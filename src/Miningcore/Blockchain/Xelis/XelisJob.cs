@@ -21,7 +21,7 @@ public class XelisJob
 {
     protected IMasterClock clock;
     protected double shareMultiplier;
-    protected readonly IHashAlgorithm blake3Hasher = new Blake3();
+    protected readonly IHashAlgorithm blake3Hasher = new Blake3IHash();
     protected readonly IHashAlgorithm xelisHash = new XelisHash();
     protected readonly IHashAlgorithm xelisHashV2 = new XelisHashV2();
 
