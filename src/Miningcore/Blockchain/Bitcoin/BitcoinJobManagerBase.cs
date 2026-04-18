@@ -41,11 +41,10 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected RpcClient rpc;
     protected readonly IExtraNonceProvider extraNonceProvider;
     protected const int ExtranonceBytes = 4;
-    protected int maxActiveJobs = 4;
+    public int maxActiveJobs { get; protected set; } = 4;
     protected bool hasLegacyDaemon;
     protected BitcoinPoolConfigExtra extraPoolConfig;
     protected BitcoinPoolPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
-    protected readonly List<TJob> validJobs = new();
     protected DateTime? lastJobRebroadcast;
     protected bool hasSubmitBlockMethod;
     protected bool isPoS;
@@ -220,7 +219,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
     }
 
-    private async Task UpdateNetworkStatsAsync(CancellationToken ct)
+    protected virtual async Task UpdateNetworkStatsAsync(CancellationToken ct)
     {
         try
         {
@@ -292,7 +291,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(!accepted)
         {
             logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
-            messageBus.SendMessage(new AdminNotification($"[{share.PoolId.ToUpper()}]-[{share.Source}] Block submission failed", $"[{share.PoolId.ToUpper()}]-[{share.Source}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
+            messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
         }
 
         return new SubmitResult(accepted, block?.Transactions.FirstOrDefault());
@@ -308,6 +307,10 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected async Task<bool> AreDaemonsConnectedLegacyAsync(CancellationToken ct)
     {
         var response = await rpc.ExecuteAsync<DaemonInfo>(logger, BitcoinCommands.GetInfo, ct);
+        
+        // update stats
+        if(!string.IsNullOrEmpty(response.Response.Version))
+            BlockchainStats.NodeVersion = (string) response.Response.Version;
 
         return response.Error == null && response.Response.Connections > 0;
     }
@@ -336,7 +339,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
     }
 
-    private async Task UpdateNetworkStatsLegacyAsync(CancellationToken ct)
+    protected virtual async Task UpdateNetworkStatsLegacyAsync(CancellationToken ct)
     {
         try
         {
@@ -396,6 +399,10 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             return await AreDaemonsConnectedLegacyAsync(ct);
 
         var response = await rpc.ExecuteAsync<NetworkInfo>(logger, BitcoinCommands.GetNetworkInfo, ct);
+
+        // update stats
+        if(!string.IsNullOrEmpty(response.Response.Version))
+            BlockchainStats.NodeVersion = (string) response.Response?.Version;
 
         return response.Error == null && response.Response?.Connections > 0;
     }
@@ -465,11 +472,35 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         // chain detection
         if(!hasLegacyDaemon)
-            network = (blockchainInfoResponse.Chain.ToLower() == "nexa") ? Network.Main : Network.GetNetwork(blockchainInfoResponse.Chain.ToLower());
+        {
+            // annoying special cases
+            switch(blockchainInfoResponse.Chain.ToLower())
+            {
+                // mainnet
+                case "nexa":
+                case "scash":
+                    network = Network.Main;
+                    break;
+
+                // testnet
+                case "nexatest":
+                case "scashtestnet":
+                    network = Network.TestNet;
+                    break;
+
+                // regtest
+                case "nexareg":
+                case "scashregtest":
+                    network = Network.RegTest;
+                    break;
+
+                default:
+                    network = Network.GetNetwork(blockchainInfoResponse.Chain.ToLower());
+                    break;
+            }
+        }
         else
             network = daemonInfoResponse.Testnet ? Network.TestNet : Network.Main;
-
-        PostChainIdentifyConfigure();
 
         // ensure pool owns wallet
         if(validateAddressResponse is not {IsValid: true})
@@ -510,10 +541,10 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         // block submission RPC method
         if(submitBlockResponse.Error?.Message?.ToLower() == "method not found")
             hasSubmitBlockMethod = false;
-        else if(submitBlockResponse.Error?.Code == -1)
+        else if(submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_MISC_ERROR || submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMS)
             hasSubmitBlockMethod = true;
         else
-            throw new PoolStartupException("Unable detect block submission RPC method", poolConfig.Id);
+            throw new PoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
 
         if(!hasLegacyDaemon)
             await UpdateNetworkStatsAsync(ct);
@@ -527,6 +558,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                     ex => logger.Error(ex))))
             .Concat()
             .Subscribe();
+
+        PostChainIdentifyConfigure();
 
         SetupCrypto();
         SetupJobUpdates(ct);

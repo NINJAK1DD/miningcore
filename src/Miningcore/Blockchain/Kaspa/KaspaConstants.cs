@@ -11,30 +11,22 @@ public static class KaspaConstants
     public const string WalletDaemonCategory = "wallet";
     
     public const int Diff1TargetNumZero = 31;
-    public static readonly BigInteger Diff1b = BigInteger.Parse("00000000ffff0000000000000000000000000000000000000000000000000000", NumberStyles.HexNumber);
+    public static readonly BigInteger Diff1b = BigInteger.Parse("00ffff0000000000000000000000000000000000000000000000000000000000", NumberStyles.HexNumber);
     public static BigInteger Diff1 = BigInteger.Pow(2, 256);
     public static BigInteger Diff1Target = BigInteger.Pow(2, 255) - 1;
     public static readonly double Pow2xDiff1TargetNumZero = Math.Pow(2, Diff1TargetNumZero);
-    public static BigInteger BigOne = BigInteger.One;
-    public static BigInteger OneLsh256 = BigInteger.One << 256;
     public static BigInteger MinHash = BigInteger.Divide(Diff1, Diff1Target);
-    public static BigInteger BigGig = BigInteger.Pow(10, 9);
     public const int ExtranoncePlaceHolderLength = 8;
     public static int NonceLength = 16;
-    public const uint ShareMultiplier = 1;
     
     // KAS smallest unit is called SOMPI: https://github.com/kaspanet/kaspad/blob/master/util/amount.go
     public const decimal SmallestUnit = 100000000;
 
-    // List of KAS prefixes: https://github.com/kaspanet/kaspad/blob/master/util/address.go
-    public const string ChainPrefixDevnet = "kaspadev";
-    public const string ChainPrefixSimnet = "kaspasim";
-    public const string ChainPrefixTestnet = "kaspatest";
-    public const string ChainPrefixMainnet = "kaspa";
-
     public static readonly Regex RegexUserAgentBzMiner = new("bzminer", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     public static readonly Regex RegexUserAgentIceRiverMiner = new("iceriverminer", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     public static readonly Regex RegexUserAgentGodMiner = new("godminer", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    public static readonly Regex RegexUserAgentGoldShell = new("(goldshell|bzminer)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    public static readonly Regex RegexUserAgentTNNMiner = new("tnn-miner", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     
     public const string CoinbaseBlockHash = "BlockHash";
     public const string CoinbaseProofOfWorkHash = "ProofOfWorkHash";
@@ -58,23 +50,28 @@ public static class KaspaConstants
 }
 
 public static class KarlsencoinConstants
-{
-    // List of KLS prefixes: https://github.com/karlsen-network/karlsend/blob/master/util/address.go
-    public const string ChainPrefixDevnet = "karlsendev";
-    public const string ChainPrefixSimnet = "karlsensim";
-    public const string ChainPrefixTestnet = "karlsentest";
-    public const string ChainPrefixMainnet = "karlsen";
+{   
+    public const ulong FishHashForkHeightTestnet = 0;
+    public const ulong FishHashPlusForkHeightTestnet = 43200;
+    public const ulong FishHashPlusForkHeightMainnet = 26962009;
+
+    public const int CoinbaseSize = 80;
 }
 
+// Pyrin is definitely a scam, use at your own risk
 public static class PyrinConstants
+{   
+    public const ulong Blake3ForkHeight = 1484741;
+}
+
+public static class SpectreConstants
 {
-    // List of KLS prefixes: https://github.com/Pyrinpyi/pyipad/blob/master/util/address.go
-    public const string ChainPrefixDevnet = "pyipadev";
-    public const string ChainPrefixSimnet = "pyrinsim";
-    public const string ChainPrefixTestnet = "pyrintest";
-    public const string ChainPrefixMainnet = "pyrin";
-    
-    public const long Blake3ForkHeight = 1484741;
+    public const int Diff1TargetNumZero = 7;
+    public static readonly BigInteger Diff1b = BigInteger.Parse("00ffff0000000000000000000000000000000000000000000000000000000000", NumberStyles.HexNumber);
+    public static readonly double Pow2xDiff1TargetNumZero = Math.Pow(2, Diff1TargetNumZero);
+    public static BigInteger MinHash = BigInteger.One;
+
+    public const int CoinbaseSize = 80;
 }
 
 public enum KaspaBech32Prefix

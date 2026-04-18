@@ -34,7 +34,7 @@ public class NexaJob
     protected virtual (Share Share, object submitParams) ProcessShareInternal(
         StratumConnection worker, string nonce, string extraNonce1)
     {
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<NexaWorkerContext>();
         var extraNonce1Bytes = extraNonce1.HexToByteArray();
         var nonceBytes = nonce.HexToByteArray();
 

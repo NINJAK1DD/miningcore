@@ -74,6 +74,8 @@
                 "percentage": 1
             }
         ],
+        "protobufWalletRpcServiceName": "kaspawalletd.kaspawalletd",
+        "enableAsicBoost": true,
         "clientConnectionTimeout": 600,
         "banning": {
             "enabled": true,
@@ -115,15 +117,13 @@
                 "host": "127.0.0.1",
                 "port": 16110,
                 "user": null,
-                "password": null,
-                "serviceName": "protowire.RPC"
+                "password": null
             },
             {
                 "host": "127.0.0.1",
                 "port": 8082,
                 "user": null,
                 "password": null,
-                "serviceName": "kaspawalletd.kaspawalletd",
                 "category": "wallet"
             }
         ],
@@ -131,6 +131,8 @@
             "enabled": true,
             "walletPassword": "<The Kaspa's wallet password which owns the pool address>",
             "minimumPayment": 1,
+            "versionEnablingMaxFee": "v0.12.18-rc5",
+            "maxFee": 200000,
             "payoutScheme": "PPLNS",
             "payoutSchemeConfig": {
                 "factor": 0.5

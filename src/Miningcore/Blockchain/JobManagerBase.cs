@@ -86,6 +86,7 @@ public abstract class JobManagerBase<TJob>
     protected abstract Task<bool> AreDaemonsConnectedAsync(CancellationToken ct);
     protected abstract Task EnsureDaemonsSynchedAsync(CancellationToken ct);
     protected abstract Task PostStartInitAsync(CancellationToken ct);
+    public abstract TJob GetJobForStratum();
 
     #region API-Surface
 

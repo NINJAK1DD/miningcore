@@ -49,6 +49,24 @@ public class Share
     public double Difficulty { get; set; }
 
     /// <summary>
+    /// Miner-style achieved share difficulty
+    /// </summary>
+    [ProtoMember(17)]
+    public double ShareDifficulty { get; set; }
+
+    /// <summary>
+    /// Raw achieved share difficulty, directly comparable to networkdifficulty
+    /// </summary>
+    [ProtoMember(18)]
+    public double ActualDifficulty { get; set; }
+
+    /// <summary>
+    /// Logical mining session identifier
+    /// </summary>
+    [ProtoMember(19)]
+    public string SessionId { get; set; }
+
+    /// <summary>
     /// Block this share refers to
     /// </summary>
     [ProtoMember(9)]

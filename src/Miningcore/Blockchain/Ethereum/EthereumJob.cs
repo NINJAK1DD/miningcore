@@ -24,17 +24,17 @@ public class EthereumJob
         blockTarget = new uint256(target.HexToReverseByteArray());
     }
 
-    private readonly Dictionary<string, HashSet<string>> workerNonces = new();
+    protected Dictionary<string, HashSet<string>> workerNonces = new();
 
     public string Id { get; }
     public EthereumBlockTemplate BlockTemplate { get; }
-    private readonly uint256 blockTarget;
-    private readonly ILogger logger;
-    private readonly IEthashLight ethash;
+    protected uint256 blockTarget;
+    protected ILogger logger;
+    protected IEthashLight ethash;
 
     public record SubmitResult(Share Share, string FullNonceHex = null, string HeaderHash = null, string MixHash = null);
 
-    private void RegisterNonce(StratumConnection worker, string nonce)
+    protected void RegisterNonce(StratumConnection worker, string nonce)
     {
         var nonceLower = nonce.ToLower();
 
@@ -47,14 +47,14 @@ public class EthereumJob
         else
         {
             if(nonces.Contains(nonceLower))
-                throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+                throw new StratumException(StratumError.MinusOne, "duplicate share");
 
             nonces.Add(nonceLower);
         }
     }
 
-    public async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
-        string workerName, string fullNonceHex, CancellationToken ct)
+    public virtual async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
+        string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
         // dupe check
         lock(workerNonces)
@@ -126,7 +126,7 @@ public class EthereumJob
         return new SubmitResult(share);
     }
 
-    public object[] GetJobParamsForStratum()
+    public virtual object[] GetJobParamsForStratum()
     {
         return new object[]
         {
@@ -137,7 +137,7 @@ public class EthereumJob
         };
     }
 
-    public object[] GetWorkParamsForStratum(EthereumWorkerContext context)
+    public virtual object[] GetWorkParamsForStratum(EthereumWorkerContext context)
     {
         // https://github.com/edsonayllon/Stratum-Implementation-For-Pantheon
         var workerTarget = BigInteger.Divide(EthereumConstants.BigMaxValue, new BigInteger(context.Difficulty * EthereumConstants.Pow2x32));

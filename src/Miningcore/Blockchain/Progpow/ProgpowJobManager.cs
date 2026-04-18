@@ -2,9 +2,10 @@ using Autofac;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
-using Miningcore.Blockchain.Progpow.Custom.Evrmore;
 using Miningcore.Blockchain.Progpow.Custom.Firo;
 using Miningcore.Blockchain.Progpow.Custom.Kiiro;
+using Miningcore.Blockchain.Progpow.Custom.Realichain;
+using Miningcore.Blockchain.Progpow.Custom.Telestai;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Crypto;
@@ -53,12 +54,12 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         {
             case "FIRO":
                 return new FiroJob();
-
-            case "EVR":
-                return new EvrmoreJob();
-
             case "KIIRO":
                 return new KiiroJob();
+            case "REALI":
+                return new RealichainJob();
+            case "TLS":
+                return new TelestaiJob();
         }
         
         return new ProgpowJob();
@@ -93,7 +94,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
                 {
                     logger.Info(() => "Loading current light cache ...");
 
-                    await coin.ProgpowHasher.GetCacheAsync(logger, (int) blockTemplate.Response.Height);
+                    await coin.ProgpowHasher.GetCacheAsync(logger, (int) blockTemplate.Response.Height, ct);
 
                     logger.Info(() => "Loaded current light cache");
                     break;
@@ -140,7 +141,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
 
                 var blockHeight = blockTemplate?.Height ?? currentJob.BlockTemplate.Height;
 
-                var progpowHasher = await coin.ProgpowHasher.GetCacheAsync(logger, (int) blockHeight);
+                var progpowHasher = await coin.ProgpowHasher.GetCacheAsync(logger, (int) blockHeight, ct);
 
                 job.Init(blockTemplate, NextJobId(),
                     poolConfig, extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
@@ -194,6 +195,12 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         return job?.GetJobParams(isNew);
     }
 
+    public override ProgpowJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
+    }
+
     #region API-Surface
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
@@ -240,12 +247,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         var job = currentJob;
 
         if(job != null)
-        {
-            lock(job)
-            {
-                job.PrepareWorkerJob(workerJob, out headerHash);
-            }
-        }
+            job.PrepareWorkerJob(workerJob, out headerHash);
     }
 
     public async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission,
@@ -273,7 +275,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
 
         lock(context)
         {
-            if((job = context.FindJob(jobId)) == null)
+            if((job = context.GetJob(jobId)) == null)
                 throw new StratumException(StratumError.MinusOne, "invalid jobid");
         }
 

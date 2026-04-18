@@ -5,7 +5,7 @@ namespace Miningcore.Crypto.Hashing.Progpow;
 public interface IProgpowLight : IDisposable
 {
     void Setup(int totalCache, ulong hardForkBlock = 0);
-    Task<IProgpowCache> GetCacheAsync(ILogger logger, int block);
+    Task<IProgpowCache> GetCacheAsync(ILogger logger, int block, CancellationToken ct);
     string AlgoName { get; }
 }
 

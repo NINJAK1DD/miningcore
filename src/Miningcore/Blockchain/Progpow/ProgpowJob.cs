@@ -156,13 +156,13 @@ public class ProgpowJob : BitcoinJob
         {
             var bs = new BitcoinStream(stream, true);
 
-            bs.ReadWrite(ref header);
+            bs.ReadWrite(header);
             bs.ReadWrite(ref nonce);
-            bs.ReadWrite(ref mixHash);
+            bs.ReadWrite(mixHash);
             bs.ReadWriteAsVarInt(ref transactionCount);
 
-            bs.ReadWrite(ref coinbase);
-            bs.ReadWrite(ref rawTransactionBuffer);
+            bs.ReadWrite(coinbase);
+            bs.ReadWrite(rawTransactionBuffer);
 
             return stream.ToArray();
         }
@@ -211,19 +211,11 @@ public class ProgpowJob : BitcoinJob
         {
             masterNodeParameters = BlockTemplate.Extra.SafeExtensionDataAs<MasterNodeBlockTemplateExtra>();
 
-            if(coin.Symbol == "FIRO" || coin.Symbol == "KIIRO")
+            if(coin.Symbol == "FIRO")
             {
                 if(masterNodeParameters.Extra?.ContainsKey("znode") == true)
                 {
                     masterNodeParameters.Masternode = JToken.FromObject(masterNodeParameters.Extra["znode"]);
-                }
-            }
-
-            if(coin.HasSmartNodes)
-            {
-                if(masterNodeParameters.Extra?.ContainsKey("smartnode") == true)
-                {
-                    masterNodeParameters.Masternode = JToken.FromObject(masterNodeParameters.Extra["smartnode"]);
                 }
             }
 

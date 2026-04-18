@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Reactive;
+using System.Reactive.Linq;
 using Miningcore.Mining;
 
 namespace Miningcore.Blockchain.Cryptonote;
@@ -8,25 +11,29 @@ public class CryptonoteWorkerContext : WorkerContextBase
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)
     /// </summary>
-    public string Miner { get; set; }
+    public override string Miner { get; set; }
 
     /// <summary>
     /// Arbitrary worker identififer for miners using multiple rigs
     /// </summary>
-    public string Worker { get; set; }
+    public override string Worker { get; set; }
 
-    private List<CryptonoteWorkerJob> validJobs { get; } = new();
+    /// <summary>
+    /// Current N job(s) assigned to this worker
+    /// </summary>
+    public Queue<CryptonoteWorkerJob> validJobs { get; private set; } = new();
 
-    public void AddJob(CryptonoteWorkerJob job)
+    public virtual void AddJob(CryptonoteWorkerJob job, int maxActiveJobs)
     {
-        validJobs.Insert(0, job);
+        if(!validJobs.Contains(job))
+            validJobs.Enqueue(job);
 
-        while(validJobs.Count > 4)
-            validJobs.RemoveAt(validJobs.Count - 1);
+        while(validJobs.Count > maxActiveJobs)
+            validJobs.Dequeue();
     }
 
-    public CryptonoteWorkerJob FindJob(string jobId)
+    public CryptonoteWorkerJob GetJob(string jobId)
     {
-        return validJobs.FirstOrDefault(x => x.Id == jobId);
+        return validJobs.ToArray().FirstOrDefault(x => x.Id == jobId);
     }
 }

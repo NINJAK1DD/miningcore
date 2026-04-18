@@ -36,6 +36,8 @@ public class CryptonoteJob
     {
         { CryptonightHashType.RandomX, (realm, seedHex, data, result, _) => RandomX.CalculateHash(realm, seedHex, data, result) },
         { CryptonightHashType.RandomARQ, (realm, seedHex, data, result, _) => RandomARQ.CalculateHash(realm, seedHex, data, result) },
+        { CryptonightHashType.Panthera, (realm, seedHex, data, result, _) => Panthera.CalculateHash(realm, seedHex, data, result) },
+        { CryptonightHashType.RandomXSCash, (realm, seedHex, data, result, _) => RandomXSCash.CalculateHash(realm, seedHex, data, result) },
         { CryptonightHashType.Cryptonight0, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_0, height) },
         { CryptonightHashType.Cryptonight1, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_1, height) },
         { CryptonightHashType.Cryptonight2, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_2, height) },
@@ -50,6 +52,7 @@ public class CryptonoteJob
         { CryptonightHashType.CryptonightFast, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_FAST, height) },
         { CryptonightHashType.CryptonightXAO, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_XAO, height) },
         { CryptonightHashType.Ghostrider, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, GHOSTRIDER_RTM, height) },
+        { CryptonightHashType.Mike, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, GHOSTRIDER_MIKE, height) },
         { CryptonightHashType.CryptonightLite0, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_LITE_0, height) },
         { CryptonightHashType.CryptonightLite1, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_LITE_1, height) },
         { CryptonightHashType.CryptonightHeavy, (_, _, data, result, height) => Cryptonight.CryptonightHash(data, result, CN_HEAVY_0, height) },
@@ -168,7 +171,7 @@ public class CryptonoteJob
 
         var headerHashString = headerHash.ToHexString();
         if(headerHashString != workerHash)
-            throw new StratumException(StratumError.MinusOne, "bad hash");
+            throw new StratumException(StratumError.MinusOne, $"bad hash [generated: {headerHashString}, received: {workerHash}]");
 
         // check difficulty
         var headerValue = headerHash.ToBigInteger();
@@ -206,9 +209,9 @@ public class CryptonoteJob
         {
             // Compute block hash
             Span<byte> blockHash = stackalloc byte[32];
-            
+
             // Not all Cryptonote coins are equal
-            if(blobType == ZephyrConstants.BlobType)
+            if(blobType == ZephyrConstants.BlobType || blobType == ScalaConstants.ScalaBlobType)
                 CryptonoteBindings.GetBlockId(blob, blockHash, blobType);
             else
                 ComputeBlockHash(blobConverted, blockHash);

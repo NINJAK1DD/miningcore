@@ -18,6 +18,7 @@ using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Time;
 using Miningcore.Util;
+using Miningcore.Stratum;
 using NLog;
 using Polly;
 
@@ -122,7 +123,7 @@ public class StatsRecorder : BackgroundService
                 // Stats calc windows
                 var timeFrameBeforeFirstShare = ((result.Min(x => x.FirstShare) - timeFrom).TotalSeconds);
                 var timeFrameAfterLastShare   = ((now - result.Max(x => x.LastShare)).TotalSeconds);
-                var timeFrameFirstLastShare   = (hashrateCalculationWindow.TotalSeconds - timeFrameBeforeFirstShare - timeFrameAfterLastShare);
+                //var timeFrameFirstLastShare   = (hashrateCalculationWindow.TotalSeconds - timeFrameBeforeFirstShare - timeFrameAfterLastShare);
                 //var poolHashTimeFrame         = Math.Floor(TimeFrameFirstLastShare + (TimeFrameBeforeFirstShare / 3) + (TimeFrameAfterLastShare * 3)) ;
 
                 var poolHashTimeFrame = hashrateCalculationWindow.TotalSeconds;
@@ -130,12 +131,11 @@ public class StatsRecorder : BackgroundService
                 // pool hashrate
                 var poolHashesAccumulated = result.Sum(x => x.Sum);
                 var poolHashrate = pool.HashrateFromShares(poolHashesAccumulated, poolHashTimeFrame);
-                poolHashrate = Math.Floor(poolHashrate);
-                pool.PoolStats.PoolHashrate = (ulong) poolHashrate;
+                pool.PoolStats.PoolHashrate = poolHashrate;
 
                 // pool shares
                 var poolHashesCountAccumulated = result.Sum(x => x.Count);
-                pool.PoolStats.SharesPerSecond = (int) (poolHashesCountAccumulated / poolHashTimeFrame);
+                pool.PoolStats.SharesPerSecond = Math.Round(poolHashesCountAccumulated / poolHashTimeFrame, 3);
 
                 messageBus.NotifyHashrateUpdated(pool.Config.Id, poolHashrate);
             }
@@ -223,10 +223,14 @@ public class StatsRecorder : BackgroundService
 
                         // calculate miner/worker stats
                         var minerHashrate = pool.HashrateFromShares(item.Sum, minerHashTimeFrame);
-                        minerHashrate = Math.Floor(minerHashrate);
                         minerTotalHashrate += minerHashrate;
                         stats.Hashrate = minerHashrate;
                         stats.Worker = item.Worker;
+                        stats.SessionId = WorkerSessionTracker.GetCurrentSessionId(
+                            poolId,
+                            stats.Miner,
+                            stats.Worker,
+                            now);
 
                         stats.SharesPerSecond = Math.Round(item.Count / minerHashTimeFrame, 3);
 
@@ -267,6 +271,7 @@ public class StatsRecorder : BackgroundService
 
                         stats.Miner = miner;
                         stats.Worker = worker;
+                        stats.SessionId = null;
 
                         // persist
                         await statsRepo.InsertMinerWorkerPerformanceStatsAsync(con, tx, stats, ct);

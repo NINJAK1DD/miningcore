@@ -40,6 +40,9 @@ public enum CoinFamily
     [EnumMember(Value = "ethereum")]
     Ethereum,
     
+    [EnumMember(Value = "handshake")]
+    Handshake,
+        
     [EnumMember(Value = "kaspa")]
     Kaspa,
 
@@ -48,6 +51,18 @@ public enum CoinFamily
 
     [EnumMember(Value = "progpow")]
     Progpow,
+
+    [EnumMember(Value = "satoshicash")]
+    Satoshicash,
+
+    [EnumMember(Value = "warthog")]
+    Warthog,
+
+    [EnumMember(Value = "xelis")]
+    Xelis,
+
+    [EnumMember(Value = "zano")]
+    Zano,
 }
 
 public abstract partial class CoinTemplate
@@ -133,7 +148,6 @@ public abstract partial class CoinTemplate
     [JsonProperty(Order = -9)]
     public string Telegram { get; set; }
 
-    /// <summary>
     /// Github Link
     /// </summary>
     [JsonProperty(Order = -9)]
@@ -159,9 +173,14 @@ public abstract partial class CoinTemplate
         {CoinFamily.Equihash, typeof(EquihashCoinTemplate)},
         {CoinFamily.Ergo, typeof(ErgoCoinTemplate)},
         {CoinFamily.Ethereum, typeof(EthereumCoinTemplate)},
+        {CoinFamily.Handshake, typeof(BitcoinTemplate)},
         {CoinFamily.Kaspa, typeof(KaspaCoinTemplate)},
         {CoinFamily.Nexa, typeof(BitcoinTemplate)},
         {CoinFamily.Progpow, typeof(ProgpowCoinTemplate)},
+        {CoinFamily.Satoshicash, typeof(BitcoinTemplate)},
+        {CoinFamily.Warthog, typeof(WarthogCoinTemplate)},
+        {CoinFamily.Xelis, typeof(XelisCoinTemplate)},
+        {CoinFamily.Zano, typeof(ZanoCoinTemplate)},
     };
 }
 
@@ -198,8 +217,10 @@ public partial class BitcoinTemplate : CoinTemplate
     [JsonConverter(typeof(StringEnumConverter), true)]
     public BitcoinSubfamily Subfamily { get; set; }
 
+    public JObject MerkleTreeHasher { get; set; }
     public JObject CoinbaseHasher { get; set; }
     public JObject HeaderHasher { get; set; }
+    public JObject ShareHasher { get; set; }
     public JObject BlockHasher { get; set; }
 
     [JsonProperty("posBlockHasher")]
@@ -230,28 +251,31 @@ public partial class BitcoinTemplate : CoinTemplate
     public bool HasFounderFee { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-	public bool HasFounderReward { get; set; }
+    public bool HasFortuneReward { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
     public bool HasMinerFund { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-    public bool HasCoinbaseDevReward { get; set; }
-
-    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-    public bool HasProofOfGameplayAddress { get; set; }
-
-    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-    public bool HasDevFundAddress { get; set; }
-
-    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
     public bool HasCommunityAddress { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-    public bool HasFoundation { get; set; }
+    public bool HasCoinbaseDevReward { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-    public bool HasFounderValue { get; set; }
+    public bool HasCoinbaseStakingReward { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool HasCommunity { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool HasDataMining { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool HasDeveloper { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool HasRandomXSCash { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
     [DefaultValue(1.0d)]
@@ -383,6 +407,12 @@ public enum CryptonightHashType
     [EnumMember(Value = "randomarq")]
     RandomARQ,
 
+    [EnumMember(Value = "panthera")]
+    Panthera,
+
+    [EnumMember(Value = "randomxscash")]
+    RandomXSCash,
+
     [EnumMember(Value = "cn0")]
     Cryptonight0,
 
@@ -425,6 +455,9 @@ public enum CryptonightHashType
     [EnumMember(Value = "gr")]
     Ghostrider,
 
+    [EnumMember(Value = "mike")]
+    Mike,
+
     [EnumMember(Value = "cn_lite0")]
     CryptonightLite0,
 
@@ -451,6 +484,9 @@ public enum CryptonightHashType
 
     [EnumMember(Value = "argon_wrkz")]
     ArgonWRKZ,
+
+    [EnumMember(Value = "progpowz")]
+    ProgPowZ,
 }
 
 public partial class CryptonoteCoinTemplate : CoinTemplate
@@ -667,6 +703,14 @@ public partial class EthereumCoinTemplate : CoinTemplate
     [DefaultValue(EthereumSubfamily.None)]
     [JsonConverter(typeof(StringEnumConverter), true)]
     public EthereumSubfamily Subfamily { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue("eth")]
+    public string RpcMethodPrefix { get; set; } = "eth";
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(2)]
+    public int MaxUncles { get; set; } = 2;
     
     /// <summary>
     /// Which hashing algorithm to use. (ethash, etchash, ubqhash or ethashb3)
@@ -676,6 +720,37 @@ public partial class EthereumCoinTemplate : CoinTemplate
 
 public partial class KaspaCoinTemplate : CoinTemplate
 {
+    /// <summary>
+    /// Prefix of a valid mainnet address
+    /// See: parameter -> Bech32PrefixKaspa in blob/master/util/address.go
+    /// </summary>
+    public string AddressBech32Prefix { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid devnet address
+    /// See: parameter -> Bech32PrefixKaspaDev in blob/master/util/address.go
+    /// </summary>
+    public string AddressBech32PrefixDevnet { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid simnet address
+    /// See: parameter -> Bech32PrefixKaspaSim in blob/master/util/address.go
+    /// </summary>
+    public string AddressBech32PrefixSimnet { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid testnet address
+    /// See: parameter -> Bech32PrefixKaspaTest in blob/master/util/address.go
+    /// </summary>
+    public string AddressBech32PrefixTestnet { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(1.0d)]
+    public double ShareMultiplier { get; set; } = 1.0d;
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(4294967296.0d)]
+    public double HashrateMultiplier { get; set; } = 4294967296.0d;
 }
 
 public partial class ProgpowCoinTemplate : BitcoinTemplate
@@ -684,6 +759,136 @@ public partial class ProgpowCoinTemplate : BitcoinTemplate
     /// Which hashing algorithm to use. (kawpow or firopow)
     /// </summary>
     public string Progpower { get; set; } = "kawpow";
+}
+
+public partial class WarthogCoinTemplate : CoinTemplate
+{
+}
+
+public partial class XelisCoinTemplate : CoinTemplate
+{
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(1.0d)]
+    public double ShareMultiplier { get; set; } = 1.0d;
+}
+
+public enum ZanoSubfamily
+{
+    [EnumMember(Value = "none")]
+    None,
+}
+
+public partial class ZanoCoinTemplate : CoinTemplate
+{
+    [JsonProperty(Order = -7, DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(ZanoSubfamily.None)]
+    [JsonConverter(typeof(StringEnumConverter), true)]
+    public ZanoSubfamily Subfamily { get; set; }
+
+    /// <summary>
+    /// Broader Cryptonight hash family
+    /// </summary>
+    [JsonConverter(typeof(StringEnumConverter), true)]
+    [JsonProperty(Order = -5)]
+    public CryptonightHashType Hash { get; set; }
+
+    /// <summary>
+    /// Broader Cryptonight hash variant
+    /// </summary>
+    [JsonProperty(Order = -4, DefaultValueHandling = DefaultValueHandling.Include)]
+    public int HashVariant { get; set; }
+    
+    /// <summary>
+    /// Blob type in order to build the correct blob from blobtemplate
+    /// </summary>
+    [JsonProperty(Order = -4, DefaultValueHandling = DefaultValueHandling.Include)]
+    public int BlobType { get; set; }
+    
+    /// <summary>
+    /// Conceal network hashrate = `Difficulty / DifficultyTarget`
+    /// See: parameter -> DIFFICULTY_TARGET in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong DifficultyTarget { get; set; }
+    
+    /// <summary>
+    /// Smallest unit for Blockreward formatting
+    /// </summary>
+    public decimal SmallestUnit { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid address
+    /// See: parameter -> CURRENCY_PUBLIC_ADDRESS_BASE58_PREFIX in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong AddressPrefix { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid testnet-address
+    /// See: parameter -> CURRENCY_PUBLIC_ADDRESS_BASE58_PREFIX in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong AddressPrefixTestnet { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid integrated address
+    /// See: parameter -> CURRENCY_PUBLIC_INTEG_ADDRESS_BASE58_PREFIX in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong AddressPrefixIntegrated { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid integrated testnet-address
+    /// See: parameter -> CURRENCY_PUBLIC_INTEG_ADDRESS_BASE58_PREFIX in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong AddressPrefixIntegratedTestnet { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid integrated address-v2
+    /// See: parameter -> CURRENCY_PUBLIC_INTEG_ADDRESS_V2_BASE58_PREFIX in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong AddressV2PrefixIntegrated { get; set; }
+
+    /// <summary>
+    /// Prefix of a valid integrated testnet-address-v2
+    /// See: parameter -> CURRENCY_PUBLIC_INTEG_ADDRESS_V2_BASE58_PREFIX in src/currency_core/currency_config.h
+    /// </summary>
+    public ulong AddressV2PrefixIntegratedTestnet { get; set; }
+    
+    /// <summary>
+    /// Sub Prefix of a valid auditable-address
+    /// See: namespace config -> CURRENCY_PUBLIC_AUDITABLE_ADDRESS_BASE58_PREFIX in src/cryptonote_config.h
+    /// </summary>
+    public ulong AuditableAddressPrefix { get; set; }
+
+    /// <summary>
+    /// Sub Prefix of a valid testnet-auditable-address
+    /// See: namespace config -> CURRENCY_PUBLIC_AUDITABLE_ADDRESS_BASE58_PREFIX in src/cryptonote_config.h
+    /// </summary>
+    public ulong AuditableAddressPrefixTestnet { get; set; }
+
+    /// <summary>
+    /// Sub Prefix of a valid integrated auditable-address
+    /// See: namespace config -> CURRENCY_PUBLIC_AUDITABLE_INTEG_ADDRESS_BASE58_PREFIX in src/cryptonote_config.h
+    /// </summary>
+    public ulong AuditableAddressIntegratedPrefix { get; set; }
+
+    /// <summary>
+    /// Sub Prefix of a valid integrated testnet-auditable-address
+    /// See: namespace config -> CURRENCY_PUBLIC_AUDITABLE_INTEG_ADDRESS_BASE58_PREFIX in src/cryptonote_config.h
+    /// </summary>
+    public ulong AuditableAddressIntegratedPrefixTestnet { get; set; }
+
+    /// <summary>
+    /// Fraction of block reward, the pool really gets to keep
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(1.0d)]
+    public decimal BlockrewardMultiplier { get; set; }
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(1.0d)]
+    public double ShareMultiplier { get; set; } = 1.0d;
+
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(1.0d)]
+    public double? HashrateMultiplier { get; set; } = 1.0d;
 }
 
 #endregion // Coin Definitions
@@ -906,6 +1111,8 @@ public partial class PoolShareBasedBanningConfig
     public int CheckThreshold { get; set; } // Check stats when this many shares have been submitted
     public double InvalidPercent { get; set; } // What percent of invalid shares triggers ban
     public int Time { get; set; } // How many seconds to ban worker for
+    public double? MinerEffortPercent { get; set; } // What percent of effort triggers ban
+    public int? MinerEffortTime { get; set; } // How many seconds to ban worker for
 }
 
 public partial class PoolPaymentProcessingConfig
@@ -1147,6 +1354,15 @@ public partial class PoolConfig
     /// If true, internal stratum ports are not initialized
     /// </summary>
     public bool? EnableInternalStratum { get; set; }
+
+    /// <summary>
+    /// Don't let the name fool you, "ASIC BOOST" is just the most annoying decision ever made.
+    /// Probably under the stupid incentives from NiceHack (NiceHash), some ASIC manufacturers and all their IDIOT partners in crime.
+    /// They literally came up with the STUPID idea of breaking the JSON-RPC standards by sending the "error" field even when there is no error, IDIOTS!!!
+    /// If true, stratum answer will always have the field "error" present in all JSON-RPC responses
+    /// Default: False
+    /// </summary>
+    public bool? EnableAsicBoost { get; set; }
 
     /// <summary>
     /// Interval in seconds for performing sweeps over connected miners operating on a too high diff to submit shares and adjust varDiff down

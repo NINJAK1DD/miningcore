@@ -48,7 +48,7 @@ public class NexaPool : PoolBase
         if(request.Id == null)
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<NexaWorkerContext>();
         var requestParams = request.ParamsAs<string[]>();
 
         var data = new object[]
@@ -62,7 +62,18 @@ public class NexaPool : PoolBase
         .Concat(manager.GetSubscriberData(connection))
         .ToArray();
 
-        await connection.RespondAsync(data, request.Id);
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [Respect the goddamn standards Nicehack :(]
+        var response = new JsonRpcResponse<object[]>(data, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
+        await connection.RespondAsync(response);
 
         // setup worker context
         context.IsSubscribed = true;
@@ -79,9 +90,11 @@ public class NexaPool : PoolBase
             context.SetDifficulty(nicehashDiff.Value);
         }
 
+        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
+
         // send intial update
         await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -91,7 +104,7 @@ public class NexaPool : PoolBase
         if(request.Id == null)
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<NexaWorkerContext>();
         var requestParams = request.ParamsAs<string[]>();
         var workerValue = requestParams?.Length > 0 ? requestParams[0] : null;
         var password = requestParams?.Length > 1 ? requestParams[1] : null;
@@ -109,8 +122,19 @@ public class NexaPool : PoolBase
 
         if(context.IsAuthorized)
         {
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(context.IsAuthorized, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
             // respond
-            await connection.RespondAsync(context.IsAuthorized, request.Id);
+            await connection.RespondAsync(response);
 
             // log association
             logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
@@ -148,10 +172,24 @@ public class NexaPool : PoolBase
         }
     }
 
+    private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+    {
+        var context = connection.ContextAs<NexaWorkerContext>();
+        var job = manager.GetJobForStratum();
+
+        // update context
+        lock(context)
+        {
+            context.AddJob(job, manager.maxActiveJobs);
+        }
+
+        return job.GetJobParams();
+    }
+
     protected virtual async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<NexaWorkerContext>();
 
         try
         {
@@ -180,7 +218,19 @@ public class NexaPool : PoolBase
 
             // submit
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);
-            await connection.RespondAsync(true, request.Id);
+
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(true, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            await connection.RespondAsync(response);
 
             // publish
             messageBus.SendMessage(share);
@@ -219,10 +269,21 @@ public class NexaPool : PoolBase
     private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
         var request = tsRequest.Value;
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<NexaWorkerContext>();
+
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [Respect the goddamn standards Nicehack :(]
+        var response = new JsonRpcResponse<object>(true, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
 
         // acknowledge
-        await connection.RespondAsync(true, request.Id);
+        await connection.RespondAsync(response);
 
         try
         {
@@ -254,14 +315,15 @@ public class NexaPool : PoolBase
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
-            var context = connection.ContextAs<BitcoinWorkerContext>();
+            var context = connection.ContextAs<NexaWorkerContext>();
+            var minerJobParams = CreateWorkerJob(connection, true);
 
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             // send job
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }));
     }
 
@@ -328,7 +390,7 @@ public class NexaPool : PoolBase
 
     protected override WorkerContextBase CreateWorkerContext()
     {
-        return new BitcoinWorkerContext();
+        return new NexaWorkerContext();
     }
 
     protected override async Task OnRequestAsync(StratumConnection connection,
@@ -357,7 +419,20 @@ public class NexaPool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.ExtraNonceSubscribe:
-                    await connection.RespondAsync(true, request.Id);
+                    var context = connection.ContextAs<NexaWorkerContext>();
+
+                    // Nicehash's stupid validator insists on "error" property present
+                    // in successful responses which is a violation of the JSON-RPC spec
+                    // [Respect the goddamn standards Nicehack :(]
+                    var response = new JsonRpcResponse<object>(true, request.Id);
+
+                    if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                    {
+                        response.Extra = new Dictionary<string, object>();
+                        response.Extra["error"] = null;
+                    }
+
+                    await connection.RespondAsync(response);
                     break;
 
                 default:
@@ -380,8 +455,10 @@ public class NexaPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
+            var minerJobParams = CreateWorkerJob(connection, false);
+
             await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }
     }
 

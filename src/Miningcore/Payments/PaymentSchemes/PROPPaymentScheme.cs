@@ -43,7 +43,7 @@ public class PROPPaymentScheme : IPayoutScheme
     private readonly IBlockRepository blockRepo;
     private readonly IConnectionFactory cf;
     private readonly IShareRepository shareRepo;
-    private static readonly ILogger logger = LogManager.GetLogger("PROP Payment", typeof(PROPPaymentScheme));
+    private static readonly ILogger logger = LogManager.GetLogger("PROP Payment");
 
     private const int RetryCount = 4;
     private IAsyncPolicy shareReadFaultPolicy;

@@ -42,6 +42,11 @@ public static class CryptonoteConstants
     public const decimal StaticTransactionFeeReserve = 0.03m; // in monero
 }
 
+public static class ScalaConstants
+{
+    public const int ScalaBlobType = 14;
+}
+
 public static class ZephyrConstants
 {
     public const int BlobType = 13;
@@ -77,4 +82,17 @@ public static class CryptonoteWalletCommands
     public const string GetTransfers = "get_transfers";
     public const string SplitIntegratedAddress = "split_integrated_address";
     public const string Store = "store";
+}
+
+public enum SalviumTransactionType
+{
+    Unset = 0,
+    Miner = 1,
+    Protocol = 2,
+    Transfer = 3,
+    Convert = 4,
+    Burn = 5,
+    Stake = 6,
+    Return = 7,
+    Max = 7
 }

@@ -130,18 +130,19 @@ public class KiiroJob : ProgpowJob
             {
                 foreach(var masterNode in masternodes)
                 {
-                    if(!string.IsNullOrEmpty(masterNode.Payee))
+                    if(!string.IsNullOrEmpty(masterNode.Script))
                     {
-                        var payeeDestination = BitcoinUtils.AddressToDestination(masterNode.Payee, network);
+                        Script payeeAddress = new (masterNode.Script.HexToByteArray());
                         var payeeReward = masterNode.Amount;
 
-                        tx.Outputs.Add(payeeReward, payeeDestination);
+                        tx.Outputs.Add(payeeReward, payeeAddress);
                     /*  A block reward of 30 KIIRO/block is divided as follows:
                     
                             Miners (20%, 6 KIIRO)
-                            Masternodes (60%, 18 KIIRO)
-                            Development Fund (10%, 3 KIIRO)
-                            Community Fund (10%, 3 KIIRO)
+                            Masternodes (61%, 18.3 KIIRO)
+                            DataMining Fund (1%, 0.3 KIIRO)
+                            Developer Fund (9%, 2.7 KIIRO)
+                            Community Fund (9%, 2.7 KIIRO)
                     */
                         //reward -= payeeReward; // KIIRO does not deduct payeeReward from coinbasevalue (reward) since it's the amount which goes to miners
                     }
@@ -153,41 +154,40 @@ public class KiiroJob : ProgpowJob
     }
 
     #endregion // Masternodes
-    
-    #region Founder
+ 
+    #region Community
 
-    protected override Money CreateFounderOutputs(Transaction tx, Money reward)
+    protected override Money CreateCommunityOutputs(Transaction tx, Money reward)
     {
-        if (coin.HasFounderFee)
+        if (communityParameters.Community != null)
         {
-            Founder[] founders;
-            
-            if(network.Name.ToLower() == "testnet")
-            {
-                founders = new[] { new Founder{ Payee = "TCkC4uoErEyCB4MK3d6ouyJELoXnuyqe9L", Amount = 300000000 }, new Founder{ Payee = "TWDxLLKsFp6qcV1LL4U2uNmW4HwMcapmMU", Amount = 450000000 } };
-            }
+            Community[] communitys;
+            if (communityParameters.Community.Type == JTokenType.Array)
+                communitys = communityParameters.Community.ToObject<Community[]>();
             else
-            {
-                founders = new[] { new Founder{ Payee = "KDW8CeScVpWFzekvZm4f37qs5GxByEGSKE", Amount = 300000000 }, new Founder{ Payee = "KWTco92wURX5Jwu3mMdWrs36j574meAvew", Amount = 300000000 } };
-            }
-            
-            foreach(var Founder in founders)
-            {
-                if(!string.IsNullOrEmpty(Founder.Payee))
-                {
-                    var payeeAddress = BitcoinUtils.AddressToDestination(Founder.Payee, network);
-                    var payeeReward = Founder.Amount;
+                communitys = new[] { communityParameters.Community.ToObject<Community>() };
 
-                    tx.Outputs.Add(payeeReward, payeeAddress);
-                    
+            if(communitys != null)
+            {
+                foreach(var Community in communitys)
+                {
+                    if(!string.IsNullOrEmpty(Community.Script))
+                    {
+                        Script payeeAddress = new (Community.Script.HexToByteArray());
+                        var payeeReward = Community.Amount;
+
+                        tx.Outputs.Add(payeeReward, payeeAddress);
                     /*  A block reward of 30 KIIRO/block is divided as follows:
                     
                             Miners (20%, 6 KIIRO)
-                            Masternodes (60%, 18 KIIRO)
-                            Development Fund (10%, 3 KIIRO)
-                            Community Fund (10%, 3 KIIRO)
+                            Masternodes (61%, 18.3 KIIRO)
+                            DataMining Fund (1%, 0.3 KIIRO)
+                            Developer Fund (9%, 2.7 KIIRO)
+                            Community Fund (9%, 2.7 KIIRO)
                     */
-                    //reward -= payeeReward; // KIIRO does not deduct payeeReward from coinbasevalue (reward) since it's the amount which goes to miners
+                        //reward -= payeeReward; // KIIRO does not deduct payeeReward from coinbasevalue (reward) since it's the amount which goes to miners
+
+                    }
                 }
             }
         }
@@ -195,5 +195,47 @@ public class KiiroJob : ProgpowJob
         return reward;
     }
 
-    #endregion // Founder
+    #endregion //Community
+ 
+    #region Developer
+
+    protected override Money CreateDeveloperOutputs(Transaction tx, Money reward)
+    {
+        if (developerParameters.Developer != null)
+        {
+            Developer[] developers;
+            if (developerParameters.Developer.Type == JTokenType.Array)
+                developers = developerParameters.Developer.ToObject<Developer[]>();
+            else
+                developers = new[] { developerParameters.Developer.ToObject<Developer>() };
+
+            if(developers != null)
+            {
+                foreach(var Developer in developers)
+                {
+                    if(!string.IsNullOrEmpty(Developer.Script))
+                    {
+                        Script payeeAddress = new (Developer.Script.HexToByteArray());
+                        var payeeReward = Developer.Amount;
+
+                        tx.Outputs.Add(payeeReward, payeeAddress);
+                    /*  A block reward of 30 KIIRO/block is divided as follows:
+                    
+                            Miners (20%, 6 KIIRO)
+                            Masternodes (61%, 18.3 KIIRO)
+                            DataMining Fund (1%, 0.3 KIIRO)
+                            Developer Fund (9%, 2.7 KIIRO)
+                            Community Fund (9%, 2.7 KIIRO)
+                    */
+                        //reward -= payeeReward; // KIIRO does not deduct payeeReward from coinbasevalue (reward) since it's the amount which goes to miners
+
+                    }
+                }
+            }
+        }
+
+        return reward;
+    }
+
+    #endregion //Developer
 }

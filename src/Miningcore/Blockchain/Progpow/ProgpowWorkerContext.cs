@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Reactive;
+using System.Reactive.Linq;
 using Miningcore.Mining;
 
 namespace Miningcore.Blockchain.Progpow;
@@ -7,30 +10,34 @@ public class ProgpowWorkerContext : WorkerContextBase
     /// <summary>
     /// Usually a wallet address
     /// </summary>
-    public string Miner { get; set; }
+    public override string Miner { get; set; }
 
     /// <summary>
     /// Arbitrary worker identififer for miners using multiple rigs
     /// </summary>
-    public string Worker { get; set; }
+    public override string Worker { get; set; }
 
     /// <summary>
     /// Unique value assigned per worker
     /// </summary>
     public string ExtraNonce1 { get; set; }
 
-    private List<ProgpowWorkerJob> ValidJobs { get; } = new();
+    /// <summary>
+    /// Current N job(s) assigned to this worker
+    /// </summary>
+    public Queue<ProgpowWorkerJob> validJobs { get; private set; } = new();
 
-    public void AddJob(ProgpowWorkerJob job)
+    public virtual void AddJob(ProgpowWorkerJob job, int maxActiveJobs)
     {
-        ValidJobs.Insert(0, job);
+        if(!validJobs.Contains(job))
+            validJobs.Enqueue(job);
 
-        while(ValidJobs.Count > 4)
-            ValidJobs.RemoveAt(ValidJobs.Count - 1);
+        while(validJobs.Count > maxActiveJobs)
+            validJobs.Dequeue();
     }
 
-    public ProgpowWorkerJob FindJob(string jobId)
+    public ProgpowWorkerJob GetJob(string jobId)
     {
-        return ValidJobs.FirstOrDefault(x => x.Id == jobId);
+        return validJobs.ToArray().FirstOrDefault(x => x.Id == jobId);
     }
 }

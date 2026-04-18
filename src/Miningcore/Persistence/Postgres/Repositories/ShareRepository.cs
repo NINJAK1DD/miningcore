@@ -26,7 +26,8 @@ public class ShareRepository : IShareRepository
         var pgCon = (NpgsqlConnection) con;
 
         const string query = @"COPY shares (poolid, blockheight, difficulty,
-            networkdifficulty, miner, worker, useragent, ipaddress, source, created) FROM STDIN (FORMAT BINARY)";
+            networkdifficulty, sharedifficulty, actualdifficulty, miner, worker, useragent, ipaddress, source, sessionid, created)
+            FROM STDIN (FORMAT BINARY)";
 
         await using(var writer = await pgCon.BeginBinaryImportAsync(query, ct))
         {
@@ -38,11 +39,41 @@ public class ShareRepository : IShareRepository
                 await writer.WriteAsync((long) share.BlockHeight, NpgsqlDbType.Bigint, ct);
                 await writer.WriteAsync(share.Difficulty, NpgsqlDbType.Double, ct);
                 await writer.WriteAsync(share.NetworkDifficulty, NpgsqlDbType.Double, ct);
+
+                if(share.ShareDifficulty.HasValue)
+                    await writer.WriteAsync(share.ShareDifficulty.Value, NpgsqlDbType.Double, ct);
+                else
+                    await writer.WriteNullAsync(ct);
+
+                if(share.ActualDifficulty.HasValue)
+                    await writer.WriteAsync(share.ActualDifficulty.Value, NpgsqlDbType.Double, ct);
+                else
+                    await writer.WriteNullAsync(ct);
+
                 await writer.WriteAsync(share.Miner, ct);
-                await writer.WriteAsync(share.Worker, ct);
-                await writer.WriteAsync(share.UserAgent, ct);
+
+                if(string.IsNullOrEmpty(share.Worker))
+                    await writer.WriteNullAsync(ct);
+                else
+                    await writer.WriteAsync(share.Worker, ct);
+
+                if(string.IsNullOrEmpty(share.UserAgent))
+                    await writer.WriteNullAsync(ct);
+                else
+                    await writer.WriteAsync(share.UserAgent, ct);
+
                 await writer.WriteAsync(share.IpAddress, ct);
-                await writer.WriteAsync(share.Source, ct);
+
+                if(string.IsNullOrEmpty(share.Source))
+                    await writer.WriteNullAsync(ct);
+                else
+                    await writer.WriteAsync(share.Source, ct);
+
+                if(string.IsNullOrEmpty(share.SessionId))
+                    await writer.WriteNullAsync(ct);
+                else
+                    await writer.WriteAsync(share.SessionId, ct);
+
                 await writer.WriteAsync(share.Created, NpgsqlDbType.TimestampTz, ct);
             }
 
@@ -75,18 +106,18 @@ public class ShareRepository : IShareRepository
         return con.QuerySingleAsync<long>(new CommandDefinition(query, new { poolId, miner}, tx, cancellationToken: ct));
     }
 
-    public Task<double?> GetEffortBetweenCreatedAsync(IDbConnection con, string poolId, DateTime start, DateTime end)
+    public Task<double?> GetEffortBetweenCreatedAsync(IDbConnection con, string poolId, double shareConst, DateTime start, DateTime end, CancellationToken ct)
     {
-        const string query = "SELECT SUM(difficulty / networkdifficulty) FROM shares WHERE poolid = @poolId AND created > @start AND created < @end";
+        const string query = "SELECT SUM((difficulty * @shareConst) / networkdifficulty) FROM shares WHERE poolid = @poolId AND created > @start AND created < @end";
 
-        return con.QuerySingleAsync<double?>(query, new { poolId, start, end });
+        return con.QuerySingleAsync<double?>(new CommandDefinition(query, new { poolId, shareConst, start, end }, cancellationToken: ct));
     }
 
-    public Task<double?> GetMinerEffortBetweenCreatedAsync(IDbConnection con, string poolId, string miner, DateTime start, DateTime end)
+    public Task<double?> GetMinerEffortBetweenCreatedAsync(IDbConnection con, string poolId, string miner, DateTime start, DateTime end, CancellationToken ct)
     {
         const string query = "SELECT SUM(difficulty / networkdifficulty) FROM shares WHERE poolid = @poolId AND miner = @miner AND created > @start AND created < @end";
 
-        return con.QuerySingleAsync<double?>(query, new { poolId, miner, start, end });
+        return con.QuerySingleAsync<double?>(new CommandDefinition(query, new { poolId, miner, start, end }, cancellationToken: ct));
     }
 
     public async Task DeleteSharesByMinerAsync(IDbConnection con, IDbTransaction tx, string poolId, string miner, CancellationToken ct)

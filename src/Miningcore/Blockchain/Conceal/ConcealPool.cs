@@ -126,7 +126,18 @@ public class ConcealPool : PoolBase
                 Job = CreateWorkerJob(connection)
             };
 
-            await connection.RespondAsync(loginResponse, request.Id);
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(loginResponse, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            await connection.RespondAsync(response);
 
             // log association
             if(!string.IsNullOrEmpty(context.Worker))
@@ -164,9 +175,21 @@ public class ConcealPool : PoolBase
         if(connection.ConnectionId != getJobRequest?.WorkerId || !context.IsAuthorized)
             throw new StratumException(StratumError.MinusOne, "unauthorized");
 
-        // respond
         var job = CreateWorkerJob(connection);
-        await connection.RespondAsync(job, request.Id);
+
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [Respect the goddamn standards Nicehack :(]
+        var response = new JsonRpcResponse<object>(job, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
+        // respond
+        await connection.RespondAsync(response);
     }
 
     private ConcealJobParams CreateWorkerJob(StratumConnection connection)
@@ -177,7 +200,7 @@ public class ConcealPool : PoolBase
         manager.PrepareWorkerJob(job, out var blob, out var target);
 
         // should never happen
-        if(string.IsNullOrEmpty(blob) || string.IsNullOrEmpty(blob))
+        if(string.IsNullOrEmpty(blob) || string.IsNullOrEmpty(target))
             return null;
 
         var result = new ConcealJobParams
@@ -194,7 +217,7 @@ public class ConcealPool : PoolBase
         // update context
         lock(context)
         {
-            context.AddJob(job);
+            context.AddJob(job, 4);
         }
 
         return result;
@@ -210,6 +233,10 @@ public class ConcealPool : PoolBase
             if(request.Id == null)
                 throw new StratumException(StratumError.MinusOne, "missing request id");
 
+            // authorized worker
+            if(!context.IsAuthorized)
+                throw new StratumException(StratumError.MinusOne, "unauthorized");
+
             // check age of submission (aged submissions are usually caused by high server load)
             var requestAge = clock.Now - tsRequest.Timestamp.UtcDateTime;
 
@@ -223,8 +250,8 @@ public class ConcealPool : PoolBase
             var submitRequest = request.ParamsAs<ConcealSubmitShareRequest>();
 
             // validate worker
-            if(connection.ConnectionId != submitRequest?.WorkerId || !context.IsAuthorized)
-                throw new StratumException(StratumError.MinusOne, "unauthorized");
+            if(connection.ConnectionId != submitRequest?.WorkerId)
+                throw new StratumException(StratumError.MinusOne, "cheater");
 
             // recognize activity
             context.LastActivity = clock.Now;
@@ -235,7 +262,7 @@ public class ConcealPool : PoolBase
             {
                 var jobId = submitRequest?.JobId;
 
-                if((job = context.FindJob(jobId)) == null)
+                if((job = context.GetJob(jobId)) == null)
                     throw new StratumException(StratumError.MinusOne, "invalid jobid");
             }
 
@@ -245,7 +272,19 @@ public class ConcealPool : PoolBase
 
             // submit
             var share = await manager.SubmitShareAsync(connection, submitRequest, job, ct);
-            await connection.RespondAsync(new ConcealResponseBase(), request.Id);
+
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(new ConcealResponseBase(), request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            await connection.RespondAsync(response);
 
             // publish
             messageBus.SendMessage(share);
@@ -386,8 +425,20 @@ public class ConcealPool : PoolBase
 
                     // For some reasons, we would never send a reply here :/
                     // But the official XMRig documentation is explicit, we should reply: https://xmrig.com/docs/extensions/keepalive
-                    // XMRig is such a gift, i wish more mining pool operators were like them and valued open-source, the same way the XMRig devs do
-                    await connection.RespondAsync(new ConcealKeepAliveResponse(), request.Id);
+                    // XMRig is such a gift, i wish more mining pool operators value open-source, the same way the XMRig devs do
+
+                    // Nicehash's stupid validator insists on "error" property present
+                    // in successful responses which is a violation of the JSON-RPC spec
+                    // [Respect the goddamn standards Nicehack :(]
+                    var response = new JsonRpcResponse<object>(new ConcealKeepAliveResponse(), request.Id);
+
+                    if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                    {
+                        response.Extra = new Dictionary<string, object>();
+                        response.Extra["error"] = null;
+                    }
+
+                    await connection.RespondAsync(response);
                     break;
 
                 default:

@@ -23,9 +23,9 @@ public class MeowpowLight : IProgpowLight
             value.Dispose();
     }
 
-    public async Task<IProgpowCache> GetCacheAsync(ILogger logger, int block)
+    public async Task<IProgpowCache> GetCacheAsync(ILogger logger, int block, CancellationToken ct)
     {
-        var epoch = block / MeowcoinConstants.EpochLength;
+        var epoch = block / RavencoinConstants.EpochLength;
         Cache result;
 
         lock(cacheLock)
@@ -72,7 +72,7 @@ public class MeowpowLight : IProgpowLight
                 future = new Cache(epoch + 1);
 
 #pragma warning disable 4014
-                future.GenerateAsync(logger);
+                future.GenerateAsync(logger, ct);
 #pragma warning restore 4014
             }
 
@@ -80,7 +80,7 @@ public class MeowpowLight : IProgpowLight
         }
 
         // get/generate current one
-        await result.GenerateAsync(logger);
+        await result.GenerateAsync(logger, ct);
 
         return result;
     }

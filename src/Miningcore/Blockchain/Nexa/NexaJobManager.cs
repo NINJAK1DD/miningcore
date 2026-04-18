@@ -127,15 +127,6 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
                 job.Init(miningCandidate, blockTemplate, NextJobId(),
                     poolConfig, clock, ShareMultiplier, coin.HeaderHasherValue);
 
-                lock(jobLock)
-                {
-                    validJobs.Insert(0, job);
-
-                    // trim active jobs
-                    while(validJobs.Count > maxActiveJobs)
-                        validJobs.RemoveAt(validJobs.Count - 1);
-                }
-
                 if(isNew)
                 {
                     if(via != null)
@@ -184,6 +175,12 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
         return job?.GetJobParams();
     }
 
+    public override NexaJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
+    }
+
     #region API-Surface
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
@@ -202,7 +199,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
     {
         Contract.RequiresNonNull(worker);
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<NexaWorkerContext>();
 
         // assign unique ExtraNonce1 to worker (miner)
         context.ExtraNonce1 = extraNonceProvider.Next();
@@ -226,7 +223,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
         if(submission is not object[] submitParams)
             throw new StratumException(StratumError.Other, "invalid params");
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<NexaWorkerContext>();
 
         var workerValue = (submitParams[0] as string)?.Trim();
         var jobId = submitParams[1] as string;
@@ -242,9 +239,9 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
 
         NexaJob job;
 
-        lock(jobLock)
+        lock(context)
         {
-            job = validJobs.FirstOrDefault(x => x.JobId == jobId);
+            job = context.GetJob(jobId);
         }
 
         if(job == null)

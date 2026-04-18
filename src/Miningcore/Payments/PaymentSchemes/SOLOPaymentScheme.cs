@@ -26,7 +26,7 @@ public class SOLOPaymentScheme : IPayoutScheme
 
     private readonly IBalanceRepository balanceRepo;
     private readonly IShareRepository shareRepo;
-    private static readonly ILogger logger = LogManager.GetLogger("SOLO Payment", typeof(SOLOPaymentScheme));
+    private static readonly ILogger logger = LogManager.GetLogger("SOLO Payment");
 
     #region IPayoutScheme
 

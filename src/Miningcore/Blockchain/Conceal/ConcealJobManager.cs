@@ -146,12 +146,9 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
     {
         var info = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
         
-        if(info.Status != "OK")
+        if(info.Status == "OK")
         {
-            var lowestHeight = info.Height;
-
-            var totalBlocks = info.TargetHeight;
-            var percent = (double) lowestHeight / totalBlocks * 100;
+            var percent = (double) info.TargetHeight / info.Height * 100;
 
             logger.Info(() => $"Daemon has downloaded {percent:0.00}% of blockchain from {info.OutgoingConnectionsCount} peers");
         }
@@ -194,6 +191,23 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
         }
 
         return true;
+    }
+
+    public void PrepareWorkerJob(ConcealWorkerJob workerJob, out string blob, out string target)
+    {
+        blob = null;
+        target = null;
+
+        var job = currentJob;
+
+        if(job != null)
+            job.PrepareWorkerJob(workerJob, out blob, out target);
+    }
+
+    public override ConcealJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
     }
 
     #region API-Surface
@@ -254,7 +268,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for conceal-pools require an additional entry of category \'wallet' pointing to the wallet daemon)", pc.Id);
+                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for conceal-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
         }
 
         ConfigureDaemons();
@@ -286,22 +300,6 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
     }
 
     public BlockchainStats BlockchainStats { get; } = new();
-
-    public void PrepareWorkerJob(ConcealWorkerJob workerJob, out string blob, out string target)
-    {
-        blob = null;
-        target = null;
-
-        var job = currentJob;
-
-        if(job != null)
-        {
-            lock(job)
-            {
-                job.PrepareWorkerJob(workerJob, out blob, out target);
-            }
-        }
-    }
 
     public async ValueTask<Share> SubmitShareAsync(StratumConnection worker,
         ConcealSubmitShareRequest request, ConcealWorkerJob workerJob, CancellationToken ct)
@@ -394,14 +392,20 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
         // test daemons
         try
         {
-            var response = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
-            if(response?.Status != "OK")
+            var request = new GetBlockTemplateRequest
             {
-                logger.Debug(() => $"conceald daemon did not responded...");
-                return false;
-            }
+                WalletAddress = poolConfig.Address,
+                ReserveSize = ConcealConstants.ReserveSize
+            };
 
-            logger.Debug(() => $"{response?.Status} - Incoming: {response?.IncomingConnectionsCount} - Outgoing: {response?.OutgoingConnectionsCount})");
+            var response = await rpc.ExecuteAsync<GetBlockTemplateResponse>(logger,
+                ConcealCommands.GetBlockTemplate, ct, request);
+
+            if(response.Error != null)
+                logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
+
+            if(response.Error is {Code: -9})
+                return false;
         }
         
         catch(Exception)
@@ -445,6 +449,10 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             if(response?.Status == "OK")
                 logger.Debug(() => $"Peers connected - Incoming: {response?.IncomingConnectionsCount} - Outgoing: {response?.OutgoingConnectionsCount}");
 
+            // update stats
+            if(!string.IsNullOrEmpty(response?.Version))
+                BlockchainStats.NodeVersion = response?.Version;
+
             return response?.Status == "OK" &&
                 (response?.OutgoingConnectionsCount + response?.IncomingConnectionsCount) > 0;
         }
@@ -466,24 +474,32 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         do
         {
-            var request = new GetBlockTemplateRequest
+            try
             {
-                WalletAddress = poolConfig.Address,
-                ReserveSize = ConcealConstants.ReserveSize
-            };
+                var request = new GetBlockTemplateRequest
+                {
+                    WalletAddress = poolConfig.Address,
+                    ReserveSize = ConcealConstants.ReserveSize
+                };
 
-            var response = await rpc.ExecuteAsync<GetBlockTemplateResponse>(logger,
-                ConcealCommands.GetBlockTemplate, ct, request);
-            
-            if(response.Error != null)
-                logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
+                var response = await rpc.ExecuteAsync<GetBlockTemplateResponse>(logger,
+                    ConcealCommands.GetBlockTemplate, ct, request);
 
-            var isSynched = response.Error is not {Code: -9};
+                if(response.Error != null)
+                    logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
 
-            if(isSynched)
+                var info = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
+
+                if((response.Error is not {Code: -9}) && (response.Response?.Height >= info.Height))
+                {
+                    logger.Info(() => "All daemons synched with blockchain");
+                    break;
+                }
+            }
+
+            catch(Exception e)
             {
-                logger.Info(() => "All daemons synched with blockchain");
-                break;
+                logger.Error(e);
             }
 
             if(!syncPendingNotificationShown)

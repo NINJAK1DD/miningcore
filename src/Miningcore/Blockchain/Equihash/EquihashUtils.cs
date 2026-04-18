@@ -8,7 +8,6 @@ public static class EquihashUtils
 {
     public static string EncodeTarget(double difficulty, EquihashCoinTemplate.EquihashNetworkParams chainConfig)
     {
-        string result;
         var diff = BigInteger.ValueOf((long) (difficulty * 255d));
         var quotient = chainConfig.Diff1Value.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
@@ -17,14 +16,10 @@ public static class EquihashUtils
         var padLength = EquihashConstants.TargetPaddingLength - bytes.Length;
 
         if(padLength > 0)
-        {
             bytes.CopyTo(padded.Slice(padLength, bytes.Length));
-            result = padded.ToHexString(0, EquihashConstants.TargetPaddingLength);
-        }
-
         else
-            result = bytes.ToHexString(0, EquihashConstants.TargetPaddingLength);
+            bytes.Slice(bytes.Length - padded.Length, padded.Length).CopyTo(padded);
 
-        return result;
+        return padded.ToHexString();
     }
 }

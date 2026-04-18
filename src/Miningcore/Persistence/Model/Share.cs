@@ -8,8 +8,11 @@ public record Share
     public string Worker { get; init; }
     public string UserAgent { get; init; }
     public double Difficulty { get; init; }
+    public double? ShareDifficulty { get; init; }
+    public double? ActualDifficulty { get; init; }
     public double NetworkDifficulty { get; init; }
     public string IpAddress { get; init; }
     public string Source { get; init; }
+    public string SessionId { get; init; }
     public DateTime Created { get; init; }
 }

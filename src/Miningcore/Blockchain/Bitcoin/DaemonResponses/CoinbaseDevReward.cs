@@ -9,11 +9,12 @@ namespace Miningcore.Blockchain.Bitcoin.DaemonResponses
     public class CoinbaseDevReward
     {
         public string ScriptPubkey { get; set; }
-        public long   Value        { get; set; }
+        public long Value { get; set; }
     }
 
     public class CoinbaseDevRewardTemplateExtra
     {
+        [JsonProperty("coinbasedevreward")]
         public JToken CoinbaseDevReward { get; set; }
     }
 }

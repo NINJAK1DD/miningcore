@@ -8,6 +8,10 @@
 #define HF_VERSION_HAVEN2            18
 #define HF_VERSION_USE_COLLATERAL      20
 
+// Salvium
+#define HF_VERSION_ENABLE_N_OUTS         2
+#define TRANSACTION_VERSION_N_OUTS       3
+
 // UNLOCK TIMES
 #define TX_V6_OFFSHORE_UNLOCK_BLOCKS                    21*720  // 21 day unlock time
 #define TX_V6_ONSHORE_UNLOCK_BLOCKS                     360     // 12 hour unlock time
@@ -34,4 +38,6 @@ enum BLOB_TYPE {
   BLOB_TYPE_CRYPTONOTE_XHV    = 11, // Haven
   BLOB_TYPE_CRYPTONOTE_XTA    = 12, // ITALO
   BLOB_TYPE_CRYPTONOTE_ZEPHYR = 13, // ZEPHYR
+  BLOB_TYPE_CRYPTONOTE_XLA    = 14, // XLA
+  BLOB_TYPE_CRYPTONOTE_SALVIUM= 15, // Salvium
 };

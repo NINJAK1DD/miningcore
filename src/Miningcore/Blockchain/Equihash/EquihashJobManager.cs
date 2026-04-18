@@ -4,6 +4,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Equihash.Custom.BitcoinGold;
 using Miningcore.Blockchain.Equihash.Custom.Minexcoin;
+using Miningcore.Blockchain.Equihash.Custom.Piratechain;
 using Miningcore.Blockchain.Equihash.Custom.Veruscoin;
 using Miningcore.Blockchain.Equihash.DaemonResponses;
 using Miningcore.Configuration;
@@ -83,6 +84,9 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
     {
         switch(coin.Symbol)
         {
+            case "ARRR":
+                return new PiratechainJob();
+
             case "BTG":
                 return new BitcoinGoldJob();
 
@@ -132,15 +136,6 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
                 job.Init(blockTemplate, NextJobId(),
                     poolConfig, clusterConfig, clock, poolAddressDestination, network, solver);
 
-                lock(jobLock)
-                {
-                    validJobs.Insert(0, job);
-
-                    // trim active jobs
-                    while(validJobs.Count > maxActiveJobs)
-                        validJobs.RemoveAt(validJobs.Count - 1);
-                }
-
                 if(isNew)
                 {
                     if(via != null)
@@ -189,6 +184,12 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
         return job?.GetJobParams(isNew);
     }
 
+    public override EquihashJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
+    }
+
     #region API-Surface
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
@@ -223,7 +224,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
     {
         Contract.RequiresNonNull(worker);
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<EquihashWorkerContext>();
 
         // assign unique ExtraNonce1 to worker (miner)
         context.ExtraNonce1 = extraNonceProvider.Next();
@@ -246,7 +247,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
         if(submission is not object[] submitParams)
             throw new StratumException(StratumError.Other, "invalid params");
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<EquihashWorkerContext>();
 
         // extract params
         var workerValue = (submitParams[0] as string)?.Trim();
@@ -263,9 +264,9 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
 
         EquihashJob job;
 
-        lock(jobLock)
+        lock(context)
         {
-            job = validJobs.FirstOrDefault(x => x.JobId == jobId);
+            job = context.GetJob(jobId);
         }
 
         if(job == null)

@@ -36,45 +36,6 @@ public class EthereumConstants
 
     public const string RpcRequestWorkerPropertyName = "worker";
 }
-//Rethereum
-public class RethereumConstants
-{
-    public const ulong EpochLength = 32000;
-    public const ulong LondonHeight = 13524557;
-    public const decimal LondonBlockReward = 3.0m;
-    public const ulong ArrowGlacierHeight = 27200177;
-    public const decimal ArrowGlacierBlockReward = 2.0m;
-    public const ulong GrayGlacierHeight = 40725107;
-    public const decimal GrayGlacierBlockReward = 1.0m;
-    public const decimal BaseRewardInitial = 4.0m;
-}
-
-// OCTA block reward distribution
-// https://docs.octa.space/cryptocurrency/monetary-policy
-public class OctaSpaceConstants
-{
-    public const ulong TriangulumHardForkHeight = 10000000;
-    public const decimal TriangulumBlockReward = 1.0m;
-    public const ulong VegaHardForkHeight = 8000000;
-    public const decimal VegaBlockReward = 1.1m;
-    public const ulong BlackeyeHardForkHeight = 6000000;
-    public const decimal BlackeyeBlockReward = 1.2m;
-    public const ulong DneprHardForkHeight = 4000000;
-    public const decimal DneprBlockReward = 1.85m;
-    public const ulong MahasimHardForkHeight = 3000000;
-    public const decimal MahasimBlockReward = 2.3m;
-    public const ulong PolarisHardForkHeight = 2500000;
-    public const decimal PolarisBlockReward = 2.8m;
-    public const ulong SpringwaterHardForkHeight = 2000000;
-    public const decimal SpringwaterBlockReward = 3.0m;
-    public const ulong ZagamiHardForkHeight = 1500000;
-    public const decimal ZagamiBlockReward = 3.5m;
-    public const ulong OldenburgHardForkHeight = 1000000;
-    public const decimal OldenburgBlockReward = 4.0m;
-    public const ulong ArcturusHardForkHeight = 650000;
-    public const decimal ArcturusBlockReward = 5.0m;
-    public const decimal BaseRewardInitial = 6.5m;
-}
 
 // ETC block reward distribution - ECIP 1017
 // https://ecips.ethereumclassic.org/ECIPs/ecip-1017
@@ -100,6 +61,33 @@ public class CallistoConstants
 public class EthOneConstants
 {
     public const decimal BaseRewardInitial = 2.0m;
+}
+
+// OCTA block reward distribution - 
+// https://docs.octa.space/cryptocurrency/monetary-policy
+public class OctaSpaceConstants
+{
+    public const ulong TriangulumHardForkHeight = 10000000;
+    public const decimal TriangulumBlockReward = 1.0m;
+    public const ulong VegaHardForkHeight = 8000000;
+    public const decimal VegaBlockReward = 1.1m;
+    public const ulong BlackeyeHardForkHeight = 6000000;
+    public const decimal BlackeyeBlockReward = 1.2m;
+    public const ulong DneprHardForkHeight = 4000000;
+    public const decimal DneprBlockReward = 1.85m;
+    public const ulong MahasimHardForkHeight = 3000000;
+    public const decimal MahasimBlockReward = 2.3m;
+    public const ulong PolarisHardForkHeight = 2500000;
+    public const decimal PolarisBlockReward = 2.8m;
+    public const ulong SpringwaterHardForkHeight = 2000000;
+    public const decimal SpringwaterBlockReward = 3.0m;
+    public const ulong ZagamiHardForkHeight = 1500000;
+    public const decimal ZagamiBlockReward = 3.5m;
+    public const ulong OldenburgHardForkHeight = 1000000;
+    public const decimal OldenburgBlockReward = 4.0m;
+    public const ulong ArcturusHardForkHeight = 650000;
+    public const decimal ArcturusBlockReward = 5.0m;
+    public const decimal BaseRewardInitial = 6.5m;
 }
 
 public class PinkConstants
@@ -138,73 +126,20 @@ public class UbiqConstants
     public const decimal BaseRewardInitial = 8.0m;
 }
 
-public class JibChainConstants
+// CORTEX block reward distribution - 
+// https://github.com/CortexFoundation/CortexTheseus/blob/master/params/config.go#L88
+public class CortexConstants
 {
-    public const decimal BaseRewardInitial = 2.0m;
-}
+    public static double Pow2x30 = Math.Pow(2, 30);
+    public static BigInteger BigPow2x30 = new(Pow2x30);
 
-public class AltcoinConstants
-{
-    public const decimal BaseRewardInitial = 2.0m;
-}
+    public const ulong BaseBlockRewardPeriod = 8409600; // Halving every four years: 365 days * 24 hours * 60 minutes * 4 blocks * 4 years = 8409600
+    public const ulong DoloresBlockRewardPeriod = 1000000;
 
-public class MaxxChainConstants
-{
-    public const ulong MaxxHardForkHeight = 103307;
-    public const decimal MaxxBlockReward = 5.0m;
-    public const decimal BaseRewardInitial = 2.0m;
-}
-
-public class PomConstants
-{
     public const decimal BaseRewardInitial = 7.0m;
-}
 
-public class CanxiumConstants
-{
-    public const decimal BaseRewardInitial = 0.1875m;
-}
-
-public class BitnetConstants
-{
-    public const decimal BaseRewardInitial = 1.0m;
-}
-
-public class RedeV2Constants
-{
-    public const decimal BaseRewardInitial = 0.5m;
-}
-
-public class EtherChainConstants
-{
-    public const decimal BaseRewardInitial = 6.0m;
-}
-
-public class EtherGemConstants
-{
-    public const decimal BaseRewardInitial = 3.0m;
-}
-
-public class PowBlocksConstants
-{
-    public const decimal BaseRewardInitial = 9.0m;
-}
-
-public class SlayerXConstants
-{
-    public const decimal BaseRewardInitial = 60.0m;
-    public const decimal HalvingReward1 = 30.0m;
-    public const decimal HalvingReward2 = 15.0m;
-    public const decimal HalvingReward3 = 7.5m;
-    public const decimal HalvingReward4 = 3.75m;
-    public const decimal HalvingReward5 = 1.875m;
-    public const decimal StakePercent = 5m;
-
-    public const ulong HalvingHeight1 = 840000;
-    public const ulong HalvingHeight2 = 1680000;
-    public const ulong HalvingHeight3 = 2520000;
-    public const ulong HalvingHeight4 = 3360000;
-    public const ulong HalvingHeight5 = 4200000;
+    public const int CuckarooHeaderNonceSize = 40;
+    public const int CuckarooSolutionSize = 42;
 }
 
 public enum EthereumNetworkType
@@ -218,20 +153,12 @@ public enum EthereumNetworkType
     MainPow = 10001,
     EtherOne = 4949,
     Pink = 10100,
-    JibChain = 8899,
-    Altcoin = 2330,
-    MaxxChain = 10201,
-    Pom = 801921,
-    Canxium = 3003,
-    Rethereum = 622277,
-    Bitnet = 210,
     OctaSpace = 800001,
-    RedeV2 = 1972,
-    EtherChain = 11777,
-    EtherGem = 1987,
-    PowBlocks = 12300,
-    SlayerX = 1,
+    OctaSpaceTestnet = 800002,
     Hypra = 622277,
+    Cortex = 21,
+    Dolores = 43,
+    Bernard = 42,
 
     Unknown = -1,
 }
@@ -247,42 +174,34 @@ public enum GethChainType
     MainPow = 10001,
     EtherOne = 4949,
     Pink = 10100,
-    JibChain = 8899,
-    Altcoin = 2330,
-    MaxxChain = 10201,
-    Pom = 801921,
-    Canxium = 3003,
-    Rethereum = 622277,
-    Bitnet,
     OctaSpace,
-    RedeV2 = 1972,
-    EtherChain = 11777,
-    EtherGem = 1987,
-    PowBlocks = 12300,
-    SlayerX = 9119,
+    OctaSpaceTestnet,
     Hypra,
+    Cortex = 21,
+    Dolores = 43,
+    Bernard = 42,
     
     Unknown = -1,
 }
 
 public static class EthCommands
 {
-    public const string GetWork = "eth_getWork";
-    public const string SubmitWork = "eth_submitWork";
-    public const string Sign = "eth_sign";
+    public const string GetWork = "_getWork";
+    public const string SubmitWork = "_submitWork";
+    public const string Sign = "_sign";
     public const string GetNetVersion = "net_version";
     public const string GetClientVersion = "web3_clientVersion";
-    public const string GetCoinbase = "eth_coinbase";
-    public const string GetAccounts = "eth_accounts";
+    public const string GetCoinbase = "_coinbase";
+    public const string GetAccounts = "_accounts";
     public const string GetPeerCount = "net_peerCount";
-    public const string GetSyncState = "eth_syncing";
-    public const string GetBlockNumber = "eth_blockNumber";
-    public const string GetBlockByNumber = "eth_getBlockByNumber";
-    public const string GetBlockByHash = "eth_getBlockByHash";
-    public const string GetUncleByBlockNumberAndIndex = "eth_getUncleByBlockNumberAndIndex";
-    public const string GetTxReceipt = "eth_getTransactionReceipt";
-    public const string SendTx = "eth_sendTransaction";
+    public const string GetSyncState = "_syncing";
+    public const string GetBlockNumber = "_blockNumber";
+    public const string GetBlockByNumber = "_getBlockByNumber";
+    public const string GetBlockByHash = "_getBlockByHash";
+    public const string GetUncleByBlockNumberAndIndex = "_getUncleByBlockNumberAndIndex";
+    public const string GetTxReceipt = "_getTransactionReceipt";
+    public const string SendTx = "_sendTransaction";
     public const string UnlockAccount = "personal_unlockAccount";
-    public const string Subscribe = "eth_subscribe";
-    public const string MaxPriorityFeePerGas = "eth_maxPriorityFeePerGas";
+    public const string Subscribe = "_subscribe";
+    public const string MaxPriorityFeePerGas = "_maxPriorityFeePerGas";
 }

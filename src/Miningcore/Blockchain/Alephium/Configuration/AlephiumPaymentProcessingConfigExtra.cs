@@ -19,7 +19,8 @@ public class AlephiumPaymentProcessingConfigExtra
     public long? BlockRewardsLockTime { get; set; }
     
     /// <summary>
-    /// True to exempt transaction fees from miner rewards
+    /// If True, miners pay payment tx fees
+    /// Default: False
     /// </summary>
     public bool KeepTransactionFees { get; set; }
 }

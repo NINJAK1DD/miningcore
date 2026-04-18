@@ -76,7 +76,7 @@ public class EthereumPool : PoolBase
         // in successful responses which is a violation of the JSON-RPC spec
         var response = new JsonRpcResponse<object[]>(data, request.Id);
 
-        if(context.IsNicehash)
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
         {
             response.Extra = new Dictionary<string, object>();
             response.Extra["error"] = null;
@@ -108,8 +108,19 @@ public class EthereumPool : PoolBase
 
         context.IsAuthorized = manager.ValidateAddress(minerName);
 
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
+        var response = new JsonRpcResponse<object>(context.IsAuthorized, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
         // respond
-        await connection.RespondAsync(context.IsAuthorized, request.Id);
+        await connection.RespondAsync(response);
 
         if(context.IsAuthorized)
         {
@@ -146,8 +157,10 @@ public class EthereumPool : PoolBase
                 logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
             }
 
+            var ethereumJob = CreateWorkerJob(connection);
+
             await connection.NotifyAsync(EthereumStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-            await connection.NotifyAsync(EthereumStratumMethods.MiningNotify, manager.GetJobParamsForStratum());
+            await connection.NotifyAsync(EthereumStratumMethods.MiningNotify, ethereumJob.GetJobParamsForStratum());
 
             logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
         }
@@ -163,6 +176,20 @@ public class EthereumPool : PoolBase
                 Disconnect(connection);
             }
         }
+    }
+
+    private EthereumJob CreateWorkerJob(StratumConnection connection)
+    {
+        var context = connection.ContextAs<EthereumWorkerContext>();
+        var job = manager.GetJobForStratum();
+
+        // update context
+        lock(context)
+        {
+            context.AddJob(job, 6);
+        }
+
+        return job;
     }
 
     private async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct, bool v1 = false)
@@ -208,7 +235,18 @@ public class EthereumPool : PoolBase
             else
                 share = await manager.SubmitShareV1Async(connection, submitRequest, GetWorkerNameFromV1Request(request, context), ct);
 
-            await connection.RespondAsync(true, request.Id);
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
+            var response = new JsonRpcResponse<object>(true, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            await connection.RespondAsync(response);
 
             // publish
             messageBus.SendMessage(share);
@@ -244,14 +282,16 @@ public class EthereumPool : PoolBase
         }
     }
 
-    private async Task SendJob(EthereumWorkerContext context, StratumConnection connection, object parameters)
+    private async Task SendJob(EthereumWorkerContext context, StratumConnection connection)
     {
         // varDiff: if the client has a pending difficulty change, apply it now
         if(context.ApplyPendingDifficulty())
             await connection.NotifyAsync(EthereumStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
+        var ethereumJob = CreateWorkerJob(connection);
+
         // send job
-        await connection.NotifyAsync(EthereumStratumMethods.MiningNotify, parameters);
+        await connection.NotifyAsync(EthereumStratumMethods.MiningNotify, ethereumJob.GetJobParamsForStratum());
     }
 
     #endregion // Protocol V2 handlers
@@ -284,8 +324,19 @@ public class EthereumPool : PoolBase
 
         context.IsAuthorized = manager.ValidateAddress(minerName);
 
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
+        var response = new JsonRpcResponse<object>(context.IsAuthorized, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
         // respond
-        await connection.RespondAsync(context.IsAuthorized, request.Id);
+        await connection.RespondAsync(response);
 
         if(context.IsAuthorized)
         {
@@ -351,10 +402,22 @@ public class EthereumPool : PoolBase
 
     private async Task SendWork(EthereumWorkerContext context, StratumConnection connection, object requestId)
     {
-        var parameters = manager.GetWorkParamsForStratum(context);
+        var ethereumJob = CreateWorkerJob(connection);
+        var parameters = ethereumJob.GetWorkParamsForStratum(context);
+
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
+        var response = new JsonRpcResponse<object[]>(parameters, requestId);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
 
         // respond
-        await connection.RespondAsync(parameters, requestId);
+        await connection.RespondAsync(response);
     }
 
     #endregion // Protocol V1 handlers
@@ -438,7 +501,7 @@ public class EthereumPool : PoolBase
                     break;
 
                 case 2:
-                    await SendJob(context, connection, currentJobParams);
+                    await SendJob(context, connection);
                     break;
             }
         }));
@@ -483,7 +546,19 @@ public class EthereumPool : PoolBase
                     EnsureProtocolVersion(context, 2);
 
                     // Pretend to support it even though we actually do not. Some miners drop the connection upon receiving an error from this
-                    await connection.RespondAsync(true, request.Id);
+
+                    // Nicehash's stupid validator insists on "error" property present
+                    // in successful responses which is a violation of the JSON-RPC spec
+                    // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
+                    var responseSubscribe = new JsonRpcResponse<object>(true, request.Id);
+
+                    if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                    {
+                        responseSubscribe.Extra = new Dictionary<string, object>();
+                        responseSubscribe.Extra["error"] = null;
+                    }
+
+                    await connection.RespondAsync(responseSubscribe);
                     break;
 
                 // V1 Stratum methods
@@ -492,14 +567,14 @@ public class EthereumPool : PoolBase
                 // https://eips.ethereum.org/EIPS/eip-1571
                 // https://github.com/AndreaLanfranchi/EthereumStratum-2.0.0/issues/10#issuecomment-595053258
                 // Based on that critical fact, mining pool should be cautious of the risks of using a such deprecated and broken stratum protocol. Used it at your own risks.
-                case EthereumStratumMethods.SubmitLogin:
+                case var _ when request.Method == coin.RpcMethodPrefix + EthereumStratumMethods.SubmitLogin:
                     context.ProtocolVersion = 1;    // lock in protocol version
 
                     await OnSubmitLoginAsync(connection, tsRequest);
                     break;
 
-                case EthereumStratumMethods.GetWork:
-                    if(!extraPoolConfig.enableEthashStratumV1)
+                case var _ when request.Method == coin.RpcMethodPrefix + EthereumStratumMethods.GetWork:
+                    if(!extraPoolConfig.EnableEthashStratumV1)
                     {
                         logger.Info(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
 
@@ -508,13 +583,14 @@ public class EthereumPool : PoolBase
                     else
                     {
                         EnsureProtocolVersion(context, 1);
+                        
                         logger.Warn(() => $"Use of Ethash Stratum V1 method: {request.Method}");
                         await OnGetWorkAsync(connection, tsRequest);
                     }
                     break;
 
-                case EthereumStratumMethods.SubmitWork:
-                    if(!extraPoolConfig.enableEthashStratumV1)
+                case var _ when request.Method == coin.RpcMethodPrefix + EthereumStratumMethods.SubmitWork:
+                    if(!extraPoolConfig.EnableEthashStratumV1)
                     {
                         logger.Info(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
 
@@ -523,13 +599,25 @@ public class EthereumPool : PoolBase
                     else
                     {
                         EnsureProtocolVersion(context, 1);
+                        
                         logger.Warn(() => $"Use of Ethash Stratum V1 method: {request.Method}");
                         await OnSubmitAsync(connection, tsRequest, ct, true);
                     }
                     break;
 
-                case EthereumStratumMethods.SubmitHashrate:
-                    await connection.RespondAsync(true, request.Id);
+                case var _ when request.Method == coin.RpcMethodPrefix + EthereumStratumMethods.SubmitHashrate:
+                    // Nicehash's stupid validator insists on "error" property present
+                    // in successful responses which is a violation of the JSON-RPC spec
+                    // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
+                    var responseSubmitHashrate = new JsonRpcResponse<object>(true, request.Id);
+
+                    if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                    {
+                        responseSubmitHashrate.Extra = new Dictionary<string, object>();
+                        responseSubmitHashrate.Extra["error"] = null;
+                    }
+
+                    await connection.RespondAsync(responseSubmitHashrate);
                     break;
 
                 default:
@@ -571,7 +659,7 @@ public class EthereumPool : PoolBase
                     break;
 
                 case 2:
-                    await SendJob(context, connection, manager.GetJobParamsForStratum());
+                    await SendJob(context, connection);
                     break;
             }
         }

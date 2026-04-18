@@ -11,6 +11,8 @@ public class WorkerPerformanceStats
 {
     public double Hashrate { get; set; }
     public double SharesPerSecond { get; set; }
+    public double BestSessionShare { get; set; }
+    public double BestShare { get; set; }
 }
 
 public class WorkerPerformanceStatsContainer
@@ -25,9 +27,13 @@ public class MinerStats
     public decimal PendingBalance { get; set; }
     public decimal TotalPaid { get; set; }
     public decimal TodayPaid { get; set; }
+    public double BestSessionShare { get; set; }
+    public double BestShare { get; set; }
     public double MinerEffort { get; set; }
     public DateTime? LastPayment { get; set; }
     public string LastPaymentLink { get; set; }
     public WorkerPerformanceStatsContainer Performance { get; set; }
     public WorkerPerformanceStatsContainer[] PerformanceSamples { get; set; }
+    public long TotalConfirmedBlocks { get; set; }
+    public long TotalPendingBlocks { get; set; }
 }

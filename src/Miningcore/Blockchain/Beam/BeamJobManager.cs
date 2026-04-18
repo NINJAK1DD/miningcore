@@ -65,7 +65,6 @@ public class BeamJobManager : JobManagerBase<BeamJob>
     private readonly IMasterClock clock;
     private readonly IExtraNonceProvider extraNonceProvider;
     protected int maxActiveJobs = 4;
-    private readonly List<BeamJob> validJobs = new();
     private BeamPoolConfigExtra extraPoolConfig;
     public ulong? Forkheight;
     public ulong? Forkheight2;
@@ -157,6 +156,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
                             logger.Debug(() => $"No more data received. Bye!");
                             client.Shutdown(SocketShutdown.Both);
+                            client.Close();
                         }
 
                         catch(OperationCanceledException)
@@ -185,7 +185,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
     {
         try
         {
-            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
             BeamBlockTemplate blockTemplate;
             
             if (!string.IsNullOrEmpty(json))
@@ -226,15 +226,6 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
                 job.Init(blockTemplate, blockTemplate.JobId, poolConfig, clusterConfig, clock, solver);
 
-                lock(jobLock)
-                {
-                    validJobs.Insert(0, job);
-
-                    // trim active jobs
-                    while(validJobs.Count > maxActiveJobs)
-                        validJobs.RemoveAt(validJobs.Count - 1);
-                }
-                
                 currentJob = job;
 
                 if(via != null)
@@ -282,7 +273,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
     private async Task ShowDaemonSyncProgressAsync(CancellationToken ct)
     {
-        var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+        var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
         var responseWalletRpc = await walletRpc.ExecuteAsync<GetBalanceResponse>(logger, BeamWalletCommands.GetBalance, ct);
 
         if(responseWalletRpc.Error == null)
@@ -300,7 +291,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
     {
         try
         {
-            var latestBlock = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+            var latestBlock = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
             
             var latestBlockHeaderRequest = new GetBlockHeaderRequest
             {
@@ -411,6 +402,12 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         return job?.GetJobParamsForStratum() ?? Array.Empty<object>();
     }
 
+    public override BeamJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
+    }
+
     #region API-Surface
     
     public IObservable<object[]> Jobs { get; private set; }
@@ -438,13 +435,6 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         // extract explorer daemon endpoints
         explorerDaemonEndpoints = pc.Daemons
             .Where(x => x.Category?.ToLower() == BeamConstants.ExplorerDaemonCategory)
-            .Select(x =>
-            {
-                if(string.IsNullOrEmpty(x.HttpPath))
-                    x.HttpPath = BeamConstants.ExplorerDaemonRpcStatusLocation;
-
-                return x;
-            })
             .ToArray();
 
         if(explorerDaemonEndpoints.Length == 0)
@@ -511,12 +501,14 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         Contract.RequiresNonNull(JobId);
         Contract.RequiresNonNull(nonce);
         Contract.RequiresNonNull(solution);
+
+        var context = worker.ContextAs<BeamWorkerContext>();
         
         BeamJob job;
 
-        lock(jobLock)
+        lock(context)
         {
-            job = validJobs.FirstOrDefault(x => x.JobId == JobId);
+            job = context.GetJob(JobId);
         }
 
         if(job == null)
@@ -527,8 +519,6 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         
         if (stratumError != BeamConstants.BeamRpcShareAccepted)
             return (share, stratumError);
-        
-        var context = worker.ContextAs<BeamWorkerContext>();
         
         // enrich share with common data
         share.PoolId = poolConfig.Id;
@@ -590,7 +580,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
     {
         try
         {
-            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
             
             if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
             {
@@ -615,7 +605,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         
         try
         {
-            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
             logger.Debug(() => $"`beam-node-explorer` is connected to {responseExplorerRestClient?.PeersCount} peer(s): Latest blockHeight known: {responseExplorerRestClient?.Height}");
             
             return (responseExplorerRestClient?.PeersCount > 0);
@@ -636,7 +626,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
         do
         {
-            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
             
             // It's only possible to know if the node is synchronized when using both daemons
             if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
@@ -679,7 +669,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         
         try
         {
-            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamConstants.ExplorerDaemonRpcStatusLocation, ct);
+            var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
         }
         
         catch(Exception)
@@ -725,6 +715,10 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         {
             BlockchainStats.NetworkType = "N/A [Wallet API >= 6.1]";
         }
+        
+        // update stats
+        if(!string.IsNullOrEmpty(responseNetwork.Response?.BeamVersion))
+            BlockchainStats.NodeVersion = responseNetwork.Response?.BeamVersion;
         
         await UpdateNetworkStatsAsync(ct);
 

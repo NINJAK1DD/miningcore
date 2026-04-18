@@ -36,7 +36,6 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
     private ErgoCoinTemplate coin;
     private ErgoClient rpc;
     private string network;
-    private readonly List<ErgoJob> validJobs = new();
     private int maxActiveJobs = 4;
     private readonly int extraNonceSize;
     private readonly IExtraNonceProvider extraNonceProvider;
@@ -114,15 +113,6 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
                 job = new ErgoJob();
 
                 job.Init(blockTemplate, blockVersion, extraNonceSize, NextJobId());
-
-                lock(jobLock)
-                {
-                    validJobs.Insert(0, job);
-
-                    // trim active jobs
-                    while(validJobs.Count > maxActiveJobs)
-                        validJobs.RemoveAt(validJobs.Count - 1);
-                }
 
                 if(isNew)
                 {
@@ -232,6 +222,18 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
         return false;
     }
 
+    private object[] GetJobParamsForStratum(bool isNew)
+    {
+        var job = currentJob;
+        return job?.GetJobParams(isNew);
+    }
+
+    public override ErgoJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
+    }
+
     #region API-Surface
 
     public IObservable<object[]> Jobs { get; private set; }
@@ -281,9 +283,9 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
         ErgoJob job;
 
-        lock(jobLock)
+        lock(context)
         {
-            job = validJobs.FirstOrDefault(x => x.JobId == jobId);
+            job = context.GetJob(jobId);
         }
 
         if(job == null)
@@ -417,6 +419,10 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
         if(info?.IsMining != true)
             throw new PoolStartupException("Mining is disabled in Ergo Daemon", poolConfig.Id);
 
+        // update stats
+        if(!string.IsNullOrEmpty(info?.AppVersion))
+            BlockchainStats.NodeVersion = info?.AppVersion;
+
         return true;
     }
 
@@ -455,12 +461,6 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
             await ShowDaemonSyncProgressAsync();
         } while(await timer.WaitForNextTickAsync(ct));
-    }
-
-    private object[] GetJobParamsForStratum(bool isNew)
-    {
-        var job = currentJob;
-        return job?.GetJobParams(isNew);
     }
 
     #endregion // Overrides

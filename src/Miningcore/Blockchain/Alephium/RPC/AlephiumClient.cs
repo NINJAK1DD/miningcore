@@ -9911,6 +9911,138 @@ namespace Miningcore.Blockchain.Alephium
         }
 
         /// <summary>
+        /// Get a mainchain block by ghost uncle hash
+        /// </summary>
+        /// <exception cref="AlephiumApiException">A server side error occurred.</exception>
+        public virtual System.Threading.Tasks.Task<BlockEntry> UncleHashAsync(string ghost_uncle_hash)
+        {
+            return UncleHashAsync(ghost_uncle_hash, System.Threading.CancellationToken.None);
+        }
+
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <summary>
+        /// Get a mainchain block by ghost uncle hash
+        /// </summary>
+        /// <exception cref="AlephiumApiException">A server side error occurred.</exception>
+        public virtual async System.Threading.Tasks.Task<BlockEntry> UncleHashAsync(string ghost_uncle_hash, System.Threading.CancellationToken cancellationToken)
+        {
+            if (ghost_uncle_hash == null)
+                throw new System.ArgumentNullException("ghost_uncle_hash");
+
+            var urlBuilder_ = new System.Text.StringBuilder();
+            urlBuilder_.Append(BaseUrl != null ? BaseUrl.TrimEnd('/') : "").Append("/blockflow/main-chain-block-by-ghost-uncle/{ghost_uncle_hash}");
+            urlBuilder_.Replace("{ghost_uncle_hash}", System.Uri.EscapeDataString(ConvertToString(ghost_uncle_hash, System.Globalization.CultureInfo.InvariantCulture)));
+
+            var client_ = _httpClient;
+            var disposeClient_ = false;
+            try
+            {
+                using (var request_ = new System.Net.Http.HttpRequestMessage())
+                {
+                    request_.Method = new System.Net.Http.HttpMethod("GET");
+                    request_.Headers.Accept.Add(System.Net.Http.Headers.MediaTypeWithQualityHeaderValue.Parse("application/json"));
+
+                    await PrepareRequestAsync(client_, request_, urlBuilder_, cancellationToken).ConfigureAwait(false);
+
+                    var url_ = urlBuilder_.ToString();
+                    request_.RequestUri = new System.Uri(url_, System.UriKind.RelativeOrAbsolute);
+
+                    await PrepareRequestAsync(client_, request_, url_, cancellationToken).ConfigureAwait(false);
+
+                    var response_ = await client_.SendAsync(request_, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                    var disposeResponse_ = true;
+                    try
+                    {
+                        var headers_ = System.Linq.Enumerable.ToDictionary(response_.Headers, h_ => h_.Key, h_ => h_.Value);
+                        if (response_.Content != null && response_.Content.Headers != null)
+                        {
+                            foreach (var item_ in response_.Content.Headers)
+                                headers_[item_.Key] = item_.Value;
+                        }
+
+                        await ProcessResponseAsync(client_, response_, cancellationToken).ConfigureAwait(false);
+
+                        var status_ = (int)response_.StatusCode;
+                        if (status_ == 200)
+                        {
+                            var objectResponse_ = await ReadObjectResponseAsync<BlockEntry>(response_, headers_, cancellationToken).ConfigureAwait(false);
+                            if (objectResponse_.Object == null)
+                            {
+                                throw new AlephiumApiException("Response was null which was not expected.", status_, objectResponse_.Text, headers_, null);
+                            }
+                            return objectResponse_.Object;
+                        }
+                        else
+                        if (status_ == 400)
+                        {
+                            var objectResponse_ = await ReadObjectResponseAsync<BadRequest>(response_, headers_, cancellationToken).ConfigureAwait(false);
+                            if (objectResponse_.Object == null)
+                            {
+                                throw new AlephiumApiException("Response was null which was not expected.", status_, objectResponse_.Text, headers_, null);
+                            }
+                            throw new AlephiumApiException<BadRequest>("BadRequest", status_, objectResponse_.Text, headers_, objectResponse_.Object, null);
+                        }
+                        else
+                        if (status_ == 401)
+                        {
+                            var objectResponse_ = await ReadObjectResponseAsync<Unauthorized>(response_, headers_, cancellationToken).ConfigureAwait(false);
+                            if (objectResponse_.Object == null)
+                            {
+                                throw new AlephiumApiException("Response was null which was not expected.", status_, objectResponse_.Text, headers_, null);
+                            }
+                            throw new AlephiumApiException<Unauthorized>("Unauthorized", status_, objectResponse_.Text, headers_, objectResponse_.Object, null);
+                        }
+                        else
+                        if (status_ == 404)
+                        {
+                            var objectResponse_ = await ReadObjectResponseAsync<NotFound>(response_, headers_, cancellationToken).ConfigureAwait(false);
+                            if (objectResponse_.Object == null)
+                            {
+                                throw new AlephiumApiException("Response was null which was not expected.", status_, objectResponse_.Text, headers_, null);
+                            }
+                            throw new AlephiumApiException<NotFound>("NotFound", status_, objectResponse_.Text, headers_, objectResponse_.Object, null);
+                        }
+                        else
+                        if (status_ == 500)
+                        {
+                            var objectResponse_ = await ReadObjectResponseAsync<InternalServerError>(response_, headers_, cancellationToken).ConfigureAwait(false);
+                            if (objectResponse_.Object == null)
+                            {
+                                throw new AlephiumApiException("Response was null which was not expected.", status_, objectResponse_.Text, headers_, null);
+                            }
+                            throw new AlephiumApiException<InternalServerError>("InternalServerError", status_, objectResponse_.Text, headers_, objectResponse_.Object, null);
+                        }
+                        else
+                        if (status_ == 503)
+                        {
+                            var objectResponse_ = await ReadObjectResponseAsync<ServiceUnavailable>(response_, headers_, cancellationToken).ConfigureAwait(false);
+                            if (objectResponse_.Object == null)
+                            {
+                                throw new AlephiumApiException("Response was null which was not expected.", status_, objectResponse_.Text, headers_, null);
+                            }
+                            throw new AlephiumApiException<ServiceUnavailable>("ServiceUnavailable", status_, objectResponse_.Text, headers_, objectResponse_.Object, null);
+                        }
+                        else
+                        {
+                            var responseData_ = response_.Content == null ? null : await response_.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            throw new AlephiumApiException("The HTTP status code of the response was not expected (" + status_ + ").", status_, responseData_, headers_, null);
+                        }
+                    }
+                    finally
+                    {
+                        if (disposeResponse_)
+                            response_.Dispose();
+                    }
+                }
+            }
+            finally
+            {
+                if (disposeClient_)
+                    client_.Dispose();
+            }
+        }
+
+        /// <summary>
         /// Get a block and events with hash
         /// </summary>
         /// <exception cref="AlephiumApiException">A server side error occurred.</exception>
@@ -10512,6 +10644,10 @@ namespace Miningcore.Blockchain.Alephium
         [System.ComponentModel.DataAnnotations.Required(AllowEmptyStrings = true)]
         public string Target { get; set; } = default!;
 
+        [Newtonsoft.Json.JsonProperty("ghostUncles", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        [System.ComponentModel.DataAnnotations.Required]
+        public System.Collections.Generic.ICollection<GhostUncleBlockEntry> GhostUncles { get; set; } = new System.Collections.ObjectModel.Collection<GhostUncleBlockEntry>();
+
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties = new System.Collections.Generic.Dictionary<string, object>();
 
         [Newtonsoft.Json.JsonExtensionData]
@@ -10939,24 +11075,24 @@ namespace Miningcore.Blockchain.Alephium
         [System.ComponentModel.DataAnnotations.Required(AllowEmptyStrings = true)]
         public string FromPublicKey { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("fromPublicKeyType", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public string FromPublicKeyType { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("fromPublicKeyType", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public string? FromPublicKeyType { get; set; } = default!;
 
         [Newtonsoft.Json.JsonProperty("destinations", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
         [System.ComponentModel.DataAnnotations.Required]
         public System.Collections.Generic.ICollection<Terminus> Destinations { get; set; } = new System.Collections.ObjectModel.Collection<Terminus>();
 
-        [Newtonsoft.Json.JsonProperty("utxos", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public System.Collections.Generic.ICollection<OutputRef> Utxos { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("utxos", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public System.Collections.Generic.ICollection<OutputRef>? Utxos { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("gasAmount", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public int GasAmount { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("gasAmount", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public int? GasAmount { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("gasPrice", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public string GasPrice { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("gasPrice", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public string? GasPrice { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("targetBlockHash", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public string TargetBlockHash { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("targetBlockHash", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public string? TargetBlockHash { get; set; } = default!;
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties = new System.Collections.Generic.Dictionary<string, object>();
 
@@ -11955,6 +12091,28 @@ namespace Miningcore.Blockchain.Alephium
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "13.16.1.0 (NJsonSchema v10.7.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class GhostUncleBlockEntry
+    {
+        [Newtonsoft.Json.JsonProperty("blockHash", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        [System.ComponentModel.DataAnnotations.Required(AllowEmptyStrings = true)]
+        public string BlockHash { get; set; } = default!;
+
+        [Newtonsoft.Json.JsonProperty("miner", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        [System.ComponentModel.DataAnnotations.Required(AllowEmptyStrings = true)]
+        public string Miner { get; set; } = default!;
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties = new System.Collections.Generic.Dictionary<string, object>();
+
+        [Newtonsoft.Json.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties; }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "13.16.1.0 (NJsonSchema v10.7.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class Group
     {
         [Newtonsoft.Json.JsonProperty("group", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
@@ -12166,8 +12324,8 @@ namespace Miningcore.Blockchain.Alephium
         [Newtonsoft.Json.JsonProperty("upnp", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
         public bool Upnp { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("externalAddress", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public ExternalAddress ExternalAddress { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("externalAddress", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public ExternalAddress? ExternalAddress { get; set; } = default!;
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties = new System.Collections.Generic.Dictionary<string, object>();
 
@@ -12604,20 +12762,20 @@ namespace Miningcore.Blockchain.Alephium
         [System.ComponentModel.DataAnnotations.Required(AllowEmptyStrings = true)]
         public string ToAddress { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("lockTime", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public long LockTime { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("lockTime", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public long? LockTime { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("gasAmount", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public int GasAmount { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("gasAmount", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public int? GasAmount { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("gasPrice", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public string GasPrice { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("gasPrice", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public string? GasPrice { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("utxosLimit", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public int UtxosLimit { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("utxosLimit", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public int? UtxosLimit { get; set; } = default!;
 
-        [Newtonsoft.Json.JsonProperty("targetBlockHash", Required = Newtonsoft.Json.Required.DisallowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
-        public string TargetBlockHash { get; set; } = default!;
+        [Newtonsoft.Json.JsonProperty("targetBlockHash", Required = Newtonsoft.Json.Required.AllowNull, NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+        public string? TargetBlockHash { get; set; } = default!;
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties = new System.Collections.Generic.Dictionary<string, object>();
 

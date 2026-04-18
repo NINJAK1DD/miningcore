@@ -138,13 +138,12 @@ namespace ethash
             static_assert(sizeof(epoch_context_full) < sizeof(hash512), "epoch_context too big");
             static constexpr size_t context_alloc_size = sizeof(hash512);
 
-	    int meow_epoch = epoch_number;
-	    if (epoch_number >= meowpow_dagchange_epoch)
-	    {
-	        // note, int truncates, it doesnt round, 10 == 10.5. So this is ok.
-	        meow_epoch = epoch_number*4; //This should pass 4gb DAG size
-	    }
-
+            int meow_epoch = epoch_number;
+            if (epoch_number >= meowpow_dagchange_epoch)
+            {
+				// note, int truncates, it doesnt round, 10 == 10.5. So this is ok.
+				meow_epoch = epoch_number*4; //This should pass 4gb DAG size
+            }
             const int light_cache_num_items = calculate_light_cache_num_items(meow_epoch);
             const int full_dataset_num_items = calculate_full_dataset_num_items(meow_epoch);
             const size_t light_cache_size = get_light_cache_size(light_cache_num_items);

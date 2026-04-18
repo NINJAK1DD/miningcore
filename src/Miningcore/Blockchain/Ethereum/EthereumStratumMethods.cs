@@ -40,20 +40,20 @@ public static class EthereumStratumMethods
     /// <summary>
     /// Used to login & subscribe to work from a server, required before all other communication.
     /// </summary>
-    public const string SubmitLogin = "eth_submitLogin";
+    public const string SubmitLogin = "_submitLogin";
 
     /// <summary>
     /// Used to request work
     /// </summary>
-    public const string GetWork = "eth_getWork";
+    public const string GetWork = "_getWork";
 
     /// <summary>
     /// Used to submit work (shares)
     /// </summary>
-    public const string SubmitWork = "eth_submitWork";
+    public const string SubmitWork = "_submitWork";
 
     /// <summary>
     /// Ignored
     /// </summary>
-    public const string SubmitHashrate = "eth_submitHashrate";
+    public const string SubmitHashrate = "_submitHashrate";
 }

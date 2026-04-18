@@ -25,15 +25,17 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 extern "C" MODULE_API bool beamhash_verify_export(const char* header, int header_length, const char* solution, int solution_length, const char* nonce, int nonce_length, int pow)
 {
-    if (header_length != 32) {
+    if (header_length != 32)
+    {
         return false;
     }
-    
-    if (nonce_length != 8) {
+
+    if (nonce_length != 8)
+    {
         return false;
     }
 
     const std::vector<unsigned char> vecSolution(solution, solution + solution_length);
-    
+
     return verifyBH(header, nonce, vecSolution, pow);
 }

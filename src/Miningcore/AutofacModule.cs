@@ -10,9 +10,14 @@ using Miningcore.Blockchain.Cryptonote;
 using Miningcore.Blockchain.Equihash;
 using Miningcore.Blockchain.Ergo;
 using Miningcore.Blockchain.Ethereum;
+using Miningcore.Blockchain.Handshake;
 using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Nexa;
 using Miningcore.Blockchain.Progpow;
+using Miningcore.Blockchain.Satoshicash;
+using Miningcore.Blockchain.Warthog;
+using Miningcore.Blockchain.Xelis;
+using Miningcore.Blockchain.Zano;
 using Miningcore.Configuration;
 using Miningcore.Crypto;
 using Miningcore.Crypto.Hashing.Equihash;
@@ -61,9 +66,12 @@ public class AutofacModule : Module
             .SingleInstance();
 
         builder.RegisterInstance(new RecyclableMemoryStreamManager
-        {
-            ThrowExceptionOnToArray = true
-        });
+        (
+            new RecyclableMemoryStreamManager.Options
+            {
+                ThrowExceptionOnToArray = true
+            }
+        ));
 
         builder.RegisterType<StandardClock>()
             .AsImplementedInterfaces()
@@ -104,18 +112,6 @@ public class AutofacModule : Module
             .Where(t => t.IsAssignableTo<EquihashSolver>())
             .PropertiesAutowired()
             .AsSelf();
-
-        builder.RegisterAssemblyTypes(ThisAssembly)
-            .Where(t => t.GetCustomAttributes<IdentifierAttribute>().Any() &&
-                t.GetInterfaces().Any(i => i.IsAssignableFrom(typeof(IEthashLight))))
-            .Named<IEthashLight>(t => t.GetCustomAttributes<IdentifierAttribute>().First().Name)
-            .PropertiesAutowired();
-
-        builder.RegisterAssemblyTypes(ThisAssembly)
-            .Where(t => t.GetCustomAttributes<IdentifierAttribute>().Any() &&
-                t.GetInterfaces().Any(i => i.IsAssignableFrom(typeof(IProgpowLight))))
-            .Named<IProgpowLight>(t => t.GetCustomAttributes<IdentifierAttribute>().First().Name)
-            .PropertiesAutowired();
 
         builder.RegisterAssemblyTypes(ThisAssembly)
             .Where(t => t.IsAssignableTo<ControllerBase>())
@@ -167,6 +163,10 @@ public class AutofacModule : Module
             .Keyed<IPayoutScheme>(PayoutScheme.PPLNS)
             .SingleInstance();
 
+        builder.RegisterType<PPLNSBFPaymentScheme>()
+            .Keyed<IPayoutScheme>(PayoutScheme.PPLNSBF)
+            .SingleInstance();
+
         builder.RegisterType<SOLOPaymentScheme>()
             .Keyed<IPayoutScheme>(PayoutScheme.SOLO)
             .SingleInstance();
@@ -184,10 +184,6 @@ public class AutofacModule : Module
         // Beam
 
         builder.RegisterType<BeamJobManager>();
-        
-        //////////////////////
-        // Alephium
-        builder.RegisterType<AlephiumJobManager>();
         
         //////////////////////
         // Bitcoin and family
@@ -218,19 +214,46 @@ public class AutofacModule : Module
         // Ethereum
 
         builder.RegisterType<EthereumJobManager>();
+
+        //////////////////////
+        // Handshake
+
+        builder.RegisterType<HandshakeJobManager>();
         
         //////////////////////
         // Kaspa
 
         builder.RegisterType<KaspaJobManager>();
 
+        //////////////////////
+        // Nexa
+
+        builder.RegisterType<NexaJobManager>();
+        
+        //////////////////////
         // Progpow
 
         builder.RegisterType<ProgpowJobManager>();
 
         //////////////////////
-        // Nexa
-        builder.RegisterType<NexaJobManager>();
+        // Satoshicash
+
+        builder.RegisterType<SatoshicashJobManager>();
+
+        //////////////////////
+        // Warthog
+
+        builder.RegisterType<WarthogJobManager>();
+
+        //////////////////////
+        // Xelis
+
+        builder.RegisterType<XelisJobManager>();
+
+        //////////////////////
+        // Zano
+
+        builder.RegisterType<ZanoJobManager>();
 
         base.Load(builder);
     }

@@ -280,7 +280,7 @@ public class RpcClient
                                 var json = JsonConvert.SerializeObject(request, payloadJsonSerializerSettings);
                                 var requestData = new ArraySegment<byte>(Encoding.UTF8.GetBytes(json));
 
-                                logger.Debug(() => $"Sending WebSocket subscription request to {uri}");
+                                logger.Debug(() => $"Sending WebSocket subscription request `{json}` to {uri}");
                                 await client.SendAsync(requestData, WebSocketMessageType.Text, true, cts.Token);
 
                                 // stream response

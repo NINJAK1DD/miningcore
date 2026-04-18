@@ -45,23 +45,12 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             };
         }
 
-        if(coin.HasMWEB)
-        {
-            result = new object[]
-            {
-                new
-                {
-                    rules = new[] {"segwit", "mweb"},
-                }
-            };
-        }
-
         if(coin.BlockTemplateRpcExtraParams != null)
         {
             if(coin.BlockTemplateRpcExtraParams.Type == JTokenType.Array)
                 result = result.Concat(coin.BlockTemplateRpcExtraParams.ToObject<object[]>() ?? Array.Empty<object>()).ToArray();
             else
-                result = result.Concat(new[] { coin.BlockTemplateRpcExtraParams.ToObject<object>()}).ToArray();
+                result = result.Concat(new []{ coin.BlockTemplateRpcExtraParams.ToObject<object>()}).ToArray();
         }
 
         return result;
@@ -127,7 +116,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         if(poolConfig.EnableInternalStratum == true && coin.HeaderHasherValue is IHashAlgorithmInit hashInit)
         {
             if(!hashInit.DigestInit(poolConfig))
-                logger.Error(() => $"{hashInit.GetType().Name} initialization failed");
+                logger.Error(()=> $"{hashInit.GetType().Name} initialization failed");
         }
     }
 
@@ -168,15 +157,6 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                     poolConfig, extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
                     ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue,
                     !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ?? coin.BlockHasherValue);
-
-                lock(jobLock)
-                {
-                    validJobs.Insert(0, job);
-
-                    // trim active jobs
-                    while(validJobs.Count > maxActiveJobs)
-                        validJobs.RemoveAt(validJobs.Count - 1);
-                }
 
                 if(isNew)
                 {
@@ -224,6 +204,12 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         var job = currentJob;
         return job?.GetJobParams(isNew);
+    }
+
+    public override BitcoinJob GetJobForStratum()
+    {
+        var job = currentJob;
+        return job;
     }
 
     #region API-Surface
@@ -285,9 +271,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         BitcoinJob job;
 
-        lock(jobLock)
+        lock(context)
         {
-            job = validJobs.FirstOrDefault(x => x.JobId == jobId);
+            job = context.GetJob(jobId);
         }
 
         if(job == null)

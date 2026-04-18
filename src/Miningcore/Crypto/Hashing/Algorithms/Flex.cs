@@ -15,7 +15,7 @@ public unsafe class Flex : IHashAlgorithm
         {
             fixed (byte* output = result)
             {
-                Multihash.flex(input, output, (uint) data.Length);
+                Multihash.flex(input, output);
             }
         }
     }

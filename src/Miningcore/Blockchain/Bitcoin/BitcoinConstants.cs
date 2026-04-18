@@ -56,7 +56,7 @@ public enum BitcoinTransactionCategory
 
 public class BitcoinConstants
 {
-    public const int ExtranoncePlaceHolderLength = 8;
+    public const int ExtranoncePlaceHolderLength = 11;
     public const decimal SatoshisPerBitcoin = 100000000;
     public static readonly double Pow2x32 = Math.Pow(2, 32);
     public static readonly BigInteger Diff1 = BigInteger.Parse("00ffff0000000000000000000000000000000000000000000000000000", NumberStyles.HexNumber);

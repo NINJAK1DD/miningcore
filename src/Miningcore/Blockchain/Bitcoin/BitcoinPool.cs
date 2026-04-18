@@ -64,7 +64,18 @@ public class BitcoinPool : PoolBase
         .Concat(manager.GetSubscriberData(connection))
         .ToArray();
 
-        await connection.RespondAsync(data, request.Id);
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [Respect the goddamn standards Nicehack :(]
+        var response = new JsonRpcResponse<object[]>(data, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
+        await connection.RespondAsync(response);
 
         // setup worker context
         context.IsSubscribed = true;
@@ -81,9 +92,11 @@ public class BitcoinPool : PoolBase
             context.SetDifficulty(nicehashDiff.Value);
         }
 
+        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
+
         // send intial update
         await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -111,8 +124,26 @@ public class BitcoinPool : PoolBase
 
         if(context.IsAuthorized)
         {
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(context.IsAuthorized, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
             // respond
-            await connection.RespondAsync(context.IsAuthorized, request.Id);
+            await connection.RespondAsync(response);
+
+            context.SessionId = WorkerSessionTracker.GetOrCreateSessionId(
+                poolConfig.Id,
+                context.Miner,
+                context.Worker,
+                connection.RemoteEndpoint?.Address?.ToString(),
+                DateTime.UtcNow);
 
             // log association
             logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
@@ -150,6 +181,20 @@ public class BitcoinPool : PoolBase
         }
     }
 
+    private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var job = manager.GetJobForStratum();
+
+        // update context
+        lock(context)
+        {
+            context.AddJob(job, manager.maxActiveJobs);
+        }
+
+        return job.GetJobParams(cleanJob);
+    }
+
     protected virtual async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
@@ -182,7 +227,39 @@ public class BitcoinPool : PoolBase
 
             // submit
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);
-            await connection.RespondAsync(true, request.Id);
+
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(true, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            await connection.RespondAsync(response);
+
+            if(string.IsNullOrEmpty(context.SessionId))
+            {
+                context.SessionId = WorkerSessionTracker.GetOrCreateSessionId(
+                    poolConfig.Id,
+                    context.Miner,
+                    context.Worker,
+                    connection.RemoteEndpoint?.Address?.ToString(),
+                    DateTime.UtcNow);
+            }
+
+            share.SessionId = context.SessionId;
+
+            WorkerSessionTracker.Touch(
+                share.PoolId,
+                share.Miner,
+                share.Worker,
+                share.SessionId,
+                share.IpAddress,
+                DateTime.UtcNow);
 
             // publish
             messageBus.SendMessage(share);
@@ -223,12 +300,24 @@ public class BitcoinPool : PoolBase
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
 
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [Respect the goddamn standards Nicehack :(]
+        var response = new JsonRpcResponse<object>(true, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
         // acknowledge
-        await connection.RespondAsync(true, request.Id);
+        await connection.RespondAsync(response);
 
         try
         {
-            var requestedDiff = (double) Convert.ChangeType(request.Params, TypeCode.Double)!;
+            var requestParams = request.ParamsAs<object[]>();
+            var requestedDiff = (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
 
             // client may suggest higher-than-base difficulty, but not a lower one
             var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
@@ -275,7 +364,18 @@ public class BitcoinPool : PoolBase
             }
         }
 
-        await connection.RespondAsync(result, request.Id);
+        // Nicehash's stupid validator insists on "error" property present
+        // in successful responses which is a violation of the JSON-RPC spec
+        // [Respect the goddamn standards Nicehack :(]
+        var response = new JsonRpcResponse<object>(result, request.Id);
+
+        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object>();
+            response.Extra["error"] = null;
+        }
+
+        await connection.RespondAsync(response);
     }
 
     private void ConfigureVersionRolling(StratumConnection connection, BitcoinWorkerContext context,
@@ -326,13 +426,14 @@ public class BitcoinPool : PoolBase
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BitcoinWorkerContext>();
+            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             // send job
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }));
     }
 
@@ -433,7 +534,20 @@ public class BitcoinPool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.ExtraNonceSubscribe:
-                    await connection.RespondAsync(true, request.Id);
+                    var context = connection.ContextAs<BitcoinWorkerContext>();
+
+                    // Nicehash's stupid validator insists on "error" property present
+                    // in successful responses which is a violation of the JSON-RPC spec
+                    // [Respect the goddamn standards Nicehack :(]
+                    var response = new JsonRpcResponse<object>(true, request.Id);
+
+                    if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                    {
+                        response.Extra = new Dictionary<string, object>();
+                        response.Extra["error"] = null;
+                    }
+
+                    await connection.RespondAsync(response);
                     break;
 
                 case BitcoinStratumMethods.GetTransactions:
@@ -464,8 +578,14 @@ public class BitcoinPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
+            var cleanJob = (bool) ((object[]) currentJobParams)[^1];
+            if(cleanJob)
+                cleanJob = !cleanJob;
+
+            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+
             await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }
     }
 

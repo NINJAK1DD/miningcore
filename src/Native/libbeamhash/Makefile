@@ -3,7 +3,7 @@ CXXFLAGS += -g -Wall -fPIC -fpermissive -O2 -funroll-loops -fomit-frame-pointer 
 LDFLAGS += -shared
 TARGET = libbeamhash.so
 
-OBJECTS = beam/core/difficulty.o beam/core/uintBig.o beam/utility/common.o crypto/blake/sse/blake2b.o crypto/beamHashIII.o crypto/equihashR.o support/cleanse.o arith_uint256.o beamhashverify.o exports.o random.o uint256.o util.o utilstrencodings.o
+OBJECTS = blake/blake2b.o beamHashIII_imp.o beamhashverify.o equihashR_imp.o exports.o 
 
 all: $(TARGET)
 

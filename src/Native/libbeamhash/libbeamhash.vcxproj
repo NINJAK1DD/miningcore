@@ -168,57 +168,33 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="beam\core\common.h" />
-    <ClInclude Include="beam\core\difficulty.h" />
-    <ClInclude Include="beam\core\uintBig.h" />
-    <ClInclude Include="beam\utility\common.h" />
-    <ClInclude Include="crypto\blake\ref\blake2-impl.h" />
-    <ClInclude Include="crypto\blake\ref\blake2.h" />
-    <ClInclude Include="crypto\blake\sse\blake2-config.h" />
-    <ClInclude Include="crypto\blake\sse\blake2-impl.h" />
-    <ClInclude Include="crypto\blake\sse\blake2-round.h" />
-    <ClInclude Include="crypto\blake\sse\blake2.h" />
-    <ClInclude Include="crypto\blake\sse\blake2b-load-sse2.h" />
-    <ClInclude Include="crypto\blake\sse\blake2b-load-sse41.h" />
-    <ClInclude Include="crypto\blake\sse\blake2b-round.h" />
-    <ClInclude Include="crypto\compat\byteswap.h" />
-    <ClInclude Include="crypto\compat\endian.h" />
-    <ClInclude Include="crypto\beamHashIII.h" />
-    <ClInclude Include="crypto\common.h" />
-    <ClInclude Include="crypto\equihashR.h" />
-    <ClInclude Include="crypto\powScheme.h" />
-    <ClInclude Include="crypto\sha256.h" />
-    <ClInclude Include="support\cleanse.h" />
-    <ClInclude Include="arith_uint256.h" />
+    <ClInclude Include="blake\blake2-config.h" />
+    <ClInclude Include="blake\blake2-impl.h" />
+    <ClInclude Include="blake\blake2-round.h" />
+    <ClInclude Include="blake\blake2.h" />
+    <ClInclude Include="blake\blake2b-load-sse2.h" />
+    <ClInclude Include="blake\blake2b-load-sse41.h" />
+    <ClInclude Include="blake\blake2b-round.h" />
+    <ClInclude Include="compat\byteswap.h" />
+    <ClInclude Include="compat\endian.h" />
+    <ClInclude Include="beamHashIII.h" />
     <ClInclude Include="beamhashverify.h" />
-    <ClInclude Include="random.h" />
-    <ClInclude Include="serialize.h" />
+    <ClInclude Include="common.h" />
+    <ClInclude Include="equihashR.h" />
+    <ClInclude Include="powScheme.h" />
+    <ClInclude Include="sha256.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="stdint.h" />
     <ClInclude Include="targetver.h" />
-    <ClInclude Include="tinyformat.h" />
-    <ClInclude Include="uint256.h" />
-    <ClInclude Include="util.h" />
-    <ClInclude Include="utilstrencodings.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="beam\core\difficulty.cpp" />
-    <ClCompile Include="beam\core\uintBig.cpp" />
-    <ClCompile Include="beam\utility\common.cpp" />
-    <ClCompile Include="crypto\blake\ref\blake2b-ref.c" />
-    <ClCompile Include="crypto\blake\sse\blake2b.cpp" />
-    <ClCompile Include="crypto\beamHashIII.cpp" />
-    <ClCompile Include="crypto\equihashR.cpp" />
-    <ClCompile Include="support\cleanse.cpp" />
-    <ClCompile Include="arith_uint256.cpp" />
+    <ClCompile Include="blake\blake2b.cpp" />
+    <ClCompile Include="beamHashIII_imp.cpp" />
     <ClCompile Include="beamhashverify.cpp" />
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="equihashR_imp.cpp" />
     <ClCompile Include="exports.cpp" />
-    <ClCompile Include="random.cpp" />
     <ClCompile Include="stdafx.cpp" />
-    <ClCompile Include="uint256.cpp" />
-    <ClCompile Include="util.cpp" />
-    <ClCompile Include="utilstrencodings.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Makefile" />

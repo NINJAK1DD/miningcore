@@ -43,7 +43,7 @@ public class PPLNSPaymentScheme : IPayoutScheme
     private readonly IBlockRepository blockRepo;
     private readonly IConnectionFactory cf;
     private readonly IShareRepository shareRepo;
-    private static readonly ILogger logger = LogManager.GetLogger("PPLNS Payment", typeof(PPLNSPaymentScheme));
+    private static readonly ILogger logger = LogManager.GetLogger("PPLNS Payment");
 
     private const int RetryCount = 4;
     private IAsyncPolicy shareReadFaultPolicy;
@@ -169,7 +169,7 @@ public class PPLNSPaymentScheme : IPayoutScheme
             logger.Info(() => $"Fetching page {currentPage} of shares for pool {poolConfig.Id}, block {block.BlockHeight}");
 
             var page = await shareReadFaultPolicy.ExecuteAsync(() =>
-                cf.Run(con => shareRepo.ReadSharesBeforeAsync(con, poolConfig.Id, before, inclusive, pageSize, ct))); //, sw, logger));
+                cf.Run(con => shareRepo.ReadSharesBeforeAsync(con, poolConfig.Id, before, inclusive, pageSize, ct)));
 
             inclusive = false;
             currentPage++;

@@ -1,1 +1,0 @@
-namespace Miningcore.Blockchain.Kaspa;

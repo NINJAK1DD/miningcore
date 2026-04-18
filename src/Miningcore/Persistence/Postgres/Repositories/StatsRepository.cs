@@ -20,6 +20,19 @@ public class StatsRepository : IStatsRepository
     private readonly IMapper mapper;
     private readonly IMasterClock clock;
     private static readonly TimeSpan MinerStatsMaxAge = TimeSpan.FromMinutes(20);
+    
+    private sealed class WorkerBestShareRecord
+    {
+        public string Worker { get; set; }
+        public double BestShare { get; set; }
+    }
+
+    private sealed class WorkerBestSessionShareRecord
+    {
+        public string Worker { get; set; }
+        public string SessionId { get; set; }
+        public double BestSessionShare { get; set; }
+    }
 
     public async Task InsertPoolStatsAsync(IDbConnection con, IDbTransaction tx, PoolStats stats, CancellationToken ct)
     {
@@ -40,8 +53,8 @@ public class StatsRepository : IStatsRepository
         if(string.IsNullOrEmpty(mapped.Worker))
             mapped.Worker = string.Empty;
 
-        const string query = @"INSERT INTO minerstats(poolid, miner, worker, hashrate, sharespersecond, created)
-            VALUES(@poolid, @miner, @worker, @hashrate, @sharespersecond, @created)";
+        const string query = @"INSERT INTO minerstats(poolid, miner, worker, sessionid, hashrate, sharespersecond, created)
+            VALUES(@poolid, @miner, @worker, @sessionid, @hashrate, @sharespersecond, @created)";
 
         await con.ExecuteAsync(new CommandDefinition(query, mapped, tx, cancellationToken: ct));
     }
@@ -87,43 +100,89 @@ public class StatsRepository : IStatsRepository
 
     public async Task<MinerStats> GetMinerStatsAsync(IDbConnection con, IDbTransaction tx, string poolId, string miner, CancellationToken ct)
     {
-        var query = @"SELECT (SELECT SUM(difficulty) FROM shares WHERE poolid = @poolId AND miner = @miner) AS pendingshares,
-            (SELECT amount FROM balances WHERE poolid = @poolId AND address = @miner) AS pendingbalance,
-            (SELECT SUM(amount) FROM payments WHERE poolid = @poolId and address = @miner) as totalpaid,
-            (SELECT SUM(amount) FROM payments WHERE poolid = @poolId and address = @miner and created >= date_trunc('day', now())) as todaypaid";
+        var query = @"
+            SELECT
+                COALESCE((SELECT SUM(difficulty) FROM shares WHERE poolid = @poolId AND miner = @miner), 0) AS pendingshares,
+                COALESCE((SELECT amount FROM balances WHERE poolid = @poolId AND address = @miner), 0) AS pendingbalance,
+                COALESCE((SELECT SUM(amount) FROM payments WHERE poolid = @poolId AND address = @miner), 0) AS totalpaid,
+                COALESCE((SELECT SUM(amount) FROM payments WHERE poolid = @poolId AND address = @miner AND created >= date_trunc('day', now())), 0) AS todaypaid,
+                COALESCE((SELECT MAX(actualdifficulty) FROM shares WHERE poolid = @poolId AND miner = @miner), 0) AS bestshare,
+                0 AS bestsessionshare";
 
-        var result = await con.QuerySingleOrDefaultAsync<MinerStats>(new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct));
+        var result = await con.QuerySingleOrDefaultAsync<MinerStats>(
+            new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct));
 
         if(result != null)
         {
             query = @"SELECT * FROM payments WHERE poolid = @poolId AND address = @miner
                 ORDER BY created DESC LIMIT 1";
 
-            result.LastPayment = await con.QuerySingleOrDefaultAsync<Payment>(new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct));
+            result.LastPayment = await con.QuerySingleOrDefaultAsync<Payment>(
+                new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct));
 
-            // query timestamp of last stats update
             query = @"SELECT created FROM minerstats WHERE poolid = @poolId AND miner = @miner
                 ORDER BY created DESC LIMIT 1";
 
-            var lastUpdate = await con.QuerySingleOrDefaultAsync<DateTime?>(new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct));
+            var lastUpdate = await con.QuerySingleOrDefaultAsync<DateTime?>(
+                new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct));
 
-            // ignore stale minerstats
             if(lastUpdate.HasValue && (clock.Now - DateTime.SpecifyKind(lastUpdate.Value, DateTimeKind.Utc) > MinerStatsMaxAge))
                 lastUpdate = null;
 
             if(lastUpdate.HasValue)
             {
-                // load rows rows by timestamp
+                query = @"SELECT COALESCE(worker, '') AS worker, COALESCE(MAX(actualdifficulty), 0) AS bestshare
+                    FROM shares
+                    WHERE poolid = @poolId AND miner = @miner
+                    GROUP BY COALESCE(worker, '')";
+
+                var workerBestShares = (await con.QueryAsync<WorkerBestShareRecord>(
+                    new CommandDefinition(query, new { poolId, miner }, tx, cancellationToken: ct)))
+                    .ToDictionary(x => x.Worker ?? string.Empty, x => x.BestShare);
+
                 query = @"SELECT * FROM minerstats WHERE poolid = @poolId AND miner = @miner AND created = @created";
 
-                var stats = (await con.QueryAsync<Entities.MinerWorkerPerformanceStats>(new CommandDefinition(query,
-                        new { poolId, miner, created = lastUpdate }, cancellationToken: ct)))
+                var stats = (await con.QueryAsync<Entities.MinerWorkerPerformanceStats>(
+                        new CommandDefinition(query, new { poolId, miner, created = lastUpdate }, tx, cancellationToken: ct)))
                     .Select(mapper.Map<MinerWorkerPerformanceStats>)
                     .ToArray();
 
+                var currentSessionIds = stats
+                    .Where(x => !string.IsNullOrEmpty(x.SessionId))
+                    .Select(x => x.SessionId)
+                    .Distinct()
+                    .ToArray();
+
+                Dictionary<string, double> workerSessionBestShares = new();
+
+                if(currentSessionIds.Length > 0)
+                {
+                    query = @"SELECT COALESCE(MAX(actualdifficulty), 0)
+                        FROM shares
+                        WHERE poolid = @poolId AND miner = @miner AND sessionid = ANY(@sessionIds)";
+
+                    result.BestSessionShare = await con.ExecuteScalarAsync<double>(
+                        new CommandDefinition(query, new { poolId, miner, sessionIds = currentSessionIds }, tx, cancellationToken: ct));
+
+                    query = @"SELECT COALESCE(worker, '') AS worker, sessionid,
+                        COALESCE(MAX(actualdifficulty), 0) AS bestsessionshare
+                        FROM shares
+                        WHERE poolid = @poolId AND miner = @miner AND sessionid = ANY(@sessionIds)
+                        GROUP BY COALESCE(worker, ''), sessionid";
+
+                    workerSessionBestShares = (await con.QueryAsync<WorkerBestSessionShareRecord>(
+                        new CommandDefinition(query, new { poolId, miner, sessionIds = currentSessionIds }, tx, cancellationToken: ct)))
+                        .ToDictionary(
+                            x => $"{x.Worker ?? string.Empty}|{x.SessionId ?? string.Empty}",
+                            x => x.BestSessionShare);
+                }
+                else
+                {
+                    result.BestSessionShare = 0;
+                }
+
                 if(stats.Any())
                 {
-                    // replace null worker with empty string
                     foreach(var stat in stats)
                     {
                         if(stat.Worker == null)
@@ -133,13 +192,19 @@ public class StatsRepository : IStatsRepository
                         }
                     }
 
-                    // transform to dictionary
                     result.Performance = new WorkerPerformanceStatsContainer
                     {
                         Workers = stats.ToDictionary(x => x.Worker ?? string.Empty, x => new WorkerPerformanceStats
                         {
                             Hashrate = x.Hashrate,
-                            SharesPerSecond = x.SharesPerSecond
+                            SharesPerSecond = x.SharesPerSecond,
+                            BestSessionShare = workerSessionBestShares.TryGetValue(
+                                $"{x.Worker ?? string.Empty}|{x.SessionId ?? string.Empty}", out var bestSessionShare)
+                                ? bestSessionShare
+                                : 0,
+                            BestShare = workerBestShares.TryGetValue(x.Worker ?? string.Empty, out var bestShare)
+                                ? bestShare
+                                : 0
                         }),
 
                         Created = stats.First().Created
@@ -205,7 +270,7 @@ public class StatsRepository : IStatsRepository
         var tmp = entitiesByDate.Select(x => new WorkerPerformanceStatsContainer
         {
             Created = x.Key,
-            Workers = x.ToDictionary(y => y.Worker, y => new WorkerPerformanceStats
+            Workers = x.ToDictionary(y => y.Worker ?? string.Empty, y => new WorkerPerformanceStats
             {
                 Hashrate = y.Hashrate,
                 SharesPerSecond = y.SharesPerSecond
@@ -303,7 +368,7 @@ public class StatsRepository : IStatsRepository
         var tmp = entitiesByDate.Select(x => new WorkerPerformanceStatsContainer
         {
             Created = x.Key,
-            Workers = x.ToDictionary(y => y.Worker, y => new WorkerPerformanceStats
+            Workers = x.ToDictionary(y => y.Worker ?? string.Empty, y => new WorkerPerformanceStats
             {
                 Hashrate = y.Hashrate,
                 SharesPerSecond = y.SharesPerSecond
@@ -353,5 +418,19 @@ public class StatsRepository : IStatsRepository
         const string query = @"DELETE FROM minerstats WHERE created < @date";
 
         return con.ExecuteAsync(new CommandDefinition(query, new { date }, cancellationToken: ct));
+    }
+
+    public Task<uint> GetMinerTotalConfirmedBlocksAsync(IDbConnection con, string poolId, string miner, CancellationToken ct)
+    {
+        const string query = @"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND miner = @miner AND status = 'confirmed'";
+
+        return con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new { poolId, miner }, cancellationToken: ct));
+    }
+
+    public Task<uint> GetMinerTotalPendingBlocksAsync(IDbConnection con, string poolId, string miner, CancellationToken ct)
+    {
+        const string query = @"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND miner = @miner AND status = 'pending'";
+
+        return con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new { poolId, miner }, cancellationToken: ct));
     }
 }
