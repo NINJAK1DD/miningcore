@@ -43,6 +43,9 @@ public static unsafe class Multihash
     [DllImport("libmultihash", EntryPoint = "x11_export", CallingConvention = CallingConvention.Cdecl)]
     public static extern void x11(byte* input, void* output, uint inputLength);
 
+    [DllImport("libmultihash", EntryPoint = "x11kvs_export", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void x11kvs(byte* input, void* output, uint inputLength);
+
     [DllImport("libmultihash", EntryPoint = "x13_export", CallingConvention = CallingConvention.Cdecl)]
     public static extern void x13(byte* input, void* output, uint inputLength);
 
