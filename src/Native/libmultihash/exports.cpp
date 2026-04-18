@@ -70,6 +70,8 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "megabtx.h"
 #include "xelishash/xelishash.hpp"
 #include "x11kvs.h"
+#include "evohash.h"
+
 
 #ifdef _WIN32
 #include "blake2/ref/blake2.h"
@@ -488,4 +490,9 @@ extern "C" MODULE_API void xelis_hash_export(const unsigned char *input, unsigne
 extern "C" MODULE_API void xelis_hash_v2_export(const unsigned char *input, unsigned char *output, uint32_t input_len)
 {
     xelis_hash_v2(input, input_len, output);
+}
+
+extern "C" MODULE_API void evohash_export(const char* input, char* output, uint32_t input_len)
+{
+    evohash_hash(input, output, input_len);
 }

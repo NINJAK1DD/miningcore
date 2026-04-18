@@ -215,6 +215,9 @@
     <ClInclude Include="equi\utilstrencodings.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="evohash.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="equi\crypto\common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -662,6 +665,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="equi\utilstrencodings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="evohash.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="equi\crypto\equihash.cpp">

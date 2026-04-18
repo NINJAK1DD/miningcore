@@ -196,6 +196,7 @@
     <ClInclude Include="equi\uint256.h" />
     <ClInclude Include="equi\util.h" />
     <ClInclude Include="equi\utilstrencodings.h" />
+    <ClInclude Include="evohash.h" />
     <ClInclude Include="fresh.h" />
     <ClInclude Include="fugue.h" />
     <ClInclude Include="geek.h" />
@@ -350,6 +351,7 @@
     <ClCompile Include="equi\uint256.cpp" />
     <ClCompile Include="equi\util.cpp" />
     <ClCompile Include="equi\utilstrencodings.cpp" />
+    <ClCompile Include="evohash.c" />
     <ClCompile Include="fresh.c" />
     <ClCompile Include="fugue.c" />
     <ClCompile Include="geek.c" />
