@@ -71,6 +71,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "xelishash/xelishash.hpp"
 #include "x11kvs.h"
 #include "evohash.h"
+#include "xelisv2.h"
 
 
 #ifdef _WIN32
@@ -495,4 +496,9 @@ extern "C" MODULE_API void xelis_hash_v2_export(const unsigned char *input, unsi
 extern "C" MODULE_API void evohash_export(const char* input, char* output, uint32_t input_len)
 {
     evohash_hash(input, output, input_len);
+}
+
+extern "C" MODULE_API void xelisv2_pepew_export(const char* input, char* output, uint32_t input_len)
+{
+    xelisv2_pepew_hash(input, output, input_len);
 }

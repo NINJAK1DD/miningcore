@@ -473,6 +473,9 @@
     <ClInclude Include="xelishash\xelishash.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="xelisv2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -893,6 +896,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="xelishash\xelishashv2.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="xelisv2.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
