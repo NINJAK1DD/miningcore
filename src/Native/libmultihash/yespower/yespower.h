@@ -33,6 +33,8 @@
 #include <stdint.h>
 #include <stdlib.h> /* for size_t */
 
+void yespowerADVC_hash(const char* input, char* output, uint32_t len);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

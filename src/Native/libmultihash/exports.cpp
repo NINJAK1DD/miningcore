@@ -448,6 +448,11 @@ extern "C" MODULE_API void yespower_export(const char *input, char *output, uint
     yespower_hash(input, output, input_len);
 }
 
+extern "C" MODULE_API void yespowerADVC_export(const char *input, char *output, uint32_t input_len)
+{
+    yespowerADVC_hash(input, output, input_len);
+}
+
 extern "C" MODULE_API void yespowerIC_export(const char *input, char *output, uint32_t input_len)
 {
     yespowerIC_hash(input, output, input_len);
