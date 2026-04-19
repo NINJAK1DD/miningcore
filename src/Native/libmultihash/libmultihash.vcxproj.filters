@@ -476,6 +476,21 @@
     <ClInclude Include="xelisv2.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="argon2d.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/argon2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/core.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/encoding.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/thread.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -899,6 +914,24 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="xelisv2.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/argon2.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/core.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/encoding.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/opt.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/thread.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

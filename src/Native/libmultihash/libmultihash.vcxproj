@@ -321,6 +321,11 @@
     <ClInclude Include="xelishash\crc32.h" />
     <ClInclude Include="xelishash\xelishash.hpp" />
     <ClInclude Include="xelisv2.h" />
+    <ClInclude Include="argon2d.h" />
+    <ClInclude Include="argon2d/argon2.h" />
+    <ClInclude Include="argon2d/core.h" />
+    <ClInclude Include="argon2d/encoding.h" />
+    <ClInclude Include="argon2d/thread.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="allium.c" />
@@ -464,6 +469,12 @@
     <ClCompile Include="xelishash\xelishashv1.cpp" />
     <ClCompile Include="xelishash\xelishashv2.cpp" />
     <ClCompile Include="xelisv2.c" />
+    <ClCompile Include="argon2d.c" />
+    <ClCompile Include="argon2d/argon2.c" />
+    <ClCompile Include="argon2d/core.c" />
+    <ClCompile Include="argon2d/encoding.c" />
+    <ClCompile Include="argon2d/opt.c" />
+    <ClCompile Include="argon2d/thread.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="equi\crypto\equihash.tcc" />
