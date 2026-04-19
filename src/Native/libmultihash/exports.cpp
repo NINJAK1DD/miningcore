@@ -444,6 +444,11 @@ extern "C" MODULE_API void power2b_export(const char *input, char *output, uint3
     power2b_hash(input, output, input_len);
 }
 
+extern "C" MODULE_API void interchained_export(const char *input, char *output, uint32_t input_len)
+{
+    interchained_hash(input, output, input_len);
+}
+
 extern "C" MODULE_API void yespower_export(const char *input, char *output, uint32_t input_len)
 {
     yespower_hash(input, output, input_len);
