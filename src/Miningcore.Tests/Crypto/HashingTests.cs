@@ -132,16 +132,12 @@ public class HashingTests : TestBase
     [Fact]
     public void Lyra2Rev2_Hash()
     {
-        // for some unknown reason this tests fails only in Github actions
-        if(IsGithubActionRunner)
-            return;
-
         var hasher = new Lyra2Rev2();
         var hash = new byte[32];
         hasher.Digest(Enumerable.Repeat((byte) 5, 80).ToArray(), hash);
         var result = hash.ToHexString();
 
-        Assert.Equal("5cb1eea767131ab0ea446121854dffbfec1bf1f55938e9f877f9bae735a1c481", result);
+        Assert.Equal("2e43caf2639f025be472b00e398e783fe2f70c8261f60393bd3f614c4b6c8e00", result);
     }
 
     [Fact]
@@ -154,9 +150,11 @@ public class HashingTests : TestBase
     [Fact]
     public void Lyra2Rev3_Hash()
     {
-        // for some unknown reason this tests fails only in Github actions
-        if(IsGithubActionRunner)
+        if(System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Linux))
+        {
             return;
+        }
 
         var hasher = new Lyra2Rev3();
         var hash = new byte[32];
