@@ -37,26 +37,57 @@ jobs:
       run: |
         set -euo pipefail
 
-        echo "Workspace: $GITHUB_WORKSPACE"
-        echo "Listing built native libs from repo build dir"
-        find "$GITHUB_WORKSPACE/build" -maxdepth 1 -type f -name '*.so' -print | sort
+        APP_OUT="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
+        TEST_OUT="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
 
-        mkdir -p "$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
-        mkdir -p "$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
+        echo "Miningcore output directory: $APP_OUT"
+        echo "Miningcore.Tests output directory: $TEST_OUT"
 
-        cp -av "$GITHUB_WORKSPACE"/build/*.so "$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0/"
-        cp -av "$GITHUB_WORKSPACE"/build/*.so "$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0/"
+        mkdir -p "$TEST_OUT"
+
+        echo
+        echo "Native libs currently in Miningcore output:"
+        find "$APP_OUT" -maxdepth 1 -type f -name '*.so' -print | sort || true
+
+        if ! compgen -G "$APP_OUT/*.so" > /dev/null; then
+          echo "No native .so files were found in $APP_OUT"
+          echo "Searching the workspace for built native libraries..."
+
+          mapfile -t FOUND_LIBS < <(
+            find "$GITHUB_WORKSPACE" -type f -name '*.so' \
+              ! -path '*/obj/*' \
+              ! -path '*/.git/*' \
+              ! -path '*/src/Miningcore.Tests/bin/*' \
+              | sort
+          )
+
+          if [ "${#FOUND_LIBS[@]}" -eq 0 ]; then
+            echo "No native .so files found anywhere in the workspace."
+            exit 1
+          fi
+
+          echo "Found native libs in workspace:"
+          printf '%s\n' "${FOUND_LIBS[@]}"
+
+          for so in "${FOUND_LIBS[@]}"; do
+            cp -av "$so" "$APP_OUT/"
+          done
+        fi
+
+        echo
+        echo "Copying native libs into test output..."
+        cp -av "$APP_OUT"/*.so "$TEST_OUT/"
 
         echo
         echo "Miningcore output libs:"
-        find "$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0" -maxdepth 1 -type f -name '*.so' -print | sort
+        find "$APP_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
         echo
         echo "Miningcore.Tests output libs:"
-        find "$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0" -maxdepth 1 -type f -name '*.so' -print | sort
+        find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
     - name: Test
       shell: bash
       env:
-        LD_LIBRARY_PATH: ${{ github.workspace }}/build:${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
