@@ -15,16 +15,48 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0    
+        fetch-depth: 0
+
     - name: Install Build dependencies
       run: sudo apt-get install -y cmake cmake ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libgmp-dev
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 6.0.x
+
     - name: Restore dependencies
       run: dotnet restore src
+
     - name: Build
       run: dotnet build --no-restore src
+
+    - name: Stage Linux native libs for tests
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "Workspace: $GITHUB_WORKSPACE"
+        echo "Listing built native libs from repo build dir"
+        find "$GITHUB_WORKSPACE/build" -maxdepth 1 -type f -name '*.so' -print | sort
+
+        mkdir -p "$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
+        mkdir -p "$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
+
+        cp -av "$GITHUB_WORKSPACE"/build/*.so "$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0/"
+        cp -av "$GITHUB_WORKSPACE"/build/*.so "$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0/"
+
+        echo
+        echo "Miningcore output libs:"
+        find "$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0" -maxdepth 1 -type f -name '*.so' -print | sort
+
+        echo
+        echo "Miningcore.Tests output libs:"
+        find "$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0" -maxdepth 1 -type f -name '*.so' -print | sort
+
     - name: Test
+      shell: bash
+      env:
+        LD_LIBRARY_PATH: ${{ github.workspace }}/build:${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
