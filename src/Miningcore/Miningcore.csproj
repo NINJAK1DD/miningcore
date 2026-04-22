@@ -134,22 +134,6 @@
         <Exec Command="(cd $(ProjectDir) &amp;&amp; sh build-libs-linux.sh $(OutDir))" />
     </Target>
 
-    <!-- Copy Linux native libs from ../build into Miningcore output -->
-    <Target Name="CopyNativeLibsLinuxToOutput" AfterTargets="BuildNativeLibsLinux" Condition="'$(IsLinux)' == 'true'">
-        <ItemGroup>
-            <LinuxNativeLibs Include="$(MSBuildProjectDirectory)/../../build/*.so" />
-        </ItemGroup>
-
-        <Message Importance="high"
-                 Text="Copying Linux native libs to Miningcore output: @(LinuxNativeLibs)"
-                 Condition="'@(LinuxNativeLibs)' != ''" />
-
-        <Copy SourceFiles="@(LinuxNativeLibs)"
-              DestinationFolder="$(OutDir)"
-              SkipUnchangedFiles="true"
-              Condition="'@(LinuxNativeLibs)' != ''" />
-    </Target>
-
     <!-- Include library binaries in publish on Windows -->
     <Target Name="NativeLibsPublishIncludeWin" BeforeTargets="PrepareForPublish" Condition="'$(IsWindows)' == 'true'">
         <ItemGroup>

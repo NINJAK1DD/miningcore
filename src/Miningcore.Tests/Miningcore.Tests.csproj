@@ -60,14 +60,14 @@
     </None>
   </ItemGroup>
 
-  <!-- Copy Linux native libs directly from repo build output into test output -->
+  <!-- Copy Linux native libs from Miningcore output into test output -->
   <Target Name="CopyLibsLinux" AfterTargets="Build" Condition="'$(IsLinux)' == 'true'">
     <ItemGroup>
-      <Libs Include="$(MSBuildProjectDirectory)/../../build/*.so" />
+      <Libs Include="$(MSBuildProjectDirectory)/../Miningcore/bin/$(Configuration)/$(TargetFramework)/*.so" />
     </ItemGroup>
 
     <Message Importance="high"
-             Text="Copying Linux native libs to test output: @(Libs)"
+             Text="Copying Linux native libs from Miningcore output to test output: @(Libs)"
              Condition="'@(Libs)' != ''" />
 
     <Copy SourceFiles="@(Libs)"

@@ -38,6 +38,8 @@ OBJECTS = bcrypt.o blake.o c11.o dcrypt.o fresh.o lane.o \
         chacha20/chacha20.o xelishash/xelishashv1.o xelishash/xelishashv2.o xelisv2.o \
         argon2d.o argon2d/argon2.o argon2d/thread.o argon2d/core.o argon2d/encoding.o argon2d/opt.o 
 
+xelisv2.o: CFLAGS += -maes
+
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
