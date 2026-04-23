@@ -115,6 +115,17 @@ jobs:
         echo "=== Strings from libmultihash.so ==="
         strings "$APP_OUT/libmultihash.so" | grep -Ei 'lyra|cubehash|bmw|skein|keccak' | sort -u | head -200 || true
 
+    - name: Debug Lyra2 single test
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+      run: |
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+          --no-build \
+          --filter "FullyQualifiedName=Miningcore.Tests.Crypto.HashingTests.Lyra2Rev2_Hash" \
+          --logger:"console;verbosity=detailed"
+
     - name: Test
       shell: bash
       env:
