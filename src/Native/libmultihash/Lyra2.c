@@ -376,7 +376,6 @@ int LYRA2_old(void *K, uint64_t kLen, const void *pwd, uint64_t pwdlen, const vo
 
     //Wiping out the sponge's internal state before freeing it
     memset(state, 0, 16 * sizeof (uint64_t));
-    free(state);
     //==========================================================================/
 
     return 0;
