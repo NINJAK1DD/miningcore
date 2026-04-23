@@ -86,6 +86,35 @@ jobs:
         echo "Miningcore.Tests output libs:"
         find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
+    - name: Debug Lyra2 native inputs
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        APP_OUT="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
+        TEST_OUT="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
+
+        echo "=== build-libs-linux.sh ==="
+        sed -n '1,80p' src/Miningcore/build-libs-linux.sh
+
+        echo
+        echo "=== src/Native/libmultihash/Makefile ==="
+        sed -n '1,220p' src/Native/libmultihash/Makefile
+
+        echo
+        echo "=== Lyra2RE.c ==="
+        sed -n '70,110p' src/Native/libmultihash/Lyra2RE.c
+
+        echo
+        echo "=== Checksums ==="
+        sha256sum "$APP_OUT/libmultihash.so" || true
+        sha256sum "$TEST_OUT/libmultihash.so" || true
+
+        echo
+        echo "=== Strings from libmultihash.so ==="
+        strings "$APP_OUT/libmultihash.so" | grep -Ei 'lyra|cubehash|bmw|skein|keccak' | sort -u | head -200 || true
+
     - name: Test
       shell: bash
       env:
