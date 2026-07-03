@@ -2,7 +2,7 @@
 
 Miningcore can run Litecoin as the parent Scrypt pool and submit the same proof of work to Dogecoin through AuxPoW.
 
-This version is limited to SOLO. Configure Litecoin and Dogecoin as separate enabled pools, both using `SOLO` payment processing. The Dogecoin pool supplies its daemon, wallet address, block classification and payout pipeline. The Litecoin pool references it:
+This version is limited to SOLO. Configure Litecoin and Dogecoin as separate enabled pools with unique pool IDs, both using `SOLO` payment processing. The Dogecoin pool supplies its daemon, wallet address, block classification and payout pipeline. The Litecoin pool references it:
 
 ```json
 "mergedMining": {
