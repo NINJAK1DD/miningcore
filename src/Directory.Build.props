@@ -2,6 +2,6 @@
   <PropertyGroup>
     <WarningLevel>0</WarningLevel>
     <IsLinux>false</IsLinux>
-    <DefaultItemExcludes>$(DefaultItemExcludes);**/MergedMiningBitcoinPool.cs;**/MergedMiningIsolationStubs.cs</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/MergedMiningBitcoinJobManager.cs;**/MergedMiningBitcoinPool.cs;**/MergedMiningIsolationStubs.cs</DefaultItemExcludes>
   </PropertyGroup>
 </Project>
