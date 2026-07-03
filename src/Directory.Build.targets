@@ -2,4 +2,7 @@
   <PropertyGroup>
     <IsLinux>false</IsLinux>
   </PropertyGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'Miningcore'">
+    <Compile Remove="$(MSBuildProjectDirectory)/Blockchain/Bitcoin/MergedMining/MergedMiningManagerUpdateDiagnostic.cs" />
+  </ItemGroup>
 </Project>
