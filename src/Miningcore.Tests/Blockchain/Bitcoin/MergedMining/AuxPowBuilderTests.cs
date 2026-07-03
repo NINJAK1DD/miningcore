@@ -1,4 +1,6 @@
+using System;
 using System.Buffers.Binary;
+using System.Linq;
 using System.Security.Cryptography;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Extensions;
