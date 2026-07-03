@@ -2,6 +2,6 @@
   <PropertyGroup>
     <WarningLevel>0</WarningLevel>
     <IsLinux>false</IsLinux>
-    <DefaultItemExcludes>$(DefaultItemExcludes);**/*Diagnostic.cs;**/*Check.cs;**/*Stub.cs</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/*Diagnostic.cs;**/*Check.cs;**/*Stub.cs;**/*Stubs.cs</DefaultItemExcludes>
   </PropertyGroup>
 </Project>
