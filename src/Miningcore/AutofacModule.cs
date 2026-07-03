@@ -5,6 +5,7 @@ using Miningcore.Banning;
 using Miningcore.Blockchain.Alephium;
 using Miningcore.Blockchain.Beam;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Blockchain.Conceal;
 using Miningcore.Blockchain.Cryptonote;
 using Miningcore.Blockchain.Equihash;
@@ -82,7 +83,8 @@ public class AutofacModule : Module
             .SingleInstance();
 
         builder.RegisterAssemblyTypes(ThisAssembly)
-            .Where(t => t.GetCustomAttributes<CoinFamilyAttribute>().Any() && t.GetInterfaces()
+            .Where(t => t != typeof(BitcoinPool) &&
+                t.GetCustomAttributes<CoinFamilyAttribute>().Any() && t.GetInterfaces()
                 .Any(i =>
                     i.IsAssignableFrom(typeof(IMiningPool)) ||
                     i.IsAssignableFrom(typeof(IPayoutHandler)) ||
@@ -188,7 +190,9 @@ public class AutofacModule : Module
         //////////////////////
         // Bitcoin and family
 
-        builder.RegisterType<BitcoinJobManager>();
+        builder.RegisterType<MergedMiningBitcoinJobManager>()
+            .As<BitcoinJobManager>()
+            .AsSelf();
 
         //////////////////////
         // Conceal
