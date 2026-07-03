@@ -9,9 +9,9 @@ using Miningcore.Time;
 
 namespace Miningcore.Blockchain.Bitcoin.MergedMining;
 
-public class MergedMiningBitcoinJobManager : BitcoinJobManager
+public class MergedMiningBitcoinJobManagerInitCallCheck : BitcoinJobManager
 {
-    public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
+    public MergedMiningBitcoinJobManagerInitCallCheck(IComponentContext ctx, IMasterClock clock,
         IMessageBus messageBus, IExtraNonceProvider extraNonceProvider) :
         base(ctx, clock, messageBus, extraNonceProvider)
     {
