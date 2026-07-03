@@ -7,6 +7,6 @@ public class AuxBlockTemplate
     public string PreviousBlockhash { get; set; }
     public long CoinbaseValue { get; set; }
     public string Bits { get; set; }
-    public long Height { get; set; }
+    public uint Height { get; set; }
     public string Target { get; set; }
 }
