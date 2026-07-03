@@ -60,21 +60,19 @@
     </None>
   </ItemGroup>
 
-  <!-- Copy library binaries from Miningcore build output on Windows  -->
-  <Target Name="CopyLibsWin" AfterTargets="AfterBuild" Condition="'$(IsWindows)' == 'true'">
+  <!-- Copy Linux native libs from Miningcore output into test output -->
+  <Target Name="CopyLibsLinux" AfterTargets="Build" Condition="'$(IsLinux)' == 'true'">
     <ItemGroup>
-      <Libs Include="$(ProjectDir)..\Miningcore\bin\$(Configuration)\net6.0\lib*.dll" />
+      <Libs Include="$(MSBuildProjectDirectory)/../Miningcore/bin/$(Configuration)/$(TargetFramework)/*.so" />
     </ItemGroup>
 
-    <Copy SourceFiles="@(Libs)" DestinationFolder="$(OutDir)" />
-  </Target>
+    <Message Importance="high"
+             Text="Copying Linux native libs from Miningcore output to test output: @(Libs)"
+             Condition="'@(Libs)' != ''" />
 
-  <!-- Copy library binaries from Miningcore build output on Linux  -->
-  <Target Name="CopyLibsLinux" AfterTargets="AfterBuild" Condition="'$(IsLinux)' == 'true'">
-    <ItemGroup>
-      <Libs Include="$(ProjectDir)..\Miningcore\bin\$(Configuration)\net6.0\lib*.so" />
-    </ItemGroup>
-
-    <Copy SourceFiles="@(Libs)" DestinationFolder="$(OutDir)" />
+    <Copy SourceFiles="@(Libs)"
+          DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(Libs)' != ''" />
   </Target>
 </Project>

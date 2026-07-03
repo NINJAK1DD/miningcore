@@ -45,10 +45,12 @@
         <PackageReference Include="Autofac" Version="8.2.0" />
         <PackageReference Include="Autofac.Extensions.DependencyInjection" Version="10.0.0" />
         <PackageReference Include="CircularBuffer" Version="1.4.0" />
+        <PackageReference Include="blake3" Version="0.5.1" />
         <PackageReference Include="GitVersion.MsBuild" Version="5.12.0">
           <PrivateAssets>all</PrivateAssets>
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
+        <PackageReference Include="Isopoh.Cryptography.Argon2" Version="2.0.0" />
         <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.0" />
         <PackageReference Include="Newtonsoft.Json.Schema" Version="4.0.1" />
         <PackageReference Include="Npgsql" Version="9.0.3" />
@@ -82,6 +84,7 @@
         <PackageReference Include="prometheus-net.AspNetCore" Version="8.1.0" />
         <PackageReference Include="prometheus-net" Version="8.2.0" />
         <PackageReference Include="protobuf-net" Version="3.2.30" />
+        <PackageReference Include="SHA3.Net" Version="1.1.0" />
         <PackageReference Include="System.Diagnostics.Process" Version="4.3.0" />
         <PackageReference Include="System.Reactive" Version="6.0.0" />
         <PackageReference Include="Grpc.AspNetCore" Version="2.66.0" />

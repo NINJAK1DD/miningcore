@@ -27,7 +27,7 @@ HAVE_AVX512F=$(../Native/check_cpu.sh avx512f && echo -DHAVE_AVX512F || echo)
 
 export HAVE_FEATURE="$HAVE_AES $HAVE_SSE2 $HAVE_SSE3 $HAVE_SSSE3 $HAVE_PCLMUL $HAVE_AVX $HAVE_AVX2 $HAVE_AVX512F"
 
-(cd ../Native/libmultihash && make clean && make) && mv ../Native/libmultihash/libmultihash.so "$OutDir"
+(cd ../Native/libmultihash && make clean && make CPU_FLAGS="$CPU_FLAGS" HAVE_FEATURE="$HAVE_FEATURE") && mv ../Native/libmultihash/libmultihash.so "$OutDir"
 (cd ../Native/libbeamhash && make clean && make) && mv ../Native/libbeamhash/libbeamhash.so "$OutDir"
 (cd ../Native/libetchash && make clean && make) && mv ../Native/libetchash/libetchash.so "$OutDir"
 (cd ../Native/libethhash && make clean && make) && mv ../Native/libethhash/libethhash.so "$OutDir"

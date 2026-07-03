@@ -15,16 +15,79 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0    
+        fetch-depth: 0
+
     - name: Install Build dependencies
       run: sudo apt-get install -y cmake cmake ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libgmp-dev
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 6.0.x
+
     - name: Restore dependencies
       run: dotnet restore src
+
     - name: Build
       run: dotnet build --no-restore src
+
+    - name: Stage Linux native libs for tests
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        APP_OUT="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
+        TEST_OUT="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
+
+        echo "Miningcore output directory: $APP_OUT"
+        echo "Miningcore.Tests output directory: $TEST_OUT"
+
+        mkdir -p "$TEST_OUT"
+
+        echo
+        echo "Native libs currently in Miningcore output:"
+        find "$APP_OUT" -maxdepth 1 -type f -name '*.so' -print | sort || true
+
+        if ! compgen -G "$APP_OUT/*.so" > /dev/null; then
+          echo "No native .so files were found in $APP_OUT"
+          echo "Searching the workspace for built native libraries..."
+
+          mapfile -t FOUND_LIBS < <(
+            find "$GITHUB_WORKSPACE" -type f -name '*.so' \
+              ! -path '*/obj/*' \
+              ! -path '*/.git/*' \
+              ! -path '*/src/Miningcore.Tests/bin/*' \
+              | sort
+          )
+
+          if [ "${#FOUND_LIBS[@]}" -eq 0 ]; then
+            echo "No native .so files found anywhere in the workspace."
+            exit 1
+          fi
+
+          echo "Found native libs in workspace:"
+          printf '%s\n' "${FOUND_LIBS[@]}"
+
+          for so in "${FOUND_LIBS[@]}"; do
+            cp -av "$so" "$APP_OUT/"
+          done
+        fi
+
+        echo
+        echo "Copying native libs into test output..."
+        cp -av "$APP_OUT"/*.so "$TEST_OUT/"
+
+        echo
+        echo "Miningcore output libs:"
+        find "$APP_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
+
+        echo
+        echo "Miningcore.Tests output libs:"
+        find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
+
     - name: Test
+      shell: bash
+      env:
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src

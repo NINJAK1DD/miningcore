@@ -179,8 +179,9 @@ void reducedSqueezeRow0(uint64_t* state, uint64_t* rowOut, uint64_t nCols) {
 	ptrWord[10] = state[10];
 	ptrWord[11] = state[11];
 
-	//Goes to next block (column) that will receive the squeezed data
-	ptrWord -= BLOCK_LEN_INT64;
+	// Goes to the next block without constructing a pointer before rowOut
+	if (i + 1 < nCols)
+	    ptrWord -= BLOCK_LEN_INT64;
 
 	//Applies the reduced-round transformation f to the sponge's state
 	reducedBlake2bLyra(state);
@@ -237,8 +238,9 @@ void reducedDuplexRow1(uint64_t *state, uint64_t *rowIn, uint64_t *rowOut, uint6
 
 	//Input: next column (i.e., next block in sequence)
 	ptrWordIn += BLOCK_LEN_INT64;
-	//Output: goes to previous column
-	ptrWordOut -= BLOCK_LEN_INT64;
+	// Output: goes to the previous column without stepping before rowOut
+	if (i + 1 < nCols)
+	    ptrWordOut -= BLOCK_LEN_INT64;
     }
 }
 
@@ -311,8 +313,9 @@ void reducedDuplexRowSetup(uint64_t *state, uint64_t *rowIn, uint64_t *rowInOut,
 	//Inputs: next column (i.e., next block in sequence)
 	ptrWordInOut += BLOCK_LEN_INT64;
 	ptrWordIn += BLOCK_LEN_INT64;
-	//Output: goes to previous column
-	ptrWordOut -= BLOCK_LEN_INT64;
+	// Output: goes to the previous column without stepping before rowOut
+	if (i + 1 < nCols)
+	    ptrWordOut -= BLOCK_LEN_INT64;
     }
 }
 

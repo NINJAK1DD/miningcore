@@ -196,6 +196,7 @@
     <ClInclude Include="equi\uint256.h" />
     <ClInclude Include="equi\util.h" />
     <ClInclude Include="equi\utilstrencodings.h" />
+    <ClInclude Include="evohash.h" />
     <ClInclude Include="fresh.h" />
     <ClInclude Include="fugue.h" />
     <ClInclude Include="geek.h" />
@@ -274,6 +275,7 @@
     <ClInclude Include="yespower\sysendian.h" />
     <ClInclude Include="yespower\yespower.h" />
     <ClInclude Include="x11.h" />
+    <ClInclude Include="x11kvs.h" />
     <ClInclude Include="x13.h" />
     <ClInclude Include="x14.h" />
     <ClInclude Include="x15.h" />
@@ -318,6 +320,12 @@
     <ClInclude Include="xelishash\aes.h" />
     <ClInclude Include="xelishash\crc32.h" />
     <ClInclude Include="xelishash\xelishash.hpp" />
+    <ClInclude Include="xelisv2.h" />
+    <ClInclude Include="argon2d.h" />
+    <ClInclude Include="argon2d/argon2.h" />
+    <ClInclude Include="argon2d/core.h" />
+    <ClInclude Include="argon2d/encoding.h" />
+    <ClInclude Include="argon2d/thread.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="allium.c" />
@@ -349,6 +357,7 @@
     <ClCompile Include="equi\uint256.cpp" />
     <ClCompile Include="equi\util.cpp" />
     <ClCompile Include="equi\utilstrencodings.cpp" />
+    <ClCompile Include="evohash.c" />
     <ClCompile Include="fresh.c" />
     <ClCompile Include="fugue.c" />
     <ClCompile Include="geek.c" />
@@ -422,6 +431,7 @@
     <ClCompile Include="yespower\yespower-combined.c" />
     <ClCompile Include="yespower\yespower-platform.c" />
     <ClCompile Include="x11.c" />
+    <ClCompile Include="x11kvs.c" />
     <ClCompile Include="x13.c" />
     <ClCompile Include="x14.c" />
     <ClCompile Include="x15.c" />
@@ -458,6 +468,13 @@
     <ClCompile Include="chacha20\chacha20.c" />
     <ClCompile Include="xelishash\xelishashv1.cpp" />
     <ClCompile Include="xelishash\xelishashv2.cpp" />
+    <ClCompile Include="xelisv2.c" />
+    <ClCompile Include="argon2d.c" />
+    <ClCompile Include="argon2d/argon2.c" />
+    <ClCompile Include="argon2d/core.c" />
+    <ClCompile Include="argon2d/encoding.c" />
+    <ClCompile Include="argon2d/opt.c" />
+    <ClCompile Include="argon2d/thread.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="equi\crypto\equihash.tcc" />
