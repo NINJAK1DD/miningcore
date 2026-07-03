@@ -11,9 +11,9 @@ using Newtonsoft.Json;
 
 namespace Miningcore.Blockchain.Bitcoin.MergedMining;
 
-public class MergedMiningBitcoinJobManager : BitcoinJobManager
+public class MergedMiningBitcoinJobManagerSyncDiagnostic : BitcoinJobManager
 {
-    public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
+    public MergedMiningBitcoinJobManagerSyncDiagnostic(IComponentContext ctx, IMasterClock clock,
         IMessageBus messageBus, IExtraNonceProvider extraNonceProvider) :
         base(ctx, clock, messageBus, extraNonceProvider)
     {
