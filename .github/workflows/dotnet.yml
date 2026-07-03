@@ -86,48 +86,6 @@ jobs:
         echo "Miningcore.Tests output libs:"
         find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
-    - name: Diagnose Lyra2 compiler sensitivity
-      if: runner.os == 'Linux'
-      shell: bash
-      env:
-        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
-      run: |
-        set -euo pipefail
-
-        NATIVE_DIR="$GITHUB_WORKSPACE/src/Native/libmultihash"
-        APP_OUT="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
-        TEST_OUT="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
-        COMMON_FLAGS="-g -Wall -c -fPIC -Wno-pointer-sign -Wno-char-subscripts -Wno-unused-variable -Wno-unused-function -Wno-strict-aliasing -Wno-discarded-qualifiers -Wno-unused-const-variable"
-        CPU_FLAGS="-maes -msse2 -mssse3 -mpclmul -mavx -mavx2"
-        FEATURE_FLAGS="-D__AES__ -DHAVE_SSE2 -DHAVE_SSSE3 -DHAVE_PCLMUL -DHAVE_AVX -DHAVE_AVX2"
-        OBJECTS=(Lyra2.o Lyra2RE.o Sponge.o sha3/sph_blake.o sha3/sph_keccak.o sha3/sph_cubehash.o sha3/sph_skein.o sha3/sph_bmw.o)
-
-        run_variant() {
-          local name="$1"
-          local optimization_flags="$2"
-
-          echo "=== Lyra2 variant: $name ($optimization_flags) ==="
-          (
-            cd "$NATIVE_DIR"
-            rm -f libmultihash.so "${OBJECTS[@]}"
-            make CFLAGS="$COMMON_FLAGS $CPU_FLAGS $FEATURE_FLAGS $optimization_flags"
-          )
-          cp "$NATIVE_DIR/libmultihash.so" "$APP_OUT/libmultihash.so"
-          cp "$NATIVE_DIR/libmultihash.so" "$TEST_OUT/libmultihash.so"
-          dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
-            --no-build \
-            --filter "FullyQualifiedName=Miningcore.Tests.Crypto.HashingTests.Lyra2Rev2_Hash" \
-            --logger:"console;verbosity=normal" || true
-        }
-
-        run_variant "O0" "-O0"
-        run_variant "O1" "-O1"
-        run_variant "O2-no-vectorize" "-O2 -fno-tree-vectorize"
-        run_variant "O2-no-slp" "-O2 -fno-tree-slp-vectorize"
-        run_variant "O2-no-alias" "-O2 -fno-strict-aliasing"
-        run_variant "O2-no-vectorize-no-alias" "-O2 -fno-tree-vectorize -fno-strict-aliasing"
-        run_variant "O2-avx512-target" "-O2 -mavx512f"
-
     - name: Test
       shell: bash
       env:
