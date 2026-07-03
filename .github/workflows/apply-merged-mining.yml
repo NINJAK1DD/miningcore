@@ -1,0 +1,60 @@
+name: Apply merged-mining implementation
+
+on:
+  push:
+    branches:
+      - feature/ltc-doge-merged-mining-v2
+    paths:
+      - tools/apply_merged_mining.py
+      - .github/workflows/apply-merged-mining.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/ltc-doge-merged-mining-v2
+          fetch-depth: 0
+
+      - name: Apply surgical source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i '/using Miningcore.Messaging;/a using Miningcore.Mining;' src/Miningcore/Blockchain/Bitcoin/BitcoinJobManager.cs
+          python3 tools/apply_merged_mining.py
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libgmp-dev
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Restore
+        run: dotnet restore src
+
+      - name: Build
+        run: dotnet build --no-restore src
+
+      - name: Test merged-mining helpers
+        run: dotnet test --no-build src --filter "FullyQualifiedName~MergedMiningAuxPowTests"
+
+      - name: Remove one-shot patch machinery
+        run: rm tools/apply_merged_mining.py .github/workflows/apply-merged-mining.yml
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "feat(merged-mining): implement Litecoin-Dogecoin AuxPoW"
+          git push origin HEAD:feature/ltc-doge-merged-mining-v2
