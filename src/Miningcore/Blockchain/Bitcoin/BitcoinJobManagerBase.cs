@@ -64,6 +64,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         };
     }
 
+    /// <summary>
+    /// Enables daemon polling even when jobs are normally supplied by a Bitcoin Template Stream.
+    /// Specialized managers can use this when they depend on another chain whose updates are not
+    /// represented by the parent-chain stream.
+    /// </summary>
+    protected virtual bool PollJobsWithBlockTemplateStream => false;
+
     protected virtual void SetupJobUpdates(CancellationToken ct)
     {
         jobRebroadcastTimeout = TimeSpan.FromSeconds(Math.Max(1, poolConfig.JobRebroadcastTimeout));
@@ -169,6 +176,16 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                     .Select(json => (false, JobRefreshBy.BlockTemplateStream, json))
                     .Publish()
                     .RefCount());
+            }
+
+            if(PollJobsWithBlockTemplateStream && poolConfig.BlockRefreshInterval > 0)
+            {
+                var pollingInterval = TimeSpan.FromMilliseconds(poolConfig.BlockRefreshInterval);
+
+                triggers.Add(Observable.Timer(pollingInterval)
+                    .TakeUntil(blockFound)
+                    .Select(_ => (false, JobRefreshBy.Poll, (string) null))
+                    .Repeat());
             }
 
             // get initial blocktemplate

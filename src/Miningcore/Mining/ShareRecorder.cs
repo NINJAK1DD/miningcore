@@ -82,13 +82,19 @@ public class ShareRecorder : BackgroundService
         await faultPolicy.ExecuteAsync(ctx => PersistSharesCoreAsync((IList<Share>) ctx[PolicyContextKeyShares]), context);
     }
 
-    private async Task PersistSharesCoreAsync(IList<Share> shares)
+    internal async Task PersistSharesCoreAsync(IList<Share> shares)
     {
         await cf.RunTx(async (con, tx) =>
         {
-            // Insert shares
-            var mapped = shares.Select(mapper.Map<Persistence.Model.Share>).ToArray();
-            await shareRepo.BatchInsertAsync(con, tx, mapped, CancellationToken.None);
+            // Auxiliary block candidates are sent through the share message pipeline so they can
+            // reuse normal block persistence and notifications. They are not standalone shares on
+            // the auxiliary pool and must not distort its hashrate, effort, or share statistics.
+            var mapped = GetSharesForPersistence(shares)
+                .Select(mapper.Map<Persistence.Model.Share>)
+                .ToArray();
+
+            if(mapped.Length > 0)
+                await shareRepo.BatchInsertAsync(con, tx, mapped, CancellationToken.None);
 
             // Insert blocks
             foreach(var share in shares)
@@ -106,6 +112,13 @@ public class ShareRecorder : BackgroundService
                     logger.Warn(()=> $"Block found for unknown pool {share.PoolId}");
             }
         });
+    }
+
+    internal static IEnumerable<Share> GetSharesForPersistence(IEnumerable<Share> shares)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+
+        return shares.Where(x => !x.BlockOnly);
     }
 
     private static void OnPolicyRetry(Exception ex, TimeSpan timeSpan, int retry, object context)

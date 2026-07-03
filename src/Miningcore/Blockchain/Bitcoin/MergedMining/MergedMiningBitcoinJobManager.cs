@@ -36,6 +36,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
+    protected override bool PollJobsWithBlockTemplateStream => MergedMiningEnabled;
+
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         parentCoin = pc.Template.As<BitcoinTemplate>();
@@ -85,9 +87,16 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(string.IsNullOrWhiteSpace(mergedMiningConfig.AddressParameter))
             mergedMiningConfig.AddressParameter = "doge";
+        else
+            mergedMiningConfig.AddressParameter = mergedMiningConfig.AddressParameter.Trim();
 
-        // Parent ZMQ notifications do not report auxiliary-chain tip changes. Polling
-        // guarantees that a fresh Dogecoin template is broadcast independently.
+        if(!MergedMiningPasswordParser.IsValidAddressParameter(mergedMiningConfig.AddressParameter))
+            throw new PoolStartupException(
+                "mergedMining.addressParameter must not be 'd' or contain ';' or '='",
+                pc.Id);
+
+        // Parent ZMQ and Bitcoin Template Stream notifications do not report auxiliary-chain
+        // tip changes. Polling guarantees that a fresh Dogecoin template is broadcast independently.
         if(pc.BlockRefreshInterval <= 0)
             pc.BlockRefreshInterval = 1000;
 
@@ -362,6 +371,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             BlockHeight = template.Height,
             BlockHash = template.Hash,
             IsBlockCandidate = true,
+            BlockOnly = true,
             TransactionConfirmationData = coinbaseTransaction,
             SessionId = context.SessionId,
             Created = clock.Now,

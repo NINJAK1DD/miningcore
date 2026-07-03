@@ -6,6 +6,28 @@ namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 public class MergedMiningPasswordParserTests
 {
     [Theory]
+    [InlineData("doge")]
+    [InlineData("aux")]
+    [InlineData("doge-address")]
+    public void IsValidAddressParameter_AcceptsUnambiguousKeys(string key)
+    {
+        Assert.True(MergedMiningPasswordParser.IsValidAddressParameter(key));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("d")]
+    [InlineData("D")]
+    [InlineData("doge;aux")]
+    [InlineData("doge=aux")]
+    public void IsValidAddressParameter_RejectsReservedOrDelimitedKeys(string key)
+    {
+        Assert.False(MergedMiningPasswordParser.IsValidAddressParameter(key));
+    }
+
+    [Theory]
     [InlineData("d=65536;doge=DJ7zExampleAddress", "DJ7zExampleAddress")]
     [InlineData(" DOGE = DJ7zExampleAddress ; d = 1024 ", "DJ7zExampleAddress")]
     [InlineData("d=1;foo=bar;DoGe=DJ7zExampleAddress", "DJ7zExampleAddress")]

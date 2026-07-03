@@ -67,6 +67,14 @@ public class Share
     public string SessionId { get; set; }
 
     /// <summary>
+    /// Persist this message as a block candidate without inserting it into the shares table.
+    /// Used for accepted auxiliary blocks that did not originate from a standalone Stratum share
+    /// on the auxiliary pool.
+    /// </summary>
+    [ProtoMember(20)]
+    public bool BlockOnly { get; set; }
+
+    /// <summary>
     /// Block this share refers to
     /// </summary>
     [ProtoMember(9)]
