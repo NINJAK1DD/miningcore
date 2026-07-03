@@ -18,6 +18,7 @@ public class MergedMiningShareResult
     public string ParentBlockHex { get; init; }
     public string AuxPowHex { get; init; }
     public AuxBlockTemplate AuxiliaryBlockTemplate { get; init; }
+    public double AuxiliaryDifficulty { get; init; }
 }
 
 public class MergedMiningBitcoinJob : BitcoinJob
@@ -67,11 +68,11 @@ public class MergedMiningBitcoinJob : BitcoinJob
         ArgumentNullException.ThrowIfNull(worker);
 
         if(string.IsNullOrEmpty(extraNonce2))
-            throw new ArgumentException("Missing extranonce2", nameof(extraNonce2));
+            throw new StratumException(StratumError.Other, "missing extranonce2");
         if(string.IsNullOrEmpty(nTime))
-            throw new ArgumentException("Missing ntime", nameof(nTime));
+            throw new StratumException(StratumError.Other, "missing ntime");
         if(string.IsNullOrEmpty(nonce))
-            throw new ArgumentException("Missing nonce", nameof(nonce));
+            throw new StratumException(StratumError.Other, "missing nonce");
 
         var context = worker.ContextAs<MergedMiningBitcoinWorkerContext>();
 
@@ -157,7 +158,7 @@ public class MergedMiningBitcoinJob : BitcoinJob
         }
 
         var auxPowHex = isAuxiliaryBlockCandidate
-            ? AuxPowBuilder.BuildAuxPow(coinbase, mt.Steps, headerBytes).ToHexString()
+            ? AuxPowBuilder.BuildAuxPow(coinbase, mt.Steps.ToArray(), headerBytes).ToHexString()
             : null;
 
         return new MergedMiningShareResult
@@ -166,6 +167,7 @@ public class MergedMiningBitcoinJob : BitcoinJob
             ParentBlockHex = parentBlockHex,
             AuxPowHex = auxPowHex,
             AuxiliaryBlockTemplate = AuxiliaryBlockTemplate,
+            AuxiliaryDifficulty = AuxiliaryDifficulty,
         };
     }
 }
