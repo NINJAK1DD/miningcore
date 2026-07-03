@@ -4,5 +4,6 @@
   </PropertyGroup>
   <ItemGroup Condition="'$(MSBuildProjectName)' == 'Miningcore'">
     <Compile Remove="$(MSBuildProjectDirectory)/Blockchain/Bitcoin/MergedMining/MergedMiningManagerUpdateDiagnostic.cs" />
+    <Compile Remove="$(MSBuildProjectDirectory)/Blockchain/Bitcoin/MergedMining/MergedMiningManagerNewnessDiagnostic.cs" />
   </ItemGroup>
 </Project>
