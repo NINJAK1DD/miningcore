@@ -1,0 +1,258 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Common;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using AutoMapper;
+using Miningcore.Persistence.Model;
+using Miningcore.Persistence.Postgres.Repositories;
+using Xunit;
+
+namespace Miningcore.Tests.Persistence.Postgres;
+
+public class BlockRepositoryTests
+{
+    [Fact]
+    public async Task UpdateBlockAsync_PersistsTransactionConfirmationData()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection();
+        var block = new Block
+        {
+            Id = 42,
+            PoolId = "doge-test",
+            BlockHeight = 100,
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "resolved-coinbase-txid",
+        };
+
+        await repository.UpdateBlockAsync(connection, null, block);
+
+        Assert.Contains("transactionconfirmationdata = @transactionconfirmationdata",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(block.TransactionConfirmationData,
+            connection.Parameters["transactionconfirmationdata"]);
+    }
+
+    private sealed class RecordingDbConnection : DbConnection
+    {
+        public string CommandText { get; private set; }
+        public IReadOnlyDictionary<string, object> Parameters { get; private set; }
+
+        public override string ConnectionString { get; set; }
+        public override string Database => "test";
+        public override string DataSource => "test";
+        public override string ServerVersion => "1";
+        public override ConnectionState State => ConnectionState.Open;
+
+        public override void ChangeDatabase(string databaseName)
+        {
+        }
+
+        public override void Close()
+        {
+        }
+
+        public override void Open()
+        {
+        }
+
+        protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
+        {
+            throw new NotSupportedException();
+        }
+
+        protected override DbCommand CreateDbCommand()
+        {
+            return new RecordingDbCommand(this);
+        }
+
+        public void Record(RecordingDbCommand command)
+        {
+            CommandText = command.CommandText;
+            Parameters = command.ParametersList
+                .Cast<DbParameter>()
+                .ToDictionary(x => x.ParameterName.TrimStart('@'), x => x.Value,
+                    StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private sealed class RecordingDbCommand : DbCommand
+    {
+        private readonly RecordingDbConnection connection;
+        private readonly RecordingParameterCollection parameters = new();
+
+        public RecordingDbCommand(RecordingDbConnection connection)
+        {
+            this.connection = connection;
+        }
+
+        public RecordingParameterCollection ParametersList => parameters;
+
+        public override string CommandText { get; set; }
+        public override int CommandTimeout { get; set; }
+        public override CommandType CommandType { get; set; }
+        public override bool DesignTimeVisible { get; set; }
+        public override UpdateRowSource UpdatedRowSource { get; set; }
+        protected override DbConnection DbConnection { get => connection; set { } }
+        protected override DbParameterCollection DbParameterCollection => parameters;
+        protected override DbTransaction DbTransaction { get; set; }
+
+        public override void Cancel()
+        {
+        }
+
+        public override int ExecuteNonQuery()
+        {
+            connection.Record(this);
+            return 1;
+        }
+
+        public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(ExecuteNonQuery());
+        }
+
+        public override object ExecuteScalar()
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Prepare()
+        {
+        }
+
+        protected override DbParameter CreateDbParameter()
+        {
+            return new RecordingDbParameter();
+        }
+
+        protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class RecordingDbParameter : DbParameter
+    {
+        public override DbType DbType { get; set; }
+        public override ParameterDirection Direction { get; set; }
+        public override bool IsNullable { get; set; }
+        public override string ParameterName { get; set; }
+        public override int Size { get; set; }
+        public override string SourceColumn { get; set; }
+        public override bool SourceColumnNullMapping { get; set; }
+        public override object Value { get; set; }
+
+        public override void ResetDbType()
+        {
+        }
+    }
+
+    private sealed class RecordingParameterCollection : DbParameterCollection
+    {
+        private readonly List<DbParameter> parameters = new();
+
+        public override int Count => parameters.Count;
+        public override object SyncRoot => ((ICollection) parameters).SyncRoot;
+
+        public override int Add(object value)
+        {
+            parameters.Add((DbParameter) value);
+            return parameters.Count - 1;
+        }
+
+        public override void AddRange(Array values)
+        {
+            foreach(var value in values)
+                Add(value);
+        }
+
+        public override void Clear()
+        {
+            parameters.Clear();
+        }
+
+        public override bool Contains(object value)
+        {
+            return parameters.Contains((DbParameter) value);
+        }
+
+        public override bool Contains(string value)
+        {
+            return IndexOf(value) >= 0;
+        }
+
+        public override void CopyTo(Array array, int index)
+        {
+            ((ICollection) parameters).CopyTo(array, index);
+        }
+
+        public override IEnumerator GetEnumerator()
+        {
+            return parameters.GetEnumerator();
+        }
+
+        public override int IndexOf(object value)
+        {
+            return parameters.IndexOf((DbParameter) value);
+        }
+
+        public override int IndexOf(string parameterName)
+        {
+            return parameters.FindIndex(x => string.Equals(x.ParameterName, parameterName,
+                StringComparison.OrdinalIgnoreCase));
+        }
+
+        public override void Insert(int index, object value)
+        {
+            parameters.Insert(index, (DbParameter) value);
+        }
+
+        public override void Remove(object value)
+        {
+            parameters.Remove((DbParameter) value);
+        }
+
+        public override void RemoveAt(int index)
+        {
+            parameters.RemoveAt(index);
+        }
+
+        public override void RemoveAt(string parameterName)
+        {
+            var index = IndexOf(parameterName);
+            if(index >= 0)
+                RemoveAt(index);
+        }
+
+        protected override DbParameter GetParameter(int index)
+        {
+            return parameters[index];
+        }
+
+        protected override DbParameter GetParameter(string parameterName)
+        {
+            return parameters[IndexOf(parameterName)];
+        }
+
+        protected override void SetParameter(int index, DbParameter value)
+        {
+            parameters[index] = value;
+        }
+
+        protected override void SetParameter(string parameterName, DbParameter value)
+        {
+            var index = IndexOf(parameterName);
+            if(index >= 0)
+                parameters[index] = value;
+            else
+                parameters.Add(value);
+        }
+    }
+}

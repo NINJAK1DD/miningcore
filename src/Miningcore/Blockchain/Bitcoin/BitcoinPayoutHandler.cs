@@ -113,8 +113,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     block.TransactionConfirmationData, out var blockHash))
                     continue;
 
-                var response = await rpcClient.ExecuteAsync<DaemonBlock>(logger,
-                    BitcoinCommands.GetBlock, ct, new object[] { blockHash });
+                var response = await GetBlockAsync(blockHash, ct);
                 var coinbaseTransaction = response.Error == null
                     ? response.Response?.Transactions?.FirstOrDefault()
                     : null;
@@ -128,23 +127,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 block.TransactionConfirmationData = coinbaseTransaction;
                 resolvedAuxiliaryBlocks.Add(block);
+                result.Add(block);
                 logger.Info(() => $"[{LogCategory}] Reconciled accepted auxiliary block {block.BlockHeight} [{blockHash}] to coinbase transaction {coinbaseTransaction}");
             }
 
             var classifiablePage = page
-                .Where(block => !AuxPowBlockConfirmation.TryGetPendingBlockHash(
-                    block.TransactionConfirmationData, out _))
+                .Where(block => !resolvedAuxiliaryBlocks.Contains(block) &&
+                    !AuxPowBlockConfirmation.TryGetPendingBlockHash(
+                        block.TransactionConfirmationData, out _))
                 .ToArray();
 
             if(classifiablePage.Length == 0)
                 continue;
 
             // build command batch (block.TransactionConfirmationData is the hash of the blocks coinbase transaction)
-            var batch = classifiablePage.Select(block => new RpcRequest(BitcoinCommands.GetTransaction,
-                new[] { block.TransactionConfirmationData })).ToArray();
-
-            // execute batch
-            var results = await rpcClient.ExecuteBatchAsync(logger, ct, batch);
+            var results = await GetTransactionsAsync(classifiablePage, ct);
 
             for(var j = 0; j < results.Length; j++)
             {
@@ -157,7 +154,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 if(cmdResult.Error != null)
                 {
                     // Code -5 interpreted as "orphaned"
-                    if(cmdResult.Error.Code == -5 && !resolvedAuxiliaryBlocks.Contains(block))
+                    if(cmdResult.Error.Code == -5)
                     {
                         block.Status = BlockStatus.Orphaned;
                         block.Reward = 0;
@@ -169,12 +166,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     }
 
                     else
-                    {
-                        // Keep transient errors pending. Adding a newly reconciled block to the
-                        // result also persists its resolved coinbase txid for the next cycle.
-                        result.Add(block);
                         logger.Warn(() => $"[{LogCategory}] Daemon reports error '{cmdResult.Error.Message}' (Code {cmdResult.Error.Code}) for transaction {block.TransactionConfirmationData}");
-                    }
                 }
 
                 // missing transaction details are interpreted as "orphaned"
@@ -229,6 +221,22 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
 
         return result.ToArray();
+    }
+
+    protected virtual Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
+        CancellationToken ct)
+    {
+        return rpcClient.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock, ct,
+            new object[] { blockHash });
+    }
+
+    protected virtual Task<RpcResponse<JToken>[]> GetTransactionsAsync(Block[] blocks,
+        CancellationToken ct)
+    {
+        var batch = blocks.Select(block => new RpcRequest(BitcoinCommands.GetTransaction,
+            new[] { block.TransactionConfirmationData })).ToArray();
+
+        return rpcClient.ExecuteBatchAsync(logger, ct, batch);
     }
 
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)

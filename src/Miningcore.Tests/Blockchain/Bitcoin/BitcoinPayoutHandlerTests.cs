@@ -1,0 +1,213 @@
+using System;
+using System.Data;
+using System.Threading;
+using System.Threading.Tasks;
+using Autofac;
+using AutoMapper;
+using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
+using Miningcore.Configuration;
+using Miningcore.JsonRpc;
+using Miningcore.Messaging;
+using Miningcore.Mining;
+using Miningcore.Payments.PaymentSchemes;
+using Miningcore.Persistence;
+using Miningcore.Persistence.Model;
+using Miningcore.Persistence.Repositories;
+using Miningcore.Rpc;
+using Miningcore.Time;
+using Newtonsoft.Json.Linq;
+using NSubstitute;
+using Xunit;
+using DaemonBlock = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
+using PersistedBlock = Miningcore.Persistence.Model.Block;
+
+namespace Miningcore.Tests.Blockchain.Bitcoin;
+
+public class BitcoinPayoutHandlerTests : TestBase
+{
+    [Fact]
+    public async Task Reconciliation_UnavailableBlock_RemainsPendingWithMarker()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block"));
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-5, "Block not available", null));
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Empty(result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("auxpow-block:doge-block", block.TransactionConfirmationData);
+        Assert.Equal(1, fixture.Handler.BlockCalls);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ResolvedBlock_IsPersistedPendingBeforeTransactionClassification()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block"));
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Transactions = new[] { "coinbase-txid" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Classification_SubsequentImmatureResponse_UpdatesRewardAndProgress()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        fixture.Handler.TransactionResponse = SuccessTransaction("immature", 50m, 10);
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(50m, block.Reward);
+        Assert.InRange(block.ConfirmationProgress, double.Epsilon, 0.999999d);
+    }
+
+    [Fact]
+    public async Task Classification_SubsequentGenerateResponse_ConfirmsAndCreditsSoloMiner()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        fixture.Handler.TransactionResponse = SuccessTransaction("generate", 75m, 1000);
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        var confirmed = Assert.Single(result);
+        Assert.Equal(BlockStatus.Confirmed, confirmed.Status);
+        Assert.Equal(1, confirmed.ConfirmationProgress);
+        Assert.Equal(75m, confirmed.Reward);
+
+        var scheme = new SOLOPaymentScheme(fixture.ShareRepository, fixture.BalanceRepository);
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        await scheme.UpdateBalancesAsync(connection, transaction, fixture.Pool,
+            fixture.Handler, confirmed, confirmed.Reward, CancellationToken.None);
+
+        await fixture.BalanceRepository.Received(1).AddAmountAsync(connection, transaction,
+            fixture.Config.Id, confirmed.Miner, confirmed.Reward,
+            $"Reward for block {confirmed.BlockHeight}");
+    }
+
+    [Fact]
+    public async Task Classification_OrdinaryBlockWithMissingTransaction_IsOrphaned()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("ordinary-coinbase-txid");
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null, new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
+    }
+
+    private async Task<HandlerFixture> CreateFixtureAsync()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var mapper = container.Resolve<IMapper>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var balanceRepository = Substitute.For<IBalanceRepository>();
+        var paymentRepository = Substitute.For<IPaymentRepository>();
+        var clock = Substitute.For<IMasterClock>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = new TestBitcoinPayoutHandler(container, connectionFactory, mapper,
+            shareRepository, blockRepository, balanceRepository, paymentRepository, clock, messageBus);
+        var config = new PoolConfig
+        {
+            Id = "doge-test",
+            Template = ModuleInitializer.CoinTemplates["dogecoin"],
+            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 22555 } },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+            RewardRecipients = Array.Empty<RewardRecipient>(),
+        };
+        await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
+
+        var pool = Substitute.For<IMiningPool>();
+        pool.Config.Returns(config);
+
+        return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository);
+    }
+
+    private static PersistedBlock PendingBlock(string confirmationData)
+    {
+        return new PersistedBlock
+        {
+            Id = 1,
+            PoolId = "doge-test",
+            BlockHeight = 100,
+            Miner = "DTestMiner",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = confirmationData,
+        };
+    }
+
+    private static RpcResponse<JToken>[] SuccessTransaction(string category, decimal amount,
+        int confirmations)
+    {
+        return new[]
+        {
+            new RpcResponse<JToken>(JToken.FromObject(new Transaction
+            {
+                Amount = amount,
+                Confirmations = confirmations,
+                Details = new[] { new TransactionDetails { Category = category } },
+            })),
+        };
+    }
+
+    private sealed record HandlerFixture(TestBitcoinPayoutHandler Handler, IMiningPool Pool,
+        PoolConfig Config, IShareRepository ShareRepository, IBalanceRepository BalanceRepository);
+
+    private sealed class TestBitcoinPayoutHandler : BitcoinPayoutHandler
+    {
+        public TestBitcoinPayoutHandler(IComponentContext ctx, IConnectionFactory cf, IMapper mapper,
+            IShareRepository shareRepo, IBlockRepository blockRepo, IBalanceRepository balanceRepo,
+            IPaymentRepository paymentRepo, IMasterClock clock, IMessageBus messageBus) :
+            base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
+        {
+        }
+
+        public RpcResponse<DaemonBlock> BlockResponse { get; set; }
+        public RpcResponse<JToken>[] TransactionResponse { get; set; }
+        public int BlockCalls { get; private set; }
+        public int TransactionCalls { get; private set; }
+
+        protected override Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
+            CancellationToken ct)
+        {
+            BlockCalls++;
+            return Task.FromResult(BlockResponse);
+        }
+
+        protected override Task<RpcResponse<JToken>[]> GetTransactionsAsync(PersistedBlock[] blocks,
+            CancellationToken ct)
+        {
+            TransactionCalls++;
+            return Task.FromResult(TransactionResponse);
+        }
+    }
+}

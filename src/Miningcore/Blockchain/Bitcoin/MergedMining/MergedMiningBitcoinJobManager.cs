@@ -334,35 +334,42 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(!string.IsNullOrEmpty(result.AuxPowHex))
             auxiliarySubmission = SubmitAuxiliaryBlockAsync(worker, context, result, ct);
 
-        var submissionTasks = new Task[] { parentSubmission, auxiliarySubmission }
+        var pendingSubmissions = new List<Task>(new Task[] { parentSubmission, auxiliarySubmission }
             .Where(x => x != null)
-            .ToArray();
+            .ToArray());
 
-        if(submissionTasks.Length > 0)
-            await Task.WhenAll(submissionTasks);
+        var blockFoundSignaled = false;
 
-        var blockFound = false;
-
-        if(parentSubmission != null)
+        while(pendingSubmissions.Count > 0)
         {
-            var acceptResponse = await parentSubmission;
-            share.IsBlockCandidate = acceptResponse.Accepted;
+            var completed = await Task.WhenAny(pendingSubmissions);
+            pendingSubmissions.Remove(completed);
 
-            if(share.IsBlockCandidate)
+            var blockAccepted = false;
+
+            if(ReferenceEquals(completed, parentSubmission))
             {
-                share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
-                blockFound = true;
-                logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                var acceptResponse = await parentSubmission;
+                share.IsBlockCandidate = acceptResponse.Accepted;
+                blockAccepted = acceptResponse.Accepted;
+
+                if(share.IsBlockCandidate)
+                {
+                    share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
+                    logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                }
+                else
+                    share.TransactionConfirmationData = null;
             }
-            else
-                share.TransactionConfirmationData = null;
+            else if(ReferenceEquals(completed, auxiliarySubmission))
+                blockAccepted = await auxiliarySubmission;
+
+            if(blockAccepted && !blockFoundSignaled)
+            {
+                OnBlockFound();
+                blockFoundSignaled = true;
+            }
         }
-
-        if(auxiliarySubmission != null && await auxiliarySubmission)
-            blockFound = true;
-
-        if(blockFound)
-            OnBlockFound();
 
         return share;
     }
