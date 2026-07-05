@@ -20,7 +20,7 @@ Connect miners only to the Litecoin Stratum endpoint.
 
 The Dogecoin daemon mines rewards to the configured Dogecoin pool wallet. Miningcore records the password-supplied Dogecoin address as the SOLO beneficiary and pays it through the existing Dogecoin payout processor after maturity.
 
-A new parent job is generated when either chain changes. Each submitted Scrypt proof is checked against both targets. Litecoin and Dogecoin block submissions are independent. Accepted Dogecoin blocks are sent through the share message pipeline as block-only candidates under the Dogecoin pool id. They create a Dogecoin block record without inserting a synthetic Dogecoin share row.
+A new parent job is generated when either chain changes. Each submitted Scrypt proof is checked against both targets. Litecoin and Dogecoin block submissions are independent. Accepted Dogecoin blocks are immediately sent through the share message pipeline as block-only candidates under the Dogecoin pool id. They create a Dogecoin block record without inserting a synthetic Dogecoin share row. If the coinbase transaction is not yet available, the block stores a reconciliation marker; the normal Dogecoin payout classifier retries `getblock` on every processing cycle and replaces that marker with the coinbase transaction ID before monitoring maturity.
 
 When `requireAuxAddress` is true, authorisation fails if the address is missing or rejected by Dogecoin's `validateaddress` RPC. The Dogecoin pool must remain enabled so its normal classifier, maturity checks and payout processor can handle auxiliary blocks.
 
@@ -35,6 +35,9 @@ Before enabling mainnet traffic, run a daemon-backed regtest with real `litecoin
 1. Create and fund/mature regtest wallets on both nodes, then configure distinct enabled LTC and DOGE SOLO pools.
 2. Connect a Scrypt miner only to the LTC Stratum port using `d=<difficulty>;doge=<address>`.
 3. Advance only the Dogecoin tip and confirm Miningcore broadcasts a fresh combined job without waiting for the Litecoin tip to change.
-4. Submit an auxiliary solution and confirm `submitauxblock` accepts it, one pending DOGE block row is created, and no synthetic DOGE row is added to `shares`.
-5. Mature the DOGE coinbase and confirm the normal DOGE classifier credits and pays the password-supplied beneficiary.
-6. Repeat with a parent-chain solution and with a solution meeting both targets to confirm LTC and DOGE submissions remain independent.
+4. Submit an auxiliary-only solution and confirm `submitauxblock` accepts it, one pending DOGE block row is created, and no synthetic DOGE row is added to `shares`.
+5. Interrupt or restart Dogecoin RPC immediately after acceptance. Confirm the block row survives with a reconciliation marker and later resolves to its coinbase transaction ID.
+6. Mature the DOGE coinbase and confirm the normal DOGE classifier credits and pays the password-supplied beneficiary.
+7. Repeat with a parent-only solution and with a solution meeting both targets to confirm LTC and DOGE submissions run independently.
+8. Trigger a same-height Dogecoin template refresh and confirm a clean Stratum job is broadcast without a false chain-height notification.
+9. Repeat with Litecoin MWEB enabled and a normal transaction-bearing parent template.

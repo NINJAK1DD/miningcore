@@ -1,11 +1,9 @@
-using System.Reactive;
 using Autofac;
 using AutoMapper;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
-using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Nicehash;
@@ -48,18 +46,19 @@ public class MergedMiningBitcoinPool : BitcoinPool
         return new MergedMiningBitcoinWorkerContext();
     }
 
-    protected override async Task OnAuthorizeAsync(StratumConnection connection,
-        Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
+    protected override async Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
+        string minerName, string password, CancellationToken ct)
     {
         if(!MergedMiningEnabled)
-        {
-            await base.OnAuthorizeAsync(connection, tsRequest, ct);
-            return;
-        }
+            return await base.ValidateWorkerAsync(context, minerName, password, ct);
 
-        var request = tsRequest.Value;
-        var requestParams = request.ParamsAs<string[]>();
-        var password = requestParams?.Length > 1 ? requestParams[1] : null;
+        if(manager is not MergedMiningBitcoinJobManager mergedManager)
+            throw new InvalidOperationException("Merged-mining job manager is not configured");
+
+        // Reject an invalid parent payout address before making an auxiliary RPC call.
+        if(!await mergedManager.ValidateAddressAsync(minerName, ct))
+            return false;
+
         var auxiliaryAddress = MergedMiningPasswordParser.GetValue(password,
             mergedMiningConfig.AddressParameter);
 
@@ -69,17 +68,15 @@ public class MergedMiningBitcoinPool : BitcoinPool
 
         if(!string.IsNullOrWhiteSpace(auxiliaryAddress))
         {
-            if(manager is not MergedMiningBitcoinJobManager mergedManager)
-                throw new InvalidOperationException("Merged-mining job manager is not configured");
-
             if(!await mergedManager.ValidateAuxiliaryAddressAsync(auxiliaryAddress, ct))
                 throw new StratumException(StratumError.UnauthorizedWorker,
                     "invalid auxiliary payout address");
         }
 
-        var context = connection.ContextAs<MergedMiningBitcoinWorkerContext>();
-        context.AuxiliaryMiner = auxiliaryAddress;
+        if(context is not MergedMiningBitcoinWorkerContext mergedContext)
+            throw new InvalidOperationException("Merged-mining worker context is not configured");
 
-        await base.OnAuthorizeAsync(connection, tsRequest, ct);
+        mergedContext.AuxiliaryMiner = auxiliaryAddress;
+        return true;
     }
 }

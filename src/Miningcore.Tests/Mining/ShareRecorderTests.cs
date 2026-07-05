@@ -91,6 +91,7 @@ public class ShareRecorderTests
             BlockHash = "doge-block-hash",
             IsBlockCandidate = true,
             BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
         };
 
         await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
@@ -101,7 +102,8 @@ public class ShareRecorderTests
         await blockRepository.Received(1).InsertAsync(connection, transaction,
             Arg.Is<Block>(x => x.PoolId == candidate.PoolId &&
                 x.BlockHeight == (ulong) candidate.BlockHeight &&
-                x.Hash == candidate.BlockHash));
+                x.Hash == candidate.BlockHash &&
+                x.TransactionConfirmationData == candidate.TransactionConfirmationData));
         transaction.Received(1).Commit();
     }
 }

@@ -7,15 +7,20 @@ using Miningcore.Contracts;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
-using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using DaemonBlock = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
 
 namespace Miningcore.Blockchain.Bitcoin.MergedMining;
+
+internal enum AuxiliaryTemplateChange
+{
+    None,
+    Template,
+    ChainTip,
+}
 
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
 {
@@ -141,6 +146,22 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             new[] { auxiliaryPoolConfig.Address });
     }
 
+    internal static AuxiliaryTemplateChange ClassifyAuxiliaryTemplateChange(
+        AuxBlockTemplate previous, AuxBlockTemplate current)
+    {
+        if(current == null)
+            return AuxiliaryTemplateChange.None;
+
+        if(previous == null || previous.Height != current.Height ||
+            !string.Equals(previous.PreviousBlockhash, current.PreviousBlockhash,
+                StringComparison.OrdinalIgnoreCase))
+            return AuxiliaryTemplateChange.ChainTip;
+
+        return !string.Equals(previous.Hash, current.Hash, StringComparison.OrdinalIgnoreCase)
+            ? AuxiliaryTemplateChange.Template
+            : AuxiliaryTemplateChange.None;
+    }
+
     protected override async Task<(bool IsNew, bool Force)> UpdateJob(CancellationToken ct,
         bool forceUpdate, string via = null, string json = null)
     {
@@ -180,14 +201,14 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 previousJob.BlockTemplate?.PreviousBlockhash != blockTemplate.PreviousBlockhash ||
                 blockTemplate.Height > previousHeight;
 
-            var auxiliaryIsNew = previousJob == null ||
-                !string.Equals(previousJob.AuxiliaryBlockTemplate?.Hash, auxiliaryTemplate.Hash,
-                    StringComparison.OrdinalIgnoreCase);
+            var auxiliaryChange = ClassifyAuxiliaryTemplateChange(
+                previousJob?.AuxiliaryBlockTemplate, auxiliaryTemplate);
+            var auxiliaryIsNew = auxiliaryChange != AuxiliaryTemplateChange.None;
 
             if(parentIsNew)
                 messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
 
-            if(auxiliaryIsNew)
+            if(auxiliaryChange == AuxiliaryTemplateChange.ChainTip)
                 messageBus.NotifyChainHeight(auxiliaryPoolConfig.Id, auxiliaryTemplate.Height,
                     auxiliaryPoolConfig.Template);
 
@@ -211,9 +232,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     BlockchainStats.NextNetworkTarget = blockTemplate.Target;
                     BlockchainStats.NextNetworkBits = blockTemplate.Bits;
                 }
-                else if(auxiliaryIsNew)
+                else if(auxiliaryChange == AuxiliaryTemplateChange.ChainTip)
                 {
                     logger.Info(() => $"Detected new auxiliary block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
+                }
+                else if(auxiliaryChange == AuxiliaryTemplateChange.Template)
+                {
+                    logger.Debug(() => $"Detected auxiliary template update {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
                 }
                 else
                 {
@@ -297,35 +322,58 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         share.Source = clusterConfig.ClusterName;
         share.Created = clock.Now;
 
+        Task<SubmitResult> parentSubmission = null;
+        Task<bool> auxiliarySubmission = null;
+
         if(share.IsBlockCandidate)
         {
             logger.Info(() => $"Submitting parent block {share.BlockHeight} [{share.BlockHash}]");
-            var acceptResponse = await SubmitBlockAsync(share, result.ParentBlockHex, ct);
+            parentSubmission = SubmitBlockAsync(share, result.ParentBlockHex, ct);
+        }
+
+        if(!string.IsNullOrEmpty(result.AuxPowHex))
+            auxiliarySubmission = SubmitAuxiliaryBlockAsync(worker, context, result, ct);
+
+        var submissionTasks = new Task[] { parentSubmission, auxiliarySubmission }
+            .Where(x => x != null)
+            .ToArray();
+
+        if(submissionTasks.Length > 0)
+            await Task.WhenAll(submissionTasks);
+
+        var blockFound = false;
+
+        if(parentSubmission != null)
+        {
+            var acceptResponse = await parentSubmission;
             share.IsBlockCandidate = acceptResponse.Accepted;
 
             if(share.IsBlockCandidate)
             {
                 share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
-                OnBlockFound();
+                blockFound = true;
                 logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
             }
             else
                 share.TransactionConfirmationData = null;
         }
 
-        if(!string.IsNullOrEmpty(result.AuxPowHex))
-            await SubmitAuxiliaryBlockAsync(worker, context, result, ct);
+        if(auxiliarySubmission != null && await auxiliarySubmission)
+            blockFound = true;
+
+        if(blockFound)
+            OnBlockFound();
 
         return share;
     }
 
-    private async Task SubmitAuxiliaryBlockAsync(StratumConnection worker,
+    private async Task<bool> SubmitAuxiliaryBlockAsync(StratumConnection worker,
         MergedMiningBitcoinWorkerContext context, MergedMiningShareResult result, CancellationToken ct)
     {
         if(string.IsNullOrWhiteSpace(context.AuxiliaryMiner))
         {
             logger.Warn(() => $"Skipping auxiliary block {result.AuxiliaryBlockTemplate.Height}: worker supplied no auxiliary address");
-            return;
+            return false;
         }
 
         var template = result.AuxiliaryBlockTemplate;
@@ -342,18 +390,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         {
             var error = submitResponse.Error?.Message ?? submitResponse.Response?.ToString() ?? "rejected";
             logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] was not accepted: {error}");
-            return;
-        }
-
-        OnBlockFound();
-
-        var coinbaseTransaction = await GetAuxiliaryCoinbaseTransactionAsync(template.Hash, ct);
-        if(string.IsNullOrEmpty(coinbaseTransaction))
-        {
-            var message = $"Auxiliary daemon accepted block {template.Height} [{template.Hash}], but its coinbase transaction could not be retrieved";
-            logger.Error(() => message);
-            messageBus.SendMessage(new AdminNotification("Auxiliary block accounting failed", message));
-            return;
+            return false;
         }
 
         var auxiliaryShare = new Share
@@ -372,33 +409,15 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             BlockHash = template.Hash,
             IsBlockCandidate = true,
             BlockOnly = true,
-            TransactionConfirmationData = coinbaseTransaction,
+            // submitauxblock only confirms acceptance. Persist the accepted block immediately;
+            // the payout handler resolves this marker to the coinbase txid via getblock.
+            TransactionConfirmationData = AuxPowBlockConfirmation.CreatePending(template.Hash),
             SessionId = context.SessionId,
             Created = clock.Now,
         };
 
         messageBus.SendMessage(auxiliaryShare);
-        logger.Info(() => $"Auxiliary daemon accepted block {template.Height} [{template.Hash}] submitted by {context.AuxiliaryMiner}");
-    }
-
-    private async Task<string> GetAuxiliaryCoinbaseTransactionAsync(string blockHash, CancellationToken ct)
-    {
-        for(var attempt = 1; attempt <= 8; attempt++)
-        {
-            var response = await auxiliaryRpc.ExecuteAsync<DaemonBlock>(logger,
-                BitcoinCommands.GetBlock, ct, new object[] { blockHash });
-
-            var coinbase = response.Error == null
-                ? response.Response?.Transactions?.FirstOrDefault()
-                : null;
-
-            if(!string.IsNullOrEmpty(coinbase))
-                return coinbase;
-
-            if(attempt < 8)
-                await Task.Delay(TimeSpan.FromMilliseconds(attempt * 100), ct);
-        }
-
-        return null;
+        logger.Info(() => $"Auxiliary daemon accepted block {template.Height} [{template.Hash}] submitted by {context.AuxiliaryMiner}; coinbase reconciliation queued");
+        return true;
     }
 }

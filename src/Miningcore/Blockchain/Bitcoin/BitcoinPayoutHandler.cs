@@ -2,6 +2,7 @@ using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
@@ -16,6 +17,7 @@ using Miningcore.Util;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Block = Miningcore.Persistence.Model.Block;
+using DaemonBlock = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
 using Contract = Miningcore.Contracts.Contract;
 using static Miningcore.Util.ActionUtils;
 
@@ -103,8 +105,42 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Take(pageSize)
                 .ToArray();
 
+            var resolvedAuxiliaryBlocks = new HashSet<Block>();
+
+            foreach(var block in page)
+            {
+                if(!AuxPowBlockConfirmation.TryGetPendingBlockHash(
+                    block.TransactionConfirmationData, out var blockHash))
+                    continue;
+
+                var response = await rpcClient.ExecuteAsync<DaemonBlock>(logger,
+                    BitcoinCommands.GetBlock, ct, new object[] { blockHash });
+                var coinbaseTransaction = response.Error == null
+                    ? response.Response?.Transactions?.FirstOrDefault()
+                    : null;
+
+                if(string.IsNullOrEmpty(coinbaseTransaction))
+                {
+                    var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
+                    logger.Warn(() => $"[{LogCategory}] Unable to reconcile accepted auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
+                    continue;
+                }
+
+                block.TransactionConfirmationData = coinbaseTransaction;
+                resolvedAuxiliaryBlocks.Add(block);
+                logger.Info(() => $"[{LogCategory}] Reconciled accepted auxiliary block {block.BlockHeight} [{blockHash}] to coinbase transaction {coinbaseTransaction}");
+            }
+
+            var classifiablePage = page
+                .Where(block => !AuxPowBlockConfirmation.TryGetPendingBlockHash(
+                    block.TransactionConfirmationData, out _))
+                .ToArray();
+
+            if(classifiablePage.Length == 0)
+                continue;
+
             // build command batch (block.TransactionConfirmationData is the hash of the blocks coinbase transaction)
-            var batch = page.Select(block => new RpcRequest(BitcoinCommands.GetTransaction,
+            var batch = classifiablePage.Select(block => new RpcRequest(BitcoinCommands.GetTransaction,
                 new[] { block.TransactionConfirmationData })).ToArray();
 
             // execute batch
@@ -115,13 +151,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 var cmdResult = results[j];
 
                 var transactionInfo = cmdResult.Response?.ToObject<Transaction>();
-                var block = page[j];
+                var block = classifiablePage[j];
 
                 // check error
                 if(cmdResult.Error != null)
                 {
                     // Code -5 interpreted as "orphaned"
-                    if(cmdResult.Error.Code == -5)
+                    if(cmdResult.Error.Code == -5 && !resolvedAuxiliaryBlocks.Contains(block))
                     {
                         block.Status = BlockStatus.Orphaned;
                         block.Reward = 0;
@@ -133,7 +169,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     }
 
                     else
-                        logger.Warn(() => $"[{LogCategory}] Daemon reports error '{cmdResult.Error.Message}' (Code {cmdResult.Error.Code}) for transaction {page[j].TransactionConfirmationData}");
+                    {
+                        // Keep transient errors pending. Adding a newly reconciled block to the
+                        // result also persists its resolved coinbase txid for the next cycle.
+                        result.Add(block);
+                        logger.Warn(() => $"[{LogCategory}] Daemon reports error '{cmdResult.Error.Message}' (Code {cmdResult.Error.Code}) for transaction {block.TransactionConfirmationData}");
+                    }
                 }
 
                 // missing transaction details are interpreted as "orphaned"

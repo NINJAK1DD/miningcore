@@ -118,7 +118,7 @@ public class BitcoinPool : PoolBase
         var workerName = split?.Skip(1).FirstOrDefault()?.Trim() ?? string.Empty;
 
         // assumes that minerName is an address
-        context.IsAuthorized = await manager.ValidateAddressAsync(minerName, ct);
+        context.IsAuthorized = await ValidateWorkerAsync(context, minerName, password, ct);
         context.Miner = minerName;
         context.Worker = workerName;
 
@@ -179,6 +179,12 @@ public class BitcoinPool : PoolBase
                 Disconnect(connection);
             }
         }
+    }
+
+    protected virtual Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
+        string minerName, string password, CancellationToken ct)
+    {
+        return manager.ValidateAddressAsync(minerName, ct);
     }
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
