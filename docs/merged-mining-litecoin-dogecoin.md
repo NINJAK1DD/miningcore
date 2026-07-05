@@ -24,7 +24,9 @@ A new parent job is generated when either chain changes. Each submitted Scrypt p
 
 When `requireAuxAddress` is true, authorisation fails if the address is missing or rejected by Dogecoin's `validateaddress` RPC. The Dogecoin pool must remain enabled so its normal classifier, maturity checks and payout processor can handle auxiliary blocks.
 
-The parent pool polls both templates even when a Bitcoin Template Stream is configured, because parent-chain notifications do not include Dogecoin tip changes. `addressParameter` cannot be `d` or contain `;` or `=`.
+All enabled pool coin templates are assigned before any pool is configured, so the LTC and DOGE entries may appear in either order. `addressParameter` is trimmed, defaults to `doge` when blank, and cannot be `d` or contain `;` or `=`. Definitively invalid DOGE logins use the normal failed-login ban path; a temporary DOGE validation RPC failure returns a server error without banning the miner.
+
+The parent pool polls both templates even when a Bitcoin Template Stream is configured, because parent-chain notifications do not include Dogecoin tip changes. After the initial combined job, a temporary DOGE template outage uses the last valid auxiliary template so fresh LTC jobs continue. Parent and auxiliary block submissions have independent ten-second bounds. If `submitauxblock` has an ambiguous transport result, Miningcore checks `getblock` before deciding that the DOGE block was not accepted.
 
 ## Pre-production validation
 

@@ -12,6 +12,7 @@ using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using DaemonBlock = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
 
 namespace Miningcore.Blockchain.Bitcoin.MergedMining;
 
@@ -20,6 +21,20 @@ internal enum AuxiliaryTemplateChange
     None,
     Template,
     ChainTip,
+}
+
+internal enum AuxiliaryAddressValidation
+{
+    Valid,
+    Invalid,
+    Unavailable,
+}
+
+internal enum AuxiliarySubmissionResult
+{
+    Accepted,
+    Rejected,
+    Ambiguous,
 }
 
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
@@ -32,12 +47,16 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
     private const string CreateAuxBlock = "createauxblock";
     private const string SubmitAuxBlock = "submitauxblock";
+    private static readonly TimeSpan AuxiliaryRpcTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan BlockSubmissionTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan AmbiguousSubmissionLookupTimeout = TimeSpan.FromSeconds(5);
 
     private MergedMiningConfig mergedMiningConfig;
     private PoolConfig auxiliaryPoolConfig;
     private BitcoinTemplate parentCoin;
     private BitcoinTemplate auxiliaryCoin;
     private RpcClient auxiliaryRpc;
+    private bool auxiliaryTemplateDegraded;
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -48,7 +67,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         parentCoin = pc.Template.As<BitcoinTemplate>();
         base.Configure(pc, cc);
 
-        mergedMiningConfig = pc.Extra.SafeExtensionDataAs<MergedMiningPoolConfigExtra>()?.MergedMining;
+        mergedMiningConfig = MergedMiningConfigLoader.GetNormalizedConfig(pc);
         if(!MergedMiningEnabled)
             return;
 
@@ -89,11 +108,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(auxiliaryPoolConfig.Daemons == null || auxiliaryPoolConfig.Daemons.Length == 0)
             throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' requires a daemon endpoint", pc.Id);
-
-        if(string.IsNullOrWhiteSpace(mergedMiningConfig.AddressParameter))
-            mergedMiningConfig.AddressParameter = "doge";
-        else
-            mergedMiningConfig.AddressParameter = mergedMiningConfig.AddressParameter.Trim();
 
         if(!MergedMiningPasswordParser.IsValidAddressParameter(mergedMiningConfig.AddressParameter))
             throw new PoolStartupException(
@@ -140,9 +154,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
-    private Task<RpcResponse<AuxBlockTemplate>> GetAuxBlockTemplateAsync(CancellationToken ct)
+    private async Task<RpcResponse<AuxBlockTemplate>> GetAuxBlockTemplateAsync(CancellationToken ct)
     {
-        return auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger, CreateAuxBlock, ct,
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(AuxiliaryRpcTimeout);
+
+        return await auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger, CreateAuxBlock, cts.Token,
             new[] { auxiliaryPoolConfig.Address });
     }
 
@@ -184,17 +201,38 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 return (false, forceUpdate);
             }
 
+            var previousJob = currentJob as MergedMiningBitcoinJob;
             var auxiliaryResponse = await GetAuxBlockTemplateAsync(ct);
-            if(auxiliaryResponse.Error != null || auxiliaryResponse.Response == null)
+            var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
+                previousJob?.AuxiliaryBlockTemplate, auxiliaryResponse,
+                out var auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
+
+            if(!hasAuxiliaryTemplate)
             {
                 var error = auxiliaryResponse.Error?.Message ?? "empty response";
-                logger.Warn(() => $"Unable to update auxiliary job: {error}");
+                logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
                 return (false, forceUpdate);
             }
 
+            if(usedCachedAuxiliaryTemplate)
+            {
+                var error = auxiliaryResponse.Error?.Message ?? "empty response";
+                if(!auxiliaryTemplateDegraded)
+                    logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
+                else
+                    logger.Debug(() => $"Auxiliary template remains unavailable: {error}");
+
+                auxiliaryTemplateDegraded = true;
+            }
+            else
+            {
+                if(auxiliaryTemplateDegraded)
+                    logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
+
+                auxiliaryTemplateDegraded = false;
+            }
+
             var blockTemplate = parentResponse.Response;
-            var auxiliaryTemplate = auxiliaryResponse.Response;
-            var previousJob = currentJob as MergedMiningBitcoinJob;
             var previousHeight = previousJob?.BlockTemplate?.Height ?? 0;
 
             var parentIsNew = previousJob == null ||
@@ -263,18 +301,49 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         return (false, forceUpdate);
     }
 
-    public async Task<bool> ValidateAuxiliaryAddressAsync(string address, CancellationToken ct)
+    internal static bool TryResolveAuxiliaryTemplate(AuxBlockTemplate previous,
+        RpcResponse<AuxBlockTemplate> response, out AuxBlockTemplate template, out bool usedCached)
+    {
+        if(response?.Error == null && response?.Response != null)
+        {
+            template = response.Response;
+            usedCached = false;
+            return true;
+        }
+
+        template = previous;
+        usedCached = previous != null;
+        return previous != null;
+    }
+
+    internal async Task<AuxiliaryAddressValidation> ValidateAuxiliaryAddressAsync(string address,
+        CancellationToken ct)
     {
         if(!MergedMiningEnabled)
-            return true;
+            return AuxiliaryAddressValidation.Valid;
 
         if(string.IsNullOrWhiteSpace(address))
-            return !mergedMiningConfig.RequireAuxAddress;
+            return mergedMiningConfig.RequireAuxAddress
+                ? AuxiliaryAddressValidation.Invalid
+                : AuxiliaryAddressValidation.Valid;
 
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(AuxiliaryRpcTimeout);
         var result = await auxiliaryRpc.ExecuteAsync<ValidateAddressResponse>(logger,
-            BitcoinCommands.ValidateAddress, ct, new[] { address });
+            BitcoinCommands.ValidateAddress, cts.Token, new[] { address });
 
-        return result.Error == null && result.Response is { IsValid: true };
+        return ClassifyAuxiliaryAddressValidation(result);
+    }
+
+    internal static AuxiliaryAddressValidation ClassifyAuxiliaryAddressValidation(
+        RpcResponse<ValidateAddressResponse> result)
+    {
+        if(result?.Error != null || result?.Response == null)
+            return AuxiliaryAddressValidation.Unavailable;
+
+        return result.Response.IsValid
+            ? AuxiliaryAddressValidation.Valid
+            : AuxiliaryAddressValidation.Invalid;
     }
 
     public override async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission,
@@ -324,15 +393,21 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         Task<SubmitResult> parentSubmission = null;
         Task<bool> auxiliarySubmission = null;
+        using var parentSubmissionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var auxiliarySubmissionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        parentSubmissionCts.CancelAfter(BlockSubmissionTimeout);
+        auxiliarySubmissionCts.CancelAfter(BlockSubmissionTimeout);
 
         if(share.IsBlockCandidate)
         {
             logger.Info(() => $"Submitting parent block {share.BlockHeight} [{share.BlockHash}]");
-            parentSubmission = SubmitBlockAsync(share, result.ParentBlockHex, ct);
+            parentSubmission = SubmitBlockAsync(share, result.ParentBlockHex,
+                parentSubmissionCts.Token);
         }
 
         if(!string.IsNullOrEmpty(result.AuxPowHex))
-            auxiliarySubmission = SubmitAuxiliaryBlockAsync(worker, context, result, ct);
+            auxiliarySubmission = SubmitAuxiliaryBlockAsync(worker, context, result,
+                auxiliarySubmissionCts.Token);
 
         var pendingSubmissions = new List<Task>(new Task[] { parentSubmission, auxiliarySubmission }
             .Where(x => x != null)
@@ -389,9 +464,16 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         var submitResponse = await auxiliaryRpc.ExecuteAsync<JToken>(logger, SubmitAuxBlock, ct,
             new object[] { template.Hash, result.AuxPowHex });
 
-        var accepted = submitResponse.Error == null &&
-            submitResponse.Response?.Type == JTokenType.Boolean &&
-            submitResponse.Response.Value<bool>();
+        var submissionResult = ClassifyAuxiliarySubmissionResponse(submitResponse);
+        var accepted = submissionResult == AuxiliarySubmissionResult.Accepted;
+
+        if(submissionResult == AuxiliarySubmissionResult.Ambiguous)
+        {
+            accepted = await IsAuxiliaryBlockKnownAsync(template.Hash);
+
+            if(accepted)
+                logger.Warn(() => $"Auxiliary submission response was ambiguous, but block {template.Height} [{template.Hash}] is present on the daemon");
+        }
 
         if(!accepted)
         {
@@ -426,5 +508,25 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         messageBus.SendMessage(auxiliaryShare);
         logger.Info(() => $"Auxiliary daemon accepted block {template.Height} [{template.Hash}] submitted by {context.AuxiliaryMiner}; coinbase reconciliation queued");
         return true;
+    }
+
+    internal static AuxiliarySubmissionResult ClassifyAuxiliarySubmissionResponse(
+        RpcResponse<JToken> response)
+    {
+        if(response?.Error != null || response?.Response?.Type != JTokenType.Boolean)
+            return AuxiliarySubmissionResult.Ambiguous;
+
+        return response.Response.Value<bool>()
+            ? AuxiliarySubmissionResult.Accepted
+            : AuxiliarySubmissionResult.Rejected;
+    }
+
+    private async Task<bool> IsAuxiliaryBlockKnownAsync(string blockHash)
+    {
+        using var cts = new CancellationTokenSource(AmbiguousSubmissionLookupTimeout);
+        var response = await auxiliaryRpc.ExecuteAsync<DaemonBlock>(logger,
+            BitcoinCommands.GetBlock, cts.Token, new object[] { blockHash });
+
+        return response.Error == null && response.Response != null;
     }
 }

@@ -375,11 +375,15 @@ public class Program : BackgroundService
         var coinTemplates = LoadCoinTemplates();
         logger.Info($"{coinTemplates.Keys.Count} coins loaded from '{string.Join(", ", clusterConfig.CoinTemplates)}'");
 
-        var tasks = clusterConfig.Pools
+        var enabledPools = clusterConfig.Pools
             .Where(config => config.Enabled)
-            .Select(config => RunPool(config, coinTemplates, ct));
+            .ToArray();
 
-        await Guard(()=> Task.WhenAll(tasks), ex =>
+        await Guard(async () =>
+        {
+            AssignPoolTemplates(enabledPools, coinTemplates);
+            await Task.WhenAll(enabledPools.Select(config => RunPool(config, ct)));
+        }, ex =>
         {
             switch(ex)
             {
@@ -400,14 +404,22 @@ public class Program : BackgroundService
         });
     }
 
-    private async Task RunPool(PoolConfig poolConfig, Dictionary<string, CoinTemplate> coinTemplates, CancellationToken ct)
+    internal static void AssignPoolTemplates(IEnumerable<PoolConfig> poolConfigs,
+        IReadOnlyDictionary<string, CoinTemplate> coinTemplates)
     {
-        // Lookup coin
-        if(!coinTemplates.TryGetValue(poolConfig.Coin, out var template))
-            throw new PoolStartupException($"Pool {poolConfig.Id} references undefined coin '{poolConfig.Coin}'", poolConfig.Id);
+        foreach(var poolConfig in poolConfigs)
+        {
+            if(!coinTemplates.TryGetValue(poolConfig.Coin, out var template))
+                throw new PoolStartupException(
+                    $"Pool {poolConfig.Id} references undefined coin '{poolConfig.Coin}'",
+                    poolConfig.Id);
 
-        poolConfig.Template = template;
+            poolConfig.Template = template;
+        }
+    }
 
+    private async Task RunPool(PoolConfig poolConfig, CancellationToken ct)
+    {
         // resolve implementation
         var poolImpl = container.Resolve<IEnumerable<Meta<Lazy<IMiningPool, CoinFamilyAttribute>>>>()
             .First(x => x.Value.Metadata.SupportedFamilies.Contains(poolConfig.Template.Family)).Value;

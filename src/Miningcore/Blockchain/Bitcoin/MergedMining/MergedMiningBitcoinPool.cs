@@ -3,7 +3,6 @@ using AutoMapper;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
-using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Nicehash;
@@ -37,7 +36,7 @@ public class MergedMiningBitcoinPool : BitcoinPool
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        mergedMiningConfig = pc.Extra.SafeExtensionDataAs<MergedMiningPoolConfigExtra>()?.MergedMining;
+        mergedMiningConfig = MergedMiningConfigLoader.GetNormalizedConfig(pc);
         base.Configure(pc, cc);
     }
 
@@ -63,14 +62,18 @@ public class MergedMiningBitcoinPool : BitcoinPool
             mergedMiningConfig.AddressParameter);
 
         if(string.IsNullOrWhiteSpace(auxiliaryAddress) && mergedMiningConfig.RequireAuxAddress)
-            throw new StratumException(StratumError.UnauthorizedWorker,
-                $"missing {mergedMiningConfig.AddressParameter} auxiliary address in password");
+            return false;
 
         if(!string.IsNullOrWhiteSpace(auxiliaryAddress))
         {
-            if(!await mergedManager.ValidateAuxiliaryAddressAsync(auxiliaryAddress, ct))
-                throw new StratumException(StratumError.UnauthorizedWorker,
-                    "invalid auxiliary payout address");
+            var validation = await mergedManager.ValidateAuxiliaryAddressAsync(auxiliaryAddress, ct);
+
+            if(validation == AuxiliaryAddressValidation.Invalid)
+                return false;
+
+            if(validation == AuxiliaryAddressValidation.Unavailable)
+                throw new StratumException(StratumError.Other,
+                    "auxiliary payout-address validation is temporarily unavailable");
         }
 
         if(context is not MergedMiningBitcoinWorkerContext mergedContext)
