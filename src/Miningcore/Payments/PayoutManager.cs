@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Data;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
@@ -181,12 +182,12 @@ public class PayoutManager : BackgroundService
                             var blockReward = await handler.UpdateBlockRewardBalancesAsync(con, tx, pool, block, ct);
 
                             await scheme.UpdateBalancesAsync(con, tx, pool, handler, block, blockReward, ct);
-                            await blockRepo.UpdateBlockAsync(con, tx, block);
+                            await UpdateBlockAsync(con, tx, poolConfig, block);
                             break;
 
                         case BlockStatus.Orphaned:
                         case BlockStatus.Pending:
-                            await blockRepo.UpdateBlockAsync(con, tx, block);
+                            await UpdateBlockAsync(con, tx, poolConfig, block);
                             break;
                     }
                 });
@@ -195,6 +196,15 @@ public class PayoutManager : BackgroundService
 
         else
             logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
+    }
+
+    private async Task UpdateBlockAsync(IDbConnection con, IDbTransaction tx,
+        PoolConfig poolConfig, Block block)
+    {
+        var updated = await blockRepo.UpdateBlockAsync(con, tx, block);
+
+        if(updated && block.NotifyBlockFoundOnUpdate)
+            messageBus.NotifyBlockFound(poolConfig.Id, block, poolConfig.Template);
     }
 
     private async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, CancellationToken ct)

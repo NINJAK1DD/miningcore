@@ -92,6 +92,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(BlockStatus.Pending, winningClaim.Status);
         Assert.Equal("auxpow", winningClaim.Type);
         Assert.Equal("coinbase-txid", winningClaim.TransactionConfirmationData);
+        Assert.True(winningClaim.NotifyBlockFoundOnUpdate);
         Assert.Equal(0, fixture.Handler.TransactionCalls);
         fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
             Arg.Any<string>());
@@ -185,7 +186,53 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
         Assert.Equal("merged-parent", block.Type);
+        Assert.True(block.NotifyBlockFoundOnUpdate);
         Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
+    }
+
+    [Fact]
+    public async Task Reconciliation_AuxPowClaim_MissingParentProofPersistsRetryCount()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-header"));
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Confirmations = 1,
+            Transactions = new[] { "coinbase-txid" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("auxpow-claim:doge-block:parent-header:1",
+            block.TransactionConfirmationData);
+    }
+
+    [Fact]
+    public async Task Reconciliation_AuxPowClaim_MissingParentProofExpiresAfterRepeatedObservation()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-header", 2));
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Confirmations = 1,
+            Transactions = new[] { "coinbase-txid" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
     }
 
     [Fact]

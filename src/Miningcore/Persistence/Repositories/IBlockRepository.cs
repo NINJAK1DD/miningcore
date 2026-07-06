@@ -7,7 +7,7 @@ public interface IBlockRepository
 {
     Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block);
     Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
-    Task UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
+    Task<bool> UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
 
     Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct);

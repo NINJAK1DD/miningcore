@@ -177,6 +177,14 @@ public class BlockRepositoryTests
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("idx_blocks_merged_parent_pool_hash", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pg_index", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("indisunique", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("indisvalid", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pg_get_indexdef", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -195,12 +203,57 @@ public class BlockRepositoryTests
             TransactionConfirmationData = "resolved-coinbase-txid",
         };
 
-        await repository.UpdateBlockAsync(connection, null, block);
+        var updated = await repository.UpdateBlockAsync(connection, null, block);
 
+        Assert.True(updated);
         Assert.Contains("transactionconfirmationdata = @transactionconfirmationdata",
             connection.CommandText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(block.TransactionConfirmationData,
             connection.Parameters["transactionconfirmationdata"]);
+    }
+
+    [Fact]
+    public async Task UpdateBlockAsync_ReturnsFalseWhenPromotionGuardDoesNotUpdateRow()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection { NonQueryResult = 0 };
+        var block = new Block
+        {
+            Id = 42,
+            PoolId = "doge-test",
+            BlockHeight = 100,
+            Type = "auxpow",
+            Hash = "doge-block",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "resolved-coinbase-txid",
+        };
+
+        var updated = await repository.UpdateBlockAsync(connection, null, block);
+
+        Assert.False(updated);
+        Assert.Contains("NOT EXISTS", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ON CONFLICT", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetBlockBeforeCountAsync_UsesCountScalar()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection { ScalarResult = 0 };
+
+        await repository.GetBlockBeforeCountAsync(connection, "doge-test",
+            new[] { BlockStatus.Pending }, DateTime.UtcNow);
+
+        Assert.Contains("SELECT COUNT(*)", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class RecordingDbConnection : DbConnection
@@ -208,6 +261,7 @@ public class BlockRepositoryTests
         public string CommandText { get; private set; }
         public IReadOnlyDictionary<string, object> Parameters { get; private set; }
         public object ScalarResult { get; set; }
+        public int NonQueryResult { get; set; } = 1;
 
         public override string ConnectionString { get; set; }
         public override string Database => "test";
@@ -275,7 +329,7 @@ public class BlockRepositoryTests
         public override int ExecuteNonQuery()
         {
             connection.Record(this);
-            return 1;
+            return connection.NonQueryResult;
         }
 
         public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)

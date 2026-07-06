@@ -3,7 +3,6 @@ using AutoMapper;
 using Dapper;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
-using Npgsql;
 
 namespace Miningcore.Persistence.Postgres.Repositories;
 
@@ -53,7 +52,7 @@ public class BlockRepository : IBlockRepository
         await con.ExecuteAsync(query, block, tx);
     }
 
-    public async Task UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block)
+    public async Task<bool> UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block)
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
@@ -69,19 +68,8 @@ public class BlockRepository : IBlockRepository
                 WHERE poolid = @poolid AND hash = @hash AND type = 'auxpow' AND id <> @id
             )";
 
-        try
-        {
-            await con.ExecuteAsync(mapped.Type == "auxpow" ? auxPowPromotionQuery : query,
-                mapped, tx);
-        }
-
-        catch(PostgresException ex) when(mapped.Type == "auxpow" &&
-            ex.SqlState == PostgresErrorCodes.UniqueViolation)
-        {
-            // Another recorder/payout node finalized the same DOGE child block between
-            // reconciliation and update. Leave this claim untouched; a later payout cycle
-            // will see the finalized row and orphan the superseded claim cleanly.
-        }
+        return await con.ExecuteAsync(mapped.Type == "auxpow" ? auxPowPromotionQuery : query,
+            mapped, tx) > 0;
     }
 
     public async Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status,
@@ -164,7 +152,7 @@ public class BlockRepository : IBlockRepository
     
     public async Task<uint> GetBlockBeforeCountAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before)
     {
-        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
+        var query = $@"SELECT COUNT(*) FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
             AND {PublicBlockTypesFilter}";
         
         return await con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new
@@ -265,10 +253,45 @@ public class BlockRepository : IBlockRepository
 
     public Task<bool> HasMergedMiningBlockIndexesAsync(IDbConnection con, CancellationToken ct)
     {
-        const string query = @"SELECT
-            to_regclass('idx_blocks_auxpow_pool_hash') IS NOT NULL AND
-            to_regclass('idx_blocks_auxpow_claim') IS NOT NULL AND
-            to_regclass('idx_blocks_merged_parent_pool_hash') IS NOT NULL";
+        const string query = @"WITH expected(name, required_fragments) AS (
+                VALUES
+                ('idx_blocks_auxpow_pool_hash', ARRAY[
+                    'CREATE UNIQUE INDEX',
+                    'ON public.blocks USING btree (poolid, hash)',
+                    'WHERE (type = ''auxpow''::text)'
+                ]),
+                ('idx_blocks_auxpow_claim', ARRAY[
+                    'CREATE UNIQUE INDEX',
+                    'ON public.blocks USING btree (poolid, hash, regexp_replace(transactionconfirmationdata, '':[0-9]+$''::text, ''''::text))',
+                    'WHERE (type = ''auxpow-claim''::text)'
+                ]),
+                ('idx_blocks_merged_parent_pool_hash', ARRAY[
+                    'CREATE UNIQUE INDEX',
+                    'ON public.blocks USING btree (poolid, hash)',
+                    'WHERE (type = ANY (ARRAY[''merged-parent''::text, ''merged-parent-uncertain''::text]))'
+                ])
+            ),
+            actual AS (
+                SELECT lower(c.relname) AS name,
+                    i.indisunique,
+                    i.indisvalid,
+                    i.indisready,
+                    pg_get_indexdef(c.oid) AS indexdef
+                FROM pg_class c
+                JOIN pg_index i ON i.indexrelid = c.oid
+                WHERE c.relkind = 'i'
+            )
+            SELECT COUNT(*) = 3
+            FROM expected e
+            JOIN actual a ON a.name = e.name
+            WHERE a.indisunique
+              AND a.indisvalid
+              AND a.indisready
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM unnest(e.required_fragments) fragment
+                  WHERE a.indexdef NOT ILIKE '%' || fragment || '%'
+              )";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));

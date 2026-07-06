@@ -591,38 +591,22 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             new object[] { template.Hash, result.AuxPowHex });
 
         var submissionResult = ClassifyAuxiliarySubmissionResponse(submitResponse);
-        var accepted = submissionResult == AuxiliarySubmissionResult.Accepted;
+        var accepted = false;
         var uncertain = false;
 
-        if(submissionResult == AuxiliarySubmissionResult.Ambiguous)
+        if(RequiresAuxiliaryProofLookup(submissionResult))
         {
             var lookupResult = await GetAuxiliaryBlockLookupResultAsync(template.Hash,
                 result.ParentHeaderHex);
-            switch(lookupResult)
-            {
-                case AuxiliaryBlockLookupResult.Accepted:
-                    accepted = true;
-                    break;
-
-                case AuxiliaryBlockLookupResult.Unavailable:
-                case AuxiliaryBlockLookupResult.MissingProof:
-                    accepted = false;
-                    uncertain = true;
-                    break;
-
-                case AuxiliaryBlockLookupResult.LostToDifferentProof:
-                    accepted = false;
-                    logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] is active, but was accepted with a different parent proof");
-                    break;
-
-                case AuxiliaryBlockLookupResult.Orphaned:
-                    accepted = false;
-                    logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] is known by the daemon but is not active");
-                    break;
-            }
+            (accepted, uncertain) = ClassifyAuxiliarySubmissionOutcome(
+                submissionResult, lookupResult);
 
             if(accepted)
-                logger.Warn(() => $"Auxiliary submission response was ambiguous, but block {template.Height} [{template.Hash}] is active with the submitted parent proof");
+                logger.Info(() => $"Auxiliary block {template.Height} [{template.Hash}] is active with the submitted parent proof");
+            else if(lookupResult == AuxiliaryBlockLookupResult.LostToDifferentProof)
+                logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] is active, but was accepted with a different parent proof");
+            else if(lookupResult == AuxiliaryBlockLookupResult.Orphaned)
+                logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] is known by the daemon but is not active");
         }
 
         if(!accepted && !uncertain)
@@ -684,6 +668,30 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         return response.Response.Value<bool>()
             ? AuxiliarySubmissionResult.Accepted
             : AuxiliarySubmissionResult.Rejected;
+    }
+
+    internal static (bool Accepted, bool Uncertain) ClassifyAuxiliarySubmissionOutcome(
+        AuxiliarySubmissionResult submissionResult, AuxiliaryBlockLookupResult lookupResult)
+    {
+        if(!RequiresAuxiliaryProofLookup(submissionResult))
+            return (false, false);
+
+        return lookupResult switch
+        {
+            AuxiliaryBlockLookupResult.Accepted => (true, false),
+            AuxiliaryBlockLookupResult.Unavailable => (false, true),
+            AuxiliaryBlockLookupResult.MissingProof => (false, true),
+            AuxiliaryBlockLookupResult.LostToDifferentProof => (false, false),
+            AuxiliaryBlockLookupResult.Orphaned => (false, false),
+            _ => (false, false),
+        };
+    }
+
+    internal static bool RequiresAuxiliaryProofLookup(
+        AuxiliarySubmissionResult submissionResult)
+    {
+        return submissionResult is AuxiliarySubmissionResult.Accepted or
+            AuxiliarySubmissionResult.Ambiguous;
     }
 
     private async Task<AuxiliaryBlockLookupResult> GetAuxiliaryBlockLookupResultAsync(

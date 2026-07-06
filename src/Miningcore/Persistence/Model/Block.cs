@@ -17,4 +17,11 @@ public class Block
     public string Source { get; set; }
     public string Hash { get; set; }
     public DateTime Created { get; set; }
+
+    /// <summary>
+    /// Runtime-only signal used by payout classification when an unresolved
+    /// block candidate has just become a proven accepted block. Repository
+    /// mappings ignore this property.
+    /// </summary>
+    public bool NotifyBlockFoundOnUpdate { get; set; }
 }

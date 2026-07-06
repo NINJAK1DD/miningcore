@@ -181,7 +181,26 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     var acceptedParentBlock = response.Response?.AuxPow?.ParentBlock;
                     if(string.IsNullOrEmpty(acceptedParentBlock))
                     {
-                        logger.Warn(() => $"[{LogCategory}] DOGE block {block.BlockHeight} [{blockHash}] did not expose auxpow.parentblock");
+                        var nextMiss = definitiveMisses + 1;
+
+                        if(nextMiss >= MinimumDefinitiveMisses &&
+                            clock.Now - block.Created >= UncertainBlockLifetime)
+                        {
+                            block.Status = BlockStatus.Orphaned;
+                            block.Reward = 0;
+                            result.Add(block);
+                            logger.Warn(() => $"[{LogCategory}] DOGE block {block.BlockHeight} [{blockHash}] repeatedly did not expose auxpow.parentblock; expiring claim");
+                            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        }
+                        else
+                        {
+                            block.TransactionConfirmationData =
+                                AuxPowBlockConfirmation.CreateClaim(blockHash,
+                                    claimedParentBlock, nextMiss);
+                            result.Add(block);
+                            logger.Warn(() => $"[{LogCategory}] DOGE block {block.BlockHeight} [{blockHash}] did not expose auxpow.parentblock; claim remains pending after proof-miss {nextMiss}");
+                        }
+
                         continue;
                     }
 
@@ -208,9 +227,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     }
 
                     block.Type = "auxpow";
+                    block.NotifyBlockFoundOnUpdate = true;
                 }
                 else if(isParentUncertain)
+                {
                     block.Type = "merged-parent";
+                    block.NotifyBlockFoundOnUpdate = true;
+                }
 
                 block.TransactionConfirmationData = coinbaseTransaction;
                 resolvedAuxiliaryBlocks.Add(block);

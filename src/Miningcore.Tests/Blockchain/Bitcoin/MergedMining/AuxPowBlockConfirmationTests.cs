@@ -198,6 +198,39 @@ public class AuxPowBlockConfirmationTests
                 })));
     }
 
+    [Theory]
+    [InlineData((int) AuxiliarySubmissionResult.Accepted, (int) AuxiliaryBlockLookupResult.Accepted, true, false)]
+    [InlineData((int) AuxiliarySubmissionResult.Accepted, (int) AuxiliaryBlockLookupResult.LostToDifferentProof, false, false)]
+    [InlineData((int) AuxiliarySubmissionResult.Accepted, (int) AuxiliaryBlockLookupResult.Unavailable, false, true)]
+    [InlineData((int) AuxiliarySubmissionResult.Accepted, (int) AuxiliaryBlockLookupResult.MissingProof, false, true)]
+    [InlineData((int) AuxiliarySubmissionResult.Accepted, (int) AuxiliaryBlockLookupResult.Orphaned, false, false)]
+    [InlineData((int) AuxiliarySubmissionResult.Ambiguous, (int) AuxiliaryBlockLookupResult.Accepted, true, false)]
+    [InlineData((int) AuxiliarySubmissionResult.Rejected, (int) AuxiliaryBlockLookupResult.Accepted, false, false)]
+    public void AuxiliarySubmissionOutcome_RequiresProofAttributionForBooleanTrue(
+        int submissionResultValue, int lookupResultValue,
+        bool expectedAccepted, bool expectedUncertain)
+    {
+        var submissionResult = (AuxiliarySubmissionResult) submissionResultValue;
+        var lookupResult = (AuxiliaryBlockLookupResult) lookupResultValue;
+        var (accepted, uncertain) =
+            MergedMiningBitcoinJobManager.ClassifyAuxiliarySubmissionOutcome(
+                submissionResult, lookupResult);
+
+        Assert.Equal(expectedAccepted, accepted);
+        Assert.Equal(expectedUncertain, uncertain);
+    }
+
+    [Fact]
+    public void AuxiliaryProofLookup_IsRequiredForBooleanTrueAndTransportAmbiguity()
+    {
+        Assert.True(MergedMiningBitcoinJobManager.RequiresAuxiliaryProofLookup(
+            AuxiliarySubmissionResult.Accepted));
+        Assert.True(MergedMiningBitcoinJobManager.RequiresAuxiliaryProofLookup(
+            AuxiliarySubmissionResult.Ambiguous));
+        Assert.False(MergedMiningBitcoinJobManager.RequiresAuxiliaryProofLookup(
+            AuxiliarySubmissionResult.Rejected));
+    }
+
     [Fact]
     public void ParentTemplateOrdering_RejectsLowerHeight()
     {
