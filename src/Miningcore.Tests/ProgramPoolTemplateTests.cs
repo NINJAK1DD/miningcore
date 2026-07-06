@@ -54,7 +54,7 @@ public class ProgramPoolTemplateTests
     public async Task MergedMining_ShareRelaySender_DoesNotRequireLocalPersistenceOrSchemaCheck()
     {
         var config = MergedMiningCluster(shareRelaySender: true,
-            globalPaymentProcessing: false, postgres: false);
+            globalPaymentProcessing: true, postgres: false);
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var blockRepository = Substitute.For<IBlockRepository>();
 
@@ -69,15 +69,42 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
-    public void MergedMining_ShareRelaySender_DoesNotRunPayoutManagerWhenGloballyEnabled()
+    public async Task MergedMining_ShareRelaySender_WithPostgresCanRunPayoutManager()
     {
         var config = MergedMiningCluster(shareRelaySender: true);
-        config.Pools[0].PaymentProcessing = new PoolPaymentProcessingConfig
-        {
-            Enabled = true,
-        };
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        blockRepository.HasMergedMiningBlockIndexesAsync(connection,
+            Arg.Any<CancellationToken>()).Returns(true);
 
-        Assert.False(Program.ShouldRunPaymentProcessor(config));
+        Assert.True(Program.ShouldRunPaymentProcessor(config));
+        Assert.True(Program.RequiresMergedMiningPersistence(config));
+        Program.ValidateMergedMiningDeployment(config);
+        await Program.EnsureMergedMiningSchemaAsync(config, connectionFactory,
+            blockRepository, CancellationToken.None);
+        await connectionFactory.Received(1).OpenConnectionAsync();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PaymentProcessor_DirectAndRelayReceiverNodesRemainEnabled(bool relayReceiver)
+    {
+        var config = MergedMiningCluster(relayReceiver: relayReceiver);
+
+        Assert.True(Program.ShouldRunPaymentProcessor(config));
+    }
+
+    [Fact]
+    public void PaymentProcessor_NonMergedRelaySenderWithPostgresRetainsOriginalBehaviour()
+    {
+        var config = MergedMiningCluster(shareRelaySender: true);
+        config.Pools[0].Extra = null;
+
+        Assert.True(Program.ShouldRunPaymentProcessor(config));
+        Assert.False(Program.RequiresMergedMiningPersistence(config));
     }
 
     [Fact]

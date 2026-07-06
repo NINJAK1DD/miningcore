@@ -562,7 +562,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(result.Accepted || !result.Ambiguous)
             return result;
 
-        using var cts = new CancellationTokenSource(AmbiguousSubmissionLookupTimeout);
+        using var cts = CreateAmbiguousLookupCancellationTokenSource(ct);
         var response = await rpc.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock,
             cts.Token, new object[] { share.BlockHash });
         var accepted = IsActiveBlock(response, share.BlockHash);
@@ -597,7 +597,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(RequiresAuxiliaryProofLookup(submissionResult))
         {
             var lookupResult = await GetAuxiliaryBlockLookupResultAsync(template.Hash,
-                result.ParentHeaderHex);
+                result.ParentHeaderHex, ct);
             (accepted, uncertain) = ClassifyAuxiliarySubmissionOutcome(
                 submissionResult, lookupResult);
 
@@ -695,13 +695,21 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     }
 
     private async Task<AuxiliaryBlockLookupResult> GetAuxiliaryBlockLookupResultAsync(
-        string blockHash, string parentHeaderHex)
+        string blockHash, string parentHeaderHex, CancellationToken ct)
     {
-        using var cts = new CancellationTokenSource(AmbiguousSubmissionLookupTimeout);
+        using var cts = CreateAmbiguousLookupCancellationTokenSource(ct);
         var response = await auxiliaryRpc.ExecuteAsync<DaemonBlock>(logger,
             BitcoinCommands.GetBlock, cts.Token, new object[] { blockHash });
 
         return ClassifyAuxiliaryBlockLookup(blockHash, parentHeaderHex, response);
+    }
+
+    internal static CancellationTokenSource CreateAmbiguousLookupCancellationTokenSource(
+        CancellationToken operationToken)
+    {
+        var result = CancellationTokenSource.CreateLinkedTokenSource(operationToken);
+        result.CancelAfter(AmbiguousSubmissionLookupTimeout);
+        return result;
     }
 
     internal static AuxiliaryBlockLookupResult ClassifyAuxiliaryBlockLookup(

@@ -4,6 +4,7 @@ using Miningcore.Blockchain;
 using Miningcore.JsonRpc;
 using Miningcore.Rpc;
 using Newtonsoft.Json.Linq;
+using System.Threading;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
@@ -229,6 +230,18 @@ public class AuxPowBlockConfirmationTests
             AuxiliarySubmissionResult.Ambiguous));
         Assert.False(MergedMiningBitcoinJobManager.RequiresAuxiliaryProofLookup(
             AuxiliarySubmissionResult.Rejected));
+    }
+
+    [Fact]
+    public void AmbiguousLookup_UsesRemainingSubmissionOperationDeadline()
+    {
+        using var operation = new CancellationTokenSource();
+        using var lookup = MergedMiningBitcoinJobManager
+            .CreateAmbiguousLookupCancellationTokenSource(operation.Token);
+
+        operation.Cancel();
+
+        Assert.True(lookup.IsCancellationRequested);
     }
 
     [Fact]

@@ -1,5 +1,9 @@
 -- Required before enabling Litecoin-Dogecoin merged mining on an existing database.
 -- The partial indexes leave block types used by other coin families unchanged.
+-- Every change is transactional: failed validation or index creation restores the
+-- database to its exact pre-migration state.
+BEGIN;
+
 DO $$
 BEGIN
     IF EXISTS (
@@ -51,7 +55,10 @@ BEGIN
     END IF;
 END $$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS IDX_BLOCKS_AUXPOW_POOL_HASH
+-- Recreate every index so rerunning this migration repairs stale same-named indexes
+-- left by prerelease versions instead of preserving an incompatible definition.
+DROP INDEX IF EXISTS IDX_BLOCKS_AUXPOW_POOL_HASH;
+CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH
     ON blocks(poolid, hash)
     WHERE type = 'auxpow';
 
@@ -61,6 +68,9 @@ CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM
         (regexp_replace(transactionconfirmationdata, ':[0-9]+$', '')))
     WHERE type = 'auxpow-claim';
 
-CREATE UNIQUE INDEX IF NOT EXISTS IDX_BLOCKS_MERGED_PARENT_POOL_HASH
+DROP INDEX IF EXISTS IDX_BLOCKS_MERGED_PARENT_POOL_HASH;
+CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH
     ON blocks(poolid, hash)
     WHERE type IN ('merged-parent', 'merged-parent-uncertain');
+
+COMMIT;

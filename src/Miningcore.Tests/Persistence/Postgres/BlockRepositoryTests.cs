@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -254,6 +255,33 @@ public class BlockRepositoryTests
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SELECT *", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AuxPowMigration_IsAtomicAndRecreatesEveryRequiredIndex()
+    {
+        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+            "../../../../Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql"));
+        var script = File.ReadAllText(path);
+        var indexNames = new[]
+        {
+            "IDX_BLOCKS_AUXPOW_POOL_HASH",
+            "IDX_BLOCKS_AUXPOW_CLAIM",
+            "IDX_BLOCKS_MERGED_PARENT_POOL_HASH",
+        };
+
+        Assert.Contains("BEGIN;", script, StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith("COMMIT;", script.Trim(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CREATE UNIQUE INDEX IF NOT EXISTS", script,
+            StringComparison.OrdinalIgnoreCase);
+
+        foreach(var indexName in indexNames)
+        {
+            Assert.Contains($"DROP INDEX IF EXISTS {indexName}", script,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains($"CREATE UNIQUE INDEX {indexName}", script,
+                StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private sealed class RecordingDbConnection : DbConnection

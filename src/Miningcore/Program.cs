@@ -918,15 +918,22 @@ public class Program : BackgroundService
 
     internal static bool RequiresMergedMiningPersistence(ClusterConfig config)
     {
-        return config?.ShareRelay == null && config?.Pools?.Any(pool =>
+        var mergedMiningEnabled = config?.Pools?.Any(pool =>
             pool.Enabled && MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled == true) == true;
+
+        return mergedMiningEnabled &&
+            (config.ShareRelay == null || ShouldRunPaymentProcessor(config));
     }
 
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
     {
-        return config?.ShareRelay == null &&
-            config.PaymentProcessing?.Enabled == true &&
+        var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
             config.Pools?.Any(x => x.PaymentProcessing?.Enabled == true) == true;
+
+        if(!paymentEnabled)
+            return false;
+
+        return config.ShareRelay == null || config.Persistence?.Postgres != null;
     }
 
     internal static void ValidateMergedMiningDeployment(ClusterConfig config)
