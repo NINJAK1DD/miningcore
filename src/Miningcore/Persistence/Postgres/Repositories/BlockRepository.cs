@@ -25,7 +25,11 @@ public class BlockRepository : IBlockRepository
             VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
                 @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created)";
 
-        await con.ExecuteAsync(query, mapped, tx);
+        const string auxPowConflictClause =
+            " ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING";
+
+        await con.ExecuteAsync(mapped.Type == "auxpow" ? query + auxPowConflictClause : query,
+            mapped, tx);
     }
 
     public async Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block)

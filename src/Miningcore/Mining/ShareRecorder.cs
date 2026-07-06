@@ -339,9 +339,16 @@ public class ShareRecorder : BackgroundService
         return messageBus.Listen<Share>()
             .ObserveOn(TaskPoolScheduler.Default)
             .Where(x => x != null)
-            .Select(x => x)
-            .Buffer(TimeSpan.FromSeconds(5), 250)
-            .Where(shares => shares.Any())
+            .Publish(shares => shares
+                // Minimize the in-memory durability window for accepted or uncertain block
+                // candidates. Ordinary shares retain the existing batching behavior.
+                .Where(x => x.IsBlockCandidate)
+                .Select(x => (IList<Share>) new[] { x })
+                .Merge(shares
+                    .Where(x => !x.IsBlockCandidate)
+                    .Buffer(TimeSpan.FromSeconds(5), 250)
+                    .Where(batch => batch.Any())
+                    .Select(batch => (IList<Share>) batch)))
             .Select(shares => Observable.FromAsync(() =>
                 Guard(() =>
                         PersistSharesAsync(shares),

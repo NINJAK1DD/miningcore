@@ -55,6 +55,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private int payoutDecimalPlaces = 4;
     private CoinTemplate coin;
     private int minConfirmations;
+    private static readonly TimeSpan UncertainAuxiliaryBlockLifetime = TimeSpan.FromMinutes(10);
 
     protected override string LogCategory => "Bitcoin Payout Handler";
 
@@ -109,19 +110,37 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             foreach(var block in page)
             {
-                if(!AuxPowBlockConfirmation.TryGetPendingBlockHash(
-                    block.TransactionConfirmationData, out var blockHash))
+                var isAcceptedMarker = AuxPowBlockConfirmation.TryGetPendingBlockHash(
+                    block.TransactionConfirmationData, out var blockHash);
+                var isUncertainMarker = !isAcceptedMarker &&
+                    AuxPowBlockConfirmation.TryGetUncertainBlockHash(
+                        block.TransactionConfirmationData, out blockHash);
+
+                if(!isAcceptedMarker && !isUncertainMarker)
                     continue;
 
                 var response = await GetBlockAsync(blockHash, ct);
-                var coinbaseTransaction = response.Error == null
+                var blockHashMatches = response.Error == null && string.Equals(
+                    response.Response?.Hash, blockHash, StringComparison.OrdinalIgnoreCase);
+                var coinbaseTransaction = blockHashMatches
                     ? response.Response?.Transactions?.FirstOrDefault()
                     : null;
 
                 if(string.IsNullOrEmpty(coinbaseTransaction))
                 {
                     var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
-                    logger.Warn(() => $"[{LogCategory}] Unable to reconcile accepted auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
+                    logger.Warn(() => $"[{LogCategory}] Unable to reconcile auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
+
+                    if(isUncertainMarker && response.Error?.Code == -5 &&
+                        clock.Now - block.Created >= UncertainAuxiliaryBlockLifetime)
+                    {
+                        block.Status = BlockStatus.Orphaned;
+                        block.Reward = 0;
+                        result.Add(block);
+                        logger.Info(() => $"[{LogCategory}] Uncertain auxiliary block {block.BlockHeight} [{blockHash}] expired without appearing on the daemon");
+                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                    }
+
                     continue;
                 }
 
@@ -134,6 +153,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             var classifiablePage = page
                 .Where(block => !resolvedAuxiliaryBlocks.Contains(block) &&
                     !AuxPowBlockConfirmation.TryGetPendingBlockHash(
+                        block.TransactionConfirmationData, out _) &&
+                    !AuxPowBlockConfirmation.TryGetUncertainBlockHash(
                         block.TransactionConfirmationData, out _))
                 .ToArray();
 

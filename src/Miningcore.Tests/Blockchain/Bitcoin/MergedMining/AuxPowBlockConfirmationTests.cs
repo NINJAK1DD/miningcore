@@ -1,5 +1,6 @@
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
+using Miningcore.Blockchain;
 using Miningcore.JsonRpc;
 using Miningcore.Rpc;
 using Newtonsoft.Json.Linq;
@@ -19,6 +20,19 @@ public class AuxPowBlockConfirmationTests
 
         Assert.True(parsed);
         Assert.Equal(blockHash, result);
+    }
+
+    [Fact]
+    public void UncertainMarker_RoundTripsBlockHash()
+    {
+        const string blockHash = "0123456789abcdef";
+
+        var marker = AuxPowBlockConfirmation.CreateUncertain(blockHash);
+        var parsed = AuxPowBlockConfirmation.TryGetUncertainBlockHash(marker, out var result);
+
+        Assert.True(parsed);
+        Assert.Equal(blockHash, result);
+        Assert.False(AuxPowBlockConfirmation.TryGetPendingBlockHash(marker, out _));
     }
 
     [Theory]
@@ -104,6 +118,40 @@ public class AuxPowBlockConfirmationTests
             MergedMiningBitcoinJobManager.ClassifyAuxiliarySubmissionResponse(
                 new RpcResponse<JToken>(null,
                     new JsonRpcError(-500, "connection lost", null))));
+        Assert.Equal(AuxiliarySubmissionResult.Rejected,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliarySubmissionResponse(
+                new RpcResponse<JToken>(null,
+                    new JsonRpcError(-8, "block hash unknown", null))));
+        Assert.Equal(AuxiliarySubmissionResult.Rejected,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliarySubmissionResponse(
+                new RpcResponse<JToken>(null,
+                    new JsonRpcError(-22, "AuxPoW decode failed", null))));
+    }
+
+    [Fact]
+    public void ParentTemplateOrdering_RejectsLowerHeight()
+    {
+        var previous = new BlockTemplate { Height = 102 };
+
+        Assert.True(MergedMiningBitcoinJobManager.IsStaleParentTemplate(
+            previous, new BlockTemplate { Height = 101 }));
+        Assert.False(MergedMiningBitcoinJobManager.IsStaleParentTemplate(
+            previous, new BlockTemplate { Height = 102 }));
+        Assert.False(MergedMiningBitcoinJobManager.IsStaleParentTemplate(
+            previous, new BlockTemplate { Height = 103 }));
+    }
+
+    [Fact]
+    public void StreamRefresh_UsesCachedAuxiliaryTemplateWithoutBlockingOnDogeRpc()
+    {
+        Assert.False(MergedMiningBitcoinJobManager.ShouldRefreshAuxiliaryTemplate(
+            JobRefreshBy.BlockTemplateStream, true));
+        Assert.False(MergedMiningBitcoinJobManager.ShouldRefreshAuxiliaryTemplate(
+            JobRefreshBy.BlockTemplateStreamRefresh, true));
+        Assert.True(MergedMiningBitcoinJobManager.ShouldRefreshAuxiliaryTemplate(
+            JobRefreshBy.Poll, true));
+        Assert.True(MergedMiningBitcoinJobManager.ShouldRefreshAuxiliaryTemplate(
+            JobRefreshBy.BlockTemplateStream, false));
     }
 
     private static AuxBlockTemplate Template(uint height, string previousBlockHash, string hash)

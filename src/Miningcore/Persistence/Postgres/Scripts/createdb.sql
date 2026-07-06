@@ -47,6 +47,7 @@ CREATE TABLE blocks
 
 CREATE INDEX IDX_BLOCKS_POOL_BLOCK_STATUS on blocks(poolid, blockheight, status);
 CREATE INDEX IDX_BLOCKS_POOL_BLOCK_TYPE on blocks(poolid, blockheight, type);
+CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH on blocks(poolid, hash) WHERE type = 'auxpow';
 
 CREATE TABLE balances
 (
@@ -131,4 +132,3 @@ CREATE INDEX IDX_MINERSTATS_POOL_MINER_CREATED on minerstats(poolid, miner, crea
 CREATE INDEX IDX_MINERSTATS_POOL_MINER_WORKER_CREATED_HASHRATE on minerstats(poolid,miner,worker,created desc,hashrate);
 CREATE INDEX IDX_MINERSTATS_POOL_MINER_WORKER_SESSION_CREATED on minerstats(poolid, miner, worker, sessionid, created desc);
 CREATE INDEX IDX_MINERSTATS_POOL_MINER_SESSION_CREATED on minerstats(poolid, miner, sessionid, created desc);
-

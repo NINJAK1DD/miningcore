@@ -271,7 +271,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
     }
 
-    protected record SubmitResult(bool Accepted, string CoinbaseTx);
+    protected record SubmitResult(bool Accepted, string CoinbaseTx, bool Ambiguous = false);
 
     protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex, CancellationToken ct)
     {
@@ -295,9 +295,11 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(!string.IsNullOrEmpty(submitError))
         {
+            var ambiguous = submitResult.Error?.Code == -500;
             logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
-            return new SubmitResult(false, null);
+            if(!ambiguous)
+                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+            return new SubmitResult(false, null, ambiguous);
         }
 
         // was it accepted?
@@ -307,11 +309,14 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(!accepted)
         {
+            var ambiguous = acceptResult.Error?.Code == -500;
             logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
-            messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
+            if(!ambiguous)
+                messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
         }
 
-        return new SubmitResult(accepted, block?.Transactions.FirstOrDefault());
+        return new SubmitResult(accepted, block?.Transactions.FirstOrDefault(),
+            !accepted && acceptResult.Error?.Code == -500);
     }
 
     protected async Task<bool> AreDaemonsHealthyLegacyAsync(CancellationToken ct)

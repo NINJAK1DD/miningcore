@@ -16,6 +16,55 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class BlockRepositoryTests
 {
     [Fact]
+    public async Task InsertAsync_DeduplicatesAuxPowBlocksByPoolAndHash()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection();
+        var block = new Block
+        {
+            PoolId = "doge-test",
+            BlockHeight = 100,
+            Type = "auxpow",
+            Hash = "doge-block",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "auxpow-uncertain:doge-block",
+            Created = DateTime.UtcNow,
+        };
+
+        await repository.InsertAsync(connection, null, block);
+
+        Assert.Contains("ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("auxpow", connection.Parameters["type"]);
+        Assert.Equal(block.Hash, connection.Parameters["hash"]);
+    }
+
+    [Fact]
+    public async Task InsertAsync_OrdinaryBlocksDoNotRequireAuxPowIndex()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection();
+        var block = new Block
+        {
+            PoolId = "btc-test",
+            BlockHeight = 100,
+            Hash = "btc-block",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "coinbase-txid",
+            Created = DateTime.UtcNow,
+        };
+
+        await repository.InsertAsync(connection, null, block);
+
+        Assert.DoesNotContain("ON CONFLICT", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task UpdateBlockAsync_PersistsTransactionConfirmationData()
     {
         var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))

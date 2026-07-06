@@ -52,6 +52,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block"));
         fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
         {
+            Hash = "doge-block",
             Transactions = new[] { "coinbase-txid" },
         });
 
@@ -62,6 +63,62 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(BlockStatus.Pending, block.Status);
         Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
         Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Reconciliation_UncertainSubmission_ResolvesOnLaterCycle()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateUncertain("doge-block"));
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Transactions = new[] { "coinbase-txid" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Reconciliation_MismatchedReturnedHash_RemainsPending()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block"));
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "different-block",
+            Transactions = new[] { "wrong-coinbase" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Empty(result);
+        Assert.Equal("auxpow-block:doge-block", block.TransactionConfirmationData);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+    }
+
+    [Fact]
+    public async Task Reconciliation_UncertainSubmissionExpiresAfterDefinitiveAbsence()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateUncertain("doge-block"));
+        block.Created = fixture.Now - TimeSpan.FromMinutes(11);
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-5, "Block not found", null));
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
     }
 
     [Fact]
@@ -133,6 +190,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         var balanceRepository = Substitute.For<IBalanceRepository>();
         var paymentRepository = Substitute.For<IPaymentRepository>();
         var clock = Substitute.For<IMasterClock>();
+        var now = DateTime.UtcNow;
+        clock.Now.Returns(now);
         var messageBus = Substitute.For<IMessageBus>();
         var handler = new TestBitcoinPayoutHandler(container, connectionFactory, mapper,
             shareRepository, blockRepository, balanceRepository, paymentRepository, clock, messageBus);
@@ -149,7 +208,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         var pool = Substitute.For<IMiningPool>();
         pool.Config.Returns(config);
 
-        return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository);
+        return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository, now);
     }
 
     private static PersistedBlock PendingBlock(string confirmationData)
@@ -162,6 +221,7 @@ public class BitcoinPayoutHandlerTests : TestBase
             Miner = "DTestMiner",
             Status = BlockStatus.Pending,
             TransactionConfirmationData = confirmationData,
+            Created = DateTime.UtcNow,
         };
     }
 
@@ -180,7 +240,8 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     private sealed record HandlerFixture(TestBitcoinPayoutHandler Handler, IMiningPool Pool,
-        PoolConfig Config, IShareRepository ShareRepository, IBalanceRepository BalanceRepository);
+        PoolConfig Config, IShareRepository ShareRepository, IBalanceRepository BalanceRepository,
+        DateTime Now);
 
     private sealed class TestBitcoinPayoutHandler : BitcoinPayoutHandler
     {
