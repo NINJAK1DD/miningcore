@@ -96,6 +96,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(0, fixture.Handler.TransactionCalls);
         fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
             Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -122,6 +124,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal("auxpow-claim", block.Type);
         fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
             Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -142,6 +146,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Orphaned, block.Status);
         Assert.Equal(0, block.Reward);
+        fixture.MessageBus.Received(1).SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -166,6 +172,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Orphaned, block.Status);
         Assert.Equal(0, block.Reward);
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]
@@ -233,6 +241,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Orphaned, block.Status);
         Assert.Equal(0, block.Reward);
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]

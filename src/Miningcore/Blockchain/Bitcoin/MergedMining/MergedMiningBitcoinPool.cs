@@ -41,25 +41,6 @@ public class MergedMiningBitcoinPool : BitcoinPool
         base.Configure(pc, cc);
     }
 
-    protected override async Task SetupJobManager(CancellationToken ct)
-    {
-        if(MergedMiningEnabled)
-            await EnsureMergedMiningSchemaAsync(ct);
-
-        await base.SetupJobManager(ct);
-    }
-
-    private async Task EnsureMergedMiningSchemaAsync(CancellationToken ct)
-    {
-        var schemaReady = await cf.Run(con =>
-            blocksRepo.HasMergedMiningBlockIndexesAsync(con, ct));
-
-        if(!schemaReady)
-            throw new PoolStartupException(
-                "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.",
-                poolConfig.Id);
-    }
-
     protected override WorkerContextBase CreateWorkerContext()
     {
         return new MergedMiningBitcoinWorkerContext();

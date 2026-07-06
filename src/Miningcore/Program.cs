@@ -24,6 +24,7 @@ using Miningcore.Api;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
+using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
@@ -48,6 +49,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Dummy;
 using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
+using Miningcore.Persistence.Repositories;
 using Miningcore.Util;
 using NBitcoin.Zcash;
 using Newtonsoft.Json;
@@ -314,8 +316,7 @@ public class Program : BackgroundService
             services.AddHostedService<MetricsPublisher>();
 
         // Payment processing
-        if(clusterConfig.PaymentProcessing?.Enabled == true &&
-           clusterConfig.Pools.Any(x => x.PaymentProcessing?.Enabled == true))
+        if(ShouldRunPaymentProcessor(clusterConfig))
             services.AddHostedService<PayoutManager>();
         else
             logger.Info("Payment processing is not enabled");
@@ -478,6 +479,7 @@ public class Program : BackgroundService
         try
         {
             clusterConfig.Validate();
+            ValidateMergedMiningDeployment(clusterConfig);
 
             if(clusterConfig.Notifications?.Admin?.Enabled == true)
             {
@@ -796,6 +798,13 @@ public class Program : BackgroundService
     {
         await ConfigurePostgresCompatibilityOptions(services);
 
+        if(RequiresMergedMiningPersistence(clusterConfig))
+        {
+            await EnsureMergedMiningSchemaAsync(clusterConfig,
+                services.GetService<IConnectionFactory>(),
+                services.GetService<IBlockRepository>(), CancellationToken.None);
+        }
+
         ZcashNetworks.Instance.EnsureRegistered();
 
         var messageBus = services.GetService<IMessageBus>();
@@ -905,6 +914,47 @@ public class Program : BackgroundService
 
             AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
         }
+    }
+
+    internal static bool RequiresMergedMiningPersistence(ClusterConfig config)
+    {
+        return config?.ShareRelay == null && config?.Pools?.Any(pool =>
+            pool.Enabled && MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled == true) == true;
+    }
+
+    internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
+    {
+        return config?.ShareRelay == null &&
+            config.PaymentProcessing?.Enabled == true &&
+            config.Pools?.Any(x => x.PaymentProcessing?.Enabled == true) == true;
+    }
+
+    internal static void ValidateMergedMiningDeployment(ClusterConfig config)
+    {
+        if(!RequiresMergedMiningPersistence(config))
+            return;
+
+        if(config.Persistence?.Postgres == null)
+            throw new PoolStartupException(
+                "Litecoin-Dogecoin merged mining requires PostgreSQL on direct and share-relay receiver/recorder nodes. Database-free share-relay sender nodes are supported.");
+
+        if(config.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                "Litecoin-Dogecoin merged mining requires cluster-level payment processing on direct and share-relay receiver/recorder nodes so accepted and uncertain blocks are reconciled.");
+    }
+
+    internal static async Task EnsureMergedMiningSchemaAsync(ClusterConfig config,
+        IConnectionFactory cf, IBlockRepository blockRepo, CancellationToken ct)
+    {
+        if(!RequiresMergedMiningPersistence(config))
+            return;
+
+        var schemaReady = await cf.Run(con =>
+            blockRepo.HasMergedMiningBlockIndexesAsync(con, ct));
+
+        if(!schemaReady)
+            throw new PoolStartupException(
+                "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.");
     }
 
     private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)

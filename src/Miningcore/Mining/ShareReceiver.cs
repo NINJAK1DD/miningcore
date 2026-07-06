@@ -285,6 +285,11 @@ public class ShareReceiver : BackgroundService
         share.Created = clock.Now;
         messageBus.SendMessage(share);
 
+        // Block-only relay messages persist independently accepted or uncertain block records.
+        // They are not ordinary shares and must not affect share telemetry or network statistics.
+        if(!IsShareTelemetryEligible(share))
+            return;
+
         // update poolstats from shares
         if(poolContext != null)
         {
@@ -314,6 +319,11 @@ public class ShareReceiver : BackgroundService
 
         else
             logger.Info(() => $"External {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}share accepted: D={Math.Round(share.Difficulty, 4)}");
+    }
+
+    internal static bool IsShareTelemetryEligible(Share share)
+    {
+        return share?.BlockOnly != true;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)

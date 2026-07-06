@@ -166,7 +166,7 @@ public class PayoutManager : BackgroundService
             {
                 logger.Info(() => $"Processing payments for pool {poolConfig.Id}, block {block.BlockHeight}");
 
-                await cf.RunTx(async (con, tx) =>
+                await RunBlockUpdateTransactionAsync(poolConfig, block, async (con, tx) =>
                 {
                     if(!block.Effort.HasValue)  // fill block effort if empty
                         await CalculateBlockEffortAsync(pool, poolConfig, block, handler, ct);
@@ -182,13 +182,14 @@ public class PayoutManager : BackgroundService
                             var blockReward = await handler.UpdateBlockRewardBalancesAsync(con, tx, pool, block, ct);
 
                             await scheme.UpdateBalancesAsync(con, tx, pool, handler, block, blockReward, ct);
-                            await UpdateBlockAsync(con, tx, poolConfig, block);
-                            break;
+                            return await blockRepo.UpdateBlockAsync(con, tx, block);
 
                         case BlockStatus.Orphaned:
                         case BlockStatus.Pending:
-                            await UpdateBlockAsync(con, tx, poolConfig, block);
-                            break;
+                            return await blockRepo.UpdateBlockAsync(con, tx, block);
+
+                        default:
+                            return false;
                     }
                 });
             }
@@ -198,10 +199,10 @@ public class PayoutManager : BackgroundService
             logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
     }
 
-    private async Task UpdateBlockAsync(IDbConnection con, IDbTransaction tx,
-        PoolConfig poolConfig, Block block)
+    internal async Task RunBlockUpdateTransactionAsync(PoolConfig poolConfig, Block block,
+        Func<IDbConnection, IDbTransaction, Task<bool>> action)
     {
-        var updated = await blockRepo.UpdateBlockAsync(con, tx, block);
+        var updated = await cf.RunTx(action);
 
         if(updated && block.NotifyBlockFoundOnUpdate)
             messageBus.NotifyBlockFound(poolConfig.Id, block, poolConfig.Template);

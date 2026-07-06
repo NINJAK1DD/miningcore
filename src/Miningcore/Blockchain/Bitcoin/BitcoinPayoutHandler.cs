@@ -136,7 +136,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     block.Reward = 0;
                     result.Add(block);
                     logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} [{blockHash}] is known by the daemon but is not active");
-                    messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+
+                    if(!isAuxPowClaim && !isParentUncertain)
+                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+
                     continue;
                 }
 
@@ -159,7 +162,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             block.Status = BlockStatus.Orphaned;
                             block.Reward = 0;
                             logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] expired after {nextMiss} definitive misses");
-                            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                         }
                         else
                         {
@@ -190,7 +192,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             block.Reward = 0;
                             result.Add(block);
                             logger.Warn(() => $"[{LogCategory}] DOGE block {block.BlockHeight} [{blockHash}] repeatedly did not expose auxpow.parentblock; expiring claim");
-                            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                         }
                         else
                         {
@@ -211,7 +212,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         block.Reward = 0;
                         result.Add(block);
                         logger.Info(() => $"[{LogCategory}] AuxPoW claim for block {block.BlockHeight} [{blockHash}] lost to a different parent proof");
-                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                         continue;
                     }
 
@@ -222,7 +222,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         block.Reward = 0;
                         result.Add(block);
                         logger.Info(() => $"[{LogCategory}] AuxPoW claim for block {block.BlockHeight} [{blockHash}] superseded by finalized block record {finalized.Id}");
-                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                         continue;
                     }
 
