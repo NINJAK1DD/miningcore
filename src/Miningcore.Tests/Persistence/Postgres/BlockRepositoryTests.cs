@@ -91,6 +91,94 @@ public class BlockRepositoryTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("merged-parent")]
+    [InlineData("merged-parent-uncertain")]
+    public async Task InsertAsync_DeduplicatesMergedParentBlocksByPoolAndHash(string type)
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection();
+        var block = new Block
+        {
+            PoolId = "ltc-test",
+            BlockHeight = 100,
+            Type = type,
+            Hash = "ltc-block",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "coinbase-or-marker",
+            Created = DateTime.UtcNow,
+        };
+
+        var inserted = await repository.InsertAsync(connection, null, block);
+
+        Assert.True(inserted);
+        Assert.Contains("ON CONFLICT (poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain') DO NOTHING",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("GetPoolBlockCountAsync")]
+    [InlineData("GetTotalPendingBlocksAsync")]
+    [InlineData("GetMinerBlockCountAsync")]
+    [InlineData("GetLastPoolBlockTimeAsync")]
+    [InlineData("GetLastMinerBlockTimeAsync")]
+    public async Task PublicStatistics_ExcludeUnresolvedMergedMiningClaims(string method)
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection { ScalarResult = 0 };
+
+        switch(method)
+        {
+            case "GetPoolBlockCountAsync":
+                connection.ScalarResult = 0;
+                await repository.GetPoolBlockCountAsync(connection, "doge-test", CancellationToken.None);
+                break;
+            case "GetTotalPendingBlocksAsync":
+                connection.ScalarResult = 0;
+                await repository.GetTotalPendingBlocksAsync(connection, "doge-test", CancellationToken.None);
+                break;
+            case "GetMinerBlockCountAsync":
+                connection.ScalarResult = 0;
+                await repository.GetMinerBlockCountAsync(connection, "doge-test", "miner", CancellationToken.None);
+                break;
+            case "GetLastPoolBlockTimeAsync":
+                connection.ScalarResult = DateTime.UtcNow;
+                await repository.GetLastPoolBlockTimeAsync(connection, "doge-test", CancellationToken.None);
+                break;
+            case "GetLastMinerBlockTimeAsync":
+                connection.ScalarResult = DateTime.UtcNow;
+                await repository.GetLastMinerBlockTimeAsync(connection, "doge-test", "miner", CancellationToken.None);
+                break;
+        }
+
+        Assert.Contains("type NOT IN ('auxpow-claim', 'parent-uncertain', 'merged-parent-uncertain')",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HasMergedMiningBlockIndexesAsync_ChecksAllRequiredIndexes()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection { ScalarResult = true };
+
+        var result = await repository.HasMergedMiningBlockIndexesAsync(connection,
+            CancellationToken.None);
+
+        Assert.True(result);
+        Assert.Contains("idx_blocks_auxpow_pool_hash", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("idx_blocks_auxpow_claim", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("idx_blocks_merged_parent_pool_hash", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task UpdateBlockAsync_PersistsTransactionConfirmationData()
     {
@@ -119,6 +207,7 @@ public class BlockRepositoryTests
     {
         public string CommandText { get; private set; }
         public IReadOnlyDictionary<string, object> Parameters { get; private set; }
+        public object ScalarResult { get; set; }
 
         public override string ConnectionString { get; set; }
         public override string Database => "test";
@@ -196,7 +285,13 @@ public class BlockRepositoryTests
 
         public override object ExecuteScalar()
         {
-            throw new NotSupportedException();
+            connection.Record(this);
+            return connection.ScalarResult;
+        }
+
+        public override Task<object> ExecuteScalarAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(ExecuteScalar());
         }
 
         public override void Prepare()

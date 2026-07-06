@@ -15,6 +15,11 @@ SET type = 'auxpow'
 WHERE type IS NULL
   AND transactionconfirmationdata LIKE 'auxpow-block:%';
 
+UPDATE blocks
+SET type = 'merged-parent-uncertain'
+WHERE type = 'parent-uncertain'
+  AND transactionconfirmationdata LIKE 'parent-uncertain:%';
+
 DO $$
 BEGIN
     IF EXISTS (
@@ -35,6 +40,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Duplicate AuxPoW claim rows require manual review before migration';
     END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM blocks
+        WHERE type IN ('merged-parent', 'merged-parent-uncertain')
+        GROUP BY poolid, hash
+        HAVING COUNT(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'Duplicate merged parent rows require manual review before migration';
+    END IF;
 END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS IDX_BLOCKS_AUXPOW_POOL_HASH
@@ -46,3 +60,7 @@ CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM
     ON blocks(poolid, hash,
         (regexp_replace(transactionconfirmationdata, ':[0-9]+$', '')))
     WHERE type = 'auxpow-claim';
+
+CREATE UNIQUE INDEX IF NOT EXISTS IDX_BLOCKS_MERGED_PARENT_POOL_HASH
+    ON blocks(poolid, hash)
+    WHERE type IN ('merged-parent', 'merged-parent-uncertain');

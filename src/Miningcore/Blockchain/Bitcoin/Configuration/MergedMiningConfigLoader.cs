@@ -20,6 +20,9 @@ internal static class MergedMiningConfigLoader
             ? "doge"
             : result.AddressParameter.Trim();
 
+        if(result.AuxiliaryTemplatePollTimeoutMs <= 0)
+            result.AuxiliaryTemplatePollTimeoutMs = 500;
+
         return result;
     }
 }

@@ -37,6 +37,15 @@ internal enum AuxiliarySubmissionResult
     Ambiguous,
 }
 
+internal enum AuxiliaryBlockLookupResult
+{
+    Accepted,
+    LostToDifferentProof,
+    MissingProof,
+    Orphaned,
+    Unavailable,
+}
+
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
 {
     public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
@@ -47,7 +56,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
     private const string CreateAuxBlock = "createauxblock";
     private const string SubmitAuxBlock = "submitauxblock";
-    private static readonly TimeSpan AuxiliaryTemplatePollTimeout = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan DefaultAuxiliaryTemplatePollTimeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan AuxiliaryStartupTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AuxiliaryAddressValidationTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BlockSubmissionTimeout = TimeSpan.FromSeconds(10);
@@ -59,6 +68,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private BitcoinTemplate auxiliaryCoin;
     private RpcClient auxiliaryRpc;
     private bool auxiliaryTemplateDegraded;
+    private AuxBlockTemplate startupAuxiliaryTemplate;
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -141,6 +151,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             var response = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout);
             if(response.Error == null && response.Response != null)
             {
+                startupAuxiliaryTemplate = response.Response;
                 logger.Info(() => $"Auxiliary daemon for {auxiliaryCoin.Name} is synched");
                 return;
             }
@@ -213,7 +224,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 return (false, forceUpdate);
             }
 
-            var previousAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate;
+            var previousAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate ??
+                startupAuxiliaryTemplate;
             var shouldRefreshAuxiliaryTemplate = ShouldRefreshAuxiliaryTemplate(via,
                 previousAuxiliaryTemplate != null);
             AuxBlockTemplate auxiliaryTemplate;
@@ -226,8 +238,11 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             }
             else
             {
+                var auxiliaryTemplateTimeout = previousAuxiliaryTemplate == null
+                    ? AuxiliaryStartupTimeout
+                    : GetAuxiliaryTemplatePollTimeout();
                 var auxiliaryResponse = await GetAuxBlockTemplateAsync(ct,
-                    AuxiliaryTemplatePollTimeout);
+                    auxiliaryTemplateTimeout);
                 var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
                     previousAuxiliaryTemplate, auxiliaryResponse,
                     out auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
@@ -324,6 +339,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         }
 
         return (false, forceUpdate);
+    }
+
+    private TimeSpan GetAuxiliaryTemplatePollTimeout()
+    {
+        return mergedMiningConfig?.AuxiliaryTemplatePollTimeoutMs > 0
+            ? TimeSpan.FromMilliseconds(mergedMiningConfig.AuxiliaryTemplatePollTimeoutMs)
+            : DefaultAuxiliaryTemplatePollTimeout;
     }
 
     internal static bool IsStaleParentTemplate(BlockTemplate previous, BlockTemplate current)
@@ -469,13 +491,14 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
                 if(share.IsBlockCandidate)
                 {
+                    share.BlockType = "merged-parent";
                     share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
                     logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
                 }
                 else if(acceptResponse.Ambiguous)
                 {
                     share.IsBlockCandidate = true;
-                    share.BlockType = "parent-uncertain";
+                    share.BlockType = "merged-parent-uncertain";
                     share.TransactionConfirmationData =
                         AuxPowBlockConfirmation.CreateParentUncertain(share.BlockHash);
                     logger.Warn(() => $"Parent submission outcome for block {share.BlockHeight} [{share.BlockHash}] is uncertain; durable reconciliation queued");
@@ -542,8 +565,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         using var cts = new CancellationTokenSource(AmbiguousSubmissionLookupTimeout);
         var response = await rpc.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock,
             cts.Token, new object[] { share.BlockHash });
-        var accepted = response.Error == null && string.Equals(response.Response?.Hash,
-            share.BlockHash, StringComparison.OrdinalIgnoreCase);
+        var accepted = IsActiveBlock(response, share.BlockHash);
 
         if(accepted)
             logger.Warn(() => $"Parent submission response was ambiguous, but block {share.BlockHeight} [{share.BlockHash}] is present on the daemon");
@@ -574,11 +596,33 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(submissionResult == AuxiliarySubmissionResult.Ambiguous)
         {
-            accepted = await IsAuxiliaryBlockKnownAsync(template.Hash);
-            uncertain = !accepted;
+            var lookupResult = await GetAuxiliaryBlockLookupResultAsync(template.Hash,
+                result.ParentHeaderHex);
+            switch(lookupResult)
+            {
+                case AuxiliaryBlockLookupResult.Accepted:
+                    accepted = true;
+                    break;
+
+                case AuxiliaryBlockLookupResult.Unavailable:
+                case AuxiliaryBlockLookupResult.MissingProof:
+                    accepted = false;
+                    uncertain = true;
+                    break;
+
+                case AuxiliaryBlockLookupResult.LostToDifferentProof:
+                    accepted = false;
+                    logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] is active, but was accepted with a different parent proof");
+                    break;
+
+                case AuxiliaryBlockLookupResult.Orphaned:
+                    accepted = false;
+                    logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] is known by the daemon but is not active");
+                    break;
+            }
 
             if(accepted)
-                logger.Warn(() => $"Auxiliary submission response was ambiguous, but block {template.Height} [{template.Hash}] is present on the daemon");
+                logger.Warn(() => $"Auxiliary submission response was ambiguous, but block {template.Height} [{template.Hash}] is active with the submitted parent proof");
         }
 
         if(!accepted && !uncertain)
@@ -642,13 +686,43 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             : AuxiliarySubmissionResult.Rejected;
     }
 
-    private async Task<bool> IsAuxiliaryBlockKnownAsync(string blockHash)
+    private async Task<AuxiliaryBlockLookupResult> GetAuxiliaryBlockLookupResultAsync(
+        string blockHash, string parentHeaderHex)
     {
         using var cts = new CancellationTokenSource(AmbiguousSubmissionLookupTimeout);
         var response = await auxiliaryRpc.ExecuteAsync<DaemonBlock>(logger,
             BitcoinCommands.GetBlock, cts.Token, new object[] { blockHash });
 
-        return response.Error == null && string.Equals(response.Response?.Hash, blockHash,
-            StringComparison.OrdinalIgnoreCase);
+        return ClassifyAuxiliaryBlockLookup(blockHash, parentHeaderHex, response);
+    }
+
+    internal static AuxiliaryBlockLookupResult ClassifyAuxiliaryBlockLookup(
+        string blockHash, string parentHeaderHex, RpcResponse<DaemonBlock> response)
+    {
+        if(response?.Error != null || response.Response == null ||
+            !string.Equals(response.Response.Hash, blockHash, StringComparison.OrdinalIgnoreCase))
+            return AuxiliaryBlockLookupResult.Unavailable;
+
+        if(response.Response.Confirmations < 0)
+            return AuxiliaryBlockLookupResult.Orphaned;
+
+        if(response.Response.Confirmations == 0)
+            return AuxiliaryBlockLookupResult.Unavailable;
+
+        var acceptedParentBlock = response.Response.AuxPow?.ParentBlock;
+        if(string.IsNullOrWhiteSpace(acceptedParentBlock))
+            return AuxiliaryBlockLookupResult.MissingProof;
+
+        return string.Equals(acceptedParentBlock, parentHeaderHex,
+            StringComparison.OrdinalIgnoreCase)
+            ? AuxiliaryBlockLookupResult.Accepted
+            : AuxiliaryBlockLookupResult.LostToDifferentProof;
+    }
+
+    private static bool IsActiveBlock(RpcResponse<DaemonBlock> response, string blockHash)
+    {
+        return response?.Error == null &&
+            string.Equals(response.Response?.Hash, blockHash, StringComparison.OrdinalIgnoreCase) &&
+            response.Response.Confirmations > 0;
     }
 }

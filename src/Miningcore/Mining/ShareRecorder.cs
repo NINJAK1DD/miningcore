@@ -74,6 +74,12 @@ public class ShareRecorder : BackgroundService
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
     private bool notifiedAdminOnPolicyFallback = false;
+    private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "auxpow-claim",
+        "parent-uncertain",
+        "merged-parent-uncertain",
+    };
 
     private async Task PersistSharesAsync(IList<Share> shares)
     {
@@ -109,12 +115,20 @@ public class ShareRecorder : BackgroundService
                 if(!inserted)
                     continue;
 
+                if(IsUncertainBlockType(blockEntity.Type))
+                    continue;
+
                 if(pools.TryGetValue(share.PoolId, out var poolConfig))
                     messageBus.NotifyBlockFound(share.PoolId, blockEntity, poolConfig.Template);
                 else
                     logger.Warn(()=> $"Block found for unknown pool {share.PoolId}");
             }
         });
+    }
+
+    internal static bool IsUncertainBlockType(string type)
+    {
+        return !string.IsNullOrEmpty(type) && UncertainBlockTypes.Contains(type);
     }
 
     internal static IEnumerable<Share> GetSharesForPersistence(IEnumerable<Share> shares)

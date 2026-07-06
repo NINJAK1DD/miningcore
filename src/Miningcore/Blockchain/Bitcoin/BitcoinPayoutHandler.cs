@@ -127,9 +127,20 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     continue;
 
                 var response = await GetBlockAsync(blockHash, ct);
-                var blockHashMatches = response.Error == null && string.Equals(
-                    response.Response?.Hash, blockHash, StringComparison.OrdinalIgnoreCase);
-                var coinbaseTransaction = blockHashMatches
+                var blockIsKnown = IsExpectedBlock(response, blockHash);
+                var blockIsActive = IsActiveBlock(response, blockHash);
+
+                if(blockIsKnown && !blockIsActive && response.Response?.Confirmations < 0)
+                {
+                    block.Status = BlockStatus.Orphaned;
+                    block.Reward = 0;
+                    result.Add(block);
+                    logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} [{blockHash}] is known by the daemon but is not active");
+                    messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                    continue;
+                }
+
+                var coinbaseTransaction = blockIsActive
                     ? response.Response?.Transactions?.FirstOrDefault()
                     : null;
 
@@ -199,7 +210,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     block.Type = "auxpow";
                 }
                 else if(isParentUncertain)
-                    block.Type = null;
+                    block.Type = "merged-parent";
 
                 block.TransactionConfirmationData = coinbaseTransaction;
                 resolvedAuxiliaryBlocks.Add(block);
@@ -236,10 +247,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     // Code -5 interpreted as "orphaned"
                     if(cmdResult.Error.Code == -5)
                     {
-                        if(block.Type == "auxpow" && await IsBlockKnownAsync(block.Hash, ct))
+                        if(block.Type == "auxpow" && await IsBlockActiveAsync(block.Hash, ct))
                         {
                             result.Add(block);
-                            logger.Warn(() => $"[{LogCategory}] Wallet has not indexed AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains present");
+                            logger.Warn(() => $"[{LogCategory}] Wallet has not indexed AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains active");
                             continue;
                         }
 
@@ -259,10 +270,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // missing transaction details are interpreted as "orphaned"
                 else if(transactionInfo?.Details == null || transactionInfo.Details.Length == 0)
                 {
-                    if(block.Type == "auxpow" && await IsBlockKnownAsync(block.Hash, ct))
+                    if(block.Type == "auxpow" && await IsBlockActiveAsync(block.Hash, ct))
                     {
                         result.Add(block);
-                        logger.Warn(() => $"[{LogCategory}] Wallet returned no details for AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains present");
+                        logger.Warn(() => $"[{LogCategory}] Wallet returned no details for AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains active");
                         continue;
                     }
 
@@ -340,11 +351,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             "auxpow"));
     }
 
-    private async Task<bool> IsBlockKnownAsync(string blockHash, CancellationToken ct)
+    private async Task<bool> IsBlockActiveAsync(string blockHash, CancellationToken ct)
     {
         var response = await GetBlockAsync(blockHash, ct);
-        return response.Error == null && string.Equals(response.Response?.Hash, blockHash,
+        return IsActiveBlock(response, blockHash);
+    }
+
+    private static bool IsExpectedBlock(RpcResponse<DaemonBlock> response, string blockHash)
+    {
+        return response?.Error == null && string.Equals(response.Response?.Hash, blockHash,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsActiveBlock(RpcResponse<DaemonBlock> response, string blockHash)
+    {
+        return IsExpectedBlock(response, blockHash) && response.Response.Confirmations > 0;
     }
 
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)

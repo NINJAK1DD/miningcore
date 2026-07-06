@@ -147,6 +147,58 @@ public class AuxPowBlockConfirmationTests
     }
 
     [Fact]
+    public void AuxiliaryBlockLookup_AcceptsOnlyActiveMatchingParentProof()
+    {
+        Assert.Equal(AuxiliaryBlockLookupResult.Accepted,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliaryBlockLookup("doge-block",
+                "parent-a", new RpcResponse<Block>(new Block
+                {
+                    Hash = "doge-block",
+                    Confirmations = 1,
+                    AuxPow = new AuxPow { ParentBlock = "parent-a" },
+                })));
+
+        Assert.Equal(AuxiliaryBlockLookupResult.LostToDifferentProof,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliaryBlockLookup("doge-block",
+                "parent-b", new RpcResponse<Block>(new Block
+                {
+                    Hash = "doge-block",
+                    Confirmations = 1,
+                    AuxPow = new AuxPow { ParentBlock = "parent-a" },
+                })));
+    }
+
+    [Fact]
+    public void AuxiliaryBlockLookup_PersistsClaimWhenProofIsUnavailable()
+    {
+        Assert.Equal(AuxiliaryBlockLookupResult.MissingProof,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliaryBlockLookup("doge-block",
+                "parent-a", new RpcResponse<Block>(new Block
+                {
+                    Hash = "doge-block",
+                    Confirmations = 1,
+                })));
+
+        Assert.Equal(AuxiliaryBlockLookupResult.Unavailable,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliaryBlockLookup("doge-block",
+                "parent-a", new RpcResponse<Block>(null,
+                    new JsonRpcError(-5, "Block not found", null))));
+    }
+
+    [Fact]
+    public void AuxiliaryBlockLookup_RejectsKnownInactiveChild()
+    {
+        Assert.Equal(AuxiliaryBlockLookupResult.Orphaned,
+            MergedMiningBitcoinJobManager.ClassifyAuxiliaryBlockLookup("doge-block",
+                "parent-a", new RpcResponse<Block>(new Block
+                {
+                    Hash = "doge-block",
+                    Confirmations = -1,
+                    AuxPow = new AuxPow { ParentBlock = "parent-a" },
+                })));
+    }
+
+    [Fact]
     public void ParentTemplateOrdering_RejectsLowerHeight()
     {
         var previous = new BlockTemplate { Height = 102 };

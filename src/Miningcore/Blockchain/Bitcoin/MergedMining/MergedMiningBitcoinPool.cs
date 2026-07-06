@@ -3,6 +3,7 @@ using AutoMapper;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Nicehash;
@@ -38,6 +39,25 @@ public class MergedMiningBitcoinPool : BitcoinPool
     {
         mergedMiningConfig = MergedMiningConfigLoader.GetNormalizedConfig(pc);
         base.Configure(pc, cc);
+    }
+
+    protected override async Task SetupJobManager(CancellationToken ct)
+    {
+        if(MergedMiningEnabled)
+            await EnsureMergedMiningSchemaAsync(ct);
+
+        await base.SetupJobManager(ct);
+    }
+
+    private async Task EnsureMergedMiningSchemaAsync(CancellationToken ct)
+    {
+        var schemaReady = await cf.Run(con =>
+            blocksRepo.HasMergedMiningBlockIndexesAsync(con, ct));
+
+        if(!schemaReady)
+            throw new PoolStartupException(
+                "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.",
+                poolConfig.Id);
     }
 
     protected override WorkerContextBase CreateWorkerContext()

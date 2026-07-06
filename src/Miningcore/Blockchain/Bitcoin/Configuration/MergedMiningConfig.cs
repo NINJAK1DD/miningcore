@@ -27,6 +27,13 @@ public class MergedMiningConfig
     /// but auxiliary block candidates are not submitted because they cannot be credited.
     /// </summary>
     public bool RequireAuxAddress { get; set; } = true;
+
+    /// <summary>
+    /// Timeout in milliseconds for recurring auxiliary template refreshes after startup.
+    /// The startup sync check still uses a longer timeout so a healthy but slow Dogecoin
+    /// daemon can seed the first combined job.
+    /// </summary>
+    public int AuxiliaryTemplatePollTimeoutMs { get; set; } = 500;
 }
 
 /// <summary>
