@@ -273,7 +273,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     protected record SubmitResult(bool Accepted, string CoinbaseTx, bool Ambiguous = false);
 
-    protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex, CancellationToken ct)
+    protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex,
+        CancellationToken ct, bool notifyAmbiguous = true)
     {
         var submitBlockRequest = hasSubmitBlockMethod
             ? new RpcRequest(BitcoinCommands.SubmitBlock, new[] { blockHex })
@@ -297,7 +298,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         {
             var ambiguous = submitResult.Error?.Code == -500;
             logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            if(!ambiguous)
+            if(!ambiguous || notifyAmbiguous)
                 messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
             return new SubmitResult(false, null, ambiguous);
         }
@@ -311,7 +312,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         {
             var ambiguous = acceptResult.Error?.Code == -500;
             logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
-            if(!ambiguous)
+            if(!ambiguous || notifyAmbiguous)
                 messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
         }
 

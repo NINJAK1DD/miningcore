@@ -86,9 +86,9 @@ public class ShareRecorder : BackgroundService
     {
         await cf.RunTx(async (con, tx) =>
         {
-            // Auxiliary block candidates are sent through the share message pipeline so they can
-            // reuse normal block persistence and notifications. They are not standalone shares on
-            // the auxiliary pool and must not distort its hashrate, effort, or share statistics.
+            // Block-only candidates are sent through the share message pipeline so they can reuse
+            // normal block persistence and notifications without creating a duplicate standalone
+            // share row or distorting hashrate, effort, and share statistics.
             var mapped = GetSharesForPersistence(shares)
                 .Select(mapper.Map<Persistence.Model.Share>)
                 .ToArray();
@@ -99,12 +99,15 @@ public class ShareRecorder : BackgroundService
             // Insert blocks
             foreach(var share in shares)
             {
-                if(!share.IsBlockCandidate)
+                if(!share.IsBlockCandidate || share.BlockRecordEmitted)
                     continue;
 
                 var blockEntity = mapper.Map<Block>(share);
                 blockEntity.Status = BlockStatus.Pending;
-                await blockRepo.InsertAsync(con, tx, blockEntity);
+                var inserted = await blockRepo.InsertAsync(con, tx, blockEntity);
+
+                if(!inserted)
+                    continue;
 
                 if(pools.TryGetValue(share.PoolId, out var poolConfig))
                     messageBus.NotifyBlockFound(share.PoolId, blockEntity, poolConfig.Template);
@@ -342,10 +345,10 @@ public class ShareRecorder : BackgroundService
             .Publish(shares => shares
                 // Minimize the in-memory durability window for accepted or uncertain block
                 // candidates. Ordinary shares retain the existing batching behavior.
-                .Where(x => x.IsBlockCandidate)
+                .Where(x => x.BlockOnly)
                 .Select(x => (IList<Share>) new[] { x })
                 .Merge(shares
-                    .Where(x => !x.IsBlockCandidate)
+                    .Where(x => !x.BlockOnly)
                     .Buffer(TimeSpan.FromSeconds(5), 250)
                     .Where(batch => batch.Any())
                     .Select(batch => (IList<Share>) batch)))

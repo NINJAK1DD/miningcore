@@ -9,6 +9,7 @@ using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Newtonsoft.Json;
@@ -45,7 +46,7 @@ public class ShareRecorderTests
     }
 
     [Fact]
-    public void BlockOnly_RoundTripsThroughShareRelayWireFormat()
+    public void MergedMiningFields_RoundTripThroughShareRelayWireFormat()
     {
         var share = new Share
         {
@@ -53,6 +54,8 @@ public class ShareRecorderTests
             Miner = "DExampleAddress",
             IsBlockCandidate = true,
             BlockOnly = true,
+            BlockType = "auxpow",
+            BlockRecordEmitted = true,
         };
 
         using var stream = new MemoryStream();
@@ -65,6 +68,40 @@ public class ShareRecorderTests
         Assert.True(result.IsBlockCandidate);
         Assert.Equal(share.PoolId, result.PoolId);
         Assert.Equal(share.Miner, result.Miner);
+        Assert.Equal("auxpow", result.BlockType);
+        Assert.True(result.BlockRecordEmitted);
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_OriginalShareDoesNotDuplicateEmittedBlockRecord()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new PoolConfig[0] }, messageBus);
+        var share = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "LExampleAddress",
+            IsBlockCandidate = true,
+            BlockRecordEmitted = true,
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { share });
+
+        await shareRepository.Received(1).BatchInsertAsync(connection, transaction,
+            Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        await blockRepository.DidNotReceive().InsertAsync(connection, transaction,
+            Arg.Any<Block>());
     }
 
     [Fact]
@@ -80,6 +117,7 @@ public class ShareRecorderTests
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
 
         var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
             shareRepository, blockRepository, new ClusterConfig { Pools = new PoolConfig[0] }, messageBus);
@@ -91,6 +129,7 @@ public class ShareRecorderTests
             BlockHash = "doge-block-hash",
             IsBlockCandidate = true,
             BlockOnly = true,
+            BlockType = "auxpow",
             TransactionConfirmationData = "auxpow-block:doge-block-hash",
         };
 
@@ -102,8 +141,49 @@ public class ShareRecorderTests
         await blockRepository.Received(1).InsertAsync(connection, transaction,
             Arg.Is<Block>(x => x.PoolId == candidate.PoolId &&
                 x.BlockHeight == (ulong) candidate.BlockHeight &&
+                x.Type == candidate.BlockType &&
                 x.Hash == candidate.BlockHash &&
                 x.TransactionConfirmationData == candidate.TransactionConfirmationData));
         transaction.Received(1).Commit();
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_DuplicateBlockDoesNotNotifyAgain()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(false);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
+            Arg.Any<string>());
     }
 }

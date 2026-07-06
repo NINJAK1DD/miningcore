@@ -66,13 +66,63 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Reconciliation_UncertainSubmission_ResolvesOnLaterCycle()
+    public async Task Reconciliation_AuxPowClaim_ResolvesOnlyForMatchingParentProof()
     {
         var fixture = await CreateFixtureAsync();
-        var block = PendingBlock(AuxPowBlockConfirmation.CreateUncertain("doge-block"));
+        var losingClaim = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-a"), 1, "MinerA");
+        var winningClaim = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-b"), 2, "MinerB");
         fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
         {
             Hash = "doge-block",
+            Transactions = new[] { "coinbase-txid" },
+            AuxPow = new AuxPow { ParentBlock = "parent-b" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { losingClaim, winningClaim }, CancellationToken.None);
+
+        Assert.Equal(2, result.Length);
+        Assert.Equal(BlockStatus.Orphaned, losingClaim.Status);
+        Assert.Equal(0, losingClaim.Reward);
+        Assert.Equal(BlockStatus.Pending, winningClaim.Status);
+        Assert.Equal("auxpow", winningClaim.Type);
+        Assert.Equal("coinbase-txid", winningClaim.TransactionConfirmationData);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Reconciliation_AuxPowClaim_IsOrphanedWhenFinalRecordAlreadyExists()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-header"));
+        fixture.Handler.FinalizedAuxPowBlock = PendingBlock("coinbase-txid", 99);
+        fixture.Handler.FinalizedAuxPowBlock.Type = "auxpow";
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Transactions = new[] { "coinbase-txid" },
+            AuxPow = new AuxPow { ParentBlock = "parent-header" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
+    }
+
+    [Fact]
+    public async Task Reconciliation_AmbiguousParentSubmission_ResolvesOnLaterCycle()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateParentUncertain("ltc-block"));
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "ltc-block",
             Transactions = new[] { "coinbase-txid" },
         });
 
@@ -81,8 +131,8 @@ public class BitcoinPayoutHandlerTests : TestBase
 
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Null(block.Type);
         Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
-        Assert.Equal(0, fixture.Handler.TransactionCalls);
     }
 
     [Fact]
@@ -105,11 +155,12 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Reconciliation_UncertainSubmissionExpiresAfterDefinitiveAbsence()
+    public async Task Reconciliation_UncertainSubmissionExpiresAfterRepeatedDefinitiveAbsence()
     {
         var fixture = await CreateFixtureAsync();
-        var block = PendingBlock(AuxPowBlockConfirmation.CreateUncertain("doge-block"));
-        block.Created = fixture.Now - TimeSpan.FromMinutes(11);
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-header", 2));
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
         fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
             new JsonRpcError(-5, "Block not found", null));
 
@@ -119,6 +170,25 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Orphaned, block.Status);
         Assert.Equal(0, block.Reward);
+    }
+
+    [Fact]
+    public async Task Reconciliation_UncertainSubmissionPersistsDefinitiveMissCount()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-header"));
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-5, "Block not found", null));
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("auxpow-claim:doge-block:parent-header:1",
+            block.TransactionConfirmationData);
     }
 
     [Fact]
@@ -181,6 +251,31 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(0, block.Reward);
     }
 
+    [Fact]
+    public async Task Classification_AuxPowBlockWithWalletIndexLag_RemainsPendingWhenBlockExists()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        block.Type = "auxpow";
+        block.Hash = "doge-block";
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(1, fixture.Handler.BlockCalls);
+    }
+
     private async Task<HandlerFixture> CreateFixtureAsync()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -211,14 +306,16 @@ public class BitcoinPayoutHandlerTests : TestBase
         return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository, now);
     }
 
-    private static PersistedBlock PendingBlock(string confirmationData)
+    private static PersistedBlock PendingBlock(string confirmationData, long id = 1,
+        string miner = "DTestMiner")
     {
         return new PersistedBlock
         {
-            Id = 1,
+            Id = id,
             PoolId = "doge-test",
             BlockHeight = 100,
-            Miner = "DTestMiner",
+            Miner = miner,
+            Hash = "doge-block",
             Status = BlockStatus.Pending,
             TransactionConfirmationData = confirmationData,
             Created = DateTime.UtcNow,
@@ -254,6 +351,7 @@ public class BitcoinPayoutHandlerTests : TestBase
 
         public RpcResponse<DaemonBlock> BlockResponse { get; set; }
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
+        public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public int BlockCalls { get; private set; }
         public int TransactionCalls { get; private set; }
 
@@ -269,6 +367,12 @@ public class BitcoinPayoutHandlerTests : TestBase
         {
             TransactionCalls++;
             return Task.FromResult(TransactionResponse);
+        }
+
+        protected override Task<PersistedBlock> GetFinalizedAuxPowBlockAsync(string poolId,
+            string blockHash, CancellationToken ct)
+        {
+            return Task.FromResult(FinalizedAuxPowBlock);
         }
     }
 }

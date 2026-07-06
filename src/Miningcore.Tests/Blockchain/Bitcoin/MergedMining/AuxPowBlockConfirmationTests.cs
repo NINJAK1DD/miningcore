@@ -23,16 +23,34 @@ public class AuxPowBlockConfirmationTests
     }
 
     [Fact]
-    public void UncertainMarker_RoundTripsBlockHash()
+    public void ClaimMarker_RoundTripsProofIdentityAndMissCount()
     {
         const string blockHash = "0123456789abcdef";
+        const string parentBlock = "parent-header";
 
-        var marker = AuxPowBlockConfirmation.CreateUncertain(blockHash);
-        var parsed = AuxPowBlockConfirmation.TryGetUncertainBlockHash(marker, out var result);
+        var marker = AuxPowBlockConfirmation.CreateClaim(blockHash, parentBlock, 2);
+        var parsed = AuxPowBlockConfirmation.TryGetClaim(marker, out var result,
+            out var resultParentBlock, out var misses);
 
         Assert.True(parsed);
         Assert.Equal(blockHash, result);
+        Assert.Equal(parentBlock, resultParentBlock);
+        Assert.Equal(2, misses);
         Assert.False(AuxPowBlockConfirmation.TryGetPendingBlockHash(marker, out _));
+    }
+
+    [Fact]
+    public void ParentUncertainMarker_RoundTripsBlockHashAndMissCount()
+    {
+        const string blockHash = "0123456789abcdef";
+
+        var marker = AuxPowBlockConfirmation.CreateParentUncertain(blockHash, 2);
+        var parsed = AuxPowBlockConfirmation.TryGetParentUncertain(marker, out var result,
+            out var misses);
+
+        Assert.True(parsed);
+        Assert.Equal(blockHash, result);
+        Assert.Equal(2, misses);
     }
 
     [Theory]

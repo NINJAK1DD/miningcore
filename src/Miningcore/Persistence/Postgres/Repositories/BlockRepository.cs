@@ -15,7 +15,7 @@ public class BlockRepository : IBlockRepository
 
     private readonly IMapper mapper;
 
-    public async Task InsertAsync(IDbConnection con, IDbTransaction tx, Block block)
+    public async Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block)
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
@@ -27,9 +27,17 @@ public class BlockRepository : IBlockRepository
 
         const string auxPowConflictClause =
             " ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING";
+        const string auxPowClaimConflictClause =
+            " ON CONFLICT (poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim' DO NOTHING";
 
-        await con.ExecuteAsync(mapped.Type == "auxpow" ? query + auxPowConflictClause : query,
-            mapped, tx);
+        var command = mapped.Type switch
+        {
+            "auxpow" => query + auxPowConflictClause,
+            "auxpow-claim" => query + auxPowClaimConflictClause,
+            _ => query,
+        };
+
+        return await con.ExecuteAsync(command, mapped, tx) > 0;
     }
 
     public async Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block)
@@ -192,6 +200,22 @@ public class BlockRepository : IBlockRepository
             poolId,
             height,
             type
+        }))
+            .Select(mapper.Map<Block>)
+            .FirstOrDefault();
+    }
+
+    public async Task<Block> GetBlockByPoolHashAndTypeAsync(IDbConnection con, string poolId,
+        string hash, string type)
+    {
+        const string query = @"SELECT * FROM blocks WHERE poolid = @poolId AND hash = @hash AND type = @type
+            ORDER BY created ASC FETCH NEXT 1 ROWS ONLY";
+
+        return (await con.QueryAsync<Entities.Block>(query, new
+        {
+            poolId,
+            hash,
+            type,
         }))
             .Select(mapper.Map<Block>)
             .FirstOrDefault();

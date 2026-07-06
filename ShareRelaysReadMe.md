@@ -7,6 +7,8 @@
 
 ### Purpose
 
+> **Durability note:** The current ZeroMQ PUB/SUB relay is an in-memory, unacknowledged transport. Messages published while a receiver is disconnected are not replayed. Do not treat it as financially durable delivery for merged-mining block candidates; colocate the recorder with the pool or add an acknowledged durable queue/outbox for that traffic.
+
 The overall goal is to enable a setup where **multiple stratum servers** work in tandem with a **shared primary server**. This architecture allows us to:
 
 - **Distribute load:** Different servers can handle mining requests concurrently.

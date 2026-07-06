@@ -68,11 +68,18 @@ public class Share
 
     /// <summary>
     /// Persist this message as a block candidate without inserting it into the shares table.
-    /// Used for accepted auxiliary blocks that did not originate from a standalone Stratum share
-    /// on the auxiliary pool.
+    /// Used for independently durable merged-mining block records that must not create a second
+    /// standalone share row.
     /// </summary>
     [ProtoMember(20)]
     public bool BlockOnly { get; set; }
+
+    /// <summary>
+    /// The block record was emitted independently as a block-only message. The original share is
+    /// still persisted for statistics, but must not create a duplicate block row.
+    /// </summary>
+    [ProtoMember(21)]
+    public bool BlockRecordEmitted { get; set; }
 
     /// <summary>
     /// Block this share refers to

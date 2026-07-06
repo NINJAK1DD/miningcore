@@ -16,6 +16,7 @@ public class MergedMiningShareResult
 {
     public Share Share { get; init; }
     public string ParentBlockHex { get; init; }
+    public string ParentHeaderHex { get; init; }
     public string AuxPowHex { get; init; }
     public AuxBlockTemplate AuxiliaryBlockTemplate { get; init; }
     public double AuxiliaryDifficulty { get; init; }
@@ -165,6 +166,7 @@ public class MergedMiningBitcoinJob : BitcoinJob
         {
             Share = share,
             ParentBlockHex = parentBlockHex,
+            ParentHeaderHex = headerBytes.ToHexString(),
             AuxPowHex = auxPowHex,
             AuxiliaryBlockTemplate = AuxiliaryBlockTemplate,
             AuxiliaryDifficulty = AuxiliaryDifficulty,

@@ -33,12 +33,38 @@ public class BlockRepositoryTests
             Created = DateTime.UtcNow,
         };
 
-        await repository.InsertAsync(connection, null, block);
+        var inserted = await repository.InsertAsync(connection, null, block);
 
+        Assert.True(inserted);
         Assert.Contains("ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING",
             connection.CommandText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("auxpow", connection.Parameters["type"]);
         Assert.Equal(block.Hash, connection.Parameters["hash"]);
+    }
+
+    [Fact]
+    public async Task InsertAsync_DeduplicatesOnlyIdenticalAuxPowClaims()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var repository = new BlockRepository(mapper);
+        var connection = new RecordingDbConnection();
+        var block = new Block
+        {
+            PoolId = "doge-test",
+            BlockHeight = 100,
+            Type = "auxpow-claim",
+            Hash = "doge-block",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "auxpow-claim:doge-block:parent-header:0",
+            Created = DateTime.UtcNow,
+        };
+
+        var inserted = await repository.InsertAsync(connection, null, block);
+
+        Assert.True(inserted);
+        Assert.Contains("ON CONFLICT (poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim' DO NOTHING",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -58,8 +84,9 @@ public class BlockRepositoryTests
             Created = DateTime.UtcNow,
         };
 
-        await repository.InsertAsync(connection, null, block);
+        var inserted = await repository.InsertAsync(connection, null, block);
 
+        Assert.True(inserted);
         Assert.DoesNotContain("ON CONFLICT", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
     }

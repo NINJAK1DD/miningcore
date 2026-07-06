@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -48,7 +47,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
     private const string CreateAuxBlock = "createauxblock";
     private const string SubmitAuxBlock = "submitauxblock";
-    private static readonly TimeSpan AuxiliaryRpcTimeout = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan AuxiliaryTemplatePollTimeout = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan AuxiliaryStartupTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan AuxiliaryAddressValidationTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BlockSubmissionTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AmbiguousSubmissionLookupTimeout = TimeSpan.FromSeconds(5);
 
@@ -58,8 +59,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private BitcoinTemplate auxiliaryCoin;
     private RpcClient auxiliaryRpc;
     private bool auxiliaryTemplateDegraded;
-    private readonly ConcurrentDictionary<string, byte> recordedAuxiliaryBlocks = new(
-        StringComparer.OrdinalIgnoreCase);
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -139,7 +138,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         do
         {
-            var response = await GetAuxBlockTemplateAsync(ct);
+            var response = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout);
             if(response.Error == null && response.Response != null)
             {
                 logger.Info(() => $"Auxiliary daemon for {auxiliaryCoin.Name} is synched");
@@ -157,10 +156,11 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
-    private async Task<RpcResponse<AuxBlockTemplate>> GetAuxBlockTemplateAsync(CancellationToken ct)
+    private async Task<RpcResponse<AuxBlockTemplate>> GetAuxBlockTemplateAsync(CancellationToken ct,
+        TimeSpan timeout)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(AuxiliaryRpcTimeout);
+        cts.CancelAfter(timeout);
 
         return await auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger, CreateAuxBlock, cts.Token,
             new[] { auxiliaryPoolConfig.Address });
@@ -213,38 +213,49 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 return (false, forceUpdate);
             }
 
-            var hasCachedAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate != null;
-            var auxiliaryResponse = ShouldRefreshAuxiliaryTemplate(via,
-                hasCachedAuxiliaryTemplate)
-                ? await GetAuxBlockTemplateAsync(ct)
-                : new RpcResponse<AuxBlockTemplate>(previousJob.AuxiliaryBlockTemplate);
-            var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
-                previousJob?.AuxiliaryBlockTemplate, auxiliaryResponse,
-                out var auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
+            var previousAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate;
+            var shouldRefreshAuxiliaryTemplate = ShouldRefreshAuxiliaryTemplate(via,
+                previousAuxiliaryTemplate != null);
+            AuxBlockTemplate auxiliaryTemplate;
 
-            if(!hasAuxiliaryTemplate)
+            if(!shouldRefreshAuxiliaryTemplate)
             {
-                var error = auxiliaryResponse.Error?.Message ?? "empty response";
-                logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
-                return (false, forceUpdate);
-            }
-
-            if(usedCachedAuxiliaryTemplate)
-            {
-                var error = auxiliaryResponse.Error?.Message ?? "empty response";
-                if(!auxiliaryTemplateDegraded)
-                    logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
-                else
-                    logger.Debug(() => $"Auxiliary template remains unavailable: {error}");
-
-                auxiliaryTemplateDegraded = true;
+                // Parent block-template stream events cannot prove that the auxiliary daemon has
+                // recovered. Reuse the cached template without changing the degraded state.
+                auxiliaryTemplate = previousAuxiliaryTemplate;
             }
             else
             {
-                if(auxiliaryTemplateDegraded)
-                    logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
+                var auxiliaryResponse = await GetAuxBlockTemplateAsync(ct,
+                    AuxiliaryTemplatePollTimeout);
+                var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
+                    previousAuxiliaryTemplate, auxiliaryResponse,
+                    out auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
 
-                auxiliaryTemplateDegraded = false;
+                if(!hasAuxiliaryTemplate)
+                {
+                    var error = auxiliaryResponse.Error?.Message ?? "empty response";
+                    logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
+                    return (false, forceUpdate);
+                }
+
+                if(usedCachedAuxiliaryTemplate)
+                {
+                    var error = auxiliaryResponse.Error?.Message ?? "empty response";
+                    if(!auxiliaryTemplateDegraded)
+                        logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
+                    else
+                        logger.Debug(() => $"Auxiliary template remains unavailable: {error}");
+
+                    auxiliaryTemplateDegraded = true;
+                }
+                else
+                {
+                    if(auxiliaryTemplateDegraded)
+                        logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
+
+                    auxiliaryTemplateDegraded = false;
+                }
             }
 
             var previousHeight = previousJob?.BlockTemplate?.Height ?? 0;
@@ -356,7 +367,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 : AuxiliaryAddressValidation.Valid;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(AuxiliaryRpcTimeout);
+        cts.CancelAfter(AuxiliaryAddressValidationTimeout);
         var result = await auxiliaryRpc.ExecuteAsync<ValidateAddressResponse>(logger,
             BitcoinCommands.ValidateAddress, cts.Token, new[] { address });
 
@@ -461,8 +472,25 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
                     logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
                 }
+                else if(acceptResponse.Ambiguous)
+                {
+                    share.IsBlockCandidate = true;
+                    share.BlockType = "parent-uncertain";
+                    share.TransactionConfirmationData =
+                        AuxPowBlockConfirmation.CreateParentUncertain(share.BlockHash);
+                    logger.Warn(() => $"Parent submission outcome for block {share.BlockHeight} [{share.BlockHash}] is uncertain; durable reconciliation queued");
+                }
                 else
                     share.TransactionConfirmationData = null;
+
+                if(share.IsBlockCandidate)
+                {
+                    // Persist the parent result as soon as its own RPC/reconciliation completes.
+                    // The original share is still returned through the ordered share stream for
+                    // statistics, while this block-only copy avoids waiting for DOGE submission.
+                    messageBus.SendMessage(CreateParentBlockOnlyShare(share));
+                    share.BlockRecordEmitted = true;
+                }
             }
             else if(ReferenceEquals(completed, auxiliarySubmission))
                 blockAccepted = await auxiliarySubmission;
@@ -477,10 +505,37 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         return share;
     }
 
+    private static Share CreateParentBlockOnlyShare(Share share)
+    {
+        return new Share
+        {
+            PoolId = share.PoolId,
+            Miner = share.Miner,
+            Worker = share.Worker,
+            UserAgent = share.UserAgent,
+            IpAddress = share.IpAddress,
+            Source = share.Source,
+            Difficulty = share.Difficulty,
+            ShareDifficulty = share.ShareDifficulty,
+            ActualDifficulty = share.ActualDifficulty,
+            SessionId = share.SessionId,
+            BlockOnly = true,
+            BlockHeight = share.BlockHeight,
+            BlockReward = share.BlockReward,
+            BlockRewardDouble = share.BlockRewardDouble,
+            BlockHash = share.BlockHash,
+            BlockType = share.BlockType,
+            IsBlockCandidate = true,
+            TransactionConfirmationData = share.TransactionConfirmationData,
+            NetworkDifficulty = share.NetworkDifficulty,
+            Created = share.Created,
+        };
+    }
+
     private async Task<SubmitResult> SubmitParentBlockWithReconciliationAsync(Share share,
         string blockHex, CancellationToken ct)
     {
-        var result = await SubmitBlockAsync(share, blockHex, ct);
+        var result = await SubmitBlockAsync(share, blockHex, ct, false);
         if(result.Accepted || !result.Ambiguous)
             return result;
 
@@ -533,12 +588,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             return false;
         }
 
-        if(!recordedAuxiliaryBlocks.TryAdd(template.Hash, 0))
-        {
-            logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] has already been queued for accounting");
-            return accepted;
-        }
-
         var auxiliaryShare = new Share
         {
             PoolId = auxiliaryPoolConfig.Id,
@@ -553,13 +602,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             NetworkDifficulty = result.AuxiliaryDifficulty,
             BlockHeight = template.Height,
             BlockHash = template.Hash,
-            BlockType = "auxpow",
+            BlockType = uncertain ? "auxpow-claim" : "auxpow",
             IsBlockCandidate = true,
             BlockOnly = true,
             // submitauxblock only confirms acceptance. Persist the accepted block immediately;
             // the payout handler resolves this marker to the coinbase txid via getblock.
             TransactionConfirmationData = uncertain
-                ? AuxPowBlockConfirmation.CreateUncertain(template.Hash)
+                ? AuxPowBlockConfirmation.CreateClaim(template.Hash, result.ParentHeaderHex)
                 : AuxPowBlockConfirmation.CreatePending(template.Hash),
             SessionId = context.SessionId,
             Created = clock.Now,

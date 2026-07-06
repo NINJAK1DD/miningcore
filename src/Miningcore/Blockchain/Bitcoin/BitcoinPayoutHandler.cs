@@ -55,7 +55,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private int payoutDecimalPlaces = 4;
     private CoinTemplate coin;
     private int minConfirmations;
-    private static readonly TimeSpan UncertainAuxiliaryBlockLifetime = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
+    private const int MinimumDefinitiveMisses = 3;
 
     protected override string LogCategory => "Bitcoin Payout Handler";
 
@@ -110,13 +111,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             foreach(var block in page)
             {
+                string blockHash;
+                string claimedParentBlock = null;
+                var definitiveMisses = 0;
                 var isAcceptedMarker = AuxPowBlockConfirmation.TryGetPendingBlockHash(
-                    block.TransactionConfirmationData, out var blockHash);
-                var isUncertainMarker = !isAcceptedMarker &&
-                    AuxPowBlockConfirmation.TryGetUncertainBlockHash(
-                        block.TransactionConfirmationData, out blockHash);
+                    block.TransactionConfirmationData, out blockHash);
+                var isAuxPowClaim = !isAcceptedMarker && AuxPowBlockConfirmation.TryGetClaim(
+                    block.TransactionConfirmationData, out blockHash, out claimedParentBlock,
+                    out definitiveMisses);
+                var isParentUncertain = !isAcceptedMarker && !isAuxPowClaim &&
+                    AuxPowBlockConfirmation.TryGetParentUncertain(
+                        block.TransactionConfirmationData, out blockHash, out definitiveMisses);
 
-                if(!isAcceptedMarker && !isUncertainMarker)
+                if(!isAcceptedMarker && !isAuxPowClaim && !isParentUncertain)
                     continue;
 
                 var response = await GetBlockAsync(blockHash, ct);
@@ -131,18 +138,68 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
                     logger.Warn(() => $"[{LogCategory}] Unable to reconcile auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
 
-                    if(isUncertainMarker && response.Error?.Code == -5 &&
-                        clock.Now - block.Created >= UncertainAuxiliaryBlockLifetime)
+                    if((isAuxPowClaim || isParentUncertain) && response.Error?.Code == -5)
                     {
-                        block.Status = BlockStatus.Orphaned;
-                        block.Reward = 0;
+                        var nextMiss = definitiveMisses + 1;
+
+                        if(nextMiss >= MinimumDefinitiveMisses &&
+                            clock.Now - block.Created >= UncertainBlockLifetime)
+                        {
+                            block.Status = BlockStatus.Orphaned;
+                            block.Reward = 0;
+                            logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] expired after {nextMiss} definitive misses");
+                            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        }
+                        else
+                        {
+                            block.TransactionConfirmationData = isAuxPowClaim
+                                ? AuxPowBlockConfirmation.CreateClaim(blockHash,
+                                    claimedParentBlock, nextMiss)
+                                : AuxPowBlockConfirmation.CreateParentUncertain(blockHash, nextMiss);
+                            logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] remains pending after definitive miss {nextMiss}");
+                        }
+
                         result.Add(block);
-                        logger.Info(() => $"[{LogCategory}] Uncertain auxiliary block {block.BlockHeight} [{blockHash}] expired without appearing on the daemon");
-                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                     }
 
                     continue;
                 }
+
+                if(isAuxPowClaim)
+                {
+                    var acceptedParentBlock = response.Response?.AuxPow?.ParentBlock;
+                    if(string.IsNullOrEmpty(acceptedParentBlock))
+                    {
+                        logger.Warn(() => $"[{LogCategory}] DOGE block {block.BlockHeight} [{blockHash}] did not expose auxpow.parentblock");
+                        continue;
+                    }
+
+                    if(!string.Equals(acceptedParentBlock, claimedParentBlock,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        block.Status = BlockStatus.Orphaned;
+                        block.Reward = 0;
+                        result.Add(block);
+                        logger.Info(() => $"[{LogCategory}] AuxPoW claim for block {block.BlockHeight} [{blockHash}] lost to a different parent proof");
+                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        continue;
+                    }
+
+                    var finalized = await GetFinalizedAuxPowBlockAsync(block.PoolId, blockHash, ct);
+                    if(finalized != null && finalized.Id != block.Id)
+                    {
+                        block.Status = BlockStatus.Orphaned;
+                        block.Reward = 0;
+                        result.Add(block);
+                        logger.Info(() => $"[{LogCategory}] AuxPoW claim for block {block.BlockHeight} [{blockHash}] superseded by finalized block record {finalized.Id}");
+                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        continue;
+                    }
+
+                    block.Type = "auxpow";
+                }
+                else if(isParentUncertain)
+                    block.Type = null;
 
                 block.TransactionConfirmationData = coinbaseTransaction;
                 resolvedAuxiliaryBlocks.Add(block);
@@ -154,8 +211,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Where(block => !resolvedAuxiliaryBlocks.Contains(block) &&
                     !AuxPowBlockConfirmation.TryGetPendingBlockHash(
                         block.TransactionConfirmationData, out _) &&
-                    !AuxPowBlockConfirmation.TryGetUncertainBlockHash(
-                        block.TransactionConfirmationData, out _))
+                    !AuxPowBlockConfirmation.TryGetClaim(
+                        block.TransactionConfirmationData, out _, out _, out _) &&
+                    !AuxPowBlockConfirmation.TryGetParentUncertain(
+                        block.TransactionConfirmationData, out _, out _))
                 .ToArray();
 
             if(classifiablePage.Length == 0)
@@ -177,6 +236,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     // Code -5 interpreted as "orphaned"
                     if(cmdResult.Error.Code == -5)
                     {
+                        if(block.Type == "auxpow" && await IsBlockKnownAsync(block.Hash, ct))
+                        {
+                            result.Add(block);
+                            logger.Warn(() => $"[{LogCategory}] Wallet has not indexed AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains present");
+                            continue;
+                        }
+
                         block.Status = BlockStatus.Orphaned;
                         block.Reward = 0;
                         result.Add(block);
@@ -193,6 +259,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // missing transaction details are interpreted as "orphaned"
                 else if(transactionInfo?.Details == null || transactionInfo.Details.Length == 0)
                 {
+                    if(block.Type == "auxpow" && await IsBlockKnownAsync(block.Hash, ct))
+                    {
+                        result.Add(block);
+                        logger.Warn(() => $"[{LogCategory}] Wallet returned no details for AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains present");
+                        continue;
+                    }
+
                     block.Status = BlockStatus.Orphaned;
                     block.Reward = 0;
                     result.Add(block);
@@ -258,6 +331,20 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             new[] { block.TransactionConfirmationData })).ToArray();
 
         return rpcClient.ExecuteBatchAsync(logger, ct, batch);
+    }
+
+    protected virtual Task<Block> GetFinalizedAuxPowBlockAsync(string poolId, string blockHash,
+        CancellationToken ct)
+    {
+        return cf.Run(con => blockRepo.GetBlockByPoolHashAndTypeAsync(con, poolId, blockHash,
+            "auxpow"));
+    }
+
+    private async Task<bool> IsBlockKnownAsync(string blockHash, CancellationToken ct)
+    {
+        var response = await GetBlockAsync(blockHash, ct);
+        return response.Error == null && string.Equals(response.Response?.Hash, blockHash,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
