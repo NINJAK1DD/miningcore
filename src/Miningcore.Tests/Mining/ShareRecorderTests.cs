@@ -187,6 +187,91 @@ public class ShareRecorderTests
             Arg.Any<string>());
     }
 
+    [Fact]
+    public async Task PersistSharesCoreAsync_EmitsBlockFoundOnlyAfterCommit()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        Received.InOrder(() =>
+        {
+            transaction.Commit();
+            messageBus.SendMessage(Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
+        });
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_FailedCommitDoesNotEmitBlockFound()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        transaction.When(x => x.Commit()).Do(_ => throw new DataException("commit failed"));
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await Assert.ThrowsAsync<DataException>(() =>
+            recorder.PersistSharesCoreAsync(new List<Share> { candidate }));
+
+        messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
+            Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData("auxpow-claim")]
     [InlineData("merged-parent-uncertain")]

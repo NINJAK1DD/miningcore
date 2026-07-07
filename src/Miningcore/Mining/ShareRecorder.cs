@@ -90,8 +90,10 @@ public class ShareRecorder : BackgroundService
 
     internal async Task PersistSharesCoreAsync(IList<Share> shares)
     {
-        await cf.RunTx(async (con, tx) =>
+        var insertedBlocks = await cf.RunTx(async (con, tx) =>
         {
+            var result = new List<(string PoolId, Block Block)>();
+
             // Block-only candidates are sent through the share message pipeline so they can reuse
             // normal block persistence and notifications without creating a duplicate standalone
             // share row or distorting hashrate, effort, and share statistics.
@@ -118,12 +120,19 @@ public class ShareRecorder : BackgroundService
                 if(IsUncertainBlockType(blockEntity.Type))
                     continue;
 
-                if(pools.TryGetValue(share.PoolId, out var poolConfig))
-                    messageBus.NotifyBlockFound(share.PoolId, blockEntity, poolConfig.Template);
-                else
-                    logger.Warn(()=> $"Block found for unknown pool {share.PoolId}");
+                result.Add((share.PoolId, blockEntity));
             }
+
+            return result;
         });
+
+        foreach(var (poolId, block) in insertedBlocks)
+        {
+            if(pools.TryGetValue(poolId, out var poolConfig))
+                messageBus.NotifyBlockFound(poolId, block, poolConfig.Template);
+            else
+                logger.Warn(()=> $"Block found for unknown pool {poolId}");
+        }
     }
 
     internal static bool IsUncertainBlockType(string type)

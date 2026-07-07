@@ -7,6 +7,7 @@ using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Extensions;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -294,7 +295,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             submitResult.Error?.Code.ToString(CultureInfo.InvariantCulture) ??
             submitResult.Response?.ToString();
 
-        if(!string.IsNullOrEmpty(submitError))
+        var duplicateSubmission = IsDuplicateBlockSubmissionResponse(submitError);
+
+        if(!string.IsNullOrEmpty(submitError) && !duplicateSubmission)
         {
             var ambiguous = submitResult.Error?.Code == -500;
             logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
@@ -303,10 +306,22 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             return new SubmitResult(false, null, ambiguous);
         }
 
-        // was it accepted?
+        // was it accepted or already known on the active chain?
         var acceptResult = results[1];
         var block = acceptResult.Response?.ToObject<DaemonResponses.Block>();
-        var accepted = acceptResult.Error == null && block?.Hash == share.BlockHash;
+        var accepted = IsAcceptedBlockLookup(acceptResult.Error, block, share.BlockHash);
+
+        if(duplicateSubmission)
+        {
+            if(accepted)
+            {
+                logger.Warn(() => $"Block {share.BlockHeight} submission returned duplicate, but block [{share.BlockHash}] is active on the daemon");
+                return new SubmitResult(true, block?.Transactions?.FirstOrDefault());
+            }
+
+            logger.Warn(() => $"Block {share.BlockHeight} submission returned duplicate, but block [{share.BlockHash}] was not found active after submission");
+            return new SubmitResult(false, null, true);
+        }
 
         if(!accepted)
         {
@@ -316,8 +331,23 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
         }
 
-        return new SubmitResult(accepted, block?.Transactions.FirstOrDefault(),
+        return new SubmitResult(accepted, block?.Transactions?.FirstOrDefault(),
             !accepted && acceptResult.Error?.Code == -500);
+    }
+
+    internal static bool IsDuplicateBlockSubmissionResponse(string submitError)
+    {
+        return !string.IsNullOrWhiteSpace(submitError) &&
+            (submitError.Equals("duplicate", StringComparison.OrdinalIgnoreCase) ||
+                submitError.Equals("duplicate-inconclusive", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsAcceptedBlockLookup(JsonRpcError error, DaemonResponses.Block block,
+        string expectedHash)
+    {
+        return error == null &&
+            string.Equals(block?.Hash, expectedHash, StringComparison.OrdinalIgnoreCase) &&
+            block.Confirmations > 0;
     }
 
     protected async Task<bool> AreDaemonsHealthyLegacyAsync(CancellationToken ct)

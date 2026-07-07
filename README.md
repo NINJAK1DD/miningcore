@@ -59,10 +59,13 @@ relay compatibility and the required pre-production regtest.
 | Direct pool/recorder | Required | Required for merged mining | Required |
 | Database-free relay sender | Not required | Disabled | Skipped |
 | Relay sender selected as payout node | Required | Allowed when configured; avoid duplicate processors | Required if it reconciles merged mining |
-| Central relay receiver/recorder | Required | Required for merged mining | Required |
+| Central relay receiver/recorder | Required | Required for merged mining unless another database-connected node is explicitly the sole payout/reconciliation owner | Required when it reconciles merged mining |
 
 For merged mining, cluster-level `paymentProcessing.enabled` must be true on the node that owns
-reconciliation and payouts. Run only one active payout manager for a database/pool set.
+reconciliation and payouts. Exactly one database-connected node should own that role for a
+database/pool set. That node must include the local `mergedMining` configuration for the merged pool,
+all participating nodes must use the same PostgreSQL database, and enabling payment processing on both
+the relay sender and receiver can result in concurrent balance and payout processing.
 
 Share relay uses ZeroMQ PUB/SUB and is not an acknowledged durable queue. A disconnected receiver or
 process failure can lose an accepted block event. Production deployments requiring stronger financial
@@ -87,8 +90,9 @@ Debian 12 is the clearest maintained script path in this repository:
 ```
 
 The GitHub Actions [`.NET` workflow](.github/workflows/dotnet.yml) is the authoritative automated
-build-and-test environment. The project currently targets .NET 6; modernising the target framework is
-separate work.
+build-and-test environment. The project currently targets the unsupported .NET 6 runtime; upgrade to a
+supported .NET release before treating this fork as production-hardened. Modernising the target
+framework is tracked as separate work.
 
 ### Docker
 
@@ -121,8 +125,9 @@ Visual Studio 2022 can open `Miningcore.sln` directly.
 ## Database setup and upgrades
 
 Direct nodes, relay receiver/recorders and any node running payment processing require PostgreSQL.
-Database-free relay senders are the exception. PostgreSQL 10 or newer is supported; PostgreSQL 11 or
-newer is recommended for higher-load partitioned deployments.
+Database-free relay senders are the exception. The schema may remain compatible with older PostgreSQL
+versions, but production deployments should use a currently supported PostgreSQL major release; for a
+new public pool, PostgreSQL 15 or later is a more defensible baseline than PostgreSQL 10.
 
 Create a role and database:
 
@@ -183,9 +188,10 @@ Automated tests cover AuxPoW serialization, proof attribution, reconciliation, p
 deployment validation and regressions. They do not replace live integration testing.
 
 Before mainnet funds are enabled, complete the documented tests with real `litecoind`, `dogecoind` and
-PostgreSQL. Required scenarios include competing parent proofs, response loss, duplicate submissions,
-reorganisations, parent-only/DOGE-only/dual-target solutions, Litecoin MWEB templates, payout maturity,
-wallet credit and concurrent PostgreSQL claim promotion.
+PostgreSQL. Required scenarios include height-decreasing Litecoin reorganisations, competing parent
+proofs, response loss, duplicate submissions, Dogecoin reorganisations, parent-only/DOGE-only/dual-target
+solutions, Litecoin MWEB templates, payout maturity, wallet credit and concurrent PostgreSQL claim
+promotion.
 
 ## Security and durability
 

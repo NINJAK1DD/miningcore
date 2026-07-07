@@ -245,16 +245,24 @@ public class AuxPowBlockConfirmationTests
     }
 
     [Fact]
-    public void ParentTemplateOrdering_RejectsLowerHeight()
+    public void ParentTemplateSelection_AcceptsHeightDecreasingReorgWhenParentHashChanges()
     {
-        var previous = new BlockTemplate { Height = 102 };
+        var previous = new BlockTemplate
+        {
+            Height = 102,
+            PreviousBlockhash = "old-tip",
+        };
 
-        Assert.True(MergedMiningBitcoinJobManager.IsStaleParentTemplate(
-            previous, new BlockTemplate { Height = 101 }));
-        Assert.False(MergedMiningBitcoinJobManager.IsStaleParentTemplate(
-            previous, new BlockTemplate { Height = 102 }));
-        Assert.False(MergedMiningBitcoinJobManager.IsStaleParentTemplate(
-            previous, new BlockTemplate { Height = 103 }));
+        Assert.True(MergedMiningBitcoinJobManager.IsNewParentTemplate(
+            previous, new BlockTemplate { Height = 101, PreviousBlockhash = "new-tip" }));
+        Assert.True(MergedMiningBitcoinJobManager.IsNewParentTemplate(
+            previous, new BlockTemplate { Height = 102, PreviousBlockhash = "new-tip" }));
+        Assert.True(MergedMiningBitcoinJobManager.IsNewParentTemplate(
+            previous, new BlockTemplate { Height = 103, PreviousBlockhash = "old-tip" }));
+        Assert.False(MergedMiningBitcoinJobManager.IsNewParentTemplate(
+            previous, new BlockTemplate { Height = 101, PreviousBlockhash = "old-tip" }));
+        Assert.True(MergedMiningBitcoinJobManager.IsNewParentTemplate(
+            null, new BlockTemplate { Height = 101, PreviousBlockhash = "new-tip" }));
     }
 
     [Fact]

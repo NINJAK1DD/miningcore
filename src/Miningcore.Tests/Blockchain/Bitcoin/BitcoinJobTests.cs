@@ -2,18 +2,49 @@ using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
+using Miningcore.JsonRpc;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using NBitcoin;
 using Newtonsoft.Json;
 using NLog;
 using Xunit;
+using DaemonBlock = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
 #pragma warning disable 8974
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
 public class BitcoinJobTests : TestBase
 {
+    [Theory]
+    [InlineData("duplicate")]
+    [InlineData("DUPLICATE")]
+    [InlineData("duplicate-inconclusive")]
+    public void DuplicateSubmitResponse_IsLookupAmbiguous(string response)
+    {
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>
+            .IsDuplicateBlockSubmissionResponse(response));
+    }
+
+    [Fact]
+    public void AcceptedBlockLookup_RequiresExactActiveHash()
+    {
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            null,
+            new DaemonBlock { Hash = "block-hash", Confirmations = 1 },
+            "BLOCK-HASH"));
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            null,
+            new DaemonBlock { Hash = "block-hash", Confirmations = -1 },
+            "block-hash"));
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            new JsonRpcError(-5, "not found", null),
+            new DaemonBlock { Hash = "block-hash", Confirmations = 1 },
+            "block-hash"));
+    }
+
     [Fact]
     public void Process_Valid_Block()
     {

@@ -218,12 +218,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             var previousJob = currentJob as MergedMiningBitcoinJob;
             var blockTemplate = parentResponse.Response;
 
-            if(IsStaleParentTemplate(previousJob?.BlockTemplate, blockTemplate))
-            {
-                logger.Warn(() => $"Ignoring stale parent template {blockTemplate.Height}; current height is {previousJob.BlockTemplate.Height}");
-                return (false, forceUpdate);
-            }
-
             var previousAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate ??
                 startupAuxiliaryTemplate;
             var shouldRefreshAuxiliaryTemplate = ShouldRefreshAuxiliaryTemplate(via,
@@ -273,11 +267,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 }
             }
 
-            var previousHeight = previousJob?.BlockTemplate?.Height ?? 0;
-
-            var parentIsNew = previousJob == null ||
-                previousJob.BlockTemplate?.PreviousBlockhash != blockTemplate.PreviousBlockhash ||
-                blockTemplate.Height > previousHeight;
+            var parentIsNew = IsNewParentTemplate(previousJob?.BlockTemplate, blockTemplate);
 
             var auxiliaryChange = ClassifyAuxiliaryTemplateChange(
                 previousJob?.AuxiliaryBlockTemplate, auxiliaryTemplate);
@@ -348,9 +338,17 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             : DefaultAuxiliaryTemplatePollTimeout;
     }
 
-    internal static bool IsStaleParentTemplate(BlockTemplate previous, BlockTemplate current)
+    internal static bool IsNewParentTemplate(BlockTemplate previous, BlockTemplate current)
     {
-        return previous != null && current != null && current.Height < previous.Height;
+        if(current == null)
+            return false;
+
+        if(previous == null)
+            return true;
+
+        return !string.Equals(previous.PreviousBlockhash, current.PreviousBlockhash,
+                StringComparison.OrdinalIgnoreCase) ||
+            current.Height > previous.Height;
     }
 
     internal static bool ShouldRefreshAuxiliaryTemplate(string via, bool hasCachedTemplate)
