@@ -143,46 +143,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     continue;
                 }
 
-                var coinbaseTransaction = blockIsActive
-                    ? response.Response?.Transactions?.FirstOrDefault()
-                    : null;
-
-                if(string.IsNullOrEmpty(coinbaseTransaction))
-                {
-                    var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
-                    logger.Warn(() => $"[{LogCategory}] Unable to reconcile auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
-
-                    var definitiveMiss = response.Error?.Code == -5 || blockIsActive;
-
-                    if((isAcceptedMarker || isAuxPowClaim || isParentUncertain) && definitiveMiss)
-                    {
-                        var nextMiss = definitiveMisses + 1;
-
-                        if(nextMiss >= MinimumDefinitiveMisses &&
-                            clock.Now - block.Created >= UncertainBlockLifetime)
-                        {
-                            block.Status = BlockStatus.Orphaned;
-                            block.Reward = 0;
-                            logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] expired after {nextMiss} definitive misses");
-                        }
-                        else
-                        {
-                            block.TransactionConfirmationData = isAcceptedMarker
-                                ? AuxPowBlockConfirmation.CreatePending(blockHash, nextMiss)
-                                : isAuxPowClaim
-                                    ? AuxPowBlockConfirmation.CreateClaim(blockHash,
-                                        claimedParentBlock, nextMiss)
-                                    : AuxPowBlockConfirmation.CreateParentUncertain(blockHash, nextMiss);
-                            logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] remains pending after definitive miss {nextMiss}");
-                        }
-
-                        result.Add(block);
-                    }
-
-                    continue;
-                }
-
-                if(isAuxPowClaim)
+                if(isAuxPowClaim && blockIsActive)
                 {
                     var acceptedParentBlock = response.Response?.AuxPow?.ParentBlock;
                     if(string.IsNullOrEmpty(acceptedParentBlock))
@@ -232,7 +193,62 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     block.Type = "auxpow";
                     block.NotifyBlockFoundOnUpdate = true;
                 }
-                else if(isParentUncertain)
+
+                var coinbaseTransaction = blockIsActive
+                    ? response.Response?.Transactions?.FirstOrDefault()
+                    : null;
+
+                if(string.IsNullOrEmpty(coinbaseTransaction))
+                {
+                    var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
+                    logger.Warn(() => $"[{LogCategory}] Unable to reconcile auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
+
+                    if(blockIsActive)
+                    {
+                        if(isAuxPowClaim)
+                        {
+                            block.TransactionConfirmationData =
+                                AuxPowBlockConfirmation.CreatePending(blockHash);
+                            result.Add(block);
+                            logger.Warn(() => $"[{LogCategory}] AuxPoW claim for active block {block.BlockHeight} [{blockHash}] matched the accepted parent proof but coinbase transaction data is unavailable; finalized marker remains pending");
+                        }
+
+                        continue;
+                    }
+
+                    if((isAcceptedMarker || isAuxPowClaim || isParentUncertain) &&
+                        response.Error?.Code == -5)
+                    {
+                        var nextMiss = definitiveMisses + 1;
+
+                        if(nextMiss >= MinimumDefinitiveMisses &&
+                            clock.Now - block.Created >= UncertainBlockLifetime)
+                        {
+                            block.Status = BlockStatus.Orphaned;
+                            block.Reward = 0;
+                            logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] expired after {nextMiss} definitive misses");
+
+                            if(isAcceptedMarker)
+                                messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        }
+                        else
+                        {
+                            block.TransactionConfirmationData = isAcceptedMarker
+                                ? AuxPowBlockConfirmation.CreatePending(blockHash, nextMiss)
+                                : isAuxPowClaim
+                                    ? AuxPowBlockConfirmation.CreateClaim(blockHash,
+                                        claimedParentBlock, nextMiss)
+                                    : AuxPowBlockConfirmation.CreateParentUncertain(blockHash, nextMiss);
+                            logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] remains pending after definitive miss {nextMiss}");
+                        }
+
+                        result.Add(block);
+                    }
+
+                    continue;
+                }
+
+                if(isParentUncertain)
                 {
                     block.Type = "merged-parent";
                     block.NotifyBlockFoundOnUpdate = true;

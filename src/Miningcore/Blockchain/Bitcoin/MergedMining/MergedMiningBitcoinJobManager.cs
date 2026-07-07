@@ -565,6 +565,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         string blockHex, CancellationToken ct)
     {
         var result = await SubmitBlockAsync(share, blockHex, ct, false);
+        if(result.Duplicate && !string.IsNullOrEmpty(result.CoinbaseTx))
+        {
+            logger.Warn(() => $"Parent submission returned duplicate, but block {share.BlockHeight} [{share.BlockHash}] is active on the daemon");
+            return new SubmitResult(true, result.CoinbaseTx);
+        }
+
         if(result.Accepted || !result.Ambiguous)
             return result;
 

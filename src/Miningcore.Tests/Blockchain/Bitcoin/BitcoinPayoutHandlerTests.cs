@@ -47,6 +47,26 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Reconciliation_AcceptedMarker_RepeatedDefinitiveAbsenceOrphansWithNotification()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block", 2));
+        block.Type = "auxpow";
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-5, "Block not available", null));
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
+        fixture.MessageBus.Received(1).SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task Reconciliation_ResolvedBlock_IsPersistedPendingBeforeTransactionClassification()
     {
         var fixture = await CreateFixtureAsync();
@@ -68,10 +88,11 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Reconciliation_ActiveBlockWithoutTransactions_PersistsCoinbaseMissCount()
+    public async Task Reconciliation_ActiveAcceptedMarkerWithoutTransactions_RemainsPending()
     {
         var fixture = await CreateFixtureAsync();
         var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block"));
+        block.Type = "auxpow";
         fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
         {
             Hash = "doge-block",
@@ -81,17 +102,20 @@ public class BitcoinPayoutHandlerTests : TestBase
         var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, CancellationToken.None);
 
-        Assert.Equal(new[] { block }, result);
+        Assert.Empty(result);
         Assert.Equal(BlockStatus.Pending, block.Status);
-        Assert.Equal("auxpow-block:doge-block:1", block.TransactionConfirmationData);
+        Assert.Equal("auxpow-block:doge-block", block.TransactionConfirmationData);
         Assert.Equal(0, fixture.Handler.TransactionCalls);
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]
-    public async Task Reconciliation_ActiveBlockWithoutTransactions_ExpiresAfterRepeatedObservation()
+    public async Task Reconciliation_ActiveAcceptedMarkerWithoutTransactions_DoesNotExpireAsOrphan()
     {
         var fixture = await CreateFixtureAsync();
         var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block", 2));
+        block.Type = "auxpow";
         block.Created = fixture.Now - TimeSpan.FromMinutes(31);
         fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
         {
@@ -102,10 +126,84 @@ public class BitcoinPayoutHandlerTests : TestBase
         var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, CancellationToken.None);
 
+        Assert.Empty(result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("auxpow-block:doge-block:2", block.TransactionConfirmationData);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Reconciliation_ActiveParentUncertainWithoutTransactions_RemainsPending()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateParentUncertain("ltc-block"));
+        block.Hash = "ltc-block";
+        block.Type = "merged-parent-uncertain";
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "ltc-block",
+            Confirmations = 1,
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Empty(result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("merged-parent-uncertain", block.Type);
+        Assert.Equal("parent-uncertain:ltc-block:0", block.TransactionConfirmationData);
+        Assert.False(block.NotifyBlockFoundOnUpdate);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ActiveMatchingClaimWithoutTransactions_FinalizesProofAndKeepsCoinbasePending()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-header"));
+        block.Type = "auxpow-claim";
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Confirmations = 1,
+            AuxPow = new AuxPow { ParentBlock = "parent-header" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("auxpow", block.Type);
+        Assert.True(block.NotifyBlockFoundOnUpdate);
+        Assert.Equal("auxpow-block:doge-block", block.TransactionConfirmationData);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ActiveMismatchingClaimWithoutTransactions_IsRejectedByProof()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreateClaim(
+            "doge-block", "parent-a"));
+        block.Type = "auxpow-claim";
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Confirmations = 1,
+            AuxPow = new AuxPow { ParentBlock = "parent-b" },
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Orphaned, block.Status);
         Assert.Equal(0, block.Reward);
-        Assert.Equal(0, fixture.Handler.TransactionCalls);
+        Assert.Equal("auxpow-claim", block.Type);
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(),
+            Arg.Any<string>());
     }
 
     [Fact]
