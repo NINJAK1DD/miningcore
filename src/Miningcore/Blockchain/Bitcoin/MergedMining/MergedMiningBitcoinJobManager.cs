@@ -46,6 +46,14 @@ internal enum AuxiliaryBlockLookupResult
     Unavailable,
 }
 
+internal enum ParentBlockLookupResult
+{
+    Accepted,
+    MissingCoinbase,
+    KnownInactive,
+    Unavailable,
+}
+
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
 {
     public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
@@ -563,14 +571,28 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         using var cts = CreateAmbiguousLookupCancellationTokenSource(ct);
         var response = await rpc.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock,
             cts.Token, new object[] { share.BlockHash });
-        var accepted = IsActiveBlock(response, share.BlockHash);
+        var lookupResult = ClassifyParentBlockLookup(share.BlockHash, response,
+            out var coinbaseTransaction);
 
-        if(accepted)
+        if(lookupResult == ParentBlockLookupResult.Accepted)
+        {
             logger.Warn(() => $"Parent submission response was ambiguous, but block {share.BlockHeight} [{share.BlockHash}] is present on the daemon");
+            return new SubmitResult(true, coinbaseTransaction);
+        }
 
-        return accepted
-            ? new SubmitResult(true, response.Response.Transactions?.FirstOrDefault())
-            : result;
+        if(lookupResult == ParentBlockLookupResult.MissingCoinbase)
+        {
+            logger.Warn(() => $"Parent block {share.BlockHeight} [{share.BlockHash}] is active but its coinbase transaction is unavailable; durable reconciliation queued");
+            return new SubmitResult(false, null, true, result.Duplicate);
+        }
+
+        if(lookupResult == ParentBlockLookupResult.KnownInactive)
+        {
+            logger.Warn(() => $"Parent submission response was ambiguous, but block {share.BlockHeight} [{share.BlockHash}] is known only outside the active chain");
+            return new SubmitResult(false, null, false, result.Duplicate);
+        }
+
+        return result;
     }
 
     private async Task<bool> SubmitAuxiliaryBlockAsync(StratumConnection worker,
@@ -733,10 +755,25 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             : AuxiliaryBlockLookupResult.LostToDifferentProof;
     }
 
-    private static bool IsActiveBlock(RpcResponse<DaemonBlock> response, string blockHash)
+    internal static ParentBlockLookupResult ClassifyParentBlockLookup(
+        string blockHash, RpcResponse<DaemonBlock> response, out string coinbaseTransaction)
     {
-        return response?.Error == null &&
-            string.Equals(response.Response?.Hash, blockHash, StringComparison.OrdinalIgnoreCase) &&
-            response.Response.Confirmations > 0;
+        coinbaseTransaction = null;
+
+        if(response?.Error != null || response.Response == null ||
+            !string.Equals(response.Response.Hash, blockHash, StringComparison.OrdinalIgnoreCase))
+            return ParentBlockLookupResult.Unavailable;
+
+        if(response.Response.Confirmations < 0)
+            return ParentBlockLookupResult.KnownInactive;
+
+        if(response.Response.Confirmations == 0)
+            return ParentBlockLookupResult.Unavailable;
+
+        coinbaseTransaction = response.Response.Transactions?.FirstOrDefault();
+        return string.IsNullOrEmpty(coinbaseTransaction)
+            ? ParentBlockLookupResult.MissingCoinbase
+            : ParentBlockLookupResult.Accepted;
     }
+
 }

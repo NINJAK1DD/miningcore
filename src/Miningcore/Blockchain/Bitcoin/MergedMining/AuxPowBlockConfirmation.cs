@@ -6,17 +6,44 @@ internal static class AuxPowBlockConfirmation
     private const string ClaimPrefix = "auxpow-claim:";
     private const string ParentUncertainPrefix = "parent-uncertain:";
 
-    public static string CreatePending(string blockHash)
+    public static string CreatePending(string blockHash, int coinbaseMisses = 0)
     {
         if(string.IsNullOrWhiteSpace(blockHash))
             throw new ArgumentException("Block hash must not be empty", nameof(blockHash));
+        if(coinbaseMisses < 0)
+            throw new ArgumentOutOfRangeException(nameof(coinbaseMisses));
 
-        return PendingPrefix + blockHash.Trim();
+        var trimmedBlockHash = blockHash.Trim();
+        return coinbaseMisses == 0
+            ? PendingPrefix + trimmedBlockHash
+            : $"{PendingPrefix}{trimmedBlockHash}:{coinbaseMisses}";
     }
 
     public static bool TryGetPendingBlockHash(string value, out string blockHash)
     {
-        return TryGetBlockHash(value, PendingPrefix, out blockHash);
+        return TryGetPendingBlockHash(value, out blockHash, out _);
+    }
+
+    public static bool TryGetPendingBlockHash(string value, out string blockHash,
+        out int coinbaseMisses)
+    {
+        blockHash = null;
+        coinbaseMisses = 0;
+
+        if(string.IsNullOrWhiteSpace(value) ||
+            !value.StartsWith(PendingPrefix, StringComparison.Ordinal))
+            return false;
+
+        var parts = value[PendingPrefix.Length..].Split(':');
+        if(parts.Length is < 1 or > 2 || string.IsNullOrWhiteSpace(parts[0]))
+            return false;
+
+        if(parts.Length == 2 &&
+            (!int.TryParse(parts[1], out coinbaseMisses) || coinbaseMisses < 0))
+            return false;
+
+        blockHash = parts[0].Trim();
+        return true;
     }
 
     public static string CreateClaim(string blockHash, string parentBlock, int definitiveMisses = 0)
@@ -78,19 +105,4 @@ internal static class AuxPowBlockConfirmation
         return true;
     }
 
-    private static bool TryGetBlockHash(string value, string prefix, out string blockHash)
-    {
-        blockHash = null;
-
-        if(string.IsNullOrWhiteSpace(value) ||
-            !value.StartsWith(prefix, StringComparison.Ordinal))
-            return false;
-
-        var candidate = value[prefix.Length..].Trim();
-        if(string.IsNullOrEmpty(candidate))
-            return false;
-
-        blockHash = candidate;
-        return true;
-    }
 }

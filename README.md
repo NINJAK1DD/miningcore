@@ -169,7 +169,7 @@ is useful background, but fork-specific behavior is documented in this repositor
 Start a published build with:
 
 ```console
-Miningcore -c config.json
+./Miningcore -c config.json
 ```
 
 The REST API listens on port 4000 by default. The

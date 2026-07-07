@@ -39,9 +39,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, CancellationToken.None);
 
-        Assert.Empty(result);
+        Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
-        Assert.Equal("auxpow-block:doge-block", block.TransactionConfirmationData);
+        Assert.Equal("auxpow-block:doge-block:1", block.TransactionConfirmationData);
         Assert.Equal(1, fixture.Handler.BlockCalls);
         Assert.Equal(0, fixture.Handler.TransactionCalls);
     }
@@ -64,6 +64,47 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
         Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ActiveBlockWithoutTransactions_PersistsCoinbaseMissCount()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block"));
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Confirmations = 1,
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal("auxpow-block:doge-block:1", block.TransactionConfirmationData);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
+    }
+
+    [Fact]
+    public async Task Reconciliation_ActiveBlockWithoutTransactions_ExpiresAfterRepeatedObservation()
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(AuxPowBlockConfirmation.CreatePending("doge-block", 2));
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block",
+            Confirmations = 1,
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
         Assert.Equal(0, fixture.Handler.TransactionCalls);
     }
 

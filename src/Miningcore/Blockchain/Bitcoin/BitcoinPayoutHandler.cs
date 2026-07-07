@@ -115,7 +115,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 string claimedParentBlock = null;
                 var definitiveMisses = 0;
                 var isAcceptedMarker = AuxPowBlockConfirmation.TryGetPendingBlockHash(
-                    block.TransactionConfirmationData, out blockHash);
+                    block.TransactionConfirmationData, out blockHash, out definitiveMisses);
                 var isAuxPowClaim = !isAcceptedMarker && AuxPowBlockConfirmation.TryGetClaim(
                     block.TransactionConfirmationData, out blockHash, out claimedParentBlock,
                     out definitiveMisses);
@@ -152,7 +152,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
                     logger.Warn(() => $"[{LogCategory}] Unable to reconcile auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
 
-                    if((isAuxPowClaim || isParentUncertain) && response.Error?.Code == -5)
+                    var definitiveMiss = response.Error?.Code == -5 || blockIsActive;
+
+                    if((isAcceptedMarker || isAuxPowClaim || isParentUncertain) && definitiveMiss)
                     {
                         var nextMiss = definitiveMisses + 1;
 
@@ -165,10 +167,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         }
                         else
                         {
-                            block.TransactionConfirmationData = isAuxPowClaim
-                                ? AuxPowBlockConfirmation.CreateClaim(blockHash,
-                                    claimedParentBlock, nextMiss)
-                                : AuxPowBlockConfirmation.CreateParentUncertain(blockHash, nextMiss);
+                            block.TransactionConfirmationData = isAcceptedMarker
+                                ? AuxPowBlockConfirmation.CreatePending(blockHash, nextMiss)
+                                : isAuxPowClaim
+                                    ? AuxPowBlockConfirmation.CreateClaim(blockHash,
+                                        claimedParentBlock, nextMiss)
+                                    : AuxPowBlockConfirmation.CreateParentUncertain(blockHash, nextMiss);
                             logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] remains pending after definitive miss {nextMiss}");
                         }
 

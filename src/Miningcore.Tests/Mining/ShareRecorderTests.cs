@@ -272,6 +272,48 @@ public class ShareRecorderTests
             Arg.Any<string>());
     }
 
+    [Fact]
+    public async Task PersistSharesCoreAsync_PostCommitNotificationFailureDoesNotFailPersistence()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+        messageBus.When(x => x.SendMessage(Arg.Any<BlockFoundNotification>(), Arg.Any<string>()))
+            .Do(_ => throw new IOException("subscriber failed"));
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        transaction.Received(1).Commit();
+        transaction.DidNotReceive().Rollback();
+    }
+
     [Theory]
     [InlineData("auxpow-claim")]
     [InlineData("merged-parent-uncertain")]

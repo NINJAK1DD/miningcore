@@ -17,10 +17,31 @@ public class AuxPowBlockConfirmationTests
         const string blockHash = "0123456789abcdef";
 
         var marker = AuxPowBlockConfirmation.CreatePending(blockHash);
-        var parsed = AuxPowBlockConfirmation.TryGetPendingBlockHash(marker, out var result);
+        var parsed = AuxPowBlockConfirmation.TryGetPendingBlockHash(marker, out var result,
+            out var misses);
 
         Assert.True(parsed);
         Assert.Equal(blockHash, result);
+        Assert.Equal(0, misses);
+    }
+
+    [Fact]
+    public void PendingMarker_RoundTripsCoinbaseMissCountAndLegacyFormat()
+    {
+        const string blockHash = "0123456789abcdef";
+
+        var marker = AuxPowBlockConfirmation.CreatePending(blockHash, 2);
+        var parsed = AuxPowBlockConfirmation.TryGetPendingBlockHash(marker, out var result,
+            out var misses);
+
+        Assert.True(parsed);
+        Assert.Equal(blockHash, result);
+        Assert.Equal(2, misses);
+
+        Assert.True(AuxPowBlockConfirmation.TryGetPendingBlockHash(
+            $"auxpow-block:{blockHash}", out result, out misses));
+        Assert.Equal(blockHash, result);
+        Assert.Equal(0, misses);
     }
 
     [Fact]
@@ -197,6 +218,46 @@ public class AuxPowBlockConfirmationTests
                     Confirmations = -1,
                     AuxPow = new AuxPow { ParentBlock = "parent-a" },
                 })));
+    }
+
+    [Fact]
+    public void ParentBlockLookup_AcceptsOnlyActiveBlockWithCoinbase()
+    {
+        Assert.Equal(ParentBlockLookupResult.Accepted,
+            MergedMiningBitcoinJobManager.ClassifyParentBlockLookup("ltc-block",
+                new RpcResponse<Block>(new Block
+                {
+                    Hash = "ltc-block",
+                    Confirmations = 1,
+                    Transactions = new[] { "coinbase-txid" },
+                }), out var coinbaseTransaction));
+        Assert.Equal("coinbase-txid", coinbaseTransaction);
+
+        Assert.Equal(ParentBlockLookupResult.MissingCoinbase,
+            MergedMiningBitcoinJobManager.ClassifyParentBlockLookup("ltc-block",
+                new RpcResponse<Block>(new Block
+                {
+                    Hash = "ltc-block",
+                    Confirmations = 1,
+                }), out coinbaseTransaction));
+        Assert.Null(coinbaseTransaction);
+
+        Assert.Equal(ParentBlockLookupResult.KnownInactive,
+            MergedMiningBitcoinJobManager.ClassifyParentBlockLookup("ltc-block",
+                new RpcResponse<Block>(new Block
+                {
+                    Hash = "ltc-block",
+                    Confirmations = -1,
+                    Transactions = new[] { "coinbase-txid" },
+                }), out coinbaseTransaction));
+        Assert.Null(coinbaseTransaction);
+
+        Assert.Equal(ParentBlockLookupResult.Unavailable,
+            MergedMiningBitcoinJobManager.ClassifyParentBlockLookup("ltc-block",
+                new RpcResponse<Block>(null,
+                    new JsonRpcError(-5, "Block not found", null)),
+                out coinbaseTransaction));
+        Assert.Null(coinbaseTransaction);
     }
 
     [Theory]

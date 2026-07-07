@@ -31,18 +31,76 @@ public class BitcoinJobTests : TestBase
     {
         Assert.True(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
             null,
-            new DaemonBlock { Hash = "block-hash", Confirmations = 1 },
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+                Transactions = new[] { "coinbase-txid" },
+            },
             "BLOCK-HASH"));
 
         Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
             null,
-            new DaemonBlock { Hash = "block-hash", Confirmations = -1 },
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+            },
+            "block-hash"));
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = -1,
+                Transactions = new[] { "coinbase-txid" },
+            },
             "block-hash"));
 
         Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
             new JsonRpcError(-5, "not found", null),
-            new DaemonBlock { Hash = "block-hash", Confirmations = 1 },
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+                Transactions = new[] { "coinbase-txid" },
+            },
             "block-hash"));
+    }
+
+    [Fact]
+    public void DuplicateSubmitLookup_NeverAcceptsInSharedBitcoinPath()
+    {
+        var active = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "block-hash");
+
+        Assert.False(active.Accepted);
+        Assert.True(active.Ambiguous);
+        Assert.True(active.Duplicate);
+        Assert.Equal("coinbase-txid", active.CoinbaseTx);
+
+        var sideChain = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = -1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "block-hash");
+
+        Assert.False(sideChain.Accepted);
+        Assert.False(sideChain.Ambiguous);
+        Assert.True(sideChain.Duplicate);
+        Assert.Null(sideChain.CoinbaseTx);
     }
 
     [Fact]

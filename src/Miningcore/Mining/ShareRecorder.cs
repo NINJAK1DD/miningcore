@@ -128,10 +128,18 @@ public class ShareRecorder : BackgroundService
 
         foreach(var (poolId, block) in insertedBlocks)
         {
-            if(pools.TryGetValue(poolId, out var poolConfig))
-                messageBus.NotifyBlockFound(poolId, block, poolConfig.Template);
-            else
-                logger.Warn(()=> $"Block found for unknown pool {poolId}");
+            try
+            {
+                if(pools.TryGetValue(poolId, out var poolConfig))
+                    messageBus.NotifyBlockFound(poolId, block, poolConfig.Template);
+                else
+                    logger.Warn(()=> $"Block found for unknown pool {poolId}");
+            }
+
+            catch(Exception ex)
+            {
+                logger.Error(ex, () => $"Unable to emit block-found notification for pool {poolId}, block {block.BlockHeight} [{block.Hash}] after persistence committed");
+            }
         }
     }
 
