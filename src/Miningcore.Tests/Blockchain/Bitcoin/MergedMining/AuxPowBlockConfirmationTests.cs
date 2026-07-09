@@ -62,6 +62,30 @@ public class AuxPowBlockConfirmationTests
     }
 
     [Fact]
+    public void ClaimMarker_SeparatesAbsenceMissesFromProofMisses()
+    {
+        const string blockHash = "0123456789abcdef";
+        const string parentBlock = "parent-header";
+
+        var marker = AuxPowBlockConfirmation.CreateClaim(blockHash, parentBlock, 2,
+            AuxPowBlockConfirmation.ClaimMissKind.MissingProof);
+        var parsed = AuxPowBlockConfirmation.TryGetClaim(marker, out var result,
+            out var resultParentBlock, out var misses, out var missKind);
+
+        Assert.True(parsed);
+        Assert.Equal(blockHash, result);
+        Assert.Equal(parentBlock, resultParentBlock);
+        Assert.Equal(2, misses);
+        Assert.Equal(AuxPowBlockConfirmation.ClaimMissKind.MissingProof, missKind);
+
+        Assert.True(AuxPowBlockConfirmation.TryGetClaim(
+            AuxPowBlockConfirmation.CreateClaim(blockHash, parentBlock, 2),
+            out _, out _, out misses, out missKind));
+        Assert.Equal(2, misses);
+        Assert.Equal(AuxPowBlockConfirmation.ClaimMissKind.Absence, missKind);
+    }
+
+    [Fact]
     public void ParentUncertainMarker_RoundTripsBlockHashAndMissCount()
     {
         const string blockHash = "0123456789abcdef";

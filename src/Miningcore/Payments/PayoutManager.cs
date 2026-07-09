@@ -206,6 +206,9 @@ public class PayoutManager : BackgroundService
 
         if(updated && block.NotifyBlockFoundOnUpdate)
             messageBus.NotifyBlockFound(poolConfig.Id, block, poolConfig.Template);
+
+        if(updated && block.NotifyBlockUnlockedOnUpdate)
+            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template);
     }
 
     private async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, CancellationToken ct)

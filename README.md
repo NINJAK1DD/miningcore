@@ -144,8 +144,10 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
 ```
 
-For an existing database created before LTC/DOGE merged mining, back it up and apply the transactional
-upgrade before enabling the feature:
+For an existing database created before LTC/DOGE merged mining, stop Miningcore block writers or
+schedule a maintenance window, back it up, and apply the transactional upgrade before enabling the
+feature. The migration uses regular transactional `CREATE INDEX` operations rather than concurrent
+index builds:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \

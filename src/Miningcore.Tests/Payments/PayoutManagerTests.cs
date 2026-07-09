@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Threading.Tasks;
 using Autofac;
@@ -48,6 +49,24 @@ public class PayoutManagerTests
             Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
     }
 
+    [Fact]
+    public async Task UnlockedBlockNotification_IsEmittedAfterTransactionCommit()
+    {
+        var fixture = CreateFixture();
+        fixture.Block.NotifyBlockFoundOnUpdate = false;
+        fixture.Block.NotifyBlockUnlockedOnUpdate = true;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, fixture.Block,
+            (_, _) => Task.FromResult(true));
+
+        Received.InOrder(() =>
+        {
+            fixture.Transaction.Commit();
+            fixture.MessageBus.SendMessage(Arg.Any<BlockUnlockedNotification>(),
+                Arg.Any<string>());
+        });
+    }
+
     private static Fixture CreateFixture()
     {
         var context = Substitute.For<IComponentContext>();
@@ -65,7 +84,12 @@ public class PayoutManagerTests
         var pool = new PoolConfig
         {
             Id = "doge-solo",
-            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "DOGE",
+                Name = "Dogecoin",
+                ExplorerBlockLinks = new Dictionary<string, string>(),
+            },
         };
         var block = new Block
         {

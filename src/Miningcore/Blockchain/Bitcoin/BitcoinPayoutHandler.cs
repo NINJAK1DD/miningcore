@@ -114,11 +114,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 string blockHash;
                 string claimedParentBlock = null;
                 var definitiveMisses = 0;
+                var claimMissKind = AuxPowBlockConfirmation.ClaimMissKind.Absence;
                 var isAcceptedMarker = AuxPowBlockConfirmation.TryGetPendingBlockHash(
                     block.TransactionConfirmationData, out blockHash, out definitiveMisses);
                 var isAuxPowClaim = !isAcceptedMarker && AuxPowBlockConfirmation.TryGetClaim(
                     block.TransactionConfirmationData, out blockHash, out claimedParentBlock,
-                    out definitiveMisses);
+                    out definitiveMisses, out claimMissKind);
                 var isParentUncertain = !isAcceptedMarker && !isAuxPowClaim &&
                     AuxPowBlockConfirmation.TryGetParentUncertain(
                         block.TransactionConfirmationData, out blockHash, out definitiveMisses);
@@ -138,7 +139,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} [{blockHash}] is known by the daemon but is not active");
 
                     if(!isAuxPowClaim && !isParentUncertain)
-                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        block.NotifyBlockUnlockedOnUpdate = true;
 
                     continue;
                 }
@@ -148,7 +149,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     var acceptedParentBlock = response.Response?.AuxPow?.ParentBlock;
                     if(string.IsNullOrEmpty(acceptedParentBlock))
                     {
-                        var nextMiss = definitiveMisses + 1;
+                        var nextMiss = claimMissKind == AuxPowBlockConfirmation.ClaimMissKind.MissingProof
+                            ? definitiveMisses + 1
+                            : 1;
 
                         if(nextMiss >= MinimumDefinitiveMisses &&
                             clock.Now - block.Created >= UncertainBlockLifetime)
@@ -162,7 +165,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         {
                             block.TransactionConfirmationData =
                                 AuxPowBlockConfirmation.CreateClaim(blockHash,
-                                    claimedParentBlock, nextMiss);
+                                    claimedParentBlock, nextMiss,
+                                    AuxPowBlockConfirmation.ClaimMissKind.MissingProof);
                             result.Add(block);
                             logger.Warn(() => $"[{LogCategory}] DOGE block {block.BlockHeight} [{blockHash}] did not expose auxpow.parentblock; claim remains pending after proof-miss {nextMiss}");
                         }
@@ -212,6 +216,20 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             result.Add(block);
                             logger.Warn(() => $"[{LogCategory}] AuxPoW claim for active block {block.BlockHeight} [{blockHash}] matched the accepted parent proof but coinbase transaction data is unavailable; finalized marker remains pending");
                         }
+                        else if(isAcceptedMarker && definitiveMisses > 0)
+                        {
+                            block.TransactionConfirmationData =
+                                AuxPowBlockConfirmation.CreatePending(blockHash);
+                            result.Add(block);
+                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} [{blockHash}] is active; reset historical absence miss count while coinbase transaction data remains unavailable");
+                        }
+                        else if(isParentUncertain && definitiveMisses > 0)
+                        {
+                            block.TransactionConfirmationData =
+                                AuxPowBlockConfirmation.CreateParentUncertain(blockHash);
+                            result.Add(block);
+                            logger.Info(() => $"[{LogCategory}] Parent block {block.BlockHeight} [{blockHash}] is active; reset historical absence miss count while coinbase transaction data remains unavailable");
+                        }
 
                         continue;
                     }
@@ -219,7 +237,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     if((isAcceptedMarker || isAuxPowClaim || isParentUncertain) &&
                         response.Error?.Code == -5)
                     {
-                        var nextMiss = definitiveMisses + 1;
+                        var nextMiss = isAuxPowClaim &&
+                            claimMissKind != AuxPowBlockConfirmation.ClaimMissKind.Absence
+                                ? 1
+                                : definitiveMisses + 1;
 
                         if(nextMiss >= MinimumDefinitiveMisses &&
                             clock.Now - block.Created >= UncertainBlockLifetime)
@@ -229,7 +250,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             logger.Info(() => $"[{LogCategory}] Uncertain block {block.BlockHeight} [{blockHash}] expired after {nextMiss} definitive misses");
 
                             if(isAcceptedMarker)
-                                messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                                block.NotifyBlockUnlockedOnUpdate = true;
                         }
                         else
                         {
@@ -289,10 +310,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     // Code -5 interpreted as "orphaned"
                     if(cmdResult.Error.Code == -5)
                     {
-                        if(block.Type == "auxpow" && await IsBlockActiveAsync(block.Hash, ct))
+                        if(SupportsActiveBlockGrace(block) && await IsBlockActiveAsync(block.Hash, ct))
                         {
                             result.Add(block);
-                            logger.Warn(() => $"[{LogCategory}] Wallet has not indexed AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains active");
+                            logger.Warn(() => $"[{LogCategory}] Wallet has not indexed coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
                             continue;
                         }
 
@@ -302,7 +323,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                         logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned due to daemon error {cmdResult.Error.Code}");
 
-                        messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                        block.NotifyBlockUnlockedOnUpdate = true;
                     }
 
                     else
@@ -312,10 +333,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // missing transaction details are interpreted as "orphaned"
                 else if(transactionInfo?.Details == null || transactionInfo.Details.Length == 0)
                 {
-                    if(block.Type == "auxpow" && await IsBlockActiveAsync(block.Hash, ct))
+                    if(SupportsActiveBlockGrace(block) && await IsBlockActiveAsync(block.Hash, ct))
                     {
                         result.Add(block);
-                        logger.Warn(() => $"[{LogCategory}] Wallet returned no details for AuxPoW coinbase {block.TransactionConfirmationData}; child block {block.Hash} remains active");
+                        logger.Warn(() => $"[{LogCategory}] Wallet returned no details for coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
                         continue;
                     }
 
@@ -325,7 +346,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                     logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned due to missing tx details");
 
-                    messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                    block.NotifyBlockUnlockedOnUpdate = true;
                 }
 
                 else
@@ -360,7 +381,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             block.Reward = 0;
                             result.Add(block);
 
-                            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
+                            block.NotifyBlockUnlockedOnUpdate = true;
                             break;
                     }
                 }
@@ -397,6 +418,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     {
         var response = await GetBlockAsync(blockHash, ct);
         return IsActiveBlock(response, blockHash);
+    }
+
+    private static bool SupportsActiveBlockGrace(Block block)
+    {
+        return block.Type is "auxpow" or "merged-parent";
     }
 
     private static bool IsExpectedBlock(RpcResponse<DaemonBlock> response, string blockHash)
