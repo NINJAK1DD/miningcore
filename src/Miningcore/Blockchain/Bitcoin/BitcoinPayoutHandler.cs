@@ -7,6 +7,7 @@ using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -62,6 +63,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private int payoutDecimalPlaces = 4;
     private CoinTemplate coin;
     private int minConfirmations;
+    private readonly HashSet<string> activeBlockGraceWarnings = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
     private const int MinimumDefinitiveMisses = 3;
 
@@ -332,6 +334,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         {
                             result.Add(block);
                             logger.Warn(() => $"[{LogCategory}] Unable to verify whether block {block.Hash} remains active after wallet lookup failed; keeping block {block.BlockHeight} pending");
+                            NotifyUnavailableActiveBlockGrace(block, "wallet lookup failed");
                             continue;
                         }
 
@@ -366,6 +369,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     {
                         result.Add(block);
                         logger.Warn(() => $"[{LogCategory}] Unable to verify whether block {block.Hash} remains active after wallet returned no transaction details; keeping block {block.BlockHeight} pending");
+                        NotifyUnavailableActiveBlockGrace(block, "wallet returned no transaction details");
                         continue;
                     }
 
@@ -467,6 +471,34 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private static bool SupportsActiveBlockGrace(Block block)
     {
         return block.Type is "auxpow" or "merged-parent";
+    }
+
+    private void NotifyUnavailableActiveBlockGrace(Block block, string reason)
+    {
+        var age = clock.Now - block.Created;
+        if(age < UncertainBlockLifetime)
+            return;
+
+        var key = $"{block.PoolId}:{block.Id}:{block.Hash}:{block.Type}";
+        if(!activeBlockGraceWarnings.Add(key))
+            return;
+
+        var ageMinutes = Math.Max(0, (int) Math.Floor(age.TotalMinutes));
+        var subject = $"[{poolConfig.Id}] merged-mining block reconciliation delayed";
+        var message = $"Pool {poolConfig.Id} block {block.BlockHeight} [{block.Hash}] " +
+            $"({block.Type}) has remained pending for about {ageMinutes} minutes because " +
+            $"{reason} and the daemon could not verify whether the block is still active. " +
+            "Check getblock/gettransaction RPC behaviour, wallet indexing, and any RPC proxy before manually intervening.";
+
+        try
+        {
+            messageBus.SendMessage(new AdminNotification(subject, message));
+        }
+
+        catch(Exception ex)
+        {
+            logger.Error(ex, () => $"[{LogCategory}] Unable to emit delayed reconciliation admin notification for block {block.BlockHeight} [{block.Hash}]");
+        }
     }
 
     private static bool IsExpectedBlock(RpcResponse<DaemonBlock> response, string blockHash)

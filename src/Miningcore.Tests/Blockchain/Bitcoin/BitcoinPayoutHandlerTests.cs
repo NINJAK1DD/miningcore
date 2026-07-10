@@ -606,6 +606,42 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(BlockStatus.Pending, block.Status);
         Assert.False(block.NotifyBlockUnlockedOnUpdate);
         Assert.Equal(1, fixture.Handler.BlockCalls);
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_LongUnavailableActivityLookup_NotifiesAdminOnce(
+        string blockType, string blockHash)
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+        block.Created = fixture.Now - TimeSpan.FromMinutes(31);
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-500, "RPC timeout", null));
+
+        var first = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+        var second = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, first);
+        Assert.Equal(new[] { block }, second);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(x =>
+                x.Subject.Contains("reconciliation delayed") &&
+                x.Message.Contains(blockHash)),
+            Arg.Any<string>());
     }
 
     [Theory]
