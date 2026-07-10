@@ -613,10 +613,10 @@ public class BitcoinPayoutHandlerTests : TestBase
     [Theory]
     [InlineData("auxpow", "doge-block")]
     [InlineData("merged-parent", "ltc-block")]
-    public async Task Classification_LongUnavailableActivityLookup_NotifiesAdminOnce(
+    public async Task Classification_OldBlockFirstUnavailableActivityLookup_DoesNotNotifyImmediately(
         string blockType, string blockHash)
     {
-        var fixture = await CreateFixtureAsync();
+        var fixture = await CreateFixtureAsync(now: DateTime.UtcNow);
         var block = PendingBlock("coinbase-txid");
         block.Type = blockType;
         block.Hash = blockHash;
@@ -629,19 +629,117 @@ public class BitcoinPayoutHandlerTests : TestBase
         fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
             new JsonRpcError(-500, "RPC timeout", null));
 
-        var first = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
-            new[] { block }, CancellationToken.None);
-        var second = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, CancellationToken.None);
 
-        Assert.Equal(new[] { block }, first);
-        Assert.Equal(new[] { block }, second);
+        Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
-        fixture.MessageBus.Received(1).SendMessage(
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_ContinuousUnavailableActivityLookup_NotifiesOnceAcrossHandlers(
+        string blockType, string blockHash)
+    {
+        var tracker = new ActiveBlockGracePeriodTracker();
+        var start = DateTime.UtcNow;
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+
+        var first = await CreateFixtureAsync(tracker, start);
+        ConfigureUnavailableWalletGrace(first, block);
+        await first.Handler.ClassifyBlocksAsync(first.Pool,
+            new[] { block }, CancellationToken.None);
+        first.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+
+        var second = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(31));
+        ConfigureUnavailableWalletGrace(second, block);
+        await second.Handler.ClassifyBlocksAsync(second.Pool,
+            new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        second.MessageBus.Received(1).SendMessage(
             Arg.Is<AdminNotification>(x =>
                 x.Subject.Contains("reconciliation delayed") &&
                 x.Message.Contains(blockHash)),
             Arg.Any<string>());
+
+        var third = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(62));
+        ConfigureUnavailableWalletGrace(third, block);
+        await third.Handler.ClassifyBlocksAsync(third.Pool,
+            new[] { block }, CancellationToken.None);
+        third.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_RecoveredActivityLookup_ClearsUnavailableEpisode(
+        string blockType, string blockHash)
+    {
+        var tracker = new ActiveBlockGracePeriodTracker();
+        var start = DateTime.UtcNow;
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+
+        var first = await CreateFixtureAsync(tracker, start);
+        ConfigureUnavailableWalletGrace(first, block);
+        await first.Handler.ClassifyBlocksAsync(first.Pool,
+            new[] { block }, CancellationToken.None);
+
+        var recovered = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(10));
+        recovered.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        recovered.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = blockHash,
+            Confirmations = 1,
+        });
+        await recovered.Handler.ClassifyBlocksAsync(recovered.Pool,
+            new[] { block }, CancellationToken.None);
+
+        var secondEpisode = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(11));
+        ConfigureUnavailableWalletGrace(secondEpisode, block);
+        await secondEpisode.Handler.ClassifyBlocksAsync(secondEpisode.Pool,
+            new[] { block }, CancellationToken.None);
+        secondEpisode.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+
+        var delayed = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(42));
+        ConfigureUnavailableWalletGrace(delayed, block);
+        await delayed.Handler.ClassifyBlocksAsync(delayed.Pool,
+            new[] { block }, CancellationToken.None);
+        delayed.MessageBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(x => x.Message.Contains(blockHash)),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public void ActiveBlockGracePeriodTracker_ConcurrentObservers_EmitOnlyOneAlert()
+    {
+        var tracker = new ActiveBlockGracePeriodTracker();
+        var start = DateTime.UtcNow;
+        Assert.False(tracker.ObserveUnavailable("pool", 1, "block", "auxpow",
+            start, TimeSpan.FromMinutes(30)));
+
+        var alerts = 0;
+        Parallel.For(0, 32, _ =>
+        {
+            if(tracker.ObserveUnavailable("pool", 1, "block", "auxpow",
+                   start + TimeSpan.FromMinutes(31), TimeSpan.FromMinutes(30)))
+                Interlocked.Increment(ref alerts);
+        });
+
+        Assert.Equal(1, alerts);
     }
 
     [Theory]
@@ -817,7 +915,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(1, fixture.Handler.BlockCalls);
     }
 
-    private async Task<HandlerFixture> CreateFixtureAsync()
+    private async Task<HandlerFixture> CreateFixtureAsync(
+        IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker = null,
+        DateTime? now = null)
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var mapper = container.Resolve<IMapper>();
@@ -826,11 +926,12 @@ public class BitcoinPayoutHandlerTests : TestBase
         var balanceRepository = Substitute.For<IBalanceRepository>();
         var paymentRepository = Substitute.For<IPaymentRepository>();
         var clock = Substitute.For<IMasterClock>();
-        var now = DateTime.UtcNow;
-        clock.Now.Returns(now);
+        var currentTime = now ?? DateTime.UtcNow;
+        clock.Now.Returns(currentTime);
         var messageBus = Substitute.For<IMessageBus>();
         var handler = new TestBitcoinPayoutHandler(container, connectionFactory, mapper,
-            shareRepository, blockRepository, balanceRepository, paymentRepository, clock, messageBus);
+            shareRepository, blockRepository, balanceRepository, paymentRepository, clock, messageBus,
+            activeBlockGracePeriodTracker ?? new ActiveBlockGracePeriodTracker());
         var config = new PoolConfig
         {
             Id = "doge-test",
@@ -845,7 +946,19 @@ public class BitcoinPayoutHandlerTests : TestBase
         pool.Config.Returns(config);
 
         return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository,
-            messageBus, now);
+            messageBus, currentTime);
+    }
+
+    private static void ConfigureUnavailableWalletGrace(HandlerFixture fixture,
+        PersistedBlock block)
+    {
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-500, "RPC timeout", null));
     }
 
     private static PersistedBlock PendingBlock(string confirmationData, long id = 1,
@@ -886,8 +999,10 @@ public class BitcoinPayoutHandlerTests : TestBase
     {
         public TestBitcoinPayoutHandler(IComponentContext ctx, IConnectionFactory cf, IMapper mapper,
             IShareRepository shareRepo, IBlockRepository blockRepo, IBalanceRepository balanceRepo,
-            IPaymentRepository paymentRepo, IMasterClock clock, IMessageBus messageBus) :
-            base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
+            IPaymentRepository paymentRepo, IMasterClock clock, IMessageBus messageBus,
+            IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker) :
+            base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus,
+                activeBlockGracePeriodTracker)
         {
         }
 

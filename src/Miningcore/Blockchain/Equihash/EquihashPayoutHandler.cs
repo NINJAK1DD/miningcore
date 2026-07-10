@@ -32,8 +32,10 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         IBalanceRepository balanceRepo,
         IPaymentRepository paymentRepo,
         IMasterClock clock,
-        IMessageBus messageBus) :
-        base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
+        IMessageBus messageBus,
+        IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker) :
+        base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus,
+            activeBlockGracePeriodTracker)
     {
     }
 

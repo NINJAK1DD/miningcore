@@ -44,17 +44,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         IBalanceRepository balanceRepo,
         IPaymentRepository paymentRepo,
         IMasterClock clock,
-        IMessageBus messageBus) :
+        IMessageBus messageBus,
+        IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker) :
         base(cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
     {
         Contract.RequiresNonNull(ctx);
         Contract.RequiresNonNull(balanceRepo);
         Contract.RequiresNonNull(paymentRepo);
+        Contract.RequiresNonNull(activeBlockGracePeriodTracker);
 
         this.ctx = ctx;
+        this.activeBlockGracePeriodTracker = activeBlockGracePeriodTracker;
     }
 
     protected readonly IComponentContext ctx;
+    private readonly IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker;
     protected RpcClient rpcClient;
     protected BitcoinPoolConfigExtra extraPoolConfig;
     protected BitcoinDaemonEndpointConfigExtra extraPoolEndpointConfig;
@@ -63,7 +67,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private int payoutDecimalPlaces = 4;
     private CoinTemplate coin;
     private int minConfirmations;
-    private readonly HashSet<string> activeBlockGraceWarnings = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
     private const int MinimumDefinitiveMisses = 3;
 
@@ -327,6 +330,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         {
                             result.Add(block);
                             logger.Warn(() => $"[{LogCategory}] Wallet has not indexed coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
+                            ClearUnavailableActiveBlockGrace(block);
                             continue;
                         }
 
@@ -341,6 +345,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         block.Status = BlockStatus.Orphaned;
                         block.Reward = 0;
                         result.Add(block);
+                        ClearUnavailableActiveBlockGrace(block);
 
                         logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned due to daemon error {cmdResult.Error.Code}");
 
@@ -362,6 +367,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     {
                         result.Add(block);
                         logger.Warn(() => $"[{LogCategory}] Wallet returned no details for coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
+                        ClearUnavailableActiveBlockGrace(block);
                         continue;
                     }
 
@@ -376,6 +382,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     block.Status = BlockStatus.Orphaned;
                     block.Reward = 0;
                     result.Add(block);
+                    ClearUnavailableActiveBlockGrace(block);
 
                     logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned due to missing tx details");
 
@@ -387,6 +394,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     switch(transactionInfo.Details[0].Category)
                     {
                         case "immature":
+                            ClearUnavailableActiveBlockGrace(block);
+
                             // update progress
                             block.ConfirmationProgress = Math.Min(1.0d, (double) transactionInfo.Confirmations / minConfirmations);
                             block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
@@ -396,6 +405,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             break;
 
                         case "generate":
+                            ClearUnavailableActiveBlockGrace(block);
+
                             // matured and spendable coinbase transaction
                             block.Status = BlockStatus.Confirmed;
                             block.ConfirmationProgress = 1;
@@ -408,6 +419,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             break;
 
                         default:
+                            ClearUnavailableActiveBlockGrace(block);
+
                             logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned. Category: {transactionInfo.Details[0].Category}");
 
                             block.Status = BlockStatus.Orphaned;
@@ -475,18 +488,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private void NotifyUnavailableActiveBlockGrace(Block block, string reason)
     {
-        var age = clock.Now - block.Created;
-        if(age < UncertainBlockLifetime)
+        if(!activeBlockGracePeriodTracker.ObserveUnavailable(block.PoolId, block.Id,
+            block.Hash, block.Type, clock.Now, UncertainBlockLifetime))
             return;
 
-        var key = $"{block.PoolId}:{block.Id}:{block.Hash}:{block.Type}";
-        if(!activeBlockGraceWarnings.Add(key))
-            return;
-
-        var ageMinutes = Math.Max(0, (int) Math.Floor(age.TotalMinutes));
         var subject = $"[{poolConfig.Id}] merged-mining block reconciliation delayed";
         var message = $"Pool {poolConfig.Id} block {block.BlockHeight} [{block.Hash}] " +
-            $"({block.Type}) has remained pending for about {ageMinutes} minutes because " +
+            $"({block.Type}) has had unavailable active-chain verification for at least " +
+            $"{(int) UncertainBlockLifetime.TotalMinutes} minutes because " +
             $"{reason} and the daemon could not verify whether the block is still active. " +
             "Check getblock/gettransaction RPC behaviour, wallet indexing, and any RPC proxy before manually intervening.";
 
@@ -499,6 +508,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             logger.Error(ex, () => $"[{LogCategory}] Unable to emit delayed reconciliation admin notification for block {block.BlockHeight} [{block.Hash}]");
         }
+    }
+
+    private void ClearUnavailableActiveBlockGrace(Block block)
+    {
+        if(SupportsActiveBlockGrace(block))
+            activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id, block.Hash, block.Type);
     }
 
     private static bool IsExpectedBlock(RpcResponse<DaemonBlock> response, string blockHash)

@@ -78,6 +78,10 @@ public class AutofacModule : Module
             .AsImplementedInterfaces()
             .SingleInstance();
 
+        builder.RegisterType<ActiveBlockGracePeriodTracker>()
+            .AsImplementedInterfaces()
+            .SingleInstance();
+
         builder.RegisterType<IntegratedBanManager>()
             .Keyed<IBanManager>(BanManagerKind.Integrated)
             .SingleInstance();
