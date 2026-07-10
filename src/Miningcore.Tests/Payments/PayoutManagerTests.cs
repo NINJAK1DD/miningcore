@@ -67,6 +67,58 @@ public class PayoutManagerTests
         });
     }
 
+    [Fact]
+    public async Task UnlockedBlockNotification_IsNotEmittedWhenCommitFails()
+    {
+        var fixture = CreateFixture();
+        fixture.Block.NotifyBlockFoundOnUpdate = false;
+        fixture.Block.NotifyBlockUnlockedOnUpdate = true;
+        fixture.Transaction.When(x => x.Commit())
+            .Do(_ => throw new InvalidOperationException("commit failed"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, fixture.Block,
+                (_, _) => Task.FromResult(true)));
+
+        fixture.Transaction.Received(1).Rollback();
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PostCommitNotificationFailure_DoesNotPropagate()
+    {
+        var fixture = CreateFixture();
+        fixture.Block.NotifyBlockFoundOnUpdate = false;
+        fixture.Block.NotifyBlockUnlockedOnUpdate = true;
+        fixture.MessageBus.When(x => x.SendMessage(
+                Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("subscriber failed"));
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, fixture.Block,
+            (_, _) => Task.FromResult(true));
+
+        fixture.Transaction.Received(1).Commit();
+    }
+
+    [Fact]
+    public async Task ConfirmationProgressNotification_IsEmittedAfterTransactionCommit()
+    {
+        var fixture = CreateFixture();
+        fixture.Block.NotifyBlockFoundOnUpdate = false;
+        fixture.Block.NotifyBlockConfirmationProgressOnUpdate = true;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, fixture.Block,
+            (_, _) => Task.FromResult(true));
+
+        Received.InOrder(() =>
+        {
+            fixture.Transaction.Commit();
+            fixture.MessageBus.SendMessage(Arg.Any<BlockConfirmationProgressNotification>(),
+                Arg.Any<string>());
+        });
+    }
+
     private static Fixture CreateFixture()
     {
         var context = Substitute.For<IComponentContext>();

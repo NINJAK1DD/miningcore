@@ -503,6 +503,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(BlockStatus.Pending, block.Status);
         Assert.Equal(50m, block.Reward);
         Assert.InRange(block.ConfirmationProgress, double.Epsilon, 0.999999d);
+        Assert.True(block.NotifyBlockConfirmationProgressOnUpdate);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<BlockConfirmationProgressNotification>(), Arg.Any<string>());
     }
 
     [Fact]
@@ -519,6 +522,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(BlockStatus.Confirmed, confirmed.Status);
         Assert.Equal(1, confirmed.ConfirmationProgress);
         Assert.Equal(75m, confirmed.Reward);
+        Assert.True(confirmed.NotifyBlockUnlockedOnUpdate);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>());
 
         var scheme = new SOLOPaymentScheme(fixture.ShareRepository, fixture.BalanceRepository);
         var connection = Substitute.For<IDbConnection>();
@@ -572,6 +578,124 @@ public class BitcoinPayoutHandlerTests : TestBase
 
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(1, fixture.Handler.BlockCalls);
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_BlockWithWalletIndexLag_RemainsPendingWhenActivityLookupUnavailable(
+        string blockType, string blockHash)
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-500, "RPC timeout", null));
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(1, fixture.Handler.BlockCalls);
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_BlockWithMissingWalletDetails_RemainsPendingWhenActivityLookupUnavailable(
+        string blockType, string blockHash)
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(JToken.FromObject(new Transaction
+            {
+                Amount = 0m,
+                Confirmations = 0,
+                Details = Array.Empty<TransactionDetails>(),
+            })),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(null,
+            new JsonRpcError(-500, "Cancelled", null));
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(1, fixture.Handler.BlockCalls);
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_BlockWithWalletIndexLag_RemainsPendingWhenActivityHashMismatches(
+        string blockType, string blockHash)
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "different-block",
+            Confirmations = 1,
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(1, fixture.Handler.BlockCalls);
+    }
+
+    [Theory]
+    [InlineData("auxpow", "doge-block")]
+    [InlineData("merged-parent", "ltc-block")]
+    public async Task Classification_BlockWithWalletIndexLag_RemainsPendingWhenActivityHasZeroConfirmations(
+        string blockType, string blockHash)
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock("coinbase-txid");
+        block.Type = blockType;
+        block.Hash = blockHash;
+        fixture.Handler.TransactionResponse = new[]
+        {
+            new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
+        };
+        fixture.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = blockHash,
+            Confirmations = 0,
+        });
+
+        var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
+            new[] { block }, CancellationToken.None);
+
+        Assert.Equal(new[] { block }, result);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
         Assert.Equal(1, fixture.Handler.BlockCalls);
     }
 

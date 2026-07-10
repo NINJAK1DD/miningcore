@@ -330,7 +330,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(!accepted)
         {
-            var ambiguous = acceptResult.Error?.Code == -500;
+            var ambiguous = acceptResult.Error?.Code == -500 ||
+                IsActiveBlockLookup(acceptResult.Error, block, share.BlockHash);
             logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
             if(!ambiguous || notifyAmbiguous)
                 messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));

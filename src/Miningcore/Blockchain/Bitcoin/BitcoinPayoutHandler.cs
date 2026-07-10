@@ -27,6 +27,13 @@ namespace Miningcore.Blockchain.Bitcoin;
 public class BitcoinPayoutHandler : PayoutHandlerBase,
     IPayoutHandler
 {
+    internal enum BlockActivity
+    {
+        Active,
+        Inactive,
+        Unavailable,
+    }
+
     public BitcoinPayoutHandler(
         IComponentContext ctx,
         IConnectionFactory cf,
@@ -310,10 +317,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     // Code -5 interpreted as "orphaned"
                     if(cmdResult.Error.Code == -5)
                     {
-                        if(SupportsActiveBlockGrace(block) && await IsBlockActiveAsync(block.Hash, ct))
+                        var activity = SupportsActiveBlockGrace(block)
+                            ? await GetBlockActivityAsync(block.Hash, ct)
+                            : BlockActivity.Inactive;
+
+                        if(activity == BlockActivity.Active)
                         {
                             result.Add(block);
                             logger.Warn(() => $"[{LogCategory}] Wallet has not indexed coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
+                            continue;
+                        }
+
+                        if(activity == BlockActivity.Unavailable)
+                        {
+                            result.Add(block);
+                            logger.Warn(() => $"[{LogCategory}] Unable to verify whether block {block.Hash} remains active after wallet lookup failed; keeping block {block.BlockHeight} pending");
                             continue;
                         }
 
@@ -333,10 +351,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // missing transaction details are interpreted as "orphaned"
                 else if(transactionInfo?.Details == null || transactionInfo.Details.Length == 0)
                 {
-                    if(SupportsActiveBlockGrace(block) && await IsBlockActiveAsync(block.Hash, ct))
+                    var activity = SupportsActiveBlockGrace(block)
+                        ? await GetBlockActivityAsync(block.Hash, ct)
+                        : BlockActivity.Inactive;
+
+                    if(activity == BlockActivity.Active)
                     {
                         result.Add(block);
                         logger.Warn(() => $"[{LogCategory}] Wallet returned no details for coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
+                        continue;
+                    }
+
+                    if(activity == BlockActivity.Unavailable)
+                    {
+                        result.Add(block);
+                        logger.Warn(() => $"[{LogCategory}] Unable to verify whether block {block.Hash} remains active after wallet returned no transaction details; keeping block {block.BlockHeight} pending");
                         continue;
                     }
 
@@ -357,9 +386,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             // update progress
                             block.ConfirmationProgress = Math.Min(1.0d, (double) transactionInfo.Confirmations / minConfirmations);
                             block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
+                            block.NotifyBlockConfirmationProgressOnUpdate = true;
                             result.Add(block);
 
-                            messageBus.NotifyBlockConfirmationProgress(poolConfig.Id, block, coin);
                             break;
 
                         case "generate":
@@ -367,11 +396,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             block.Status = BlockStatus.Confirmed;
                             block.ConfirmationProgress = 1;
                             block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
+                            block.NotifyBlockUnlockedOnUpdate = true;
                             result.Add(block);
 
                             logger.Info(() => $"[{LogCategory}] Unlocked block {block.BlockHeight} worth {FormatAmount(block.Reward)}");
 
-                            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                             break;
 
                         default:
@@ -414,10 +443,25 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             "auxpow"));
     }
 
-    private async Task<bool> IsBlockActiveAsync(string blockHash, CancellationToken ct)
+    private async Task<BlockActivity> GetBlockActivityAsync(string blockHash, CancellationToken ct)
     {
         var response = await GetBlockAsync(blockHash, ct);
-        return IsActiveBlock(response, blockHash);
+        return ClassifyBlockActivity(response, blockHash);
+    }
+
+    internal static BlockActivity ClassifyBlockActivity(RpcResponse<DaemonBlock> response,
+        string blockHash)
+    {
+        if(response?.Error != null || response.Response == null ||
+            !string.Equals(response.Response.Hash, blockHash, StringComparison.OrdinalIgnoreCase))
+            return BlockActivity.Unavailable;
+
+        if(response.Response.Confirmations < 0)
+            return BlockActivity.Inactive;
+
+        return response.Response.Confirmations > 0
+            ? BlockActivity.Active
+            : BlockActivity.Unavailable;
     }
 
     private static bool SupportsActiveBlockGrace(Block block)

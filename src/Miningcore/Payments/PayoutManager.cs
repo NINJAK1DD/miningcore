@@ -205,10 +205,31 @@ public class PayoutManager : BackgroundService
         var updated = await cf.RunTx(action);
 
         if(updated && block.NotifyBlockFoundOnUpdate)
-            messageBus.NotifyBlockFound(poolConfig.Id, block, poolConfig.Template);
+            TryNotifyPostCommit(poolConfig.Id, block, "block-found",
+                () => messageBus.NotifyBlockFound(poolConfig.Id, block, poolConfig.Template));
+
+        if(updated && block.NotifyBlockConfirmationProgressOnUpdate)
+            TryNotifyPostCommit(poolConfig.Id, block, "block-confirmation-progress",
+                () => messageBus.NotifyBlockConfirmationProgress(poolConfig.Id, block,
+                    poolConfig.Template));
 
         if(updated && block.NotifyBlockUnlockedOnUpdate)
-            messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template);
+            TryNotifyPostCommit(poolConfig.Id, block, "block-unlocked",
+                () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
+    }
+
+    private static void TryNotifyPostCommit(string poolId, Block block, string notification,
+        Action action)
+    {
+        try
+        {
+            action();
+        }
+
+        catch(Exception ex)
+        {
+            logger.Error(ex, () => $"Unable to emit post-commit {notification} notification for pool {poolId}, block {block.BlockHeight} [{block.Hash}]");
+        }
     }
 
     private async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, CancellationToken ct)
