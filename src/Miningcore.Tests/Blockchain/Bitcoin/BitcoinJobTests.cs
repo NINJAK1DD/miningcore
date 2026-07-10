@@ -26,6 +26,15 @@ public class BitcoinJobTests : TestBase
             .IsDuplicateBlockSubmissionResponse(response));
     }
 
+    [Theory]
+    [InlineData("inconclusive")]
+    [InlineData("INCONCLUSIVE")]
+    public void InconclusiveSubmitResponse_IsIndeterminate(string response)
+    {
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>
+            .IsInconclusiveBlockSubmissionResponse(response));
+    }
+
     [Fact]
     public void AcceptedBlockLookup_RequiresExactActiveHash()
     {
@@ -70,6 +79,70 @@ public class BitcoinJobTests : TestBase
     }
 
     [Fact]
+    public void SubmissionBlockLookup_ClassifiesUnavailableAndInactiveSeparately()
+    {
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Accepted,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = 1,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.MissingCoinbase,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = 1,
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.KnownInactive,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = -1,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Unavailable,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                new JsonRpcError(-5, "not found", null),
+                null,
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Unavailable,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "other-block",
+                    Confirmations = 1,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Unavailable,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = 0,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+    }
+
+    [Fact]
     public void DuplicateSubmitLookup_NeverAcceptsInSharedBitcoinPath()
     {
         var active = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
@@ -101,6 +174,114 @@ public class BitcoinJobTests : TestBase
         Assert.False(sideChain.Ambiguous);
         Assert.True(sideChain.Duplicate);
         Assert.Null(sideChain.CoinbaseTx);
+
+        var unavailable = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            new JsonRpcError(-5, "not found", null),
+            null,
+            "block-hash");
+
+        Assert.False(unavailable.Accepted);
+        Assert.True(unavailable.Ambiguous);
+        Assert.True(unavailable.Duplicate);
+        Assert.Null(unavailable.CoinbaseTx);
+
+        var missingCoinbase = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+            },
+            "block-hash");
+
+        Assert.False(missingCoinbase.Accepted);
+        Assert.True(missingCoinbase.Ambiguous);
+        Assert.True(missingCoinbase.Duplicate);
+        Assert.Null(missingCoinbase.CoinbaseTx);
+    }
+
+    [Fact]
+    public void SubmissionOutcome_PreservesAcceptedAndIndeterminateResultsAsAmbiguous()
+    {
+        var active = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = 1,
+            Transactions = new[] { "coinbase-txid" },
+        };
+
+        var missingCoinbase = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = 1,
+        };
+
+        var zeroConfirmations = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = 0,
+            Transactions = new[] { "coinbase-txid" },
+        };
+
+        var inactive = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = -1,
+            Transactions = new[] { "coinbase-txid" },
+        };
+
+        var jsonNullUnavailable = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome(null, null,
+                new JsonRpcError(-5, "not found", null), null, "block-hash");
+        Assert.False(jsonNullUnavailable.Accepted);
+        Assert.True(jsonNullUnavailable.Ambiguous);
+        Assert.False(jsonNullUnavailable.Duplicate);
+
+        var jsonNullMissingCoinbase = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome(null, null,
+                null, missingCoinbase, "block-hash");
+        Assert.False(jsonNullMissingCoinbase.Accepted);
+        Assert.True(jsonNullMissingCoinbase.Ambiguous);
+
+        var jsonNullZeroConfirmations = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome(null, null,
+                null, zeroConfirmations, "block-hash");
+        Assert.False(jsonNullZeroConfirmations.Accepted);
+        Assert.True(jsonNullZeroConfirmations.Ambiguous);
+
+        var inconclusiveActive = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("inconclusive", null,
+                null, active, "block-hash");
+        Assert.True(inconclusiveActive.Accepted);
+        Assert.False(inconclusiveActive.Ambiguous);
+        Assert.Equal("coinbase-txid", inconclusiveActive.CoinbaseTx);
+
+        var inconclusiveUnavailable = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("inconclusive", null,
+                new JsonRpcError(-5, "not found", null), null, "block-hash");
+        Assert.False(inconclusiveUnavailable.Accepted);
+        Assert.True(inconclusiveUnavailable.Ambiguous);
+
+        var duplicateUnavailable = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("duplicate", null,
+                new JsonRpcError(-5, "not found", null), null, "block-hash");
+        Assert.False(duplicateUnavailable.Accepted);
+        Assert.True(duplicateUnavailable.Ambiguous);
+        Assert.True(duplicateUnavailable.Duplicate);
+
+        var duplicateInactive = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("duplicate", null,
+                null, inactive, "block-hash");
+        Assert.False(duplicateInactive.Accepted);
+        Assert.False(duplicateInactive.Ambiguous);
+        Assert.True(duplicateInactive.Duplicate);
+
+        var invalid = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("duplicate-invalid", null,
+                null, active, "block-hash");
+        Assert.False(invalid.Accepted);
+        Assert.False(invalid.Ambiguous);
+        Assert.False(invalid.Duplicate);
     }
 
     [Fact]

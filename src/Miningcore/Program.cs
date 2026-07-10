@@ -645,8 +645,8 @@ public class Program : BackgroundService
  ██║╚██╔╝██║██║██║╚██╗██║██║██║╚██╗██║██║   ██║██║     ██║   ██║██╔══██╗██╔══╝
  ██║ ╚═╝ ██║██║██║ ╚████║██║██║ ╚████║╚██████╔╝╚██████╗╚██████╔╝██║  ██║███████╗
 ");
-        Console.WriteLine(" https://github.com/blackmennewstyle/miningcore\n");
-        Console.WriteLine(" Donate to one of these addresses to support the project:\n");
+        Console.WriteLine(" https://github.com/NINJAK1DD/miningcore\n");
+        Console.WriteLine(" Upstream Miningcore donation addresses:\n");
         Console.WriteLine(" ETH   - 0xbC059e88A4dD11c2E882Fc6B83F8Ec12E4CCCFad");
         Console.WriteLine(" BTC   - 16xvkGfG9nrJSKKo5nGWphP8w4hr2ZzVuw");
         Console.WriteLine(" LTC   - LLs76baYT7iMqQhizxtBC96Cy48iX3Eh1p");
