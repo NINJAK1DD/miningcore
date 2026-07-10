@@ -519,6 +519,17 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     // statistics, while this block-only copy avoids waiting for DOGE submission.
                     messageBus.SendMessage(CreateParentBlockOnlyShare(share));
                     share.BlockRecordEmitted = true;
+
+                    // Keep unresolved parent submissions out of live pool "last block" stats.
+                    // The block-only copy above remains a candidate and is durable for payout
+                    // reconciliation, but the ordinary LTC share should continue as a normal
+                    // share until that uncertain parent record is proven accepted.
+                    if(acceptResponse.Ambiguous)
+                    {
+                        share.IsBlockCandidate = false;
+                        share.BlockType = null;
+                        share.TransactionConfirmationData = null;
+                    }
                 }
             }
             else if(ReferenceEquals(completed, auxiliarySubmission))
