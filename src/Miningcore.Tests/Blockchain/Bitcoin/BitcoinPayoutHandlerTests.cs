@@ -29,6 +29,31 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinPayoutHandlerTests : TestBase
 {
     [Fact]
+    public void PoolConfig_DefaultRewardRecipients_IsEmpty()
+    {
+        Assert.Empty(new PoolConfig().RewardRecipients);
+    }
+
+    [Fact]
+    public async Task UpdateBlockRewardBalances_MissingRewardRecipients_ReturnsFullReward()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Config.RewardRecipients = null;
+        var block = PendingBlock("coinbase-txid");
+        block.Reward = 75m;
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+
+        var remaining = await fixture.Handler.UpdateBlockRewardBalancesAsync(connection,
+            transaction, fixture.Pool, block, CancellationToken.None);
+
+        Assert.Equal(block.Reward, remaining);
+        await fixture.BalanceRepository.DidNotReceive().AddAmountAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<decimal>(), Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task Reconciliation_UnavailableBlock_RemainsPendingWithMarker()
     {
         var fixture = await CreateFixtureAsync();

@@ -67,6 +67,9 @@ public abstract class PayoutHandlerBase
 
     protected abstract string LogCategory { get; }
 
+    private RewardRecipient[] RewardRecipients =>
+        poolConfig.RewardRecipients ?? Array.Empty<RewardRecipient>();
+
     protected void BuildFaultHandlingPolicy()
     {
         var retry = Policy
@@ -87,7 +90,7 @@ public abstract class PayoutHandlerBase
         var blockRewardRemaining = block.Reward;
 
         // Distribute funds to configured reward recipients
-        foreach(var recipient in poolConfig.RewardRecipients.Where(x => x.Percentage > 0))
+        foreach(var recipient in RewardRecipients.Where(x => x.Percentage > 0))
         {
             var amount = block.Reward * (recipient.Percentage / 100.0m);
             var address = recipient.Address;
@@ -120,7 +123,7 @@ public abstract class PayoutHandlerBase
                 {
                     foreach(var balance in balances)
                     {
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && poolConfig.RewardRecipients.All(x => x.Address != balance.Address))
+                        if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
                         {
                             // record payment
                             var payment = new Payment
@@ -169,7 +172,7 @@ public abstract class PayoutHandlerBase
                     {
                         var (balance, transactionConfirmation) = kvp;
 
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && poolConfig.RewardRecipients.All(x => x.Address != balance.Address))
+                        if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
                         {
                             // record payment
                             var payment = new Payment
