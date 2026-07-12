@@ -59,9 +59,13 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            CryptonoteWalletCommands.Transfer);
+
         if(response.Error == null)
         {
-            var txHash = response.Response.TxHash;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                response.Response?.TxHash, CryptonoteWalletCommands.Transfer);
             var txFee = response.Response.Fee / coin.SmallestUnit;
 
             logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}, TxFee {FormatAmount(txFee)}, TxKey {response.Response.TxKey}");
@@ -84,9 +88,14 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            CryptonoteWalletCommands.TransferSplit);
+
         if(response.Error == null)
         {
             var txHashes = response.Response.TxHashList;
+            WalletSubmissionOutcome.RequireTransactionId(txHashes?.FirstOrDefault(),
+                CryptonoteWalletCommands.TransferSplit);
             var txFees = response.Response.FeeList.Select(x => x / coin.SmallestUnit).ToArray();
 
             logger.Info(() => $"[{LogCategory}] Split-Payment transaction ids: {string.Join(", ", txHashes)}, Corresponding TxFees were {string.Join(", ", txFees.Select(FormatAmount))}");

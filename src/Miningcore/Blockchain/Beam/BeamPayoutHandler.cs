@@ -134,10 +134,14 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         // send command
         var response = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, BeamWalletCommands.SendTransaction, ct, request);
         
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            BeamWalletCommands.SendTransaction);
+
         if(response.Error != null)
             throw new Exception($"{BeamWalletCommands.SendTransaction} returned error: {response.Error.Message} code {response.Error.Code}");
         
-        var txHash = response.Response.TxId;
+        var txHash = WalletSubmissionOutcome.RequireTransactionId(
+            response.Response?.TxId, BeamWalletCommands.SendTransaction);
         logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}");
 
         // update db
@@ -305,6 +309,9 @@ public class BeamPayoutHandler : PayoutHandlerBase,
 
             catch(Exception ex)
             {
+                WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                    BeamWalletCommands.SendTransaction);
+
                 logger.Error(ex);
 
                 NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);

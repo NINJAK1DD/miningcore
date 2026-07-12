@@ -302,6 +302,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
             return;
 
         var balancesTotal = amounts.Sum(x => x.Value);
+        var outcomeUncertain = false;
 
         try
         {
@@ -349,6 +350,9 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
             var txId = await Guard(()=> ergoClient.WalletPaymentTransactionGenerateAndSendAsync(requests, ct), ex =>
             {
+                WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                    "Ergo wallet transaction submission");
+
                 if(ex is ApiException<ApiError> apiException)
                 {
                     var error = apiException.Result.Detail ?? apiException.Result.Reason;
@@ -363,8 +367,8 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
                     throw ex;
             });
 
-            if(string.IsNullOrEmpty(txId))
-                throw new PaymentException("Payment transaction failed to return a transaction id");
+            txId = WalletSubmissionOutcome.RequireTransactionId(txId,
+                "Ergo wallet transaction submission");
 
             // payment successful
             logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
@@ -372,6 +376,12 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
             await PersistPaymentsAsync(balances, txId);
 
             NotifyPayoutSuccess(poolConfig.Id, balances, new[] {txId}, null);
+        }
+
+        catch(PayoutOutcomeUncertainException)
+        {
+            outcomeUncertain = true;
+            throw;
         }
 
         catch(PaymentException ex)
@@ -383,7 +393,15 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
         finally
         {
-            await LockWallet(ct);
+            try
+            {
+                await LockWallet(ct);
+            }
+            catch(Exception ex) when(outcomeUncertain)
+            {
+                logger.Warn(() =>
+                    $"[{LogCategory}] Unable to lock wallet while preserving an unknown payout outcome: {ex.Message}");
+            }
         }
     }
 

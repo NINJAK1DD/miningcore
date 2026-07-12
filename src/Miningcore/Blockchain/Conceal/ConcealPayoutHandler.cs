@@ -65,9 +65,13 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<ConcealCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            ConcealWalletCommands.SendTransaction);
+
         if(response.Error == null)
         {
-            var txHash = response.Response.TxHash;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                response.Response?.TxHash, ConcealWalletCommands.SendTransaction);
             var txFee = ConcealConstants.StaticTransactionFeeReserve;
 
             logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}, TxFee {FormatAmount(txFee)}");

@@ -162,7 +162,8 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 For an existing database, stop Miningcore block writers and payout managers or schedule a maintenance
 window, back it up, and apply the transactional upgrades before deploying this revision. The payout
 ownership migration is mandatory for every cluster with payment processing enabled, even when no
-merged-mining pool is configured. The AuxPoW migration is required when enabling LTC/DOGE merged
+merged-mining pool is configured, and for recorder/recovery-only deployments that use the `-rs`
+share-recovery importer. The AuxPoW migration is required when enabling LTC/DOGE merged
 mining. It uses regular transactional `CREATE INDEX` operations rather than concurrent index builds:
 
 ```console

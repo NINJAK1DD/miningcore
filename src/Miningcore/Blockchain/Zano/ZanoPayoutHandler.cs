@@ -61,9 +61,13 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<ZanoCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            ZanoWalletCommands.Transfer);
+
         if(response.Error == null)
         {
-            var txHash = response.Response.TxHash;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                response.Response?.TxHash, ZanoWalletCommands.Transfer);
 
             logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}");
 
@@ -85,9 +89,14 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<ZanoCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            ZanoWalletCommands.TransferSplit);
+
         if(response.Error == null)
         {
             var txHashes = response.Response.TxHashList;
+            WalletSubmissionOutcome.RequireTransactionId(txHashes?.FirstOrDefault(),
+                ZanoWalletCommands.TransferSplit);
 
             logger.Info(() => $"[{LogCategory}] Split-Payment transaction ids: {string.Join(", ", txHashes)}");
 

@@ -123,6 +123,61 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task ConfirmedBlock_GuardedTransitionPrecedesRewardCredits()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        var scheme = Substitute.For<IPayoutScheme>();
+        fixture.BlockRepository.UpdateBlockAsync(fixture.Connection,
+                fixture.Transaction, fixture.Block)
+            .Returns(true);
+        handler.UpdateBlockRewardBalancesAsync(fixture.Connection, fixture.Transaction,
+                fixture.MiningPool, fixture.Block, Arg.Any<CancellationToken>())
+            .Returns(12.5m);
+
+        var updated = await fixture.Manager.ApplyConfirmedBlockAsync(fixture.Connection,
+            fixture.Transaction, fixture.MiningPool, fixture.Block, handler, scheme,
+            CancellationToken.None);
+
+        Assert.True(updated);
+        Received.InOrder(() =>
+        {
+            fixture.BlockRepository.UpdateBlockAsync(fixture.Connection,
+                fixture.Transaction, fixture.Block);
+            handler.UpdateBlockRewardBalancesAsync(fixture.Connection,
+                fixture.Transaction, fixture.MiningPool, fixture.Block,
+                Arg.Any<CancellationToken>());
+            scheme.UpdateBalancesAsync(fixture.Connection, fixture.Transaction,
+                fixture.MiningPool, handler, fixture.Block, 12.5m,
+                Arg.Any<CancellationToken>());
+        });
+    }
+
+    [Fact]
+    public async Task RejectedClaimPromotion_DoesNotCreditAnyReward()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        var scheme = Substitute.For<IPayoutScheme>();
+        fixture.BlockRepository.UpdateBlockAsync(fixture.Connection,
+                fixture.Transaction, fixture.Block)
+            .Returns(false);
+
+        var updated = await fixture.Manager.ApplyConfirmedBlockAsync(fixture.Connection,
+            fixture.Transaction, fixture.MiningPool, fixture.Block, handler, scheme,
+            CancellationToken.None);
+
+        Assert.False(updated);
+        await handler.DidNotReceive().UpdateBlockRewardBalancesAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<IMiningPool>(),
+            Arg.Any<Block>(), Arg.Any<CancellationToken>());
+        await scheme.DidNotReceive().UpdateBalancesAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<IMiningPool>(),
+            Arg.Any<IPayoutHandler>(), Arg.Any<Block>(), Arg.Any<decimal>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task TerminalBlockRow_PreventsDuplicateCreditAndNotification()
     {
         var fixture = CreateFixture(BlockStatus.Confirmed);
@@ -183,7 +238,7 @@ public class PayoutManagerTests
     }
 
     [Fact]
-    public async Task FailedPayout_MarksFinancialOutcomeUncertain()
+    public async Task UnknownPayout_MarksFinancialOutcomeUncertain()
     {
         var fixture = CreateFixture();
         var handler = Substitute.For<IPayoutHandler>();
@@ -192,7 +247,7 @@ public class PayoutManagerTests
             .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
         handler.PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(),
                 Arg.Any<CancellationToken>())
-            .Returns<Task>(_ => throw new IOException("wallet response lost"));
+            .Returns<Task>(_ => throw new PayoutOutcomeUncertainException("wallet response lost"));
 
         await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
             fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
@@ -201,6 +256,27 @@ public class PayoutManagerTests
         fixture.PayoutLease.Received(1).BeginFinancialOperation();
         fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
         fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+    }
+
+    [Fact]
+    public async Task ConclusivePayoutFailure_CompletesFinancialOperation()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+        handler.PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("invalid wallet configuration"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
+                handler, CancellationToken.None));
+
+        fixture.PayoutLease.Received(1).BeginFinancialOperation();
+        fixture.PayoutLease.Received(1).CompleteFinancialOperation();
+        fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
     }
 
     private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending)
@@ -255,11 +331,12 @@ public class PayoutManagerTests
             shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease);
 
         return new Fixture(manager, miningPool, pool, block, connection, transaction,
-            balanceRepository, messageBus, payoutLease);
+            blockRepository, balanceRepository, messageBus, payoutLease);
     }
 
     private sealed record Fixture(PayoutManager Manager, IMiningPool MiningPool,
         PoolConfig Pool, Block Block, IDbConnection Connection,
-        IDbTransaction Transaction, IBalanceRepository BalanceRepository,
+        IDbTransaction Transaction, IBlockRepository BlockRepository,
+        IBalanceRepository BalanceRepository,
         IMessageBus MessageBus, IPayoutManagerLease PayoutLease);
 }

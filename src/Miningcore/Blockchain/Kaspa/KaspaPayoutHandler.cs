@@ -487,14 +487,21 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                     broadcastRequest.Transactions.Add(signedTransaction.SignedTransactions);
                     var callBroadcast = walletRpc.BroadcastAsync(broadcastRequest);
                     broadcastTransaction = await Guard(() => callBroadcast.ResponseAsync,
-                        ex=> logger.Warn(ex));
+                        ex =>
+                        {
+                            WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                                "Kaspa wallet transaction broadcast");
+                            logger.Warn(ex);
+                        });
                     callBroadcast.Dispose();
 
                     logger.Debug(()=> $"[{LogCategory}] {(broadcastTransaction?.TxIDs == null ? 0 : broadcastTransaction?.TxIDs.Count)} transaction ID(s) returned");
 
                     if(broadcastTransaction?.TxIDs.Count > 0)
                     {
-                        var txId = broadcastTransaction?.TxIDs.First();
+                        var txId = WalletSubmissionOutcome.RequireTransactionId(
+                            broadcastTransaction.TxIDs.FirstOrDefault(),
+                            "Kaspa wallet transaction broadcast");
 
                         logger.Info(() => $"[{LogCategory}] [{amount.Key} - {FormatAmount(amount.Value)}] Payment transaction id: {txId}");
 
@@ -505,6 +512,9 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                             Amount = amount.Value,
                         }, txId);
                     }
+                    else
+                        throw new PayoutOutcomeUncertainException(
+                            "Kaspa wallet transaction broadcast returned success without a transaction id");
                 }
             }
         }

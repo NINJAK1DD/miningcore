@@ -39,6 +39,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Dogecoin wallet-index lag | Passed | Repeated DOGE `gettransaction -5` responses retained exact active AuxPoW rows; pass-through recovery resumed normal maturity checks. |
 | Coinbase maturity and wallet credit | Passed | Earlier blocks matured and produced actual 100 LTC and 1,000,000 DOGE payment records in this regtest environment. |
 | Claim promotion vs direct insert | Passed | Twenty real PostgreSQL races retained exactly one payable AuxPoW row, including uniqueness-conflict rollback/retry outcomes. |
+| Losing-claim balance side effects | Passed | A real PostgreSQL direct-final-vs-claim race produced `0` losing balances, `0` losing balance-change rows, `1` winner balance, `1` winner balance-change row and `1` payable finalized AuxPoW row. The repeatable harness is `scripts/regtest/postgres-claim-balance-race.sh`. |
 | Two concurrent claim promotions | Passed | One guarded update affected one row, the other affected zero; both transactions committed with `1 auxpow : 0 claims`. |
 | PostgreSQL replay/idempotency | Passed | Final AuxPoW, proof claims and accepted/uncertain merged-parent replay each retained one protected identity. |
 | Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
@@ -65,7 +66,8 @@ were made against the same PostgreSQL instance used by the running payout manage
   imports configure neither ordinary background services nor the API web host.
 - A database-scoped advisory lock prevents concurrent healthy payout-manager startup. A durable
   ownership row survives lock-session/process loss, so replacement startup remains fail-closed.
-  Pending block rows are locked through terminal update, and committed wallet transaction IDs are
+  Pending block rows are locked and must win their guarded terminal transition before any reward
+  balance mutation; committed wallet transaction IDs are
   idempotent payment-batch keys so database retry cannot reset balances twice.
 
 ## Remaining mainnet gates

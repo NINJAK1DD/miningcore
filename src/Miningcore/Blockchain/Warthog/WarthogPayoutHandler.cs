@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using Autofac;
 using AutoMapper;
@@ -310,8 +311,8 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         if(extraPoolPaymentProcessingConfig?.KeepTransactionFees == true)
             logger.Debug(() => $"[{LogCategory}] Pool does not pay the transaction fee, so each address will have its payout deducted with [{FormatAmount(maximumTransactionFees / WarthogConstants.SmallestUnit)}]");
 
-        var txFailures = new List<Tuple<KeyValuePair<string, decimal>, Exception>>();
-        var successBalances = new Dictionary<Balance, string>();
+        var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
+        var successBalances = new ConcurrentDictionary<Balance, string>();
 
         Random randomNonceId = new Random();
         List<uint> usedNonceId = new List<uint>();
@@ -395,26 +396,27 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                 if(response?.Error != null)
                     throw new Exception($"[{nonceId}] {WarthogCommands.SendTransaction} returned error: {response.Error} (Code {response?.Code})");
 
-                if(string.IsNullOrEmpty(response.Data.TxHash))
-                    throw new Exception($"[{nonceId}] {WarthogCommands.SendTransaction} did not return a transaction id!");
-                else
-                    logger.Info(() => $"[{LogCategory}] [{nonceId}] Payment transaction id: {response.Data.TxHash}");
+                var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                    response?.Data?.TxHash, WarthogCommands.SendTransaction);
+                logger.Info(() => $"[{LogCategory}] [{nonceId}] Payment transaction id: {txHash}");
 
-                successBalances.Add(new Balance
+                successBalances.TryAdd(new Balance
                 {
                     PoolId = poolConfig.Id,
                     Address = address,
                     Amount = amount,
-                }, response.Data.TxHash);
+                }, txHash);
             }, ex =>
             {
+                WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                    WarthogCommands.SendTransaction);
                 txFailures.Add(Tuple.Create(x, ex));
             });
         });
 
         if(successBalances.Any())
         {
-            await PersistPaymentsAsync(successBalances);
+            await PersistPaymentsAsync(successBalances.ToDictionary(x => x.Key, x => x.Value));
 
             NotifyPayoutSuccess(poolConfig.Id, successBalances.Keys.ToArray(), successBalances.Values.ToArray(), null);
         }

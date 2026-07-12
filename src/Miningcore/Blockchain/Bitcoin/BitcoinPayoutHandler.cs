@@ -73,7 +73,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private const int MinimumDefinitiveMisses = 3;
 
     internal static bool IsUnknownWalletSubmission(JsonRpcError error) =>
-        error?.Code == -500;
+        WalletSubmissionOutcome.IsUnknown(error);
 
     protected virtual Task<RpcResponse<string>> SendManyAsync(object[] args,
         CancellationToken ct) =>

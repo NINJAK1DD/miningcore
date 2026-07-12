@@ -1,6 +1,7 @@
 -- Adds durable payout-manager ownership, payment-persistence idempotency and
 -- recovery-file replay protection. Required by every payment-processing cluster,
--- even when merged mining is disabled.
+-- even when merged mining is disabled, and by recorder/recovery-only deployments
+-- that use the -rs share-recovery importer.
 -- Stop every payout manager before applying this migration.
 
 BEGIN;

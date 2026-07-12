@@ -158,7 +158,8 @@ public abstract class PayoutHandlerBase
         {
             logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
                 $"{JsonConvert.SerializeObject(balances.Where(x => x.Amount > 0).ToDictionary(x => x.Address, x => x.Amount))}");
-            throw;
+            throw new PayoutOutcomeUncertainException(
+                "Wallet submission succeeded but its payment records could not be persisted", ex);
         }
     }
 
@@ -223,7 +224,8 @@ public abstract class PayoutHandlerBase
         {
             logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
                 $"{JsonConvert.SerializeObject(balances.Where(x => x.Key.Amount > 0).ToDictionary(x => x.Key.Address, x => x.Key.Amount))}");
-            throw;
+            throw new PayoutOutcomeUncertainException(
+                "One or more wallet submissions succeeded but their payment records could not be persisted", ex);
         }
     }
 

@@ -218,12 +218,8 @@ public class PayoutManager : BackgroundService
                     switch(block.Status)
                     {
                         case BlockStatus.Confirmed:
-                            // blockchains that do not support block-reward payments via coinbase Tx
-                            // must generate balance records for all reward recipients instead
-                            var blockReward = await handler.UpdateBlockRewardBalancesAsync(con, tx, pool, block, ct);
-
-                            await scheme.UpdateBalancesAsync(con, tx, pool, handler, block, blockReward, ct);
-                            return await blockRepo.UpdateBlockAsync(con, tx, block);
+                            return await ApplyConfirmedBlockAsync(con, tx, pool, block,
+                                handler, scheme, ct);
 
                         case BlockStatus.Orphaned:
                         case BlockStatus.Pending:
@@ -270,6 +266,25 @@ public class PayoutManager : BackgroundService
                 () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
     }
 
+    internal async Task<bool> ApplyConfirmedBlockAsync(IDbConnection con, IDbTransaction tx,
+        IMiningPool pool, Block block, IPayoutHandler handler, IPayoutScheme scheme,
+        CancellationToken ct)
+    {
+        // A guarded transition (notably auxpow-claim promotion) must win before
+        // any reward side effects are applied. Everything remains in this transaction,
+        // so a later balance failure rolls the block transition back too.
+        if(!await blockRepo.UpdateBlockAsync(con, tx, block))
+            return false;
+
+        // Blockchains that do not support block-reward payments via coinbase Tx
+        // must generate balance records for all reward recipients instead.
+        var blockReward = await handler.UpdateBlockRewardBalancesAsync(con, tx, pool,
+            block, ct);
+
+        await scheme.UpdateBalancesAsync(con, tx, pool, handler, block, blockReward, ct);
+        return true;
+    }
+
     private static void TryNotifyPostCommit(string poolId, Block block, string notification,
         Action action)
     {
@@ -300,7 +315,7 @@ public class PayoutManager : BackgroundService
                 payoutLease.CompleteFinancialOperation();
             }
 
-            catch(Exception ex)
+            catch(PayoutOutcomeUncertainException ex)
             {
                 payoutLease.MarkFinancialOutcomeUncertain();
 
@@ -315,11 +330,28 @@ public class PayoutManager : BackgroundService
                         $"Unable to emit payout-failure notification for pool {config.Id}");
                 }
 
-                if(ex is PayoutOutcomeUncertainException)
-                    throw;
+                throw;
+            }
 
-                throw new PayoutOutcomeUncertainException(
-                    $"Payout processing for pool {config.Id} ended without a conclusive financial outcome", ex);
+            catch(Exception ex)
+            {
+                // No handler may throw an ordinary exception after an ambiguous submission.
+                // Such outcomes must be classified explicitly above. This path is therefore a
+                // conclusive pre-submission/configuration failure and must not strand ownership.
+                payoutLease.CompleteFinancialOperation();
+
+                try
+                {
+                    await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                }
+
+                catch(Exception notificationEx)
+                {
+                    logger.Error(notificationEx, () =>
+                        $"Unable to emit payout-failure notification for pool {config.Id}");
+                }
+
+                throw;
             }
         }
 

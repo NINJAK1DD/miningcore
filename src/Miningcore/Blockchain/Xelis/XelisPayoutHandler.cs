@@ -356,6 +356,9 @@ public class XelisPayoutHandler : PayoutHandlerBase,
             }
 
             var buildTransactionResponse = await rpcClientWallet.ExecuteAsync<BuildTransactionResponse>(logger, XelisWalletCommands.BuildTransaction, ct, buildTransactionRequest);
+            WalletSubmissionOutcome.ThrowIfUnknown(buildTransactionResponse.Error,
+                XelisWalletCommands.BuildTransaction);
+
             if(buildTransactionResponse.Error != null)
             {
                 logger.Error(()=> $"[{LogCategory}] '{XelisWalletCommands.BuildTransaction}': {buildTransactionResponse.Error.Message} (Code {buildTransactionResponse.Error.Code})");
@@ -363,21 +366,16 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 continue;
             }
 
-            if(string.IsNullOrEmpty(buildTransactionResponse.Response.Hash))
-            {
-                logger.Warn(() => $"[{LogCategory}] Payment transaction failed to return a transaction id");
-                continue;
-            }
-            else
-            {
-                // payment successful
-                var finalTransactionFees = (decimal) buildTransactionResponse.Response.Fee / XelisConstants.SmallestUnit;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                buildTransactionResponse.Response?.Hash, XelisWalletCommands.BuildTransaction);
 
-                logger.Info(() => $"[{LogCategory}] Payment transaction id: {buildTransactionResponse.Response.Hash} || Payment transaction fees: {FormatAmount(finalTransactionFees)}");
+            // payment successful
+            var finalTransactionFees = (decimal) buildTransactionResponse.Response.Fee / XelisConstants.SmallestUnit;
 
-                await PersistPaymentsAsync(page, buildTransactionResponse.Response.Hash);
-                NotifyPayoutSuccess(poolConfig.Id, page, new[] { buildTransactionResponse.Response.Hash }, finalTransactionFees);
-            }
+            logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash} || Payment transaction fees: {FormatAmount(finalTransactionFees)}");
+
+            await PersistPaymentsAsync(page, txHash);
+            NotifyPayoutSuccess(poolConfig.Id, page, new[] { txHash }, finalTransactionFees);
         }
     }
 
