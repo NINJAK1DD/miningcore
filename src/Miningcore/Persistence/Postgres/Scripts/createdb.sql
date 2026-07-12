@@ -100,6 +100,28 @@ CREATE TABLE payments
 
 CREATE INDEX IDX_PAYMENTS_POOL_COIN_WALLET on payments(poolid, coin, address);
 
+CREATE TABLE payment_batches
+(
+	poolid TEXT NOT NULL,
+	transactionconfirmationdata TEXT NOT NULL,
+	created TIMESTAMPTZ NOT NULL,
+
+	PRIMARY KEY(poolid, transactionconfirmationdata)
+);
+
+CREATE TABLE payout_manager_ownership
+(
+	id SMALLINT NOT NULL PRIMARY KEY CHECK(id = 1),
+	generation BIGINT NOT NULL DEFAULT 0,
+	owner_id UUID NULL,
+	owner_host TEXT NULL,
+	owner_process_id INT NULL,
+	acquired TIMESTAMPTZ NULL,
+	released TIMESTAMPTZ NULL
+);
+
+INSERT INTO payout_manager_ownership(id) VALUES(1);
+
 CREATE TABLE poolstats
 (
 	id BIGSERIAL NOT NULL PRIMARY KEY,

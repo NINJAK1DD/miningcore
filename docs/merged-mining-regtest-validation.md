@@ -43,7 +43,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | PostgreSQL replay/idempotency | Passed | Final AuxPoW, proof claims and accepted/uncertain merged-parent replay each retained one protected identity. |
 | Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
 | Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares plus LTC/DOGE block-only rows. Receiver restart also reacquired ownership and resumed persistence. A different physical-host/firewall path should still be checked for the final deployment. |
-| Accidental dual payout manager | Partial guard passed / issue #19 open | A PostgreSQL session advisory lock rejected a second healthy receiver and a clean restart released then reacquired the lock. The lock does not fence work already in progress if its backend is terminated. Automatic/hot-standby payout failover remains unsupported pending durable block/payment fencing and active-cycle interruption tests. |
+| Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
 | Asynchronous block delivery decision | Explicit opt-in | The current recorder handoff and ZeroMQ PUB/SUB model is retained, but it is no longer silently accepted: every enabled merged-mining pool must set `acceptNonDurableBlockDelivery=true`. Startup otherwise fails with the documented process-crash and disconnected-receiver loss windows. |
 
 ## Runtime hardening observed during validation
@@ -60,8 +60,10 @@ were made against the same PostgreSQL instance used by the running payout manage
 - Every applied proxy response mutation is written to the JSONL fault log.
 - Relay receiver pools without internal Stratum remain alive until host cancellation, and recovery
   imports configure neither ordinary background services nor the API web host.
-- A database-scoped PostgreSQL advisory lock prevents accidental concurrent healthy payout-manager
-  startup and is checked before each cycle. It does not fence financial work already in progress.
+- A database-scoped advisory lock prevents concurrent healthy payout-manager startup. A durable
+  ownership row survives lock-session/process loss, so replacement startup remains fail-closed.
+  Pending block rows are locked through terminal update, and committed wallet transaction IDs are
+  idempotent payment-batch keys so database retry cannot reset balances twice.
 
 ## Remaining mainnet gates
 
@@ -70,6 +72,7 @@ across the exact physical hosts, firewall and network path planned for deploymen
 asynchronous recorder and ZeroMQ PUB/SUB loss windows remain an explicitly accepted operational risk
 when `acceptNonDurableBlockDelivery=true`; deployments that cannot accept that risk still require a
 transactional outbox, synchronous repository handoff or acknowledged transport.
-Automatic/hot-standby payout-manager failover is unsupported. Confirm the old process has fully
-terminated before starting a replacement until issue #19 adds durable fencing, payout-batch
-idempotency and active-cycle interruption tests.
+Automatic/hot-standby payout-manager failover remains intentionally unsupported. After an unclean
+stop, confirm the old process has fully terminated before explicitly clearing its durable ownership
+row. The fail-closed backend-termination, controlled recovery, block-credit serialization and
+payment-batch idempotency tests have passed against PostgreSQL 17.

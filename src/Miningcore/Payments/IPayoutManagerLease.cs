@@ -1,8 +1,8 @@
 namespace Miningcore.Payments;
 
 /// <summary>
-/// Prevents two healthy payout managers from starting concurrently against one database.
-/// This is an operational guard, not a fencing token for work already in progress.
+/// Prevents concurrent payout managers with a durable ownership token that survives
+/// database-session or process loss. Ownership is released only after a clean stop.
 /// </summary>
 public interface IPayoutManagerLease : IAsyncDisposable
 {

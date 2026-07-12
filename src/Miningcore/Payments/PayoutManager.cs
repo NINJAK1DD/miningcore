@@ -77,7 +77,8 @@ public class PayoutManager : BackgroundService
     {
         if(!await payoutLease.TryAcquireAsync(ct))
             throw new PoolStartupException(
-                "Another payout manager already owns this PostgreSQL database. Run exactly one payout/reconciliation processor per database.");
+                "Another payout manager owns this PostgreSQL database, or a durable ownership marker remains after an unclean stop. " +
+                "Run exactly one payout/reconciliation processor per database. Clear a stale marker only after confirming the previous process is dead.");
 
         try
         {
@@ -237,7 +238,18 @@ public class PayoutManager : BackgroundService
     internal async Task RunBlockUpdateTransactionAsync(PoolConfig poolConfig, Block block,
         Func<IDbConnection, IDbTransaction, Task<bool>> action)
     {
-        var updated = await cf.RunTx(action);
+        var updated = await cf.RunTx(async (con, tx) =>
+        {
+            // Serialize classification and crediting on the persisted block row. A second
+            // process that classified the same pending block must wait, then observes the
+            // committed terminal status and performs no balance changes or notifications.
+            var persisted = await blockRepo.GetBlockByIdForUpdateAsync(con, tx, block.Id);
+
+            if(persisted == null || persisted.Status != BlockStatus.Pending)
+                return false;
+
+            return await action(con, tx);
+        });
 
         if(updated && block.NotifyBlockFoundOnUpdate)
             TryNotifyPostCommit(poolConfig.Id, block, "block-found",
@@ -364,8 +376,8 @@ public class PayoutManager : BackgroundService
 
             do
             {
-                // Refuse to begin another cycle after the concurrent-start guard session
-                // has been lost. This does not fence work already running inside a cycle.
+                // Refuse to begin another cycle if either the advisory session or durable
+                // ownership token has been lost. Replacement startup remains fail-closed.
                 await payoutLease.EnsureHeldAsync(ct);
 
                 try

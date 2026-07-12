@@ -72,6 +72,16 @@ public class BlockRepository : IBlockRepository
             mapped, tx) > 0;
     }
 
+    public async Task<Block> GetBlockByIdForUpdateAsync(IDbConnection con, IDbTransaction tx,
+        long id)
+    {
+        const string query = "SELECT * FROM blocks WHERE id = @id FOR UPDATE";
+
+        return (await con.QueryAsync<Entities.Block>(query, new { id }, tx))
+            .Select(mapper.Map<Block>)
+            .FirstOrDefault();
+    }
+
     public async Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status,
         int page, int pageSize, CancellationToken ct)
     {

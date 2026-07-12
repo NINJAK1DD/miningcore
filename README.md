@@ -65,12 +65,13 @@ checks from the remaining mainnet gates.
 | Central relay receiver/recorder | Required | Required for merged mining unless another database-connected node is explicitly the sole payout/reconciliation owner | Required when it reconciles merged mining |
 
 For merged mining, cluster-level `paymentProcessing.enabled` must be true on the node that owns
-reconciliation and payouts. A PostgreSQL session advisory lock prevents two healthy payout managers
-from starting concurrently against one database. It is not a fencing token for a block-credit or
-wallet-payment operation already in progress when that lock session is lost. Automatic/hot-standby
-failover is therefore unsupported: confirm the previous payout process has fully terminated before
-starting its replacement. The owner must include the local `mergedMining` configuration for the
-merged pool, and all participating recorder/payout nodes must use the intended PostgreSQL database.
+reconciliation and payouts. PostgreSQL stores a durable payout-manager ownership token in addition
+to the session advisory lock. Only a clean shutdown clears that token; losing the database session
+or crashing leaves replacement startup blocked. After an unclean stop, confirm that the previous
+process is dead before explicitly clearing the stale token with the statement documented in the
+ownership migration. Automatic/hot-standby takeover is intentionally unsupported. The owner must
+include the local `mergedMining` configuration for the merged pool, and all participating
+recorder/payout nodes must use the intended PostgreSQL database.
 
 Share relay uses ZeroMQ PUB/SUB and is not an acknowledged durable queue. A disconnected receiver or
 process failure can lose an accepted block event. Production deployments requiring stronger financial
@@ -163,11 +164,16 @@ index builds:
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
 ```
 
 The migration stops rather than guessing if legacy or duplicate claimant rows require manual review.
 Startup also verifies the required unique partial indexes and refuses merged mining when they are
-missing or malformed.
+missing or malformed. The payout-manager migration adds durable ownership plus an idempotent
+payment-batch ledger. An ambiguous PostgreSQL retry with the same wallet transaction ID therefore
+cannot record the same payment or reset balances twice.
 
 The optional PostgreSQL 11 partitioning appendix is available at
 [createdb_postgresql_11_appendix.sql](src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql).

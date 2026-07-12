@@ -121,6 +121,13 @@ public abstract class PayoutHandlerBase
             {
                 await cf.RunTx(async (con, tx) =>
                 {
+                    if(!await paymentRepo.TryBeginPaymentBatchAsync(con, tx, poolConfig.Id,
+                           transactionConfirmation, clock.Now))
+                    {
+                        logger.Warn(() => $"[{LogCategory}] Payment batch {transactionConfirmation} was already persisted; skipping duplicate balance reset");
+                        return;
+                    }
+
                     foreach(var balance in balances)
                     {
                         if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
@@ -168,29 +175,45 @@ public abstract class PayoutHandlerBase
             {
                 await cf.RunTx(async (con, tx) =>
                 {
-                    foreach(var kvp in balances)
+                    foreach(var group in balances.GroupBy(x => x.Value))
                     {
-                        var (balance, transactionConfirmation) = kvp;
+                        var transactionConfirmation = group.Key;
 
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
+                        if(string.IsNullOrEmpty(transactionConfirmation))
+                            throw new InvalidOperationException(
+                                "Refusing to persist a payment batch without a wallet transaction id");
+
+                        if(!await paymentRepo.TryBeginPaymentBatchAsync(con, tx, poolConfig.Id,
+                               transactionConfirmation, clock.Now))
                         {
-                            // record payment
-                            var payment = new Payment
-                            {
-                                PoolId = poolConfig.Id,
-                                Coin = coin.Symbol,
-                                Address = balance.Address,
-                                Amount = balance.Amount,
-                                Created = clock.Now,
-                                TransactionConfirmationData = transactionConfirmation
-                            };
-
-                            await paymentRepo.InsertAsync(con, tx, payment);
+                            logger.Warn(() => $"[{LogCategory}] Payment batch {transactionConfirmation} was already persisted; skipping duplicate balance reset");
+                            continue;
                         }
 
-                        // reset balance
-                        logger.Info(() => $"[{LogCategory}] Resetting balance of {balance.Address}");
-                        await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, balance.Address, -balance.Amount, "Balance reset after payment");
+                        foreach(var kvp in group)
+                        {
+                            var balance = kvp.Key;
+
+                            if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
+                            {
+                                // record payment
+                                var payment = new Payment
+                                {
+                                    PoolId = poolConfig.Id,
+                                    Coin = coin.Symbol,
+                                    Address = balance.Address,
+                                    Amount = balance.Amount,
+                                    Created = clock.Now,
+                                    TransactionConfirmationData = transactionConfirmation
+                                };
+
+                                await paymentRepo.InsertAsync(con, tx, payment);
+                            }
+
+                            // reset balance
+                            logger.Info(() => $"[{LogCategory}] Resetting balance of {balance.Address}");
+                            await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, balance.Address, -balance.Amount, "Balance reset after payment");
+                        }
                     }
                 });
             });

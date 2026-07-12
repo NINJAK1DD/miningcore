@@ -2,14 +2,16 @@ using System.Data;
 using Dapper;
 using Miningcore.Persistence;
 using NLog;
+using Npgsql;
 
 namespace Miningcore.Payments;
 
 /// <summary>
-/// Holds a PostgreSQL session advisory lock for the complete payout-manager lifetime.
-/// Advisory locks are scoped to a database, so the same lock ids may safely be used by
-/// independent Miningcore installations that use different databases. Losing the session
-/// is detected before the next cycle, but does not fence financial work already in progress.
+/// Holds both a PostgreSQL session advisory lock and a durable ownership record for the
+/// complete payout-manager lifetime. The durable record is cleared only after a clean stop.
+/// If the guard session or process is lost, replacement startup remains blocked until an
+/// operator has confirmed that the previous process is dead and clears the stale record.
+/// This deliberately favours financial safety over automatic failover.
 /// </summary>
 public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 {
@@ -25,7 +27,9 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IConnectionFactory cf;
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly Guid ownerId = Guid.NewGuid();
     private IDbConnection connection;
+    private long generation;
     private bool acquired;
     private int disposed;
 
@@ -56,10 +60,77 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     return false;
                 }
 
+                using(var tx = candidate.BeginTransaction())
+                {
+                    const string verifyPaymentBatchSchema = @"SELECT EXISTS(
+                        SELECT 1
+                        FROM pg_constraint con
+                        JOIN pg_class rel ON rel.oid = con.conrelid
+                        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                        WHERE ns.nspname = current_schema()
+                          AND rel.relname = 'payment_batches'
+                          AND con.contype = 'p'
+                          AND pg_get_constraintdef(con.oid) ILIKE
+                              'PRIMARY KEY (poolid, transactionconfirmationdata)%')";
+                    var paymentBatchSchemaValid = await candidate.ExecuteScalarAsync<bool>(
+                        new CommandDefinition(verifyPaymentBatchSchema,
+                            transaction: tx, cancellationToken: ct));
+
+                    if(!paymentBatchSchemaValid)
+                        throw new InvalidOperationException(
+                            "The payment-batch idempotency schema is missing or malformed. Apply " +
+                            "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql before enabling payment processing.");
+
+                    const string ensureRow = @"INSERT INTO payout_manager_ownership(
+                            id, generation, owner_id, owner_host, owner_process_id, acquired, released)
+                        VALUES(1, 0, NULL, NULL, NULL, NULL, NULL)
+                        ON CONFLICT(id) DO NOTHING";
+                    await candidate.ExecuteAsync(new CommandDefinition(ensureRow,
+                        transaction: tx, cancellationToken: ct));
+
+                    const string acquireOwnership = @"UPDATE payout_manager_ownership
+                        SET generation = generation + 1,
+                            owner_id = @ownerId,
+                            owner_host = @ownerHost,
+                            owner_process_id = @ownerProcessId,
+                            acquired = now(),
+                            released = NULL
+                        WHERE id = 1 AND owner_id IS NULL
+                        RETURNING generation";
+                    generation = await candidate.QuerySingleOrDefaultAsync<long>(
+                        new CommandDefinition(acquireOwnership, new
+                        {
+                            ownerId,
+                            ownerHost = Environment.MachineName,
+                            ownerProcessId = Environment.ProcessId,
+                        }, tx, cancellationToken: ct));
+
+                    if(generation == 0)
+                    {
+                        tx.Rollback();
+                    }
+                    else
+                        tx.Commit();
+                }
+
+                if(generation == 0)
+                {
+                    candidate.Dispose();
+                    return false;
+                }
+
                 connection = candidate;
                 acquired = true;
-                logger.Info(() => "Acquired PostgreSQL payout-manager concurrent-start guard");
+                logger.Info(() => $"Acquired durable PostgreSQL payout-manager ownership generation {generation} [{ownerId}]");
                 return true;
+            }
+
+            catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.UndefinedTable)
+            {
+                candidate.Dispose();
+                throw new InvalidOperationException(
+                    "The payout-manager ownership schema is missing. Apply " +
+                    "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql before enabling payment processing.", ex);
             }
 
             catch
@@ -87,8 +158,15 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                 throw new InvalidOperationException(
                     "The PostgreSQL payout-manager guard session is no longer available");
 
-            var command = new CommandDefinition("SELECT 1", cancellationToken: ct);
-            await connection.ExecuteScalarAsync<int>(command);
+            const string query = @"SELECT EXISTS(
+                    SELECT 1 FROM payout_manager_ownership
+                    WHERE id = 1 AND owner_id = @ownerId AND generation = @generation)";
+            var held = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(query,
+                new { ownerId, generation }, cancellationToken: ct));
+
+            if(!held)
+                throw new InvalidOperationException(
+                    "The durable PostgreSQL payout-manager ownership token no longer matches this process");
         }
 
         catch(Exception ex) when(ex is not OperationCanceledException)
@@ -116,9 +194,32 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
         {
             if(connection != null)
             {
-                // Session advisory locks are released by PostgreSQL when this connection
-                // closes. Avoid a final network round-trip so shutdown cannot stall on an
-                // unavailable database.
+                if(acquired && connection.State == ConnectionState.Open)
+                {
+                    try
+                    {
+                        const string release = @"UPDATE payout_manager_ownership
+                            SET owner_id = NULL,
+                                owner_host = NULL,
+                                owner_process_id = NULL,
+                                released = now()
+                            WHERE id = 1 AND owner_id = @ownerId AND generation = @generation";
+                        var released = await connection.ExecuteAsync(new CommandDefinition(release,
+                            new { ownerId, generation }, commandTimeout: 5));
+
+                        if(released == 0)
+                            logger.Error(() => "Unable to clear durable payout-manager ownership because the stored token changed");
+                    }
+
+                    catch(Exception ex)
+                    {
+                        // Fail closed. Leaving the durable row owned prevents an unsafe
+                        // replacement process from starting after an uncertain shutdown.
+                        logger.Error(ex, () => "Unable to clear durable payout-manager ownership; manual release is required after confirming this process is stopped");
+                    }
+                }
+
+                // The session advisory lock is released when this connection closes.
                 connection.Dispose();
                 connection = null;
             }

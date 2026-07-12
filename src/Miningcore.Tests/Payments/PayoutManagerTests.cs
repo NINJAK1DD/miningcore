@@ -122,6 +122,24 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task TerminalBlockRow_PreventsDuplicateCreditAndNotification()
+    {
+        var fixture = CreateFixture(BlockStatus.Confirmed);
+        var actionCalls = 0;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, fixture.Block,
+            (_, _) =>
+            {
+                actionCalls++;
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(0, actionCalls);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task StartAsync_RejectsSecondPayoutManagerOwner()
     {
         var fixture = CreateFixture();
@@ -146,7 +164,7 @@ public class PayoutManagerTests
         await fixture.PayoutLease.Received(1).DisposeAsync();
     }
 
-    private static Fixture CreateFixture()
+    private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending)
     {
         var context = Substitute.For<IComponentContext>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -174,6 +192,7 @@ public class PayoutManagerTests
         };
         var block = new Block
         {
+            Id = 42,
             PoolId = pool.Id,
             BlockHeight = 100,
             Miner = "DExampleMiner",
@@ -182,6 +201,13 @@ public class PayoutManagerTests
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.GetBlockByIdForUpdateAsync(connection, transaction, block.Id)
+            .Returns(new Block
+            {
+                Id = block.Id,
+                PoolId = block.PoolId,
+                Status = persistedStatus,
+            });
 
         var manager = new PayoutManager(context, connectionFactory, blockRepository,
             shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease);
