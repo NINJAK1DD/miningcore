@@ -31,6 +31,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Litecoin JSON-null response | Passed | A forwarded accepted block had its response replaced with JSON null and was recovered by exact active-hash lookup. |
 | Litecoin `inconclusive` response | Passed | The replacement fault fired once; the active block and coinbase were recovered into one idempotent parent row. |
 | Duplicate parent/recovery replay | Passed | The same real `merged-parent` block-only recovery record was imported twice; both imports exited and one database row remained. |
+| Atomic ordinary-share recovery | Passed | Recovery holds the source read-locked, validates every record before opening a transaction, then imports all batches in one transaction. Tests cover a malformed record after 100 valid shares, valid/invalid/valid input, second-batch database rollback followed by safe full retry, exact valid-file batching and block-only replay. A real Linux recovery run with 100 valid records followed by malformed input exited 1 while PostgreSQL remained at 24 shares before and after. |
 | Lower-height Litecoin reorganisation | Passed | An authoritative lower template with a changed `previousblockhash` replaced the job and retained the cached DOGE template. |
 | Dogecoin reorganisation | Passed | An accepted child was invalidated, returned `confirmations = -1`, and its row became orphaned; the chain was then restored. |
 | Litecoin MWEB template | Passed | The original failure skipped Litecoin Core's required pre-activation pegin. Repeating the [official v0.21.5.5 functional-test sequence](https://github.com/litecoin-project/litecoin/blob/v0.21.5.5/test/functional/mweb_mining.py) produced a height-432 template with a 4,198-character `mweb` payload. CUDA ccminer then submitted through Miningcore; Litecoin accepted blocks 433 and 434, and verbose `getblock` returned valid MWEB extension data for both. |
@@ -49,7 +50,9 @@ were made against the same PostgreSQL instance used by the running payout manage
 
 - A normal systemd stop now completes in about 0.8 seconds without SIGKILL or a libzmq assertion.
 - Recovery import is a one-shot mode: it does not start normal payout/statistics/relay background
-  services and stops the host after success or failure.
+  services and stops the host after success or failure. Missing, malformed or database-failed
+  imports return exit code 1 only after ensuring that the complete file wrote nothing; rerunning the
+  original failed input is therefore safe.
 - Fault rules can require a minimum parameter count, preventing a block-submission fault from being
   consumed by Miningcore's parameterless startup capability probe.
 - Fault rules can patch nested template results, allowing deterministic target-separated parent-only

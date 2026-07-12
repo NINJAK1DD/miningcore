@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
@@ -90,42 +91,52 @@ public class ShareRecorder : BackgroundService
 
     internal async Task PersistSharesCoreAsync(IList<Share> shares)
     {
-        var insertedBlocks = await cf.RunTx(async (con, tx) =>
+        var insertedBlocks = await cf.RunTx((con, tx) =>
+            PersistSharesBatchAsync(con, tx, shares));
+
+        NotifyPersistedBlocks(insertedBlocks);
+    }
+
+    private async Task<List<(string PoolId, Block Block)>> PersistSharesBatchAsync(
+        IDbConnection con, IDbTransaction tx, IList<Share> shares)
+    {
+        var result = new List<(string PoolId, Block Block)>();
+
+        // Block-only candidates are sent through the share message pipeline so they can reuse
+        // normal block persistence and notifications without creating a duplicate standalone
+        // share row or distorting hashrate, effort, and share statistics.
+        var mapped = GetSharesForPersistence(shares)
+            .Select(mapper.Map<Persistence.Model.Share>)
+            .ToArray();
+
+        if(mapped.Length > 0)
+            await shareRepo.BatchInsertAsync(con, tx, mapped, CancellationToken.None);
+
+        // Insert blocks
+        foreach(var share in shares)
         {
-            var result = new List<(string PoolId, Block Block)>();
+            if(!share.IsBlockCandidate || share.BlockRecordEmitted)
+                continue;
 
-            // Block-only candidates are sent through the share message pipeline so they can reuse
-            // normal block persistence and notifications without creating a duplicate standalone
-            // share row or distorting hashrate, effort, and share statistics.
-            var mapped = GetSharesForPersistence(shares)
-                .Select(mapper.Map<Persistence.Model.Share>)
-                .ToArray();
+            var blockEntity = mapper.Map<Block>(share);
+            blockEntity.Status = BlockStatus.Pending;
+            var inserted = await blockRepo.InsertAsync(con, tx, blockEntity);
 
-            if(mapped.Length > 0)
-                await shareRepo.BatchInsertAsync(con, tx, mapped, CancellationToken.None);
+            if(!inserted)
+                continue;
 
-            // Insert blocks
-            foreach(var share in shares)
-            {
-                if(!share.IsBlockCandidate || share.BlockRecordEmitted)
-                    continue;
+            if(IsUncertainBlockType(blockEntity.Type))
+                continue;
 
-                var blockEntity = mapper.Map<Block>(share);
-                blockEntity.Status = BlockStatus.Pending;
-                var inserted = await blockRepo.InsertAsync(con, tx, blockEntity);
+            result.Add((share.PoolId, blockEntity));
+        }
 
-                if(!inserted)
-                    continue;
+        return result;
+    }
 
-                if(IsUncertainBlockType(blockEntity.Type))
-                    continue;
-
-                result.Add((share.PoolId, blockEntity));
-            }
-
-            return result;
-        });
-
+    private void NotifyPersistedBlocks(
+        IEnumerable<(string PoolId, Block Block)> insertedBlocks)
+    {
         foreach(var (poolId, block) in insertedBlocks)
         {
             try
@@ -213,103 +224,49 @@ public class ShareRecorder : BackgroundService
 
         try
         {
-            var successCount = 0;
-            var failCount = 0;
-            const int bufferSize = 100;
+            List<(string PoolId, Block Block)> insertedBlocks;
+            int validatedCount;
 
-            await using(var stream = new FileStream(filename, FileMode.Open, FileAccess.Read))
+            // Hold one read-only handle across both passes. FileShare.Read permits diagnostics
+            // and backups, but prevents the recovery source from being changed between validation
+            // and import.
+            await using(var stream = new FileStream(filename, new FileStreamOptions
             {
-                using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+            }))
+            using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
+            {
+                // Pass one validates every record before a database transaction is opened.
+                validatedCount = await ProcessRecoveryRecordsAsync(reader,
+                    _ => Task.CompletedTask);
+
+                reader.DiscardBufferedData();
+                stream.Seek(0, SeekOrigin.Begin);
+
+                // Pass two imports every batch through one transaction. Any parse or database
+                // failure rolls back the complete file, making a non-zero exit safe to retry.
+                insertedBlocks = await cf.RunTx(async (con, tx) =>
                 {
-                    var shares = new List<Share>();
-                    var lastProgressUpdate = DateTime.UtcNow;
+                    var result = new List<(string PoolId, Block Block)>();
+                    var importedCount = await ProcessRecoveryRecordsAsync(reader,
+                        async shares => result.AddRange(
+                            await PersistSharesBatchAsync(con, tx, shares)));
 
-                    while(!reader.EndOfStream)
+                    if(importedCount != validatedCount)
                     {
-                        var line = await reader.ReadLineAsync();
-
-                        if(string.IsNullOrEmpty(line))
-                            continue;
-
-                        // skip blank lines
-                        line = line.Trim();
-
-                        if(line.Length == 0)
-                            continue;
-
-                        // skip comments
-                        if(line.StartsWith("#"))
-                            continue;
-
-                        // parse
-                        try
-                        {
-                            var share = JsonConvert.DeserializeObject<Share>(line, jsonSerializerSettings);
-                            shares.Add(share);
-                        }
-
-                        catch(JsonException ex)
-                        {
-                            logger.Error(ex, () => $"Unable to parse share record: {line}");
-                            failCount++;
-                        }
-
-                        // import
-                        try
-                        {
-                            if(shares.Count == bufferSize)
-                            {
-                                await PersistSharesCoreAsync(shares);
-
-                                successCount += shares.Count;
-                                shares.Clear();
-                            }
-                        }
-
-                        catch(Exception ex)
-                        {
-                            logger.Error(ex, () => "Unable to import shares");
-                            throw new InvalidOperationException("Share recovery database import failed", ex);
-                        }
-
-                        // progress
-                        var now = DateTime.UtcNow;
-
-                        if(now - lastProgressUpdate > TimeSpan.FromSeconds(10))
-                        {
-                            logger.Info($"{successCount} shares imported");
-                            lastProgressUpdate = now;
-                        }
+                        throw new InvalidDataException(
+                            "Recovery source changed between validation and import");
                     }
 
-                    // import remaining shares
-                    try
-                    {
-                        if(shares.Count > 0)
-                        {
-                            await PersistSharesCoreAsync(shares);
-
-                            successCount += shares.Count;
-                        }
-                    }
-
-                    catch(Exception ex)
-                    {
-                        logger.Error(ex, () => "Unable to import shares");
-                        throw new InvalidOperationException("Share recovery database import failed", ex);
-                    }
-                }
+                    return result;
+                });
             }
 
-            if(failCount == 0)
-                logger.Info(() => $"Successfully imported {successCount} shares");
-            else
-            {
-                logger.Warn(() => $"Successfully imported {successCount} shares with {failCount} failures");
-
-                throw new InvalidDataException(
-                    $"Share recovery failed to parse {failCount} record(s)");
-            }
+            NotifyPersistedBlocks(insertedBlocks);
+            logger.Info(() => $"Successfully imported {validatedCount} shares");
         }
 
         catch(FileNotFoundException)
@@ -317,6 +274,64 @@ public class ShareRecorder : BackgroundService
             logger.Error(() => $"Recovery file {filename} was not found");
             throw;
         }
+    }
+
+    private async Task<int> ProcessRecoveryRecordsAsync(StreamReader reader,
+        Func<IList<Share>, Task> processBatch)
+    {
+        const int bufferSize = 100;
+        var shares = new List<Share>(bufferSize);
+        var recordCount = 0;
+        var lineNumber = 0;
+
+        while(!reader.EndOfStream)
+        {
+            var line = await reader.ReadLineAsync();
+            lineNumber++;
+
+            if(string.IsNullOrWhiteSpace(line))
+                continue;
+
+            line = line.Trim();
+
+            if(line.StartsWith("#"))
+                continue;
+
+            Share share;
+
+            try
+            {
+                share = JsonConvert.DeserializeObject<Share>(line,
+                    jsonSerializerSettings);
+            }
+
+            catch(JsonException ex)
+            {
+                throw new InvalidDataException(
+                    $"Unable to parse recovery record at line {lineNumber}", ex);
+            }
+
+            if(share == null)
+                throw new InvalidDataException(
+                    $"Recovery record at line {lineNumber} is null");
+
+            shares.Add(share);
+
+            if(shares.Count < bufferSize)
+                continue;
+
+            await processBatch(shares);
+            recordCount += shares.Count;
+            shares.Clear();
+        }
+
+        if(shares.Count > 0)
+        {
+            await processBatch(shares);
+            recordCount += shares.Count;
+        }
+
+        return recordCount;
     }
 
     private void NotifyAdminOnPolicyFallback()

@@ -78,6 +78,10 @@ durability should add a synchronous repository/outbox write or an acknowledged d
 Until then, merged mining starts only when each enabled parent pool explicitly sets
 `mergedMining.acceptNonDurableBlockDelivery=true`; this acknowledges the risk but does not remove it.
 
+Share recovery validates the complete read-locked input before writing, then imports all batches in
+one PostgreSQL transaction. A non-zero recovery exit therefore leaves the complete file rolled back
+and safe to retry rather than partially committing ordinary shares.
+
 ## Build and installation
 
 Clone this fork and use its integration branch:
