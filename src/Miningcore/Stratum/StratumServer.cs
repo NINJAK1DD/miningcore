@@ -86,23 +86,38 @@ public abstract class StratumServer
     protected IBanManager banManager;
     protected ILogger logger;
 
-    protected Task RunAsync(CancellationToken ct, params StratumEndpoint[] endpoints)
+    protected async Task RunAsync(CancellationToken ct, params StratumEndpoint[] endpoints)
     {
         Contract.RequiresNonNull(endpoints);
 
         logger.Info(() => $"Stratum ports {string.Join(", ", endpoints.Select(x => $"{x.IPEndPoint.Address}:{x.IPEndPoint.Port}").ToArray())} online");
 
-        var tasks = endpoints.Select(port =>
+        var servers = endpoints.Select(port =>
         {
             var server = new Socket(SocketType.Stream, ProtocolType.Tcp);
             server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             server.Bind(port.IPEndPoint);
             server.Listen();
 
-            return Listen(server, port, ct);
+            return (Server: server, Endpoint: port);
         }).ToArray();
 
-        return Task.WhenAll(tasks);
+        using var registration = ct.Register(() =>
+        {
+            foreach(var item in servers)
+                item.Server.Dispose();
+        });
+
+        try
+        {
+            await Task.WhenAll(servers.Select(x => Listen(x.Server, x.Endpoint, ct)));
+        }
+
+        finally
+        {
+            foreach(var item in servers)
+                item.Server.Dispose();
+        }
     }
 
     private async Task Listen(Socket server, StratumEndpoint port, CancellationToken ct)

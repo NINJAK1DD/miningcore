@@ -403,6 +403,7 @@ public class RpcClient
                         using(var subSocket = new ZSocket(ZSocketType.SUB))
                         {
                             //subSocket.Options.ReceiveHighWatermark = 1000;
+                            subSocket.ReceiveTimeout = TimeSpan.FromSeconds(1);
                             subSocket.Connect(url);
                             subSocket.Subscribe(topic);
 
@@ -410,27 +411,42 @@ public class RpcClient
 
                             while(!tcs.IsCancellationRequested)
                             {
-                                var msg = subSocket.ReceiveMessage();
-                                obs.OnNext(msg);
+                                var msg = subSocket.ReceiveMessage(out var error);
+
+                                if(msg != null)
+                                    obs.OnNext(msg);
+                                else if(error != ZError.EAGAIN && error != ZError.ETIMEDOUT)
+                                    throw new ZException(error);
                             }
                         }
                     }
 
                     catch(Exception ex)
                     {
+                        if(tcs.IsCancellationRequested)
+                            break;
+
                         logger.Error(ex);
 
                         // do not run wild in case of a persistent error condition
                         Thread.Sleep(1000);
                     }
                 }
-            });
+            })
+            {
+                IsBackground = true,
+                Name = $"ZMQ subscriber {topic}",
+            };
 
             thread.Start();
 
             return Disposable.Create(() =>
             {
                 tcs.Cancel();
+
+                if(!thread.Join(TimeSpan.FromSeconds(5)))
+                    logger.Warn(() => $"ZMQ subscriber for {url}/{topic} did not stop within 5 seconds");
+
                 tcs.Dispose();
             });
         }));

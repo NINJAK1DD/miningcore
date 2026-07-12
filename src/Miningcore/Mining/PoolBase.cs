@@ -443,6 +443,12 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
             logger.Error(ex);
             throw;
         }
+
+        finally
+        {
+            disposables.Dispose();
+            logger.Info(() => "Pool Offline");
+        }
     }
 
     #endregion // API-Surface

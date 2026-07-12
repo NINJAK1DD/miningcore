@@ -77,6 +77,12 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         jobRebroadcastTimeout = TimeSpan.FromSeconds(Math.Max(1, poolConfig.JobRebroadcastTimeout));
         var blockFound = blockFoundSubject.Synchronize();
         var pollTimerRestart = blockFoundSubject.Synchronize();
+        var shutdown = Observable.Create<Unit>(observer =>
+            ct.Register(() =>
+            {
+                observer.OnNext(Unit.Default);
+                observer.OnCompleted();
+            }));
 
         var triggers = new List<IObservable<(bool Force, string Via, string Data)>>
         {
@@ -196,6 +202,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
 
         Jobs = triggers.Merge()
+            .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
             .Where(x => x.IsNew || x.Force)

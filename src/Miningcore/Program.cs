@@ -405,6 +405,13 @@ public class Program : BackgroundService
         });
     }
 
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        logger.Info(() => "Stopping mining pools ...");
+        await base.StopAsync(ct);
+        logger.Info(() => "Mining pools stopped");
+    }
+
     internal static void AssignPoolTemplates(IEnumerable<PoolConfig> poolConfigs,
         IReadOnlyDictionary<string, CoinTemplate> coinTemplates)
     {
