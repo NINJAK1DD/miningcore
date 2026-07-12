@@ -85,6 +85,28 @@ public class ShareReceiverTests
         Assert.True(ShareReceiver.IsShareTelemetryEligible(new Share()));
     }
 
+    [Fact]
+    public void BlockOnlyRelayMessage_PreservesOriginatingCreatedTimestamp()
+    {
+        var created = DateTime.UtcNow.AddMinutes(-5);
+        var share = new Share { BlockOnly = true, Created = created };
+
+        ShareReceiver.NormalizeCreatedTimestamp(share, DateTime.UtcNow);
+
+        Assert.Equal(created, share.Created);
+    }
+
+    [Fact]
+    public void OrdinaryRelayShare_UsesReceiverCreatedTimestamp()
+    {
+        var received = DateTime.UtcNow;
+        var share = new Share { Created = received.AddMinutes(-5) };
+
+        ShareReceiver.NormalizeCreatedTimestamp(share, received);
+
+        Assert.Equal(received, share.Created);
+    }
+
     private static async Task<(ShareRelay Relay, MessageBus Bus)> StartRelayAsync(
         string url)
     {
@@ -118,6 +140,7 @@ public class ShareReceiverTests
                 Miner = miner,
                 BlockOnly = true,
                 IsBlockCandidate = true,
+                Created = DateTime.UnixEpoch,
             });
             await Task.Delay(100);
         }
@@ -126,6 +149,7 @@ public class ShareReceiverTests
         Assert.Equal(poolId, share.PoolId);
         Assert.Equal("regtest-sender", share.Source);
         Assert.True(share.BlockOnly);
+        Assert.Equal(DateTime.UnixEpoch, share.Created);
     }
 
     private static int GetFreePort()

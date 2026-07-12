@@ -41,13 +41,16 @@ public class ProgramPoolTemplateTests
     public async Task RecoveryMode_StopsHostWhenImportFails()
     {
         var stopped = false;
+        var exitCode = 0;
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             Program.RunRecoveryModeAsync(
                 () => throw new InvalidOperationException("import failed"),
-                () => stopped = true));
+                () => stopped = true,
+                code => exitCode = code));
 
         Assert.True(stopped);
+        Assert.Equal(1, exitCode);
     }
 
     [Theory]

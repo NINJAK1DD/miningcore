@@ -269,7 +269,7 @@ public class ShareRecorder : BackgroundService
                         catch(Exception ex)
                         {
                             logger.Error(ex, () => "Unable to import shares");
-                            failCount++;
+                            throw new InvalidOperationException("Share recovery database import failed", ex);
                         }
 
                         // progress
@@ -296,7 +296,7 @@ public class ShareRecorder : BackgroundService
                     catch(Exception ex)
                     {
                         logger.Error(ex, () => "Unable to import shares");
-                        failCount++;
+                        throw new InvalidOperationException("Share recovery database import failed", ex);
                     }
                 }
             }
@@ -304,12 +304,18 @@ public class ShareRecorder : BackgroundService
             if(failCount == 0)
                 logger.Info(() => $"Successfully imported {successCount} shares");
             else
+            {
                 logger.Warn(() => $"Successfully imported {successCount} shares with {failCount} failures");
+
+                throw new InvalidDataException(
+                    $"Share recovery failed to parse {failCount} record(s)");
+            }
         }
 
         catch(FileNotFoundException)
         {
             logger.Error(() => $"Recovery file {filename} was not found");
+            throw;
         }
     }
 

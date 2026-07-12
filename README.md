@@ -65,11 +65,12 @@ checks from the remaining mainnet gates.
 | Central relay receiver/recorder | Required | Required for merged mining unless another database-connected node is explicitly the sole payout/reconciliation owner | Required when it reconciles merged mining |
 
 For merged mining, cluster-level `paymentProcessing.enabled` must be true on the node that owns
-reconciliation and payouts. Exactly one database-connected node owns that role for a database.
-Miningcore enforces this with a PostgreSQL session advisory lock: a second payout manager fails
-startup, and loss of the ownership session stops further payout cycles. The owner must include the
-local `mergedMining` configuration for the merged pool, and all participating recorder/payout nodes
-must use the intended PostgreSQL database.
+reconciliation and payouts. A PostgreSQL session advisory lock prevents two healthy payout managers
+from starting concurrently against one database. It is not a fencing token for a block-credit or
+wallet-payment operation already in progress when that lock session is lost. Automatic/hot-standby
+failover is therefore unsupported: confirm the previous payout process has fully terminated before
+starting its replacement. The owner must include the local `mergedMining` configuration for the
+merged pool, and all participating recorder/payout nodes must use the intended PostgreSQL database.
 
 Share relay uses ZeroMQ PUB/SUB and is not an acknowledged durable queue. A disconnected receiver or
 process failure can lose an accepted block event. Production deployments requiring stronger financial

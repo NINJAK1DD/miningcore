@@ -24,6 +24,36 @@ namespace Miningcore.Tests.Mining;
 public class ShareRecorderTests
 {
     [Fact]
+    public async Task RecoverSharesAsync_MissingFileThrows()
+    {
+        var recorder = CreateRecoveryRecorder();
+        var filename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() =>
+            recorder.RecoverSharesAsync(filename));
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_InvalidRecordsThrow()
+    {
+        var recorder = CreateRecoveryRecorder();
+        var filename = Path.GetTempFileName();
+
+        try
+        {
+            await File.WriteAllTextAsync(filename, "this is not a share record");
+
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.RecoverSharesAsync(filename));
+        }
+
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
+    [Fact]
     public void GetSharesForPersistence_ExcludesBlockOnlyCandidates()
     {
         var regularShare = new Share { PoolId = "ltc-solo" };
@@ -357,5 +387,17 @@ public class ShareRecorderTests
             Arg.Any<Block>());
         messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
             Arg.Any<string>());
+    }
+
+    private static ShareRecorder CreateRecoveryRecorder()
+    {
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+
+        return new ShareRecorder(Substitute.For<IConnectionFactory>(), mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(),
+            new ClusterConfig { Pools = new PoolConfig[0] },
+            Substitute.For<IMessageBus>());
     }
 }

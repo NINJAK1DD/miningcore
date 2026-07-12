@@ -364,8 +364,8 @@ public class PayoutManager : BackgroundService
 
             do
             {
-                // The dedicated advisory-lock session is the ownership boundary. Never
-                // classify or credit another cycle after that session has been lost.
+                // Refuse to begin another cycle after the concurrent-start guard session
+                // has been lost. This does not fence work already running inside a cycle.
                 await payoutLease.EnsureHeldAsync(ct);
 
                 try

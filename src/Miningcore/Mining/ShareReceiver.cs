@@ -299,7 +299,7 @@ public class ShareReceiver : BackgroundService
 
         // store
         share.PoolId = topic;
-        share.Created = clock.Now;
+        NormalizeCreatedTimestamp(share, clock.Now);
         messageBus.SendMessage(share);
 
         // Block-only relay messages persist independently accepted or uncertain block records.
@@ -341,6 +341,15 @@ public class ShareReceiver : BackgroundService
     internal static bool IsShareTelemetryEligible(Share share)
     {
         return share?.BlockOnly != true;
+    }
+
+    internal static void NormalizeCreatedTimestamp(Share share, DateTime receivedAt)
+    {
+        // Ordinary shares retain the receiver-local timestamp used by existing hashrate
+        // accounting. Block-only records preserve the originating daemon-submission time
+        // for reconciliation expiry, effort boundaries and operational auditing.
+        if(share?.BlockOnly != true)
+            share.Created = receivedAt;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)

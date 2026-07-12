@@ -8,7 +8,8 @@ namespace Miningcore.Payments;
 /// <summary>
 /// Holds a PostgreSQL session advisory lock for the complete payout-manager lifetime.
 /// Advisory locks are scoped to a database, so the same lock ids may safely be used by
-/// independent Miningcore installations that use different databases.
+/// independent Miningcore installations that use different databases. Losing the session
+/// is detected before the next cycle, but does not fence financial work already in progress.
 /// </summary>
 public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 {
@@ -57,7 +58,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                 connection = candidate;
                 acquired = true;
-                logger.Info(() => "Acquired exclusive PostgreSQL payout-manager ownership");
+                logger.Info(() => "Acquired PostgreSQL payout-manager concurrent-start guard");
                 return true;
             }
 
@@ -84,7 +85,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
         {
             if(!acquired || connection == null || connection.State != ConnectionState.Open)
                 throw new InvalidOperationException(
-                    "The PostgreSQL payout-manager ownership session is no longer available");
+                    "The PostgreSQL payout-manager guard session is no longer available");
 
             var command = new CommandDefinition("SELECT 1", cancellationToken: ct);
             await connection.ExecuteScalarAsync<int>(command);
@@ -94,7 +95,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
         {
             acquired = false;
             throw new InvalidOperationException(
-                "Lost the PostgreSQL payout-manager ownership session; payment processing is stopping fail-closed",
+                "Lost the PostgreSQL payout-manager guard session; payment processing is stopping before the next cycle",
                 ex);
         }
 

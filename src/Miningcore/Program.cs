@@ -420,11 +420,17 @@ public class Program : BackgroundService
         !recoveryMode && (api == null || api.Enabled);
 
     internal static async Task RunRecoveryModeAsync(Func<Task> recover,
-        Action stopApplication)
+        Action stopApplication, Action<int> setExitCode = null)
     {
         try
         {
             await recover();
+        }
+
+        catch
+        {
+            (setExitCode ?? (code => Environment.ExitCode = code))(1);
+            throw;
         }
 
         finally
