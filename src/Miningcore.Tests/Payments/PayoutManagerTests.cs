@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
@@ -119,6 +121,31 @@ public class PayoutManagerTests
         });
     }
 
+    [Fact]
+    public async Task StartAsync_RejectsSecondPayoutManagerOwner()
+    {
+        var fixture = CreateFixture();
+        fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(false);
+
+        var ex = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            fixture.Manager.StartAsync(CancellationToken.None));
+
+        Assert.Contains("Another payout manager", ex.Message);
+    }
+
+    [Fact]
+    public async Task StartAndStop_HoldLeaseForServiceLifetime()
+    {
+        var fixture = CreateFixture();
+        fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(true);
+
+        await fixture.Manager.StartAsync(CancellationToken.None);
+        await fixture.Manager.StopAsync(CancellationToken.None);
+
+        await fixture.PayoutLease.Received(1).TryAcquireAsync(Arg.Any<CancellationToken>());
+        await fixture.PayoutLease.Received(1).DisposeAsync();
+    }
+
     private static Fixture CreateFixture()
     {
         var context = Substitute.For<IComponentContext>();
@@ -129,6 +156,8 @@ public class PayoutManagerTests
         var shareRepository = Substitute.For<IShareRepository>();
         var balanceRepository = Substitute.For<IBalanceRepository>();
         var messageBus = Substitute.For<IMessageBus>();
+        var payoutLease = Substitute.For<IPayoutManagerLease>();
+        payoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(true);
         var clusterConfig = new ClusterConfig
         {
             PaymentProcessing = new ClusterPaymentProcessingConfig(),
@@ -155,11 +184,11 @@ public class PayoutManagerTests
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
 
         var manager = new PayoutManager(context, connectionFactory, blockRepository,
-            shareRepository, balanceRepository, clusterConfig, messageBus);
+            shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease);
 
-        return new Fixture(manager, pool, block, transaction, messageBus);
+        return new Fixture(manager, pool, block, transaction, messageBus, payoutLease);
     }
 
     private sealed record Fixture(PayoutManager Manager, PoolConfig Pool, Block Block,
-        IDbTransaction Transaction, IMessageBus MessageBus);
+        IDbTransaction Transaction, IMessageBus MessageBus, IPayoutManagerLease PayoutLease);
 }

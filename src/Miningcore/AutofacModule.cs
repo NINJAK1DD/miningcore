@@ -141,6 +141,10 @@ public class AutofacModule : Module
         builder.RegisterType<PayoutManager>()
             .SingleInstance();
 
+        builder.RegisterType<PostgresPayoutManagerLease>()
+            .As<IPayoutManagerLease>()
+            .SingleInstance();
+
         builder.RegisterType<ShareRecorder>()
             .SingleInstance();
 

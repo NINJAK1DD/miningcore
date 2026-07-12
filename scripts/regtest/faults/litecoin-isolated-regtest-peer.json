@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "method": "getnetworkinfo",
+      "action": "patch_result",
+      "patch": {
+        "connections": 1
+      }
+    }
+  ]
+}

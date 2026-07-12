@@ -35,6 +35,7 @@ The Litecoin pool references the Dogecoin pool:
 "mergedMining": {
   "enabled": true,
   "auxPoolId": "doge-solo",
+  "acceptNonDurableBlockDelivery": true,
   "addressParameter": "doge",
   "requireAuxAddress": true,
   "auxiliaryTemplatePollTimeoutMs": 500
@@ -60,18 +61,21 @@ checks from the remaining mainnet gates.
 | --- | --- | --- | --- |
 | Direct pool/recorder | Required | Required for merged mining | Required |
 | Database-free relay sender | Not required | Disabled | Skipped |
-| Relay sender selected as payout node | Required | Allowed when configured; avoid duplicate processors | Required if it reconciles merged mining |
+| Relay sender selected as payout node | Required | Allowed when configured; database lease rejects duplicate processors | Required if it reconciles merged mining |
 | Central relay receiver/recorder | Required | Required for merged mining unless another database-connected node is explicitly the sole payout/reconciliation owner | Required when it reconciles merged mining |
 
 For merged mining, cluster-level `paymentProcessing.enabled` must be true on the node that owns
-reconciliation and payouts. Exactly one database-connected node should own that role for a
-database/pool set. That node must include the local `mergedMining` configuration for the merged pool,
-all participating nodes must use the same PostgreSQL database, and enabling payment processing on both
-the relay sender and receiver can result in concurrent balance and payout processing.
+reconciliation and payouts. Exactly one database-connected node owns that role for a database.
+Miningcore enforces this with a PostgreSQL session advisory lock: a second payout manager fails
+startup, and loss of the ownership session stops further payout cycles. The owner must include the
+local `mergedMining` configuration for the merged pool, and all participating recorder/payout nodes
+must use the intended PostgreSQL database.
 
 Share relay uses ZeroMQ PUB/SUB and is not an acknowledged durable queue. A disconnected receiver or
 process failure can lose an accepted block event. Production deployments requiring stronger financial
 durability should add a synchronous repository/outbox write or an acknowledged durable transport.
+Until then, merged mining starts only when each enabled parent pool explicitly sets
+`mergedMining.acceptNonDurableBlockDelivery=true`; this acknowledges the risk but does not remove it.
 
 ## Build and installation
 

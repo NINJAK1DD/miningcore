@@ -154,6 +154,19 @@ public class ProgramPoolTemplateTests
         Assert.Contains("cluster-level payment processing", ex.Message);
     }
 
+    [Fact]
+    public void MergedMining_RequiresExplicitNonDurableDeliveryAcceptance()
+    {
+        var config = MergedMiningCluster();
+        ((Dictionary<string, object>) config.Pools[0].Extra["mergedMining"])
+            ["acceptNonDurableBlockDelivery"] = false;
+
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateMergedMiningDeployment(config));
+
+        Assert.Contains("acceptNonDurableBlockDelivery=true", ex.Message);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -198,6 +211,7 @@ public class ProgramPoolTemplateTests
                         {
                             ["enabled"] = true,
                             ["auxPoolId"] = "doge-solo",
+                            ["acceptNonDurableBlockDelivery"] = true,
                         },
                     },
                 },

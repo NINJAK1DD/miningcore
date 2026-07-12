@@ -33,7 +33,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Duplicate parent/recovery replay | Passed | The same real `merged-parent` block-only recovery record was imported twice; both imports exited and one database row remained. |
 | Lower-height Litecoin reorganisation | Passed | An authoritative lower template with a changed `previousblockhash` replaced the job and retained the cached DOGE template. |
 | Dogecoin reorganisation | Passed | An accepted child was invalidated, returned `confirmations = -1`, and its row became orphaned; the chain was then restored. |
-| Litecoin MWEB template | Blocked upstream | At MWEB activation, Litecoin Core 0.21.5.5 itself rejected `getblocktemplate`/`generatetoaddress` with `bad-txns-vin-empty`. Miningcore never received a valid MWEB-active template. Repeat with a daemon build/regtest setup that can produce one. |
+| Litecoin MWEB template | Passed | The original failure skipped Litecoin Core's required pre-activation pegin. Repeating the [official v0.21.5.5 functional-test sequence](https://github.com/litecoin-project/litecoin/blob/v0.21.5.5/test/functional/mweb_mining.py) produced a height-432 template with a 4,198-character `mweb` payload. CUDA ccminer then submitted through Miningcore; Litecoin accepted blocks 433 and 434, and verbose `getblock` returned valid MWEB extension data for both. |
 | Parent wallet-index lag | Passed | Repeated Litecoin `gettransaction -5` responses retained exact active parent rows as pending. |
 | Dogecoin wallet-index lag | Passed | Repeated DOGE `gettransaction -5` responses retained exact active AuxPoW rows; pass-through recovery resumed normal maturity checks. |
 | Coinbase maturity and wallet credit | Passed | Earlier blocks matured and produced actual 100 LTC and 1,000,000 DOGE payment records in this regtest environment. |
@@ -41,8 +41,9 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Two concurrent claim promotions | Passed | One guarded update affected one row, the other affected zero; both transactions committed with `1 auxpow : 0 claims`. |
 | PostgreSQL replay/idempotency | Passed | Final AuxPoW, proof claims and accepted/uncertain merged-parent replay each retained one protected identity. |
 | Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
-| Relay disconnect/reconnect | Passed in automated real-ZeroMQ test | A block-only message was received, the publisher was stopped/rebound, the subscriber reconnected, and a second message was received. Repeat with the exact multi-process deployment and network path before mainnet. PUB/SUB remains intentionally non-durable while disconnected. |
-| Accidental dual payout manager | Outstanding / issue #19 | Do not run this topology with funds. Database-backed single-owner payout hardening remains tracked separately. |
+| Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares plus LTC/DOGE block-only rows. Receiver restart also reacquired ownership and resumed persistence. A different physical-host/firewall path should still be checked for the final deployment. |
+| Accidental dual payout manager | Passed | A PostgreSQL session advisory lock now covers the payout-manager lifetime. A second receiver against the same database failed startup, the first remained active, and a clean receiver restart released then reacquired ownership before processing resumed. |
+| Asynchronous block delivery decision | Explicit opt-in | The current recorder handoff and ZeroMQ PUB/SUB model is retained, but it is no longer silently accepted: every enabled merged-mining pool must set `acceptNonDurableBlockDelivery=true`. Startup otherwise fails with the documented process-crash and disconnected-receiver loss windows. |
 
 ## Runtime hardening observed during validation
 
@@ -56,12 +57,13 @@ were made against the same PostgreSQL instance used by the running payout manage
 - Every applied proxy response mutation is written to the JSONL fault log.
 - Relay receiver pools without internal Stratum remain alive until host cancellation, and recovery
   imports configure neither ordinary background services nor the API web host.
+- Payout/reconciliation processing is fail-closed behind one database-scoped PostgreSQL advisory
+  lock. Loss of the dedicated lock session stops further payout cycles.
 
 ## Remaining mainnet gates
 
-Do not enable mainnet funds solely because the passed rows above are green. At minimum, obtain a
-valid MWEB-active parent template and repeat relay recovery with the exact multi-process/network
-topology planned for deployment. Continue to operate exactly one payout
-manager per database/pool set until issue #19 is resolved. The documented asynchronous recorder and
-ZeroMQ PUB/SUB durability limits also remain accepted operational risks unless an outbox or
-acknowledged transport is added.
+Do not enable mainnet funds solely because the passed rows above are green. Repeat relay recovery
+across the exact physical hosts, firewall and network path planned for deployment. The documented
+asynchronous recorder and ZeroMQ PUB/SUB loss windows remain an explicitly accepted operational risk
+when `acceptNonDurableBlockDelivery=true`; deployments that cannot accept that risk still require a
+transactional outbox, synchronous repository handoff or acknowledged transport.

@@ -34,6 +34,13 @@ public class MergedMiningConfig
     /// daemon can seed the first combined job.
     /// </summary>
     public int AuxiliaryTemplatePollTimeoutMs { get; set; } = 500;
+
+    /// <summary>
+    /// Explicitly acknowledges that the current in-process recorder handoff and ZeroMQ
+    /// PUB/SUB share relay are asynchronous and unacknowledged. A process failure or a
+    /// disconnected relay receiver can therefore lose an accepted block event.
+    /// </summary>
+    public bool AcceptNonDurableBlockDelivery { get; set; }
 }
 
 /// <summary>

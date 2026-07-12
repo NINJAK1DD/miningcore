@@ -30,7 +30,8 @@ public class PayoutManager : BackgroundService
         IShareRepository shareRepo,
         IBalanceRepository balanceRepo,
         ClusterConfig clusterConfig,
-        IMessageBus messageBus)
+        IMessageBus messageBus,
+        IPayoutManagerLease payoutLease)
     {
         Contract.RequiresNonNull(ctx);
         Contract.RequiresNonNull(cf);
@@ -38,6 +39,7 @@ public class PayoutManager : BackgroundService
         Contract.RequiresNonNull(shareRepo);
         Contract.RequiresNonNull(balanceRepo);
         Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(payoutLease);
 
         this.ctx = ctx;
         this.cf = cf;
@@ -46,6 +48,7 @@ public class PayoutManager : BackgroundService
         this.balanceRepo = balanceRepo;
         this.messageBus = messageBus;
         this.clusterConfig = clusterConfig;
+        this.payoutLease = payoutLease;
 
         interval = TimeSpan.FromSeconds(clusterConfig.PaymentProcessing.Interval > 0 ?
             clusterConfig.PaymentProcessing.Interval : 600);
@@ -61,6 +64,7 @@ public class PayoutManager : BackgroundService
     private readonly TimeSpan interval;
     private readonly ConcurrentDictionary<string, IMiningPool> pools = new();
     private readonly ClusterConfig clusterConfig;
+    private readonly IPayoutManagerLease payoutLease;
     private readonly CompositeDisposable disposables = new();
 
 #if !DEBUG
@@ -68,6 +72,37 @@ public class PayoutManager : BackgroundService
 #else
     private static readonly TimeSpan initialRunDelay = TimeSpan.FromSeconds(15);
 #endif
+
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        if(!await payoutLease.TryAcquireAsync(ct))
+            throw new PoolStartupException(
+                "Another payout manager already owns this PostgreSQL database. Run exactly one payout/reconciliation processor per database.");
+
+        try
+        {
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            await payoutLease.DisposeAsync();
+            throw;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            await payoutLease.DisposeAsync();
+        }
+    }
 
     private void AttachPool(IMiningPool pool)
     {
@@ -329,6 +364,10 @@ public class PayoutManager : BackgroundService
 
             do
             {
+                // The dedicated advisory-lock session is the ownership boundary. Never
+                // classify or credit another cycle after that session has been lost.
+                await payoutLease.EnsureHeldAsync(ct);
+
                 try
                 {
                     await ProcessPoolsAsync(ct);
