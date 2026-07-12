@@ -30,6 +30,11 @@ public class ProgramPoolTemplateTests
         Assert.True(stopped);
         Assert.False(Program.ShouldConfigureBackgroundServices(true));
         Assert.True(Program.ShouldConfigureBackgroundServices(false));
+        Assert.False(Program.ShouldConfigureApi(true, null));
+        Assert.False(Program.ShouldConfigureApi(true, new ApiConfig { Enabled = true }));
+        Assert.True(Program.ShouldConfigureApi(false, null));
+        Assert.True(Program.ShouldConfigureApi(false, new ApiConfig { Enabled = true }));
+        Assert.False(Program.ShouldConfigureApi(false, new ApiConfig { Enabled = false }));
     }
 
     [Fact]

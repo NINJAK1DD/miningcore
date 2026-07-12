@@ -29,7 +29,17 @@ public class ShareReceiver : BackgroundService
     public ShareReceiver(
         ClusterConfig clusterConfig,
         IMasterClock clock,
-        IMessageBus messageBus)
+        IMessageBus messageBus) : this(clusterConfig, clock, messageBus,
+        TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(60))
+    {
+    }
+
+    internal ShareReceiver(
+        ClusterConfig clusterConfig,
+        IMasterClock clock,
+        IMessageBus messageBus,
+        TimeSpan receiveTimeout,
+        TimeSpan reconnectTimeout)
     {
         Contract.RequiresNonNull(clock);
         Contract.RequiresNonNull(messageBus);
@@ -37,12 +47,16 @@ public class ShareReceiver : BackgroundService
         this.clusterConfig = clusterConfig;
         this.clock = clock;
         this.messageBus = messageBus;
+        this.receiveTimeout = receiveTimeout;
+        this.reconnectTimeout = reconnectTimeout;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IMasterClock clock;
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
+    private readonly TimeSpan receiveTimeout;
+    private readonly TimeSpan reconnectTimeout;
     private readonly CompositeDisposable disposables = new();
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
     private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
@@ -83,9 +97,6 @@ public class ShareReceiver : BackgroundService
         return Task.Run(() =>
         {
             Thread.CurrentThread.Name = "ShareReceiver Socket Poller";
-            var timeout = TimeSpan.FromMilliseconds(5000);
-            var reconnectTimeout = TimeSpan.FromSeconds(60);
-
             var relays = clusterConfig.ShareRelays
                 .DistinctBy(x => $"{x.Url}:{x.SharedEncryptionKey}")
                 .ToArray();
@@ -100,13 +111,13 @@ public class ShareReceiver : BackgroundService
                     // setup sockets
                     var sockets = relays.Select(x=> SetupSubSocket(x)).ToArray();
 
-                    using(new CompositeDisposable(sockets))
+                    try
                     {
                         var pollItems = sockets.Select(_ => ZPollItem.CreateReceiver()).ToArray();
 
                         while(!ct.IsCancellationRequested)
                         {
-                            if(sockets.PollIn(pollItems, out var messages, out var error, timeout))
+                            if(sockets.PollIn(pollItems, out var messages, out var error, receiveTimeout))
                             {
                                 for(var i = 0; i < messages.Length; i++)
                                 {
@@ -155,6 +166,12 @@ public class ShareReceiver : BackgroundService
                                 }
                             }
                         }
+                    }
+
+                    finally
+                    {
+                        foreach(var socket in sockets)
+                            socket?.Dispose();
                     }
                 }
 

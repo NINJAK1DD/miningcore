@@ -144,7 +144,7 @@ public class Program : BackgroundService
                     services.AddHostedService<Program>();
                 });
 
-            if(clusterConfig.Api == null || clusterConfig.Api.Enabled)
+            if(ShouldConfigureApi(isShareRecoveryMode, clusterConfig.Api))
             {
                 var address = clusterConfig.Api?.ListenAddress != null
                     ? (clusterConfig.Api.ListenAddress != "*" ? IPAddress.Parse(clusterConfig.Api.ListenAddress) : IPAddress.Any)
@@ -415,6 +415,9 @@ public class Program : BackgroundService
     }
 
     internal static bool ShouldConfigureBackgroundServices(bool recoveryMode) => !recoveryMode;
+
+    internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
+        !recoveryMode && (api == null || api.Enabled);
 
     internal static async Task RunRecoveryModeAsync(Func<Task> recover,
         Action stopApplication)

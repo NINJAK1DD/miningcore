@@ -23,8 +23,8 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Real `litecoind` and `dogecoind` | Passed | Both pools started, served combined jobs and accepted mined blocks. |
 | Real PostgreSQL | Passed | Real inserts, partial unique indexes, rollbacks and concurrent transactions were exercised. |
 | Dual-target proof | Passed | One proof produced independent payable LTC `merged-parent` and DOGE `auxpow` rows. |
-| Litecoin-only proof | Partially passed | Parent acceptance with auxiliary rejection was observed operationally. A deliberately different parent/aux target pair is still desirable for a target-threshold-specific case. |
-| Dogecoin-only proof | Outstanding | Both local regtest chains expose the same minimum target. Run with deliberately different parent/aux targets to force this outcome. |
+| Litecoin-only proof | Passed | The fault proxy advertised a harder DOGE target while leaving Litecoin at regtest minimum. Miningcore submitted only Litecoin, which accepted block 291; exactly one new `merged-parent` row was recorded. |
+| Dogecoin-only proof | Passed | The fault proxy advertised a harder Litecoin target while leaving DOGE at regtest minimum. Miningcore submitted only AuxPoW, which Dogecoin accepted at height 212; exactly one new `auxpow` row was recorded. |
 | Competing parent proofs | Passed | Six different valid parent proofs were submitted for one frozen DOGE child. Dogecoin returned `true` for all; only the header matching `getblock.auxpow.parentblock` was credited. |
 | Lost DOGE HTTP response | Passed | The proxy forwarded `submitauxblock`, dropped the response, and Miningcore recovered the matching active proof without duplicate rows. |
 | Boolean-positive duplicate DOGE submission | Passed | Competing valid proofs returned Boolean success; mismatching parent headers were rejected for accounting. |
@@ -41,7 +41,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Two concurrent claim promotions | Passed | One guarded update affected one row, the other affected zero; both transactions committed with `1 auxpow : 0 claims`. |
 | PostgreSQL replay/idempotency | Passed | Final AuxPoW, proof claims and accepted/uncertain merged-parent replay each retained one protected identity. |
 | Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
-| Relay disconnect/reconnect | Outstanding | Requires a separate sender and receiver process. PUB/SUB remains intentionally non-durable while disconnected. |
+| Relay disconnect/reconnect | Passed in automated real-ZeroMQ test | A block-only message was received, the publisher was stopped/rebound, the subscriber reconnected, and a second message was received. Repeat with the exact multi-process deployment and network path before mainnet. PUB/SUB remains intentionally non-durable while disconnected. |
 | Accidental dual payout manager | Outstanding / issue #19 | Do not run this topology with funds. Database-backed single-owner payout hardening remains tracked separately. |
 
 ## Runtime hardening observed during validation
@@ -51,13 +51,17 @@ were made against the same PostgreSQL instance used by the running payout manage
   services and stops the host after success or failure.
 - Fault rules can require a minimum parameter count, preventing a block-submission fault from being
   consumed by Miningcore's parameterless startup capability probe.
+- Fault rules can patch nested template results, allowing deterministic target-separated parent-only
+  and auxiliary-only daemon-backed tests without changing chain consensus.
 - Every applied proxy response mutation is written to the JSONL fault log.
+- Relay receiver pools without internal Stratum remain alive until host cancellation, and recovery
+  imports configure neither ordinary background services nor the API web host.
 
 ## Remaining mainnet gates
 
-Do not enable mainnet funds solely because the passed rows above are green. At minimum, complete the
-target-threshold-specific LTC-only and DOGE-only cases, obtain a valid MWEB-active parent template,
-and test the exact relay topology planned for deployment. Continue to operate exactly one payout
+Do not enable mainnet funds solely because the passed rows above are green. At minimum, obtain a
+valid MWEB-active parent template and repeat relay recovery with the exact multi-process/network
+topology planned for deployment. Continue to operate exactly one payout
 manager per database/pool set until issue #19 is resolved. The documented asynchronous recorder and
 ZeroMQ PUB/SUB durability limits also remain accepted operational risks unless an outbox or
 acknowledged transport is added.

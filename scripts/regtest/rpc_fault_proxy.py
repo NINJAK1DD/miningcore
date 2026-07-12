@@ -12,6 +12,7 @@ The control file is reloaded whenever its timestamp changes. Example:
 Supported actions:
   drop_after_forward  Forward the request, then close without returning its response.
   replace_response    Forward, then merge `response` into matching response object(s).
+  patch_result        Forward, then merge `patch` into matching object results.
   reverse_batch       Forward, then reverse a JSON-RPC batch response array.
   delay_response      Forward, then wait `milliseconds` before returning.
   strip_transactions  Forward, then replace result.tx with an empty array.
@@ -223,6 +224,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 for item in matching_responses(payload, response, method):
                     item.update(rule.get("response", {}))
 
+            elif action == "patch_result":
+                for item in matching_responses(payload, response, method):
+                    result = item.get("result")
+                    if isinstance(result, dict):
+                        result.update(rule.get("patch", {}))
+
             elif action == "reverse_batch" and isinstance(response, list):
                 response.reverse()
 
@@ -239,7 +246,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 key = str(rule.get("key", f"{method}:0"))
                 self.server.state.set_cached_response(key, response)
 
-            if action in {"replace_response", "reverse_batch", "delay_response",
+            if action in {"replace_response", "patch_result", "reverse_batch", "delay_response",
                           "strip_transactions", "freeze_response"}:
                 self.server.state.log({"event": "fault", "action": action,
                                        "method": method, "methods": sorted(methods)})
