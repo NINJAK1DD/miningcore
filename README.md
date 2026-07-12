@@ -50,7 +50,9 @@ Password: d=<difficulty>;doge=<DOGE address>
 
 Read the [complete Litecoin–Dogecoin merged-mining guide](docs/merged-mining-litecoin-dogecoin.md)
 before enabling the feature. It covers daemon setup, payout attribution, migrations, failure modes,
-relay compatibility and the required pre-production regtest.
+relay compatibility and the required pre-production regtest. The
+[live regtest validation record](docs/merged-mining-regtest-validation.md) distinguishes completed
+checks from the remaining mainnet gates.
 
 ## Deployment models
 

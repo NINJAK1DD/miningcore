@@ -14,6 +14,37 @@ namespace Miningcore.Tests;
 
 public class ProgramPoolTemplateTests
 {
+    [Fact]
+    public async Task RecoveryMode_StopsHostAndSkipsNormalBackgroundServices()
+    {
+        var recovered = false;
+        var stopped = false;
+
+        await Program.RunRecoveryModeAsync(() =>
+        {
+            recovered = true;
+            return Task.CompletedTask;
+        }, () => stopped = true);
+
+        Assert.True(recovered);
+        Assert.True(stopped);
+        Assert.False(Program.ShouldConfigureBackgroundServices(true));
+        Assert.True(Program.ShouldConfigureBackgroundServices(false));
+    }
+
+    [Fact]
+    public async Task RecoveryMode_StopsHostWhenImportFails()
+    {
+        var stopped = false;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Program.RunRecoveryModeAsync(
+                () => throw new InvalidOperationException("import failed"),
+                () => stopped = true));
+
+        Assert.True(stopped);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

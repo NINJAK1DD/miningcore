@@ -6,7 +6,7 @@
       "action": "replace_response",
       "count": 1,
       "response": {
-        "result": null,
+        "result": "inconclusive",
         "error": null
       }
     }

@@ -1,13 +1,15 @@
 {
   "rules": [
     {
-      "method": "submitblock",
+      "method": "gettransaction",
       "params_min_length": 1,
       "action": "replace_response",
-      "count": 1,
       "response": {
         "result": null,
-        "error": null
+        "error": {
+          "code": -5,
+          "message": "Invalid or non-wallet transaction id"
+        }
       }
     }
   ]

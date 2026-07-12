@@ -298,6 +298,12 @@ public class Program : BackgroundService
 
     private static void ConfigureBackgroundServices(IServiceCollection services)
     {
+        // Recovery mode resolves ShareRecorder directly for a one-shot import. Starting the normal
+        // hosted services here would unnecessarily run payment, statistics, relay and recorder
+        // loops alongside that import before the host is stopped.
+        if(!ShouldConfigureBackgroundServices(isShareRecoveryMode))
+            return;
+
         services.AddHostedService<NotificationService>();
         services.AddHostedService<BtStreamReceiver>();
 
@@ -366,7 +372,10 @@ public class Program : BackgroundService
     {
         if(isShareRecoveryMode)
         {
-            await RecoverSharesAsync(shareRecoveryOption.Value());
+            await RunRecoveryModeAsync(
+                () => RecoverSharesAsync(shareRecoveryOption.Value()),
+                hal.StopApplication);
+
             return;
         }
 
@@ -403,6 +412,23 @@ public class Program : BackgroundService
                     throw ex;
             }
         });
+    }
+
+    internal static bool ShouldConfigureBackgroundServices(bool recoveryMode) => !recoveryMode;
+
+    internal static async Task RunRecoveryModeAsync(Func<Task> recover,
+        Action stopApplication)
+    {
+        try
+        {
+            await recover();
+        }
+
+        finally
+        {
+            // Returning from a BackgroundService does not stop the generic host by itself.
+            stopApplication();
+        }
     }
 
     public override async Task StopAsync(CancellationToken ct)

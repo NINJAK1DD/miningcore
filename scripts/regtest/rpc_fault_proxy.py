@@ -19,6 +19,10 @@ Supported actions:
 
 Every request and upstream response is written as JSON Lines when --log is supplied.
 The proxy deliberately does not log HTTP authorization headers.
+
+Rules may include `params_min_length` to avoid matching parameterless capability
+probes. For example, a submitblock fault intended only for real submissions uses
+`"params_min_length": 1`.
 """
 
 from __future__ import annotations
@@ -69,13 +73,13 @@ class FaultState:
         ]
         self.cached_responses = {}
 
-    def acquire_rules(self, methods: set[str]) -> list[dict[str, Any]]:
+    def acquire_rules(self, payload: Any) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         with self.lock:
             self._reload_locked()
             for index, rule in enumerate(self.rules):
-                method = rule.get("method", "*")
-                if method != "*" and method not in methods:
+                if not any(rule_matches_request(rule, request)
+                           for request in request_items(payload)):
                     continue
 
                 remaining = self.remaining[index]
@@ -109,12 +113,33 @@ class FaultState:
 
 
 def request_methods(payload: Any) -> set[str]:
-    requests = payload if isinstance(payload, list) else [payload]
+    requests = request_items(payload)
     return {
         str(item.get("method"))
         for item in requests
         if isinstance(item, dict) and item.get("method") is not None
     }
+
+
+def request_items(payload: Any) -> list[dict[str, Any]]:
+    requests = payload if isinstance(payload, list) else [payload]
+    return [item for item in requests if isinstance(item, dict)]
+
+
+def rule_matches_request(rule: dict[str, Any], request: dict[str, Any]) -> bool:
+    method = rule.get("method", "*")
+    if method != "*" and request.get("method") != method:
+        return False
+
+    params_min_length = rule.get("params_min_length")
+    if params_min_length is None:
+        return True
+
+    params = request.get("params")
+    if not isinstance(params, (list, dict)):
+        return False
+
+    return len(params) >= int(params_min_length)
 
 
 def matching_responses(payload: Any, response: Any, method: str) -> list[dict[str, Any]]:
@@ -139,7 +164,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         payload = json.loads(body.decode("utf-8"))
         methods = request_methods(payload)
-        rules = self.server.state.acquire_rules(methods)
+        rules = self.server.state.acquire_rules(payload)
         self.server.state.log({"event": "request", "methods": sorted(methods), "body": payload})
 
         for index, rule in enumerate(rules):
@@ -213,6 +238,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             elif action == "freeze_response":
                 key = str(rule.get("key", f"{method}:0"))
                 self.server.state.set_cached_response(key, response)
+
+            if action in {"replace_response", "reverse_batch", "delay_response",
+                          "strip_transactions", "freeze_response"}:
+                self.server.state.log({"event": "fault", "action": action,
+                                       "method": method, "methods": sorted(methods)})
 
         self._send_json(status, content_type, response)
 

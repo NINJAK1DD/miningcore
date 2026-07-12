@@ -43,6 +43,10 @@ The current ZeroMQ PUB/SUB relay is not an acknowledged durable queue: a block e
 
 The automated suite verifies the AuxPoW byte layout, password parsing, relay compatibility, and that an accepted auxiliary candidate creates a block without a synthetic share row. It does not launch Litecoin Core or Dogecoin Core.
 
+Live results for the reference Windows/WSL regtest environment are tracked in
+[merged-mining-regtest-validation.md](merged-mining-regtest-validation.md). Items marked outstanding
+there remain deployment gates rather than being implied by the automated suite.
+
 Before enabling mainnet traffic, run a daemon-backed regtest with real `litecoind` and `dogecoind` processes:
 
 1. Create and fund/mature regtest wallets on both nodes, then configure distinct enabled LTC and DOGE SOLO pools.
