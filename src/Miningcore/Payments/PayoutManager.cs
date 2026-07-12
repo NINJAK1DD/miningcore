@@ -142,6 +142,11 @@ public class PayoutManager : BackgroundService
                 await PayoutPoolBalancesAsync(pool, poolConfig, handler, ct);
             }
 
+            catch(PayoutOutcomeUncertainException)
+            {
+                throw;
+            }
+
             catch(InvalidOperationException ex)
             {
                 logger.Error(ex.InnerException ?? ex, () => $"[{poolConfig.Id}] Payment processing failed");
@@ -279,22 +284,42 @@ public class PayoutManager : BackgroundService
         }
     }
 
-    private async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, CancellationToken ct)
+    internal async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config,
+        IPayoutHandler handler, CancellationToken ct)
     {
         var poolBalancesOverMinimum = await cf.Run(con =>
             balanceRepo.GetPoolBalancesOverThresholdAsync(con, config.Id, config.PaymentProcessing.MinimumPayment));
 
         if(poolBalancesOverMinimum.Length > 0)
         {
+            payoutLease.BeginFinancialOperation();
+
             try
             {
                 await handler.PayoutAsync(pool, poolBalancesOverMinimum, ct);
+                payoutLease.CompleteFinancialOperation();
             }
 
             catch(Exception ex)
             {
-                await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
-                throw;
+                payoutLease.MarkFinancialOutcomeUncertain();
+
+                try
+                {
+                    await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                }
+
+                catch(Exception notificationEx)
+                {
+                    logger.Error(notificationEx, () =>
+                        $"Unable to emit payout-failure notification for pool {config.Id}");
+                }
+
+                if(ex is PayoutOutcomeUncertainException)
+                    throw;
+
+                throw new PayoutOutcomeUncertainException(
+                    $"Payout processing for pool {config.Id} ended without a conclusive financial outcome", ex);
             }
         }
 
@@ -383,6 +408,12 @@ public class PayoutManager : BackgroundService
                 try
                 {
                     await ProcessPoolsAsync(ct);
+                }
+
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    logger.Fatal(ex, () => "Payout processing stopped with an unknown wallet outcome. Durable ownership will be retained until wallet reconciliation");
+                    throw;
                 }
 
                 catch(OperationCanceledException)

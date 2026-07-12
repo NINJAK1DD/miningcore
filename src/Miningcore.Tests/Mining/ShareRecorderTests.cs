@@ -120,6 +120,8 @@ public class ShareRecorderTests
                 Task.FromException(new IOException("database unavailable")),
                 Task.CompletedTask, Task.CompletedTask);
 
+        string archiveFilename = null;
+
         try
         {
             await Assert.ThrowsAsync<IOException>(() =>
@@ -128,7 +130,7 @@ public class ShareRecorderTests
             fixture.Transaction.Received(1).Rollback();
             fixture.Transaction.DidNotReceive().Commit();
 
-            await fixture.Recorder.RecoverSharesAsync(filename);
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
 
             fixture.Transaction.Received(1).Rollback();
             fixture.Transaction.Received(1).Commit();
@@ -136,11 +138,15 @@ public class ShareRecorderTests
                 fixture.Connection, fixture.Transaction,
                 Arg.Any<IEnumerable<PersistedShare>>(),
                 Arg.Any<CancellationToken>());
+            Assert.False(File.Exists(filename));
+            Assert.True(File.Exists(archiveFilename));
         }
 
         finally
         {
             File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
         }
     }
 
@@ -151,9 +157,11 @@ public class ShareRecorderTests
         var filename = await WriteRecoveryFileAsync(Enumerable.Range(0, 150)
             .Select(x => RecoveryShareJson(x)));
 
+        string archiveFilename = null;
+
         try
         {
-            await fixture.Recorder.RecoverSharesAsync(filename);
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
 
             fixture.Transaction.Received(1).Commit();
             fixture.Transaction.DidNotReceive().Rollback();
@@ -161,16 +169,52 @@ public class ShareRecorderTests
                 fixture.Connection, fixture.Transaction,
                 Arg.Any<IEnumerable<PersistedShare>>(),
                 Arg.Any<CancellationToken>());
+            Assert.False(File.Exists(filename));
+            Assert.True(File.Exists(archiveFilename));
         }
 
         finally
         {
             File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
         }
     }
 
     [Fact]
-    public async Task RecoverSharesAsync_BlockOnlyReplay_RemainsIdempotent()
+    public async Task RecoverSharesAsync_SuccessfulOrdinaryReplay_IsRejectedByManifest()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = await WriteRecoveryFileAsync(new[] { RecoveryShareJson(1) });
+        fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
+                Arg.Any<CancellationToken>())
+            .Returns(true, false);
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+            File.Copy(archiveFilename, filename);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_BlockOnlyReplay_IsRejectedByManifest()
     {
         var fixture = CreateRecoveryFixture();
         var filename = await WriteRecoveryFileAsync(new[]
@@ -179,17 +223,25 @@ public class ShareRecorderTests
         });
         fixture.BlockRepository.InsertAsync(fixture.Connection,
                 fixture.Transaction, Arg.Any<Block>())
+            .Returns(true);
+        fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
+                Arg.Any<CancellationToken>())
             .Returns(true, false);
+        string archiveFilename = null;
 
         try
         {
-            await fixture.Recorder.RecoverSharesAsync(filename);
-            await fixture.Recorder.RecoverSharesAsync(filename);
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+            File.Copy(archiveFilename, filename);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
 
             await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
                 Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
                 Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
-            await fixture.BlockRepository.Received(2).InsertAsync(
+            await fixture.BlockRepository.Received(1).InsertAsync(
                 fixture.Connection, fixture.Transaction, Arg.Any<Block>());
             fixture.MessageBus.Received(1).SendMessage(
                 Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
@@ -198,6 +250,8 @@ public class ShareRecorderTests
         finally
         {
             File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
         }
     }
 
@@ -263,7 +317,6 @@ public class ShareRecorderTests
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
-
         var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
             shareRepository, blockRepository, new ClusterConfig { Pools = new PoolConfig[0] }, messageBus);
         var share = new Share
@@ -555,6 +608,10 @@ public class ShareRecorderTests
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.TryRegisterRecoveryImportAsync(connection, transaction,
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
 
         var recorder = new ShareRecorder(connectionFactory, mapper,
             new JsonSerializerSettings(), shareRepository, blockRepository,

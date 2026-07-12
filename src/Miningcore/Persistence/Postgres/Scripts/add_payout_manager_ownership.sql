@@ -1,7 +1,17 @@
--- Adds durable payout-manager ownership and payment-persistence idempotency.
+-- Adds durable payout-manager ownership, payment-persistence idempotency and
+-- recovery-file replay protection. Required by every payment-processing cluster,
+-- even when merged mining is disabled.
 -- Stop every payout manager before applying this migration.
 
 BEGIN;
+
+CREATE TABLE IF NOT EXISTS share_recovery_imports
+(
+    filehash TEXT NOT NULL PRIMARY KEY,
+    filename TEXT NOT NULL,
+    recordcount INT NOT NULL,
+    created TIMESTAMPTZ NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS payment_batches
 (

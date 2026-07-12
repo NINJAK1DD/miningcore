@@ -8,4 +8,7 @@ public interface IPayoutManagerLease : IAsyncDisposable
 {
     Task<bool> TryAcquireAsync(CancellationToken ct);
     Task EnsureHeldAsync(CancellationToken ct);
+    void BeginFinancialOperation();
+    void CompleteFinancialOperation();
+    void MarkFinancialOutcomeUncertain();
 }

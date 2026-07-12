@@ -12,6 +12,7 @@ using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
+using Miningcore.Payments;
 using Miningcore.Payments.PaymentSchemes;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -28,6 +29,57 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 
 public class BitcoinPayoutHandlerTests : TestBase
 {
+    [Theory]
+    [InlineData(-500, true)]
+    [InlineData(-5, false)]
+    [InlineData(-1, false)]
+    public void WalletSubmission_OnlyTransportErrorsAreUnknown(int errorCode,
+        bool expected)
+    {
+        Assert.Equal(expected, BitcoinPayoutHandler.IsUnknownWalletSubmission(
+            new JsonRpcError(errorCode, "test", null)));
+    }
+
+    [Fact]
+    public async Task Payout_TransportErrorAfterSendMany_IsUnknown()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+            new JsonRpcError(-500, "response lost", null));
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Payout_ExplicitWalletRejection_IsConclusive()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+            new JsonRpcError(-5, "rejected", null));
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Payout_SuccessWithoutTransactionId_IsUnknown()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null);
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, CancellationToken.None));
+    }
+
     [Fact]
     public void PoolConfig_DefaultRewardRecipients_IsEmpty()
     {
@@ -1066,6 +1118,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         public RpcResponse<DaemonBlock> BlockResponse { get; set; }
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
+        public RpcResponse<string> PayoutResponse { get; set; }
         public int BlockCalls { get; private set; }
         public int TransactionCalls { get; private set; }
 
@@ -1087,6 +1140,12 @@ public class BitcoinPayoutHandlerTests : TestBase
             string blockHash, CancellationToken ct)
         {
             return Task.FromResult(FinalizedAuxPowBlock);
+        }
+
+        protected override Task<RpcResponse<string>> SendManyAsync(object[] args,
+            CancellationToken ct)
+        {
+            return Task.FromResult(PayoutResponse);
         }
     }
 }

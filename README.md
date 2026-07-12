@@ -82,7 +82,9 @@ Until then, merged mining starts only when each enabled parent pool explicitly s
 
 Share recovery validates the complete read-locked input before writing, then imports all batches in
 one PostgreSQL transaction. A non-zero recovery exit therefore leaves the complete file rolled back
-and safe to retry rather than partially committing ordinary shares.
+and safe to retry rather than partially committing ordinary shares. A successful import records the
+source SHA-256 hash in PostgreSQL and renames the file with an `.imported-<timestamp>` suffix. The
+manifest rejects the same content if an operator copies or renames it back and attempts a replay.
 
 ## Build and installation
 
@@ -157,10 +159,11 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
 ```
 
-For an existing database created before LTC/DOGE merged mining, stop Miningcore block writers or
-schedule a maintenance window, back it up, and apply the transactional upgrade before enabling the
-feature. The migration uses regular transactional `CREATE INDEX` operations rather than concurrent
-index builds:
+For an existing database, stop Miningcore block writers and payout managers or schedule a maintenance
+window, back it up, and apply the transactional upgrades before deploying this revision. The payout
+ownership migration is mandatory for every cluster with payment processing enabled, even when no
+merged-mining pool is configured. The AuxPoW migration is required when enabling LTC/DOGE merged
+mining. It uses regular transactional `CREATE INDEX` operations rather than concurrent index builds:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
@@ -173,8 +176,10 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 The migration stops rather than guessing if legacy or duplicate claimant rows require manual review.
 Startup also verifies the required unique partial indexes and refuses merged mining when they are
 missing or malformed. The payout-manager migration adds durable ownership plus an idempotent
-payment-batch ledger. An ambiguous PostgreSQL retry with the same wallet transaction ID therefore
-cannot record the same payment or reset balances twice.
+payment-batch ledger and recovery-import manifest. An ambiguous PostgreSQL retry with the same wallet
+transaction ID therefore cannot record the same payment or reset balances twice. A wallet submission
+whose response is cancelled or lost retains durable ownership and stops payout processing; reconcile
+wallet history before manually releasing that marker.
 
 The optional PostgreSQL 11 partitioning appendix is available at
 [createdb_postgresql_11_appendix.sql](src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql).

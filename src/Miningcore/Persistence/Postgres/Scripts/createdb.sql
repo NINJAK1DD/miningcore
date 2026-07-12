@@ -26,6 +26,14 @@ CREATE INDEX IDX_SHARES_POOL_MINER_ACTUALDIFFICULTY on shares(poolid, miner, act
 CREATE INDEX IDX_SHARES_POOL_MINER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,sessionid,actualdifficulty);
 CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,worker,sessionid,actualdifficulty);
 
+CREATE TABLE share_recovery_imports
+(
+	filehash TEXT NOT NULL PRIMARY KEY,
+	filename TEXT NOT NULL,
+	recordcount INT NOT NULL,
+	created TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE blocks
 (
 	id BIGSERIAL NOT NULL PRIMARY KEY,

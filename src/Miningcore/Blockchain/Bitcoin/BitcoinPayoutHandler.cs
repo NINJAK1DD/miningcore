@@ -6,6 +6,7 @@ using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -70,6 +71,17 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private int minConfirmations;
     private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
     private const int MinimumDefinitiveMisses = 3;
+
+    internal static bool IsUnknownWalletSubmission(JsonRpcError error) =>
+        error?.Code == -500;
+
+    protected virtual Task<RpcResponse<string>> SendManyAsync(object[] args,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendMany, ct, args);
+
+    protected virtual Task<RpcResponse<string>> SendToAddressAsync(object[] args,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendToAddress, ct, args);
 
     protected override string LogCategory => "Bitcoin Payout Handler";
 
@@ -600,7 +612,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             // send command
             tryTransfer:
-            var result = await rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendMany, ct, args);
+            var result = await SendManyAsync(args, ct);
 
             if(result.Error == null)
             {
@@ -615,7 +627,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 var txId = result.Response;
 
                 if(string.IsNullOrEmpty(txId))
-                    logger.Error(() => $"[{LogCategory}] {BitcoinCommands.SendMany} did not return a transaction id!");
+                    throw new PayoutOutcomeUncertainException(
+                        $"{BitcoinCommands.SendMany} returned success without a transaction id");
                 else
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
@@ -629,6 +642,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             else
             {
+                if(IsUnknownWalletSubmission(result.Error))
+                    throw new PayoutOutcomeUncertainException(
+                        $"{BitcoinCommands.SendMany} outcome is unknown: {result.Error.Message}");
+
                 if(result.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
                     if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
@@ -686,20 +703,27 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                     logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
 
-                    var result = await rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendToAddress, ct, new object[]
+                    var result = await SendToAddressAsync(new object[]
                     {
                         address,
                         amount,
-                    });
+                    }, ct);
 
                     // check result
                     var txId = result.Response;
 
                     if(result.Error != null)
+                    {
+                        if(IsUnknownWalletSubmission(result.Error))
+                            throw new PayoutOutcomeUncertainException(
+                                $"[{transferId}] {BitcoinCommands.SendToAddress} outcome is unknown: {result.Error.Message}");
+
                         throw new Exception($"[{transferId}] {BitcoinCommands.SendToAddress} returned error: {result.Error.Message} code {result.Error.Code}");
+                    }
 
                     if(string.IsNullOrEmpty(txId))
-                        throw new Exception($"[{transferId}] {BitcoinCommands.SendToAddress} did not return a transaction id!");
+                        throw new PayoutOutcomeUncertainException(
+                            $"[{transferId}] {BitcoinCommands.SendToAddress} returned success without a transaction id");
                     else
                         logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
 
@@ -733,6 +757,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
 
                 NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
+
+                var unknownOutcome = txFailures
+                    .Select(x => x.Item2)
+                    .OfType<PayoutOutcomeUncertainException>()
+                    .FirstOrDefault();
+
+                if(unknownOutcome != null)
+                    throw unknownOutcome;
             }
         }
     }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -164,6 +165,44 @@ public class PayoutManagerTests
         await fixture.PayoutLease.Received(1).DisposeAsync();
     }
 
+    [Fact]
+    public async Task SuccessfulPayout_CompletesFinancialOperation()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+
+        await fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
+            handler, CancellationToken.None);
+
+        fixture.PayoutLease.Received(1).BeginFinancialOperation();
+        fixture.PayoutLease.Received(1).CompleteFinancialOperation();
+        fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
+    }
+
+    [Fact]
+    public async Task FailedPayout_MarksFinancialOutcomeUncertain()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+        handler.PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new IOException("wallet response lost"));
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
+                handler, CancellationToken.None));
+
+        fixture.PayoutLease.Received(1).BeginFinancialOperation();
+        fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
+        fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+    }
+
     private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending)
     {
         var context = Substitute.For<IComponentContext>();
@@ -189,7 +228,10 @@ public class PayoutManagerTests
                 Name = "Dogecoin",
                 ExplorerBlockLinks = new Dictionary<string, string>(),
             },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
         };
+        var miningPool = Substitute.For<IMiningPool>();
+        miningPool.Config.Returns(pool);
         var block = new Block
         {
             Id = 42,
@@ -212,9 +254,12 @@ public class PayoutManagerTests
         var manager = new PayoutManager(context, connectionFactory, blockRepository,
             shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease);
 
-        return new Fixture(manager, pool, block, transaction, messageBus, payoutLease);
+        return new Fixture(manager, miningPool, pool, block, connection, transaction,
+            balanceRepository, messageBus, payoutLease);
     }
 
-    private sealed record Fixture(PayoutManager Manager, PoolConfig Pool, Block Block,
-        IDbTransaction Transaction, IMessageBus MessageBus, IPayoutManagerLease PayoutLease);
+    private sealed record Fixture(PayoutManager Manager, IMiningPool MiningPool,
+        PoolConfig Pool, Block Block, IDbConnection Connection,
+        IDbTransaction Transaction, IBalanceRepository BalanceRepository,
+        IMessageBus MessageBus, IPayoutManagerLease PayoutLease);
 }

@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Security.Cryptography;
 using System.Text;
 using AutoMapper;
 using Microsoft.Extensions.Hosting;
@@ -218,7 +219,7 @@ public class ShareRecorder : BackgroundService
         writer.WriteLine("# miningcore -c <path-to-config> -rs <path-to-this-file>\n");
     }
 
-    public async Task RecoverSharesAsync(string filename)
+    public async Task<string> RecoverSharesAsync(string filename)
     {
         logger.Info(() => $"Recovering shares using {filename} ...");
 
@@ -226,6 +227,7 @@ public class ShareRecorder : BackgroundService
         {
             List<(string PoolId, Block Block)> insertedBlocks;
             int validatedCount;
+            string fileHash;
 
             // Hold one read-only handle across both passes. FileShare.Read permits diagnostics
             // and backups, but prevents the recovery source from being changed between validation
@@ -239,6 +241,12 @@ public class ShareRecorder : BackgroundService
             }))
             using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
             {
+                using(var sha256 = SHA256.Create())
+                    fileHash = Convert.ToHexString(await sha256.ComputeHashAsync(stream));
+
+                reader.DiscardBufferedData();
+                stream.Seek(0, SeekOrigin.Begin);
+
                 // Pass one validates every record before a database transaction is opened.
                 validatedCount = await ProcessRecoveryRecordsAsync(reader,
                     _ => Task.CompletedTask);
@@ -250,6 +258,14 @@ public class ShareRecorder : BackgroundService
                 // failure rolls back the complete file, making a non-zero exit safe to retry.
                 insertedBlocks = await cf.RunTx(async (con, tx) =>
                 {
+                    var registered = await shareRepo.TryRegisterRecoveryImportAsync(con,
+                        tx, fileHash, Path.GetFileName(filename), validatedCount,
+                        CancellationToken.None);
+
+                    if(!registered)
+                        throw new InvalidOperationException(
+                            $"Recovery file {filename} was already imported [{fileHash}]");
+
                     var result = new List<(string PoolId, Block Block)>();
                     var importedCount = await ProcessRecoveryRecordsAsync(reader,
                         async shares => result.AddRange(
@@ -265,14 +281,35 @@ public class ShareRecorder : BackgroundService
                 });
             }
 
+            var archiveFilename = ArchiveImportedRecoveryFile(filename);
             NotifyPersistedBlocks(insertedBlocks);
-            logger.Info(() => $"Successfully imported {validatedCount} shares");
+            logger.Info(() => $"Successfully imported {validatedCount} shares" +
+                (archiveFilename != null ? $" and archived the source as {archiveFilename}" :
+                    "; the database import manifest will prevent replay"));
+            return archiveFilename;
         }
 
         catch(FileNotFoundException)
         {
             logger.Error(() => $"Recovery file {filename} was not found");
             throw;
+        }
+    }
+
+    private static string ArchiveImportedRecoveryFile(string filename)
+    {
+        var archiveFilename = $"{filename}.imported-{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}";
+
+        try
+        {
+            File.Move(filename, archiveFilename);
+            return archiveFilename;
+        }
+
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            logger.Warn(ex, () => $"Unable to archive successfully imported recovery file {filename}. Do not retry it; the database import manifest will reject the same content");
+            return null;
         }
     }
 

@@ -18,6 +18,23 @@ public class ShareRepository : IShareRepository
 
     private readonly IMapper mapper;
 
+    public async Task<bool> TryRegisterRecoveryImportAsync(IDbConnection con,
+        IDbTransaction tx, string fileHash, string filename, int recordCount,
+        CancellationToken ct)
+    {
+        const string query = @"INSERT INTO share_recovery_imports(
+                filehash, filename, recordcount, created)
+            VALUES(@fileHash, @filename, @recordCount, now())
+            ON CONFLICT(filehash) DO NOTHING";
+
+        return await con.ExecuteAsync(new CommandDefinition(query, new
+        {
+            fileHash,
+            filename,
+            recordCount,
+        }, tx, cancellationToken: ct)) > 0;
+    }
+
     public async Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Share> shares, CancellationToken ct)
     {
         // NOTE: Even though the tx parameter is completely ignored here,

@@ -27,11 +27,60 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IConnectionFactory cf;
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly object financialStateGate = new();
     private readonly Guid ownerId = Guid.NewGuid();
     private IDbConnection connection;
     private long generation;
     private bool acquired;
     private int disposed;
+    private int activeFinancialOperations;
+    private bool financialOutcomeUncertain;
+
+    internal bool CanReleaseOwnership
+    {
+        get
+        {
+            lock(financialStateGate)
+                return activeFinancialOperations == 0 && !financialOutcomeUncertain;
+        }
+    }
+
+    public void BeginFinancialOperation()
+    {
+        lock(financialStateGate)
+        {
+            if(disposed != 0)
+                throw new ObjectDisposedException(nameof(PostgresPayoutManagerLease));
+
+            if(financialOutcomeUncertain)
+                throw new InvalidOperationException(
+                    "A previous wallet submission has an unknown outcome and requires reconciliation");
+
+            activeFinancialOperations++;
+        }
+    }
+
+    public void CompleteFinancialOperation()
+    {
+        lock(financialStateGate)
+        {
+            if(activeFinancialOperations <= 0)
+                throw new InvalidOperationException("No payout financial operation is active");
+
+            activeFinancialOperations--;
+        }
+    }
+
+    public void MarkFinancialOutcomeUncertain()
+    {
+        lock(financialStateGate)
+        {
+            if(activeFinancialOperations > 0)
+                activeFinancialOperations--;
+
+            financialOutcomeUncertain = true;
+        }
+    }
 
     public async Task<bool> TryAcquireAsync(CancellationToken ct)
     {
@@ -185,8 +234,16 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
     public async ValueTask DisposeAsync()
     {
-        if(Interlocked.Exchange(ref disposed, 1) != 0)
-            return;
+        bool retainOwnership;
+
+        lock(financialStateGate)
+        {
+            if(disposed != 0)
+                return;
+
+            disposed = 1;
+            retainOwnership = activeFinancialOperations > 0 || financialOutcomeUncertain;
+        }
 
         await gate.WaitAsync();
 
@@ -194,7 +251,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
         {
             if(connection != null)
             {
-                if(acquired && connection.State == ConnectionState.Open)
+                if(acquired && connection.State == ConnectionState.Open && !retainOwnership)
                 {
                     try
                     {
@@ -217,6 +274,11 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                         // replacement process from starting after an uncertain shutdown.
                         logger.Error(ex, () => "Unable to clear durable payout-manager ownership; manual release is required after confirming this process is stopped");
                     }
+                }
+
+                else if(retainOwnership)
+                {
+                    logger.Error(() => "Retaining durable payout-manager ownership because a wallet submission is still active or has an unknown outcome. Reconcile wallet history before manual release");
                 }
 
                 // The session advisory lock is released when this connection closes.

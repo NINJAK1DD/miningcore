@@ -44,6 +44,8 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
 | Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares plus LTC/DOGE block-only rows. Receiver restart also reacquired ownership and resumed persistence. A different physical-host/firewall path should still be checked for the final deployment. |
 | Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
+| Wallet accepted, response lost during shutdown | Passed | The Dogecoin fault proxy forwarded `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged, generation 6 ownership remained durable, and replacement startup was rejected. After `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset, the dead owner was explicitly released and generation 7 started normally. |
+| Successful recovery-file replay | Passed | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. Copying the exact archived content back exited 1; PostgreSQL retained one share and one SHA-256 import-manifest row. |
 | Asynchronous block delivery decision | Explicit opt-in | The current recorder handoff and ZeroMQ PUB/SUB model is retained, but it is no longer silently accepted: every enabled merged-mining pool must set `acceptNonDurableBlockDelivery=true`. Startup otherwise fails with the documented process-crash and disconnected-receiver loss windows. |
 
 ## Runtime hardening observed during validation
@@ -52,7 +54,8 @@ were made against the same PostgreSQL instance used by the running payout manage
 - Recovery import is a one-shot mode: it does not start normal payout/statistics/relay background
   services and stops the host after success or failure. Missing, malformed or database-failed
   imports return exit code 1 only after ensuring that the complete file wrote nothing; rerunning the
-  original failed input is therefore safe.
+  original failed input is therefore safe. Successful input is registered by SHA-256 in PostgreSQL
+  and archived with an `.imported-<timestamp>` suffix, preventing ordinary-share replay.
 - Fault rules can require a minimum parameter count, preventing a block-submission fault from being
   consumed by Miningcore's parameterless startup capability probe.
 - Fault rules can patch nested template results, allowing deterministic target-separated parent-only

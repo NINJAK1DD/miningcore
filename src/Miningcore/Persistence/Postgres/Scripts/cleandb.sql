@@ -1,4 +1,5 @@
 ﻿DROP TABLE shares;
+DROP TABLE share_recovery_imports;
 DROP TABLE blocks;
 DROP TABLE balances;
 DROP TABLE payments;
