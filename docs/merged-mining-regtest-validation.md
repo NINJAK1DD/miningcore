@@ -62,6 +62,10 @@ were made against the same PostgreSQL instance used by the running payout manage
 - Fault rules can patch nested template results, allowing deterministic target-separated parent-only
   and auxiliary-only daemon-backed tests without changing chain consensus.
 - Every applied proxy response mutation is written to the JSONL fault log.
+- Litecoin and Dogecoin fault proxies are installed as enabled systemd template instances and are
+  required dependencies of `miningcore-regtest.service`. A controlled WSL stop/start through the
+  Windows keepalive launcher restored both proxies, both pools, PostgreSQL connectivity and Stratum
+  automatically; payout ownership advanced to a fresh generation without manual proxy startup.
 - Relay receiver pools without internal Stratum remain alive until host cancellation, and recovery
   imports configure neither ordinary background services nor the API web host.
 - A database-scoped advisory lock prevents concurrent healthy payout-manager startup. A durable
