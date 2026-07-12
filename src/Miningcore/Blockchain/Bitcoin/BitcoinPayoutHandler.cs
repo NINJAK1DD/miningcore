@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -665,8 +666,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
         else
         {
-            var txFailures = new List<Tuple<KeyValuePair<string, decimal>, Exception>>();
-            var successBalances = new Dictionary<Balance, string>();
+            var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
+            var successBalances = new ConcurrentDictionary<Balance, string>();
 
             var parallelOptions = new ParallelOptions
             {
@@ -702,7 +703,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     else
                         logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
 
-                    successBalances.Add(new Balance
+                    successBalances.TryAdd(new Balance
                     {
                         PoolId = poolConfig.Id,
                         Address = address,
@@ -716,9 +717,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             if(successBalances.Any())
             {
-                await PersistPaymentsAsync(successBalances);
+                var persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
 
-                NotifyPayoutSuccess(poolConfig.Id, successBalances.Keys.ToArray(), successBalances.Values.ToArray(), null);
+                await PersistPaymentsAsync(persistedBalances);
+
+                NotifyPayoutSuccess(poolConfig.Id, persistedBalances.Keys.ToArray(),
+                    persistedBalances.Values.ToArray(), null);
             }
 
             if(txFailures.Any())

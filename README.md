@@ -68,8 +68,9 @@ For merged mining, cluster-level `paymentProcessing.enabled` must be true on the
 reconciliation and payouts. PostgreSQL stores a durable payout-manager ownership token in addition
 to the session advisory lock. Only a clean shutdown clears that token; losing the database session
 or crashing leaves replacement startup blocked. After an unclean stop, confirm that the previous
-process is dead before explicitly clearing the stale token with the statement documented in the
-ownership migration. Automatic/hot-standby takeover is intentionally unsupported. The owner must
+process is dead and reconcile wallet history for any payout that may have been submitted but not
+recorded before explicitly clearing the stale token with the statement documented in the ownership
+migration. Automatic/hot-standby takeover is intentionally unsupported. The owner must
 include the local `mergedMining` configuration for the merged pool, and all participating
 recorder/payout nodes must use the intended PostgreSQL database.
 
