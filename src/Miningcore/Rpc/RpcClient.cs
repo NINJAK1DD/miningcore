@@ -191,7 +191,11 @@ public class RpcClient
     {
         var sw = Stopwatch.StartNew();
 
-        var rpcRequests = batch.Select(x => new JsonRpcRequest<object>(x.Method, x.Payload, GetRequestId()));
+        var batchRequestId = GetRequestId();
+        var rpcRequests = batch
+            .Select((x, index) => new JsonRpcRequest<object>(x.Method, x.Payload,
+                $"{batchRequestId}-{index}"))
+            .ToArray();
 
         // url
         var protocol = (endPoint.Ssl || endPoint.Http2) ? Uri.UriSchemeHttps : Uri.UriSchemeHttp;
@@ -235,10 +239,60 @@ public class RpcClient
                     messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, string.Join(", ", batch.Select(x => x.Method)),
                         sw.Elapsed, response.IsSuccessStatusCode);
 
-                    return result;
+                    return OrderBatchResponses(rpcRequests, result);
                 }
             }
         }
+    }
+
+    internal static JsonRpcResponse<JToken>[] OrderBatchResponses(
+        IReadOnlyCollection<JsonRpcRequest<object>> requests,
+        IReadOnlyCollection<JsonRpcResponse<JToken>> responses)
+    {
+        if(responses == null)
+            throw new InvalidDataException("JSON-RPC batch response was empty");
+
+        if(responses.Count != requests.Count)
+            throw new InvalidDataException(
+                $"JSON-RPC batch response count mismatch: expected {requests.Count}, received {responses.Count}");
+
+        var responsesById = new Dictionary<string, JsonRpcResponse<JToken>>(StringComparer.Ordinal);
+
+        foreach(var response in responses)
+        {
+            var id = NormalizeJsonRpcId(response?.Id);
+
+            if(!responsesById.TryAdd(id, response))
+                throw new InvalidDataException($"JSON-RPC batch response contained duplicate id {id}");
+        }
+
+        var result = new JsonRpcResponse<JToken>[requests.Count];
+        var index = 0;
+
+        foreach(var request in requests)
+        {
+            var id = NormalizeJsonRpcId(request.Id);
+
+            if(!responsesById.Remove(id, out var response))
+                throw new InvalidDataException($"JSON-RPC batch response omitted request id {id}");
+
+            result[index++] = response;
+        }
+
+        if(responsesById.Count > 0)
+            throw new InvalidDataException("JSON-RPC batch response contained an unknown request id");
+
+        return result;
+    }
+
+    private static string NormalizeJsonRpcId(object id)
+    {
+        if(id == null)
+            throw new InvalidDataException("JSON-RPC batch response omitted an id");
+
+        return id is JToken token
+            ? token.ToString(Formatting.None)
+            : JToken.FromObject(id).ToString(Formatting.None);
     }
 
     protected string GetRequestId()

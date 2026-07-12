@@ -753,18 +753,50 @@ public class BitcoinPayoutHandlerTests : TestBase
     {
         var tracker = new ActiveBlockGracePeriodTracker();
         var start = DateTime.UtcNow;
-        Assert.False(tracker.ObserveUnavailable("pool", 1, "block", "auxpow",
+        Assert.False(tracker.TryAcquireNotification("pool", 1, "block", "auxpow",
             start, TimeSpan.FromMinutes(30)));
 
         var alerts = 0;
         Parallel.For(0, 32, _ =>
         {
-            if(tracker.ObserveUnavailable("pool", 1, "block", "auxpow",
+            if(tracker.TryAcquireNotification("pool", 1, "block", "auxpow",
                    start + TimeSpan.FromMinutes(31), TimeSpan.FromMinutes(30)))
                 Interlocked.Increment(ref alerts);
         });
 
         Assert.Equal(1, alerts);
+    }
+
+    [Fact]
+    public async Task Classification_FailedDelayedNotification_IsRetried()
+    {
+        var tracker = new ActiveBlockGracePeriodTracker();
+        var start = DateTime.UtcNow;
+        var block = PendingBlock("coinbase-txid");
+        block.Type = "auxpow";
+
+        var first = await CreateFixtureAsync(tracker, start);
+        ConfigureUnavailableWalletGrace(first, block);
+        await first.Handler.ClassifyBlocksAsync(first.Pool,
+            new[] { block }, CancellationToken.None);
+
+        var failed = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(31));
+        ConfigureUnavailableWalletGrace(failed, block);
+        failed.MessageBus
+            .When(x => x.SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("notification transport failed"));
+
+        await failed.Handler.ClassifyBlocksAsync(failed.Pool,
+            new[] { block }, CancellationToken.None);
+
+        var retry = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(32));
+        ConfigureUnavailableWalletGrace(retry, block);
+        await retry.Handler.ClassifyBlocksAsync(retry.Pool,
+            new[] { block }, CancellationToken.None);
+
+        retry.MessageBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(x => x.Message.Contains(block.Hash)),
+            Arg.Any<string>());
     }
 
     [Theory]

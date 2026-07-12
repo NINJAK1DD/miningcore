@@ -488,7 +488,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private void NotifyUnavailableActiveBlockGrace(Block block, string reason)
     {
-        if(!activeBlockGracePeriodTracker.ObserveUnavailable(block.PoolId, block.Id,
+        if(!activeBlockGracePeriodTracker.TryAcquireNotification(block.PoolId, block.Id,
             block.Hash, block.Type, clock.Now, UncertainBlockLifetime))
             return;
 
@@ -502,10 +502,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         try
         {
             messageBus.SendMessage(new AdminNotification(subject, message));
+            activeBlockGracePeriodTracker.MarkNotificationSent(block.PoolId, block.Id,
+                block.Hash, block.Type);
         }
 
         catch(Exception ex)
         {
+            activeBlockGracePeriodTracker.ReleaseNotification(block.PoolId, block.Id,
+                block.Hash, block.Type);
             logger.Error(ex, () => $"[{LogCategory}] Unable to emit delayed reconciliation admin notification for block {block.BlockHeight} [{block.Hash}]");
         }
     }

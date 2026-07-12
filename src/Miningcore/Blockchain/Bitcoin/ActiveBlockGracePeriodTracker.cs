@@ -4,8 +4,12 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public interface IActiveBlockGracePeriodTracker
 {
-    bool ObserveUnavailable(string poolId, long blockId, string blockHash, string blockType,
+    bool TryAcquireNotification(string poolId, long blockId, string blockHash, string blockType,
         DateTime now, TimeSpan alertAfter);
+
+    void MarkNotificationSent(string poolId, long blockId, string blockHash, string blockType);
+
+    void ReleaseNotification(string poolId, long blockId, string blockHash, string blockType);
 
     void Clear(string poolId, long blockId, string blockHash, string blockType);
 }
@@ -15,7 +19,7 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
     private readonly ConcurrentDictionary<string, Episode> episodes =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public bool ObserveUnavailable(string poolId, long blockId, string blockHash,
+    public bool TryAcquireNotification(string poolId, long blockId, string blockHash,
         string blockType, DateTime now, TimeSpan alertAfter)
     {
         var episode = episodes.GetOrAdd(CreateKey(poolId, blockId, blockHash, blockType),
@@ -26,11 +30,37 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
             if(now - episode.FirstUnavailableAt < alertAfter)
                 return false;
 
-            if(episode.NotificationSent)
+            if(episode.NotificationSent || episode.NotificationInProgress)
                 return false;
 
-            episode.NotificationSent = true;
+            episode.NotificationInProgress = true;
             return true;
+        }
+    }
+
+    public void MarkNotificationSent(string poolId, long blockId, string blockHash,
+        string blockType)
+    {
+        if(!episodes.TryGetValue(CreateKey(poolId, blockId, blockHash, blockType), out var episode))
+            return;
+
+        lock(episode)
+        {
+            episode.NotificationInProgress = false;
+            episode.NotificationSent = true;
+        }
+    }
+
+    public void ReleaseNotification(string poolId, long blockId, string blockHash,
+        string blockType)
+    {
+        if(!episodes.TryGetValue(CreateKey(poolId, blockId, blockHash, blockType), out var episode))
+            return;
+
+        lock(episode)
+        {
+            if(!episode.NotificationSent)
+                episode.NotificationInProgress = false;
         }
     }
 
@@ -54,5 +84,6 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
 
         public DateTime FirstUnavailableAt { get; }
         public bool NotificationSent { get; set; }
+        public bool NotificationInProgress { get; set; }
     }
 }
