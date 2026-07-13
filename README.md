@@ -352,10 +352,11 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
 - **Share relay is not a durable queue.** ZeroMQ PUB/SUB does not acknowledge ordinary shares; merged
   block candidates use additional synchronous persistence, but final physical-path testing remains
   required for a distributed deployment.
-- **Block-submission timing is durability-first.** The ten-second merged-mining deadline covers daemon
-  submission and attribution, not PostgreSQL retries or write-through recovery-journal I/O. A block
-  candidate can take longer to acknowledge during storage failure because miner disconnects are not
-  allowed to cancel financially significant recording.
+- **Block-submission timing is durability-first.** After local proof validation, the manager owns
+  candidate delivery independently of miner EOF or TCP reset. Its ten-second merged-mining deadline
+  covers daemon submission and attribution, not PostgreSQL retries or write-through recovery-journal
+  I/O. A block candidate can take longer to acknowledge during storage failure because client
+  cancellation is not allowed to abandon financially significant delivery or recording.
 
 ## Production operation
 

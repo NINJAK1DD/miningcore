@@ -35,6 +35,22 @@ public class MergedMiningBitcoinPool : BitcoinPool
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
+    public override async Task RunAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.RunAsync(ct);
+        }
+        finally
+        {
+            // StratumConnection stops awaiting request processing when a socket or host task
+            // ends. Validated candidates are manager-owned, so keep the pool alive until their
+            // daemon submission and durable database/recovery-journal paths have completed.
+            if(manager is MergedMiningBitcoinJobManager mergedManager)
+                await mergedManager.DrainCandidateOperationsAsync();
+        }
+    }
+
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         mergedMiningConfig = MergedMiningConfigLoader.GetNormalizedConfig(pc);

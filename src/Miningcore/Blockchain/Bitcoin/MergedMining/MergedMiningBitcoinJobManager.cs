@@ -81,6 +81,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private bool auxiliaryTemplateDegraded;
     private AuxBlockTemplate startupAuxiliaryTemplate;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
+    private readonly object candidateOperationsLock = new();
+    private readonly Dictionary<long, TaskCompletionSource<bool>> candidateOperations = new();
+    private long nextCandidateOperationId;
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -473,30 +476,87 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             share.IpAddress, now);
         share.Created = now;
 
+        var hasCandidate = share.IsBlockCandidate || !string.IsNullOrEmpty(result.AuxPowHex);
+        TaskCompletionSource<bool> candidateStart = null;
+        Task<bool[]> candidateOperation = null;
+
+        if(hasCandidate)
+        {
+            // Reserve manager ownership synchronously as soon as proof validation identifies a
+            // candidate. The start gate preserves statistical-share ordering without leaving a
+            // host-shutdown gap before the operation becomes visible to the drain coordinator.
+            candidateStart = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            candidateOperation = StartCandidateOperationAsync(operationToken =>
+                SubmitCandidatePathsAsync(worker, context, result, share, operationToken),
+                candidateStart.Task);
+        }
+
         // The proof has passed all share validation. Publish a cleared statistical copy before
         // either daemon submission begins so a slow or failed peer-chain path cannot suppress
         // the ordinary share or move it past the parent block's effort boundary. BitcoinPool
         // observes the runtime-only guard and does not publish the returned object a second time.
-        messageBus.SendMessage(CreateStatisticalShare(share));
-        share.StatisticalRecordEmitted = true;
+        try
+        {
+            messageBus.SendMessage(CreateStatisticalShare(share));
+            share.StatisticalRecordEmitted = true;
+        }
+        finally
+        {
+            // A synchronous telemetry subscriber failure must not strand a validated candidate.
+            candidateStart?.TrySetResult(true);
+        }
 
+        if(candidateOperation != null)
+            await candidateOperation;
+
+        return share;
+    }
+
+    internal Task<bool[]> StartCandidateOperationAsync(
+        Func<CancellationToken, Task<bool[]>> operation, Task startSignal = null)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        var operationId = Interlocked.Increment(ref nextCandidateOperationId);
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        lock(candidateOperationsLock)
+            candidateOperations.Add(operationId, completion);
+
+        var task = ExecuteCandidateOperationAsync(operation, startSignal);
+        _ = ObserveCandidateOperationAsync(operationId, completion, task);
+        return task;
+    }
+
+    private static async Task<bool[]> ExecuteCandidateOperationAsync(
+        Func<CancellationToken, Task<bool[]>> operation, Task startSignal)
+    {
+        if(startSignal != null)
+            await startSignal;
+
+        using var deadline = new CancellationTokenSource(BlockSubmissionTimeout);
+        return await operation(deadline.Token);
+    }
+
+    private async Task<bool[]> SubmitCandidatePathsAsync(StratumConnection worker,
+        MergedMiningBitcoinWorkerContext context, MergedMiningShareResult result,
+        Share share, CancellationToken operationToken)
+    {
         Task<bool> parentSubmission = null;
         Task<bool> auxiliarySubmission = null;
-        using var parentSubmissionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        using var auxiliarySubmissionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        parentSubmissionCts.CancelAfter(BlockSubmissionTimeout);
-        auxiliarySubmissionCts.CancelAfter(BlockSubmissionTimeout);
 
         if(share.IsBlockCandidate)
         {
             logger.Info(() => $"Submitting parent block {share.BlockHeight} [{share.BlockHash}]");
             parentSubmission = SubmitAndPersistParentBlockAsync(share,
-                result.ParentBlockHex, parentSubmissionCts.Token);
+                result.ParentBlockHex, operationToken);
         }
 
         if(!string.IsNullOrEmpty(result.AuxPowHex))
             auxiliarySubmission = SubmitAuxiliaryBlockAsync(worker, context, result,
-                auxiliarySubmissionCts.Token);
+                operationToken);
 
         var blockFoundSignaled = 0;
         async Task<bool> TrackAcceptedSubmissionAsync(Task<bool> submission)
@@ -513,15 +573,51 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             .Select(TrackAcceptedSubmissionAsync)
             .ToArray();
 
-        // Every path owns submission, reconciliation and durable persistence. The linked
-        // ten-second tokens bound daemon RPC and attribution only. Once persistence starts,
-        // it deliberately ignores miner disconnect cancellation and follows the database
+        // The internal deadline bounds daemon RPC and attribution only. Persistence
+        // deliberately ignores miner and RPC cancellation and follows the database
         // retry/recovery-journal policy, so the complete drain can exceed ten seconds.
-        // Drain both paths before propagating an error so an accepted peer result is never
-        // left unobserved or unpersisted.
-        await DrainSubmissionTasksAsync(submissions);
+        // Drain both chains before propagating an error so an accepted peer result is
+        // never left unobserved or unpersisted.
+        return await DrainSubmissionTasksAsync(submissions);
+    }
 
-        return share;
+    private async Task ObserveCandidateOperationAsync(long operationId,
+        TaskCompletionSource<bool> completion, Task operation)
+    {
+        try
+        {
+            await operation;
+        }
+        catch(Exception ex)
+        {
+            // The Stratum request path normally observes this exception too. The manager-level
+            // observer is required for EOF races where DispatchAsync has already stopped
+            // awaiting the request processor.
+            logger.Error(ex, () => $"Merged-mining candidate operation {operationId} failed");
+        }
+        finally
+        {
+            lock(candidateOperationsLock)
+                candidateOperations.Remove(operationId);
+
+            completion.TrySetResult(true);
+        }
+    }
+
+    public async Task DrainCandidateOperationsAsync()
+    {
+        while(true)
+        {
+            Task[] pending;
+            lock(candidateOperationsLock)
+                pending = candidateOperations.Values.Select(x => x.Task).ToArray();
+
+            if(pending.Length == 0)
+                return;
+
+            logger.Info(() => $"Waiting for {pending.Length} in-flight merged-mining candidate operation(s)");
+            await Task.WhenAll(pending);
+        }
     }
 
     private async Task<bool> SubmitAndPersistParentBlockAsync(Share share,

@@ -1,15 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Reactive.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Microsoft.IO;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -17,6 +22,7 @@ using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using NLog;
 using NSubstitute;
 using Xunit;
 
@@ -158,6 +164,101 @@ public class MergedMiningManagerReorgTests
         Assert.Equal(2, error.InnerExceptions.Count);
         Assert.Contains(error.InnerExceptions, x => x is IOException);
         Assert.Contains(error.InnerExceptions, x => x is TimeoutException);
+    }
+
+    [Fact]
+    public async Task MinerEof_DoesNotCancelManagerOwnedCandidatePersistence()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        recorder.PersistBlockCandidateAsync(Arg.Any<Share>())
+            .Returns(Task.CompletedTask);
+        var manager = new TestManager(container, clock, new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder);
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var listenerEndpoint = (IPEndPoint) listener.LocalEndpoint;
+        using var client = new TcpClient();
+        var acceptTask = listener.AcceptSocketAsync();
+        await client.ConnectAsync(listenerEndpoint.Address, listenerEndpoint.Port);
+        using var serverSocket = await acceptTask;
+        listener.Stop();
+
+        var rpcStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var operationRegistered = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRpc = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionClosed = new TaskCompletionSource<Exception>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var candidate = new Share
+        {
+            PoolId = parent.Id,
+            BlockHash = new string('a', 64),
+            BlockOnly = true,
+            IsBlockCandidate = true,
+        };
+        Task<bool[]> candidateOperation = null;
+        CancellationToken requestToken = default;
+        CancellationToken operationToken = default;
+
+        Task HandleRequestAsync(StratumConnection _, JsonRpcRequest request,
+            CancellationToken ct)
+        {
+            Assert.Equal("mining.submit", request.Method);
+            requestToken = ct;
+            candidateOperation = manager.StartCandidateOperationAsync(async ownedToken =>
+            {
+                operationToken = ownedToken;
+                rpcStarted.TrySetResult(true);
+                await releaseRpc.Task.WaitAsync(ownedToken);
+                await recorder.PersistBlockCandidateAsync(candidate);
+                return new[] { true };
+            });
+            operationRegistered.TrySetResult(true);
+            return candidateOperation;
+        }
+
+        var connection = new StratumConnection(
+            new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "candidate-eof", false);
+        connection.DispatchAsync(serverSocket, CancellationToken.None,
+            new StratumEndpoint(listenerEndpoint, new PoolEndpoint()),
+            (IPEndPoint) client.Client.LocalEndPoint, null, HandleRequestAsync,
+            _ => connectionClosed.TrySetResult(null),
+            (_, ex) => connectionClosed.TrySetResult(ex));
+
+        var requestBytes = Encoding.UTF8.GetBytes(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+        await client.GetStream().WriteAsync(requestBytes);
+        await client.GetStream().FlushAsync();
+        await rpcStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await operationRegistered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        client.Close();
+        var dispatchError = await connectionClosed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Null(dispatchError);
+        Assert.True(requestToken.IsCancellationRequested);
+        Assert.False(operationToken.IsCancellationRequested);
+        Assert.False(candidateOperation.IsCompleted);
+        var shutdownDrain = manager.DrainCandidateOperationsAsync();
+        Assert.False(shutdownDrain.IsCompleted);
+
+        releaseRpc.TrySetResult(true);
+        Assert.Equal(new[] { true },
+            await candidateOperation.WaitAsync(TimeSpan.FromSeconds(2)));
+        await shutdownDrain.WaitAsync(TimeSpan.FromSeconds(2));
+        await recorder.Received(1).PersistBlockCandidateAsync(candidate);
     }
 
     [Fact]

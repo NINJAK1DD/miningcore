@@ -116,9 +116,15 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                         FROM pg_constraint con
                         JOIN pg_class rel ON rel.oid = con.conrelid
                         JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                        JOIN pg_index idx ON idx.indexrelid = con.conindid
                         WHERE ns.nspname = current_schema()
                           AND rel.relname = 'payment_batches'
                           AND con.contype = 'p'
+                          AND NOT con.condeferrable
+                          AND idx.indisunique
+                          AND idx.indisvalid
+                          AND idx.indisready
+                          AND idx.indimmediate
                           AND pg_get_constraintdef(con.oid) ILIKE
                               'PRIMARY KEY (poolid, transactionconfirmationdata)%')";
                     var paymentBatchSchemaValid = await candidate.ExecuteScalarAsync<bool>(

@@ -23,7 +23,32 @@ CREATE TABLE IF NOT EXISTS payment_batches
     PRIMARY KEY(poolid, transactionconfirmationdata)
 );
 
--- Protect database retries of payments already recorded before this migration.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+        JOIN pg_index idx ON idx.indexrelid = con.conindid
+        WHERE ns.nspname = current_schema()
+          AND rel.relname = 'payment_batches'
+          AND con.contype = 'p'
+          AND NOT con.condeferrable
+          AND idx.indisunique
+          AND idx.indisvalid
+          AND idx.indisready
+          AND idx.indimmediate
+          AND pg_get_constraintdef(con.oid) ILIKE
+              'PRIMARY KEY (poolid, transactionconfirmationdata)%'
+    ) THEN
+        RAISE EXCEPTION 'payment_batches must have a non-deferrable PRIMARY KEY(poolid, transactionconfirmationdata); rename or repair the stale table before rerunning this migration';
+    END IF;
+END $$;
+
+-- Protect database retries of payments already recorded before this migration. Validate the
+-- arbiter first so a deferrable or otherwise malformed key produces the actionable error above
+-- instead of failing inside ON CONFLICT after wallet safety has already been enabled operationally.
 INSERT INTO payment_batches(poolid, transactionconfirmationdata, created)
 SELECT poolid, transactionconfirmationdata, MIN(created)
 FROM payments
@@ -40,23 +65,6 @@ CREATE TABLE IF NOT EXISTS payout_manager_ownership
     acquired TIMESTAMPTZ NULL,
     released TIMESTAMPTZ NULL
 );
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint con
-        JOIN pg_class rel ON rel.oid = con.conrelid
-        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
-        WHERE ns.nspname = current_schema()
-          AND rel.relname = 'payment_batches'
-          AND con.contype = 'p'
-          AND pg_get_constraintdef(con.oid) ILIKE
-              'PRIMARY KEY (poolid, transactionconfirmationdata)%'
-    ) THEN
-        RAISE EXCEPTION 'payment_batches must have PRIMARY KEY(poolid, transactionconfirmationdata); rename or repair the stale table before rerunning this migration';
-    END IF;
-END $$;
 
 INSERT INTO payout_manager_ownership(id) VALUES(1)
 ON CONFLICT(id) DO NOTHING;

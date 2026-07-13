@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using AutoMapper;
 using Dapper;
 using Miningcore.Payments;
+using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
@@ -14,6 +15,80 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class MergedMiningIndexIntegrationTests
 {
+    [Fact]
+    public async Task PayoutOwnershipMigrationAndPreflight_RejectDeferrablePaymentBatchKey()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        if(string.IsNullOrWhiteSpace(connectionString))
+            return;
+
+        var schema = $"miningcore_payout_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, public;
+                CREATE TABLE payments(
+                    poolid text NOT NULL,
+                    transactionconfirmationdata text NOT NULL,
+                    created timestamptz NOT NULL);
+                CREATE TABLE payment_batches(
+                    poolid text NOT NULL,
+                    transactionconfirmationdata text NOT NULL,
+                    created timestamptz NOT NULL,
+                    PRIMARY KEY(poolid, transactionconfirmationdata)
+                        DEFERRABLE INITIALLY IMMEDIATE);
+            ");
+
+            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+            var migration = await File.ReadAllTextAsync(migrationPath);
+            await Assert.ThrowsAsync<PostgresException>(() =>
+                connection.ExecuteAsync(migration));
+            await connection.ExecuteAsync("ROLLBACK");
+
+            // The migration is transactional: rejecting the malformed arbiter must not leave
+            // a partially installed ownership table behind.
+            Assert.Null(await connection.ExecuteScalarAsync<uint?>(
+                "SELECT to_regclass('payout_manager_ownership')::oid"));
+
+            await connection.ExecuteAsync(@"
+                CREATE TABLE payout_manager_ownership(
+                    id smallint NOT NULL PRIMARY KEY CHECK(id = 1),
+                    generation bigint NOT NULL DEFAULT 0,
+                    owner_id uuid NULL,
+                    owner_host text NULL,
+                    owner_process_id int NULL,
+                    acquired timestamptz NULL,
+                    released timestamptz NULL);
+                INSERT INTO payout_manager_ownership(id) VALUES(1);
+            ");
+
+            var leaseConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
+            {
+                SearchPath = $"{schema},public",
+            }.ConnectionString;
+            await using var lease = new PostgresPayoutManagerLease(
+                new PgConnectionFactory(leaseConnectionString));
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                lease.TryAcquireAsync(CancellationToken.None));
+            Assert.Contains("payment-batch idempotency schema", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Null(await connection.ExecuteScalarAsync<Guid?>(
+                "SELECT owner_id FROM payout_manager_ownership WHERE id = 1"));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("SET search_path TO public; ROLLBACK");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
     [Fact]
     public async Task Migration_DropsOnlyIndexesOwnedByResolvedBlocksSchema()
     {
