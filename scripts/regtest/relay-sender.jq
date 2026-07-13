@@ -1,6 +1,5 @@
 .clusterName = "relay-sender"
 | .logging.logBaseDirectory = "/tmp/miningcore-relay-sender"
-| .persistence = null
 | .paymentProcessing.enabled = false
 | .api.enabled = false
 | .shareRelay = {
@@ -8,6 +7,5 @@
     connect: false
   }
 | .shareRelays = null
-| .pools[0].mergedMining.acceptNonDurableBlockDelivery = true
 | .pools[0].enableInternalStratum = true
 | .pools[1].enableInternalStratum = true

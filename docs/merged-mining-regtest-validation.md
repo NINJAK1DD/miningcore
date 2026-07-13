@@ -43,11 +43,11 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Two concurrent claim promotions | Passed | One guarded update affected one row, the other affected zero; both transactions committed with `1 auxpow : 0 claims`. |
 | PostgreSQL replay/idempotency | Passed | Final AuxPoW, proof claims and accepted/uncertain merged-parent replay each retained one protected identity. |
 | Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
-| Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares plus LTC/DOGE block-only rows. Receiver restart also reacquired ownership and resumed persistence. A different physical-host/firewall path should still be checked for the final deployment. |
+| Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares. LTC/DOGE block-only rows are now synchronously persisted by the sender and do not depend on relay availability. The final physical path can be repeated with `scripts/regtest/validate-physical-relay.sh`. |
 | Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
 | Wallet accepted, response lost during shutdown | Passed | The Dogecoin fault proxy forwarded `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged, generation 6 ownership remained durable, and replacement startup was rejected. After `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset, the dead owner was explicitly released and generation 7 started normally. |
-| Successful recovery-file replay | Passed | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. Replaying exact content, or semantically identical normalized share records with different comments, JSON whitespace or line endings, is rejected by the SHA-256 import manifest. |
-| Asynchronous block delivery decision | Explicit opt-in | The current recorder handoff and ZeroMQ PUB/SUB model is retained, but it is no longer silently accepted: every enabled merged-mining pool must set `acceptNonDurableBlockDelivery=true`. Startup otherwise fails with the documented process-crash and disconnected-receiver loss windows. |
+| Successful recovery-file replay | Passed plus automated hardening | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. The automated regression now rejects the same normalized record multiset even when records are reordered or comments, JSON whitespace and line endings differ. |
+| Durable merged-block delivery | Automated regression passed; live repeat required | Accepted and uncertain LTC/DOGE block-only candidates are synchronously committed by the submitting node before submission returns. PostgreSQL retry exhaustion falls back to a write-through recovery journal; failure of both destinations propagates. ZeroMQ remains asynchronous only for ordinary shares. Repeat a real accepted-block run with PostgreSQL interruption before mainnet activation. |
 
 ## Runtime hardening observed during validation
 
@@ -76,11 +76,10 @@ were made against the same PostgreSQL instance used by the running payout manage
 
 ## Remaining mainnet gates
 
-Do not enable mainnet funds solely because the passed rows above are green. Repeat relay recovery
-across the exact physical hosts, firewall and network path planned for deployment. The documented
-asynchronous recorder and ZeroMQ PUB/SUB loss windows remain an explicitly accepted operational risk
-when `acceptNonDurableBlockDelivery=true`; deployments that cannot accept that risk still require a
-transactional outbox, synchronous repository handoff or acknowledged transport.
+Do not enable mainnet funds solely because the passed rows above are green. Repeat ordinary-share
+relay recovery across the exact physical hosts, firewall and network path planned for deployment by
+running `bash scripts/regtest/validate-physical-relay.sh` on the final receiver host. Block-candidate
+accounting no longer depends on that asynchronous relay path.
 Automatic/hot-standby payout-manager failover remains intentionally unsupported. After an unclean
 stop, confirm the old process has fully terminated before explicitly clearing its durable ownership
 row. The fail-closed backend-termination, controlled recovery, block-credit serialization and

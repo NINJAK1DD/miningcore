@@ -36,10 +36,10 @@ public class MergedMiningConfig
     public int AuxiliaryTemplatePollTimeoutMs { get; set; } = 500;
 
     /// <summary>
-    /// Explicitly acknowledges that the current in-process recorder handoff and ZeroMQ
-    /// PUB/SUB share relay are asynchronous and unacknowledged. A process failure or a
-    /// disconnected relay receiver can therefore lose an accepted block event.
+    /// Legacy compatibility setting. Block candidates are now persisted synchronously on the
+    /// submitting node; this acknowledgement is no longer required.
     /// </summary>
+    [Obsolete("Merged-mining block candidates are synchronously persisted")]
     public bool AcceptNonDurableBlockDelivery { get; set; }
 }
 

@@ -27,7 +27,7 @@ public class MergedMiningBitcoinJob : BitcoinJob
     private uint256 auxiliaryTargetValue;
     private BitcoinTemplate.BitcoinNetworkParams mergedNetworkParams;
 
-    public AuxBlockTemplate AuxiliaryBlockTemplate { get; private set; }
+    public AuxBlockTemplate AuxiliaryBlockTemplate { get; protected set; }
     public double AuxiliaryDifficulty { get; private set; }
 
     public void InitMerged(BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryBlockTemplate, string jobId,

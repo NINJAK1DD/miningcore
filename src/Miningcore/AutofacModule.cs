@@ -146,6 +146,8 @@ public class AutofacModule : Module
             .SingleInstance();
 
         builder.RegisterType<ShareRecorder>()
+            .AsSelf()
+            .As<IBlockCandidateRecorder>()
             .SingleInstance();
 
         builder.RegisterType<ShareReceiver>()

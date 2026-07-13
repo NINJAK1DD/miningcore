@@ -28,7 +28,7 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Asynchronously persist shares produced by all pools for processing by coin-specific payment processor(s)
 /// </summary>
-public class ShareRecorder : BackgroundService
+public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
 {
     public ShareRecorder(IConnectionFactory cf,
         IMapper mapper,
@@ -76,6 +76,7 @@ public class ShareRecorder : BackgroundService
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
     private bool notifiedAdminOnPolicyFallback = false;
+    private readonly SemaphoreSlim recoveryWriteGate = new(1, 1);
     private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "auxpow-claim",
@@ -88,6 +89,17 @@ public class ShareRecorder : BackgroundService
         var context = new Dictionary<string, object> { { PolicyContextKeyShares, shares } };
 
         await faultPolicy.ExecuteAsync(ctx => PersistSharesCoreAsync((IList<Share>) ctx[PolicyContextKeyShares]), context);
+    }
+
+    public Task PersistBlockCandidateAsync(Share share)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+
+        if(!share.BlockOnly || !share.IsBlockCandidate)
+            throw new ArgumentException(
+                "Synchronous block persistence requires a block-only candidate", nameof(share));
+
+        return PersistSharesAsync(new[] { share });
     }
 
     internal async Task PersistSharesCoreAsync(IList<Share> shares)
@@ -184,19 +196,36 @@ public class ShareRecorder : BackgroundService
 
         try
         {
-            await using(var stream = new FileStream(recoveryFilename, FileMode.Append, FileAccess.Write))
-            {
-                await using(var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-                {
-                    if(stream.Length == 0)
-                        WriteRecoveryFileheader(writer);
+            await recoveryWriteGate.WaitAsync(CancellationToken.None);
 
-                    foreach(var share in shares)
-                    {
-                        var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
-                        await writer.WriteLineAsync(json);
-                    }
+            try
+            {
+                await using var stream = new FileStream(recoveryFilename, new FileStreamOptions
+                {
+                    Mode = FileMode.Append,
+                    Access = FileAccess.Write,
+                    Share = FileShare.Read,
+                    Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+                });
+                await using var writer = new StreamWriter(stream, new UTF8Encoding(false),
+                    1024, true);
+
+                if(stream.Length == 0)
+                    WriteRecoveryFileheader(writer);
+
+                foreach(var share in shares)
+                {
+                    var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
+                    await writer.WriteLineAsync(json);
                 }
+
+                await writer.FlushAsync();
+                stream.Flush(true);
+            }
+
+            finally
+            {
+                recoveryWriteGate.Release();
             }
 
             NotifyAdminOnPolicyFallback();
@@ -209,6 +238,11 @@ public class ShareRecorder : BackgroundService
                 logger.Fatal(ex, "Fatal error during policy fallback execution. Share(s) will be lost!");
                 hasLoggedPolicyFallbackFailure = true;
             }
+
+            if(shares.Any(x => x.BlockOnly))
+                throw new IOException(
+                    "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
+                    ex);
         }
     }
 
@@ -242,15 +276,13 @@ public class ShareRecorder : BackgroundService
             using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
             {
                 // Pass one validates every record before a database transaction is opened.
-                using(var validationHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+                var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
+                validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
                 {
-                    validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
-                    {
-                        AppendRecoveryRecordsHash(validationHash, shares);
-                        return Task.CompletedTask;
-                    });
-                    fileHash = Convert.ToHexString(validationHash.GetHashAndReset());
-                }
+                    validationHash.Append(shares);
+                    return Task.CompletedTask;
+                });
+                fileHash = validationHash.GetHash();
 
                 reader.DiscardBufferedData();
                 stream.Seek(0, SeekOrigin.Begin);
@@ -271,16 +303,14 @@ public class ShareRecorder : BackgroundService
                     int importedCount;
                     string importedHash;
 
-                    using(var importHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
-                    {
-                        importedCount = await ProcessRecoveryRecordsAsync(reader,
-                            async shares =>
-                            {
-                                AppendRecoveryRecordsHash(importHash, shares);
-                                result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
-                            });
-                        importedHash = Convert.ToHexString(importHash.GetHashAndReset());
-                    }
+                    var importHash = new RecoveryContentHasher(jsonSerializerSettings);
+                    importedCount = await ProcessRecoveryRecordsAsync(reader,
+                        async shares =>
+                        {
+                            importHash.Append(shares);
+                            result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
+                        });
+                    importedHash = importHash.GetHash();
 
                     if(importedCount != validatedCount ||
                        !string.Equals(importedHash, fileHash,
@@ -309,17 +339,55 @@ public class ShareRecorder : BackgroundService
         }
     }
 
-    private void AppendRecoveryRecordsHash(IncrementalHash hash,
-        IEnumerable<Share> shares)
+    private sealed class RecoveryContentHasher
     {
-        foreach(var share in shares)
+        public RecoveryContentHasher(JsonSerializerSettings serializerSettings)
         {
-            // Hash the normalized record rather than source bytes. This makes replay identity
-            // insensitive to recovery comments, JSON whitespace and platform line endings.
-            var json = JsonConvert.SerializeObject(share, Formatting.None,
-                jsonSerializerSettings);
-            hash.AppendData(Encoding.UTF8.GetBytes(json));
-            hash.AppendData(new byte[] { (byte) '\n' });
+            this.serializerSettings = serializerSettings;
+        }
+
+        private readonly JsonSerializerSettings serializerSettings;
+        private readonly List<byte[]> recordHashes = new();
+
+        public void Append(IEnumerable<Share> shares)
+        {
+            foreach(var share in shares)
+            {
+                // Hash each normalized record independently. Sorting the fixed-size record
+                // digests later makes the manifest identity insensitive to record order while
+                // preserving duplicate cardinality.
+                var json = JsonConvert.SerializeObject(share, Formatting.None,
+                    serializerSettings);
+                recordHashes.Add(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+            }
+        }
+
+        public string GetHash()
+        {
+            recordHashes.Sort(ByteArrayComparer.Instance);
+
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach(var recordHash in recordHashes)
+                hash.AppendData(recordHash);
+
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+    }
+
+    private sealed class ByteArrayComparer : IComparer<byte[]>
+    {
+        public static readonly ByteArrayComparer Instance = new();
+
+        public int Compare(byte[] left, byte[] right)
+        {
+            if(ReferenceEquals(left, right))
+                return 0;
+            if(left == null)
+                return -1;
+            if(right == null)
+                return 1;
+
+            return left.AsSpan().SequenceCompareTo(right);
         }
     }
 

@@ -90,20 +90,15 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
-    public async Task MergedMining_ShareRelaySender_DoesNotRequireLocalPersistenceOrSchemaCheck()
+    public void MergedMining_ShareRelaySender_RequiresPostgresForSynchronousBlocks()
     {
         var config = MergedMiningCluster(shareRelaySender: true,
             globalPaymentProcessing: true, postgres: false);
-        var connectionFactory = Substitute.For<IConnectionFactory>();
-        var blockRepository = Substitute.For<IBlockRepository>();
 
-        Program.ValidateMergedMiningDeployment(config);
-        await Program.EnsureMergedMiningSchemaAsync(config, connectionFactory,
-            blockRepository, CancellationToken.None);
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateMergedMiningDeployment(config));
 
-        await connectionFactory.DidNotReceive().OpenConnectionAsync();
-        await blockRepository.DidNotReceive().HasMergedMiningBlockIndexesAsync(
-            Arg.Any<IDbConnection>(), Arg.Any<CancellationToken>());
+        Assert.Contains("synchronously", ex.Message);
         Assert.False(Program.ShouldRunPaymentProcessor(config));
     }
 
@@ -124,6 +119,18 @@ public class ProgramPoolTemplateTests
         await Program.EnsureMergedMiningSchemaAsync(config, connectionFactory,
             blockRepository, CancellationToken.None);
         await connectionFactory.Received(1).OpenConnectionAsync();
+    }
+
+    [Fact]
+    public void MergedMining_ShareRelaySender_WithPostgresDoesNotRequireLocalPayoutManager()
+    {
+        var config = MergedMiningCluster(shareRelaySender: true,
+            globalPaymentProcessing: false);
+
+        Program.ValidateMergedMiningDeployment(config);
+
+        Assert.True(Program.RequiresMergedMiningPersistence(config));
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
     }
 
     [Theory]
@@ -158,16 +165,13 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
-    public void MergedMining_RequiresExplicitNonDurableDeliveryAcceptance()
+    public void MergedMining_LegacyNonDurableAcknowledgementIsNoLongerRequired()
     {
         var config = MergedMiningCluster();
         ((Dictionary<string, object>) config.Pools[0].Extra["mergedMining"])
             ["acceptNonDurableBlockDelivery"] = false;
 
-        var ex = Assert.Throws<PoolStartupException>(() =>
-            Program.ValidateMergedMiningDeployment(config));
-
-        Assert.Contains("acceptNonDurableBlockDelivery=true", ex.Message);
+        Program.ValidateMergedMiningDeployment(config);
     }
 
     [Theory]
@@ -214,7 +218,6 @@ public class ProgramPoolTemplateTests
                         {
                             ["enabled"] = true,
                             ["auxPoolId"] = "doge-solo",
-                            ["acceptNonDurableBlockDelivery"] = true,
                         },
                     },
                 },

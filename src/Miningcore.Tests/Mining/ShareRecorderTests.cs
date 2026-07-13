@@ -217,11 +217,11 @@ public class ShareRecorderTests
     public async Task RecoverSharesAsync_SemanticallyEquivalentReplay_IsRejectedByManifest()
     {
         var fixture = CreateRecoveryFixture();
-        var original = RecoveryShareJson(7);
-        var filename = await WriteRecoveryFileAsync(new[] { original });
+        var originals = new[] { RecoveryShareJson(7), RecoveryShareJson(8) };
+        var filename = await WriteRecoveryFileAsync(originals);
         var registeredHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
-                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 2,
                 Arg.Any<CancellationToken>())
             .Returns(call => registeredHashes.Add(call.ArgAt<string>(2)));
         string archiveFilename = null;
@@ -230,13 +230,16 @@ public class ShareRecorderTests
         {
             archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
 
-            var parsed = Newtonsoft.Json.Linq.JObject.Parse(original);
-            var reordered = new Newtonsoft.Json.Linq.JObject(
-                parsed.Properties().Reverse().Select(x => new Newtonsoft.Json.Linq.JProperty(
-                    x.Name, x.Value)));
-            var equivalent = reordered.ToString(Formatting.None);
+            var equivalent = originals.Reverse().Select(original =>
+            {
+                var parsed = Newtonsoft.Json.Linq.JObject.Parse(original);
+                return new Newtonsoft.Json.Linq.JObject(
+                    parsed.Properties().Reverse().Select(x =>
+                        new Newtonsoft.Json.Linq.JProperty(x.Name, x.Value)))
+                    .ToString(Formatting.None);
+            });
             await File.WriteAllTextAsync(filename,
-                $"# regenerated recovery file\r\n\r\n  {equivalent}  \r\n");
+                $"# regenerated recovery file\r\n\r\n  {string.Join("  \r\n  ", equivalent)}  \r\n");
 
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 fixture.Recorder.RecoverSharesAsync(filename));
@@ -418,6 +421,44 @@ public class ShareRecorderTests
                 x.Hash == candidate.BlockHash &&
                 x.TransactionConfirmationData == candidate.TransactionConfirmationData));
         transaction.Received(1).Commit();
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_CommitsSynchronouslyBeforeReturning()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), shareRepository, blockRepository,
+            new ClusterConfig { Pools = Array.Empty<PoolConfig>() }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistBlockCandidateAsync(candidate);
+
+        Received.InOrder(() =>
+        {
+            blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>());
+            transaction.Commit();
+        });
     }
 
     [Fact]

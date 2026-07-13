@@ -5,6 +5,5 @@
 | .shareRelays = [{
     url: "tcp://127.0.0.1:5570"
   }]
-| .pools[0].mergedMining.acceptNonDurableBlockDelivery = true
 | .pools[0].enableInternalStratum = false
 | .pools[1].enableInternalStratum = false

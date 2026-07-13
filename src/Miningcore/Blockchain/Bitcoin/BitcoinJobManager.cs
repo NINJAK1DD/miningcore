@@ -89,7 +89,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
-    protected async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
+    protected virtual async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(
+        CancellationToken ct)
     {
         var result = await rpc.ExecuteAsync<BlockTemplate>(logger,
             BitcoinCommands.GetBlockTemplate, ct, extraPoolConfig?.GBTArgs ?? (object) GetBlockTemplateParams());

@@ -35,7 +35,6 @@ The Litecoin pool references the Dogecoin pool:
 "mergedMining": {
   "enabled": true,
   "auxPoolId": "doge-solo",
-  "acceptNonDurableBlockDelivery": true,
   "addressParameter": "doge",
   "requireAuxAddress": true,
   "auxiliaryTemplatePollTimeoutMs": 500
@@ -60,8 +59,8 @@ checks from the remaining mainnet gates.
 | Role | PostgreSQL | Local payout manager | Merged-mining schema preflight |
 | --- | --- | --- | --- |
 | Direct pool/recorder | Required | Required for merged mining | Required |
-| Database-free relay sender | Not required | Disabled | Skipped |
-| Relay sender selected as payout node | Required | Allowed when configured; database lease rejects duplicate processors | Required if it reconciles merged mining |
+| Database-free relay sender | Supported for non-merged pools only | Disabled | Skipped |
+| Merged-mining relay sender | Required for synchronous block persistence | Optional; database lease rejects duplicate processors | Required |
 | Central relay receiver/recorder | Required | Required for merged mining unless another database-connected node is explicitly the sole payout/reconciliation owner | Required when it reconciles merged mining |
 
 For merged mining, cluster-level `paymentProcessing.enabled` must be true on the node that owns
@@ -74,15 +73,20 @@ migration. Automatic/hot-standby takeover is intentionally unsupported. The owne
 include the local `mergedMining` configuration for the merged pool, and all participating
 recorder/payout nodes must use the intended PostgreSQL database.
 
-Share relay uses ZeroMQ PUB/SUB and is not an acknowledged durable queue. A disconnected receiver or
-process failure can lose an accepted block event. Production deployments requiring stronger financial
-durability should add a synchronous repository/outbox write or an acknowledged durable transport.
-Until then, merged mining starts only when each enabled parent pool explicitly sets
-`mergedMining.acceptNonDurableBlockDelivery=true`; this acknowledges the risk but does not remove it.
+Share relay still uses ZeroMQ PUB/SUB for ordinary shares, but merged-mining block candidates no
+longer depend on that path. Every submitting node synchronously commits accepted or uncertain LTC/DOGE
+block records to the shared PostgreSQL database before returning from submission. If PostgreSQL remains
+unavailable after retries, the recorder synchronously flushes the block record to its recovery journal;
+failure of both destinations fails the submission path loudly. Consequently every merged-mining sender
+requires PostgreSQL and the merged-mining indexes, even when another node owns payouts.
+Validate the final host/firewall path for ordinary shares by running
+`bash scripts/regtest/validate-physical-relay.sh RELAY_HOST RELAY_PORT POOL_ID SENDER_SOURCE` on the
+receiver with the PostgreSQL environment variables set, then submit work through the real sender.
 
 Share recovery validates the complete read-locked input before writing, then imports all batches in
-one PostgreSQL transaction. Its replay manifest hashes normalized share records, so equivalent files
-with different comments, JSON whitespace or line endings are still rejected. A non-zero recovery exit therefore leaves the complete file rolled back
+one PostgreSQL transaction. Its replay manifest hashes an order-independent multiset of normalized
+share records, so equivalent files with reordered records, different comments, JSON whitespace or line
+endings are still rejected. A non-zero recovery exit therefore leaves the complete file rolled back
 and safe to retry rather than partially committing ordinary shares. A successful import records the
 source SHA-256 hash in PostgreSQL and renames the file with an `.imported-<timestamp>` suffix. The
 manifest rejects the same content if an operator copies or renames it back and attempts a replay.
@@ -140,8 +144,8 @@ Visual Studio 2022 can open `Miningcore.sln` directly.
 
 ## Database setup and upgrades
 
-Direct nodes, relay receiver/recorders and any node running payment processing require PostgreSQL.
-Database-free relay senders are the exception. The schema may remain compatible with older PostgreSQL
+Direct nodes, relay receiver/recorders, merged-mining senders and any node running payment processing
+require PostgreSQL. Database-free relay senders are supported only for non-merged pools. The schema may remain compatible with older PostgreSQL
 versions, but production deployments should use a currently supported PostgreSQL major release; for a
 new public pool, PostgreSQL 15 or later is a more defensible baseline than PostgreSQL 10.
 

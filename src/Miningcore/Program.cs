@@ -963,8 +963,9 @@ public class Program : BackgroundService
         var mergedMiningEnabled = config?.Pools?.Any(pool =>
             pool.Enabled && MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled == true) == true;
 
-        return mergedMiningEnabled &&
-            (config.ShareRelay == null || ShouldRunPaymentProcessor(config));
+        // Every merged-mining submission node persists block-only results synchronously before
+        // returning to the miner. Ordinary shares may still use a database-free relay topology.
+        return mergedMiningEnabled;
     }
 
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
@@ -986,18 +987,14 @@ public class Program : BackgroundService
             .Where(x => x?.Enabled == true)
             .ToArray() ?? Array.Empty<MergedMiningConfig>();
 
-        if(enabledMergedMining.Any(x => !x.AcceptNonDurableBlockDelivery))
-            throw new PoolStartupException(
-                "Litecoin-Dogecoin merged mining currently uses asynchronous, unacknowledged block delivery. Set mergedMining.acceptNonDurableBlockDelivery=true only after explicitly accepting the documented process-crash and relay-disconnection loss windows.");
-
         if(!RequiresMergedMiningPersistence(config))
             return;
 
         if(config.Persistence?.Postgres == null)
             throw new PoolStartupException(
-                "Litecoin-Dogecoin merged mining requires PostgreSQL on direct and share-relay receiver/recorder nodes. Database-free share-relay sender nodes are supported.");
+                "Litecoin-Dogecoin merged mining requires PostgreSQL on every submitting node so accepted and uncertain block candidates are persisted synchronously. Database-free share-relay senders remain supported for non-merged pools.");
 
-        if(config.PaymentProcessing?.Enabled != true)
+        if(config.ShareRelay == null && config.PaymentProcessing?.Enabled != true)
             throw new PoolStartupException(
                 "Litecoin-Dogecoin merged mining requires cluster-level payment processing on direct and share-relay receiver/recorder nodes so accepted and uncertain blocks are reconciled.");
     }

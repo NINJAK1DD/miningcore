@@ -1,6 +1,5 @@
 .clusterName = "mweb-live"
 | .logging.logBaseDirectory = "/tmp/miningcore-mweb"
-| .persistence = null
 | .paymentProcessing.enabled = false
 | .api.enabled = false
 | .shareRelay = {
@@ -23,7 +22,6 @@
     user: "litecoin",
     password: "local-test-password"
   }]
-| .pools[0].mergedMining.acceptNonDurableBlockDelivery = true
 | .pools[1].ports = {
     "4446": {
       name: "DOGE auxiliary live test",

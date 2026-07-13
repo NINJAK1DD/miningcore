@@ -57,9 +57,12 @@ internal enum ParentBlockLookupResult
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
 {
     public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
-        IMessageBus messageBus, IExtraNonceProvider extraNonceProvider) :
+        IMessageBus messageBus, IExtraNonceProvider extraNonceProvider,
+        IBlockCandidateRecorder blockCandidateRecorder) :
         base(ctx, clock, messageBus, extraNonceProvider)
     {
+        Contract.RequiresNonNull(blockCandidateRecorder);
+        this.blockCandidateRecorder = blockCandidateRecorder;
     }
 
     private const string CreateAuxBlock = "createauxblock";
@@ -77,6 +80,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private RpcClient auxiliaryRpc;
     private bool auxiliaryTemplateDegraded;
     private AuxBlockTemplate startupAuxiliaryTemplate;
+    private readonly IBlockCandidateRecorder blockCandidateRecorder;
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -290,11 +294,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
             if(parentIsNew || auxiliaryIsNew || forceUpdate)
             {
-                var job = new MergedMiningBitcoinJob();
-                job.InitMerged(blockTemplate, auxiliaryTemplate, NextJobId(), poolConfig,
-                    extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
-                    ShareMultiplier, parentCoin.CoinbaseHasherValue, parentCoin.HeaderHasherValue,
-                    !isPoS ? parentCoin.BlockHasherValue : parentCoin.PoSBlockHasherValue ?? parentCoin.BlockHasherValue);
+                var job = CreateMergedMiningJob(blockTemplate, auxiliaryTemplate);
 
                 if(parentIsNew)
                 {
@@ -337,6 +337,18 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         }
 
         return (false, forceUpdate);
+    }
+
+    protected virtual MergedMiningBitcoinJob CreateMergedMiningJob(BlockTemplate blockTemplate,
+        AuxBlockTemplate auxiliaryTemplate)
+    {
+        var job = new MergedMiningBitcoinJob();
+        job.InitMerged(blockTemplate, auxiliaryTemplate, NextJobId(), poolConfig,
+            extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
+            ShareMultiplier, parentCoin.CoinbaseHasherValue, parentCoin.HeaderHasherValue,
+            !isPoS ? parentCoin.BlockHasherValue :
+                parentCoin.PoSBlockHasherValue ?? parentCoin.BlockHasherValue);
+        return job;
     }
 
     private TimeSpan GetAuxiliaryTemplatePollTimeout()
@@ -517,7 +529,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     // Persist the parent result as soon as its own RPC/reconciliation completes.
                     // The original share is still returned through the ordered share stream for
                     // statistics, while this block-only copy avoids waiting for DOGE submission.
-                    messageBus.SendMessage(CreateParentBlockOnlyShare(share));
+                    await blockCandidateRecorder.PersistBlockCandidateAsync(
+                        CreateParentBlockOnlyShare(share));
                     share.BlockRecordEmitted = true;
 
                     // Keep unresolved parent submissions out of live pool "last block" stats.
@@ -679,7 +692,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             Created = clock.Now,
         };
 
-        messageBus.SendMessage(auxiliaryShare);
+        await blockCandidateRecorder.PersistBlockCandidateAsync(auxiliaryShare);
         if(uncertain)
             logger.Warn(() => $"Auxiliary submission outcome for block {template.Height} [{template.Hash}] is uncertain; durable reconciliation queued for {context.AuxiliaryMiner}");
         else
