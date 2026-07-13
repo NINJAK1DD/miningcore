@@ -27,7 +27,11 @@ public class StratumServerTests
 
         cts.Cancel();
 
-        await runTask.WaitAsync(TimeSpan.FromSeconds(2));
+        // Cancellation disposes the listening socket synchronously, but completion of the
+        // resulting AcceptAsync continuation still needs a thread-pool turn. Native hashing
+        // tests can briefly saturate constrained CI runners, so retain a strict shutdown bound
+        // without making scheduler latency look like a listener leak.
+        await runTask.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     private sealed class TestStratumServer : StratumServer
