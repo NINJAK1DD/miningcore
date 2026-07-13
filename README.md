@@ -1,35 +1,64 @@
-# Miningcore — NINJAK1DD fork
+# BTCPool.co.uk Miningcore
 
 [![.NET](https://github.com/NINJAK1DD/miningcore/actions/workflows/dotnet.yml/badge.svg?branch=dev)](https://github.com/NINJAK1DD/miningcore/actions/workflows/dotnet.yml)
 [![License](https://img.shields.io/github/license/NINJAK1DD/miningcore)](LICENSE)
 
 <img src="logo.png" width="150" alt="Miningcore logo">
 
-This repository is the NINJAK1DD Miningcore fork. It builds on the
-[upstream Miningcore project](https://github.com/blackmennewstyle/miningcore) and retains credit
-to its original authors and contributors while maintaining fork-specific features and deployment
-guidance here. The `dev` branch is this fork's primary integration branch.
+This is the Miningcore distribution maintained for the BTCPool.co.uk
+SOLO mining service. The source repository is hosted by `NINJAK1DD`, and the `dev` branch is its
+primary integration branch. It builds on the
+[upstream Miningcore project](https://github.com/blackmennewstyle/miningcore) and retains credit to
+the original authors and contributors.
 
-## Key features
+> **Production status:** the software is usable for development and regtest, but this branch still
+> targets the unsupported .NET 6 runtime. Read [Production operation](#production-operation) and the
+> live [merged-mining validation record](docs/merged-mining-regtest-validation.md) before using real
+> funds.
 
+## Features
+
+- High-performance asynchronous Stratum servers.
+- Multiple pools and currencies in one cluster; see this revision's [coin definitions](src/Miningcore/coins.json).
+- Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
+- SOLO, PPLNS and PROP payout schemes where supported by the selected coin.
+- PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
+- Share relays for distributed pool deployments.
+- REST API, WebSocket notifications and Prometheus-compatible metrics.
+- Integrated banning, TLS options, administrative notifications and payment processing.
 - Litecoin parent-chain and Dogecoin AuxPoW merged mining for SOLO pools.
-- Low-latency asynchronous Stratum servers with vardiff and native proof-of-work validation.
-- Multiple pools and currencies in one cluster.
-- PostgreSQL-backed share, block, statistics and payment processing.
-- Database-free share-relay sender nodes with central receiver/recorder deployments.
-- REST API, WebSocket events, pool statistics, banning and payment processing.
-- Linux production builds and Windows development builds.
+- Linux, Windows-development and Docker build paths.
 
-The currencies defined by this revision are listed in
-[coins.json](src/Miningcore/coins.json).
+## Quick start
+
+The shortest route to a local build is:
+
+```console
+git clone https://github.com/NINJAK1DD/miningcore.git
+cd miningcore
+git checkout dev
+./build-debian-12.sh
+cp config.example.json build/config.json
+```
+
+Next, install PostgreSQL, create the database, replace every `CHANGE_ME` value in `config.json`, and
+start Miningcore from the build directory:
+
+```console
+cd build
+./Miningcore -c config.json
+```
+
+The example deliberately will not start until its placeholder wallet addresses and passwords are
+replaced. The following sections walk through each step.
 
 ## Litecoin–Dogecoin merged mining
 
 Merged mining exposes the Litecoin Stratum endpoint to miners and submits qualifying copies of the
-same Scrypt proof to Dogecoin. This implementation is SOLO-only: the parent LTC pool and auxiliary
-DOGE pool must both be enabled and configured for SOLO processing.
+same Scrypt proof to Dogecoin. It is **SOLO-only**: both pools must be enabled, use `SOLO` payment
+processing, and have their own payout wallet address.
 
-The Litecoin pool references the Dogecoin pool:
+The Litecoin pool points to the Dogecoin pool with this block:
 
 ```json
 "mergedMining": {
@@ -41,216 +70,325 @@ The Litecoin pool references the Dogecoin pool:
 }
 ```
 
-Miners connect only to Litecoin:
+Miners connect to the **Litecoin** Stratum port. Put the Litecoin payout address in the username and
+the Dogecoin payout address in the password:
 
 ```text
-Username: <LTC address>.<worker>
-Password: d=<difficulty>;doge=<DOGE address>
+Username: YOUR_LTC_ADDRESS.rig01
+Password: doge=YOUR_DOGE_ADDRESS
 ```
 
-Read the [complete Litecoin–Dogecoin merged-mining guide](docs/merged-mining-litecoin-dogecoin.md)
-before enabling the feature. It covers daemon setup, payout attribution, migrations, failure modes,
-relay compatibility and the required pre-production regtest. The
-[live regtest validation record](docs/merged-mining-regtest-validation.md) distinguishes completed
-checks from the remaining mainnet gates.
+Example ccminer command without a requested starting difficulty:
 
-## Deployment models
+```console
+ccminer -a scrypt -o stratum+tcp://pool.example:3032 -u YOUR_LTC_ADDRESS.rig01 -p "doge=YOUR_DOGE_ADDRESS"
+```
 
-| Role | PostgreSQL | Local payout manager | Merged-mining schema preflight |
-| --- | --- | --- | --- |
-| Direct pool/recorder | Required | Required for merged mining | Required |
-| Database-free relay sender | Supported for non-merged pools only | Disabled | Skipped |
-| Merged-mining relay sender | Required for synchronous block persistence | Optional; database lease rejects duplicate processors | Required |
-| Central relay receiver/recorder | Required | Required for merged mining unless another database-connected node is explicitly the sole payout/reconciliation owner | Required when it reconciles merged mining |
+A concrete syntax example using valid-format documentation addresses is shown below. These addresses
+have no usable private key and must never be used to receive mining rewards:
 
-For merged mining, cluster-level `paymentProcessing.enabled` must be true on the node that owns
-reconciliation and payouts. PostgreSQL stores a durable payout-manager ownership token in addition
-to the session advisory lock. Only a clean shutdown clears that token; losing the database session
-or crashing leaves replacement startup blocked. After an unclean stop, confirm that the previous
-process is dead and reconcile wallet history for any payout that may have been submitted but not
-recorded before explicitly clearing the stale token with the statement documented in the ownership
-migration. Automatic/hot-standby takeover is intentionally unsupported. The owner must
-include the local `mergedMining` configuration for the merged pool, and all participating
-recorder/payout nodes must use the intended PostgreSQL database.
+```console
+ccminer -a scrypt -o stratum+tcp://pool.example:3032 -u Lbr1z8RSnJSTdxyrZUeSSLSJMVLbxT9KHZ.rig01 -p "doge=DMmAGB4G146gvAUJ7vehi5Y92Qhd7TSMS2"
+```
 
-Share relay still uses ZeroMQ PUB/SUB for ordinary shares, but merged-mining block candidates no
-longer depend on that path. Every submitting node synchronously commits accepted or uncertain LTC/DOGE
-block records to the shared PostgreSQL database before returning from submission. If PostgreSQL remains
-unavailable after retries, the recorder synchronously flushes the block record to its recovery journal;
-failure of both destinations fails the submission path loudly. Consequently every merged-mining sender
-requires PostgreSQL and the merged-mining indexes, even when another node owns payouts.
-Upgrade all relay receivers before upgrading senders or enabling merged-mining traffic. Older receivers
-do not understand the sender-timestamp preservation field and can place a winning statistical share on
-the wrong side of its parent effort boundary, although block ownership and SOLO payouts remain safe.
-Validate the final host/firewall path for ordinary shares by running
-`bash scripts/regtest/validate-physical-relay.sh RELAY_HOST RELAY_PORT POOL_ID SENDER_SOURCE` on the
-receiver with the PostgreSQL environment variables set, then submit work through the real sender.
+To request difficulty `65536`, combine the ordinary `d=` password option with the DOGE address:
 
-Share recovery validates the complete read-locked input before writing, then imports all batches in
-one PostgreSQL transaction. Its replay manifest hashes an order-independent multiset of normalized
-share records, so equivalent files with reordered records, different comments, JSON whitespace or line
-endings are still rejected. Four domain-separated 256-bit modular accumulators plus record cardinality
-retain constant-size digest state even for multi-million-record journals. A non-zero recovery exit
-therefore leaves the complete file rolled back
-and safe to retry rather than partially committing ordinary shares. A successful import records the
-source SHA-256 hash in PostgreSQL and renames the file with an `.imported-<timestamp>` suffix. The
-manifest rejects the same content if an operator copies or renames it back and attempts a replay.
+```console
+ccminer -a scrypt -o stratum+tcp://pool.example:3032 -u YOUR_LTC_ADDRESS.rig01 -p "d=65536;doge=YOUR_DOGE_ADDRESS"
+```
+
+Do not put the DOGE address in the username or connect merged miners to the auxiliary DOGE port.
+The pool validates both addresses before authorising the worker. See the commented
+[configuration example](config.example.json) and read the
+[complete merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) before enabling it.
 
 ## Build and installation
 
-Clone this fork and use its integration branch:
+### Debian and Ubuntu
+
+Run the script matching the installed operating system from the repository root. The script installs
+the native build dependencies and .NET SDK, then publishes Miningcore into `build/`.
+
+| Operating system | Command | Guidance |
+| --- | --- | --- |
+| Debian 12 | `./build-debian-12.sh` | **Recommended script path** |
+| Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Recommended Ubuntu script path |
+| Debian 11 | `./build-debian-11.sh` | Older compatibility path |
+| Ubuntu 20.04 LTS | `./build-ubuntu-20.04.sh` | Older compatibility path |
+| Ubuntu 21.04 | `./build-ubuntu-21.04.sh` | Historical/EOL; do not use for production |
+
+For example:
 
 ```console
-git clone https://github.com/NINJAK1DD/miningcore.git
-cd miningcore
-git checkout dev
-```
-
-### Recommended Linux build
-
-Debian 12 is the clearest maintained script path in this repository:
-
-```console
+chmod +x build-debian-12.sh
 ./build-debian-12.sh
+ls build/Miningcore
 ```
 
-The GitHub Actions [`.NET` workflow](.github/workflows/dotnet.yml) is the authoritative automated
-build-and-test environment. The project currently targets the unsupported .NET 6 runtime; upgrade to a
-supported .NET release before treating this fork as production-hardened. Modernising the target
-framework is tracked as separate work.
-
-### Docker
-
-Build on hardware compatible with the production host because native hashing libraries may be
-optimised for the builder's CPU features:
-
-```console
-docker build -t miningcore:local .
-docker run -d \
-  --name miningcore \
-  --restart unless-stopped \
-  -p 4000:4000 \
-  -v "$(pwd)/config.json:/app/config.json:ro" \
-  miningcore:local
-```
-
-Add the Stratum ports used by your pool configuration to the `docker run` command.
+These scripts reproduce the repository's existing .NET 6 build and are not a statement that .NET 6
+or an end-of-life operating system is safe for a new production deployment. GitHub Actions
+([workflow source](.github/workflows/dotnet.yml)) is the authoritative automated build-and-test path.
 
 ### Windows development
 
-Windows is supported for development, not recommended for production pool operation. Install the
-[.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0), then run:
+Windows is supported for development and testing, not recommended for hosting a production pool.
+
+1. Install the [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0).
+2. Optionally install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the
+   **.NET desktop build tools** and **Desktop development with C++** workloads.
+3. Clone the repository and open [Miningcore.sln](src/Miningcore.sln), or run:
 
 ```dosbatch
 build-windows.bat
 ```
 
-Visual Studio 2022 can open `Miningcore.sln` directly.
+The published files are written to `build`.
 
-## Database setup and upgrades
+### Docker Engine
 
-Direct nodes, relay receiver/recorders, merged-mining senders and any node running payment processing
-require PostgreSQL. Database-free relay senders are supported only for non-merged pools. The schema may remain compatible with older PostgreSQL
-versions, but production deployments should use a currently supported PostgreSQL major release; for a
-new public pool, PostgreSQL 15 or later is a more defensible baseline than PostgreSQL 10.
+Install [Docker Engine for your Linux distribution](https://docs.docker.com/engine/install/) and
+confirm it works before building Miningcore:
 
-Create a role and database:
-
-```sql
-CREATE ROLE miningcore WITH LOGIN ENCRYPTED PASSWORD 'replace-with-a-strong-password';
-CREATE DATABASE miningcore OWNER miningcore;
+```console
+sudo docker run --rm hello-world
+git clone https://github.com/NINJAK1DD/miningcore.git
+cd miningcore
+git checkout dev
+sudo docker build -t btcpool-miningcore:local .
+cp config.example.json config.json
 ```
 
-For a new database, import the complete current schema. It already contains all merged-mining
-idempotency indexes:
+Edit `config.json`, then run the container. This example publishes the API and the merged-mining LTC
+Stratum port; publish any additional ports used by your configuration. The example keeps the separate
+DOGE Stratum listener disabled because merged miners connect to LTC:
+
+```console
+sudo docker run -d \
+  --name miningcore \
+  --restart unless-stopped \
+  -p 4000:4000 \
+  -p 3032:3032 \
+  -v "$(pwd)/config.json:/app/config.json:ro" \
+  btcpool-miningcore:local
+```
+
+Useful management commands:
+
+```console
+sudo docker logs -f miningcore
+sudo docker restart miningcore
+sudo docker stop miningcore
+sudo docker rm miningcore
+```
+
+The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
+means the container itself, not the Docker host. Build on hardware compatible with the production
+host because native hashing libraries can be affected by CPU architecture and features.
+
+## Database setup
+
+Miningcore uses PostgreSQL for shares, blocks, balances, statistics and payments. For a new public
+pool, use a currently supported PostgreSQL release; PostgreSQL 15 or newer is a sensible baseline.
+
+After [installing PostgreSQL](https://www.postgresql.org/download/), open its administrative shell:
+
+```console
+sudo -u postgres psql
+```
+
+Create a user and database. Choose a unique strong password and do not commit it to Git:
+
+```sql
+CREATE ROLE miningcore WITH LOGIN ENCRYPTED PASSWORD 'CHANGE_ME_TO_A_STRONG_PASSWORD';
+CREATE DATABASE miningcore OWNER miningcore;
+\q
+```
+
+Import the current schema from the repository root:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
 ```
 
-For an existing database, stop Miningcore block writers and payout managers or schedule a maintenance
-window, back it up, and apply the transactional upgrades before deploying this revision. The payout
-ownership migration is mandatory for every cluster with payment processing enabled, even when no
-merged-mining pool is configured, and for recorder/recovery-only deployments that use the `-rs`
-share-recovery importer. The AuxPoW migration is required when enabling LTC/DOGE merged
-mining. It uses regular transactional `CREATE INDEX` operations rather than concurrent index builds:
+Test the login:
 
 ```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
+psql -h 127.0.0.1 -U miningcore -d miningcore -c "SELECT current_database();"
 ```
 
-The migration stops rather than guessing if legacy or duplicate claimant rows require manual review.
-Startup also verifies the required unique partial indexes and refuses merged mining when they are
-missing or malformed. The payout-manager migration adds durable ownership plus an idempotent
-payment-batch ledger and recovery-import manifest. An ambiguous PostgreSQL retry with the same wallet
-transaction ID therefore cannot record the same payment or reset balances twice. A wallet submission
-whose response is cancelled or lost retains durable ownership and stops payout processing; reconcile
-wallet history before manually releasing that marker.
+Then place the same connection details in `config.json`:
 
-The optional PostgreSQL 11 partitioning appendix is available at
-[createdb_postgresql_11_appendix.sql](src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql).
-It deletes/rebuilds the shares table, so read the script and take a verified backup before using it.
+```json
+"persistence": {
+  "postgres": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "user": "miningcore",
+    "password": "CHANGE_ME_TO_A_STRONG_PASSWORD",
+    "database": "miningcore"
+  }
+}
+```
 
-## Configuration and running
-
-Create `config.json` for the pools and services you intend to run. The configuration format is inherited
-from Miningcore; the [upstream configuration wiki](https://github.com/oliverw/miningcore/wiki/Configuration)
-is useful background, but fork-specific behavior is documented in this repository.
-
-Start a published build with:
+Back up before upgrades:
 
 ```console
+pg_dump -h 127.0.0.1 -U miningcore -Fc miningcore > miningcore-backup.dump
+```
+
+For an existing database, stop writers and payout managers before applying the migrations required by
+this revision. The [database and upgrade guide](docs/database.md) gives the exact commands, restore
+procedure, merged-mining indexes, payout-manager ownership rules and optional advanced partitioning.
+
+## Configuration
+
+Copy [config.example.json](config.example.json) to `config.json`. It is a JSON-with-comments example
+covering the common cluster, API, PostgreSQL, statistics, banning, payment, daemon, Stratum, vardiff
+and LTC/DOGE merged-mining options. Miningcore accepts comments; ordinary strict-JSON tools may not.
+
+```console
+cp config.example.json build/config.json
+```
+
+Replace all `CHANGE_ME` values and remove pools or services you do not intend to run. The
+[configuration guide](docs/configuration.md) explains the main sections and miner login formats. The
+machine-readable [configuration schema](src/Miningcore/config.schema.json) is the exhaustive option
+reference, including less common coin-specific extension fields.
+
+## Running Miningcore
+
+Start the published binary from the directory containing `config.json`:
+
+```console
+cd build
 ./Miningcore -c config.json
 ```
 
-The REST API listens on port 4000 by default. The
-[upstream API reference](https://github.com/oliverw/miningcore/wiki/API) describes the inherited API;
-always compare it with this revision when operating fork-specific features.
+Miningcore validates the file and daemon connections during startup. Keep the console open for an
+initial test; stop it with `Ctrl+C`. On Linux, confirm the API in another shell:
 
-## Testing and production status
+```console
+curl http://127.0.0.1:4000/api/health-check
+curl http://127.0.0.1:4000/api/pools
+```
 
-Run the automated test project with:
+For unattended operation, use a service manager such as systemd, send logs to persistent storage and
+configure clean shutdown timeouts. Do not run a production instance in `screen`, a desktop terminal,
+or an interactive SSH session. See [Production operation](#production-operation).
+
+### Basic PostgreSQL management
+
+```console
+# Open the database shell
+psql -h 127.0.0.1 -U miningcore -d miningcore
+
+# List tables inside psql
+\dt
+
+# Show recent blocks inside psql
+SELECT poolid, blockheight, status, created FROM blocks ORDER BY created DESC LIMIT 10;
+
+# Leave psql
+\q
+```
+
+Use SQL only for inspection unless a documented migration or recovery procedure explicitly requires
+a change. Manual edits to balances, blocks or payments can cause financial errors.
+
+## API and web front ends
+
+The API is enabled in the example on port `4000`. Common endpoints include:
+
+```text
+GET /api/health-check
+GET /api/pools
+GET /api/pools/{poolId}
+GET /api/pools/{poolId}/blocks
+GET /api/pools/{poolId}/miners/{address}
+GET /api/blocks
+```
+
+The fork now has its own [API guide](docs/api.md), derived from this revision's controllers, rather
+than relying solely on an older upstream wiki. It includes v2 routes, WebSocket notifications,
+metrics, rate limiting, admin-port isolation and reverse-proxy guidance.
+
+Miningcore supplies an API, not a bundled public website. A community project such as
+[btclinux/Miningcore.WebUI](https://github.com/btclinux/Miningcore.WebUI) can be used as a starting
+point, but it is not maintained, audited or endorsed by this project, has not received a code push
+since December 2023, and GitHub does not currently detect a licence for it. Review its code and legal
+terms, update its API assumptions, and deploy it behind your own HTTPS reverse proxy before exposing
+it publicly. BTCPool.co.uk uses its own operational choices; this reference is not a dependency.
+
+## Deployment models
+
+Most beginners should use a **direct node**: Miningcore, PostgreSQL access and payout processing on
+one Linux host, with coin daemons on the same protected network. Distributed share relay deployments
+are an advanced option.
+
+| Role | What it needs |
+| --- | --- |
+| Direct pool/recorder | PostgreSQL and one payout manager |
+| Non-merged database-free relay sender | Remote receiver/recorder; no local database |
+| Merged-mining relay sender | PostgreSQL for synchronous block persistence |
+| Central relay receiver/recorder | PostgreSQL; usually the sole payout/reconciliation owner |
+
+Only one payout manager may own a pool/database set. Merged-mining nodes also have synchronous block
+persistence and schema-preflight requirements. The full rules, crash recovery procedure and ZeroMQ
+limitations are in the [merged-mining deployment guide](docs/merged-mining-litecoin-dogecoin.md).
+
+## Caveats
+
+- **Linux is the production target.** Windows builds are intended for development and testing.
+- **.NET 6 is out of support.** Framework modernisation is intentionally deferred to a separate PR.
+- **Coin support is not identical.** Read the coin definition and daemon documentation before
+  enabling a currency. Some families require extra native files or configuration.
+- **CryptoNote/RandomX coins** can require significant memory per configured VM and CPU-specific
+  RandomX flags; validate settings on the actual host.
+- **Equihash-family pools** may require a shielded `z-address` depending on the coin and payout path.
+- **Vertcoin/Verthash** requires the correct `verthash.dat` file; configure `vertHashDataFile` when it
+  is not in the working directory.
+- **Wallet RPC is financially sensitive.** Never expose daemon or wallet RPC to the public internet.
+- **Share relay is not a durable queue.** ZeroMQ PUB/SUB does not acknowledge ordinary shares; merged
+  block candidates use additional synchronous persistence, but final physical-path testing remains
+  required for a distributed deployment.
+
+## Production operation
+
+Before advertising a public pool:
+
+- Run Miningcore on a maintained Linux release and plan migration from .NET 6.
+- Isolate daemon, wallet, PostgreSQL, admin API and relay ports with host/network firewalls.
+- Put the public API and website behind an HTTPS reverse proxy; do not expose the admin API port.
+- Keep hot-wallet balances limited and test encrypted wallet, database and configuration backups.
+- Use systemd or an equivalent supervisor with restart policy, resource limits and sufficient clean
+  shutdown time.
+- Monitor daemon sync, pool hashrate, rejected shares, uncertain blocks, reconciliation, disk space,
+  PostgreSQL backups, wallet balances and payout ownership.
+- Complete the [real-daemon validation plan](docs/merged-mining-regtest-validation.md) for merged
+  mining and test the exact firewall, relay and storage path used in production.
+
+Automated tests can be run with:
 
 ```console
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
 ```
 
-Automated tests cover AuxPoW serialization, proof attribution, reconciliation, persistence SQL,
-deployment validation and regressions. GitHub CI also starts PostgreSQL 17 for custom-`search_path`,
-stale-index and delayed relay-share integration tests. They do not replace live daemon testing.
-
-Before mainnet funds are enabled, complete the documented tests with real `litecoind`, `dogecoind` and
-PostgreSQL. Required scenarios include height-decreasing Litecoin reorganisations, competing parent
-proofs, response loss, duplicate submissions, Dogecoin reorganisations, parent-only/DOGE-only/dual-target
-solutions, Litecoin MWEB templates, payout maturity, wallet credit and concurrent PostgreSQL claim
-promotion.
-
-## Security and durability
-
-- Isolate daemon and wallet RPC endpoints from untrusted networks; use firewalling and TLS-capable
-  reverse proxies where appropriate.
-- Keep hot-wallet balances limited and maintain tested wallet/database backups.
-- Protect Stratum, API and relay endpoints with network controls appropriate to the deployment.
-- Treat ZeroMQ share relay as unacknowledged transport, not a financial ledger.
-- Apply database migrations before deploying code that depends on them.
-- Monitor reconciliation warnings, uncertain claims, payout processing and daemon health.
+They cover consensus serialization, attribution and persistence regressions, but do not replace real
+`litecoind`, `dogecoind`, wallet and PostgreSQL testing.
 
 ## Contributions and support
 
-Submit changes to this repository as pull requests targeting
-[the `dev` branch](https://github.com/NINJAK1DD/miningcore/tree/dev). Use this repository's
-[issue tracker](https://github.com/NINJAK1DD/miningcore/issues) for reproducible fork-specific bugs.
+Submit changes as pull requests targeting [the `dev` branch](https://github.com/NINJAK1DD/miningcore/tree/dev).
+Use this repository's [issue tracker](https://github.com/NINJAK1DD/miningcore/issues) for reproducible
+fork-specific bugs. Operational information for the hosted pool belongs on the BTCPool.co.uk service
+site once published, not in GitHub issues.
 
 The [upstream repository](https://github.com/blackmennewstyle/miningcore), its discussions and any
-upstream commercial services are maintained separately and should not be interpreted as support
-offered by this fork.
+upstream commercial services are maintained separately and are not support offered by BTCPool.co.uk.
 
 ## Licence and upstream credit
 
-Miningcore is distributed under the terms in [LICENSE](LICENSE). This fork derives from Miningcore and
-acknowledges its original maintainers and contributors; consult the upstream history for earlier work.
+Miningcore is distributed under the terms in [LICENSE](LICENSE). This distribution derives from
+Miningcore and acknowledges its original maintainers and contributors; consult the upstream history
+for earlier work.

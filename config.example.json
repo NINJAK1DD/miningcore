@@ -1,0 +1,231 @@
+{
+  // Copy this file to config.json and replace every CHANGE_ME value.
+  // Miningcore accepts comments, although strict JSON tools may not.
+  "clusterName": "btcpool-local",
+  "instanceId": 1,
+
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log",
+    "apiLogFile": "miningcore-api.log",
+    "logBaseDirectory": "logs",
+    "perPoolLogFile": false
+  },
+
+  "api": {
+    "enabled": true,
+    // Use "127.0.0.1" when a host reverse proxy is the only API client.
+    // "*" is useful in a container but requires firewall/reverse-proxy protection.
+    "listenAddress": "*",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false,
+    // Uncomment after placing the certificate where Miningcore can read it:
+    // "tls": {
+    //   "enabled": true,
+    //   "tlsPfxFile": "/etc/miningcore/api-certificate.pfx",
+    //   "tlsPfxPassword": "CHANGE_ME_API_CERTIFICATE_PASSWORD"
+    // },
+    "rateLimiting": {
+      "disabled": false,
+      "ipWhitelist": [ "127.0.0.1" ],
+      "rules": [
+        {
+          "endpoint": "*",
+          "period": "1s",
+          "limit": 20
+        }
+      ]
+    }
+  },
+
+  "banning": {
+    "manager": "Integrated",
+    "banOnJunkReceive": true,
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
+  },
+
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore",
+      "commandTimeout": 60,
+      "tls": false,
+      "tlsNoValidate": false
+    }
+  },
+
+  // This cluster-wide switch must be enabled on the single node that owns payouts.
+  "paymentProcessing": {
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "BTCPool.co.uk"
+  },
+
+  "statistics": {
+    "updateInterval": 60,
+    "hashrateCalculationWindow": 5,
+    "gcInterval": 24,
+    "cleanupDays": 30
+  },
+
+  "notifications": {
+    "enabled": false,
+    "email": {
+      "host": "smtp.example.com",
+      "port": 587,
+      "user": "CHANGE_ME_SMTP_USER",
+      "password": "CHANGE_ME_SMTP_PASSWORD",
+      "fromAddress": "pool@example.com",
+      "fromName": "BTCPool operator"
+    },
+    "admin": {
+      "enabled": false,
+      "emailAddress": "operator@example.com",
+      "notifyBlockFound": true,
+      "notifyPaymentSuccess": true
+    },
+    "pushover": {
+      "enabled": false,
+      "user": "CHANGE_ME_PUSHOVER_USER",
+      "token": "CHANGE_ME_PUSHOVER_TOKEN"
+    }
+  },
+
+  "nicehash": {
+    "enableAutoDiff": true
+  },
+
+  // Written when an ordinary share batch cannot be persisted. Protect and monitor this file.
+  "shareRecoveryFile": "recovered-shares.txt",
+
+  // Advanced relay sender example (leave commented for a direct node):
+  // "shareRelay": {
+  //   "publishUrl": "tcp://10.0.0.20:5555",
+  //   "connect": false,
+  //   "sharedEncryptionKey": "CHANGE_ME_40_CHARACTER_ZMQ_CURVE_KEY"
+  // },
+  // Advanced receiver example:
+  // "shareRelays": [
+  //   {
+  //     "url": "tcp://10.0.0.20:5555",
+  //     "sharedEncryptionKey": "CHANGE_ME_40_CHARACTER_ZMQ_CURVE_KEY"
+  //   }
+  // ],
+
+  "pools": [
+    {
+      "id": "ltc-solo",
+      "enabled": true,
+      "coin": "litecoin",
+      "address": "CHANGE_ME_LTC_POOL_WALLET_ADDRESS",
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
+      "rewardRecipients": [],
+      "ports": {
+        "3032": {
+          "name": "LTC-DOGE-SOLO",
+          "listenAddress": "*",
+          "difficulty": 65536,
+          "varDiff": {
+            "minDiff": 65536,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          },
+          "tls": false,
+          "tlsAuto": false,
+          // When TLS is enabled, add tlsPfxFile and tlsPfxPassword here.
+          "tcpProxyProtocol": {
+            "enable": false,
+            "mandatory": false,
+            "proxyAddresses": [ "127.0.0.1" ]
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 9332,
+          "user": "CHANGE_ME_LITECOIN_RPC_USER",
+          "password": "CHANGE_ME_LITECOIN_RPC_PASSWORD",
+          "ssl": false,
+          "http2": false
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.01,
+        "payoutScheme": "SOLO"
+      },
+      "mergedMining": {
+        "enabled": true,
+        "auxPoolId": "doge-solo",
+        "addressParameter": "doge",
+        "requireAuxAddress": true,
+        "auxiliaryTemplatePollTimeoutMs": 500
+      }
+    },
+    {
+      "id": "doge-solo",
+      "enabled": true,
+      "coin": "dogecoin",
+      "address": "CHANGE_ME_DOGE_POOL_WALLET_ADDRESS",
+      // Merged miners connect to the LTC port. Set true only if a separate DOGE Stratum is wanted.
+      "enableInternalStratum": false,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "rewardRecipients": [],
+      // A ports object is part of the pool contract even when internal Stratum is disabled.
+      "ports": {
+        "3033": {
+          "name": "DOGE-SOLO-DISABLED",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 65536
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 22555,
+          "user": "CHANGE_ME_DOGECOIN_RPC_USER",
+          "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD",
+          "ssl": false,
+          "http2": false
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 1.0,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}
