@@ -82,6 +82,21 @@ public class Share
     public bool BlockRecordEmitted { get; set; }
 
     /// <summary>
+    /// Preserve the sender timestamp when this ordinary share crosses a relay. Merged mining
+    /// publishes the statistical proof before its independent block-submission paths so the
+    /// winning proof remains on the correct effort boundary even if a peer chain is slow.
+    /// </summary>
+    [ProtoMember(22)]
+    public bool PreserveCreated { get; set; }
+
+    /// <summary>
+    /// Runtime-only guard used when a job manager has already published the ordinary statistical
+    /// copy. This is deliberately not serialized on the relay wire.
+    /// </summary>
+    [ProtoIgnore]
+    public bool StatisticalRecordEmitted { get; set; }
+
+    /// <summary>
     /// Block this share refers to
     /// </summary>
     [ProtoMember(9)]

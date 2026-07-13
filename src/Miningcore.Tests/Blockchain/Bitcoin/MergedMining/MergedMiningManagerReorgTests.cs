@@ -23,6 +23,50 @@ namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
 public class MergedMiningManagerReorgTests
 {
+    [Fact]
+    public void StatisticalShare_IsClearedAndKeepsParentBoundaryTimestamp()
+    {
+        var created = DateTime.UtcNow;
+        var candidate = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "miner",
+            Worker = "worker",
+            SessionId = "session",
+            Difficulty = 4,
+            ShareDifficulty = 5,
+            ActualDifficulty = 6,
+            NetworkDifficulty = 7,
+            BlockHeight = 123,
+            IsBlockCandidate = true,
+            BlockHash = new string('a', 64),
+            BlockType = "merged-parent",
+            TransactionConfirmationData = "coinbase",
+            Created = created,
+        };
+
+        var statistical = MergedMiningBitcoinJobManager.CreateStatisticalShare(candidate);
+
+        Assert.False(statistical.IsBlockCandidate);
+        Assert.False(statistical.BlockOnly);
+        Assert.Null(statistical.BlockHash);
+        Assert.Null(statistical.BlockType);
+        Assert.Null(statistical.TransactionConfirmationData);
+        Assert.True(statistical.PreserveCreated);
+        Assert.Equal(candidate.PoolId, statistical.PoolId);
+        Assert.Equal(candidate.Miner, statistical.Miner);
+        Assert.Equal(candidate.SessionId, statistical.SessionId);
+        Assert.Equal(candidate.Difficulty, statistical.Difficulty);
+        Assert.Equal(candidate.NetworkDifficulty, statistical.NetworkDifficulty);
+        Assert.Equal(candidate.BlockHeight, statistical.BlockHeight);
+        Assert.Equal(created, statistical.Created);
+
+        // Cloning the ordinary record must not mutate the object still owned by the
+        // independent parent submission path.
+        Assert.True(candidate.IsBlockCandidate);
+        Assert.Equal("merged-parent", candidate.BlockType);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

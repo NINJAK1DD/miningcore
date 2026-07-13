@@ -346,10 +346,11 @@ public class ShareReceiver : BackgroundService
     internal static void NormalizeCreatedTimestamp(Share share, DateTime receivedAt)
     {
         // Ordinary shares normally retain the receiver-local timestamp used by existing
-        // hashrate accounting. A merged-parent share whose block record was persisted
-        // synchronously must keep the sender timestamp so it remains on the correct side of
-        // the block-effort boundary even if the relay/recorder buffer drains later.
-        if(share?.BlockOnly != true && share?.BlockRecordEmitted != true)
+        // hashrate accounting. A merged-parent statistical share or a share whose block record
+        // was persisted independently must keep the sender timestamp so it remains on the
+        // correct side of the block-effort boundary even if relay/recorder delivery is later.
+        if(share?.BlockOnly != true && share?.BlockRecordEmitted != true &&
+           share?.PreserveCreated != true)
             share.Created = receivedAt;
     }
 

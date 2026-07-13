@@ -286,10 +286,14 @@ public class BlockRepositoryTests
         Assert.EndsWith("COMMIT;", script.Trim(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("CREATE UNIQUE INDEX IF NOT EXISTS", script,
             StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("to_regclass('blocks')", script,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("format('DROP INDEX IF EXISTS %I.%I'", script,
+            StringComparison.OrdinalIgnoreCase);
 
         foreach(var indexName in indexNames)
         {
-            Assert.Contains($"DROP INDEX IF EXISTS {indexName}", script,
+            Assert.Contains($"'{indexName.ToLowerInvariant()}'", script,
                 StringComparison.OrdinalIgnoreCase);
             Assert.Contains($"CREATE UNIQUE INDEX {indexName}", script,
                 StringComparison.OrdinalIgnoreCase);

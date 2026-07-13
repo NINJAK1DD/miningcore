@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
@@ -13,6 +14,82 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class MergedMiningIndexIntegrationTests
 {
+    [Fact]
+    public async Task Migration_DropsOnlyIndexesOwnedByResolvedBlocksSchema()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        if(string.IsNullOrWhiteSpace(connectionString))
+            return;
+
+        var suffix = Guid.NewGuid().ToString("N");
+        var shadowSchema = $"miningcore_shadow_{suffix}";
+        var targetSchema = $"miningcore_target_{suffix}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {shadowSchema};
+                CREATE SCHEMA {targetSchema};
+                CREATE TABLE {shadowSchema}.unrelated(
+                    poolid text, hash text, transactionconfirmationdata text);
+                CREATE INDEX idx_blocks_auxpow_pool_hash
+                    ON {shadowSchema}.unrelated(poolid, hash);
+                CREATE INDEX idx_blocks_auxpow_claim
+                    ON {shadowSchema}.unrelated(poolid, hash, transactionconfirmationdata);
+                CREATE INDEX idx_blocks_merged_parent_pool_hash
+                    ON {shadowSchema}.unrelated(hash, poolid);
+
+                CREATE TABLE {targetSchema}.blocks(
+                    poolid text NOT NULL,
+                    hash text NOT NULL,
+                    type text,
+                    transactionconfirmationdata text NOT NULL DEFAULT '');
+                CREATE INDEX idx_blocks_auxpow_pool_hash
+                    ON {targetSchema}.blocks(hash, poolid);
+                CREATE INDEX idx_blocks_auxpow_claim
+                    ON {targetSchema}.blocks(poolid, transactionconfirmationdata);
+                CREATE INDEX idx_blocks_merged_parent_pool_hash
+                    ON {targetSchema}.blocks(hash);
+                SET search_path TO {shadowSchema}, {targetSchema}, public;
+            ");
+
+            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                "../../../../Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql"));
+            await connection.ExecuteAsync(await File.ReadAllTextAsync(migrationPath));
+
+            var mapper = new MapperConfiguration(cfg =>
+                    cfg.AddProfile(new AutoMapperProfile()))
+                .CreateMapper();
+            var repository = new BlockRepository(mapper);
+            Assert.True(await repository.HasMergedMiningBlockIndexesAsync(connection,
+                CancellationToken.None));
+
+            foreach(var indexName in new[]
+                    {
+                        "idx_blocks_auxpow_pool_hash",
+                        "idx_blocks_auxpow_claim",
+                        "idx_blocks_merged_parent_pool_hash",
+                    })
+            {
+                Assert.NotNull(await connection.ExecuteScalarAsync<uint?>($@"
+                    SELECT to_regclass('{shadowSchema}.{indexName}')::oid"));
+                Assert.NotNull(await connection.ExecuteScalarAsync<uint?>($@"
+                    SELECT to_regclass('{targetSchema}.{indexName}')::oid"));
+            }
+        }
+
+        finally
+        {
+            await connection.ExecuteAsync("SET search_path TO public");
+            await connection.ExecuteAsync(
+                $"DROP SCHEMA IF EXISTS {shadowSchema} CASCADE; " +
+                $"DROP SCHEMA IF EXISTS {targetSchema} CASCADE;");
+        }
+    }
+
     [Fact]
     public async Task Preflight_UsesBlocksResolvedByCurrentSearchPath()
     {

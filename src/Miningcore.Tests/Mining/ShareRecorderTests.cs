@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
 using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
@@ -26,6 +27,16 @@ namespace Miningcore.Tests.Mining;
 
 public class ShareRecorderTests
 {
+    [Fact]
+    public void BitcoinPool_DoesNotRepublishManagerEmittedStatisticalShare()
+    {
+        Assert.True(BitcoinPool.ShouldPublishStatisticalShare(new Share()));
+        Assert.False(BitcoinPool.ShouldPublishStatisticalShare(new Share
+        {
+            StatisticalRecordEmitted = true,
+        }));
+    }
+
     [Fact]
     public async Task RecoverSharesAsync_MissingFileThrows()
     {
@@ -335,6 +346,8 @@ public class ShareRecorderTests
             BlockOnly = true,
             BlockType = "auxpow",
             BlockRecordEmitted = true,
+            PreserveCreated = true,
+            StatisticalRecordEmitted = true,
         };
 
         using var stream = new MemoryStream();
@@ -349,6 +362,8 @@ public class ShareRecorderTests
         Assert.Equal(share.Miner, result.Miner);
         Assert.Equal("auxpow", result.BlockType);
         Assert.True(result.BlockRecordEmitted);
+        Assert.True(result.PreserveCreated);
+        Assert.False(result.StatisticalRecordEmitted);
     }
 
     [Fact]

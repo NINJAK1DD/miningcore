@@ -468,7 +468,15 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         share.Worker = context.Worker;
         share.UserAgent = context.UserAgent;
         share.Source = clusterConfig.ClusterName;
+        share.SessionId = context.SessionId;
         share.Created = clock.Now;
+
+        // The proof has passed all share validation. Publish a cleared statistical copy before
+        // either daemon submission begins so a slow or failed peer-chain path cannot suppress
+        // the ordinary share or move it past the parent block's effort boundary. BitcoinPool
+        // observes the runtime-only guard and does not publish the returned object a second time.
+        messageBus.SendMessage(CreateStatisticalShare(share));
+        share.StatisticalRecordEmitted = true;
 
         Task<bool> parentSubmission = null;
         Task<bool> auxiliarySubmission = null;
@@ -581,6 +589,31 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         share.IsBlockCandidate = false;
         share.BlockType = null;
         share.TransactionConfirmationData = null;
+    }
+
+    internal static Share CreateStatisticalShare(Share share)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+
+        return new Share
+        {
+            PoolId = share.PoolId,
+            Miner = share.Miner,
+            Worker = share.Worker,
+            UserAgent = share.UserAgent,
+            IpAddress = share.IpAddress,
+            Source = share.Source,
+            Difficulty = share.Difficulty,
+            ShareDifficulty = share.ShareDifficulty,
+            ActualDifficulty = share.ActualDifficulty,
+            SessionId = share.SessionId,
+            PreserveCreated = share.IsBlockCandidate,
+            BlockHeight = share.BlockHeight,
+            BlockReward = share.BlockReward,
+            BlockRewardDouble = share.BlockRewardDouble,
+            NetworkDifficulty = share.NetworkDifficulty,
+            Created = share.Created,
+        };
     }
 
     private static Share CreateParentBlockOnlyShare(Share share)

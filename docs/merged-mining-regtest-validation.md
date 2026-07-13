@@ -47,12 +47,13 @@ were made against the same PostgreSQL instance used by the running payout manage
 | PostgreSQL custom-schema preflight | Automated real PostgreSQL | CI and the local PostgreSQL integration test select valid and stale same-named `blocks` relations through different `search_path` orders. Exact canonical keys and predicates are required; `lower(poolid)`, reversed keys, `lower(hash)` and a narrower status predicate are rejected. |
 | Delayed parent winning share and effort | Automated real PostgreSQL | Direct and relay merged-parent processing waits one minute, the relayed parent preserves its originating timestamp, and an ordinary share inserted later at the exact block timestamp is included by the final effort query. |
 | Independent submission failure drain | Automated | Parent failure/DOGE success, DOGE failure/parent success, one timeout plus peer acceptance, and dual failures all drain both bounded tasks before one or all errors propagate. |
+| Statistical share independent of submissions | Automated | A cleared ordinary share is published immediately after proof validation, before parent or DOGE submission starts. Peer timeout/persistence failure cannot suppress it, and current receivers preserve a parent candidate's originating effort-boundary timestamp. |
 | Alephium sweep transaction identities | Automated | Null/empty sweep envelopes, null entries and blank transaction IDs are financially uncertain; valid multi-result sweeps require every identity. |
 | Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares. LTC/DOGE block-only rows are now synchronously persisted by the sender and do not depend on relay availability. The final physical path can be repeated with `scripts/regtest/validate-physical-relay.sh`. |
 | Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
 | Wallet accepted, response lost during shutdown | Passed | The Dogecoin fault proxy forwarded `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged, generation 6 ownership remained durable, and replacement startup was rejected. After `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset, the dead owner was explicitly released and generation 7 started normally. |
 | Successful recovery-file replay | Passed plus automated hardening | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. The automated regression rejects the same normalized record multiset even when records are reordered or comments, JSON whitespace and line endings differ. Four domain-separated modular accumulators plus cardinality retain only 128 bytes of digest state; a one-million-record regression verifies the state does not grow with the journal. |
-| Durable merged-block delivery | Automated regression passed; live repeat required | Accepted and uncertain LTC/DOGE block-only candidates are synchronously committed by the submitting node before submission returns. PostgreSQL retry exhaustion falls back to a write-through recovery journal; failure of both destinations propagates. ZeroMQ remains asynchronous only for ordinary shares. Repeat a real accepted-block run with PostgreSQL interruption before mainnet activation. |
+| Durable merged-block delivery | Automated regression passed; live failure injection still required | Accepted and uncertain LTC/DOGE block-only candidates are synchronously committed by the submitting node before submission returns. PostgreSQL retry exhaustion falls back to a write-through recovery journal; failure of both destinations propagates. Atomic recovery import/replay has been tested, but no recorded live run has yet accepted an LTC/DOGE block while PostgreSQL was unavailable under this final synchronous architecture. |
 
 ## Runtime hardening observed during validation
 
@@ -81,11 +82,19 @@ were made against the same PostgreSQL instance used by the running payout manage
 
 ## Remaining mainnet gates
 
-Do not enable mainnet funds solely because the passed rows above are green. Repeat ordinary-share
-relay recovery across the exact physical hosts, firewall and network path planned for deployment by
-running `bash scripts/regtest/validate-physical-relay.sh` on the final receiver host. Block-candidate
-accounting no longer depends on that asynchronous relay path.
-Automatic/hot-standby payout-manager failover remains intentionally unsupported. After an unclean
-stop, confirm the old process has fully terminated before explicitly clearing its durable ownership
-row. The fail-closed backend-termination, controlled recovery, block-credit serialization and
-payment-batch idempotency tests have passed against PostgreSQL 17.
+Do not enable mainnet funds solely because the passed rows above are green.
+
+1. **Physical relay route — conditional, not yet recorded for final hosts.** The separate sender and
+   receiver process test passed on one Linux host. If production uses relay, repeat ordinary-share
+   recovery across the exact production hosts, firewall and route with
+   `bash scripts/regtest/validate-physical-relay.sh` on the final receiver. If production is a direct
+   single-node deployment, this gate is not applicable.
+2. **Accepted block during PostgreSQL interruption — still outstanding.** Recovery-file import,
+   replay protection and database failure behavior passed separately, but the validation record does
+   not contain a live LTC/DOGE accepted block whose synchronous PostgreSQL write failed and whose exact
+   block-only record was flushed to and recovered from the write-through journal.
+3. **Payout-manager ownership — tests passed; operating rule remains.** The fail-closed backend
+   termination, controlled recovery, block-credit serialization and payment-batch idempotency tests
+   passed against PostgreSQL 17. Automatic/hot-standby failover remains intentionally unsupported.
+   After every unclean stop, confirm the old process has fully terminated and reconcile wallet history
+   before explicitly clearing its durable ownership row.

@@ -57,18 +57,43 @@ END $$;
 
 -- Recreate every index so rerunning this migration repairs stale same-named indexes
 -- left by prerelease versions instead of preserving an incompatible definition.
-DROP INDEX IF EXISTS IDX_BLOCKS_AUXPOW_POOL_HASH;
+-- Resolve the schema of the same unqualified blocks relation used above and by runtime SQL.
+-- An unrelated same-named index earlier in search_path must not shadow the target index.
+DO $migration$
+DECLARE
+    blocks_schema name;
+    index_name text;
+BEGIN
+    SELECT namespace.nspname
+    INTO blocks_schema
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE relation.oid = to_regclass('blocks');
+
+    IF blocks_schema IS NULL THEN
+        RAISE EXCEPTION 'Unable to resolve the schema containing the active blocks table';
+    END IF;
+
+    FOREACH index_name IN ARRAY ARRAY[
+        'idx_blocks_auxpow_pool_hash',
+        'idx_blocks_auxpow_claim',
+        'idx_blocks_merged_parent_pool_hash'
+    ]
+    LOOP
+        EXECUTE format('DROP INDEX IF EXISTS %I.%I', blocks_schema, index_name);
+    END LOOP;
+END
+$migration$;
+
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH
     ON blocks(poolid, hash)
     WHERE type = 'auxpow';
 
-DROP INDEX IF EXISTS IDX_BLOCKS_AUXPOW_CLAIM;
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM
     ON blocks(poolid, hash,
         (regexp_replace(transactionconfirmationdata, ':[0-9]+$', '')))
     WHERE type = 'auxpow-claim';
 
-DROP INDEX IF EXISTS IDX_BLOCKS_MERGED_PARENT_POOL_HASH;
 CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH
     ON blocks(poolid, hash)
     WHERE type IN ('merged-parent', 'merged-parent-uncertain');

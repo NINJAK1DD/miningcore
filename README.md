@@ -79,6 +79,9 @@ block records to the shared PostgreSQL database before returning from submission
 unavailable after retries, the recorder synchronously flushes the block record to its recovery journal;
 failure of both destinations fails the submission path loudly. Consequently every merged-mining sender
 requires PostgreSQL and the merged-mining indexes, even when another node owns payouts.
+Upgrade all relay receivers before upgrading senders or enabling merged-mining traffic. Older receivers
+do not understand the sender-timestamp preservation field and can place a winning statistical share on
+the wrong side of its parent effort boundary, although block ownership and SOLO payouts remain safe.
 Validate the final host/firewall path for ordinary shares by running
 `bash scripts/regtest/validate-physical-relay.sh RELAY_HOST RELAY_PORT POOL_ID SENDER_SOURCE` on the
 receiver with the PostgreSQL environment variables set, then submit work through the real sender.

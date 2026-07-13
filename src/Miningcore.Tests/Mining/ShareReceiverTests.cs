@@ -123,6 +123,22 @@ public class ShareReceiverTests
         Assert.Equal(created, share.Created);
     }
 
+    [Fact]
+    public void EarlyMergedParentStatisticalShare_PreservesOriginatingTimestamp()
+    {
+        var created = DateTime.UtcNow.AddSeconds(-10);
+        var share = new Share
+        {
+            Created = created,
+            PreserveCreated = true,
+            IsBlockCandidate = false,
+        };
+
+        ShareReceiver.NormalizeCreatedTimestamp(share, DateTime.UtcNow);
+
+        Assert.Equal(created, share.Created);
+    }
+
     private static async Task<(ShareRelay Relay, MessageBus Bus)> StartRelayAsync(
         string url)
     {
