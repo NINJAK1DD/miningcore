@@ -14,6 +14,7 @@ using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
+using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using NSubstitute;
@@ -65,6 +66,38 @@ public class MergedMiningManagerReorgTests
         // independent parent submission path.
         Assert.True(candidate.IsBlockCandidate);
         Assert.Equal("merged-parent", candidate.BlockType);
+    }
+
+    [Fact]
+    public void FirstValidStatisticalShare_CreatesAndCopiesWorkerSession()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var poolId = $"ltc-solo-{suffix}";
+        var context = new MergedMiningBitcoinWorkerContext
+        {
+            Miner = $"miner-{suffix}",
+            Worker = "rig01",
+            SessionId = null,
+        };
+        var returnedShare = new Share
+        {
+            PoolId = poolId,
+            Miner = context.Miner,
+            Worker = context.Worker,
+        };
+        var now = DateTime.UtcNow;
+
+        var sessionId = MergedMiningBitcoinJobManager.EnsureStatisticalShareSession(
+            context, returnedShare, poolId, "127.0.0.1", now);
+        var emittedStatisticalShare =
+            MergedMiningBitcoinJobManager.CreateStatisticalShare(returnedShare);
+
+        Assert.False(string.IsNullOrWhiteSpace(sessionId));
+        Assert.Equal(sessionId, context.SessionId);
+        Assert.Equal(sessionId, returnedShare.SessionId);
+        Assert.Equal(sessionId, emittedStatisticalShare.SessionId);
+        Assert.Equal(sessionId, WorkerSessionTracker.GetCurrentSessionId(
+            poolId, context.Miner, context.Worker, now));
     }
 
     [Theory]

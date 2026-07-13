@@ -104,6 +104,16 @@ jobs:
         echo "Miningcore.Tests output libs:"
         find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
+    - name: Smoke-test ZeroMQ relay runtime
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+      run: >-
+        dotnet test --no-build --verbosity normal
+        --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
+        src/Miningcore.Tests/Miningcore.Tests.csproj
+
     - name: Test
       shell: bash
       env:

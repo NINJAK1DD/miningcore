@@ -468,8 +468,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         share.Worker = context.Worker;
         share.UserAgent = context.UserAgent;
         share.Source = clusterConfig.ClusterName;
-        share.SessionId = context.SessionId;
-        share.Created = clock.Now;
+        var now = clock.Now;
+        EnsureStatisticalShareSession(context, share, poolConfig.Id,
+            share.IpAddress, now);
+        share.Created = now;
 
         // The proof has passed all share validation. Publish a cleared statistical copy before
         // either daemon submission begins so a slow or failed peer-chain path cannot suppress
@@ -511,9 +513,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             .Select(TrackAcceptedSubmissionAsync)
             .ToArray();
 
-        // Every path owns submission, reconciliation and durable persistence. Drain all
-        // independently bounded paths before propagating an error from either chain so a
-        // successful peer result is never left unobserved or unpersisted.
+        // Every path owns submission, reconciliation and durable persistence. The linked
+        // ten-second tokens bound daemon RPC and attribution only. Once persistence starts,
+        // it deliberately ignores miner disconnect cancellation and follows the database
+        // retry/recovery-journal policy, so the complete drain can exceed ten seconds.
+        // Drain both paths before propagating an error so an accepted peer result is never
+        // left unobserved or unpersisted.
         await DrainSubmissionTasksAsync(submissions);
 
         return share;
@@ -614,6 +619,26 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             NetworkDifficulty = share.NetworkDifficulty,
             Created = share.Created,
         };
+    }
+
+    internal static string EnsureStatisticalShareSession(
+        MergedMiningBitcoinWorkerContext context, Share share, string poolId,
+        string ipAddress, DateTime nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(share);
+
+        lock(context)
+        {
+            if(string.IsNullOrEmpty(context.SessionId))
+            {
+                context.SessionId = WorkerSessionTracker.GetOrCreateSessionId(
+                    poolId, context.Miner, context.Worker, ipAddress, nowUtc);
+            }
+
+            share.SessionId = context.SessionId;
+            return context.SessionId;
+        }
     }
 
     private static Share CreateParentBlockOnlyShare(Share share)
