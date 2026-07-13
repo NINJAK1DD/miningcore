@@ -416,9 +416,8 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     
                     txSweep = await Guard(() => alephiumClient.NameSweepAllAddressesAsync(extraPoolPaymentProcessingConfig.WalletName, destinationSweep, ct), ex =>
                     {
-                        WalletSubmissionOutcome.RethrowIfUnknown(ex,
-                            "Alephium wallet sweep submission");
-                        ReportAndRethrowApiError("Failed to Sweep all wealthy active addresses", ex, false);
+                        RethrowSubmissionFailure("Alephium wallet sweep submission",
+                            "Failed to Sweep all wealthy active addresses", ex);
                     });
                 }
                 else
@@ -433,9 +432,8 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
                     txSweep = await Guard(() => alephiumClient.NameSweepActiveAddressAsync(extraPoolPaymentProcessingConfig.WalletName, destinationSweep, ct), ex =>
                     {
-                        WalletSubmissionOutcome.RethrowIfUnknown(ex,
-                            "Alephium wallet sweep submission");
-                        ReportAndRethrowApiError("Failed to Sweep wealthy active address", ex, false);
+                        RethrowSubmissionFailure("Alephium wallet sweep submission",
+                            "Failed to Sweep wealthy active address", ex);
                     });
                 }
 
@@ -616,9 +614,8 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
                     var txSubmit = await Guard(() => alephiumClient.PostTransactionsSubmitAsync(submitTxSign, ct), ex =>
                     {
-                        WalletSubmissionOutcome.RethrowIfUnknown(ex,
-                            "Alephium transaction submission");
-                        logger.Warn(() => $"[{LogCategory}] Submit signed transaction failed");
+                        RethrowSubmissionFailure("Alephium transaction submission",
+                            "Submit signed transaction failed", ex);
                     });
                     var txId = WalletSubmissionOutcome.RequireTransactionId(txSubmit?.TxId,
                         "Alephium transaction submission");
@@ -674,6 +671,15 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
         if(rethrow)
             throw ex;
+    }
+
+    private void RethrowSubmissionFailure(string operation, string action, Exception ex)
+    {
+        // Transport failures remain financially ambiguous. A structured REST rejection is
+        // conclusive and must escape Guard<T> as its original exception instead of being
+        // converted to a null result and misclassified as a malformed success.
+        WalletSubmissionOutcome.RethrowIfUnknown(ex, operation);
+        ReportAndRethrowApiError(action, ex);
     }
 
     private async Task UnlockWallet(CancellationToken ct)

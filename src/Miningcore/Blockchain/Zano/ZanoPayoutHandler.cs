@@ -85,18 +85,18 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
         }
     }
 
-    private async Task<bool> HandleTransferResponseAsync(RpcResponse<TransferSplitResponse> response, params Balance[] balances)
+    internal async Task<bool> HandleTransferSplitResponseAsync(RpcResponse<TransferSplitResponse> response, params Balance[] balances)
     {
-        var coin = poolConfig.Template.As<ZanoCoinTemplate>();
+        if(response == null)
+            throw new PayoutOutcomeUncertainException(
+                $"{ZanoWalletCommands.TransferSplit} returned no response envelope");
 
         WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
             ZanoWalletCommands.TransferSplit);
 
         if(response.Error == null)
         {
-            var txHashes = response.Response.TxHashList;
-            WalletSubmissionOutcome.RequireTransactionId(txHashes?.FirstOrDefault(),
-                ZanoWalletCommands.TransferSplit);
+            var txHashes = ParseTransferSplitSuccess(response.Response);
 
             logger.Info(() => $"[{LogCategory}] Split-Payment transaction ids: {string.Join(", ", txHashes)}");
 
@@ -111,6 +111,39 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
             NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null);
             return false;
+        }
+    }
+
+    internal static string[] ParseTransferSplitSuccess(TransferSplitResponse payload)
+    {
+        try
+        {
+            if(payload == null)
+                throw new PayoutOutcomeUncertainException(
+                    $"{ZanoWalletCommands.TransferSplit} returned success without a response body");
+
+            var transactionIds = payload.TxHashList;
+
+            if(transactionIds == null || transactionIds.Length == 0)
+                throw new PayoutOutcomeUncertainException(
+                    $"{ZanoWalletCommands.TransferSplit} returned success without transaction identities");
+
+            foreach(var transactionId in transactionIds)
+                WalletSubmissionOutcome.RequireTransactionId(transactionId,
+                    ZanoWalletCommands.TransferSplit);
+
+            return transactionIds;
+        }
+
+        catch(PayoutOutcomeUncertainException)
+        {
+            throw;
+        }
+
+        catch(Exception ex)
+        {
+            throw new PayoutOutcomeUncertainException(
+                $"{ZanoWalletCommands.TransferSplit} returned an unusable successful response", ex);
         }
     }
 
@@ -250,7 +283,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
                 var transferSplitResponse = await rpcClientWallet.ExecuteAsync<TransferSplitResponse>(logger, ZanoWalletCommands.TransferSplit, ct, request);
 
-                return await HandleTransferResponseAsync(transferSplitResponse, balances);
+                return await HandleTransferSplitResponseAsync(transferSplitResponse, balances);
             }
         }
 

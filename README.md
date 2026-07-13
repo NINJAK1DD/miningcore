@@ -81,7 +81,8 @@ Until then, merged mining starts only when each enabled parent pool explicitly s
 `mergedMining.acceptNonDurableBlockDelivery=true`; this acknowledges the risk but does not remove it.
 
 Share recovery validates the complete read-locked input before writing, then imports all batches in
-one PostgreSQL transaction. A non-zero recovery exit therefore leaves the complete file rolled back
+one PostgreSQL transaction. Its replay manifest hashes normalized share records, so equivalent files
+with different comments, JSON whitespace or line endings are still rejected. A non-zero recovery exit therefore leaves the complete file rolled back
 and safe to retry rather than partially committing ordinary shares. A successful import records the
 source SHA-256 hash in PostgreSQL and renames the file with an `.imported-<timestamp>` suffix. The
 manifest rejects the same content if an operator copies or renames it back and attempts a replay.

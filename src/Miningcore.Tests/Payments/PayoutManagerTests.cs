@@ -258,6 +258,37 @@ public class PayoutManagerTests
         fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
     }
 
+    [Theory]
+    [InlineData("cryptonote")]
+    [InlineData("zano")]
+    public async Task MalformedSuccessfulSplitPayout_RetainsDurableOwnership(string family)
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+
+        var error = family == "cryptonote"
+            ? Assert.Throws<PayoutOutcomeUncertainException>(() =>
+                global::Miningcore.Blockchain.Cryptonote.CryptonotePayoutHandler
+                    .ParseTransferSplitSuccess(null))
+            : Assert.Throws<PayoutOutcomeUncertainException>(() =>
+                global::Miningcore.Blockchain.Zano.ZanoPayoutHandler
+                    .ParseTransferSplitSuccess(null));
+
+        handler.PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(error));
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
+                handler, CancellationToken.None));
+
+        fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
+        fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+    }
+
     [Fact]
     public async Task ConclusivePayoutFailure_CompletesFinancialOperation()
     {

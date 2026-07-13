@@ -241,15 +241,16 @@ public class ShareRecorder : BackgroundService
             }))
             using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
             {
-                using(var sha256 = SHA256.Create())
-                    fileHash = Convert.ToHexString(await sha256.ComputeHashAsync(stream));
-
-                reader.DiscardBufferedData();
-                stream.Seek(0, SeekOrigin.Begin);
-
                 // Pass one validates every record before a database transaction is opened.
-                validatedCount = await ProcessRecoveryRecordsAsync(reader,
-                    _ => Task.CompletedTask);
+                using(var validationHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+                {
+                    validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
+                    {
+                        AppendRecoveryRecordsHash(validationHash, shares);
+                        return Task.CompletedTask;
+                    });
+                    fileHash = Convert.ToHexString(validationHash.GetHashAndReset());
+                }
 
                 reader.DiscardBufferedData();
                 stream.Seek(0, SeekOrigin.Begin);
@@ -264,14 +265,26 @@ public class ShareRecorder : BackgroundService
 
                     if(!registered)
                         throw new InvalidOperationException(
-                            $"Recovery file {filename} was already imported [{fileHash}]");
+                            $"Recovery content from {filename} was already imported [{fileHash}]");
 
                     var result = new List<(string PoolId, Block Block)>();
-                    var importedCount = await ProcessRecoveryRecordsAsync(reader,
-                        async shares => result.AddRange(
-                            await PersistSharesBatchAsync(con, tx, shares)));
+                    int importedCount;
+                    string importedHash;
 
-                    if(importedCount != validatedCount)
+                    using(var importHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+                    {
+                        importedCount = await ProcessRecoveryRecordsAsync(reader,
+                            async shares =>
+                            {
+                                AppendRecoveryRecordsHash(importHash, shares);
+                                result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
+                            });
+                        importedHash = Convert.ToHexString(importHash.GetHashAndReset());
+                    }
+
+                    if(importedCount != validatedCount ||
+                       !string.Equals(importedHash, fileHash,
+                           StringComparison.OrdinalIgnoreCase))
                     {
                         throw new InvalidDataException(
                             "Recovery source changed between validation and import");
@@ -293,6 +306,20 @@ public class ShareRecorder : BackgroundService
         {
             logger.Error(() => $"Recovery file {filename} was not found");
             throw;
+        }
+    }
+
+    private void AppendRecoveryRecordsHash(IncrementalHash hash,
+        IEnumerable<Share> shares)
+    {
+        foreach(var share in shares)
+        {
+            // Hash the normalized record rather than source bytes. This makes replay identity
+            // insensitive to recovery comments, JSON whitespace and platform line endings.
+            var json = JsonConvert.SerializeObject(share, Formatting.None,
+                jsonSerializerSettings);
+            hash.AppendData(Encoding.UTF8.GetBytes(json));
+            hash.AppendData(new byte[] { (byte) '\n' });
         }
     }
 

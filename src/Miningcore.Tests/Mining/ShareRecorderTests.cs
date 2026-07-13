@@ -214,6 +214,48 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoverSharesAsync_SemanticallyEquivalentReplay_IsRejectedByManifest()
+    {
+        var fixture = CreateRecoveryFixture();
+        var original = RecoveryShareJson(7);
+        var filename = await WriteRecoveryFileAsync(new[] { original });
+        var registeredHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
+                Arg.Any<CancellationToken>())
+            .Returns(call => registeredHashes.Add(call.ArgAt<string>(2)));
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+
+            var parsed = Newtonsoft.Json.Linq.JObject.Parse(original);
+            var reordered = new Newtonsoft.Json.Linq.JObject(
+                parsed.Properties().Reverse().Select(x => new Newtonsoft.Json.Linq.JProperty(
+                    x.Name, x.Value)));
+            var equivalent = reordered.ToString(Formatting.None);
+            await File.WriteAllTextAsync(filename,
+                $"# regenerated recovery file\r\n\r\n  {equivalent}  \r\n");
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            Assert.Single(registeredHashes);
+            await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
     public async Task RecoverSharesAsync_BlockOnlyReplay_IsRejectedByManifest()
     {
         var fixture = CreateRecoveryFixture();
