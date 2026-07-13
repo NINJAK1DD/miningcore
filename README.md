@@ -5,7 +5,7 @@
 
 <img src="logo.png" width="150" alt="Miningcore logo">
 
-This is the Miningcore distribution maintained for the BTCPool.co.uk
+This is the Miningcore distribution maintained for [BTCPool.co.uk](https://btcpool.co.uk)
 SOLO mining service. The source repository is hosted by `NINJAK1DD`, and the `dev` branch is its
 primary integration branch. It builds on the
 [upstream Miningcore project](https://github.com/blackmennewstyle/miningcore) and retains credit to
@@ -381,8 +381,8 @@ They cover consensus serialization, attribution and persistence regressions, but
 
 Submit changes as pull requests targeting [the `dev` branch](https://github.com/NINJAK1DD/miningcore/tree/dev).
 Use this repository's [issue tracker](https://github.com/NINJAK1DD/miningcore/issues) for reproducible
-fork-specific bugs. Operational information for the hosted pool belongs on the BTCPool.co.uk service
-site once published, not in GitHub issues.
+fork-specific bugs. Operational information for the hosted pool belongs on
+[BTCPool.co.uk](https://btcpool.co.uk), not in GitHub issues.
 
 The [upstream repository](https://github.com/blackmennewstyle/miningcore), its discussions and any
 upstream commercial services are maintained separately and are not support offered by BTCPool.co.uk.
