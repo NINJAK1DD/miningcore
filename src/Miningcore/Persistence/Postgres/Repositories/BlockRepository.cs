@@ -263,7 +263,7 @@ public class BlockRepository : IBlockRepository
 
     public Task<bool> HasMergedMiningBlockIndexesAsync(IDbConnection con, CancellationToken ct)
     {
-        const string query = @"WITH expected(name, key_fragments, predicate_fragment) AS (
+        const string query = @"WITH expected(name, key_expressions, predicate) AS (
                 VALUES
                     ('idx_blocks_auxpow_pool_hash', ARRAY[
                         'poolid',
@@ -277,7 +277,7 @@ public class BlockRepository : IBlockRepository
                     ('idx_blocks_merged_parent_pool_hash', ARRAY[
                         'poolid',
                         'hash'
-                    ], 'type = ANY (ARRAY[''merged-parent''::text, ''merged-parent-uncertain''::text])')
+                    ], 'type = any (array[''merged-parent''::text, ''merged-parent-uncertain''::text])')
             ),
             actual AS (
                 SELECT lower(index_class.relname) AS name,
@@ -310,13 +310,8 @@ public class BlockRepository : IBlockRepository
             WHERE a.indisunique
               AND a.indisvalid
               AND a.indisready
-              AND cardinality(a.key_expressions) = cardinality(e.key_fragments)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM unnest(e.key_fragments) WITH ORDINALITY fragment(value, position)
-                  WHERE a.key_expressions[position::int] NOT ILIKE '%' || fragment.value || '%'
-              )
-              AND a.predicate ILIKE '%' || e.predicate_fragment || '%'";
+              AND a.key_expressions = e.key_expressions
+              AND a.predicate = e.predicate";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));

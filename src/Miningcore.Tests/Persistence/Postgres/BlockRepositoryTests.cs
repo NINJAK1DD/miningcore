@@ -190,6 +190,12 @@ public class BlockRepositoryTests
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pg_namespace", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("a.key_expressions = e.key_expressions", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("a.predicate = e.predicate", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ILIKE", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("public.blocks", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
     }

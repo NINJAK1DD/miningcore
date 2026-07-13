@@ -437,19 +437,10 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     });
                 }
 
-                if(txSweep?.Results == null)
-                    throw new PayoutOutcomeUncertainException(
-                        "Alephium wallet sweep returned success without transaction identities");
-
-                if(txSweep.Results.Count < 1)
-                    throw new PayoutOutcomeUncertainException(
-                        "Alephium wallet sweep returned success without a transaction id");
-                else
+                var sweepResults = ParseSweepResults(txSweep);
+                foreach(var result in sweepResults)
                 {
-                    foreach (var result in txSweep.Results)
-                    {
-                        logger.Info(() => $"[{LogCategory}] Sweep transaction id: {result.TxId}, FromGroup: {result.FromGroup}, ToGroup: {result.ToGroup}");
-                    }
+                    logger.Info(() => $"[{LogCategory}] Sweep transaction id: {result.TxId}, FromGroup: {result.FromGroup}, ToGroup: {result.ToGroup}");
                 }
 
                 goto retry;
@@ -639,6 +630,27 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
             }
         
         await LockWallet(ct);
+    }
+
+    internal static TransferResult[] ParseSweepResults(TransferResults sweep)
+    {
+        if(sweep?.Results == null || sweep.Results.Count == 0)
+            throw new PayoutOutcomeUncertainException(
+                "Alephium wallet sweep returned success without transaction identities");
+
+        var results = sweep.Results.ToArray();
+        for(var i = 0; i < results.Length; i++)
+        {
+            var result = results[i];
+            if(result == null)
+                throw new PayoutOutcomeUncertainException(
+                    $"Alephium wallet sweep result {i + 1} was null");
+
+            WalletSubmissionOutcome.RequireTransactionId(result.TxId,
+                $"Alephium wallet sweep result {i + 1}");
+        }
+
+        return results;
     }
     
     public override double AdjustShareDifficulty(double difficulty)

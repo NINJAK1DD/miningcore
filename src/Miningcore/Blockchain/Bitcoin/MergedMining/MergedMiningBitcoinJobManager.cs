@@ -470,7 +470,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         share.Source = clusterConfig.ClusterName;
         share.Created = clock.Now;
 
-        Task<SubmitResult> parentSubmission = null;
+        Task<bool> parentSubmission = null;
         Task<bool> auxiliarySubmission = null;
         using var parentSubmissionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var auxiliarySubmissionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -480,71 +480,94 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(share.IsBlockCandidate)
         {
             logger.Info(() => $"Submitting parent block {share.BlockHeight} [{share.BlockHash}]");
-            parentSubmission = SubmitParentBlockWithReconciliationAsync(share, result.ParentBlockHex,
-                parentSubmissionCts.Token);
+            parentSubmission = SubmitAndPersistParentBlockAsync(share,
+                result.ParentBlockHex, parentSubmissionCts.Token);
         }
 
         if(!string.IsNullOrEmpty(result.AuxPowHex))
             auxiliarySubmission = SubmitAuxiliaryBlockAsync(worker, context, result,
                 auxiliarySubmissionCts.Token);
 
-        var pendingSubmissions = new List<Task>(new Task[] { parentSubmission, auxiliarySubmission }
-            .Where(x => x != null)
-            .ToArray());
-
-        var blockFoundSignaled = false;
-
-        while(pendingSubmissions.Count > 0)
+        var blockFoundSignaled = 0;
+        async Task<bool> TrackAcceptedSubmissionAsync(Task<bool> submission)
         {
-            var completed = await Task.WhenAny(pendingSubmissions);
-            pendingSubmissions.Remove(completed);
-
-            var blockAccepted = false;
-
-            if(ReferenceEquals(completed, parentSubmission))
-            {
-                var acceptResponse = await parentSubmission;
-                share.IsBlockCandidate = acceptResponse.Accepted;
-                blockAccepted = acceptResponse.Accepted;
-
-                if(share.IsBlockCandidate)
-                {
-                    share.BlockType = "merged-parent";
-                    share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
-                    logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
-                }
-                else if(acceptResponse.Ambiguous)
-                {
-                    share.IsBlockCandidate = true;
-                    share.BlockType = "merged-parent-uncertain";
-                    share.TransactionConfirmationData =
-                        AuxPowBlockConfirmation.CreateParentUncertain(share.BlockHash);
-                    logger.Warn(() => $"Parent submission outcome for block {share.BlockHeight} [{share.BlockHash}] is uncertain; durable reconciliation queued");
-                }
-                else
-                    share.TransactionConfirmationData = null;
-
-                if(share.IsBlockCandidate)
-                {
-                    // Persist the parent result as soon as its own RPC/reconciliation completes.
-                    // The original share is still returned through the ordered share stream for
-                    // statistics, while this block-only copy avoids waiting for DOGE submission.
-                    await blockCandidateRecorder.PersistBlockCandidateAsync(
-                        CreateParentBlockOnlyShare(share));
-                    MarkParentBlockRecordEmitted(share);
-                }
-            }
-            else if(ReferenceEquals(completed, auxiliarySubmission))
-                blockAccepted = await auxiliarySubmission;
-
-            if(blockAccepted && !blockFoundSignaled)
-            {
+            var accepted = await submission;
+            if(accepted && Interlocked.CompareExchange(ref blockFoundSignaled, 1, 0) == 0)
                 OnBlockFound();
-                blockFoundSignaled = true;
-            }
+
+            return accepted;
         }
 
+        var submissions = new Task<bool>[] { parentSubmission, auxiliarySubmission }
+            .Where(x => x != null)
+            .Select(TrackAcceptedSubmissionAsync)
+            .ToArray();
+
+        // Every path owns submission, reconciliation and durable persistence. Drain all
+        // independently bounded paths before propagating an error from either chain so a
+        // successful peer result is never left unobserved or unpersisted.
+        await DrainSubmissionTasksAsync(submissions);
+
         return share;
+    }
+
+    private async Task<bool> SubmitAndPersistParentBlockAsync(Share share,
+        string blockHex, CancellationToken ct)
+    {
+        var acceptResponse = await SubmitParentBlockWithReconciliationAsync(share,
+            blockHex, ct);
+        share.IsBlockCandidate = acceptResponse.Accepted;
+
+        if(share.IsBlockCandidate)
+        {
+            share.BlockType = "merged-parent";
+            share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
+            logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {share.Miner}");
+        }
+        else if(acceptResponse.Ambiguous)
+        {
+            share.IsBlockCandidate = true;
+            share.BlockType = "merged-parent-uncertain";
+            share.TransactionConfirmationData =
+                AuxPowBlockConfirmation.CreateParentUncertain(share.BlockHash);
+            logger.Warn(() => $"Parent submission outcome for block {share.BlockHeight} [{share.BlockHash}] is uncertain; durable reconciliation queued");
+        }
+        else
+            share.TransactionConfirmationData = null;
+
+        if(share.IsBlockCandidate)
+        {
+            await blockCandidateRecorder.PersistBlockCandidateAsync(
+                CreateParentBlockOnlyShare(share));
+            MarkParentBlockRecordEmitted(share);
+        }
+
+        return acceptResponse.Accepted;
+    }
+
+    internal static async Task<bool[]> DrainSubmissionTasksAsync(
+        IEnumerable<Task<bool>> submissions)
+    {
+        ArgumentNullException.ThrowIfNull(submissions);
+
+        var all = Task.WhenAll(submissions);
+
+        try
+        {
+            // Task.WhenAll does not fail until every supplied task has reached a terminal state
+            // and observes every task exception, which is the independent-chain drain contract.
+            return await all;
+        }
+
+        catch
+        {
+            if(all.Exception?.InnerExceptions.Count > 1)
+                throw new AggregateException(
+                    "Multiple merged-mining submission paths failed",
+                    all.Exception.InnerExceptions);
+
+            throw;
+        }
     }
 
     internal static void MarkParentBlockRecordEmitted(Share share)

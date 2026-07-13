@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,6 +23,66 @@ namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
 public class MergedMiningManagerReorgTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SubmissionFailure_DrainsSuccessfulPeerBeforeRethrow(
+        bool parentFails)
+    {
+        var peerPersisted = false;
+        var failed = Task.FromException<bool>(
+            new IOException(parentFails ? "parent persistence failed" :
+                "auxiliary persistence failed"));
+        var successful = Task.Run(async () =>
+        {
+            await Task.Delay(25);
+            peerPersisted = true;
+            return true;
+        });
+        var submissions = parentFails
+            ? new[] { failed, successful }
+            : new[] { successful, failed };
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            MergedMiningBitcoinJobManager.DrainSubmissionTasksAsync(submissions));
+
+        Assert.True(peerPersisted);
+    }
+
+    [Fact]
+    public async Task SubmissionTimeout_DrainsAcceptedPeerBeforeRethrow()
+    {
+        var peerPersisted = false;
+        var timedOut = Task.FromException<bool>(new TimeoutException("RPC timeout"));
+        var accepted = Task.Run(async () =>
+        {
+            await Task.Delay(25);
+            peerPersisted = true;
+            return true;
+        });
+
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            MergedMiningBitcoinJobManager.DrainSubmissionTasksAsync(
+                new[] { timedOut, accepted }));
+
+        Assert.True(peerPersisted);
+    }
+
+    [Fact]
+    public async Task BothSubmissionFailures_AreReportedAfterBothDrain()
+    {
+        var parent = Task.FromException<bool>(new IOException("parent failed"));
+        var auxiliary = Task.FromException<bool>(new TimeoutException("DOGE failed"));
+
+        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+            MergedMiningBitcoinJobManager.DrainSubmissionTasksAsync(
+                new[] { parent, auxiliary }));
+
+        Assert.Equal(2, error.InnerExceptions.Count);
+        Assert.Contains(error.InnerExceptions, x => x is IOException);
+        Assert.Contains(error.InnerExceptions, x => x is TimeoutException);
+    }
+
     [Fact]
     public async Task LowerHeightAuthoritativeTemplate_ReplacesJobAndEmitsCleanParams()
     {

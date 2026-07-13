@@ -196,39 +196,30 @@ public class PayoutManagerTests
     }
 
     [Fact]
-    public void MergedParentRelayBlock_DefersEffortAndStatusUntilShareSettlement()
+    public void MergedParentBlock_DefersEffortAndStatusUntilShareSettlement()
     {
         var now = DateTime.UtcNow;
-        var config = new ClusterConfig
-        {
-            ShareRelays = new[] { new ShareRelayEndpointConfig() },
-        };
         var block = new Block
         {
             Type = "merged-parent",
             Created = now,
         };
 
-        Assert.True(PayoutManager.ShouldDeferMergedParentRelaySettlement(config,
-            block, now.AddSeconds(30)));
-        Assert.False(PayoutManager.ShouldDeferMergedParentRelaySettlement(config,
-            block, now.Add(PayoutManager.MergedParentRelaySettlementDelay)));
+        Assert.True(PayoutManager.ShouldDeferMergedParentShareSettlement(block,
+            now.AddSeconds(30)));
+        Assert.False(PayoutManager.ShouldDeferMergedParentShareSettlement(block,
+            now.Add(PayoutManager.MergedParentShareSettlementDelay)));
     }
 
     [Fact]
-    public void RelaySettlementDelay_DoesNotAffectDirectOrAuxiliaryBlocks()
+    public void ShareSettlementDelay_AppliesDirectlyButNotToAuxiliaryBlocks()
     {
         var now = DateTime.UtcNow;
         var parent = new Block { Type = "merged-parent", Created = now };
         var auxiliary = new Block { Type = "auxpow", Created = now };
 
-        Assert.False(PayoutManager.ShouldDeferMergedParentRelaySettlement(
-            new ClusterConfig(), parent, now));
-        Assert.False(PayoutManager.ShouldDeferMergedParentRelaySettlement(
-            new ClusterConfig
-            {
-                ShareRelay = new ShareRelayConfig(),
-            }, auxiliary, now));
+        Assert.True(PayoutManager.ShouldDeferMergedParentShareSettlement(parent, now));
+        Assert.False(PayoutManager.ShouldDeferMergedParentShareSettlement(auxiliary, now));
     }
 
     [Fact]

@@ -3,6 +3,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
 using Dapper;
+using Miningcore.Payments;
+using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
 using Xunit;
@@ -38,6 +40,7 @@ public class MergedMiningIndexIntegrationTests
                     poolid text NOT NULL,
                     hash text NOT NULL,
                     type text,
+                    status text,
                     transactionconfirmationdata text NOT NULL DEFAULT ''
                 );
                 CREATE TABLE {validSchema}.shares(
@@ -61,6 +64,7 @@ public class MergedMiningIndexIntegrationTests
                     poolid text NOT NULL,
                     hash text NOT NULL,
                     type text,
+                    status text,
                     transactionconfirmationdata text NOT NULL DEFAULT ''
                 );
                 CREATE INDEX idx_blocks_auxpow_pool_hash
@@ -78,10 +82,64 @@ public class MergedMiningIndexIntegrationTests
 
             await connection.ExecuteAsync(
                 $"SET search_path TO {validSchema}, {staleSchema}, public");
-            Assert.True(await repository.HasMergedMiningBlockIndexesAsync(connection,
-                CancellationToken.None));
+            var initialPreflight = await repository.HasMergedMiningBlockIndexesAsync(
+                connection, CancellationToken.None);
+            var indexDetails = await connection.QueryAsync<string>(@"
+                SELECT index_class.relname || ': keys=' ||
+                    ARRAY(
+                        SELECT lower(regexp_replace(
+                            pg_get_indexdef(index_class.oid, key_position, true),
+                            '\s+', ' ', 'g'))
+                        FROM generate_series(1, i.indnkeyatts) key_position
+                        ORDER BY key_position
+                    )::text || '; predicate=' ||
+                    lower(regexp_replace(pg_get_expr(i.indpred, i.indrelid, true),
+                        '\s+', ' ', 'g'))
+                FROM pg_index i
+                JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                WHERE i.indrelid = to_regclass('blocks')
+                ORDER BY index_class.relname");
+            Assert.True(initialPreflight, string.Join(Environment.NewLine, indexDetails));
+
+            async Task AssertMalformedAuxPowIndexRejectedAsync(string keyExpression,
+                string predicate)
+            {
+                await connection.ExecuteAsync($@"
+                    DROP INDEX {validSchema}.idx_blocks_auxpow_pool_hash;
+                    CREATE UNIQUE INDEX idx_blocks_auxpow_pool_hash
+                        ON {validSchema}.blocks({keyExpression})
+                        WHERE {predicate};
+                ");
+                Assert.False(await repository.HasMergedMiningBlockIndexesAsync(connection,
+                    CancellationToken.None));
+                await connection.ExecuteAsync($@"
+                    DROP INDEX {validSchema}.idx_blocks_auxpow_pool_hash;
+                    CREATE UNIQUE INDEX idx_blocks_auxpow_pool_hash
+                        ON {validSchema}.blocks(poolid, hash)
+                        WHERE type = 'auxpow';
+                ");
+                Assert.True(await repository.HasMergedMiningBlockIndexesAsync(connection,
+                    CancellationToken.None));
+            }
+
+            await AssertMalformedAuxPowIndexRejectedAsync("lower(poolid), hash",
+                "type = 'auxpow'");
+            await AssertMalformedAuxPowIndexRejectedAsync("hash, poolid",
+                "type = 'auxpow'");
+            await AssertMalformedAuxPowIndexRejectedAsync("poolid, lower(hash)",
+                "type = 'auxpow'");
+            await AssertMalformedAuxPowIndexRejectedAsync("poolid, hash",
+                "type = 'auxpow' AND status = 'pending'");
 
             var blockTime = DateTime.UtcNow;
+            var directParent = new Block
+            {
+                PoolId = "ltc-solo",
+                Type = "merged-parent",
+                Created = blockTime,
+            };
+            Assert.True(PayoutManager.ShouldDeferMergedParentShareSettlement(
+                directParent, blockTime.AddSeconds(30)));
             await connection.ExecuteAsync($@"
                 INSERT INTO {validSchema}.shares(
                     poolid, difficulty, networkdifficulty, miner, created)
@@ -95,7 +153,7 @@ public class MergedMiningIndexIntegrationTests
 
             // Model the paired winning share arriving after the synchronous block row. Its
             // originating timestamp equals the block boundary and must be included once the
-            // relay-settlement delay has elapsed.
+            // direct/relay share-settlement delay has elapsed.
             await connection.ExecuteAsync($@"
                 INSERT INTO {validSchema}.shares(
                     poolid, difficulty, networkdifficulty, miner, created)
@@ -105,6 +163,9 @@ public class MergedMiningIndexIntegrationTests
                 .GetEffectiveAccumulatedShareDifficultyBetweenAsync(connection,
                     "ltc-solo", blockTime.AddMinutes(-1), blockTime,
                     CancellationToken.None));
+            Assert.False(PayoutManager.ShouldDeferMergedParentShareSettlement(
+                directParent,
+                blockTime.Add(PayoutManager.MergedParentShareSettlementDelay)));
 
             // Identically named valid indexes still exist, but unqualified runtime SQL now
             // resolves blocks to the stale relation and the preflight must reject it.

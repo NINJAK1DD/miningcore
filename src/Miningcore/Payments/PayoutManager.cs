@@ -66,7 +66,7 @@ public class PayoutManager : BackgroundService
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;
     private readonly CompositeDisposable disposables = new();
-    internal static readonly TimeSpan MergedParentRelaySettlementDelay =
+    internal static readonly TimeSpan MergedParentShareSettlementDelay =
         TimeSpan.FromMinutes(1);
 
 #if !DEBUG
@@ -207,10 +207,9 @@ public class PayoutManager : BackgroundService
         {
             foreach(var block in updatedBlocks.OrderBy(x => x.Created))
             {
-                if(ShouldDeferMergedParentRelaySettlement(clusterConfig, block,
-                       DateTime.UtcNow))
+                if(ShouldDeferMergedParentShareSettlement(block, DateTime.UtcNow))
                 {
-                    logger.Info(() => $"Deferring effort and status processing for merged parent block {block.BlockHeight} until its paired relay share has settled");
+                    logger.Info(() => $"Deferring effort and status processing for merged parent block {block.BlockHeight} until its paired ordinary share has settled");
                     continue;
                 }
 
@@ -245,20 +244,22 @@ public class PayoutManager : BackgroundService
             logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
     }
 
-    internal static bool ShouldDeferMergedParentRelaySettlement(ClusterConfig config,
-        Block block, DateTime now)
+    internal static bool ShouldDeferMergedParentShareSettlement(Block block,
+        DateTime now)
     {
-        if(config == null || block == null)
+        if(block == null)
             return false;
 
-        var usesShareRelay = config.ShareRelay != null || config.ShareRelays?.Length > 0;
         var isMergedParent = string.Equals(block.Type, "merged-parent",
                 StringComparison.OrdinalIgnoreCase) ||
             string.Equals(block.Type, "merged-parent-uncertain",
                 StringComparison.OrdinalIgnoreCase);
 
-        return usesShareRelay && isMergedParent &&
-            now - block.Created < MergedParentRelaySettlementDelay;
+        // Synchronous block-only persistence precedes the ordinary share recorder on both
+        // direct and relay nodes. Always allow the normal five-second share buffer to settle
+        // before effort or a terminal status can be frozen.
+        return isMergedParent &&
+            now - block.Created < MergedParentShareSettlementDelay;
     }
 
     internal async Task RunBlockUpdateTransactionAsync(PoolConfig poolConfig, Block block,
