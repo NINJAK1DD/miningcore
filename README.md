@@ -86,7 +86,9 @@ receiver with the PostgreSQL environment variables set, then submit work through
 Share recovery validates the complete read-locked input before writing, then imports all batches in
 one PostgreSQL transaction. Its replay manifest hashes an order-independent multiset of normalized
 share records, so equivalent files with reordered records, different comments, JSON whitespace or line
-endings are still rejected. A non-zero recovery exit therefore leaves the complete file rolled back
+endings are still rejected. Four domain-separated 256-bit modular accumulators plus record cardinality
+retain constant-size digest state even for multi-million-record journals. A non-zero recovery exit
+therefore leaves the complete file rolled back
 and safe to retry rather than partially committing ordinary shares. A successful import records the
 source SHA-256 hash in PostgreSQL and renames the file with an `.imported-<timestamp>` suffix. The
 manifest rejects the same content if an operator copies or renames it back and attempts a replay.
@@ -216,7 +218,8 @@ dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
 ```
 
 Automated tests cover AuxPoW serialization, proof attribution, reconciliation, persistence SQL,
-deployment validation and regressions. They do not replace live integration testing.
+deployment validation and regressions. GitHub CI also starts PostgreSQL 17 for custom-`search_path`,
+stale-index and delayed relay-share integration tests. They do not replace live daemon testing.
 
 Before mainnet funds are enabled, complete the documented tests with real `litecoind`, `dogecoind` and
 PostgreSQL. Required scenarios include height-decreasing Litecoin reorganisations, competing parent

@@ -11,6 +11,21 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: miningcore
+          POSTGRES_PASSWORD: miningcore-test
+          POSTGRES_DB: miningcore_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U miningcore -d miningcore_tests"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -93,4 +108,5 @@ jobs:
       shell: bash
       env:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+        MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src

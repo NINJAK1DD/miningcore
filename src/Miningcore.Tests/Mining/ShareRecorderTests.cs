@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.Data;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
 using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -347,6 +349,72 @@ public class ShareRecorderTests
         Assert.Equal(share.Miner, result.Miner);
         Assert.Equal("auxpow", result.BlockType);
         Assert.True(result.BlockRecordEmitted);
+    }
+
+    [Fact]
+    public void AcceptedMergedParent_IsOrdinaryForLegacyRelayReceiver()
+    {
+        var share = new Share
+        {
+            PoolId = "ltc-solo",
+            IsBlockCandidate = true,
+            BlockType = "merged-parent",
+            TransactionConfirmationData = "coinbase-txid",
+            Created = DateTime.UtcNow,
+        };
+
+        MergedMiningBitcoinJobManager.MarkParentBlockRecordEmitted(share);
+
+        using var stream = new MemoryStream();
+        Serializer.Serialize(stream, share);
+        stream.Position = 0;
+        var legacy = Serializer.Deserialize<LegacyRelayShare>(stream);
+
+        Assert.True(share.BlockRecordEmitted);
+        Assert.False(share.IsBlockCandidate);
+        Assert.Null(share.BlockType);
+        Assert.Null(share.TransactionConfirmationData);
+        Assert.False(legacy.IsBlockCandidate);
+        Assert.Equal(share.PoolId, legacy.PoolId);
+        Assert.Equal(share.Created, legacy.Created);
+    }
+
+    [Fact]
+    public void RecoveryContentHasher_IsOrderIndependentAndCardinalitySensitive()
+    {
+        var settings = new JsonSerializerSettings();
+        var first = new ShareRecorder.RecoveryContentHasher(settings);
+        var second = new ShareRecorder.RecoveryContentHasher(settings);
+        var differentCardinality = new ShareRecorder.RecoveryContentHasher(settings);
+        var a = Encoding.UTF8.GetBytes("normalized-a");
+        var b = Encoding.UTF8.GetBytes("normalized-b");
+
+        first.AppendNormalizedRecord(a);
+        first.AppendNormalizedRecord(b);
+        first.AppendNormalizedRecord(a);
+        second.AppendNormalizedRecord(a);
+        second.AppendNormalizedRecord(a);
+        second.AppendNormalizedRecord(b);
+        differentCardinality.AppendNormalizedRecord(a);
+        differentCardinality.AppendNormalizedRecord(b);
+
+        Assert.Equal(first.GetHash(), second.GetHash());
+        Assert.NotEqual(first.GetHash(), differentCardinality.GetHash());
+    }
+
+    [Fact]
+    public void RecoveryContentHasher_MillionRecordsRetainsConstantDigestState()
+    {
+        var hasher = new ShareRecorder.RecoveryContentHasher(
+            new JsonSerializerSettings());
+        var record = Encoding.UTF8.GetBytes("production-scale-normalized-record");
+
+        for(var i = 0; i < 1_000_000; i++)
+            hasher.AppendNormalizedRecord(record);
+
+        Assert.Equal(1_000_000UL, hasher.RecordCount);
+        Assert.Equal(128, hasher.AccumulatorStorageBytes);
+        Assert.Equal(64, hasher.GetHash().Length);
     }
 
     [Fact]
@@ -735,4 +803,17 @@ public class ShareRecorderTests
         IConnectionFactory ConnectionFactory, IDbConnection Connection,
         IDbTransaction Transaction, IShareRepository ShareRepository,
         IBlockRepository BlockRepository, IMessageBus MessageBus);
+
+    [ProtoContract]
+    private sealed class LegacyRelayShare
+    {
+        [ProtoMember(1)]
+        public string PoolId { get; set; }
+
+        [ProtoMember(12)]
+        public bool IsBlockCandidate { get; set; }
+
+        [ProtoMember(15)]
+        public DateTime Created { get; set; }
+    }
 }

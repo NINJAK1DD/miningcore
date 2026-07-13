@@ -184,7 +184,13 @@ public class BlockRepositoryTests
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("indisvalid", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("pg_get_indexdef", connection.CommandText,
+        Assert.Contains("i.indrelid = to_regclass('blocks')", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pg_get_expr", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pg_namespace", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("public.blocks", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
     }
 

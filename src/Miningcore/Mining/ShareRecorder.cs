@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Data;
 using System.Data.Common;
 using System.Net.Sockets;
@@ -339,55 +340,83 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         }
     }
 
-    private sealed class RecoveryContentHasher
+    internal sealed class RecoveryContentHasher
     {
         public RecoveryContentHasher(JsonSerializerSettings serializerSettings)
         {
             this.serializerSettings = serializerSettings;
         }
 
+        private const int AccumulatorCount = 4;
+        private const int DigestSize = 32;
+        private static readonly byte[] ManifestDomain =
+            Encoding.ASCII.GetBytes("Miningcore recovery multiset v2");
         private readonly JsonSerializerSettings serializerSettings;
-        private readonly List<byte[]> recordHashes = new();
+        private readonly byte[][] accumulatorSums = Enumerable.Range(0, AccumulatorCount)
+            .Select(_ => new byte[DigestSize])
+            .ToArray();
+
+        internal ulong RecordCount { get; private set; }
+        internal int AccumulatorStorageBytes => AccumulatorCount * DigestSize;
 
         public void Append(IEnumerable<Share> shares)
         {
             foreach(var share in shares)
             {
-                // Hash each normalized record independently. Sorting the fixed-size record
-                // digests later makes the manifest identity insensitive to record order while
-                // preserving duplicate cardinality.
                 var json = JsonConvert.SerializeObject(share, Formatting.None,
                     serializerSettings);
-                recordHashes.Add(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+                AppendNormalizedRecord(Encoding.UTF8.GetBytes(json));
             }
+        }
+
+        internal void AppendNormalizedRecord(ReadOnlySpan<byte> record)
+        {
+            Span<byte> recordDigest = stackalloc byte[DigestSize];
+            SHA256.HashData(record, recordDigest);
+
+            Span<byte> domainInput = stackalloc byte[DigestSize + 1];
+            recordDigest.CopyTo(domainInput[1..]);
+            Span<byte> domainDigest = stackalloc byte[DigestSize];
+
+            // Four independently domain-separated 256-bit additive accumulators form a
+            // commutative multiset identity. Addition is modulo 2^256, so memory remains
+            // constant while record order is ignored. The final cardinality prevents a
+            // different duplicate count from sharing an otherwise equal accumulator state.
+            for(var domain = 0; domain < AccumulatorCount; domain++)
+            {
+                domainInput[0] = (byte) domain;
+                SHA256.HashData(domainInput, domainDigest);
+                AddModulo256(accumulatorSums[domain], domainDigest);
+            }
+
+            RecordCount = checked(RecordCount + 1);
         }
 
         public string GetHash()
         {
-            recordHashes.Sort(ByteArrayComparer.Instance);
-
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            foreach(var recordHash in recordHashes)
-                hash.AppendData(recordHash);
+            hash.AppendData(ManifestDomain);
+
+            Span<byte> count = stackalloc byte[sizeof(ulong)];
+            BinaryPrimitives.WriteUInt64BigEndian(count, RecordCount);
+            hash.AppendData(count);
+
+            foreach(var accumulator in accumulatorSums)
+                hash.AppendData(accumulator);
 
             return Convert.ToHexString(hash.GetHashAndReset());
         }
-    }
 
-    private sealed class ByteArrayComparer : IComparer<byte[]>
-    {
-        public static readonly ByteArrayComparer Instance = new();
-
-        public int Compare(byte[] left, byte[] right)
+        private static void AddModulo256(Span<byte> accumulator,
+            ReadOnlySpan<byte> value)
         {
-            if(ReferenceEquals(left, right))
-                return 0;
-            if(left == null)
-                return -1;
-            if(right == null)
-                return 1;
-
-            return left.AsSpan().SequenceCompareTo(right);
+            var carry = 0;
+            for(var i = DigestSize - 1; i >= 0; i--)
+            {
+                var sum = accumulator[i] + value[i] + carry;
+                accumulator[i] = (byte) sum;
+                carry = sum >> 8;
+            }
         }
     }
 

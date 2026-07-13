@@ -531,18 +531,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     // statistics, while this block-only copy avoids waiting for DOGE submission.
                     await blockCandidateRecorder.PersistBlockCandidateAsync(
                         CreateParentBlockOnlyShare(share));
-                    share.BlockRecordEmitted = true;
-
-                    // Keep unresolved parent submissions out of live pool "last block" stats.
-                    // The block-only copy above remains a candidate and is durable for payout
-                    // reconciliation, but the ordinary LTC share should continue as a normal
-                    // share until that uncertain parent record is proven accepted.
-                    if(acceptResponse.Ambiguous)
-                    {
-                        share.IsBlockCandidate = false;
-                        share.BlockType = null;
-                        share.TransactionConfirmationData = null;
-                    }
+                    MarkParentBlockRecordEmitted(share);
                 }
             }
             else if(ReferenceEquals(completed, auxiliarySubmission))
@@ -556,6 +545,19 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         }
 
         return share;
+    }
+
+    internal static void MarkParentBlockRecordEmitted(Share share)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+
+        // The durable block-only copy is now the sole candidate record. Return the original
+        // proof as an ordinary statistical share so both current and pre-merged-mining relay
+        // receivers cannot attempt a second block insert during a rolling deployment.
+        share.BlockRecordEmitted = true;
+        share.IsBlockCandidate = false;
+        share.BlockType = null;
+        share.TransactionConfirmationData = null;
     }
 
     private static Share CreateParentBlockOnlyShare(Share share)

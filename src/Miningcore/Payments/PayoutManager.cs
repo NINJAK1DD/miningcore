@@ -66,6 +66,8 @@ public class PayoutManager : BackgroundService
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;
     private readonly CompositeDisposable disposables = new();
+    internal static readonly TimeSpan MergedParentRelaySettlementDelay =
+        TimeSpan.FromMinutes(1);
 
 #if !DEBUG
     private static readonly TimeSpan initialRunDelay = TimeSpan.FromMinutes(1);
@@ -205,6 +207,13 @@ public class PayoutManager : BackgroundService
         {
             foreach(var block in updatedBlocks.OrderBy(x => x.Created))
             {
+                if(ShouldDeferMergedParentRelaySettlement(clusterConfig, block,
+                       DateTime.UtcNow))
+                {
+                    logger.Info(() => $"Deferring effort and status processing for merged parent block {block.BlockHeight} until its paired relay share has settled");
+                    continue;
+                }
+
                 logger.Info(() => $"Processing payments for pool {poolConfig.Id}, block {block.BlockHeight}");
 
                 await RunBlockUpdateTransactionAsync(poolConfig, block, async (con, tx) =>
@@ -234,6 +243,22 @@ public class PayoutManager : BackgroundService
 
         else
             logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
+    }
+
+    internal static bool ShouldDeferMergedParentRelaySettlement(ClusterConfig config,
+        Block block, DateTime now)
+    {
+        if(config == null || block == null)
+            return false;
+
+        var usesShareRelay = config.ShareRelay != null || config.ShareRelays?.Length > 0;
+        var isMergedParent = string.Equals(block.Type, "merged-parent",
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(block.Type, "merged-parent-uncertain",
+                StringComparison.OrdinalIgnoreCase);
+
+        return usesShareRelay && isMergedParent &&
+            now - block.Created < MergedParentRelaySettlementDelay;
     }
 
     internal async Task RunBlockUpdateTransactionAsync(PoolConfig poolConfig, Block block,

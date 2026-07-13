@@ -263,33 +263,46 @@ public class BlockRepository : IBlockRepository
 
     public Task<bool> HasMergedMiningBlockIndexesAsync(IDbConnection con, CancellationToken ct)
     {
-        const string query = @"WITH expected(name, required_fragments) AS (
+        const string query = @"WITH expected(name, key_fragments, predicate_fragment) AS (
                 VALUES
-                ('idx_blocks_auxpow_pool_hash', ARRAY[
-                    'CREATE UNIQUE INDEX',
-                    'ON public.blocks USING btree (poolid, hash)',
-                    'WHERE (type = ''auxpow''::text)'
-                ]),
-                ('idx_blocks_auxpow_claim', ARRAY[
-                    'CREATE UNIQUE INDEX',
-                    'ON public.blocks USING btree (poolid, hash, regexp_replace(transactionconfirmationdata, '':[0-9]+$''::text, ''''::text))',
-                    'WHERE (type = ''auxpow-claim''::text)'
-                ]),
-                ('idx_blocks_merged_parent_pool_hash', ARRAY[
-                    'CREATE UNIQUE INDEX',
-                    'ON public.blocks USING btree (poolid, hash)',
-                    'WHERE (type = ANY (ARRAY[''merged-parent''::text, ''merged-parent-uncertain''::text]))'
-                ])
+                    ('idx_blocks_auxpow_pool_hash', ARRAY[
+                        'poolid',
+                        'hash'
+                    ], 'type = ''auxpow''::text'),
+                    ('idx_blocks_auxpow_claim', ARRAY[
+                        'poolid',
+                        'hash',
+                        'regexp_replace(transactionconfirmationdata, '':[0-9]+$''::text, ''''::text)'
+                    ], 'type = ''auxpow-claim''::text'),
+                    ('idx_blocks_merged_parent_pool_hash', ARRAY[
+                        'poolid',
+                        'hash'
+                    ], 'type = ANY (ARRAY[''merged-parent''::text, ''merged-parent-uncertain''::text])')
             ),
             actual AS (
-                SELECT lower(c.relname) AS name,
+                SELECT lower(index_class.relname) AS name,
                     i.indisunique,
                     i.indisvalid,
                     i.indisready,
-                    pg_get_indexdef(c.oid) AS indexdef
-                FROM pg_class c
-                JOIN pg_index i ON i.indexrelid = c.oid
-                WHERE c.relkind = 'i'
+                    ARRAY(
+                        SELECT lower(regexp_replace(
+                            pg_get_indexdef(index_class.oid, key_position, true),
+                            '\s+', ' ', 'g'))
+                        FROM generate_series(1, i.indnkeyatts) key_position
+                        ORDER BY key_position
+                    ) AS key_expressions,
+                    lower(regexp_replace(
+                        pg_get_expr(i.indpred, i.indrelid, true),
+                        '\s+', ' ', 'g')) AS predicate
+                FROM pg_index i
+                JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                JOIN pg_class table_class ON table_class.oid = i.indrelid
+                JOIN pg_namespace table_namespace ON table_namespace.oid = table_class.relnamespace
+                WHERE index_class.relkind = 'i'
+                  AND table_class.relkind IN ('r', 'p')
+                  -- Resolve the same unqualified relation used by runtime repository SQL.
+                  -- This excludes stale same-named indexes in every other schema.
+                  AND i.indrelid = to_regclass('blocks')
             )
             SELECT COUNT(*) = 3
             FROM expected e
@@ -297,11 +310,13 @@ public class BlockRepository : IBlockRepository
             WHERE a.indisunique
               AND a.indisvalid
               AND a.indisready
+              AND cardinality(a.key_expressions) = cardinality(e.key_fragments)
               AND NOT EXISTS (
                   SELECT 1
-                  FROM unnest(e.required_fragments) fragment
-                  WHERE a.indexdef NOT ILIKE '%' || fragment || '%'
-              )";
+                  FROM unnest(e.key_fragments) WITH ORDINALITY fragment(value, position)
+                  WHERE a.key_expressions[position::int] NOT ILIKE '%' || fragment.value || '%'
+              )
+              AND a.predicate ILIKE '%' || e.predicate_fragment || '%'";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));
