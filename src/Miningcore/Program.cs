@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.IO;
@@ -142,9 +143,6 @@ public class Program : BackgroundService
                     services.AddMemoryCache();
 
                     ConfigureBackgroundServices(services);
-
-                    // MUST BE THE LAST REGISTERED HOSTED SERVICE!
-                    services.AddHostedService<Program>();
                 });
 
             if(ShouldConfigureApi(isShareRecoveryMode, clusterConfig.Api))
@@ -253,6 +251,12 @@ public class Program : BackgroundService
                 });
             }
 
+            // ConfigureWebHost registers GenericWebHostService in a later service callback. Add
+            // the mining shutdown coordinator only after the optional web host so it is the final
+            // hosted service and therefore receives the shared shutdown budget first.
+            hostBuilder.ConfigureServices((_, services) =>
+                ConfigureMiningShutdownCoordinator(services));
+
             host = hostBuilder.UseConsoleLifetime().Build();
 
             await PreFlightChecks(host.Services);
@@ -313,7 +317,7 @@ public class Program : BackgroundService
         // Share processing
         if(clusterConfig.ShareRelay == null)
         {
-            services.AddHostedService<ShareRecorder>();
+            ConfigureShareRecorderHostedService(services);
             services.AddHostedService<ShareReceiver>();
         }
 
@@ -340,6 +344,7 @@ public class Program : BackgroundService
     private static IHost host;
     private readonly IComponentContext container;
     private readonly IHostApplicationLifetime hal;
+    private readonly Func<CancellationToken, Task> executeOverride;
     private static ILogger logger;
     private static CommandOption versionOption;
     private static CommandOption configFileOption;
@@ -355,6 +360,12 @@ public class Program : BackgroundService
     {
         this.container = container;
         this.hal = hal;
+    }
+
+    internal Program(IComponentContext container, IHostApplicationLifetime hal,
+        Func<CancellationToken, Task> executeOverride) : this(container, hal)
+    {
+        this.executeOverride = executeOverride;
     }
 
     private static void ConfigureAutofac(ContainerBuilder builder)
@@ -373,6 +384,16 @@ public class Program : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        using var miningShutdown = CancellationTokenSource.CreateLinkedTokenSource(
+            ct, hal.ApplicationStopping);
+        ct = miningShutdown.Token;
+
+        if(executeOverride != null)
+        {
+            await executeOverride(ct);
+            return;
+        }
+
         if(isShareRecoveryMode)
         {
             await RunRecoveryModeAsync(
@@ -418,6 +439,23 @@ public class Program : BackgroundService
     }
 
     internal static bool ShouldConfigureBackgroundServices(bool recoveryMode) => !recoveryMode;
+
+    internal static void ConfigureShareRecorderHostedService(IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        // ShareRecorder is registered as one Autofac component. Resolve that component here
+        // instead of letting AddHostedService<T>() create another singleton with independent
+        // recovery state and journal locking.
+        services.AddHostedService(sp => sp.GetRequiredService<ShareRecorder>());
+    }
+
+    internal static void ConfigureMiningShutdownCoordinator(IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton<Program>();
+        services.AddHostedService(sp => sp.GetRequiredService<Program>());
+    }
 
     internal static void ConfigureHostShutdown(IServiceCollection services,
         TimeSpan? shutdownTimeout = null)

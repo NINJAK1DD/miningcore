@@ -6,12 +6,16 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Autofac.Extensions.DependencyInjection;
 using AutoMapper;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -222,6 +226,7 @@ public class ProgramPoolTemplateTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var durable = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var slowServer = new SlowServer();
 
         async Task RunProgramAsync(CancellationToken stoppingToken)
         {
@@ -252,11 +257,17 @@ public class ProgramPoolTemplateTests
                 .ConfigureServices(services =>
                 {
                     Program.ConfigureHostShutdown(services);
-                    services.AddSingleton<ShutdownProbeProgram>(sp =>
-                        new ShutdownProbeProgram(RunProgramAsync,
-                            sp.GetRequiredService<IHostApplicationLifetime>()));
-                    services.AddSingleton<IHostedService>(sp =>
-                        sp.GetRequiredService<ShutdownProbeProgram>());
+                })
+                .ConfigureWebHost(builder => builder
+                    .UseServer(slowServer)
+                    .Configure(_ => { }))
+                .ConfigureServices(services =>
+                {
+                    services.AddSingleton(sp => new Program(
+                        Substitute.For<IComponentContext>(),
+                        sp.GetRequiredService<IHostApplicationLifetime>(),
+                        RunProgramAsync));
+                    Program.ConfigureMiningShutdownCoordinator(services);
                 })
                 .Build();
 
@@ -272,10 +283,15 @@ public class ProgramPoolTemplateTests
 
             Assert.False(stopping.IsCompleted);
             Assert.False(durable.Task.IsCompleted);
+            Assert.False(slowServer.Stopping.Task.IsCompleted);
 
             releaseCandidate.TrySetResult(true);
-            await stopping.WaitAsync(TimeSpan.FromSeconds(3));
+            await slowServer.Stopping.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.True(durable.Task.IsCompletedSuccessfully);
+            Assert.False(stopping.IsCompleted);
+
+            slowServer.ReleaseStop();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(3));
 
             var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
                 .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith('#'))
@@ -287,11 +303,46 @@ public class ProgramPoolTemplateTests
         finally
         {
             releaseCandidate.TrySetResult(true);
+            slowServer.ReleaseStop();
             databaseAttempt.TrySetException(new TimeoutException(
                 "simulated late PostgreSQL failure"));
             await Task.Delay(25);
             File.Delete(recoveryFilename);
         }
+    }
+
+    [Fact]
+    public void ProductionContainer_ShareRecorderServicesResolveSameSingleton()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var config = new ClusterConfig { Pools = Array.Empty<PoolConfig>() };
+
+        using var host = new HostBuilder()
+            .UseServiceProviderFactory(new AutofacServiceProviderFactory())
+            .ConfigureContainer<ContainerBuilder>(builder =>
+            {
+                builder.RegisterModule<AutofacModule>();
+                builder.RegisterInstance(config);
+                builder.RegisterInstance(mapper).As<IMapper>();
+                builder.RegisterInstance(connectionFactory).As<IConnectionFactory>();
+                builder.RegisterInstance(shareRepository).As<IShareRepository>();
+                builder.RegisterInstance(blockRepository).As<IBlockRepository>();
+            })
+            .ConfigureServices(Program.ConfigureShareRecorderHostedService)
+            .Build();
+
+        var self = host.Services.GetRequiredService<ShareRecorder>();
+        var candidateRecorder = host.Services.GetRequiredService<IBlockCandidateRecorder>();
+        var hostedRecorder = host.Services.GetServices<IHostedService>()
+            .OfType<ShareRecorder>()
+            .Single();
+
+        Assert.Same(self, candidateRecorder);
+        Assert.Same(self, hostedRecorder);
     }
 
     [Fact]
@@ -364,17 +415,29 @@ public class ProgramPoolTemplateTests
         };
     }
 
-    private sealed class ShutdownProbeProgram : Program
+    private sealed class SlowServer : IServer
     {
-        private readonly Func<CancellationToken, Task> execute;
+        private readonly TaskCompletionSource<bool> releaseStop = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public ShutdownProbeProgram(Func<CancellationToken, Task> execute,
-            IHostApplicationLifetime lifetime) :
-            base(Substitute.For<IComponentContext>(), lifetime)
+        public IFeatureCollection Features { get; } = new FeatureCollection();
+        public TaskCompletionSource<bool> Stopping { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task StartAsync<TContext>(IHttpApplication<TContext> application,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public async Task StopAsync(CancellationToken cancellationToken)
         {
-            this.execute = execute;
+            Stopping.TrySetResult(true);
+            await releaseStop.Task.WaitAsync(cancellationToken);
         }
 
-        protected override Task ExecuteAsync(CancellationToken ct) => execute(ct);
+        public void ReleaseStop() => releaseStop.TrySetResult(true);
+
+        public void Dispose()
+        {
+            ReleaseStop();
+        }
     }
 }

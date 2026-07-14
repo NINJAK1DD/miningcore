@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using System.Net.Sockets;
@@ -59,6 +60,9 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
 
         BuildFaultHandlingPolicy();
         ConfigureRecovery();
+        var recoveryPath = Path.GetFullPath(recoveryFilename);
+        recoveryWriteGate = RecoveryWriteGates.GetOrAdd(recoveryPath,
+            _ => new SemaphoreSlim(1, 1));
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
@@ -77,11 +81,16 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
     private bool notifiedAdminOnPolicyFallback = false;
-    private readonly SemaphoreSlim recoveryWriteGate = new(1, 1);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RecoveryWriteGates =
+        new(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+    private readonly SemaphoreSlim recoveryWriteGate;
     private readonly CancellationTokenSource blockCandidateShutdown = new();
     private int blockCandidateShutdownStarted;
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
+    internal SemaphoreSlim RecoveryWriteGate => recoveryWriteGate;
     private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "auxpow-claim",
@@ -323,7 +332,7 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         }
     }
 
-    private async Task WriteRecoveryJournalAsync(IList<Share> shares)
+    internal async Task WriteRecoveryJournalAsync(IList<Share> shares)
     {
         await recoveryWriteGate.WaitAsync(CancellationToken.None);
 

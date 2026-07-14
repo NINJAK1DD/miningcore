@@ -620,6 +620,90 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoveryJournal_ConcurrentRecorderInstancesSerializeByCanonicalFilename()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+        };
+
+        ShareRecorder CreateRecorder() => new(
+            Substitute.For<IConnectionFactory>(), mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), config,
+            Substitute.For<IMessageBus>());
+
+        var ordinaryRecorder = CreateRecorder();
+        var candidateRecorder = CreateRecorder();
+        var ordinaryShare = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "LStatisticalMiner",
+            Difficulty = 4,
+            Created = DateTime.UtcNow,
+        };
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DDurableBeneficiary",
+            BlockHeight = 987,
+            BlockHash = "concurrent-journal-doge-block",
+            BlockType = "auxpow",
+            BlockOnly = true,
+            IsBlockCandidate = true,
+            TransactionConfirmationData =
+                "auxpow-block:concurrent-journal-doge-block",
+            Created = DateTime.UtcNow,
+        };
+
+        Assert.Same(ordinaryRecorder.RecoveryWriteGate,
+            candidateRecorder.RecoveryWriteGate);
+
+        try
+        {
+            await ordinaryRecorder.RecoveryWriteGate.WaitAsync();
+            Task ordinaryWrite;
+            Task candidateWrite;
+
+            try
+            {
+                ordinaryWrite = ordinaryRecorder.WriteRecoveryJournalAsync(
+                    new[] { ordinaryShare });
+                candidateWrite = candidateRecorder.WriteRecoveryJournalAsync(
+                    new[] { candidate });
+                await Task.Delay(25);
+                Assert.False(ordinaryWrite.IsCompleted);
+                Assert.False(candidateWrite.IsCompleted);
+            }
+            finally
+            {
+                ordinaryRecorder.RecoveryWriteGate.Release();
+            }
+
+            await Task.WhenAll(ordinaryWrite, candidateWrite)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+
+            var records = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .ToArray();
+            Assert.Equal(2, records.Length);
+            Assert.Single(records, x => x.BlockHash == candidate.BlockHash &&
+                x.Miner == candidate.Miner && x.BlockOnly);
+            Assert.Single(records, x => x.Miner == ordinaryShare.Miner &&
+                !x.BlockOnly);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
     public async Task PersistSharesCoreAsync_DuplicateBlockDoesNotNotifyAgain()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();

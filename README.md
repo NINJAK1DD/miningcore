@@ -357,12 +357,16 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   covers daemon submission and attribution, not PostgreSQL retries or write-through recovery-journal
   I/O. A block candidate can take longer to acknowledge during storage failure because client
   cancellation is not allowed to abandon financially significant delivery or recording. Host
-  shutdown first quiesces new merged submissions, waits for proof validations already underway to
-  hand off any candidate, and then drains candidate delivery and persistence. Miningcore explicitly
-  reserves 45 seconds for graceful host shutdown. Once quiescing starts, candidate persistence skips
-  the ordinary 2/4/8-second retry delays, grants the active PostgreSQL attempt at most five seconds,
-  then writes and force-flushes the recovery journal. Configure the service manager's stop timeout
-  above 45 seconds; the supplied systemd example uses 60 seconds.
+  shutdown signals mining directly from `ApplicationStopping`, before sequential hosted-service
+  shutdown begins. The mining coordinator is also registered after the optional API web host, so it
+  is stopped and awaited before Kestrel can consume the shared budget. It quiesces new merged
+  submissions, waits for proof validations already underway to hand off any candidate, and then
+  drains candidate delivery and persistence. Miningcore explicitly reserves 45 seconds for graceful
+  host shutdown. Once quiescing starts, candidate persistence skips the ordinary 2/4/8-second retry
+  delays, grants the active PostgreSQL attempt at most five seconds, then writes and force-flushes the
+  recovery journal. Ordinary-share and candidate persistence use the same recorder singleton and a
+  canonical-filename journal lock. Configure the service manager's stop timeout above 45 seconds;
+  the supplied systemd example uses 60 seconds.
 
 ## Production operation
 
