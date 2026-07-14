@@ -358,7 +358,11 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   I/O. A block candidate can take longer to acknowledge during storage failure because client
   cancellation is not allowed to abandon financially significant delivery or recording. Host
   shutdown first quiesces new merged submissions, waits for proof validations already underway to
-  hand off any candidate, and then drains candidate delivery and persistence.
+  hand off any candidate, and then drains candidate delivery and persistence. Miningcore explicitly
+  reserves 45 seconds for graceful host shutdown. Once quiescing starts, candidate persistence skips
+  the ordinary 2/4/8-second retry delays, grants the active PostgreSQL attempt at most five seconds,
+  then writes and force-flushes the recovery journal. Configure the service manager's stop timeout
+  above 45 seconds; the supplied systemd example uses 60 seconds.
 
 ## Production operation
 
@@ -369,7 +373,7 @@ Before advertising a public pool:
 - Put the public API and website behind an HTTPS reverse proxy; do not expose the admin API port.
 - Keep hot-wallet balances limited and test encrypted wallet, database and configuration backups.
 - Use systemd or an equivalent supervisor with restart policy, resource limits and sufficient clean
-  shutdown time.
+  shutdown time. Keep its forced-stop timeout above Miningcore's 45-second internal budget.
 - Monitor daemon sync, pool hashrate, rejected shares, uncertain blocks, reconciliation, disk space,
   PostgreSQL backups, wallet balances and payout ownership.
 - Complete the [real-daemon validation plan](docs/merged-mining-regtest-validation.md) for merged

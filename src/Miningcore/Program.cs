@@ -78,6 +78,8 @@ namespace Miningcore;
 
 public class Program : BackgroundService
 {
+    internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
+
     public static async Task Main(string[] args)
     {
         try
@@ -135,6 +137,7 @@ public class Program : BackgroundService
                 })
                 .ConfigureServices((ctx, services) =>
                 {
+                    ConfigureHostShutdown(services);
                     services.AddHttpClient();
                     services.AddMemoryCache();
 
@@ -416,6 +419,19 @@ public class Program : BackgroundService
 
     internal static bool ShouldConfigureBackgroundServices(bool recoveryMode) => !recoveryMode;
 
+    internal static void ConfigureHostShutdown(IServiceCollection services,
+        TimeSpan? shutdownTimeout = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        var timeout = shutdownTimeout ?? HostShutdownTimeout;
+        if(timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(shutdownTimeout),
+                "Host shutdown timeout must be positive");
+
+        services.Configure<HostOptions>(options => options.ShutdownTimeout = timeout);
+    }
+
     internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
         !recoveryMode && (api == null || api.Enabled);
 
@@ -442,9 +458,9 @@ public class Program : BackgroundService
 
     public override async Task StopAsync(CancellationToken ct)
     {
-        logger.Info(() => "Stopping mining pools ...");
+        logger?.Info(() => "Stopping mining pools ...");
         await base.StopAsync(ct);
-        logger.Info(() => "Mining pools stopped");
+        logger?.Info(() => "Mining pools stopped");
     }
 
     internal static void AssignPoolTemplates(IEnumerable<PoolConfig> poolConfigs,

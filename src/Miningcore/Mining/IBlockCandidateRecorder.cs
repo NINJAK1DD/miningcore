@@ -8,4 +8,5 @@ namespace Miningcore.Mining;
 public interface IBlockCandidateRecorder
 {
     Task PersistBlockCandidateAsync(Share share);
+    void BeginShutdown();
 }

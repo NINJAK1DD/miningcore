@@ -651,6 +651,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     public async Task DrainCandidateOperationsAsync()
     {
         Task quiescence;
+        blockCandidateRecorder.BeginShutdown();
+
         lock(candidateOperationsLock)
         {
             candidateOperationsQuiescing = true;

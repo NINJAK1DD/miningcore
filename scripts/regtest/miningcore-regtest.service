@@ -14,7 +14,9 @@ RestartSec=5
 # .NET's systemd/console lifetime handles SIGTERM. Do not override this with
 # SIGINT for a non-interactive service or graceful host shutdown may not start.
 KillSignal=SIGTERM
-TimeoutStopSec=30
+# Miningcore's internal graceful-stop budget is 45 seconds. Keep a service-manager
+# margin so manager quiescence and a forced recovery-journal flush can finish first.
+TimeoutStopSec=60
 Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
 Environment=LD_LIBRARY_PATH=/opt/miningcore
 NoNewPrivileges=true

@@ -78,6 +78,10 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
     private const string PolicyContextKeyShares = "share";
     private bool notifiedAdminOnPolicyFallback = false;
     private readonly SemaphoreSlim recoveryWriteGate = new(1, 1);
+    private readonly CancellationTokenSource blockCandidateShutdown = new();
+    private int blockCandidateShutdownStarted;
+    internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
+        TimeSpan.FromSeconds(5);
     private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "auxpow-claim",
@@ -100,7 +104,110 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
             throw new ArgumentException(
                 "Synchronous block persistence requires a block-only candidate", nameof(share));
 
-        return PersistSharesAsync(new[] { share });
+        return PersistBlockCandidateDurablyAsync(new[] { share });
+    }
+
+    public void BeginShutdown()
+    {
+        if(Interlocked.Exchange(ref blockCandidateShutdownStarted, 1) == 0)
+            blockCandidateShutdown.Cancel();
+    }
+
+    private bool IsBlockCandidateShutdown =>
+        Volatile.Read(ref blockCandidateShutdownStarted) != 0;
+
+    private async Task PersistBlockCandidateDurablyAsync(IList<Share> shares)
+    {
+        Exception lastError = null;
+
+        for(var attempt = 0; attempt <= RetryCount; attempt++)
+        {
+            var databaseAttempt = PersistSharesCoreAsync(shares);
+
+            try
+            {
+                await AwaitCandidateDatabaseAttemptAsync(databaseAttempt);
+                return;
+            }
+            catch(Exception ex) when(IsRetryablePersistenceException(ex))
+            {
+                lastError = ex;
+
+                if(ex is TimeoutException && IsBlockCandidateShutdown &&
+                    !databaseAttempt.IsCompleted)
+                    _ = ObserveLateCandidateDatabaseAttemptAsync(databaseAttempt);
+            }
+
+            // Once shutdown starts, do not spend another fourteen seconds in retry delays.
+            // The current database attempt was already given its bounded grace period; move
+            // directly to the forced recovery-journal flush.
+            if(IsBlockCandidateShutdown || attempt == RetryCount)
+                break;
+
+            var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 1));
+            OnPolicyRetry(lastError, delay, attempt + 1, null);
+
+            try
+            {
+                await Task.Delay(delay, blockCandidateShutdown.Token);
+            }
+            catch(OperationCanceledException) when(IsBlockCandidateShutdown)
+            {
+                break;
+            }
+        }
+
+        try
+        {
+            await WriteRecoveryJournalAsync(shares);
+            NotifyAdminOnPolicyFallback();
+        }
+        catch(Exception ex)
+        {
+            if(!hasLoggedPolicyFallbackFailure)
+            {
+                logger.Fatal(ex, "Fatal error during candidate recovery fallback. Block candidate will be lost!");
+                hasLoggedPolicyFallbackFailure = true;
+            }
+
+            throw new IOException(
+                "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
+                ex);
+        }
+    }
+
+    private async Task AwaitCandidateDatabaseAttemptAsync(Task databaseAttempt)
+    {
+        if(!IsBlockCandidateShutdown)
+        {
+            try
+            {
+                await databaseAttempt.WaitAsync(blockCandidateShutdown.Token);
+                return;
+            }
+            catch(OperationCanceledException) when(IsBlockCandidateShutdown)
+            {
+                // Shutdown owns a separate bounded database grace period below. Cancelling this
+                // wait does not cancel the database command or its transaction.
+            }
+        }
+
+        await databaseAttempt.WaitAsync(ShutdownDatabaseAttemptTimeout);
+    }
+
+    private static bool IsRetryablePersistenceException(Exception ex) =>
+        ex is DbException or SocketException or TimeoutException or BrokenCircuitException;
+
+    private static async Task ObserveLateCandidateDatabaseAttemptAsync(Task databaseAttempt)
+    {
+        try
+        {
+            await databaseAttempt;
+        }
+        catch(Exception ex)
+        {
+            logger.Warn(ex, () => "Late PostgreSQL candidate attempt failed after recovery-journal fallback");
+        }
     }
 
     internal async Task PersistSharesCoreAsync(IList<Share> shares)
@@ -197,38 +304,7 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
 
         try
         {
-            await recoveryWriteGate.WaitAsync(CancellationToken.None);
-
-            try
-            {
-                await using var stream = new FileStream(recoveryFilename, new FileStreamOptions
-                {
-                    Mode = FileMode.Append,
-                    Access = FileAccess.Write,
-                    Share = FileShare.Read,
-                    Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
-                });
-                await using var writer = new StreamWriter(stream, new UTF8Encoding(false),
-                    1024, true);
-
-                if(stream.Length == 0)
-                    WriteRecoveryFileheader(writer);
-
-                foreach(var share in shares)
-                {
-                    var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
-                    await writer.WriteLineAsync(json);
-                }
-
-                await writer.FlushAsync();
-                stream.Flush(true);
-            }
-
-            finally
-            {
-                recoveryWriteGate.Release();
-            }
-
+            await WriteRecoveryJournalAsync(shares);
             NotifyAdminOnPolicyFallback();
         }
 
@@ -244,6 +320,40 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
                 throw new IOException(
                     "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
                     ex);
+        }
+    }
+
+    private async Task WriteRecoveryJournalAsync(IList<Share> shares)
+    {
+        await recoveryWriteGate.WaitAsync(CancellationToken.None);
+
+        try
+        {
+            await using var stream = new FileStream(recoveryFilename, new FileStreamOptions
+            {
+                Mode = FileMode.Append,
+                Access = FileAccess.Write,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+            });
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false),
+                1024, true);
+
+            if(stream.Length == 0)
+                WriteRecoveryFileheader(writer);
+
+            foreach(var share in shares)
+            {
+                var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
+                await writer.WriteLineAsync(json);
+            }
+
+            await writer.FlushAsync();
+            stream.Flush(true);
+        }
+        finally
+        {
+            recoveryWriteGate.Release();
         }
     }
 
@@ -546,6 +656,12 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         faultPolicy = Policy.WrapAsync(
             fallbackOnBrokenCircuit,
             Policy.WrapAsync(fallback, breaker, retry));
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        BeginShutdown();
+        await base.StopAsync(ct);
     }
 
     protected override Task ExecuteAsync(CancellationToken ct)

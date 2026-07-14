@@ -545,6 +545,81 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task PersistBlockCandidateAsync_ShutdownBoundsDatabaseAndFlushesRecoveryJournal()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var databaseAttempt = new TaskCompletionSource<IDbConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var databaseAttemptStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        connectionFactory.OpenConnectionAsync().Returns(_ =>
+        {
+            databaseAttemptStarted.TrySetResult(true);
+            return databaseAttempt.Task;
+        });
+
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), shareRepository, blockRepository,
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, messageBus)
+        {
+            ShutdownDatabaseAttemptTimeout = TimeSpan.FromMilliseconds(100),
+        };
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DShutdownBeneficiary",
+            BlockHeight = 456,
+            BlockHash = "shutdown-doge-block-hash",
+            BlockType = "auxpow-claim",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData =
+                "auxpow-claim:shutdown-doge-block-hash:parent-header:0",
+        };
+
+        try
+        {
+            var persistence = recorder.PersistBlockCandidateAsync(candidate);
+            await databaseAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            recorder.BeginShutdown();
+            await persistence.WaitAsync(TimeSpan.FromSeconds(2));
+
+            await connectionFactory.Received(1).OpenConnectionAsync();
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(candidate.PoolId, persisted.PoolId);
+            Assert.Equal(candidate.Miner, persisted.Miner);
+            Assert.Equal(candidate.BlockHash, persisted.BlockHash);
+            Assert.Equal(candidate.BlockType, persisted.BlockType);
+            Assert.Equal(candidate.TransactionConfirmationData,
+                persisted.TransactionConfirmationData);
+            Assert.True(persisted.BlockOnly);
+            Assert.True(persisted.IsBlockCandidate);
+        }
+        finally
+        {
+            databaseAttempt.TrySetException(new TimeoutException(
+                "simulated late PostgreSQL failure"));
+            await Task.Delay(25);
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
     public async Task PersistSharesCoreAsync_DuplicateBlockDoesNotNotifyAgain()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
