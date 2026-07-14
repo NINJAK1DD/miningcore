@@ -356,7 +356,9 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   candidate delivery independently of miner EOF or TCP reset. Its ten-second merged-mining deadline
   covers daemon submission and attribution, not PostgreSQL retries or write-through recovery-journal
   I/O. A block candidate can take longer to acknowledge during storage failure because client
-  cancellation is not allowed to abandon financially significant delivery or recording.
+  cancellation is not allowed to abandon financially significant delivery or recording. Host
+  shutdown first quiesces new merged submissions, waits for proof validations already underway to
+  hand off any candidate, and then drains candidate delivery and persistence.
 
 ## Production operation
 

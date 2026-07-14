@@ -216,6 +216,7 @@ public class MergedMiningManagerReorgTests
         {
             Assert.Equal("mining.submit", request.Method);
             requestToken = ct;
+            var preparation = manager.BeginCandidatePreparation();
             candidateOperation = manager.StartCandidateOperationAsync(async ownedToken =>
             {
                 operationToken = ownedToken;
@@ -223,7 +224,7 @@ public class MergedMiningManagerReorgTests
                 await releaseRpc.Task.WaitAsync(ownedToken);
                 await recorder.PersistBlockCandidateAsync(candidate);
                 return new[] { true };
-            });
+            }, preparation);
             operationRegistered.TrySetResult(true);
             return candidateOperation;
         }
@@ -259,6 +260,107 @@ public class MergedMiningManagerReorgTests
             await candidateOperation.WaitAsync(TimeSpan.FromSeconds(2)));
         await shutdownDrain.WaitAsync(TimeSpan.FromSeconds(2));
         await recorder.Received(1).PersistBlockCandidateAsync(candidate);
+    }
+
+    [Fact]
+    public async Task HostShutdown_DrainsValidationBeforeCandidateRegistrationAndPersistence()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        recorder.PersistBlockCandidateAsync(Arg.Any<Share>())
+            .Returns(Task.CompletedTask);
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(), recorder);
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+
+        using var validationStarted = new ManualResetEventSlim();
+        using var releaseValidation = new ManualResetEventSlim();
+        var candidateSubmissionStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePersistence = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var persisted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var candidateShare = new Share
+        {
+            BlockHeight = 321,
+            BlockHash = new string('c', 64),
+            IsBlockCandidate = true,
+            Difficulty = 1,
+            NetworkDifficulty = 1,
+        };
+
+        manager.ProcessMergedShareHandler = () =>
+        {
+            validationStarted.Set();
+            releaseValidation.Wait();
+            return new MergedMiningShareResult
+            {
+                Share = candidateShare,
+                ParentBlockHex = "parent-block",
+                ParentHeaderHex = new string('d', 160),
+            };
+        };
+        manager.SubmitCandidatePathsHandler = async operationToken =>
+        {
+            candidateSubmissionStarted.TrySetResult(true);
+            await releasePersistence.Task.WaitAsync(operationToken);
+            await recorder.PersistBlockCandidateAsync(new Share
+            {
+                PoolId = parent.Id,
+                BlockHash = candidateShare.BlockHash,
+                BlockOnly = true,
+                IsBlockCandidate = true,
+            });
+            persisted.TrySetResult(true);
+            return new[] { true };
+        };
+
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "shutdown-validation", false);
+        var context = new MergedMiningBitcoinWorkerContext
+        {
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            UserAgent = "test-miner",
+        };
+        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+            "shutdown-job");
+        context.AddJob(job, 4);
+        worker.SetContext(context);
+        using var hostShutdown = new CancellationTokenSource();
+
+        var submitTask = Task.Run(async () => await manager.SubmitShareAsync(worker,
+            new object[] { "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000" },
+            hostShutdown.Token));
+        Assert.True(validationStarted.Wait(TimeSpan.FromSeconds(2)));
+
+        hostShutdown.Cancel();
+        var shutdownDrain = manager.DrainCandidateOperationsAsync();
+        Assert.False(shutdownDrain.IsCompleted);
+
+        releaseValidation.Set();
+        await candidateSubmissionStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(shutdownDrain.IsCompleted);
+        Assert.False(persisted.Task.IsCompleted);
+
+        releasePersistence.TrySetResult(true);
+        await persisted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await shutdownDrain.WaitAsync(TimeSpan.FromSeconds(2));
+        var returnedShare = await submitTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Same(candidateShare, returnedShare);
+        await recorder.Received(1).PersistBlockCandidateAsync(
+            Arg.Is<Share>(x => x.BlockOnly && x.BlockHash == candidateShare.BlockHash));
+        Assert.Throws<OperationCanceledException>(() =>
+            manager.BeginCandidatePreparation());
     }
 
     [Fact]
@@ -384,6 +486,9 @@ public class MergedMiningManagerReorgTests
         private readonly Queue<RpcResponse<BlockTemplate>> responses = new();
         private int testJobId;
 
+        public Func<MergedMiningShareResult> ProcessMergedShareHandler { get; set; }
+        public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
+
         public MergedMiningBitcoinJob Current => (MergedMiningBitcoinJob) currentJob;
 
         public void Seed(BlockTemplate parent, AuxBlockTemplate auxiliary) =>
@@ -396,6 +501,18 @@ public class MergedMiningManagerReorgTests
 
         protected override Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(
             CancellationToken ct) => Task.FromResult(responses.Dequeue());
+
+        protected override MergedMiningShareResult ProcessMergedShare(
+            MergedMiningBitcoinJob job, StratumConnection worker, string extraNonce2,
+            string nTime, string nonce, string versionBits) =>
+            ProcessMergedShareHandler?.Invoke() ??
+            base.ProcessMergedShare(job, worker, extraNonce2, nTime, nonce, versionBits);
+
+        protected override Task<bool[]> SubmitCandidatePathsAsync(StratumConnection worker,
+            MergedMiningBitcoinWorkerContext context, MergedMiningShareResult result,
+            Share share, CancellationToken operationToken) =>
+            SubmitCandidatePathsHandler?.Invoke(operationToken) ??
+            base.SubmitCandidatePathsAsync(worker, context, result, share, operationToken);
 
         protected override MergedMiningBitcoinJob CreateMergedMiningJob(
             BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate) =>

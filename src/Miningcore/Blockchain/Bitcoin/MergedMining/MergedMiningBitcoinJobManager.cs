@@ -84,6 +84,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private readonly object candidateOperationsLock = new();
     private readonly Dictionary<long, TaskCompletionSource<bool>> candidateOperations = new();
     private long nextCandidateOperationId;
+    private int candidatePreparations;
+    private bool candidateOperationsQuiescing;
+    private TaskCompletionSource<bool> candidateQuiescence;
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -462,7 +465,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(job == null)
             throw new StratumException(StratumError.JobNotFound, "job not found");
 
-        var result = job.ProcessShareMerged(worker, extraNonce2, nTime, nonce, versionBits);
+        using var candidatePreparation = BeginCandidatePreparation();
+        var result = ProcessMergedShare(job, worker, extraNonce2, nTime, nonce, versionBits);
         var share = result.Share;
 
         share.PoolId = poolConfig.Id;
@@ -480,7 +484,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         TaskCompletionSource<bool> candidateStart = null;
         Task<bool[]> candidateOperation = null;
 
-        if(hasCandidate)
+        if(!hasCandidate)
+        {
+            // Validation is complete and this proof cannot produce a block. Shutdown does not
+            // need to wait for the remaining ordinary statistical-share publication.
+            candidatePreparation.Dispose();
+        }
+        else
         {
             // Reserve manager ownership synchronously as soon as proof validation identifies a
             // candidate. The start gate preserves statistical-share ordering without leaving a
@@ -489,7 +499,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 TaskCreationOptions.RunContinuationsAsynchronously);
             candidateOperation = StartCandidateOperationAsync(operationToken =>
                 SubmitCandidatePathsAsync(worker, context, result, share, operationToken),
-                candidateStart.Task);
+                candidatePreparation, candidateStart.Task);
         }
 
         // The proof has passed all share validation. Publish a cleared statistical copy before
@@ -513,17 +523,48 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         return share;
     }
 
+    protected virtual MergedMiningShareResult ProcessMergedShare(
+        MergedMiningBitcoinJob job, StratumConnection worker, string extraNonce2,
+        string nTime, string nonce, string versionBits) =>
+        job.ProcessShareMerged(worker, extraNonce2, nTime, nonce, versionBits);
+
+    internal CandidatePreparationLease BeginCandidatePreparation()
+    {
+        lock(candidateOperationsLock)
+        {
+            if(candidateOperationsQuiescing)
+                throw new OperationCanceledException(
+                    "Merged-mining share processing is quiescing for shutdown");
+
+            candidatePreparations++;
+            return new CandidatePreparationLease(this);
+        }
+    }
+
     internal Task<bool[]> StartCandidateOperationAsync(
-        Func<CancellationToken, Task<bool[]>> operation, Task startSignal = null)
+        Func<CancellationToken, Task<bool[]>> operation,
+        CandidatePreparationLease preparation, Task startSignal = null)
     {
         ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(preparation);
 
         var operationId = Interlocked.Increment(ref nextCandidateOperationId);
         var completion = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         lock(candidateOperationsLock)
+        {
+            if(preparation.Owner != this || preparation.Completed)
+                throw new InvalidOperationException(
+                    "Candidate preparation lease is not active for this manager");
+
+            // Candidate registration and preparation release are one atomic handoff. A shutdown
+            // drain can therefore never observe both counters at zero between validation and
+            // ownership transfer.
             candidateOperations.Add(operationId, completion);
+            preparation.Completed = true;
+            candidatePreparations--;
+        }
 
         var task = ExecuteCandidateOperationAsync(operation, startSignal);
         _ = ObserveCandidateOperationAsync(operationId, completion, task);
@@ -540,7 +581,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         return await operation(deadline.Token);
     }
 
-    private async Task<bool[]> SubmitCandidatePathsAsync(StratumConnection worker,
+    protected virtual async Task<bool[]> SubmitCandidatePathsAsync(StratumConnection worker,
         MergedMiningBitcoinWorkerContext context, MergedMiningShareResult result,
         Share share, CancellationToken operationToken)
     {
@@ -598,7 +639,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         finally
         {
             lock(candidateOperationsLock)
+            {
                 candidateOperations.Remove(operationId);
+                TryCompleteCandidateQuiescenceLocked();
+            }
 
             completion.TrySetResult(true);
         }
@@ -606,18 +650,53 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
     public async Task DrainCandidateOperationsAsync()
     {
-        while(true)
+        Task quiescence;
+        lock(candidateOperationsLock)
         {
-            Task[] pending;
-            lock(candidateOperationsLock)
-                pending = candidateOperations.Values.Select(x => x.Task).ToArray();
-
-            if(pending.Length == 0)
+            candidateOperationsQuiescing = true;
+            if(candidatePreparations == 0 && candidateOperations.Count == 0)
                 return;
 
-            logger.Info(() => $"Waiting for {pending.Length} in-flight merged-mining candidate operation(s)");
-            await Task.WhenAll(pending);
+            candidateQuiescence ??= new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            quiescence = candidateQuiescence.Task;
+            logger.Info(() => $"Waiting for {candidatePreparations} merged-mining proof validation(s) and {candidateOperations.Count} candidate operation(s)");
         }
+
+        await quiescence;
+    }
+
+    private void ReleaseCandidatePreparation(CandidatePreparationLease preparation)
+    {
+        lock(candidateOperationsLock)
+        {
+            if(preparation.Owner != this || preparation.Completed)
+                return;
+
+            preparation.Completed = true;
+            candidatePreparations--;
+            TryCompleteCandidateQuiescenceLocked();
+        }
+    }
+
+    private void TryCompleteCandidateQuiescenceLocked()
+    {
+        if(candidateOperationsQuiescing && candidatePreparations == 0 &&
+            candidateOperations.Count == 0)
+            candidateQuiescence?.TrySetResult(true);
+    }
+
+    internal sealed class CandidatePreparationLease : IDisposable
+    {
+        internal CandidatePreparationLease(MergedMiningBitcoinJobManager owner)
+        {
+            Owner = owner;
+        }
+
+        internal MergedMiningBitcoinJobManager Owner { get; }
+        internal bool Completed { get; set; }
+
+        public void Dispose() => Owner.ReleaseCandidatePreparation(this);
     }
 
     private async Task<bool> SubmitAndPersistParentBlockAsync(Share share,
