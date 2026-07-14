@@ -86,8 +86,7 @@ public class ProgramPoolTemplateTests
                     ex => templateWarning = ex),
                 () => stopped = true),
             _ => Task.CompletedTask,
-            () => 0,
-            () => false);
+            () => 0);
 
         Assert.True(recovered);
         Assert.True(stopped);
@@ -133,7 +132,7 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
-    public async Task EntryPoint_ExpectedHostCancellationReturnsSuccess()
+    public async Task EntryPoint_EscapedCancellationReturnsFailure()
     {
         var reported = false;
 
@@ -144,27 +143,7 @@ public class ProgramPoolTemplateTests
                 reported = true;
                 return Task.CompletedTask;
             },
-            () => 0,
-            () => true);
-
-        Assert.Equal(0, exitCode);
-        Assert.False(reported);
-    }
-
-    [Fact]
-    public async Task EntryPoint_UnexpectedCancellationReturnsFailure()
-    {
-        var reported = false;
-
-        var exitCode = await Program.RunStartupBoundaryAsync(
-            () => throw new OperationCanceledException(),
-            _ =>
-            {
-                reported = true;
-                return Task.CompletedTask;
-            },
-            () => 0,
-            () => false);
+            () => 0);
 
         Assert.Equal(1, exitCode);
         Assert.True(reported);
@@ -176,10 +155,121 @@ public class ProgramPoolTemplateTests
         var exitCode = await Program.RunStartupBoundaryAsync(
             () => Task.CompletedTask,
             _ => Task.CompletedTask,
-            () => 1,
-            () => false);
+            () => 1);
 
         Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task PoolStartupFailure_StopsRealHostWithFailureExitCode()
+    {
+        var processStatus = new ProcessStatus();
+        Exception reported = null;
+
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services.AddSingleton<IProcessStatus>(processStatus);
+                services.AddSingleton(sp => new Program(
+                    Substitute.For<IComponentContext>(),
+                    sp.GetRequiredService<IHostApplicationLifetime>(),
+                    processStatus,
+                    _ =>
+                    {
+                        Program.StopApplicationAsFailure(processStatus,
+                            sp.GetRequiredService<IHostApplicationLifetime>()
+                                .StopApplication);
+                        return Task.CompletedTask;
+                    }));
+                services.AddHostedService(sp => sp.GetRequiredService<Program>());
+            })
+            .Build();
+        var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+
+        var exitCode = await Program.RunStartupBoundaryAsync(
+            () => host.RunAsync(),
+            ex =>
+            {
+                reported = ex;
+                return Task.CompletedTask;
+            },
+            () => processStatus.ExitCode);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(1, processStatus.ExitCode);
+        Assert.Null(reported);
+        Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task NormalStopApplication_RealHostReturnsSuccess()
+    {
+        var processStatus = new ProcessStatus();
+
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services.AddSingleton<IProcessStatus>(processStatus);
+                services.AddSingleton(sp => new Program(
+                    Substitute.For<IComponentContext>(),
+                    sp.GetRequiredService<IHostApplicationLifetime>(),
+                    processStatus,
+                    _ =>
+                    {
+                        sp.GetRequiredService<IHostApplicationLifetime>()
+                            .StopApplication();
+                        return Task.CompletedTask;
+                    }));
+                services.AddHostedService(sp => sp.GetRequiredService<Program>());
+            })
+            .Build();
+
+        var exitCode = await Program.RunStartupBoundaryAsync(
+            () => host.RunAsync(),
+            _ => Task.CompletedTask,
+            () => processStatus.ExitCode);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, processStatus.ExitCode);
+    }
+
+    [Fact]
+    public async Task ShutdownTimeout_RealHostReturnsFailure()
+    {
+        var processStatus = new ProcessStatus();
+        var blockingService = new BlockingStopService();
+        Exception reported = null;
+
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services.Configure<HostOptions>(options =>
+                    options.ShutdownTimeout = TimeSpan.FromMilliseconds(100));
+                services.AddSingleton<IProcessStatus>(processStatus);
+                services.AddSingleton(blockingService);
+                services.AddSingleton<IHostedService>(blockingService);
+            })
+            .Build();
+
+        var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+        var run = Program.RunStartupBoundaryAsync(
+            () => host.RunAsync(),
+            ex =>
+            {
+                reported = ex;
+                return Task.CompletedTask;
+            },
+            () => processStatus.ExitCode);
+
+        await blockingService.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        lifetime.StopApplication();
+
+        var exitCode = await run.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, exitCode);
+        Assert.NotNull(reported);
+        Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+        Assert.True(blockingService.StopCancellationObserved);
     }
 
     [Theory]
@@ -382,6 +472,7 @@ public class ProgramPoolTemplateTests
                     services.AddSingleton(sp => new Program(
                         Substitute.For<IComponentContext>(),
                         sp.GetRequiredService<IHostApplicationLifetime>(),
+                        sp.GetRequiredService<IProcessStatus>(),
                         RunProgramAsync));
                     Program.ConfigureMiningShutdownCoordinator(services);
                 })
@@ -548,8 +639,7 @@ public class ProgramPoolTemplateTests
                     reported = ex;
                     return Task.CompletedTask;
                 },
-                () => 0,
-                () => false);
+                () => 0);
 
             Assert.Equal(1, exitCode);
             Assert.NotNull(reported);
@@ -585,6 +675,33 @@ public class ProgramPoolTemplateTests
         public void Dispose()
         {
             ReleaseStop();
+        }
+    }
+
+    private sealed class BlockingStopService : IHostedService
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool StopCancellationObserved { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            Started.TrySetResult(true);
+            return Task.CompletedTask;
+        }
+
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch(OperationCanceledException)
+            {
+                StopCancellationObserved = true;
+                throw;
+            }
         }
     }
 }

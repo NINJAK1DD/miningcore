@@ -58,6 +58,12 @@ were made against the same PostgreSQL instance used by the running payout manage
 ## Runtime hardening observed during validation
 
 - A normal systemd stop now completes in about 0.8 seconds without SIGKILL or a libzmq assertion.
+- Fatal pool startup, unknown payout outcome and payout-ownership loss paths mark one shared,
+  monotonic process status before the Generic Host consumes their background-service failure. A
+  timely `StopApplication` remains exit code 0; any exception escaping host shutdown, including its
+  configured timeout cancellation, returns exit code 1 so `Restart=on-failure` and monitoring can
+  distinguish an incident from an intentional stop. A Linux executable smoke test returned 0 for
+  the version command and 1 for a fatal missing-configuration startup.
 - Recovery import is a one-shot mode: it does not start normal payout/statistics/relay background
   services and stops the host after success or failure. Missing, malformed or database-failed
   imports return exit code 1 only after ensuring that the complete file wrote nothing; rerunning the

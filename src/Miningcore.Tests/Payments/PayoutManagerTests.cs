@@ -13,6 +13,8 @@ using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using NSubstitute;
 using Xunit;
 
@@ -337,7 +339,48 @@ public class PayoutManagerTests
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
     }
 
-    private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending)
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FatalPayoutBackgroundFailure_StopsRealHostWithFailureExitCode(
+        bool uncertainWalletOutcome)
+    {
+        var executionStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFailure = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Exception failure = uncertainWalletOutcome
+            ? new PayoutOutcomeUncertainException("wallet response lost")
+            : new InvalidOperationException("payout-manager ownership was lost");
+        var fixture = CreateFixture(executeOverride: async _ =>
+        {
+            executionStarted.TrySetResult(true);
+            await releaseFailure.Task;
+            throw failure;
+        });
+
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+                services.AddSingleton<IHostedService>(fixture.Manager))
+            .Build();
+
+        var run = Program.RunStartupBoundaryAsync(
+            () => host.RunAsync(),
+            _ => Task.CompletedTask,
+            () => fixture.ProcessStatus.ExitCode);
+
+        await executionStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        releaseFailure.TrySetResult(true);
+
+        var exitCode = await run.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(1, fixture.ProcessStatus.ExitCode);
+        await fixture.PayoutLease.Received(1).DisposeAsync();
+    }
+
+    private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending,
+        Func<CancellationToken, Task> executeOverride = null)
     {
         var context = Substitute.For<IComponentContext>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -348,6 +391,7 @@ public class PayoutManagerTests
         var balanceRepository = Substitute.For<IBalanceRepository>();
         var messageBus = Substitute.For<IMessageBus>();
         var payoutLease = Substitute.For<IPayoutManagerLease>();
+        var processStatus = new ProcessStatus();
         payoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(true);
         var clusterConfig = new ClusterConfig
         {
@@ -385,16 +429,22 @@ public class PayoutManagerTests
                 Status = persistedStatus,
             });
 
-        var manager = new PayoutManager(context, connectionFactory, blockRepository,
-            shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease);
+        var manager = executeOverride == null
+            ? new PayoutManager(context, connectionFactory, blockRepository,
+                shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease,
+                processStatus)
+            : new PayoutManager(context, connectionFactory, blockRepository,
+                shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease,
+                processStatus, executeOverride);
 
         return new Fixture(manager, miningPool, pool, block, connection, transaction,
-            blockRepository, balanceRepository, messageBus, payoutLease);
+            blockRepository, balanceRepository, messageBus, payoutLease, processStatus);
     }
 
     private sealed record Fixture(PayoutManager Manager, IMiningPool MiningPool,
         PoolConfig Pool, Block Block, IDbConnection Connection,
         IDbTransaction Transaction, IBlockRepository BlockRepository,
         IBalanceRepository BalanceRepository,
-        IMessageBus MessageBus, IPayoutManagerLease PayoutLease);
+        IMessageBus MessageBus, IPayoutManagerLease PayoutLease,
+        ProcessStatus ProcessStatus);
 }

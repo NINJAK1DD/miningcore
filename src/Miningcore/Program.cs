@@ -77,12 +77,14 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore;
 
-public class Program : BackgroundService
+public class Program : ProcessStatusBackgroundService
 {
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
 
     public static async Task<int> Main(string[] args)
     {
+        IProcessStatus processStatus = null;
+
         return await RunStartupBoundaryAsync(async () =>
         {
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
@@ -258,17 +260,16 @@ public class Program : BackgroundService
                 ConfigureMiningShutdownCoordinator(services));
 
             host = hostBuilder.UseConsoleLifetime().Build();
+            processStatus = host.Services.GetRequiredService<IProcessStatus>();
 
             await PreFlightChecks(host.Services);
 
             await host.RunAsync();
-        }, ReportStartupFailureAsync, () => Environment.ExitCode,
-            IsApplicationStopping);
+        }, ReportStartupFailureAsync, () =>
+            processStatus != null && processStatus.ExitCode != 0
+                ? processStatus.ExitCode
+                : Environment.ExitCode);
     }
-
-    private static bool IsApplicationStopping() =>
-        host?.Services.GetService<IHostApplicationLifetime>()?
-            .ApplicationStopping.IsCancellationRequested == true;
 
     private static async Task ReportStartupFailureAsync(Exception exception)
     {
@@ -353,14 +354,16 @@ public class Program : BackgroundService
     private static readonly ConcurrentDictionary<string, IMiningPool> pools = new();
     private static readonly AdminGcStats gcStats = new();
 
-    public Program(IComponentContext container, IHostApplicationLifetime hal)
+    public Program(IComponentContext container, IHostApplicationLifetime hal,
+        IProcessStatus processStatus) : base(processStatus)
     {
         this.container = container;
         this.hal = hal;
     }
 
     internal Program(IComponentContext container, IHostApplicationLifetime hal,
-        Func<CancellationToken, Task> executeOverride) : this(container, hal)
+        IProcessStatus processStatus, Func<CancellationToken, Task> executeOverride) :
+        this(container, hal, processStatus)
     {
         this.executeOverride = executeOverride;
     }
@@ -379,7 +382,7 @@ public class Program : BackgroundService
         ConfigurePersistence(builder);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteCoreAsync(CancellationToken ct)
     {
         using var miningShutdown = CancellationTokenSource.CreateLinkedTokenSource(
             ct, hal.ApplicationStopping);
@@ -437,7 +440,7 @@ public class Program : BackgroundService
 
                     logger.Error(() => "Cluster cannot start. Good Bye!");
 
-                    hal.StopApplication();
+                    StopApplicationAsFailure(ProcessStatus, hal.StopApplication);
                     break;
                 }
 
@@ -448,6 +451,13 @@ public class Program : BackgroundService
     }
 
     internal static bool ShouldConfigureBackgroundServices(bool recoveryMode) => !recoveryMode;
+
+    internal static void StopApplicationAsFailure(IProcessStatus processStatus,
+        Action stopApplication)
+    {
+        processStatus.MarkFailed();
+        stopApplication();
+    }
 
     internal static void ConfigureShareRecorderHostedService(IServiceCollection services)
     {
@@ -476,6 +486,7 @@ public class Program : BackgroundService
             throw new ArgumentOutOfRangeException(nameof(shutdownTimeout),
                 "Host shutdown timeout must be positive");
 
+        services.TryAddSingleton<IProcessStatus, ProcessStatus>();
         services.Configure<HostOptions>(options => options.ShutdownTimeout = timeout);
     }
 
@@ -483,20 +494,12 @@ public class Program : BackgroundService
         !recoveryMode && (api == null || api.Enabled);
 
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
-        Func<Exception, Task> reportFailure, Func<int> getExitCode = null,
-        Func<bool> isExpectedCancellation = null)
+        Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
     {
         try
         {
             await run();
             return (getExitCode ?? (() => Environment.ExitCode))();
-        }
-
-        catch(OperationCanceledException) when(isExpectedCancellation?.Invoke() == true)
-        {
-            // The generic host normally consumes Ctrl+C itself, but preserve a successful
-            // process result if cancellation escapes while application shutdown is active.
-            return 0;
         }
 
         catch(Exception ex)

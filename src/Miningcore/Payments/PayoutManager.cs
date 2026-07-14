@@ -22,7 +22,7 @@ namespace Miningcore.Payments;
 /// <summary>
 /// Coin agnostic payment processor
 /// </summary>
-public class PayoutManager : BackgroundService
+public class PayoutManager : ProcessStatusBackgroundService
 {
     public PayoutManager(IComponentContext ctx,
         IConnectionFactory cf,
@@ -31,7 +31,8 @@ public class PayoutManager : BackgroundService
         IBalanceRepository balanceRepo,
         ClusterConfig clusterConfig,
         IMessageBus messageBus,
-        IPayoutManagerLease payoutLease)
+        IPayoutManagerLease payoutLease,
+        IProcessStatus processStatus) : base(processStatus)
     {
         Contract.RequiresNonNull(ctx);
         Contract.RequiresNonNull(cf);
@@ -54,6 +55,22 @@ public class PayoutManager : BackgroundService
             clusterConfig.PaymentProcessing.Interval : 600);
     }
 
+    internal PayoutManager(IComponentContext ctx,
+        IConnectionFactory cf,
+        IBlockRepository blockRepo,
+        IShareRepository shareRepo,
+        IBalanceRepository balanceRepo,
+        ClusterConfig clusterConfig,
+        IMessageBus messageBus,
+        IPayoutManagerLease payoutLease,
+        IProcessStatus processStatus,
+        Func<CancellationToken, Task> executeOverride) :
+        this(ctx, cf, blockRepo, shareRepo, balanceRepo, clusterConfig, messageBus,
+            payoutLease, processStatus)
+    {
+        this.executeOverride = executeOverride;
+    }
+
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IBalanceRepository balanceRepo;
     private readonly IBlockRepository blockRepo;
@@ -65,6 +82,7 @@ public class PayoutManager : BackgroundService
     private readonly ConcurrentDictionary<string, IMiningPool> pools = new();
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;
+    private readonly Func<CancellationToken, Task> executeOverride;
     private readonly CompositeDisposable disposables = new();
     internal static readonly TimeSpan MergedParentShareSettlementDelay =
         TimeSpan.FromMinutes(1);
@@ -441,8 +459,14 @@ public class PayoutManager : BackgroundService
             block.MinerEffort = handler.AdjustBlockEffort(block.MinerEffort.Value);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteCoreAsync(CancellationToken ct)
     {
+        if(executeOverride != null)
+        {
+            await executeOverride(ct);
+            return;
+        }
+
         try
         {
             // monitor pool lifetime
