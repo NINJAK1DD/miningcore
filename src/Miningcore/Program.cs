@@ -428,7 +428,10 @@ public class Program : ProcessStatusBackgroundService
         await Guard(async () =>
         {
             AssignPoolTemplates(enabledPools, coinTemplates);
-            await Task.WhenAll(enabledPools.Select(config => RunPool(config, ct)));
+            await SupervisePoolLifetimesAsync(enabledPools.Select(config =>
+                    new KeyValuePair<string, Func<CancellationToken, Task>>(
+                        config.Id, poolCt => RunPool(config, poolCt))),
+                ct, ProcessStatus, hal.StopApplication);
         }, ex =>
         {
             switch(ex)
@@ -457,6 +460,60 @@ public class Program : ProcessStatusBackgroundService
     {
         processStatus.MarkFailed();
         stopApplication();
+    }
+
+    internal static async Task SupervisePoolLifetimesAsync(
+        IEnumerable<KeyValuePair<string, Func<CancellationToken, Task>>> poolLifetimes,
+        CancellationToken ct, IProcessStatus processStatus, Action stopApplication)
+    {
+        ArgumentNullException.ThrowIfNull(poolLifetimes);
+        ArgumentNullException.ThrowIfNull(processStatus);
+        ArgumentNullException.ThrowIfNull(stopApplication);
+
+        // Each task owns fail-fast signalling. Task.WhenAll is retained only to observe and
+        // drain every sibling after host cancellation; it must not be the first observer of
+        // an individual pool fault because it completes only after every supplied task ends.
+        var tasks = poolLifetimes
+            .Select(pool => RunPoolFailFastAsync(pool.Key, pool.Value, ct,
+                processStatus, stopApplication))
+            .ToArray();
+
+        await Task.WhenAll(tasks);
+    }
+
+    private static async Task RunPoolFailFastAsync(string poolId,
+        Func<CancellationToken, Task> runPool, CancellationToken ct,
+        IProcessStatus processStatus, Action stopApplication)
+    {
+        ArgumentNullException.ThrowIfNull(runPool);
+
+        try
+        {
+            await runPool(ct);
+        }
+
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // The host deliberately stopped this pool. Swallow its cooperative cancellation
+            // so a normal cluster shutdown remains successful while Task.WhenAll drains peers.
+            return;
+        }
+
+        catch
+        {
+            StopApplicationAsFailure(processStatus, stopApplication);
+            throw;
+        }
+
+        if(!ct.IsCancellationRequested)
+        {
+            // A pool is a lifetime service. Returning while the host is still running leaves
+            // the cluster only partially available and must be treated like a startup fault.
+            StopApplicationAsFailure(processStatus, stopApplication);
+            throw new PoolStartupException(
+                $"Pool {poolId} stopped unexpectedly while the cluster was running",
+                poolId);
+        }
     }
 
     internal static void ConfigureShareRecorderHostedService(IServiceCollection services)

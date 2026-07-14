@@ -201,6 +201,121 @@ public class ProgramPoolTemplateTests
         Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PoolSupervisor_FaultOrUnexpectedReturnStopsRealHostAndSibling(
+        bool throws)
+    {
+        var processStatus = new ProcessStatus();
+        var siblingStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingCancelled = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services.AddSingleton<IProcessStatus>(processStatus);
+                services.AddSingleton(sp => new Program(
+                    Substitute.For<IComponentContext>(),
+                    sp.GetRequiredService<IHostApplicationLifetime>(),
+                    processStatus,
+                    ct => Program.SupervisePoolLifetimesAsync(new[]
+                    {
+                        new KeyValuePair<string, Func<CancellationToken, Task>>(
+                            "ltc-solo", async _ =>
+                            {
+                                await siblingStarted.Task;
+
+                                if(throws)
+                                    throw new PoolStartupException(
+                                        "simulated parent pool failure", "ltc-solo");
+                            }),
+                        new KeyValuePair<string, Func<CancellationToken, Task>>(
+                            "doge-solo", async siblingToken =>
+                            {
+                                siblingStarted.TrySetResult(true);
+
+                                try
+                                {
+                                    await Task.Delay(Timeout.InfiniteTimeSpan,
+                                        siblingToken);
+                                }
+                                catch(OperationCanceledException) when(
+                                    siblingToken.IsCancellationRequested)
+                                {
+                                    siblingCancelled.TrySetResult(true);
+                                    throw;
+                                }
+                            }),
+                    }, ct, processStatus,
+                    sp.GetRequiredService<IHostApplicationLifetime>()
+                        .StopApplication)));
+                services.AddHostedService(sp => sp.GetRequiredService<Program>());
+            })
+            .Build();
+        var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+
+        var exitCode = await Program.RunStartupBoundaryAsync(
+                () => host.RunAsync(),
+                _ => Task.CompletedTask,
+                () => processStatus.ExitCode)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(1, processStatus.ExitCode);
+        Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+        Assert.True(siblingCancelled.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task PoolSupervisor_DeliberateHostStopDrainsHealthyPoolsSuccessfully()
+    {
+        var processStatus = new ProcessStatus();
+        var poolsStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedCount = 0;
+
+        using var host = new HostBuilder()
+            .ConfigureServices(services =>
+            {
+                services.AddSingleton<IProcessStatus>(processStatus);
+                services.AddSingleton(sp => new Program(
+                    Substitute.For<IComponentContext>(),
+                    sp.GetRequiredService<IHostApplicationLifetime>(),
+                    processStatus,
+                    ct => Program.SupervisePoolLifetimesAsync(
+                        new[] { "ltc-solo", "doge-solo" }.Select(poolId =>
+                            new KeyValuePair<string, Func<CancellationToken, Task>>(
+                                poolId, async poolToken =>
+                                {
+                                    if(Interlocked.Increment(ref startedCount) == 2)
+                                        poolsStarted.TrySetResult(true);
+
+                                    await Task.Delay(Timeout.InfiniteTimeSpan,
+                                        poolToken);
+                                })),
+                        ct, processStatus,
+                        sp.GetRequiredService<IHostApplicationLifetime>()
+                            .StopApplication)));
+                services.AddHostedService(sp => sp.GetRequiredService<Program>());
+            })
+            .Build();
+        var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+        var run = Program.RunStartupBoundaryAsync(
+            () => host.RunAsync(),
+            _ => Task.CompletedTask,
+            () => processStatus.ExitCode);
+
+        await poolsStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        lifetime.StopApplication();
+        var exitCode = await run.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, processStatus.ExitCode);
+    }
+
     [Fact]
     public async Task NormalStopApplication_RealHostReturnsSuccess()
     {
