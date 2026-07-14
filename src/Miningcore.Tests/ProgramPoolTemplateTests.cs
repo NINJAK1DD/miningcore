@@ -66,6 +66,32 @@ public class ProgramPoolTemplateTests
         Assert.Equal(1, exitCode);
     }
 
+    [Fact]
+    public async Task RecoveryMode_MissingCoinTemplateStillImportsAndStopsSuccessfully()
+    {
+        var recovered = false;
+        var stopped = false;
+        var exitCode = 0;
+        Exception templateWarning = null;
+
+        await Program.RunRecoveryModeAsync(
+            () => Program.RecoverSharesWithBestEffortTemplatesAsync(
+                () => throw new FileNotFoundException("optional coin template is missing"),
+                () =>
+                {
+                    recovered = true;
+                    return Task.CompletedTask;
+                },
+                ex => templateWarning = ex),
+            () => stopped = true,
+            code => exitCode = code);
+
+        Assert.True(recovered);
+        Assert.True(stopped);
+        Assert.Equal(0, exitCode);
+        Assert.IsType<FileNotFoundException>(templateWarning);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

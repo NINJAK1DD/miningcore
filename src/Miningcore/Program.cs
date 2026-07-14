@@ -396,15 +396,20 @@ public class Program : BackgroundService
 
         if(isShareRecoveryMode)
         {
-            // Recovery can commit block-only records and emits their block-found notification
-            // after the transaction succeeds. Populate the configured pool templates just as
-            // normal startup does so those notifications have the coin metadata they require.
-            var recoveryCoinTemplates = LoadCoinTemplates();
-            AssignPoolTemplates(clusterConfig.Pools.Where(config => config.Enabled),
-                recoveryCoinTemplates);
-
             await RunRecoveryModeAsync(
-                () => RecoverSharesAsync(shareRecoveryOption.Value()),
+                () => RecoverSharesWithBestEffortTemplatesAsync(
+                    () =>
+                    {
+                        // Recovery can commit block-only records and emits their block-found
+                        // notification after the transaction succeeds. Coin metadata improves
+                        // those notifications, but it must never prevent the journal import.
+                        var recoveryCoinTemplates = LoadCoinTemplates();
+                        AssignPoolTemplates(clusterConfig.Pools.Where(config => config.Enabled),
+                            recoveryCoinTemplates);
+                    },
+                    () => RecoverSharesAsync(shareRecoveryOption.Value()),
+                    ex => logger.Warn(ex, () =>
+                        "Coin templates are unavailable during recovery; block notifications may be skipped")),
                 hal.StopApplication);
 
             return;
@@ -479,6 +484,23 @@ public class Program : BackgroundService
 
     internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
         !recoveryMode && (api == null || api.Enabled);
+
+    internal static async Task RecoverSharesWithBestEffortTemplatesAsync(
+        Action prepareTemplates, Func<Task> recoverShares,
+        Action<Exception> warnTemplateFailure)
+    {
+        try
+        {
+            prepareTemplates();
+        }
+
+        catch(Exception ex)
+        {
+            warnTemplateFailure(ex);
+        }
+
+        await recoverShares();
+    }
 
     internal static async Task RunRecoveryModeAsync(Func<Task> recover,
         Action stopApplication, Action<int> setExitCode = null)
