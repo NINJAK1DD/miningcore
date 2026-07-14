@@ -20,6 +20,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
+using Npgsql;
 using NSubstitute;
 using Xunit;
 
@@ -71,25 +72,114 @@ public class ProgramPoolTemplateTests
     {
         var recovered = false;
         var stopped = false;
-        var exitCode = 0;
         Exception templateWarning = null;
 
-        await Program.RunRecoveryModeAsync(
-            () => Program.RecoverSharesWithBestEffortTemplatesAsync(
-                () => throw new FileNotFoundException("optional coin template is missing"),
-                () =>
-                {
-                    recovered = true;
-                    return Task.CompletedTask;
-                },
-                ex => templateWarning = ex),
-            () => stopped = true,
-            code => exitCode = code);
+        var exitCode = await Program.RunStartupBoundaryAsync(
+            () => Program.RunRecoveryModeAsync(
+                () => Program.RecoverSharesWithBestEffortTemplatesAsync(
+                    () => throw new FileNotFoundException("optional coin template is missing"),
+                    () =>
+                    {
+                        recovered = true;
+                        return Task.CompletedTask;
+                    },
+                    ex => templateWarning = ex),
+                () => stopped = true),
+            _ => Task.CompletedTask,
+            () => 0,
+            () => false);
 
         Assert.True(recovered);
         Assert.True(stopped);
         Assert.Equal(0, exitCode);
         Assert.IsType<FileNotFoundException>(templateWarning);
+    }
+
+    [Fact]
+    public async Task RecoveryEntryPoint_UnreachablePostgresReturnsFailureAndPreservesJournal()
+    {
+        var config = MergedMiningCluster();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw new NpgsqlException("PostgreSQL is unavailable"));
+
+        await AssertRecoveryPreflightFailurePreservesJournal(() =>
+            Program.EnsureMergedMiningSchemaAsync(config, connectionFactory,
+                blockRepository, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RecoveryEntryPoint_MissingMergedMiningIndexesReturnsFailureAndPreservesJournal()
+    {
+        var config = MergedMiningCluster();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        blockRepository.HasMergedMiningBlockIndexesAsync(connection,
+            Arg.Any<CancellationToken>()).Returns(false);
+
+        await AssertRecoveryPreflightFailurePreservesJournal(() =>
+            Program.EnsureMergedMiningSchemaAsync(config, connectionFactory,
+                blockRepository, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RecoveryEntryPoint_MalformedDatabaseConfigurationReturnsFailureAndPreservesJournal()
+    {
+        await AssertRecoveryPreflightFailurePreservesJournal(() =>
+            throw new FormatException("malformed PostgreSQL configuration"));
+    }
+
+    [Fact]
+    public async Task EntryPoint_ExpectedHostCancellationReturnsSuccess()
+    {
+        var reported = false;
+
+        var exitCode = await Program.RunStartupBoundaryAsync(
+            () => throw new OperationCanceledException(),
+            _ =>
+            {
+                reported = true;
+                return Task.CompletedTask;
+            },
+            () => 0,
+            () => true);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(reported);
+    }
+
+    [Fact]
+    public async Task EntryPoint_UnexpectedCancellationReturnsFailure()
+    {
+        var reported = false;
+
+        var exitCode = await Program.RunStartupBoundaryAsync(
+            () => throw new OperationCanceledException(),
+            _ =>
+            {
+                reported = true;
+                return Task.CompletedTask;
+            },
+            () => 0,
+            () => false);
+
+        Assert.Equal(1, exitCode);
+        Assert.True(reported);
+    }
+
+    [Fact]
+    public async Task EntryPoint_ReturnsRecoveryFailureCodeAfterHostStopsCleanly()
+    {
+        var exitCode = await Program.RunStartupBoundaryAsync(
+            () => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            () => 1,
+            () => false);
+
+        Assert.Equal(1, exitCode);
     }
 
     [Theory]
@@ -439,6 +529,37 @@ public class ProgramPoolTemplateTests
                 ? new PersistenceConfig { Postgres = new PostgresConfig() }
                 : null,
         };
+    }
+
+    private static async Task AssertRecoveryPreflightFailurePreservesJournal(
+        Func<Task> preflight)
+    {
+        var filename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var content = "{\"poolId\":\"ltc-solo\",\"miner\":\"recovery-beneficiary\"}";
+        Exception reported = null;
+
+        try
+        {
+            await File.WriteAllTextAsync(filename, content);
+
+            var exitCode = await Program.RunStartupBoundaryAsync(preflight,
+                ex =>
+                {
+                    reported = ex;
+                    return Task.CompletedTask;
+                },
+                () => 0,
+                () => false);
+
+            Assert.Equal(1, exitCode);
+            Assert.NotNull(reported);
+            Assert.True(File.Exists(filename));
+            Assert.Equal(content, await File.ReadAllTextAsync(filename));
+        }
+        finally
+        {
+            File.Delete(filename);
+        }
     }
 
     private sealed class SlowServer : IServer

@@ -63,9 +63,11 @@ were made against the same PostgreSQL instance used by the running payout manage
   imports return exit code 1 only after ensuring that the complete file wrote nothing; rerunning the
   original failed input is therefore safe. Successful input is registered by SHA-256 in PostgreSQL
   and archived with an `.imported-<timestamp>` suffix, preventing ordinary-share replay. Recovery
-  mode loads enabled pool coin templates before import so committed block-only records can emit
-  their post-commit block-found notifications; a missing template is guarded and logged instead of
-  affecting the successful database import.
+  startup, host-construction and PostgreSQL/schema-preflight failures also return exit code 1 while
+  leaving the source journal untouched. Recovery mode prepares enabled pool coin templates before
+  import so committed block-only records can emit their post-commit block-found notifications; a
+  missing or malformed optional template is guarded and logged instead of affecting the successful
+  database import.
 - Fault rules can require a minimum parameter count, preventing a block-submission fault from being
   consumed by Miningcore's parameterless startup capability probe.
 - Fault rules can patch nested template results, allowing deterministic target-separated parent-only

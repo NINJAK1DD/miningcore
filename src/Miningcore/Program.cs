@@ -81,9 +81,9 @@ public class Program : BackgroundService
 {
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
 
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
-        try
+        return await RunStartupBoundaryAsync(async () =>
         {
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
 
@@ -262,44 +262,41 @@ public class Program : BackgroundService
             await PreFlightChecks(host.Services);
 
             await host.RunAsync();
-        }
+        }, ReportStartupFailureAsync, () => Environment.ExitCode,
+            IsApplicationStopping);
+    }
 
-        catch(PoolStartupException ex)
+    private static bool IsApplicationStopping() =>
+        host?.Services.GetService<IHostApplicationLifetime>()?
+            .ApplicationStopping.IsCancellationRequested == true;
+
+    private static async Task ReportStartupFailureAsync(Exception exception)
+    {
+        switch(exception)
         {
-            if(!string.IsNullOrEmpty(ex.Message))
-                await Console.Error.WriteLineAsync(ex.Message);
+            case PoolStartupException ex:
+                if(!string.IsNullOrEmpty(ex.Message))
+                    await Console.Error.WriteLineAsync(ex.Message);
 
-            await Console.Error.WriteLineAsync("\nCluster cannot start. Good Bye!");
-        }
+                await Console.Error.WriteLineAsync("\nCluster cannot start. Good Bye!");
+                break;
 
-        catch(JsonException)
-        {
-            // ignored
-        }
+            case JsonException:
+            case IOException:
+                // The parser or console already reported these failures.
+                break;
 
-        catch(IOException)
-        {
-            // ignored
-        }
+            case AggregateException ex:
+                if(ex.InnerExceptions.FirstOrDefault() is not PoolStartupException)
+                    Console.Error.WriteLine(ex);
 
-        catch(AggregateException ex)
-        {
-            if(ex.InnerExceptions.First() is not PoolStartupException)
-                Console.Error.WriteLine(ex);
+                await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
+                break;
 
-            await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
-        }
-
-        catch(OperationCanceledException)
-        {
-            // Ctrl+C
-        }
-
-        catch(Exception ex)
-        {
-            Console.Error.WriteLine(ex);
-
-            await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
+            default:
+                Console.Error.WriteLine(exception);
+                await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
+                break;
         }
     }
 
@@ -484,6 +481,39 @@ public class Program : BackgroundService
 
     internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
         !recoveryMode && (api == null || api.Enabled);
+
+    internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
+        Func<Exception, Task> reportFailure, Func<int> getExitCode = null,
+        Func<bool> isExpectedCancellation = null)
+    {
+        try
+        {
+            await run();
+            return (getExitCode ?? (() => Environment.ExitCode))();
+        }
+
+        catch(OperationCanceledException) when(isExpectedCancellation?.Invoke() == true)
+        {
+            // The generic host normally consumes Ctrl+C itself, but preserve a successful
+            // process result if cancellation escapes while application shutdown is active.
+            return 0;
+        }
+
+        catch(Exception ex)
+        {
+            try
+            {
+                await reportFailure(ex);
+            }
+
+            catch
+            {
+                // A closed stderr stream must not turn a known startup failure into success.
+            }
+
+            return 1;
+        }
+    }
 
     internal static async Task RecoverSharesWithBestEffortTemplatesAsync(
         Action prepareTemplates, Func<Task> recoverShares,
