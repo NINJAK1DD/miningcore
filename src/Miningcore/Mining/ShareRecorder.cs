@@ -271,8 +271,12 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         {
             try
             {
-                if(pools.TryGetValue(poolId, out var poolConfig))
+                if(pools.TryGetValue(poolId, out var poolConfig) &&
+                    poolConfig.Template != null)
                     messageBus.NotifyBlockFound(poolId, block, poolConfig.Template);
+                else if(poolConfig != null)
+                    logger.Warn(() =>
+                        $"Block-found notification skipped for pool {poolId} because its coin template is unavailable");
                 else
                     logger.Warn(()=> $"Block found for unknown pool {poolId}");
             }

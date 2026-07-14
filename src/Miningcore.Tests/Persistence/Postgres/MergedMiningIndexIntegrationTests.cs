@@ -54,7 +54,7 @@ public class MergedMiningIndexIntegrationTests
             // The migration is transactional: rejecting the malformed arbiter must not leave
             // a partially installed ownership table behind.
             Assert.Null(await connection.ExecuteScalarAsync<uint?>(
-                "SELECT to_regclass('payout_manager_ownership')::oid"));
+                $"SELECT to_regclass('{schema}.payout_manager_ownership')::oid"));
 
             await connection.ExecuteAsync(@"
                 CREATE TABLE payout_manager_ownership(

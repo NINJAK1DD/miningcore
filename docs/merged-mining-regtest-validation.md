@@ -5,7 +5,7 @@ is not a promise that an arbitrary mainnet deployment is production-safe.
 
 ## Environment
 
-- Date: 12 July 2026
+- Date: 12–14 July 2026
 - Miningcore: `feature/ltc-doge-merged-mining-clean`
 - Host: Miningcore on Ubuntu 22.04 under WSL2; CUDA 10 ccminer 2.3.1 on Windows
 - Litecoin Core: 0.21.5.5 (`/LitecoinCore:0.21.5.5/`), regtest, one peer
@@ -53,7 +53,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
 | Wallet accepted, response lost during shutdown | Passed | The Dogecoin fault proxy forwarded `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged, generation 6 ownership remained durable, and replacement startup was rejected. After `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset, the dead owner was explicitly released and generation 7 started normally. |
 | Successful recovery-file replay | Passed plus automated hardening | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. The automated regression rejects the same normalized record multiset even when records are reordered or comments, JSON whitespace and line endings differ. Four domain-separated modular accumulators plus cardinality retain only 128 bytes of digest state; a one-million-record regression verifies the state does not grow with the journal. |
-| Durable merged-block delivery | Automated production-topology shutdown regressions passed; live failure injection still required | Accepted and uncertain LTC/DOGE block-only candidates are synchronously committed by the submitting node before submission returns. A WebHost-shaped Generic Host test holds a candidate beyond .NET 6's former five-second default, blocks server shutdown, and verifies mining drains to a forced journal flush before the web server begins stopping. A production Autofac-container test proves the hosted ordinary-share recorder, concrete recorder and candidate recorder are one instance. A second test forces two recorder instances to target one journal and verifies the canonical-filename gate writes exactly two parseable, force-flushed records. During quiescence the recorder skips ordinary retry delays; failure of both PostgreSQL and the journal still propagates. Atomic recovery import/replay has been tested, but no recorded live run has yet accepted an LTC/DOGE block while PostgreSQL was unavailable under this final synchronous architecture. |
+| Durable merged-block delivery during PostgreSQL outage | Passed | With PostgreSQL blocked from WSL, real ccminer produced LTC height 300 (`96ad5c54...52de68`) and DOGE height 223 (`bee32eb6...2aae36`). Both daemons accepted the proof and DOGE reported the submitted parent header. Fail-closed payout ownership then initiated shutdown; Miningcore waited for the active candidate operation and force-flushed one ordinary share, one `merged-parent` record and one `auxpow` record to the write-through journal (SHA-256 `a82246b46d8224f03a3058b1fa9ba8a89f88b325f6a05367cb5c95af5a44fd64`). Import changed PostgreSQL from 25/35/1 to 26 shares, 37 blocks and 2 recovery manifests. Both protected block identities occurred exactly once with the correct LTC/DOGE beneficiaries. Replaying identical content exited 1 and left all counts unchanged. The first attempt exposed rollback failure masking the original Npgsql timeout; `RunTx` now preserves the original retryable exception and regression tests cover both overloads. Automated shutdown, singleton-recorder, canonical-journal-lock and simultaneous database/journal failure tests remain in place. |
 
 ## Runtime hardening observed during validation
 
@@ -62,7 +62,10 @@ were made against the same PostgreSQL instance used by the running payout manage
   services and stops the host after success or failure. Missing, malformed or database-failed
   imports return exit code 1 only after ensuring that the complete file wrote nothing; rerunning the
   original failed input is therefore safe. Successful input is registered by SHA-256 in PostgreSQL
-  and archived with an `.imported-<timestamp>` suffix, preventing ordinary-share replay.
+  and archived with an `.imported-<timestamp>` suffix, preventing ordinary-share replay. Recovery
+  mode loads enabled pool coin templates before import so committed block-only records can emit
+  their post-commit block-found notifications; a missing template is guarded and logged instead of
+  affecting the successful database import.
 - Fault rules can require a minimum parameter count, preventing a block-submission fault from being
   consumed by Miningcore's parameterless startup capability probe.
 - Fault rules can patch nested template results, allowing deterministic target-separated parent-only
@@ -89,12 +92,10 @@ Do not enable mainnet funds solely because the passed rows above are green.
    recovery across the exact production hosts, firewall and route with
    `bash scripts/regtest/validate-physical-relay.sh` on the final receiver. If production is a direct
    single-node deployment, this gate is not applicable.
-2. **Accepted block during PostgreSQL interruption — still outstanding.** Recovery-file import,
-   replay protection and database failure behavior passed separately, but the validation record does
-   not contain a live LTC/DOGE accepted block whose synchronous PostgreSQL write failed and whose exact
-   block-only record was flushed to and recovered from the write-through journal.
-3. **Payout-manager ownership — tests passed; operating rule remains.** The fail-closed backend
+2. **Payout-manager ownership — tests passed; operating rule remains.** The fail-closed backend
    termination, controlled recovery, block-credit serialization and payment-batch idempotency tests
    passed against PostgreSQL 17. Automatic/hot-standby failover remains intentionally unsupported.
    After every unclean stop, confirm the old process has fully terminated and reconcile wallet history
-   before explicitly clearing its durable ownership row.
+   before explicitly clearing its durable ownership row. A TCP forwarding layer may keep the dead
+   process's PostgreSQL backend alive temporarily; if its verified backend still holds the advisory
+   lock, terminate that backend as part of the same controlled recovery.

@@ -51,9 +51,9 @@ public static class ConnectionFactoryExtensions
                         tx.Commit();
                 }
 
-                catch
+                catch(Exception ex)
                 {
-                    tx.Rollback();
+                    TryRollback(tx, ex);
                     throw;
                 }
             }
@@ -83,12 +83,30 @@ public static class ConnectionFactoryExtensions
                     return result;
                 }
 
-                catch
+                catch(Exception ex)
                 {
-                    tx.Rollback();
+                    TryRollback(tx, ex);
                     throw;
                 }
             }
+        }
+    }
+
+    internal const string RollbackExceptionDataKey = "Miningcore.RollbackException";
+
+    private static void TryRollback(IDbTransaction tx, Exception originalException)
+    {
+        try
+        {
+            tx.Rollback();
+        }
+        catch(Exception rollbackException)
+        {
+            // A connection failure can dispose the Npgsql transaction before control reaches
+            // this catch block. Preserve the original database exception so callers can apply
+            // their retry or durable-recovery policy; retain the secondary rollback failure for
+            // diagnostics without replacing the actionable exception.
+            originalException.Data[RollbackExceptionDataKey] = rollbackException;
         }
     }
 }

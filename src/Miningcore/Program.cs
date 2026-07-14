@@ -396,6 +396,13 @@ public class Program : BackgroundService
 
         if(isShareRecoveryMode)
         {
+            // Recovery can commit block-only records and emits their block-found notification
+            // after the transaction succeeds. Populate the configured pool templates just as
+            // normal startup does so those notifications have the coin metadata they require.
+            var recoveryCoinTemplates = LoadCoinTemplates();
+            AssignPoolTemplates(clusterConfig.Pools.Where(config => config.Enabled),
+                recoveryCoinTemplates);
+
             await RunRecoveryModeAsync(
                 () => RecoverSharesAsync(shareRecoveryOption.Value()),
                 hal.StopApplication);
