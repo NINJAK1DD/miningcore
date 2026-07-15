@@ -40,6 +40,8 @@ public class NotificationService : BackgroundService
     private readonly Dictionary<string, PoolConfig> poolConfigs;
     private readonly string adminEmail;
     private readonly IMessageBus messageBus;
+    private readonly TaskCompletionSource startupReady = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly EmailSenderConfig emailSenderConfig;
     private readonly PushoverClient pushoverClient;
 
@@ -140,24 +142,45 @@ public class NotificationService : BackgroundService
                 Guard(()=> handler(msg, ct), LogGuarded)));
     }
 
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        await base.StartAsync(ct);
+        await startupReady.Task.WaitAsync(ct);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var obs = new List<IObservable<IObservable<Unit>>>();
-
-        if(clusterConfig.Notifications?.Admin?.Enabled == true)
+        try
         {
-            obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
-            obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
-            obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
+            var obs = new List<IObservable<IObservable<Unit>>>();
+
+            if(clusterConfig.Notifications?.Admin?.Enabled == true)
+            {
+                obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
+                obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
+                obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
+            }
+
+            if(obs.Count > 0)
+            {
+                var processing = obs
+                    .Merge()
+                    .ObserveOn(TaskPoolScheduler.Default)
+                    .Concat()
+                    .ToTask(ct);
+
+                startupReady.TrySetResult();
+                await processing;
+            }
+
+            else
+                startupReady.TrySetResult();
         }
 
-        if(obs.Count > 0)
+        catch(Exception ex)
         {
-            await obs
-                .Merge()
-                .ObserveOn(TaskPoolScheduler.Default)
-                .Concat()
-                .ToTask(ct);
+            startupReady.TrySetException(ex);
+            throw;
         }
     }
 }

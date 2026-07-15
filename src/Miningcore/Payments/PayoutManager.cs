@@ -102,11 +102,19 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         try
         {
+            if(executeOverride == null)
+            {
+                disposables.Add(messageBus.Listen<PoolStatusNotification>()
+                    .ObserveOn(TaskPoolScheduler.Default)
+                    .Subscribe(OnPoolStatusNotification));
+            }
+
             await base.StartAsync(ct);
         }
 
         catch
         {
+            disposables.Dispose();
             await payoutLease.DisposeAsync();
             throw;
         }
@@ -469,11 +477,6 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         try
         {
-            // monitor pool lifetime
-            disposables.Add(messageBus.Listen<PoolStatusNotification>()
-                .ObserveOn(TaskPoolScheduler.Default)
-                .Subscribe(OnPoolStatusNotification));
-
             logger.Info(() => "Online");
 
             // Allow all pools to actually come up before the first payment processing run

@@ -23,6 +23,8 @@ public class MetricsPublisher : BackgroundService
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
 
     private readonly IMessageBus messageBus;
+    private readonly TaskCompletionSource startupReady = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
 
     private Summary btStreamLatencySummary;
     private Counter shareCounter;
@@ -131,19 +133,36 @@ public class MetricsPublisher : BackgroundService
         poolHashrateGauge.WithLabels(msg.PoolId).Set(msg.Hashrate);
     }
 
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        await base.StartAsync(ct);
+        await startupReady.Task.WaitAsync(ct);
+    }
+
     protected override Task ExecuteAsync(CancellationToken ct)
     {
-        var telemetryEvents = messageBus.Listen<TelemetryEvent>()
-            .ObserveOn(TaskPoolScheduler.Default)
-            .Do(x=> Guard(()=> OnTelemetryEvent(x), ex=> logger.Error(ex.Message)))
-            .Select(_=> Unit.Default);
+        try
+        {
+            var telemetryEvents = messageBus.Listen<TelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x=> Guard(()=> OnTelemetryEvent(x), ex=> logger.Error(ex.Message)))
+                .Select(_=> Unit.Default);
 
-        var hashrateNotifications = messageBus.Listen<HashrateNotification>()
-            .ObserveOn(TaskPoolScheduler.Default)
-            .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> logger.Error(ex.Message)))
-            .Select(_=> Unit.Default);
+            var hashrateNotifications = messageBus.Listen<HashrateNotification>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> logger.Error(ex.Message)))
+                .Select(_=> Unit.Default);
 
-        return Observable.Merge(telemetryEvents, hashrateNotifications)
-            .ToTask(ct);
+            var processing = Observable.Merge(telemetryEvents, hashrateNotifications)
+                .ToTask(ct);
+            startupReady.TrySetResult();
+            return processing;
+        }
+
+        catch(Exception ex)
+        {
+            startupReady.TrySetException(ex);
+            return Task.FromException(ex);
+        }
     }
 }

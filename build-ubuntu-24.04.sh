@@ -1,13 +1,11 @@
 #!/bin/bash
 
-# Install .NET 10 from Microsoft's Ubuntu 22.04 package feed.
-
 # install install-dependencies
 sudo apt-get update; \
   sudo apt-get -y install wget
-  
+
 # add dotnet repo
-wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
 sudo dpkg -i packages-microsoft-prod.deb
 rm packages-microsoft-prod.deb
 

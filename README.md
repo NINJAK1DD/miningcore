@@ -126,10 +126,8 @@ the native build dependencies and .NET SDK, then publishes Miningcore into `buil
 | Operating system | Command | Guidance |
 | --- | --- | --- |
 | Debian 12 | `./build-debian-12.sh` | **Recommended script path** |
+| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | **Recommended Ubuntu script path** |
 | Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Recommended Ubuntu script path |
-| Debian 11 | `./build-debian-11.sh` | Older compatibility path |
-| Ubuntu 20.04 LTS | `./build-ubuntu-20.04.sh` | Older compatibility path |
-| Ubuntu 21.04 | `./build-ubuntu-21.04.sh` | Historical/EOL; do not use for production |
 
 For example:
 
@@ -139,16 +137,15 @@ chmod +x build-debian-12.sh
 ls build/Miningcore
 ```
 
-These scripts reproduce the repository's existing .NET 6 build and are not a statement that .NET 6
-or an end-of-life operating system is safe for a new production deployment. GitHub Actions
+These scripts install the .NET 10 SDK and publish the `net10.0` application. GitHub Actions
 ([workflow source](.github/workflows/dotnet.yml)) is the authoritative automated build-and-test path.
 
 ### Windows development
 
 Windows is supported for development and testing, not recommended for hosting a production pool.
 
-1. Install the [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0).
-2. Optionally install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the
+1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+2. Optionally install [Visual Studio 2026](https://visualstudio.microsoft.com/vs/) with the
    **.NET desktop build tools** and **Desktop development with C++** workloads.
 3. Clone the repository and open [Miningcore.sln](src/Miningcore.sln), or run:
 

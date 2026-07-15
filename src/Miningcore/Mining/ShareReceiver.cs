@@ -92,6 +92,21 @@ public class ShareReceiver : BackgroundService
             AttachPool(notification.Pool);
     }
 
+    public override Task StartAsync(CancellationToken ct)
+    {
+        if(clusterConfig.ShareRelays != null)
+        {
+            // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+            // Subscribe before StartAsync returns so pool-online notifications cannot be lost
+            // while the socket and message-processing loops are being scheduled.
+            disposables.Add(messageBus.Listen<PoolStatusNotification>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Subscribe(OnPoolStatusNotification));
+        }
+
+        return base.StartAsync(ct);
+    }
+
     private Task StartMessageReceiver(CancellationToken ct)
     {
         return Task.Run(() =>
@@ -372,11 +387,6 @@ public class ShareReceiver : BackgroundService
         {
             try
             {
-                // monitor pool lifetime
-                disposables.Add(messageBus.Listen<PoolStatusNotification>()
-                    .ObserveOn(TaskPoolScheduler.Default)
-                    .Subscribe(OnPoolStatusNotification));
-
                 // process messages
                 await Task.WhenAll(
                     StartMessageReceiver(ct),
