@@ -16,6 +16,67 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class MergedMiningIndexIntegrationTests
 {
     [PostgresIntegrationFact]
+    public async Task RecoveryImportPreflight_RequiresImmediateFileHashPrimaryKey()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_recovery_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($"CREATE SCHEMA {schema}; " +
+                $"SET search_path TO {schema};");
+            var mapper = new MapperConfiguration(cfg =>
+                    cfg.AddProfile(new AutoMapperProfile()))
+                .CreateMapper();
+            var repository = new ShareRepository(mapper);
+
+            Assert.False(await repository.HasRecoveryImportSchemaAsync(connection,
+                CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                CREATE TABLE share_recovery_imports(
+                    filehash text NOT NULL PRIMARY KEY,
+                    filename text NOT NULL,
+                    recordcount int NOT NULL,
+                    created timestamptz NOT NULL);
+            ");
+            Assert.True(await repository.HasRecoveryImportSchemaAsync(connection,
+                CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                DROP TABLE share_recovery_imports;
+                CREATE TABLE share_recovery_imports(
+                    filehash text NOT NULL PRIMARY KEY,
+                    filename text NOT NULL,
+                    recordcount bigint NOT NULL,
+                    created timestamptz NOT NULL);
+            ");
+            Assert.False(await repository.HasRecoveryImportSchemaAsync(connection,
+                CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                DROP TABLE share_recovery_imports;
+                CREATE TABLE share_recovery_imports(
+                    filehash text NOT NULL,
+                    filename text NOT NULL,
+                    recordcount int NOT NULL,
+                    created timestamptz NOT NULL,
+                    PRIMARY KEY(filehash) DEFERRABLE INITIALLY IMMEDIATE);
+            ");
+            Assert.False(await repository.HasRecoveryImportSchemaAsync(connection,
+                CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("SET search_path TO public; ROLLBACK");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task PayoutOwnershipMigrationAndPreflight_RejectDeferrablePaymentBatchKey()
     {
         var connectionString = Environment.GetEnvironmentVariable(

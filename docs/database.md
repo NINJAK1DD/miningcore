@@ -73,7 +73,9 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
 recovery-only deployments using the `-rs` importer. The AuxPoW migration is required before enabling
 LTC/DOGE merged mining. Both scripts stop instead of guessing when legacy duplicates require manual
-review.
+review. Recovery mode validates the `share_recovery_imports` table, its required columns and its
+immediate `filehash` primary key before scanning the journal, so a missing or stale migration fails
+early with an actionable message.
 
 Merged-mining startup verifies its partial unique indexes. Payout processing uses PostgreSQL ownership
 and an idempotent payment ledger. Only a clean shutdown clears the durable owner token. After a crash:

@@ -6,6 +6,8 @@ namespace Miningcore.Persistence.Repositories;
 
 public interface IShareRepository
 {
+    Task<bool> HasRecoveryImportSchemaAsync(IDbConnection con,
+        CancellationToken ct);
     Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Share> shares, CancellationToken ct);
     Task<bool> TryRegisterRecoveryImportAsync(IDbConnection con, IDbTransaction tx,
         string fileHash, string filename, int recordCount, CancellationToken ct);

@@ -18,6 +18,56 @@ public class ShareRepository : IShareRepository
 
     private readonly IMapper mapper;
 
+    public Task<bool> HasRecoveryImportSchemaAsync(IDbConnection con,
+        CancellationToken ct)
+    {
+        const string query = @"SELECT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation
+              ON relation.oid = constraint_record.conrelid
+            JOIN pg_index index_record
+              ON index_record.indexrelid = constraint_record.conindid
+            WHERE relation.oid = to_regclass('share_recovery_imports')
+              AND relation.relkind IN ('r', 'p')
+              AND constraint_record.contype = 'p'
+              AND NOT constraint_record.condeferrable
+              AND index_record.indisunique
+              AND index_record.indisvalid
+              AND index_record.indisready
+              AND index_record.indimmediate
+              AND pg_get_constraintdef(constraint_record.oid) ILIKE
+                  'PRIMARY KEY (filehash)%'
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'filehash'
+                    AND attribute.atttypid = 'text'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'filename'
+                    AND attribute.atttypid = 'text'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'recordcount'
+                    AND attribute.atttypid = 'integer'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'created'
+                    AND attribute.atttypid = 'timestamp with time zone'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+        )";
+
+        return con.QuerySingleAsync<bool>(new CommandDefinition(query,
+            cancellationToken: ct));
+    }
+
     public async Task<bool> TryRegisterRecoveryImportAsync(IDbConnection con,
         IDbTransaction tx, string fileHash, string filename, int recordCount,
         CancellationToken ct)

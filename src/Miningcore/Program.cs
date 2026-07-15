@@ -1013,6 +1013,10 @@ public class Program : ProcessStatusBackgroundService
     {
         await ConfigurePostgresCompatibilityOptions(services);
 
+        await EnsureShareRecoverySchemaAsync(isShareRecoveryMode, clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IShareRepository>(), CancellationToken.None);
+
         if(RequiresMergedMiningPersistence(clusterConfig))
         {
             await EnsureMergedMiningSchemaAsync(clusterConfig,
@@ -1098,6 +1102,27 @@ public class Program : ProcessStatusBackgroundService
 
         // Configure SccPow
         Miningcore.Crypto.Hashing.Progpow.Sccpow.Cache.messageBus = messageBus;
+    }
+
+    internal static async Task EnsureShareRecoverySchemaAsync(bool recoveryMode,
+        ClusterConfig config, IConnectionFactory cf, IShareRepository shareRepo,
+        CancellationToken ct)
+    {
+        if(!recoveryMode)
+            return;
+
+        if(config?.Persistence?.Postgres == null || cf == null || shareRepo == null)
+            throw new PoolStartupException(
+                "Share recovery requires PostgreSQL persistence and the share_recovery_imports schema. " +
+                "Configure PostgreSQL and apply add_payout_manager_ownership.sql before rerunning -rs.");
+
+        using var con = await cf.OpenConnectionAsync();
+
+        if(!await shareRepo.HasRecoveryImportSchemaAsync(con, ct))
+            throw new PoolStartupException(
+                "Share recovery schema is missing or malformed. Apply " +
+                "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql " +
+                "before rerunning -rs; the recovery journal has not been imported.");
     }
 
     private static async Task ConfigurePostgresCompatibilityOptions(IServiceProvider services)

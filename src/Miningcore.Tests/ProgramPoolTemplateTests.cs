@@ -125,6 +125,37 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
+    public async Task RecoveryEntryPoint_MissingRecoveryManifestSchemaReturnsFailureAndPreservesJournal()
+    {
+        var config = MergedMiningCluster();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        shareRepository.HasRecoveryImportSchemaAsync(connection,
+            Arg.Any<CancellationToken>()).Returns(false);
+
+        await AssertRecoveryPreflightFailurePreservesJournal(() =>
+            Program.EnsureShareRecoverySchemaAsync(true, config, connectionFactory,
+                shareRepository, CancellationToken.None));
+
+        await shareRepository.Received(1).HasRecoveryImportSchemaAsync(connection,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task NormalStartup_DoesNotRequireRecoveryManifestPreflight()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var shareRepository = Substitute.For<IShareRepository>();
+
+        await Program.EnsureShareRecoverySchemaAsync(false, MergedMiningCluster(),
+            connectionFactory, shareRepository, CancellationToken.None);
+
+        await connectionFactory.DidNotReceive().OpenConnectionAsync();
+    }
+
+    [Fact]
     public async Task RecoveryEntryPoint_MalformedDatabaseConfigurationReturnsFailureAndPreservesJournal()
     {
         await AssertRecoveryPreflightFailurePreservesJournal(() =>
@@ -654,6 +685,8 @@ public class ProgramPoolTemplateTests
                 builder.RegisterInstance(shareRepository).As<IShareRepository>();
                 builder.RegisterInstance(blockRepository).As<IBlockRepository>();
             })
+            .ConfigureServices((_, services) =>
+                Program.ConfigureHostShutdown(services))
             .ConfigureServices(Program.ConfigureShareRecorderHostedService)
             .Build();
 
