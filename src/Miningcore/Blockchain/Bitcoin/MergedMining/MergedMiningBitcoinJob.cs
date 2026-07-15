@@ -88,16 +88,10 @@ public class MergedMiningBitcoinJob : BitcoinJob
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
-        uint versionBitsInt = 0;
+        var versionBitsInt = ParseVersionBits(context.VersionRollingMask, versionBits);
 
-        if(context.VersionRollingMask.HasValue && versionBits != null)
-        {
-            versionBitsInt = uint.Parse(versionBits, NumberStyles.HexNumber);
-            if((versionBitsInt & ~context.VersionRollingMask.Value) != 0)
-                throw new StratumException(StratumError.Other, "rolling-version mask violation");
-        }
-
-        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
+               versionBitsInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
         return ProcessShareMergedInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);

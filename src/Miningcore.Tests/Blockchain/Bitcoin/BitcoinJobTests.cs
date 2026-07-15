@@ -1,6 +1,7 @@
 using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Stratum;
@@ -331,6 +332,81 @@ public class BitcoinJobTests : TestBase
         Assert.ThrowsAny<StratumException>(() => job.ProcessShare(worker, extraNonce2, nTime, nonce));
     }
 
+    [Theory]
+    [InlineData(null, "missing version_bits")]
+    [InlineData("", "missing version_bits")]
+    [InlineData("0000200", "incorrect size of version_bits")]
+    [InlineData("000020000", "incorrect size of version_bits")]
+    [InlineData("00002xyz", "invalid version_bits")]
+    [InlineData("80000000", "rolling-version mask violation")]
+    public void Process_VersionRollingRejectsMissingMalformedAndUnmaskedBits(
+        string versionBits, string expectedMessage)
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
+
+        var ex = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
+            "01000000", "63445774", "51036775", versionBits));
+
+        Assert.Contains(expectedMessage, ex.Message);
+    }
+
+    [Fact]
+    public void Process_VersionRollingTreatsDifferentBitsAsDifferentWork()
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
+
+        var first = job.ProcessShare(worker, "01000000", "63445774",
+            "51036775", "00002000");
+        var second = job.ProcessShare(worker, "01000000", "63445774",
+            "51036775", "00004000");
+
+        Assert.NotNull(first.Share);
+        Assert.NotNull(second.Share);
+        var duplicate = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
+            "01000000", "63445774", "51036775", "00002000"));
+        Assert.Equal(StratumError.DuplicateShare, duplicate.Code);
+    }
+
+    [Fact]
+    public void Process_VersionRollingAcceptsExplicitZero()
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
+
+        var result = job.ProcessShare(worker, "01000000", "63445774",
+            "51036775", "00000000");
+
+        Assert.NotNull(result.Share);
+    }
+
+    [Theory]
+    [InlineData(null, "missing version_bits")]
+    [InlineData("0000200", "incorrect size of version_bits")]
+    [InlineData("00002xyz", "invalid version_bits")]
+    [InlineData("80000000", "rolling-version mask violation")]
+    public void MergedProcess_UsesSameStrictVersionRollingValidation(
+        string versionBits, string expectedMessage)
+    {
+        var clock = MockMasterClock.FromTicks(638010200200475015);
+        var job = new VersionValidationMergedJob();
+        job.Configure(clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            container.Resolve<RecyclableMemoryStreamManager>(), clock, "merged", false);
+        worker.SetContext(new MergedMiningBitcoinWorkerContext
+        {
+            ExtraNonce1 = "60000001",
+            Difficulty = 0.000000000001d,
+            VersionRollingMask = 0x1fffe000,
+        });
+
+        var ex = Assert.Throws<StratumException>(() => job.ProcessShareMerged(worker,
+            "01000000", "63445774", "51036775", versionBits));
+
+        Assert.Contains(expectedMessage, ex.Message);
+    }
+
     [Fact]
     public void Process_Invalid_Nonce()
     {
@@ -389,5 +465,17 @@ public class BitcoinJobTests : TestBase
             coin.ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue, coin.BlockHasherValue);
 
         return (job, worker);
+    }
+
+    private sealed class VersionValidationMergedJob : MergedMiningBitcoinJob
+    {
+        public void Configure(Miningcore.Time.IMasterClock masterClock)
+        {
+            clock = masterClock;
+            BlockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
+            {
+                CurTime = 1665423220,
+            };
+        }
     }
 }

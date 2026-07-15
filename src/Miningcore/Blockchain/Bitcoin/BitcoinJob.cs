@@ -346,16 +346,46 @@ public class BitcoinJob
         return reward;
     }
 
-    protected bool RegisterSubmit(string extraNonce1, string extraNonce2, string nTime, string nonce)
+    protected bool RegisterSubmit(string extraNonce1, string extraNonce2, string nTime,
+        string nonce, uint? versionBits)
     {
         var key = new StringBuilder()
             .Append(extraNonce1)
-            .Append(extraNonce2) // lowercase as we don't want to accept case-sensitive values as valid.
-            .Append(nTime)
-            .Append(nonce) // lowercase as we don't want to accept case-sensitive values as valid.
+            .Append(':')
+            .Append(extraNonce2.ToLowerInvariant())
+            .Append(':')
+            .Append(nTime.ToLowerInvariant())
+            .Append(':')
+            .Append(nonce.ToLowerInvariant())
+            .Append(':')
+            .Append(versionBits?.ToString("x8", CultureInfo.InvariantCulture) ?? "-")
             .ToString();
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected static uint? ParseVersionBits(uint? versionMask, string versionBits)
+    {
+        // BIP310 makes version_bits part of mining.submit whenever version-rolling was
+        // negotiated. Keeping null distinct from an explicit zero is important: null keeps
+        // every template-version bit, while 00000000 deliberately clears the negotiated bits.
+        if(!versionMask.HasValue)
+            return null;
+
+        if(string.IsNullOrEmpty(versionBits))
+            throw new StratumException(StratumError.Other, "missing version_bits");
+
+        if(versionBits.Length != 8)
+            throw new StratumException(StratumError.Other, "incorrect size of version_bits");
+
+        if(!uint.TryParse(versionBits, NumberStyles.AllowHexSpecifier,
+               CultureInfo.InvariantCulture, out var result))
+            throw new StratumException(StratumError.Other, "invalid version_bits");
+
+        if((result & ~versionMask.Value) != 0)
+            throw new StratumException(StratumError.Other, "rolling-version mask violation");
+
+        return result;
     }
 
     protected byte[] SerializeHeader(Span<byte> coinbaseHash, uint nTime, uint nonce, uint? versionMask, uint? versionBits)
@@ -991,20 +1021,11 @@ public class BitcoinJob
 
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
-        // validate version-bits (overt ASIC boost)
-        uint versionBitsInt = 0;
-
-        if(context.VersionRollingMask.HasValue && versionBits != null)
-        {
-            versionBitsInt = uint.Parse(versionBits, NumberStyles.HexNumber);
-
-            // enforce that only bits covered by current mask are changed by miner
-            if((versionBitsInt & ~context.VersionRollingMask.Value) != 0)
-                throw new StratumException(StratumError.Other, "rolling-version mask violation");
-        }
+        var versionBitsInt = ParseVersionBits(context.VersionRollingMask, versionBits);
 
         // dupe check
-        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
+               versionBitsInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
         return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);

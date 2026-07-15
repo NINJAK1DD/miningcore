@@ -254,7 +254,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         Contract.RequiresNonNull(worker);
         Contract.RequiresNonNull(submission);
 
-        if(submission is not object[] submitParams)
+        if(submission is not object[] submitParams || submitParams.Length < 5)
             throw new StratumException(StratumError.Other, "invalid params");
 
         var context = worker.ContextAs<BitcoinWorkerContext>();
@@ -265,7 +265,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         var extraNonce2 = submitParams[2] as string;
         var nTime = submitParams[3] as string;
         var nonce = submitParams[4] as string;
-        var versionBits = context.VersionRollingMask.HasValue ? submitParams[5] as string : null;
+        var versionBits = context.VersionRollingMask.HasValue && submitParams.Length > 5
+            ? submitParams[5] as string
+            : null;
 
         if(string.IsNullOrEmpty(workerValue))
             throw new StratumException(StratumError.Other, "missing or invalid workername");
