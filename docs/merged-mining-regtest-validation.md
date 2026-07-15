@@ -49,7 +49,7 @@ were made against the same PostgreSQL instance used by the running payout manage
 | Independent submission failure drain | Automated | Parent failure/DOGE success, DOGE failure/parent success, one timeout plus peer acceptance, and dual failures all drain both bounded tasks before one or all errors propagate. |
 | Statistical share independent of submissions | Automated | A cleared ordinary share is published immediately after proof validation, before parent or DOGE submission starts. Peer timeout/persistence failure cannot suppress it, and current receivers preserve a parent candidate's originating effort-boundary timestamp. |
 | Alephium sweep transaction identities | Automated | Null/empty sweep envelopes, null entries and blank transaction IDs are financially uncertain; valid multi-result sweeps require every identity. |
-| Relay disconnect/reconnect | Passed | Separate Linux sender and receiver processes exercised real Stratum, ZeroMQ and PostgreSQL. After the publisher was absent beyond the production 60-second timeout, the unchanged receiver reconnected and persisted new ordinary shares. LTC/DOGE block-only rows are now synchronously persisted by the sender and do not depend on relay availability. The final physical path can be repeated with `scripts/regtest/validate-physical-relay.sh`. |
+| Relay disconnect/reconnect | Passed, including physical hosts | Separate Ubuntu 22.04/WSL2 sender and receiver processes exercised real Stratum, CurveZMQ and PostgreSQL across `10.0.0.8` and `10.0.0.10`. The baseline persisted 11 relayed shares plus 8 LTC and 8 DOGE candidates. A Windows Firewall block on sender TCP 7000 suppressed ordinary shares during the outage while 3 LTC and 3 DOGE block records remained independently durable. After the production 60-second reconnect interval, 4 subsequent ordinary shares persisted, no duplicate pool/hash identities existed, and the accepted DOGE parent header matched the Litecoin block header. Ordinary PUB/SUB shares sent during disconnection were intentionally not replayed. |
 | Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
 | Wallet accepted, response lost during shutdown | Passed | The Dogecoin fault proxy forwarded `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged, generation 6 ownership remained durable, and replacement startup was rejected. After `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset, the dead owner was explicitly released and generation 7 started normally. |
 | Successful recovery-file replay | Passed plus automated hardening | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. The automated regression rejects the same normalized record multiset even when records are reordered or comments, JSON whitespace and line endings differ. Four domain-separated modular accumulators plus cardinality retain only 128 bytes of digest state; a one-million-record regression verifies the state does not grow with the journal. |
@@ -95,11 +95,12 @@ were made against the same PostgreSQL instance used by the running payout manage
 
 Do not enable mainnet funds solely because the passed rows above are green.
 
-1. **Physical relay route — conditional, not yet recorded for final hosts.** The separate sender and
-   receiver process test passed on one Linux host. If production uses relay, repeat ordinary-share
-   recovery across the exact production hosts, firewall and route with
-   `bash scripts/regtest/validate-physical-relay.sh` on the final receiver. If production is a direct
-   single-node deployment, this gate is not applicable.
+1. **Physical relay route — passed for the current lab.** Real traffic, interruption and reconnect
+   passed between physical hosts `10.0.0.8` and `10.0.0.10`, including sender-side firewall fault
+   injection, PostgreSQL persistence and exact merged-block attribution. If the production hosts,
+   firewall or route differ, repeat `bash scripts/regtest/validate-physical-relay.sh` on that final
+   path. Ordinary ZeroMQ shares remain intentionally unacknowledged and are not replayed after an
+   outage; this is an accepted deployment characteristic, not durable-queue validation.
 2. **Payout-manager ownership — tests passed; operating rule remains.** The fail-closed backend
    termination, controlled recovery, block-credit serialization and payment-batch idempotency tests
    passed against PostgreSQL 17. Automatic/hot-standby failover remains intentionally unsupported.

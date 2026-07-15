@@ -350,8 +350,9 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   is not in the working directory.
 - **Wallet RPC is financially sensitive.** Never expose daemon or wallet RPC to the public internet.
 - **Share relay is not a durable queue.** ZeroMQ PUB/SUB does not acknowledge ordinary shares; merged
-  block candidates use additional synchronous persistence, but final physical-path testing remains
-  required for a distributed deployment.
+  block candidates use additional synchronous persistence. The physical Windows/WSL sender-to-
+  receiver route has passed interruption and reconnect testing, but a production relay deployment
+  must still accept that ordinary shares sent while the receiver is unreachable are not replayed.
 - **Block-submission timing is durability-first.** After local proof validation, the manager owns
   candidate delivery independently of miner EOF or TCP reset. Its ten-second merged-mining deadline
   covers daemon submission and attribution, not PostgreSQL retries or write-through recovery-journal
@@ -381,7 +382,8 @@ Before advertising a public pool:
 - Monitor daemon sync, pool hashrate, rejected shares, uncertain blocks, reconciliation, disk space,
   PostgreSQL backups, wallet balances and payout ownership.
 - Complete the [real-daemon validation plan](docs/merged-mining-regtest-validation.md) for merged
-  mining and test the exact firewall, relay and storage path used in production.
+  mining. If the final relay hosts or route differ from the validated physical lab, repeat its
+  firewall-interruption test on that exact production path.
 
 Automated tests can be run with:
 
