@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using AutoMapper;
@@ -203,10 +204,7 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
             candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
                 journalError, false);
 
-            throw new IOException(
-                "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
-                new AggregateException(new[] { lastError, journalError }
-                    .Where(x => x != null)));
+            RethrowCandidatePersistenceFailure(lastError, journalError);
         }
 
         if(unexpectedDatabaseFailure)
@@ -214,10 +212,22 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
             candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
                 null, true);
 
-            throw new IOException(
-                "Block candidate was recovered to the journal after an unexpected PostgreSQL failure; the cluster is stopping",
-                lastError);
+            RethrowCandidatePersistenceFailure(lastError, null);
         }
+    }
+
+    [System.Diagnostics.CodeAnalysis.DoesNotReturn]
+    private static void RethrowCandidatePersistenceFailure(Exception databaseError,
+        Exception journalError)
+    {
+        var primary = databaseError ?? journalError ??
+            new IOException("Unknown block-candidate persistence failure");
+
+        if(databaseError != null && journalError != null)
+            databaseError.Data["RecoveryJournalException"] = journalError;
+
+        ExceptionDispatchInfo.Capture(primary).Throw();
+        throw new InvalidOperationException("Unreachable candidate-persistence path");
     }
 
     private async Task AwaitCandidateDatabaseAttemptAsync(Task databaseAttempt)

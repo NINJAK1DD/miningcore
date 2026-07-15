@@ -939,10 +939,10 @@ public class ShareRecorderTests
 
         try
         {
-            var ex = await Assert.ThrowsAsync<IOException>(() =>
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 recorder.PersistBlockCandidateAsync(candidate));
 
-            Assert.IsType<InvalidOperationException>(ex.InnerException);
+            Assert.Contains("unexpected persistence", ex.Message);
             var failureCall = Assert.Single(failureHandler.ReceivedCalls());
             var failureArguments = failureCall.GetArguments();
             var failedCandidates = Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
@@ -987,8 +987,11 @@ public class ShareRecorderTests
             }, Substitute.For<IMessageBus>(), failureHandler);
         var candidate = CreateDurableCandidate("lost-candidate-block");
 
-        await Assert.ThrowsAsync<IOException>(() =>
+        var persistenceError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             recorder.PersistBlockCandidateAsync(candidate));
+
+        Assert.IsType<DirectoryNotFoundException>(
+            persistenceError.Data["RecoveryJournalException"]);
 
         var failureCall = Assert.Single(failureHandler.ReceivedCalls());
         var failureArguments = failureCall.GetArguments();
