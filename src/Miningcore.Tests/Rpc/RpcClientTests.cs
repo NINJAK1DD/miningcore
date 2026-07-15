@@ -78,6 +78,25 @@ public class RpcClientTests
             RpcClient.OrderBatchResponses(requests, responses));
     }
 
+    [Fact]
+    public void OrderBatchResponses_WithNullId_FailsClosed()
+    {
+        var requests = new[]
+        {
+            new JsonRpcRequest<object>("submitblock", null, "batch-0"),
+            new JsonRpcRequest<object>("getblock", null, "batch-1"),
+        };
+        var responses = new[]
+        {
+            Response("accepted", null),
+            Response("block", "batch-1"),
+        };
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            RpcClient.OrderBatchResponses(requests, responses));
+        Assert.Contains("omitted an id", error.Message);
+    }
+
     private static JsonRpcResponse<JToken> Response(string result, object id)
     {
         return new JsonRpcResponse<JToken>

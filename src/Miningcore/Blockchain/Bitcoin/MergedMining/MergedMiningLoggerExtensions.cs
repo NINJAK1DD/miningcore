@@ -6,6 +6,7 @@ internal static class MergedMiningLoggerExtensions
 {
     public static void Error(this ILogger logger, Exception exception, Func<string> messageFactory)
     {
-        logger.Error(exception, messageFactory());
+        if(logger.IsErrorEnabled)
+            logger.Error(exception, messageFactory());
     }
 }

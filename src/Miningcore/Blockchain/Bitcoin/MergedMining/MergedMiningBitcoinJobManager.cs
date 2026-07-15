@@ -72,6 +72,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private static readonly TimeSpan AuxiliaryAddressValidationTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BlockSubmissionTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AmbiguousSubmissionLookupTimeout = TimeSpan.FromSeconds(5);
+    private const int ValidatedAuxiliaryAddressCacheCapacity = 4096;
 
     private MergedMiningConfig mergedMiningConfig;
     private PoolConfig auxiliaryPoolConfig;
@@ -81,6 +82,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private bool auxiliaryTemplateDegraded;
     private AuxBlockTemplate startupAuxiliaryTemplate;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
+    private readonly AuxiliaryAddressValidationCache validatedAuxiliaryAddresses =
+        new(ValidatedAuxiliaryAddressCacheCapacity);
     private readonly object candidateOperationsLock = new();
     private readonly Dictionary<long, TaskCompletionSource<bool>> candidateOperations = new();
     private long nextCandidateOperationId;
@@ -139,10 +142,16 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(auxiliaryPoolConfig.Daemons == null || auxiliaryPoolConfig.Daemons.Length == 0)
             throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' requires a daemon endpoint", pc.Id);
 
+        if(auxiliaryPoolConfig.Daemons.Length > 1)
+            logger.Warn(() => $"Auxiliary pool '{auxiliaryPoolConfig.Id}' has {auxiliaryPoolConfig.Daemons.Length} daemon endpoints; merged mining uses only the first endpoint");
+
         if(!MergedMiningPasswordParser.IsValidAddressParameter(mergedMiningConfig.AddressParameter))
             throw new PoolStartupException(
                 "mergedMining.addressParameter must not be 'd' or contain ';' or '='",
                 pc.Id);
+
+        if(!mergedMiningConfig.RequireAuxAddress)
+            logger.Warn(() => "Merged mining allows workers without a DOGE address; their auxiliary candidates will not be submitted because no SOLO beneficiary can be attributed");
 
         // Parent ZMQ and Bitcoin Template Stream notifications do not report auxiliary-chain
         // tip changes. Polling guarantees that a fresh Dogecoin template is broadcast independently.
@@ -416,8 +425,29 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         cts.CancelAfter(AuxiliaryAddressValidationTimeout);
         var result = await auxiliaryRpc.ExecuteAsync<ValidateAddressResponse>(logger,
             BitcoinCommands.ValidateAddress, cts.Token, new[] { address });
+        var validation = ClassifyAuxiliaryAddressValidation(result);
 
-        return ClassifyAuxiliaryAddressValidation(result);
+        if(validation == AuxiliaryAddressValidation.Valid)
+            validatedAuxiliaryAddresses.Add(address);
+        else if(validation == AuxiliaryAddressValidation.Invalid)
+            validatedAuxiliaryAddresses.Remove(address);
+        else if(ResolveAuxiliaryAddressValidation(validation,
+                    validatedAuxiliaryAddresses.Contains(address)) ==
+                AuxiliaryAddressValidation.Valid)
+        {
+            logger.Debug(() => $"Reusing previously validated auxiliary payout address while '{auxiliaryPoolConfig.Id}' address validation is unavailable");
+            validation = AuxiliaryAddressValidation.Valid;
+        }
+
+        return validation;
+    }
+
+    internal static AuxiliaryAddressValidation ResolveAuxiliaryAddressValidation(
+        AuxiliaryAddressValidation validation, bool previouslyValidated)
+    {
+        return validation == AuxiliaryAddressValidation.Unavailable && previouslyValidated
+            ? AuxiliaryAddressValidation.Valid
+            : validation;
     }
 
     internal static AuxiliaryAddressValidation ClassifyAuxiliaryAddressValidation(
@@ -701,11 +731,28 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         public void Dispose() => Owner.ReleaseCandidatePreparation(this);
     }
 
-    private async Task<bool> SubmitAndPersistParentBlockAsync(Share share,
+    internal async Task<bool> SubmitAndPersistParentBlockAsync(Share share,
         string blockHex, CancellationToken ct)
     {
-        var acceptResponse = await SubmitParentBlockWithReconciliationAsync(share,
-            blockHex, ct);
+        SubmitResult acceptResponse;
+
+        try
+        {
+            acceptResponse = await SubmitParentBlockWithReconciliationAsync(share,
+                blockHex, ct);
+        }
+        catch(StratumException)
+        {
+            throw;
+        }
+        catch(Exception ex)
+        {
+            // Local proof validation has already succeeded. A malformed/missing JSON-RPC batch,
+            // transport exception or operation timeout cannot prove that litecoind rejected the
+            // candidate, so persist an exact-hash marker for normal active-chain reconciliation.
+            logger.Error(ex, () => $"Parent submission outcome for block {share.BlockHeight} [{share.BlockHash}] could not be classified; durable reconciliation queued");
+            acceptResponse = new SubmitResult(false, null, true);
+        }
         share.IsBlockCandidate = acceptResponse.Accepted;
 
         if(share.IsBlockCandidate)
@@ -845,7 +892,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         };
     }
 
-    private async Task<SubmitResult> SubmitParentBlockWithReconciliationAsync(Share share,
+    protected virtual async Task<SubmitResult> SubmitParentBlockWithReconciliationAsync(Share share,
         string blockHex, CancellationToken ct)
     {
         var result = await SubmitBlockAsync(share, blockHex, ct, false);

@@ -170,6 +170,45 @@ public class AuxPowBlockConfirmationTests
     }
 
     [Fact]
+    public void AuxiliaryAddressValidationCache_IsBoundedAndLeastRecentlyUsed()
+    {
+        var cache = new AuxiliaryAddressValidationCache(2);
+
+        cache.Add("doge-a");
+        cache.Add("doge-b");
+        Assert.True(cache.Contains("doge-a"));
+
+        // Touching A makes B the least-recently-used entry.
+        cache.Add("doge-c");
+
+        Assert.True(cache.Contains("doge-a"));
+        Assert.False(cache.Contains("doge-b"));
+        Assert.True(cache.Contains("doge-c"));
+        Assert.Equal(2, cache.Count);
+
+        cache.Remove("doge-a");
+        Assert.False(cache.Contains("doge-a"));
+        Assert.Equal(1, cache.Count);
+    }
+
+    [Theory]
+    [InlineData((int) AuxiliaryAddressValidation.Unavailable, true,
+        (int) AuxiliaryAddressValidation.Valid)]
+    [InlineData((int) AuxiliaryAddressValidation.Unavailable, false,
+        (int) AuxiliaryAddressValidation.Unavailable)]
+    [InlineData((int) AuxiliaryAddressValidation.Invalid, true,
+        (int) AuxiliaryAddressValidation.Invalid)]
+    [InlineData((int) AuxiliaryAddressValidation.Valid, false,
+        (int) AuxiliaryAddressValidation.Valid)]
+    public void AuxiliaryAddressValidation_UsesOnlyPositiveCacheHitsDuringOutage(
+        int current, bool previouslyValidated, int expected)
+    {
+        Assert.Equal((AuxiliaryAddressValidation) expected,
+            MergedMiningBitcoinJobManager.ResolveAuxiliaryAddressValidation(
+                (AuxiliaryAddressValidation) current, previouslyValidated));
+    }
+
+    [Fact]
     public void AuxiliarySubmissionResponse_DistinguishesRejectionFromAmbiguousTransportFailure()
     {
         Assert.Equal(AuxiliarySubmissionResult.Accepted,

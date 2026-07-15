@@ -106,6 +106,84 @@ public class MergedMiningManagerReorgTests
             poolId, context.Miner, context.Worker, now));
     }
 
+    [Fact]
+    public async Task UnclassifiableParentSubmission_PersistsUncertainBlockRecord()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        recorder.PersistBlockCandidateAsync(Arg.Any<Share>())
+            .Returns(Task.CompletedTask);
+        var manager = new TestManager(container, clock, new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder)
+        {
+            ParentSubmissionException = new InvalidDataException(
+                "JSON-RPC batch response IDs were malformed"),
+        };
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        var candidate = new Share
+        {
+            PoolId = parent.Id,
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            BlockHeight = 456,
+            BlockHash = new string('a', 64),
+            IsBlockCandidate = true,
+            Created = DateTime.UtcNow,
+        };
+
+        var accepted = await manager.SubmitAndPersistParentBlockAsync(candidate,
+            "parent-block", CancellationToken.None);
+
+        Assert.False(accepted);
+        Assert.True(candidate.BlockRecordEmitted);
+        Assert.False(candidate.IsBlockCandidate);
+        Assert.Null(candidate.BlockType);
+        await recorder.Received(1).PersistBlockCandidateAsync(Arg.Is<Share>(x =>
+            x.BlockOnly && x.IsBlockCandidate &&
+            x.BlockType == "merged-parent-uncertain" &&
+            x.BlockHash == candidate.BlockHash &&
+            x.TransactionConfirmationData.StartsWith("parent-uncertain:")));
+    }
+
+    [Fact]
+    public async Task StratumParentSubmissionFailure_IsNotConvertedToUncertainRecord()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        var manager = new TestManager(container, clock, new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder)
+        {
+            ParentSubmissionException = new StratumException(StratumError.Other,
+                "invalid candidate"),
+        };
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        var candidate = new Share
+        {
+            PoolId = parent.Id,
+            BlockHeight = 457,
+            BlockHash = new string('b', 64),
+            IsBlockCandidate = true,
+            Created = DateTime.UtcNow,
+        };
+
+        await Assert.ThrowsAsync<StratumException>(() =>
+            manager.SubmitAndPersistParentBlockAsync(candidate, "parent-block",
+                CancellationToken.None));
+        await recorder.DidNotReceive().PersistBlockCandidateAsync(Arg.Any<Share>());
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -488,6 +566,7 @@ public class MergedMiningManagerReorgTests
 
         public Func<MergedMiningShareResult> ProcessMergedShareHandler { get; set; }
         public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
+        public Exception ParentSubmissionException { get; set; }
 
         public MergedMiningBitcoinJob Current => (MergedMiningBitcoinJob) currentJob;
 
@@ -513,6 +592,15 @@ public class MergedMiningManagerReorgTests
             Share share, CancellationToken operationToken) =>
             SubmitCandidatePathsHandler?.Invoke(operationToken) ??
             base.SubmitCandidatePathsAsync(worker, context, result, share, operationToken);
+
+        protected override Task<SubmitResult> SubmitParentBlockWithReconciliationAsync(
+            Share share, string blockHex, CancellationToken ct)
+        {
+            if(ParentSubmissionException != null)
+                return Task.FromException<SubmitResult>(ParentSubmissionException);
+
+            return base.SubmitParentBlockWithReconciliationAsync(share, blockHex, ct);
+        }
 
         protected override MergedMiningBitcoinJob CreateMergedMiningJob(
             BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate) =>
