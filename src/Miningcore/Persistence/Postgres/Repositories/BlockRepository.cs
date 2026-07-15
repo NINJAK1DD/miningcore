@@ -14,8 +14,10 @@ public class BlockRepository : IBlockRepository
     }
 
     private readonly IMapper mapper;
+    private const string PublicBlockTypesFilter =
+        "(type IS NULL OR type NOT IN ('auxpow-claim', 'parent-uncertain', 'merged-parent-uncertain'))";
 
-    public async Task InsertAsync(IDbConnection con, IDbTransaction tx, Block block)
+    public async Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block)
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
@@ -25,7 +27,23 @@ public class BlockRepository : IBlockRepository
             VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
                 @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created)";
 
-        await con.ExecuteAsync(query, mapped, tx);
+        const string auxPowConflictClause =
+            " ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING";
+        const string auxPowClaimConflictClause =
+            " ON CONFLICT (poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim' DO NOTHING";
+        const string mergedParentConflictClause =
+            " ON CONFLICT (poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain') DO NOTHING";
+
+        var command = mapped.Type switch
+        {
+            "auxpow" => query + auxPowConflictClause,
+            "auxpow-claim" => query + auxPowClaimConflictClause,
+            "merged-parent" => query + mergedParentConflictClause,
+            "merged-parent-uncertain" => query + mergedParentConflictClause,
+            _ => query,
+        };
+
+        return await con.ExecuteAsync(command, mapped, tx) > 0;
     }
 
     public async Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block)
@@ -34,20 +52,41 @@ public class BlockRepository : IBlockRepository
         await con.ExecuteAsync(query, block, tx);
     }
 
-    public async Task UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block)
+    public async Task<bool> UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block)
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
         const string query = @"UPDATE blocks SET blockheight = @blockheight, status = @status, type = @type,
-            reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress, hash = @hash WHERE id = @id";
+            reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
+            transactionconfirmationdata = @transactionconfirmationdata, hash = @hash WHERE id = @id";
 
-        await con.ExecuteAsync(query, mapped, tx);
+        const string auxPowPromotionQuery = @"UPDATE blocks SET blockheight = @blockheight, status = @status, type = @type,
+            reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
+            transactionconfirmationdata = @transactionconfirmationdata, hash = @hash
+            WHERE id = @id AND NOT EXISTS (
+                SELECT 1 FROM blocks
+                WHERE poolid = @poolid AND hash = @hash AND type = 'auxpow' AND id <> @id
+            )";
+
+        return await con.ExecuteAsync(mapped.Type == "auxpow" ? auxPowPromotionQuery : query,
+            mapped, tx) > 0;
+    }
+
+    public async Task<Block> GetBlockByIdForUpdateAsync(IDbConnection con, IDbTransaction tx,
+        long id)
+    {
+        const string query = "SELECT * FROM blocks WHERE id = @id FOR UPDATE";
+
+        return (await con.QueryAsync<Entities.Block>(query, new { id }, tx))
+            .Select(mapper.Map<Block>)
+            .FirstOrDefault();
     }
 
     public async Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status,
         int page, int pageSize, CancellationToken ct)
     {
-        const string query = @"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status)
+        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status)
+            AND {PublicBlockTypesFilter}
             ORDER BY created DESC OFFSET @offset FETCH NEXT @pageSize ROWS ONLY";
 
         return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query, new
@@ -63,7 +102,8 @@ public class BlockRepository : IBlockRepository
 
     public async Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct)
     {
-        const string query = @"SELECT * FROM blocks WHERE status = ANY(@status)
+        var query = $@"SELECT * FROM blocks WHERE status = ANY(@status)
+            AND {PublicBlockTypesFilter}
             ORDER BY created DESC OFFSET @offset FETCH NEXT @pageSize ROWS ONLY";
 
         return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query, new
@@ -79,7 +119,8 @@ public class BlockRepository : IBlockRepository
     public async Task<Block[]> PageMinerBlocksAsync(IDbConnection con, string poolId, string address, BlockStatus[] status,
         int page, int pageSize, CancellationToken ct)
     {
-        const string query = @"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND miner = @address
+        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND miner = @address
+            AND {PublicBlockTypesFilter}
             ORDER BY created DESC OFFSET @offset FETCH NEXT @pageSize ROWS ONLY";
 
         return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query, new
@@ -105,7 +146,8 @@ public class BlockRepository : IBlockRepository
 
     public async Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before)
     {
-        const string query = @"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
+        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
+            AND {PublicBlockTypesFilter}
             ORDER BY created DESC FETCH NEXT 1 ROWS ONLY";
 
         return (await con.QueryAsync<Entities.Block>(query, new
@@ -120,7 +162,8 @@ public class BlockRepository : IBlockRepository
     
     public async Task<uint> GetBlockBeforeCountAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before)
     {
-        const string query = @"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before";
+        var query = $@"SELECT COUNT(*) FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
+            AND {PublicBlockTypesFilter}";
         
         return await con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new
         {
@@ -132,49 +175,59 @@ public class BlockRepository : IBlockRepository
 
     public Task<uint> GetPoolBlockCountAsync(IDbConnection con, string poolId, CancellationToken ct)
     {
-        const string query = @"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId";
+        var query = $@"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId
+            AND {PublicBlockTypesFilter}";
 
         return con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new { poolId }, cancellationToken: ct));
     }
 
     public Task<uint> GetTotalConfirmedBlocksAsync(IDbConnection con, string poolId, CancellationToken ct)
     {
-        const string query = @"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND status = 'confirmed'";
+        var query = $@"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND status = 'confirmed'
+            AND {PublicBlockTypesFilter}";
 
         return con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new { poolId }, cancellationToken: ct));
     }
 
     public Task<uint> GetTotalPendingBlocksAsync(IDbConnection con, string poolId, CancellationToken ct)
     {
-        const string query = @"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND status = 'pending'";
+        var query = $@"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND status = 'pending'
+            AND {PublicBlockTypesFilter}";
 
         return con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new { poolId }, cancellationToken: ct));
     }
 
     public Task<decimal> GetLastConfirmedBlockRewardAsync(IDbConnection con, string poolId, CancellationToken ct)
     {
-        const string query = @"SELECT reward FROM blocks WHERE poolid = @poolId AND status = 'confirmed' ORDER BY created DESC LIMIT 1";
+        var query = $@"SELECT reward FROM blocks WHERE poolid = @poolId AND status = 'confirmed'
+            AND {PublicBlockTypesFilter}
+            ORDER BY created DESC LIMIT 1";
 
         return con.ExecuteScalarAsync<decimal>(new CommandDefinition(query, new { poolId }, cancellationToken: ct));
     }
 
     public Task<uint> GetMinerBlockCountAsync(IDbConnection con, string poolId, string address, CancellationToken ct)
     {
-        const string query = @"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND miner = @address";
+        var query = $@"SELECT COUNT(*) FROM blocks WHERE poolid = @poolId AND miner = @address
+            AND {PublicBlockTypesFilter}";
 
         return con.ExecuteScalarAsync<uint>(new CommandDefinition(query, new { poolId, address }, cancellationToken: ct));
     }
 
     public Task<DateTime?> GetLastPoolBlockTimeAsync(IDbConnection con, string poolId, CancellationToken ct)
     {
-        const string query = @"SELECT created FROM blocks WHERE poolid = @poolId ORDER BY created DESC LIMIT 1";
+        var query = $@"SELECT created FROM blocks WHERE poolid = @poolId
+            AND {PublicBlockTypesFilter}
+            ORDER BY created DESC LIMIT 1";
 
         return con.ExecuteScalarAsync<DateTime?>(new CommandDefinition(query, new { poolId }, cancellationToken: ct));
     }
 
     public Task<DateTime?> GetLastMinerBlockTimeAsync(IDbConnection con, string poolId, string address, CancellationToken ct)
     {
-        const string query = @"SELECT created FROM blocks WHERE poolid = @poolId AND miner = @address ORDER BY created DESC LIMIT 1";
+        var query = $@"SELECT created FROM blocks WHERE poolid = @poolId AND miner = @address
+            AND {PublicBlockTypesFilter}
+            ORDER BY created DESC LIMIT 1";
         return con.ExecuteScalarAsync<DateTime?>(new CommandDefinition(query, new { poolId, address }, cancellationToken: ct));
     }
 
@@ -190,6 +243,78 @@ public class BlockRepository : IBlockRepository
         }))
             .Select(mapper.Map<Block>)
             .FirstOrDefault();
+    }
+
+    public async Task<Block> GetBlockByPoolHashAndTypeAsync(IDbConnection con, string poolId,
+        string hash, string type)
+    {
+        const string query = @"SELECT * FROM blocks WHERE poolid = @poolId AND hash = @hash AND type = @type
+            ORDER BY created ASC FETCH NEXT 1 ROWS ONLY";
+
+        return (await con.QueryAsync<Entities.Block>(query, new
+        {
+            poolId,
+            hash,
+            type,
+        }))
+            .Select(mapper.Map<Block>)
+            .FirstOrDefault();
+    }
+
+    public Task<bool> HasMergedMiningBlockIndexesAsync(IDbConnection con, CancellationToken ct)
+    {
+        const string query = @"WITH expected(name, key_expressions, predicate) AS (
+                VALUES
+                    ('idx_blocks_auxpow_pool_hash', ARRAY[
+                        'poolid',
+                        'hash'
+                    ], 'type = ''auxpow''::text'),
+                    ('idx_blocks_auxpow_claim', ARRAY[
+                        'poolid',
+                        'hash',
+                        'regexp_replace(transactionconfirmationdata, '':[0-9]+$''::text, ''''::text)'
+                    ], 'type = ''auxpow-claim''::text'),
+                    ('idx_blocks_merged_parent_pool_hash', ARRAY[
+                        'poolid',
+                        'hash'
+                    ], 'type = any (array[''merged-parent''::text, ''merged-parent-uncertain''::text])')
+            ),
+            actual AS (
+                SELECT lower(index_class.relname) AS name,
+                    i.indisunique,
+                    i.indisvalid,
+                    i.indisready,
+                    ARRAY(
+                        SELECT lower(regexp_replace(
+                            pg_get_indexdef(index_class.oid, key_position, true),
+                            '\s+', ' ', 'g'))
+                        FROM generate_series(1, i.indnkeyatts) key_position
+                        ORDER BY key_position
+                    ) AS key_expressions,
+                    lower(regexp_replace(
+                        pg_get_expr(i.indpred, i.indrelid, true),
+                        '\s+', ' ', 'g')) AS predicate
+                FROM pg_index i
+                JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                JOIN pg_class table_class ON table_class.oid = i.indrelid
+                JOIN pg_namespace table_namespace ON table_namespace.oid = table_class.relnamespace
+                WHERE index_class.relkind = 'i'
+                  AND table_class.relkind IN ('r', 'p')
+                  -- Resolve the same unqualified relation used by runtime repository SQL.
+                  -- This excludes stale same-named indexes in every other schema.
+                  AND i.indrelid = to_regclass('blocks')
+            )
+            SELECT COUNT(*) = 3
+            FROM expected e
+            JOIN actual a ON a.name = e.name
+            WHERE a.indisunique
+              AND a.indisvalid
+              AND a.indisready
+              AND a.key_expressions = e.key_expressions
+              AND a.predicate = e.predicate";
+
+        return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
+            cancellationToken: ct));
     }
     
     public async Task<uint> GetPoolDuplicateBlockCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status)

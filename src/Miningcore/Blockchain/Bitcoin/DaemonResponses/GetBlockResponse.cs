@@ -18,4 +18,13 @@ public class Block
 
     [JsonProperty("tx")]
     public string[] Transactions { get; set; }
+
+    [JsonProperty("auxpow")]
+    public AuxPow AuxPow { get; set; }
+}
+
+public class AuxPow
+{
+    [JsonProperty("parentblock")]
+    public string ParentBlock { get; set; }
 }

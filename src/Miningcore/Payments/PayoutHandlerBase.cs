@@ -67,6 +67,9 @@ public abstract class PayoutHandlerBase
 
     protected abstract string LogCategory { get; }
 
+    private RewardRecipient[] RewardRecipients =>
+        poolConfig.RewardRecipients ?? Array.Empty<RewardRecipient>();
+
     protected void BuildFaultHandlingPolicy()
     {
         var retry = Policy
@@ -87,7 +90,7 @@ public abstract class PayoutHandlerBase
         var blockRewardRemaining = block.Reward;
 
         // Distribute funds to configured reward recipients
-        foreach(var recipient in poolConfig.RewardRecipients.Where(x => x.Percentage > 0))
+        foreach(var recipient in RewardRecipients.Where(x => x.Percentage > 0))
         {
             var amount = block.Reward * (recipient.Percentage / 100.0m);
             var address = recipient.Address;
@@ -118,9 +121,16 @@ public abstract class PayoutHandlerBase
             {
                 await cf.RunTx(async (con, tx) =>
                 {
+                    if(!await paymentRepo.TryBeginPaymentBatchAsync(con, tx, poolConfig.Id,
+                           transactionConfirmation, clock.Now))
+                    {
+                        logger.Warn(() => $"[{LogCategory}] Payment batch {transactionConfirmation} was already persisted; skipping duplicate balance reset");
+                        return;
+                    }
+
                     foreach(var balance in balances)
                     {
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && poolConfig.RewardRecipients.All(x => x.Address != balance.Address))
+                        if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
                         {
                             // record payment
                             var payment = new Payment
@@ -148,7 +158,8 @@ public abstract class PayoutHandlerBase
         {
             logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
                 $"{JsonConvert.SerializeObject(balances.Where(x => x.Amount > 0).ToDictionary(x => x.Address, x => x.Amount))}");
-            throw;
+            throw new PayoutOutcomeUncertainException(
+                "Wallet submission succeeded but its payment records could not be persisted", ex);
         }
     }
 
@@ -165,29 +176,45 @@ public abstract class PayoutHandlerBase
             {
                 await cf.RunTx(async (con, tx) =>
                 {
-                    foreach(var kvp in balances)
+                    foreach(var group in balances.GroupBy(x => x.Value))
                     {
-                        var (balance, transactionConfirmation) = kvp;
+                        var transactionConfirmation = group.Key;
 
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && poolConfig.RewardRecipients.All(x => x.Address != balance.Address))
+                        if(string.IsNullOrEmpty(transactionConfirmation))
+                            throw new InvalidOperationException(
+                                "Refusing to persist a payment batch without a wallet transaction id");
+
+                        if(!await paymentRepo.TryBeginPaymentBatchAsync(con, tx, poolConfig.Id,
+                               transactionConfirmation, clock.Now))
                         {
-                            // record payment
-                            var payment = new Payment
-                            {
-                                PoolId = poolConfig.Id,
-                                Coin = coin.Symbol,
-                                Address = balance.Address,
-                                Amount = balance.Amount,
-                                Created = clock.Now,
-                                TransactionConfirmationData = transactionConfirmation
-                            };
-
-                            await paymentRepo.InsertAsync(con, tx, payment);
+                            logger.Warn(() => $"[{LogCategory}] Payment batch {transactionConfirmation} was already persisted; skipping duplicate balance reset");
+                            continue;
                         }
 
-                        // reset balance
-                        logger.Info(() => $"[{LogCategory}] Resetting balance of {balance.Address}");
-                        await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, balance.Address, -balance.Amount, "Balance reset after payment");
+                        foreach(var kvp in group)
+                        {
+                            var balance = kvp.Key;
+
+                            if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
+                            {
+                                // record payment
+                                var payment = new Payment
+                                {
+                                    PoolId = poolConfig.Id,
+                                    Coin = coin.Symbol,
+                                    Address = balance.Address,
+                                    Amount = balance.Amount,
+                                    Created = clock.Now,
+                                    TransactionConfirmationData = transactionConfirmation
+                                };
+
+                                await paymentRepo.InsertAsync(con, tx, payment);
+                            }
+
+                            // reset balance
+                            logger.Info(() => $"[{LogCategory}] Resetting balance of {balance.Address}");
+                            await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, balance.Address, -balance.Amount, "Balance reset after payment");
+                        }
                     }
                 });
             });
@@ -197,7 +224,8 @@ public abstract class PayoutHandlerBase
         {
             logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
                 $"{JsonConvert.SerializeObject(balances.Where(x => x.Key.Amount > 0).ToDictionary(x => x.Key.Address, x => x.Key.Amount))}");
-            throw;
+            throw new PayoutOutcomeUncertainException(
+                "One or more wallet submissions succeeded but their payment records could not be persisted", ex);
         }
     }
 

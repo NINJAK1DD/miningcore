@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "method": "gettransaction",
+      "params_min_length": 1,
+      "action": "replace_response",
+      "response": {
+        "result": null,
+        "error": {
+          "code": -5,
+          "message": "Invalid or non-wallet transaction id"
+        }
+      }
+    }
+  ]
+}

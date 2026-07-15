@@ -26,6 +26,14 @@ CREATE INDEX IDX_SHARES_POOL_MINER_ACTUALDIFFICULTY on shares(poolid, miner, act
 CREATE INDEX IDX_SHARES_POOL_MINER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,sessionid,actualdifficulty);
 CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,worker,sessionid,actualdifficulty);
 
+CREATE TABLE share_recovery_imports
+(
+	filehash TEXT NOT NULL PRIMARY KEY,
+	filename TEXT NOT NULL,
+	recordcount INT NOT NULL,
+	created TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE blocks
 (
 	id BIGSERIAL NOT NULL PRIMARY KEY,
@@ -47,6 +55,9 @@ CREATE TABLE blocks
 
 CREATE INDEX IDX_BLOCKS_POOL_BLOCK_STATUS on blocks(poolid, blockheight, status);
 CREATE INDEX IDX_BLOCKS_POOL_BLOCK_TYPE on blocks(poolid, blockheight, type);
+CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH on blocks(poolid, hash) WHERE type = 'auxpow';
+CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM on blocks(poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim';
+CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain');
 
 CREATE TABLE balances
 (
@@ -97,6 +108,28 @@ CREATE TABLE payments
 
 CREATE INDEX IDX_PAYMENTS_POOL_COIN_WALLET on payments(poolid, coin, address);
 
+CREATE TABLE payment_batches
+(
+	poolid TEXT NOT NULL,
+	transactionconfirmationdata TEXT NOT NULL,
+	created TIMESTAMPTZ NOT NULL,
+
+	PRIMARY KEY(poolid, transactionconfirmationdata)
+);
+
+CREATE TABLE payout_manager_ownership
+(
+	id SMALLINT NOT NULL PRIMARY KEY CHECK(id = 1),
+	generation BIGINT NOT NULL DEFAULT 0,
+	owner_id UUID NULL,
+	owner_host TEXT NULL,
+	owner_process_id INT NULL,
+	acquired TIMESTAMPTZ NULL,
+	released TIMESTAMPTZ NULL
+);
+
+INSERT INTO payout_manager_ownership(id) VALUES(1);
+
 CREATE TABLE poolstats
 (
 	id BIGSERIAL NOT NULL PRIMARY KEY,
@@ -131,4 +164,3 @@ CREATE INDEX IDX_MINERSTATS_POOL_MINER_CREATED on minerstats(poolid, miner, crea
 CREATE INDEX IDX_MINERSTATS_POOL_MINER_WORKER_CREATED_HASHRATE on minerstats(poolid,miner,worker,created desc,hashrate);
 CREATE INDEX IDX_MINERSTATS_POOL_MINER_WORKER_SESSION_CREATED on minerstats(poolid, miner, worker, sessionid, created desc);
 CREATE INDEX IDX_MINERSTATS_POOL_MINER_SESSION_CREATED on minerstats(poolid, miner, sessionid, created desc);
-

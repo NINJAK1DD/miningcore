@@ -1,0 +1,1119 @@
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using AutoMapper;
+using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
+using Miningcore.Configuration;
+using Miningcore.Messaging;
+using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
+using Miningcore.Persistence;
+using Miningcore.Persistence.Repositories;
+using Microsoft.Extensions.Hosting;
+using Newtonsoft.Json;
+using NSubstitute;
+using ProtoBuf;
+using Xunit;
+using Block = Miningcore.Persistence.Model.Block;
+using PersistedShare = Miningcore.Persistence.Model.Share;
+
+namespace Miningcore.Tests.Mining;
+
+public class ShareRecorderTests
+{
+    [Fact]
+    public void BitcoinPool_DoesNotRepublishManagerEmittedStatisticalShare()
+    {
+        Assert.True(BitcoinPool.ShouldPublishStatisticalShare(new Share()));
+        Assert.False(BitcoinPool.ShouldPublishStatisticalShare(new Share
+        {
+            StatisticalRecordEmitted = true,
+        }));
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_MissingFileThrows()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() =>
+            fixture.Recorder.RecoverSharesAsync(filename));
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_InvalidRecordsThrow()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = Path.GetTempFileName();
+
+        try
+        {
+            await File.WriteAllTextAsync(filename, "this is not a share record");
+
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+        }
+
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_HundredValidThenInvalid_WritesNothingOnRepeatedFailure()
+    {
+        var fixture = CreateRecoveryFixture();
+        var records = Enumerable.Range(0, 100)
+            .Select(x => RecoveryShareJson(x))
+            .Append("not-json");
+        var filename = await WriteRecoveryFileAsync(records);
+
+        try
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            await fixture.ConnectionFactory.DidNotReceive().OpenConnectionAsync();
+            await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
+                Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        }
+
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_ValidInvalidValid_WritesNothing()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            RecoveryShareJson(1),
+            "not-json",
+            RecoveryShareJson(2),
+        });
+
+        try
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            await fixture.ConnectionFactory.DidNotReceive().OpenConnectionAsync();
+        }
+
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_SecondBatchFailure_RollsBackAndRetriesWholeFile()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = await WriteRecoveryFileAsync(Enumerable.Range(0, 200)
+            .Select(x => RecoveryShareJson(x)));
+        fixture.ShareRepository.BatchInsertAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask,
+                Task.FromException(new IOException("database unavailable")),
+                Task.CompletedTask, Task.CompletedTask);
+
+        string archiveFilename = null;
+
+        try
+        {
+            await Assert.ThrowsAsync<IOException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            fixture.Transaction.Received(1).Rollback();
+            fixture.Transaction.DidNotReceive().Commit();
+
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+
+            fixture.Transaction.Received(1).Rollback();
+            fixture.Transaction.Received(1).Commit();
+            await fixture.ShareRepository.Received(4).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>());
+            Assert.False(File.Exists(filename));
+            Assert.True(File.Exists(archiveFilename));
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_ValidFile_CommitsEveryShareExactlyOnce()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = await WriteRecoveryFileAsync(Enumerable.Range(0, 150)
+            .Select(x => RecoveryShareJson(x)));
+
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+
+            fixture.Transaction.Received(1).Commit();
+            fixture.Transaction.DidNotReceive().Rollback();
+            await fixture.ShareRepository.Received(2).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>());
+            Assert.False(File.Exists(filename));
+            Assert.True(File.Exists(archiveFilename));
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_SuccessfulOrdinaryReplay_IsRejectedByManifest()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = await WriteRecoveryFileAsync(new[] { RecoveryShareJson(1) });
+        fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
+                Arg.Any<CancellationToken>())
+            .Returns(true, false);
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+            File.Copy(archiveFilename, filename);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_SemanticallyEquivalentReplay_IsRejectedByManifest()
+    {
+        var fixture = CreateRecoveryFixture();
+        var originals = new[] { RecoveryShareJson(7), RecoveryShareJson(8) };
+        var filename = await WriteRecoveryFileAsync(originals);
+        var registeredHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 2,
+                Arg.Any<CancellationToken>())
+            .Returns(call => registeredHashes.Add(call.ArgAt<string>(2)));
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+
+            var equivalent = originals.Reverse().Select(original =>
+            {
+                var parsed = Newtonsoft.Json.Linq.JObject.Parse(original);
+                return new Newtonsoft.Json.Linq.JObject(
+                    parsed.Properties().Reverse().Select(x =>
+                        new Newtonsoft.Json.Linq.JProperty(x.Name, x.Value)))
+                    .ToString(Formatting.None);
+            });
+            await File.WriteAllTextAsync(filename,
+                $"# regenerated recovery file\r\n\r\n  {string.Join("  \r\n  ", equivalent)}  \r\n");
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            Assert.Single(registeredHashes);
+            await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_BlockOnlyReplay_IsRejectedByManifest()
+    {
+        var fixture = CreateRecoveryFixture();
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            RecoveryShareJson(1, true),
+        });
+        fixture.BlockRepository.InsertAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<Block>())
+            .Returns(true);
+        fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
+                Arg.Any<CancellationToken>())
+            .Returns(true, false);
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+            File.Copy(archiveFilename, filename);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
+                Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+            await fixture.BlockRepository.Received(1).InsertAsync(
+                fixture.Connection, fixture.Transaction, Arg.Any<Block>());
+            fixture.MessageBus.Received(1).SendMessage(
+                Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
+        }
+
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
+    public void GetSharesForPersistence_ExcludesBlockOnlyCandidates()
+    {
+        var regularShare = new Share { PoolId = "ltc-solo" };
+        var parentBlockCandidate = new Share { PoolId = "ltc-solo", IsBlockCandidate = true };
+        var auxiliaryBlockCandidate = new Share
+        {
+            PoolId = "doge-solo",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+        };
+
+        var result = ShareRecorder.GetSharesForPersistence(new[]
+        {
+            regularShare,
+            parentBlockCandidate,
+            auxiliaryBlockCandidate,
+        }).ToArray();
+
+        Assert.Equal(new[] { regularShare, parentBlockCandidate }, result);
+    }
+
+    [Fact]
+    public void MergedMiningFields_RoundTripThroughShareRelayWireFormat()
+    {
+        var share = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DExampleAddress",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            BlockType = "auxpow",
+            BlockRecordEmitted = true,
+            PreserveCreated = true,
+            StatisticalRecordEmitted = true,
+        };
+
+        using var stream = new MemoryStream();
+        Serializer.Serialize(stream, share);
+        stream.Position = 0;
+
+        var result = Serializer.Deserialize<Share>(stream);
+
+        Assert.True(result.BlockOnly);
+        Assert.True(result.IsBlockCandidate);
+        Assert.Equal(share.PoolId, result.PoolId);
+        Assert.Equal(share.Miner, result.Miner);
+        Assert.Equal("auxpow", result.BlockType);
+        Assert.True(result.BlockRecordEmitted);
+        Assert.True(result.PreserveCreated);
+        Assert.False(result.StatisticalRecordEmitted);
+    }
+
+    [Fact]
+    public void AcceptedMergedParent_IsOrdinaryForLegacyRelayReceiver()
+    {
+        var share = new Share
+        {
+            PoolId = "ltc-solo",
+            IsBlockCandidate = true,
+            BlockType = "merged-parent",
+            TransactionConfirmationData = "coinbase-txid",
+            Created = DateTime.UtcNow,
+        };
+
+        MergedMiningBitcoinJobManager.MarkParentBlockRecordEmitted(share);
+
+        using var stream = new MemoryStream();
+        Serializer.Serialize(stream, share);
+        stream.Position = 0;
+        var legacy = Serializer.Deserialize<LegacyRelayShare>(stream);
+
+        Assert.True(share.BlockRecordEmitted);
+        Assert.False(share.IsBlockCandidate);
+        Assert.Null(share.BlockType);
+        Assert.Null(share.TransactionConfirmationData);
+        Assert.False(legacy.IsBlockCandidate);
+        Assert.Equal(share.PoolId, legacy.PoolId);
+        Assert.Equal(share.Created, legacy.Created);
+    }
+
+    [Fact]
+    public void RecoveryContentHasher_IsOrderIndependentAndCardinalitySensitive()
+    {
+        var settings = new JsonSerializerSettings();
+        var first = new ShareRecorder.RecoveryContentHasher(settings);
+        var second = new ShareRecorder.RecoveryContentHasher(settings);
+        var differentCardinality = new ShareRecorder.RecoveryContentHasher(settings);
+        var a = Encoding.UTF8.GetBytes("normalized-a");
+        var b = Encoding.UTF8.GetBytes("normalized-b");
+
+        first.AppendNormalizedRecord(a);
+        first.AppendNormalizedRecord(b);
+        first.AppendNormalizedRecord(a);
+        second.AppendNormalizedRecord(a);
+        second.AppendNormalizedRecord(a);
+        second.AppendNormalizedRecord(b);
+        differentCardinality.AppendNormalizedRecord(a);
+        differentCardinality.AppendNormalizedRecord(b);
+
+        Assert.Equal(first.GetHash(), second.GetHash());
+        Assert.NotEqual(first.GetHash(), differentCardinality.GetHash());
+    }
+
+    [Fact]
+    public void RecoveryContentHasher_MillionRecordsRetainsConstantDigestState()
+    {
+        var hasher = new ShareRecorder.RecoveryContentHasher(
+            new JsonSerializerSettings());
+        var record = Encoding.UTF8.GetBytes("production-scale-normalized-record");
+
+        for(var i = 0; i < 1_000_000; i++)
+            hasher.AppendNormalizedRecord(record);
+
+        Assert.Equal(1_000_000UL, hasher.RecordCount);
+        Assert.Equal(128, hasher.AccumulatorStorageBytes);
+        Assert.Equal(64, hasher.GetHash().Length);
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_OriginalShareDoesNotDuplicateEmittedBlockRecord()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new PoolConfig[0] }, messageBus);
+        var share = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "LExampleAddress",
+            IsBlockCandidate = true,
+            BlockRecordEmitted = true,
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { share });
+
+        await shareRepository.Received(1).BatchInsertAsync(connection, transaction,
+            Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        await blockRepository.DidNotReceive().InsertAsync(connection, transaction,
+            Arg.Any<Block>());
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_WritesBlockOnlyCandidateWithoutShareRow()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new PoolConfig[0] }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            BlockType = "auxpow",
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        await shareRepository.DidNotReceive().BatchInsertAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<IEnumerable<PersistedShare>>(),
+            Arg.Any<CancellationToken>());
+        await blockRepository.Received(1).InsertAsync(connection, transaction,
+            Arg.Is<Block>(x => x.PoolId == candidate.PoolId &&
+                x.BlockHeight == (ulong) candidate.BlockHeight &&
+                x.Type == candidate.BlockType &&
+                x.Hash == candidate.BlockHash &&
+                x.TransactionConfirmationData == candidate.TransactionConfirmationData));
+        transaction.Received(1).Commit();
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_CommitsSynchronouslyBeforeReturning()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), shareRepository, blockRepository,
+            new ClusterConfig { Pools = Array.Empty<PoolConfig>() }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistBlockCandidateAsync(candidate);
+
+        Received.InOrder(() =>
+        {
+            blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>());
+            transaction.Commit();
+        });
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_ShutdownBoundsDatabaseAndFlushesRecoveryJournal()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var databaseAttempt = new TaskCompletionSource<IDbConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var databaseAttemptStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        connectionFactory.OpenConnectionAsync().Returns(_ =>
+        {
+            databaseAttemptStarted.TrySetResult(true);
+            return databaseAttempt.Task;
+        });
+
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), shareRepository, blockRepository,
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, messageBus, failureHandler)
+        {
+            ShutdownDatabaseAttemptTimeout = TimeSpan.FromMilliseconds(100),
+        };
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DShutdownBeneficiary",
+            BlockHeight = 456,
+            BlockHash = "shutdown-doge-block-hash",
+            BlockType = "auxpow-claim",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData =
+                "auxpow-claim:shutdown-doge-block-hash:parent-header:0",
+        };
+
+        try
+        {
+            var persistence = recorder.PersistBlockCandidateAsync(candidate);
+            await databaseAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            recorder.BeginShutdown();
+            await persistence.WaitAsync(TimeSpan.FromSeconds(2));
+
+            await connectionFactory.Received(1).OpenConnectionAsync();
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(candidate.PoolId, persisted.PoolId);
+            Assert.Equal(candidate.Miner, persisted.Miner);
+            Assert.Equal(candidate.BlockHash, persisted.BlockHash);
+            Assert.Equal(candidate.BlockType, persisted.BlockType);
+            Assert.Equal(candidate.TransactionConfirmationData,
+                persisted.TransactionConfirmationData);
+            Assert.True(persisted.BlockOnly);
+            Assert.True(persisted.IsBlockCandidate);
+            Assert.Empty(failureHandler.ReceivedCalls());
+        }
+        finally
+        {
+            databaseAttempt.TrySetException(new TimeoutException(
+                "simulated late PostgreSQL failure"));
+            await Task.Delay(25);
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryJournal_ConcurrentRecorderInstancesSerializeByCanonicalFilename()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+        };
+
+        ShareRecorder CreateRecorder() => new(
+            Substitute.For<IConnectionFactory>(), mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), config,
+            Substitute.For<IMessageBus>());
+
+        var ordinaryRecorder = CreateRecorder();
+        var candidateRecorder = CreateRecorder();
+        var ordinaryShare = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "LStatisticalMiner",
+            Difficulty = 4,
+            Created = DateTime.UtcNow,
+        };
+        var candidate = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "DDurableBeneficiary",
+            BlockHeight = 987,
+            BlockHash = "concurrent-journal-doge-block",
+            BlockType = "auxpow",
+            BlockOnly = true,
+            IsBlockCandidate = true,
+            TransactionConfirmationData =
+                "auxpow-block:concurrent-journal-doge-block",
+            Created = DateTime.UtcNow,
+        };
+
+        Assert.Same(ordinaryRecorder.RecoveryWriteGate,
+            candidateRecorder.RecoveryWriteGate);
+
+        try
+        {
+            await ordinaryRecorder.RecoveryWriteGate.WaitAsync();
+            Task ordinaryWrite;
+            Task candidateWrite;
+
+            try
+            {
+                ordinaryWrite = ordinaryRecorder.WriteRecoveryJournalAsync(
+                    new[] { ordinaryShare });
+                candidateWrite = candidateRecorder.WriteRecoveryJournalAsync(
+                    new[] { candidate });
+                await Task.Delay(25);
+                Assert.False(ordinaryWrite.IsCompleted);
+                Assert.False(candidateWrite.IsCompleted);
+            }
+            finally
+            {
+                ordinaryRecorder.RecoveryWriteGate.Release();
+            }
+
+            await Task.WhenAll(ordinaryWrite, candidateWrite)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+
+            var records = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .ToArray();
+            Assert.Equal(2, records.Length);
+            Assert.Single(records, x => x.BlockHash == candidate.BlockHash &&
+                x.Miner == candidate.Miner && x.BlockOnly);
+            Assert.Single(records, x => x.Miner == ordinaryShare.Miner &&
+                !x.BlockOnly);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_DuplicateBlockDoesNotNotifyAgain()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(false);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_EmitsBlockFoundOnlyAfterCommit()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        Received.InOrder(() =>
+        {
+            transaction.Commit();
+            messageBus.SendMessage(Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
+        });
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_FailedCommitDoesNotEmitBlockFound()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        transaction.When(x => x.Commit()).Do(_ => throw new DataException("commit failed"));
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await Assert.ThrowsAsync<DataException>(() =>
+            recorder.PersistSharesCoreAsync(new List<Share> { candidate }));
+
+        messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PersistSharesCoreAsync_PostCommitNotificationFailureDoesNotFailPersistence()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+        messageBus.When(x => x.SendMessage(Arg.Any<BlockFoundNotification>(), Arg.Any<string>()))
+            .Do(_ => throw new IOException("subscriber failed"));
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = "auxpow",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = "auxpow-block:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        transaction.Received(1).Commit();
+        transaction.DidNotReceive().Rollback();
+    }
+
+    [Theory]
+    [InlineData("auxpow-claim")]
+    [InlineData("merged-parent-uncertain")]
+    public async Task PersistSharesCoreAsync_UncertainBlockDoesNotEmitBlockFoundNotification(
+        string blockType)
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper, new JsonSerializerSettings(),
+            shareRepository, blockRepository, new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var candidate = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "DExampleAddress",
+            BlockHeight = 123,
+            BlockHash = "doge-block-hash",
+            BlockType = blockType,
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = $"{blockType}:doge-block-hash",
+        };
+
+        await recorder.PersistSharesCoreAsync(new List<Share> { candidate });
+
+        await blockRepository.Received(1).InsertAsync(connection, transaction,
+            Arg.Any<Block>());
+        messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_UnexpectedDatabaseFailureJournalsAndStopsCluster()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw new InvalidOperationException("unexpected persistence pipeline failure"));
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, Substitute.For<IMessageBus>(), failureHandler);
+        var candidate = CreateDurableCandidate("unexpected-db-block", "auxpow");
+
+        try
+        {
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                recorder.PersistBlockCandidateAsync(candidate));
+
+            Assert.Contains("unexpected persistence", ex.Message);
+            var failureCall = Assert.Single(failureHandler.ReceivedCalls());
+            var failureArguments = failureCall.GetArguments();
+            var failedCandidates = Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
+                failureArguments[0]);
+            Assert.Equal(candidate.BlockHash, Assert.Single(failedCandidates).BlockHash);
+            Assert.Contains("unexpected persistence",
+                Assert.IsType<InvalidOperationException>(failureArguments[1]).Message);
+            Assert.Null(failureArguments[2]);
+            Assert.True(Assert.IsType<bool>(failureArguments[3]));
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(candidate.BlockHash, persisted.BlockHash);
+            Assert.Equal(candidate.Miner, persisted.Miner);
+            Assert.Equal(candidate.BlockType, persisted.BlockType);
+            Assert.Equal(candidate.TransactionConfirmationData,
+                persisted.TransactionConfirmationData);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_DatabaseAndJournalFailureStopsCluster()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw new InvalidOperationException("unexpected database failure"));
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = Path.Combine(missingDirectory, "recovery.txt"),
+            }, Substitute.For<IMessageBus>(), failureHandler);
+        var candidate = CreateDurableCandidate("lost-candidate-block");
+
+        var persistenceError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            recorder.PersistBlockCandidateAsync(candidate));
+
+        Assert.IsType<DirectoryNotFoundException>(
+            persistenceError.Data["RecoveryJournalException"]);
+
+        var failureCall = Assert.Single(failureHandler.ReceivedCalls());
+        var failureArguments = failureCall.GetArguments();
+        Assert.Equal(candidate.BlockHash,
+            Assert.Single(Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
+                failureArguments[0])).BlockHash);
+        Assert.Contains("database failure",
+            Assert.IsType<InvalidOperationException>(failureArguments[1]).Message);
+        Assert.Contains(missingDirectory,
+            Assert.IsType<DirectoryNotFoundException>(failureArguments[2]).Message);
+        Assert.False(Assert.IsType<bool>(failureArguments[3]));
+    }
+
+    [Fact]
+    public void CandidatePersistenceFailureHandler_StopsProcessOnlyOnceForDualTargetFailure()
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = new CandidatePersistenceFailureHandler(processStatus,
+            applicationLifetime, messageBus);
+
+        handler.StopCluster(new[] { CreateDurableCandidate("ltc-parent") },
+            new InvalidOperationException("parent failed"), null, true);
+        handler.StopCluster(new[] { CreateDurableCandidate("doge-aux") },
+            new InvalidOperationException("aux failed"),
+            new IOException("journal failed"), false);
+
+        Assert.Equal(1, processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+        messageBus.Received(1).SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+    }
+
+    private static Share CreateDurableCandidate(string hash,
+        string type = "merged-parent") => new()
+    {
+        PoolId = type == "auxpow" ? "doge-solo" : "ltc-solo",
+        Miner = type == "auxpow" ? "DFinancialBeneficiary" : "LFinancialBeneficiary",
+        BlockHeight = 123,
+        BlockHash = hash,
+        BlockType = type,
+        IsBlockCandidate = true,
+        BlockOnly = true,
+        TransactionConfirmationData = type == "auxpow"
+            ? $"auxpow-block:{hash}"
+            : "coinbase-transaction",
+    };
+
+    private static RecoveryFixture CreateRecoveryFixture()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var pool = new PoolConfig
+        {
+            Id = "doge-solo",
+            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.TryRegisterRecoveryImportAsync(connection, transaction,
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), shareRepository, blockRepository,
+            new ClusterConfig { Pools = new[] { pool } }, messageBus);
+
+        return new RecoveryFixture(recorder, connectionFactory, connection,
+            transaction, shareRepository, blockRepository, messageBus);
+    }
+
+    private static string RecoveryShareJson(int index, bool blockOnly = false)
+    {
+        return JsonConvert.SerializeObject(new Share
+        {
+            PoolId = blockOnly ? "doge-solo" : "ltc-solo",
+            Miner = $"miner-{index}",
+            Difficulty = index + 1,
+            Created = DateTime.UnixEpoch.AddSeconds(index),
+            BlockOnly = blockOnly,
+            IsBlockCandidate = blockOnly,
+            BlockType = blockOnly ? "auxpow" : null,
+            BlockHash = blockOnly ? $"doge-block-{index}" : null,
+            BlockHeight = blockOnly ? index + 1 : 0,
+            TransactionConfirmationData = blockOnly
+                ? $"auxpow-block:doge-block-{index}"
+                : null,
+        });
+    }
+
+    private static async Task<string> WriteRecoveryFileAsync(
+        IEnumerable<string> records)
+    {
+        var filename = Path.GetTempFileName();
+        await File.WriteAllLinesAsync(filename, records);
+        return filename;
+    }
+
+    private sealed record RecoveryFixture(ShareRecorder Recorder,
+        IConnectionFactory ConnectionFactory, IDbConnection Connection,
+        IDbTransaction Transaction, IShareRepository ShareRepository,
+        IBlockRepository BlockRepository, IMessageBus MessageBus);
+
+    [ProtoContract]
+    private sealed class LegacyRelayShare
+    {
+        [ProtoMember(1)]
+        public string PoolId { get; set; }
+
+        [ProtoMember(12)]
+        public bool IsBlockCandidate { get; set; }
+
+        [ProtoMember(15)]
+        public DateTime Created { get; set; }
+    }
+}

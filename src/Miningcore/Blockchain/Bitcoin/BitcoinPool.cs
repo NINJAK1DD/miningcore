@@ -118,7 +118,7 @@ public class BitcoinPool : PoolBase
         var workerName = split?.Skip(1).FirstOrDefault()?.Trim() ?? string.Empty;
 
         // assumes that minerName is an address
-        context.IsAuthorized = await manager.ValidateAddressAsync(minerName, ct);
+        context.IsAuthorized = await ValidateWorkerAsync(context, minerName, password, ct);
         context.Miner = minerName;
         context.Worker = workerName;
 
@@ -179,6 +179,12 @@ public class BitcoinPool : PoolBase
                 Disconnect(connection);
             }
         }
+    }
+
+    protected virtual Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
+        string minerName, string password, CancellationToken ct)
+    {
+        return manager.ValidateAddressAsync(minerName, ct);
     }
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
@@ -261,8 +267,11 @@ public class BitcoinPool : PoolBase
                 share.IpAddress,
                 DateTime.UtcNow);
 
-            // publish
-            messageBus.SendMessage(share);
+            // Merged mining publishes its cleared statistical copy before starting the
+            // independent parent/auxiliary submission paths. Other Bitcoin-family managers
+            // continue to publish here.
+            if(ShouldPublishStatisticalShare(share))
+                messageBus.SendMessage(share);
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
@@ -293,6 +302,11 @@ public class BitcoinPool : PoolBase
 
             throw;
         }
+    }
+
+    internal static bool ShouldPublishStatisticalShare(Share share)
+    {
+        return share?.StatisticalRecordEmitted != true;
     }
 
     private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)

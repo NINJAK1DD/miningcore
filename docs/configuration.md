@@ -1,0 +1,81 @@
+# Configuration guide
+
+Miningcore reads JSON with comments. Start with [`config.example.json`](../config.example.json), copy
+it to `config.json`, and replace every `CHANGE_ME` placeholder. Strict JSON editors may complain about
+comments even though Miningcore accepts them.
+
+The exhaustive machine-readable reference is [`config.schema.json`](../src/Miningcore/config.schema.json).
+Coin-family extensions are intentionally flexible and may also be documented beside their implementation.
+
+## Main sections
+
+| Section | Purpose |
+| --- | --- |
+| `logging` | Console/file output and log level |
+| `api` | Public REST API, admin/metrics ports, TLS and rate limits |
+| `persistence.postgres` | Database connection used for shares, blocks and payments |
+| `paymentProcessing` | Cluster-wide payout scheduler |
+| `statistics` | Hashrate window, update interval and retention |
+| `banning` | Cluster-wide junk, login and invalid-share policy |
+| `notifications` | Email, Pushover and administrative events |
+| `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
+| `shareRelay` / `shareRelays` | Advanced distributed sender/receiver topology |
+
+Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
+secrets. Restrict the file to the service account.
+
+## Pool basics
+
+Every enabled pool needs a unique `id`, a matching entry from `coins.json`, a pool wallet `address`,
+one or more daemon RPC endpoints, at least one Stratum port in `ports`, and an appropriate
+`paymentProcessing` section.
+
+The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff` block allows the pool
+to adjust it toward a target share interval. A miner can request a supported starting difficulty with
+`d=VALUE` in its password.
+
+## LTC/DOGE merged mining
+
+Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled and use `SOLO`. The parent
+pool contains:
+
+```json
+"mergedMining": {
+  "enabled": true,
+  "auxPoolId": "doge-solo",
+  "addressParameter": "doge",
+  "requireAuxAddress": true,
+  "auxiliaryTemplatePollTimeoutMs": 500
+}
+```
+
+`auxPoolId` must exactly match the Dogecoin pool `id`. `addressParameter` controls the password name;
+the recommended default is `doge`. `requireAuxAddress: true` rejects miners that omit a DOGE payout
+address. The template poll timeout is milliseconds and may be raised for a healthy but slower local
+daemon.
+
+Miner examples:
+
+```text
+# Vardiff/default pool difficulty
+Username: YOUR_LTC_ADDRESS.rig01
+Password: doge=YOUR_DOGE_ADDRESS
+
+# Explicit starting difficulty
+Username: YOUR_LTC_ADDRESS.rig01
+Password: d=65536;doge=YOUR_DOGE_ADDRESS
+```
+
+The LTC address receives an accepted Litecoin parent reward; the DOGE address receives an accepted
+Dogecoin auxiliary reward. They are validated independently. Read
+[`merged-mining-litecoin-dogecoin.md`](merged-mining-litecoin-dogecoin.md) for daemon, persistence,
+reconciliation and deployment requirements.
+
+## Validate changes safely
+
+1. Keep a known-good copy of the current configuration outside the repository.
+2. Edit one logical area at a time.
+3. Start Miningcore in the foreground and read every startup warning.
+4. Check `/api/health-check` and `/api/pools`.
+5. Connect a test miner at low risk before moving production traffic.
+6. For merged mining, repeat the documented regtest and schema preflight when topology changes.

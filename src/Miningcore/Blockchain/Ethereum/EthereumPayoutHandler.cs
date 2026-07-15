@@ -361,6 +361,9 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
 
             catch(Exception ex)
             {
+                WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                    coin.RpcMethodPrefix + EC.SendTx);
+
                 logger.Error(ex);
 
                 NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
@@ -681,11 +684,15 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
             response = await rpcClient.ExecuteAsync<string>(logger, coin.RpcMethodPrefix + EC.SendTx, ct, new[] { request });
         }
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            coin.RpcMethodPrefix + EC.SendTx);
+
         if(response.Error != null)
             throw new Exception($"{coin.RpcMethodPrefix}{EC.SendTx} returned error: {response.Error.Message} code {response.Error.Code}");
         
         if(string.IsNullOrEmpty(response.Response) || EthereumConstants.ZeroHashPattern.IsMatch(response.Response))
-            throw new Exception($"{coin.RpcMethodPrefix}{EC.SendTx} did not return a valid transaction hash");
+            throw new PayoutOutcomeUncertainException(
+                $"{coin.RpcMethodPrefix}{EC.SendTx} returned success without a valid transaction hash");
         
         var txHash = response.Response;
         logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}");

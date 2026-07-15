@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {
+      "method": "getblock",
+      "action": "strip_transactions"
+    }
+  ]
+}

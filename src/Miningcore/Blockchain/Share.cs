@@ -67,6 +67,36 @@ public class Share
     public string SessionId { get; set; }
 
     /// <summary>
+    /// Persist this message as a block candidate without inserting it into the shares table.
+    /// Used for independently durable merged-mining block records that must not create a second
+    /// standalone share row.
+    /// </summary>
+    [ProtoMember(20)]
+    public bool BlockOnly { get; set; }
+
+    /// <summary>
+    /// The block record was emitted independently as a block-only message. The original share is
+    /// still persisted for statistics, but must not create a duplicate block row.
+    /// </summary>
+    [ProtoMember(21)]
+    public bool BlockRecordEmitted { get; set; }
+
+    /// <summary>
+    /// Preserve the sender timestamp when this ordinary share crosses a relay. Merged mining
+    /// publishes the statistical proof before its independent block-submission paths so the
+    /// winning proof remains on the correct effort boundary even if a peer chain is slow.
+    /// </summary>
+    [ProtoMember(22)]
+    public bool PreserveCreated { get; set; }
+
+    /// <summary>
+    /// Runtime-only guard used when a job manager has already published the ordinary statistical
+    /// copy. This is deliberately not serialized on the relay wire.
+    /// </summary>
+    [ProtoIgnore]
+    public bool StatisticalRecordEmitted { get; set; }
+
+    /// <summary>
     /// Block this share refers to
     /// </summary>
     [ProtoMember(9)]

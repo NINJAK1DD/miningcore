@@ -416,7 +416,8 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     
                     txSweep = await Guard(() => alephiumClient.NameSweepAllAddressesAsync(extraPoolPaymentProcessingConfig.WalletName, destinationSweep, ct), ex =>
                     {
-                        ReportAndRethrowApiError("Failed to Sweep all wealthy active addresses", ex, false);
+                        RethrowSubmissionFailure("Alephium wallet sweep submission",
+                            "Failed to Sweep all wealthy active addresses", ex);
                     });
                 }
                 else
@@ -431,21 +432,15 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
                     txSweep = await Guard(() => alephiumClient.NameSweepActiveAddressAsync(extraPoolPaymentProcessingConfig.WalletName, destinationSweep, ct), ex =>
                     {
-                        ReportAndRethrowApiError("Failed to Sweep wealthy active address", ex, false);
+                        RethrowSubmissionFailure("Alephium wallet sweep submission",
+                            "Failed to Sweep wealthy active address", ex);
                     });
                 }
 
-                if(txSweep?.Results == null)
-                    return;
-
-                if(txSweep.Results.Count < 1)
-                    logger.Warn(() => $"[{LogCategory}] Sweep transaction failed to return a transaction id");
-                else
+                var sweepResults = ParseSweepResults(txSweep);
+                foreach(var result in sweepResults)
                 {
-                    foreach (var result in txSweep.Results)
-                    {
-                        logger.Info(() => $"[{LogCategory}] Sweep transaction id: {result.TxId}, FromGroup: {result.FromGroup}, ToGroup: {result.ToGroup}");
-                    }
+                    logger.Info(() => $"[{LogCategory}] Sweep transaction id: {result.TxId}, FromGroup: {result.FromGroup}, ToGroup: {result.ToGroup}");
                 }
 
                 goto retry;
@@ -610,16 +605,14 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
                     var txSubmit = await Guard(() => alephiumClient.PostTransactionsSubmitAsync(submitTxSign, ct), ex =>
                     {
-                        logger.Warn(() => $"[{LogCategory}] Submit signed transaction failed");
+                        RethrowSubmissionFailure("Alephium transaction submission",
+                            "Submit signed transaction failed", ex);
                     });
-                    if(string.IsNullOrEmpty(txSubmit?.TxId))
-                    {
-                        logger.Warn(() => $"[{LogCategory}] Payment transaction failed to return a transaction id");
-                        continue;
-                    }
+                    var txId = WalletSubmissionOutcome.RequireTransactionId(txSubmit?.TxId,
+                        "Alephium transaction submission");
 
                     // payment successful
-                    logger.Info(() => $"[{LogCategory}] Payment transaction id: {txSubmit.TxId}");
+                    logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                     successBalances = groupingAmounts[j]
                         .Select(x => new Balance
@@ -630,13 +623,34 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         })
                         .ToArray();
 
-                    await PersistPaymentsAsync(successBalances, txSubmit.TxId);
+                    await PersistPaymentsAsync(successBalances, txId);
 
-                    NotifyPayoutSuccess(poolConfig.Id, successBalances, new[] {txSubmit.TxId}, ((estimatedGasAmount * AlephiumConstants.DefaultGasPrice) / AlephiumConstants.SmallestUnit));
+                    NotifyPayoutSuccess(poolConfig.Id, successBalances, new[] {txId}, ((estimatedGasAmount * AlephiumConstants.DefaultGasPrice) / AlephiumConstants.SmallestUnit));
                 }
             }
         
         await LockWallet(ct);
+    }
+
+    internal static TransferResult[] ParseSweepResults(TransferResults sweep)
+    {
+        if(sweep?.Results == null || sweep.Results.Count == 0)
+            throw new PayoutOutcomeUncertainException(
+                "Alephium wallet sweep returned success without transaction identities");
+
+        var results = sweep.Results.ToArray();
+        for(var i = 0; i < results.Length; i++)
+        {
+            var result = results[i];
+            if(result == null)
+                throw new PayoutOutcomeUncertainException(
+                    $"Alephium wallet sweep result {i + 1} was null");
+
+            WalletSubmissionOutcome.RequireTransactionId(result.TxId,
+                $"Alephium wallet sweep result {i + 1}");
+        }
+
+        return results;
     }
     
     public override double AdjustShareDifficulty(double difficulty)
@@ -669,6 +683,15 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
         if(rethrow)
             throw ex;
+    }
+
+    private void RethrowSubmissionFailure(string operation, string action, Exception ex)
+    {
+        // Transport failures remain financially ambiguous. A structured REST rejection is
+        // conclusive and must escape Guard<T> as its original exception instead of being
+        // converted to a null result and misclassified as a malformed success.
+        WalletSubmissionOutcome.RethrowIfUnknown(ex, operation);
+        ReportAndRethrowApiError(action, ex);
     }
 
     private async Task UnlockWallet(CancellationToken ct)

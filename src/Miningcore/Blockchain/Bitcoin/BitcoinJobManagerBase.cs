@@ -7,6 +7,7 @@ using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Extensions;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -64,11 +65,24 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         };
     }
 
+    /// <summary>
+    /// Enables daemon polling even when jobs are normally supplied by a Bitcoin Template Stream.
+    /// Specialized managers can use this when they depend on another chain whose updates are not
+    /// represented by the parent-chain stream.
+    /// </summary>
+    protected virtual bool PollJobsWithBlockTemplateStream => false;
+
     protected virtual void SetupJobUpdates(CancellationToken ct)
     {
         jobRebroadcastTimeout = TimeSpan.FromSeconds(Math.Max(1, poolConfig.JobRebroadcastTimeout));
         var blockFound = blockFoundSubject.Synchronize();
         var pollTimerRestart = blockFoundSubject.Synchronize();
+        var shutdown = Observable.Create<Unit>(observer =>
+            ct.Register(() =>
+            {
+                observer.OnNext(Unit.Default);
+                observer.OnCompleted();
+            }));
 
         var triggers = new List<IObservable<(bool Force, string Via, string Data)>>
         {
@@ -171,6 +185,16 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                     .RefCount());
             }
 
+            if(PollJobsWithBlockTemplateStream && poolConfig.BlockRefreshInterval > 0)
+            {
+                var pollingInterval = TimeSpan.FromMilliseconds(poolConfig.BlockRefreshInterval);
+
+                triggers.Add(Observable.Timer(pollingInterval)
+                    .TakeUntil(blockFound)
+                    .Select(_ => (false, JobRefreshBy.Poll, (string) null))
+                    .Repeat());
+            }
+
             // get initial blocktemplate
             triggers.Add(Observable.Interval(TimeSpan.FromMilliseconds(1000))
                 .Select(_ => (false, JobRefreshBy.Initial, (string) null))
@@ -178,6 +202,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
 
         Jobs = triggers.Merge()
+            .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
             .Where(x => x.IsNew || x.Force)
@@ -254,9 +279,19 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
     }
 
-    protected record SubmitResult(bool Accepted, string CoinbaseTx);
+    protected record SubmitResult(bool Accepted, string CoinbaseTx, bool Ambiguous = false,
+        bool Duplicate = false);
 
-    protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex, CancellationToken ct)
+    internal enum SubmissionBlockLookupResult
+    {
+        Accepted,
+        MissingCoinbase,
+        KnownInactive,
+        Unavailable,
+    }
+
+    protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex,
+        CancellationToken ct, bool notifyAmbiguous = true)
     {
         var submitBlockRequest = hasSubmitBlockMethod
             ? new RpcRequest(BitcoinCommands.SubmitBlock, new[] { blockHex })
@@ -276,25 +311,142 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             submitResult.Error?.Code.ToString(CultureInfo.InvariantCulture) ??
             submitResult.Response?.ToString();
 
-        if(!string.IsNullOrEmpty(submitError))
-        {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
-            return new SubmitResult(false, null);
-        }
-
-        // was it accepted?
+        // was it accepted and can it be reconciled to a coinbase transaction?
         var acceptResult = results[1];
         var block = acceptResult.Response?.ToObject<DaemonResponses.Block>();
-        var accepted = acceptResult.Error == null && block?.Hash == share.BlockHash;
+        var lookupResult = ClassifySubmissionBlockLookup(acceptResult.Error, block,
+            share.BlockHash);
+        var duplicateSubmission = IsDuplicateBlockSubmissionResponse(submitError);
+        var inconclusiveSubmission = IsInconclusiveBlockSubmissionResponse(submitError);
+        var outcome = ClassifyBlockSubmissionOutcome(submitError, submitResult.Error,
+            acceptResult.Error, block, share.BlockHash);
 
-        if(!accepted)
+        if(!string.IsNullOrEmpty(submitError) && !duplicateSubmission && !inconclusiveSubmission)
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
-            messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
+            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
+            if(!outcome.Ambiguous || notifyAmbiguous)
+                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+            return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
+                outcome.Ambiguous, outcome.Duplicate);
         }
 
-        return new SubmitResult(accepted, block?.Transactions.FirstOrDefault());
+        if(duplicateSubmission)
+        {
+            if(lookupResult == SubmissionBlockLookupResult.Accepted ||
+                lookupResult == SubmissionBlockLookupResult.MissingCoinbase)
+                logger.Warn(() => $"Block {share.BlockHeight} submission returned duplicate; block [{share.BlockHash}] is active on the daemon and will not be accepted by the shared Bitcoin submit path");
+            else
+                logger.Warn(() => $"Block {share.BlockHeight} submission returned duplicate, but block [{share.BlockHash}] was not found active after submission");
+
+            return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
+                outcome.Ambiguous, outcome.Duplicate);
+        }
+
+        if(!outcome.Accepted)
+        {
+            logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
+            if(!outcome.Ambiguous || notifyAmbiguous)
+                messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
+        }
+
+        return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
+            !outcome.Accepted && outcome.Ambiguous, outcome.Duplicate);
+    }
+
+    internal static bool IsDuplicateBlockSubmissionResponse(string submitError)
+    {
+        return !string.IsNullOrWhiteSpace(submitError) &&
+            (submitError.Equals("duplicate", StringComparison.OrdinalIgnoreCase) ||
+                submitError.Equals("duplicate-inconclusive", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsInconclusiveBlockSubmissionResponse(string submitError)
+    {
+        return !string.IsNullOrWhiteSpace(submitError) &&
+            submitError.Equals("inconclusive", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static (bool Accepted, string CoinbaseTx, bool Ambiguous, bool Duplicate)
+        ClassifyBlockSubmissionOutcome(string submitError, JsonRpcError submitRpcError,
+            JsonRpcError lookupError, DaemonResponses.Block block, string expectedHash)
+    {
+        var duplicateSubmission = IsDuplicateBlockSubmissionResponse(submitError);
+        var inconclusiveSubmission = IsInconclusiveBlockSubmissionResponse(submitError);
+
+        if(!string.IsNullOrEmpty(submitError) && !duplicateSubmission && !inconclusiveSubmission)
+            return (false, null, submitRpcError?.Code == -500, false);
+
+        if(duplicateSubmission)
+            return ClassifyDuplicateSubmissionLookup(lookupError, block, expectedHash);
+
+        var lookupResult = ClassifySubmissionBlockLookup(lookupError, block, expectedHash);
+
+        return lookupResult switch
+        {
+            SubmissionBlockLookupResult.Accepted =>
+                (true, GetCoinbaseTransaction(block), false, false),
+            SubmissionBlockLookupResult.MissingCoinbase =>
+                (false, null, true, false),
+            SubmissionBlockLookupResult.Unavailable =>
+                (false, null, true, false),
+            _ => (false, null, false, false),
+        };
+    }
+
+    internal static (bool Accepted, string CoinbaseTx, bool Ambiguous, bool Duplicate)
+        ClassifyDuplicateSubmissionLookup(JsonRpcError error, DaemonResponses.Block block,
+            string expectedHash)
+    {
+        var lookupResult = ClassifySubmissionBlockLookup(error, block, expectedHash);
+
+        return lookupResult switch
+        {
+            SubmissionBlockLookupResult.Accepted =>
+                (false, GetCoinbaseTransaction(block), true, true),
+            SubmissionBlockLookupResult.MissingCoinbase =>
+                (false, null, true, true),
+            SubmissionBlockLookupResult.Unavailable =>
+                (false, null, true, true),
+            _ => (false, null, false, true),
+        };
+    }
+
+    internal static bool IsAcceptedBlockLookup(JsonRpcError error, DaemonResponses.Block block,
+        string expectedHash)
+    {
+        return IsActiveBlockLookup(error, block, expectedHash) &&
+            !string.IsNullOrEmpty(GetCoinbaseTransaction(block));
+    }
+
+    internal static bool IsActiveBlockLookup(JsonRpcError error, DaemonResponses.Block block,
+        string expectedHash)
+    {
+        return error == null &&
+            string.Equals(block?.Hash, expectedHash, StringComparison.OrdinalIgnoreCase) &&
+            block.Confirmations > 0;
+    }
+
+    internal static SubmissionBlockLookupResult ClassifySubmissionBlockLookup(
+        JsonRpcError error, DaemonResponses.Block block, string expectedHash)
+    {
+        if(error != null ||
+            !string.Equals(block?.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            return SubmissionBlockLookupResult.Unavailable;
+
+        if(block.Confirmations < 0)
+            return SubmissionBlockLookupResult.KnownInactive;
+
+        if(block.Confirmations == 0)
+            return SubmissionBlockLookupResult.Unavailable;
+
+        return string.IsNullOrEmpty(GetCoinbaseTransaction(block))
+            ? SubmissionBlockLookupResult.MissingCoinbase
+            : SubmissionBlockLookupResult.Accepted;
+    }
+
+    internal static string GetCoinbaseTransaction(DaemonResponses.Block block)
+    {
+        return block?.Transactions?.FirstOrDefault();
     }
 
     protected async Task<bool> AreDaemonsHealthyLegacyAsync(CancellationToken ct)

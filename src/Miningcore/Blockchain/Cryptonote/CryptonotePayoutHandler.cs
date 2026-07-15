@@ -59,9 +59,13 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            CryptonoteWalletCommands.Transfer);
+
         if(response.Error == null)
         {
-            var txHash = response.Response.TxHash;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                response.Response?.TxHash, CryptonoteWalletCommands.Transfer);
             var txFee = response.Response.Fee / coin.SmallestUnit;
 
             logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}, TxFee {FormatAmount(txFee)}, TxKey {response.Response.TxKey}");
@@ -80,14 +84,20 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
         }
     }
 
-    private async Task<bool> HandleTransferResponseAsync(RpcResponse<TransferSplitResponse> response, params Balance[] balances)
+    internal async Task<bool> HandleTransferSplitResponseAsync(RpcResponse<TransferSplitResponse> response, params Balance[] balances)
     {
-        var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
+        if(response == null)
+            throw new PayoutOutcomeUncertainException(
+                $"{CryptonoteWalletCommands.TransferSplit} returned no response envelope");
+
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            CryptonoteWalletCommands.TransferSplit);
 
         if(response.Error == null)
         {
-            var txHashes = response.Response.TxHashList;
-            var txFees = response.Response.FeeList.Select(x => x / coin.SmallestUnit).ToArray();
+            var (txHashes, feeList) = ParseTransferSplitSuccess(response.Response);
+            var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
+            var txFees = feeList.Select(x => x / coin.SmallestUnit).ToArray();
 
             logger.Info(() => $"[{LogCategory}] Split-Payment transaction ids: {string.Join(", ", txHashes)}, Corresponding TxFees were {string.Join(", ", txFees.Select(FormatAmount))}");
 
@@ -102,6 +112,48 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
             NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null);
             return false;
+        }
+    }
+
+    internal static (string[] TransactionIds, ulong[] Fees) ParseTransferSplitSuccess(
+        TransferSplitResponse payload)
+    {
+        try
+        {
+            if(payload == null)
+                throw new PayoutOutcomeUncertainException(
+                    $"{CryptonoteWalletCommands.TransferSplit} returned success without a response body");
+
+            var transactionIds = payload.TxHashList;
+
+            if(transactionIds == null || transactionIds.Length == 0)
+                throw new PayoutOutcomeUncertainException(
+                    $"{CryptonoteWalletCommands.TransferSplit} returned success without transaction identities");
+
+            foreach(var transactionId in transactionIds)
+                WalletSubmissionOutcome.RequireTransactionId(transactionId,
+                    CryptonoteWalletCommands.TransferSplit);
+
+            if(payload.FeeList == null)
+                throw new PayoutOutcomeUncertainException(
+                    $"{CryptonoteWalletCommands.TransferSplit} returned transaction identities without fee metadata");
+
+            if(payload.FeeList.Length != transactionIds.Length)
+                throw new PayoutOutcomeUncertainException(
+                    $"{CryptonoteWalletCommands.TransferSplit} returned mismatched transaction and fee metadata");
+
+            return (transactionIds, payload.FeeList);
+        }
+
+        catch(PayoutOutcomeUncertainException)
+        {
+            throw;
+        }
+
+        catch(Exception ex)
+        {
+            throw new PayoutOutcomeUncertainException(
+                $"{CryptonoteWalletCommands.TransferSplit} returned an unusable successful response", ex);
         }
     }
 
@@ -268,7 +320,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
                 var transferSplitResponse = await rpcClientWallet.ExecuteAsync<TransferSplitResponse>(logger, CryptonoteWalletCommands.TransferSplit, ct, request);
 
-                return await HandleTransferResponseAsync(transferSplitResponse, balances);
+                return await HandleTransferSplitResponseAsync(transferSplitResponse, balances);
             }
         }
 

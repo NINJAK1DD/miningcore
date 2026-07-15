@@ -1,19 +1,291 @@
+using System.Buffers.Binary;
 using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
+using Miningcore.JsonRpc;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using NBitcoin;
 using Newtonsoft.Json;
 using NLog;
 using Xunit;
+using DaemonBlock = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
 #pragma warning disable 8974
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
 public class BitcoinJobTests : TestBase
 {
+    [Theory]
+    [InlineData("duplicate")]
+    [InlineData("DUPLICATE")]
+    [InlineData("duplicate-inconclusive")]
+    public void DuplicateSubmitResponse_IsLookupAmbiguous(string response)
+    {
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>
+            .IsDuplicateBlockSubmissionResponse(response));
+    }
+
+    [Theory]
+    [InlineData("inconclusive")]
+    [InlineData("INCONCLUSIVE")]
+    public void InconclusiveSubmitResponse_IsIndeterminate(string response)
+    {
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>
+            .IsInconclusiveBlockSubmissionResponse(response));
+    }
+
+    [Fact]
+    public void AcceptedBlockLookup_RequiresExactActiveHash()
+    {
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "BLOCK-HASH"));
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+            },
+            "block-hash"));
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = -1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "block-hash"));
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>.IsAcceptedBlockLookup(
+            new JsonRpcError(-5, "not found", null),
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "block-hash"));
+    }
+
+    [Fact]
+    public void SubmissionBlockLookup_ClassifiesUnavailableAndInactiveSeparately()
+    {
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Accepted,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = 1,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.MissingCoinbase,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = 1,
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.KnownInactive,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = -1,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Unavailable,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                new JsonRpcError(-5, "not found", null),
+                null,
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Unavailable,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "other-block",
+                    Confirmations = 1,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+
+        Assert.Equal(BitcoinJobManagerBase<BitcoinJob>.SubmissionBlockLookupResult.Unavailable,
+            BitcoinJobManagerBase<BitcoinJob>.ClassifySubmissionBlockLookup(
+                null,
+                new DaemonBlock
+                {
+                    Hash = "block-hash",
+                    Confirmations = 0,
+                    Transactions = new[] { "coinbase-txid" },
+                },
+                "block-hash"));
+    }
+
+    [Fact]
+    public void DuplicateSubmitLookup_NeverAcceptsInSharedBitcoinPath()
+    {
+        var active = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "block-hash");
+
+        Assert.False(active.Accepted);
+        Assert.True(active.Ambiguous);
+        Assert.True(active.Duplicate);
+        Assert.Equal("coinbase-txid", active.CoinbaseTx);
+
+        var sideChain = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = -1,
+                Transactions = new[] { "coinbase-txid" },
+            },
+            "block-hash");
+
+        Assert.False(sideChain.Accepted);
+        Assert.False(sideChain.Ambiguous);
+        Assert.True(sideChain.Duplicate);
+        Assert.Null(sideChain.CoinbaseTx);
+
+        var unavailable = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            new JsonRpcError(-5, "not found", null),
+            null,
+            "block-hash");
+
+        Assert.False(unavailable.Accepted);
+        Assert.True(unavailable.Ambiguous);
+        Assert.True(unavailable.Duplicate);
+        Assert.Null(unavailable.CoinbaseTx);
+
+        var missingCoinbase = BitcoinJobManagerBase<BitcoinJob>.ClassifyDuplicateSubmissionLookup(
+            null,
+            new DaemonBlock
+            {
+                Hash = "block-hash",
+                Confirmations = 1,
+            },
+            "block-hash");
+
+        Assert.False(missingCoinbase.Accepted);
+        Assert.True(missingCoinbase.Ambiguous);
+        Assert.True(missingCoinbase.Duplicate);
+        Assert.Null(missingCoinbase.CoinbaseTx);
+    }
+
+    [Fact]
+    public void SubmissionOutcome_PreservesAcceptedAndIndeterminateResultsAsAmbiguous()
+    {
+        var active = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = 1,
+            Transactions = new[] { "coinbase-txid" },
+        };
+
+        var missingCoinbase = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = 1,
+        };
+
+        var zeroConfirmations = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = 0,
+            Transactions = new[] { "coinbase-txid" },
+        };
+
+        var inactive = new DaemonBlock
+        {
+            Hash = "block-hash",
+            Confirmations = -1,
+            Transactions = new[] { "coinbase-txid" },
+        };
+
+        var jsonNullUnavailable = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome(null, null,
+                new JsonRpcError(-5, "not found", null), null, "block-hash");
+        Assert.False(jsonNullUnavailable.Accepted);
+        Assert.True(jsonNullUnavailable.Ambiguous);
+        Assert.False(jsonNullUnavailable.Duplicate);
+
+        var jsonNullMissingCoinbase = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome(null, null,
+                null, missingCoinbase, "block-hash");
+        Assert.False(jsonNullMissingCoinbase.Accepted);
+        Assert.True(jsonNullMissingCoinbase.Ambiguous);
+
+        var jsonNullZeroConfirmations = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome(null, null,
+                null, zeroConfirmations, "block-hash");
+        Assert.False(jsonNullZeroConfirmations.Accepted);
+        Assert.True(jsonNullZeroConfirmations.Ambiguous);
+
+        var inconclusiveActive = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("inconclusive", null,
+                null, active, "block-hash");
+        Assert.True(inconclusiveActive.Accepted);
+        Assert.False(inconclusiveActive.Ambiguous);
+        Assert.Equal("coinbase-txid", inconclusiveActive.CoinbaseTx);
+
+        var inconclusiveUnavailable = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("inconclusive", null,
+                new JsonRpcError(-5, "not found", null), null, "block-hash");
+        Assert.False(inconclusiveUnavailable.Accepted);
+        Assert.True(inconclusiveUnavailable.Ambiguous);
+
+        var duplicateUnavailable = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("duplicate", null,
+                new JsonRpcError(-5, "not found", null), null, "block-hash");
+        Assert.False(duplicateUnavailable.Accepted);
+        Assert.True(duplicateUnavailable.Ambiguous);
+        Assert.True(duplicateUnavailable.Duplicate);
+
+        var duplicateInactive = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("duplicate", null,
+                null, inactive, "block-hash");
+        Assert.False(duplicateInactive.Accepted);
+        Assert.False(duplicateInactive.Ambiguous);
+        Assert.True(duplicateInactive.Duplicate);
+
+        var invalid = BitcoinJobManagerBase<BitcoinJob>
+            .ClassifyBlockSubmissionOutcome("duplicate-invalid", null,
+                null, active, "block-hash");
+        Assert.False(invalid.Accepted);
+        Assert.False(invalid.Ambiguous);
+        Assert.False(invalid.Duplicate);
+    }
+
     [Fact]
     public void Process_Valid_Block()
     {
@@ -61,6 +333,98 @@ public class BitcoinJobTests : TestBase
         Assert.ThrowsAny<StratumException>(() => job.ProcessShare(worker, extraNonce2, nTime, nonce));
     }
 
+    [Theory]
+    [InlineData(null, "missing version_bits")]
+    [InlineData("", "missing version_bits")]
+    [InlineData("0000200", "incorrect size of version_bits")]
+    [InlineData("000020000", "incorrect size of version_bits")]
+    [InlineData("00002xyz", "invalid version_bits")]
+    [InlineData("80000000", "rolling-version mask violation")]
+    public void Process_VersionRollingRejectsMissingMalformedAndUnmaskedBits(
+        string versionBits, string expectedMessage)
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
+
+        var ex = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
+            "01000000", "63445774", "51036775", versionBits));
+
+        Assert.Contains(expectedMessage, ex.Message);
+    }
+
+    [Fact]
+    public void Process_VersionRollingTreatsDifferentBitsAsDifferentWork()
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
+
+        var first = job.ProcessShare(worker, "01000000", "63445774",
+            "51036775", "00002000");
+        var second = job.ProcessShare(worker, "01000000", "63445774",
+            "51036775", "00004000");
+
+        Assert.NotNull(first.Share);
+        Assert.NotNull(second.Share);
+        var duplicate = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
+            "01000000", "63445774", "51036775", "00002000"));
+        Assert.Equal(StratumError.DuplicateShare, duplicate.Code);
+    }
+
+    [Fact]
+    public void Process_VersionRollingAcceptsExplicitZero()
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
+
+        var result = job.ProcessShare(worker, "01000000", "63445774",
+            "51036775", "00000000");
+
+        Assert.NotNull(result.Share);
+    }
+
+    [Fact]
+    public void SerializeHeader_VersionRollingAppliesMaskToExactSerializedVersion()
+    {
+        var (baseJob, _) = CreateJob();
+        var job = Assert.IsType<VersionSerializationBitcoinJob>(baseJob);
+        const uint templateVersion = 0x20002000;
+        const uint mask = 0x00006000;
+        const uint submittedBits = 0x00004000;
+        job.SetTemplateVersion(templateVersion);
+
+        var serializedVersion = job.SerializeVersion(mask, submittedBits);
+        var expected = (templateVersion & ~mask) | (submittedBits & mask);
+
+        Assert.Equal(expected, serializedVersion);
+        Assert.Equal(templateVersion, job.SerializeVersion(null, null));
+    }
+
+    [Theory]
+    [InlineData(null, "missing version_bits")]
+    [InlineData("0000200", "incorrect size of version_bits")]
+    [InlineData("00002xyz", "invalid version_bits")]
+    [InlineData("80000000", "rolling-version mask violation")]
+    public void MergedProcess_UsesSameStrictVersionRollingValidation(
+        string versionBits, string expectedMessage)
+    {
+        var clock = MockMasterClock.FromTicks(638010200200475015);
+        var job = new VersionValidationMergedJob();
+        job.Configure(clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            container.Resolve<RecyclableMemoryStreamManager>(), clock, "merged", false);
+        worker.SetContext(new MergedMiningBitcoinWorkerContext
+        {
+            ExtraNonce1 = "60000001",
+            Difficulty = 0.000000000001d,
+            VersionRollingMask = 0x1fffe000,
+        });
+
+        var ex = Assert.Throws<StratumException>(() => job.ProcessShareMerged(worker,
+            "01000000", "63445774", "51036775", versionBits));
+
+        Assert.Contains(expectedMessage, ex.Message);
+    }
+
     [Fact]
     public void Process_Invalid_Nonce()
     {
@@ -95,7 +459,7 @@ public class BitcoinJobTests : TestBase
 
     private (BitcoinJob, StratumConnection) CreateJob(double difficulty = 0.01d)
     {
-        var job = new BitcoinJob();
+        var job = new VersionSerializationBitcoinJob();
         var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["dash"];
         var pc = new PoolConfig { Template = coin };
 
@@ -119,5 +483,29 @@ public class BitcoinJobTests : TestBase
             coin.ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue, coin.BlockHasherValue);
 
         return (job, worker);
+    }
+
+    private sealed class VersionValidationMergedJob : MergedMiningBitcoinJob
+    {
+        public void Configure(Miningcore.Time.IMasterClock masterClock)
+        {
+            clock = masterClock;
+            BlockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
+            {
+                CurTime = 1665423220,
+            };
+        }
+    }
+
+    private sealed class VersionSerializationBitcoinJob : BitcoinJob
+    {
+        public void SetTemplateVersion(uint version) => BlockTemplate.Version = version;
+
+        public uint SerializeVersion(uint? versionMask, uint? versionBits)
+        {
+            var header = SerializeHeader(new byte[32], BlockTemplate.CurTime, 0,
+                versionMask, versionBits);
+            return BinaryPrimitives.ReadUInt32LittleEndian(header);
+        }
     }
 }

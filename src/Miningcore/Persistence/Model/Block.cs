@@ -17,4 +17,26 @@ public class Block
     public string Source { get; set; }
     public string Hash { get; set; }
     public DateTime Created { get; set; }
+
+    /// <summary>
+    /// Runtime-only signal used by payout classification when an unresolved
+    /// block candidate has just become a proven accepted block. Repository
+    /// mappings ignore this property.
+    /// </summary>
+    public bool NotifyBlockFoundOnUpdate { get; set; }
+
+    /// <summary>
+    /// Runtime-only signal used by payout classification when confirmation
+    /// progress should be emitted only after the block row update has
+    /// committed. Repository mappings ignore this property.
+    /// </summary>
+    public bool NotifyBlockConfirmationProgressOnUpdate { get; set; }
+
+    /// <summary>
+    /// Runtime-only signal used by payout classification when a block status
+    /// change should emit the ordinary unlocked/orphan notification only after
+    /// the database update has committed. Repository mappings ignore this
+    /// property.
+    /// </summary>
+    public bool NotifyBlockUnlockedOnUpdate { get; set; }
 }

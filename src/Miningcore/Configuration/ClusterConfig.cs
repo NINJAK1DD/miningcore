@@ -1343,7 +1343,7 @@ public partial class PoolConfig
 
     public PoolPaymentProcessingConfig PaymentProcessing { get; set; }
     public PoolShareBasedBanningConfig Banning { get; set; }
-    public RewardRecipient[] RewardRecipients { get; set; }
+    public RewardRecipient[] RewardRecipients { get; set; } = Array.Empty<RewardRecipient>();
     public string Address { get; set; }
     public string PubKey { get; set; }  // POS coins only
     public int ClientConnectionTimeout { get; set; }

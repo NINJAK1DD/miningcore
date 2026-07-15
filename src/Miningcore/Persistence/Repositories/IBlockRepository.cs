@@ -5,9 +5,10 @@ namespace Miningcore.Persistence.Repositories;
 
 public interface IBlockRepository
 {
-    Task InsertAsync(IDbConnection con, IDbTransaction tx, Block block);
+    Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block);
     Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
-    Task UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
+    Task<bool> UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
+    Task<Block> GetBlockByIdForUpdateAsync(IDbConnection con, IDbTransaction tx, long id);
 
     Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
@@ -23,6 +24,8 @@ public interface IBlockRepository
     Task<uint> GetMinerBlockCountAsync(IDbConnection con, string poolId, string address, CancellationToken ct);
     Task<DateTime?> GetLastPoolBlockTimeAsync(IDbConnection con, string poolId, CancellationToken ct);
     Task<Block> GetBlockByPoolHeightAndTypeAsync(IDbConnection con, string poolId, long height, string type);
+    Task<Block> GetBlockByPoolHashAndTypeAsync(IDbConnection con, string poolId, string hash, string type);
+    Task<bool> HasMergedMiningBlockIndexesAsync(IDbConnection con, CancellationToken ct);
     Task<uint> GetPoolDuplicateBlockCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status);
     Task<uint> GetPoolDuplicateBlockBeforeCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status, DateTime before);
     Task<uint> GetPoolDuplicateBlockAfterCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status, DateTime after);

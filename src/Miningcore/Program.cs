@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.IO;
@@ -24,6 +25,7 @@ using Miningcore.Api;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
+using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
@@ -48,6 +50,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Dummy;
 using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
+using Miningcore.Persistence.Repositories;
 using Miningcore.Util;
 using NBitcoin.Zcash;
 using Newtonsoft.Json;
@@ -74,11 +77,15 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore;
 
-public class Program : BackgroundService
+public class Program : ProcessStatusBackgroundService
 {
-    public static async Task Main(string[] args)
+    internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
+
+    public static async Task<int> Main(string[] args)
     {
-        try
+        IProcessStatus processStatus = null;
+
+        return await RunStartupBoundaryAsync(async () =>
         {
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
 
@@ -133,16 +140,14 @@ public class Program : BackgroundService
                 })
                 .ConfigureServices((ctx, services) =>
                 {
+                    ConfigureHostShutdown(services);
                     services.AddHttpClient();
                     services.AddMemoryCache();
 
                     ConfigureBackgroundServices(services);
-
-                    // MUST BE THE LAST REGISTERED HOSTED SERVICE!
-                    services.AddHostedService<Program>();
                 });
 
-            if(clusterConfig.Api == null || clusterConfig.Api.Enabled)
+            if(ShouldConfigureApi(isShareRecoveryMode, clusterConfig.Api))
             {
                 var address = clusterConfig.Api?.ListenAddress != null
                     ? (clusterConfig.Api.ListenAddress != "*" ? IPAddress.Parse(clusterConfig.Api.ListenAddress) : IPAddress.Any)
@@ -248,61 +253,69 @@ public class Program : BackgroundService
                 });
             }
 
+            // ConfigureWebHost registers GenericWebHostService in a later service callback. Add
+            // the mining shutdown coordinator only after the optional web host so it is the final
+            // hosted service and therefore receives the shared shutdown budget first.
+            hostBuilder.ConfigureServices((_, services) =>
+                ConfigureMiningShutdownCoordinator(services));
+
             host = hostBuilder.UseConsoleLifetime().Build();
+            processStatus = host.Services.GetRequiredService<IProcessStatus>();
 
             await PreFlightChecks(host.Services);
 
             await host.RunAsync();
-        }
+        }, ReportStartupFailureAsync, () =>
+            processStatus != null && processStatus.ExitCode != 0
+                ? processStatus.ExitCode
+                : Environment.ExitCode);
+    }
 
-        catch(PoolStartupException ex)
+    private static async Task ReportStartupFailureAsync(Exception exception)
+    {
+        switch(exception)
         {
-            if(!string.IsNullOrEmpty(ex.Message))
-                await Console.Error.WriteLineAsync(ex.Message);
+            case PoolStartupException ex:
+                if(!string.IsNullOrEmpty(ex.Message))
+                    await Console.Error.WriteLineAsync(ex.Message);
 
-            await Console.Error.WriteLineAsync("\nCluster cannot start. Good Bye!");
-        }
+                await Console.Error.WriteLineAsync("\nCluster cannot start. Good Bye!");
+                break;
 
-        catch(JsonException)
-        {
-            // ignored
-        }
+            case JsonException:
+            case IOException:
+                // The parser or console already reported these failures.
+                break;
 
-        catch(IOException)
-        {
-            // ignored
-        }
+            case AggregateException ex:
+                if(ex.InnerExceptions.FirstOrDefault() is not PoolStartupException)
+                    Console.Error.WriteLine(ex);
 
-        catch(AggregateException ex)
-        {
-            if(ex.InnerExceptions.First() is not PoolStartupException)
-                Console.Error.WriteLine(ex);
+                await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
+                break;
 
-            await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
-        }
-
-        catch(OperationCanceledException)
-        {
-            // Ctrl+C
-        }
-
-        catch(Exception ex)
-        {
-            Console.Error.WriteLine(ex);
-
-            await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
+            default:
+                Console.Error.WriteLine(exception);
+                await Console.Error.WriteLineAsync("Cluster cannot start. Good Bye!");
+                break;
         }
     }
 
     private static void ConfigureBackgroundServices(IServiceCollection services)
     {
+        // Recovery mode resolves ShareRecorder directly for a one-shot import. Starting the normal
+        // hosted services here would unnecessarily run payment, statistics, relay and recorder
+        // loops alongside that import before the host is stopped.
+        if(!ShouldConfigureBackgroundServices(isShareRecoveryMode))
+            return;
+
         services.AddHostedService<NotificationService>();
         services.AddHostedService<BtStreamReceiver>();
 
         // Share processing
         if(clusterConfig.ShareRelay == null)
         {
-            services.AddHostedService<ShareRecorder>();
+            ConfigureShareRecorderHostedService(services);
             services.AddHostedService<ShareReceiver>();
         }
 
@@ -314,8 +327,7 @@ public class Program : BackgroundService
             services.AddHostedService<MetricsPublisher>();
 
         // Payment processing
-        if(clusterConfig.PaymentProcessing?.Enabled == true &&
-           clusterConfig.Pools.Any(x => x.PaymentProcessing?.Enabled == true))
+        if(ShouldRunPaymentProcessor(clusterConfig))
             services.AddHostedService<PayoutManager>();
         else
             logger.Info("Payment processing is not enabled");
@@ -330,6 +342,7 @@ public class Program : BackgroundService
     private static IHost host;
     private readonly IComponentContext container;
     private readonly IHostApplicationLifetime hal;
+    private readonly Func<CancellationToken, Task> executeOverride;
     private static ILogger logger;
     private static CommandOption versionOption;
     private static CommandOption configFileOption;
@@ -341,10 +354,18 @@ public class Program : BackgroundService
     private static readonly ConcurrentDictionary<string, IMiningPool> pools = new();
     private static readonly AdminGcStats gcStats = new();
 
-    public Program(IComponentContext container, IHostApplicationLifetime hal)
+    public Program(IComponentContext container, IHostApplicationLifetime hal,
+        IProcessStatus processStatus) : base(processStatus)
     {
         this.container = container;
         this.hal = hal;
+    }
+
+    internal Program(IComponentContext container, IHostApplicationLifetime hal,
+        IProcessStatus processStatus, Func<CancellationToken, Task> executeOverride) :
+        this(container, hal, processStatus)
+    {
+        this.executeOverride = executeOverride;
     }
 
     private static void ConfigureAutofac(ContainerBuilder builder)
@@ -361,11 +382,36 @@ public class Program : BackgroundService
         ConfigurePersistence(builder);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteCoreAsync(CancellationToken ct)
     {
+        using var miningShutdown = CancellationTokenSource.CreateLinkedTokenSource(
+            ct, hal.ApplicationStopping);
+        ct = miningShutdown.Token;
+
+        if(executeOverride != null)
+        {
+            await executeOverride(ct);
+            return;
+        }
+
         if(isShareRecoveryMode)
         {
-            await RecoverSharesAsync(shareRecoveryOption.Value());
+            await RunRecoveryModeAsync(
+                () => RecoverSharesWithBestEffortTemplatesAsync(
+                    () =>
+                    {
+                        // Recovery can commit block-only records and emits their block-found
+                        // notification after the transaction succeeds. Coin metadata improves
+                        // those notifications, but it must never prevent the journal import.
+                        var recoveryCoinTemplates = LoadCoinTemplates();
+                        AssignPoolTemplates(clusterConfig.Pools.Where(config => config.Enabled),
+                            recoveryCoinTemplates);
+                    },
+                    () => RecoverSharesAsync(shareRecoveryOption.Value()),
+                    ex => logger.Warn(ex, () =>
+                        "Coin templates are unavailable during recovery; block notifications may be skipped")),
+                hal.StopApplication);
+
             return;
         }
 
@@ -375,11 +421,18 @@ public class Program : BackgroundService
         var coinTemplates = LoadCoinTemplates();
         logger.Info($"{coinTemplates.Keys.Count} coins loaded from '{string.Join(", ", clusterConfig.CoinTemplates)}'");
 
-        var tasks = clusterConfig.Pools
+        var enabledPools = clusterConfig.Pools
             .Where(config => config.Enabled)
-            .Select(config => RunPool(config, coinTemplates, ct));
+            .ToArray();
 
-        await Guard(()=> Task.WhenAll(tasks), ex =>
+        await Guard(async () =>
+        {
+            AssignPoolTemplates(enabledPools, coinTemplates);
+            await SupervisePoolLifetimesAsync(enabledPools.Select(config =>
+                    new KeyValuePair<string, Func<CancellationToken, Task>>(
+                        config.Id, poolCt => RunPool(config, poolCt))),
+                ct, ProcessStatus, hal.StopApplication);
+        }, ex =>
         {
             switch(ex)
             {
@@ -390,7 +443,7 @@ public class Program : BackgroundService
 
                     logger.Error(() => "Cluster cannot start. Good Bye!");
 
-                    hal.StopApplication();
+                    StopApplicationAsFailure(ProcessStatus, hal.StopApplication);
                     break;
                 }
 
@@ -400,14 +453,189 @@ public class Program : BackgroundService
         });
     }
 
-    private async Task RunPool(PoolConfig poolConfig, Dictionary<string, CoinTemplate> coinTemplates, CancellationToken ct)
+    internal static bool ShouldConfigureBackgroundServices(bool recoveryMode) => !recoveryMode;
+
+    internal static void StopApplicationAsFailure(IProcessStatus processStatus,
+        Action stopApplication)
     {
-        // Lookup coin
-        if(!coinTemplates.TryGetValue(poolConfig.Coin, out var template))
-            throw new PoolStartupException($"Pool {poolConfig.Id} references undefined coin '{poolConfig.Coin}'", poolConfig.Id);
+        processStatus.MarkFailed();
+        stopApplication();
+    }
 
-        poolConfig.Template = template;
+    internal static async Task SupervisePoolLifetimesAsync(
+        IEnumerable<KeyValuePair<string, Func<CancellationToken, Task>>> poolLifetimes,
+        CancellationToken ct, IProcessStatus processStatus, Action stopApplication)
+    {
+        ArgumentNullException.ThrowIfNull(poolLifetimes);
+        ArgumentNullException.ThrowIfNull(processStatus);
+        ArgumentNullException.ThrowIfNull(stopApplication);
 
+        // Each task owns fail-fast signalling. Task.WhenAll is retained only to observe and
+        // drain every sibling after host cancellation; it must not be the first observer of
+        // an individual pool fault because it completes only after every supplied task ends.
+        var tasks = poolLifetimes
+            .Select(pool => RunPoolFailFastAsync(pool.Key, pool.Value, ct,
+                processStatus, stopApplication))
+            .ToArray();
+
+        await Task.WhenAll(tasks);
+    }
+
+    private static async Task RunPoolFailFastAsync(string poolId,
+        Func<CancellationToken, Task> runPool, CancellationToken ct,
+        IProcessStatus processStatus, Action stopApplication)
+    {
+        ArgumentNullException.ThrowIfNull(runPool);
+
+        try
+        {
+            await runPool(ct);
+        }
+
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // The host deliberately stopped this pool. Swallow its cooperative cancellation
+            // so a normal cluster shutdown remains successful while Task.WhenAll drains peers.
+            return;
+        }
+
+        catch
+        {
+            StopApplicationAsFailure(processStatus, stopApplication);
+            throw;
+        }
+
+        if(!ct.IsCancellationRequested)
+        {
+            // A pool is a lifetime service. Returning while the host is still running leaves
+            // the cluster only partially available and must be treated like a startup fault.
+            StopApplicationAsFailure(processStatus, stopApplication);
+            throw new PoolStartupException(
+                $"Pool {poolId} stopped unexpectedly while the cluster was running",
+                poolId);
+        }
+    }
+
+    internal static void ConfigureShareRecorderHostedService(IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        // ShareRecorder is registered as one Autofac component. Resolve that component here
+        // instead of letting AddHostedService<T>() create another singleton with independent
+        // recovery state and journal locking.
+        services.AddHostedService(sp => sp.GetRequiredService<ShareRecorder>());
+    }
+
+    internal static void ConfigureMiningShutdownCoordinator(IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton<Program>();
+        services.AddHostedService(sp => sp.GetRequiredService<Program>());
+    }
+
+    internal static void ConfigureHostShutdown(IServiceCollection services,
+        TimeSpan? shutdownTimeout = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        var timeout = shutdownTimeout ?? HostShutdownTimeout;
+        if(timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(shutdownTimeout),
+                "Host shutdown timeout must be positive");
+
+        services.TryAddSingleton<IProcessStatus, ProcessStatus>();
+        services.Configure<HostOptions>(options => options.ShutdownTimeout = timeout);
+    }
+
+    internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
+        !recoveryMode && (api == null || api.Enabled);
+
+    internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
+        Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
+    {
+        try
+        {
+            await run();
+            return (getExitCode ?? (() => Environment.ExitCode))();
+        }
+
+        catch(Exception ex)
+        {
+            try
+            {
+                await reportFailure(ex);
+            }
+
+            catch
+            {
+                // A closed stderr stream must not turn a known startup failure into success.
+            }
+
+            return 1;
+        }
+    }
+
+    internal static async Task RecoverSharesWithBestEffortTemplatesAsync(
+        Action prepareTemplates, Func<Task> recoverShares,
+        Action<Exception> warnTemplateFailure)
+    {
+        try
+        {
+            prepareTemplates();
+        }
+
+        catch(Exception ex)
+        {
+            warnTemplateFailure(ex);
+        }
+
+        await recoverShares();
+    }
+
+    internal static async Task RunRecoveryModeAsync(Func<Task> recover,
+        Action stopApplication, Action<int> setExitCode = null)
+    {
+        try
+        {
+            await recover();
+        }
+
+        catch
+        {
+            (setExitCode ?? (code => Environment.ExitCode = code))(1);
+            throw;
+        }
+
+        finally
+        {
+            // Returning from a BackgroundService does not stop the generic host by itself.
+            stopApplication();
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        logger?.Info(() => "Stopping mining pools ...");
+        await base.StopAsync(ct);
+        logger?.Info(() => "Mining pools stopped");
+    }
+
+    internal static void AssignPoolTemplates(IEnumerable<PoolConfig> poolConfigs,
+        IReadOnlyDictionary<string, CoinTemplate> coinTemplates)
+    {
+        foreach(var poolConfig in poolConfigs)
+        {
+            if(!coinTemplates.TryGetValue(poolConfig.Coin, out var template))
+                throw new PoolStartupException(
+                    $"Pool {poolConfig.Id} references undefined coin '{poolConfig.Coin}'",
+                    poolConfig.Id);
+
+            poolConfig.Template = template;
+        }
+    }
+
+    private async Task RunPool(PoolConfig poolConfig, CancellationToken ct)
+    {
         // resolve implementation
         var poolImpl = container.Resolve<IEnumerable<Meta<Lazy<IMiningPool, CoinFamilyAttribute>>>>()
             .First(x => x.Value.Metadata.SupportedFamilies.Contains(poolConfig.Template.Family)).Value;
@@ -466,6 +694,7 @@ public class Program : BackgroundService
         try
         {
             clusterConfig.Validate();
+            ValidateMergedMiningDeployment(clusterConfig);
 
             if(clusterConfig.Notifications?.Admin?.Enabled == true)
             {
@@ -631,8 +860,8 @@ public class Program : BackgroundService
  ██║╚██╔╝██║██║██║╚██╗██║██║██║╚██╗██║██║   ██║██║     ██║   ██║██╔══██╗██╔══╝
  ██║ ╚═╝ ██║██║██║ ╚████║██║██║ ╚████║╚██████╔╝╚██████╗╚██████╔╝██║  ██║███████╗
 ");
-        Console.WriteLine(" https://github.com/blackmennewstyle/miningcore\n");
-        Console.WriteLine(" Donate to one of these addresses to support the project:\n");
+        Console.WriteLine(" https://github.com/NINJAK1DD/miningcore\n");
+        Console.WriteLine(" Upstream Miningcore donation addresses:\n");
         Console.WriteLine(" ETH   - 0xbC059e88A4dD11c2E882Fc6B83F8Ec12E4CCCFad");
         Console.WriteLine(" BTC   - 16xvkGfG9nrJSKKo5nGWphP8w4hr2ZzVuw");
         Console.WriteLine(" LTC   - LLs76baYT7iMqQhizxtBC96Cy48iX3Eh1p");
@@ -784,6 +1013,17 @@ public class Program : BackgroundService
     {
         await ConfigurePostgresCompatibilityOptions(services);
 
+        await EnsureShareRecoverySchemaAsync(isShareRecoveryMode, clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IShareRepository>(), CancellationToken.None);
+
+        if(RequiresMergedMiningPersistence(clusterConfig))
+        {
+            await EnsureMergedMiningSchemaAsync(clusterConfig,
+                services.GetService<IConnectionFactory>(),
+                services.GetService<IBlockRepository>(), CancellationToken.None);
+        }
+
         ZcashNetworks.Instance.EnsureRegistered();
 
         var messageBus = services.GetService<IMessageBus>();
@@ -864,6 +1104,27 @@ public class Program : BackgroundService
         Miningcore.Crypto.Hashing.Progpow.Sccpow.Cache.messageBus = messageBus;
     }
 
+    internal static async Task EnsureShareRecoverySchemaAsync(bool recoveryMode,
+        ClusterConfig config, IConnectionFactory cf, IShareRepository shareRepo,
+        CancellationToken ct)
+    {
+        if(!recoveryMode)
+            return;
+
+        if(config?.Persistence?.Postgres == null || cf == null || shareRepo == null)
+            throw new PoolStartupException(
+                "Share recovery requires PostgreSQL persistence and the share_recovery_imports schema. " +
+                "Configure PostgreSQL and apply add_payout_manager_ownership.sql before rerunning -rs.");
+
+        using var con = await cf.OpenConnectionAsync();
+
+        if(!await shareRepo.HasRecoveryImportSchemaAsync(con, ct))
+            throw new PoolStartupException(
+                "Share recovery schema is missing or malformed. Apply " +
+                "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql " +
+                "before rerunning -rs; the recovery journal has not been imported.");
+    }
+
     private static async Task ConfigurePostgresCompatibilityOptions(IServiceProvider services)
     {
         if(clusterConfig.Persistence?.Postgres == null)
@@ -893,6 +1154,61 @@ public class Program : BackgroundService
 
             AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
         }
+    }
+
+    internal static bool RequiresMergedMiningPersistence(ClusterConfig config)
+    {
+        var mergedMiningEnabled = config?.Pools?.Any(pool =>
+            pool.Enabled && MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled == true) == true;
+
+        // Every merged-mining submission node persists block-only results synchronously before
+        // returning to the miner. Ordinary shares may still use a database-free relay topology.
+        return mergedMiningEnabled;
+    }
+
+    internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
+    {
+        var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
+            config.Pools?.Any(x => x.PaymentProcessing?.Enabled == true) == true;
+
+        if(!paymentEnabled)
+            return false;
+
+        return config.ShareRelay == null || config.Persistence?.Postgres != null;
+    }
+
+    internal static void ValidateMergedMiningDeployment(ClusterConfig config)
+    {
+        var enabledMergedMining = config?.Pools?
+            .Where(pool => pool.Enabled)
+            .Select(MergedMiningConfigLoader.GetNormalizedConfig)
+            .Where(x => x?.Enabled == true)
+            .ToArray() ?? Array.Empty<MergedMiningConfig>();
+
+        if(!RequiresMergedMiningPersistence(config))
+            return;
+
+        if(config.Persistence?.Postgres == null)
+            throw new PoolStartupException(
+                "Litecoin-Dogecoin merged mining requires PostgreSQL on every submitting node so accepted and uncertain block candidates are persisted synchronously. Database-free share-relay senders remain supported for non-merged pools.");
+
+        if(config.ShareRelay == null && config.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                "Litecoin-Dogecoin merged mining requires cluster-level payment processing on direct and share-relay receiver/recorder nodes so accepted and uncertain blocks are reconciled.");
+    }
+
+    internal static async Task EnsureMergedMiningSchemaAsync(ClusterConfig config,
+        IConnectionFactory cf, IBlockRepository blockRepo, CancellationToken ct)
+    {
+        if(!RequiresMergedMiningPersistence(config))
+            return;
+
+        var schemaReady = await cf.Run(con =>
+            blockRepo.HasMergedMiningBlockIndexesAsync(con, ct));
+
+        if(!schemaReady)
+            throw new PoolStartupException(
+                "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.");
     }
 
     private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)

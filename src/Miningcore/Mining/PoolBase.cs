@@ -424,6 +424,8 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
 
             if(poolConfig.EnableInternalStratum == true)
                 await RunStratum(ct);
+            else
+                await WaitForShutdownAsync(ct);
         }
 
         catch(PoolStartupException)
@@ -442,6 +444,26 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
         {
             logger.Error(ex);
             throw;
+        }
+
+        finally
+        {
+            disposables.Dispose();
+            logger.Info(() => "Pool Offline");
+        }
+    }
+
+    internal static async Task WaitForShutdownAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }
+
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // Normal host shutdown for pools that only maintain jobs/network state for a relay
+            // receiver and therefore have no internal Stratum listener to keep RunAsync alive.
         }
     }
 

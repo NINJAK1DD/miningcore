@@ -9,6 +9,7 @@ using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
@@ -32,8 +33,10 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         IBalanceRepository balanceRepo,
         IPaymentRepository paymentRepo,
         IMasterClock clock,
-        IMessageBus messageBus) :
-        base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
+        IMessageBus messageBus,
+        IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker) :
+        base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus,
+            activeBlockGracePeriodTracker)
     {
     }
 
@@ -182,14 +185,16 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             tryTransfer:
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, args);
 
+            WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+                EquihashCommands.ZSendMany);
+
             if(response.Error == null)
             {
-                var operationId = response.Response;
+                var operationId = WalletSubmissionOutcome.RequireTransactionId(
+                    response.Response, EquihashCommands.ZSendMany + " operation");
 
                 // check result
-                if(string.IsNullOrEmpty(operationId))
-                    logger.Error(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} did not return an operation id!");
-                else
+                if(!string.IsNullOrEmpty(operationId))
                 {
                     logger.Info(() => $"[{LogCategory}] Tracking payment operation id: {operationId}");
 
@@ -199,6 +204,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     {
                         var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                             EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
+
+                        WalletSubmissionOutcome.ThrowIfUnknown(operationResultResponse.Error,
+                            $"{EquihashCommands.ZSendMany} operation {operationId}");
 
                         if(operationResultResponse.Error == null &&
                            operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
@@ -214,7 +222,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                             switch(status)
                             {
                                 case ZOperationStatus.Success:
-                                    var txId = operationResult.Result?.Value<string>("txid") ?? string.Empty;
+                                    var txId = WalletSubmissionOutcome.RequireTransactionId(
+                                        operationResult.Result?.Value<string>("txid"),
+                                        EquihashCommands.ZSendMany);
                                     logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} completed with transaction id: {txId}");
 
                                     await PersistPaymentsAsync(page, txId);
@@ -235,7 +245,15 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                         logger.Info(() => $"[{LogCategory}] Waiting for completion: {operationId}");
 
-                        await Task.Delay(TimeSpan.FromSeconds(10), ct);
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+                        }
+                        catch(OperationCanceledException ex)
+                        {
+                            throw new PayoutOutcomeUncertainException(
+                                $"{EquihashCommands.ZSendMany} operation {operationId} was interrupted before its result was known", ex);
+                        }
                     }
                 }
             }
@@ -331,14 +349,16 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             trySendCurrencyTransfer:
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.SendCurrency, ct, args);
 
+            WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+                EquihashCommands.SendCurrency);
+
             if(response.Error == null)
             {
-                var operationId = response.Response;
+                var operationId = WalletSubmissionOutcome.RequireTransactionId(
+                    response.Response, EquihashCommands.SendCurrency + " operation");
 
                 // check result
-                if(string.IsNullOrEmpty(operationId))
-                    logger.Error(() => $"[{LogCategory}] {EquihashCommands.SendCurrency} did not return an operation id!");
-                else
+                if(!string.IsNullOrEmpty(operationId))
                 {
                     logger.Info(() => $"[{LogCategory}] Tracking payment operation id: {operationId}");
 
@@ -348,6 +368,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     {
                         var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                             EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
+
+                        WalletSubmissionOutcome.ThrowIfUnknown(operationResultResponse.Error,
+                            $"{EquihashCommands.SendCurrency} operation {operationId}");
 
                         if(operationResultResponse.Error == null &&
                            operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
@@ -363,7 +386,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                             switch(status)
                             {
                                 case ZOperationStatus.Success:
-                                    var txId = operationResult.Result?.Value<string>("txid") ?? string.Empty;
+                                    var txId = WalletSubmissionOutcome.RequireTransactionId(
+                                        operationResult.Result?.Value<string>("txid"),
+                                        EquihashCommands.SendCurrency);
                                     logger.Info(() => $"[{LogCategory}] {EquihashCommands.SendCurrency} completed with transaction id: {txId}");
 
                                     await PersistPaymentsAsync(page, txId);
@@ -384,7 +409,15 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                         logger.Info(() => $"[{LogCategory}] Waiting for completion: {operationId}");
 
-                        await Task.Delay(TimeSpan.FromSeconds(10), ct);
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+                        }
+                        catch(OperationCanceledException ex)
+                        {
+                            throw new PayoutOutcomeUncertainException(
+                                $"{EquihashCommands.SendCurrency} operation {operationId} was interrupted before its result was known", ex);
+                        }
                     }
                 }
             }
@@ -556,13 +589,17 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         // send command
         var sendResponse = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, args);
 
+        WalletSubmissionOutcome.ThrowIfUnknown(sendResponse.Error,
+            EquihashCommands.ZSendMany + " shielding transfer");
+
         if(sendResponse.Error != null)
         {
             logger.Error(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} returned error: {unspentResponse.Error.Message} code {unspentResponse.Error.Code}");
             return;
         }
 
-        var operationId = sendResponse.Response;
+        var operationId = WalletSubmissionOutcome.RequireTransactionId(
+            sendResponse.Response, EquihashCommands.ZSendMany + " shielding operation");
 
         logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} operation id: {operationId}");
 
@@ -574,6 +611,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         {
             var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                 EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
+
+            WalletSubmissionOutcome.ThrowIfUnknown(operationResultResponse.Error,
+                $"{EquihashCommands.ZSendMany} shielding operation {operationId}");
 
             if(operationResultResponse.Error == null &&
                operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
@@ -589,7 +629,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 switch(status)
                 {
                     case ZOperationStatus.Success:
-                        var txId = operationResult.Result?.Value<string>("txid") ?? string.Empty;
+                        var txId = WalletSubmissionOutcome.RequireTransactionId(
+                            operationResult.Result?.Value<string>("txid"),
+                            EquihashCommands.ZSendMany + " shielding transfer");
                         logger.Info(() => $"[{LogCategory}] Transfer completed with transaction id: {txId}");
 
                         continueWaiting = false;
@@ -605,6 +647,16 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             }
 
             logger.Info(() => $"[{LogCategory}] Waiting for shielding transfer completion: {operationId}");
-        } while(continueWaiting && await timer.WaitForNextTickAsync(ct));
+            try
+            {
+                if(continueWaiting && !await timer.WaitForNextTickAsync(ct))
+                    break;
+            }
+            catch(OperationCanceledException ex)
+            {
+                throw new PayoutOutcomeUncertainException(
+                    $"{EquihashCommands.ZSendMany} shielding operation {operationId} was interrupted before its result was known", ex);
+            }
+        } while(continueWaiting);
     }
 }

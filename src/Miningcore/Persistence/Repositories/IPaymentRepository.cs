@@ -8,6 +8,8 @@ public interface IPaymentRepository
 {
     Task InsertAsync(IDbConnection con, IDbTransaction tx, Payment payment);
     Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Payment> shares);
+    Task<bool> TryBeginPaymentBatchAsync(IDbConnection con, IDbTransaction tx, string poolId,
+        string transactionConfirmationData, DateTime created);
 
     Task<Payment[]> PagePaymentsAsync(IDbConnection con, string poolId, string address, int page, int pageSize, CancellationToken ct);
     Task<BalanceChange[]> PageBalanceChangesAsync(IDbConnection con, string poolId, string address, int page, int pageSize, CancellationToken ct);

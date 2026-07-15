@@ -76,12 +76,9 @@ public class PoolApiController : ApiControllerBase
                 result.LastPoolBlockTime = lastBlockTime;
 
                 var payoutConfig = config.PaymentProcessing;
-                result.PaymentProcessing.PayoutSchemeConfig = payoutConfig?.PayoutSchemeConfig.ToObject<ApiPoolPayoutSchemeConfig>();
-                // display block finder percentage only if PPLNSBF is activated
-                if(payoutConfig?.PayoutScheme != PayoutScheme.PPLNSBF)
-                    result.PaymentProcessing.PayoutSchemeConfig.BlockFinderPercentage = null;
+                ConfigurePayoutSchemeConfig(result, payoutConfig);
 
-                if(lastBlockTime.HasValue)
+                if(ShouldCalculatePoolEffort(lastBlockTime, pool))
                 {
                     var startTime = lastBlockTime.Value;
                     var poolEffort = await cf.Run(con => shareRepo.GetEffortBetweenCreatedAsync(con, config.Id, pool.ShareMultiplier, startTime, clock.Now, ct));
@@ -155,12 +152,9 @@ public class PoolApiController : ApiControllerBase
         response.Pool.LastPoolBlockTime = lastBlockTime;
 
         var payoutConfig = pool.PaymentProcessing;
-        response.Pool.PaymentProcessing.PayoutSchemeConfig = payoutConfig?.PayoutSchemeConfig.ToObject<ApiPoolPayoutSchemeConfig>();
-        // display block finder percentage only if PPLNSBF is activated
-        if(payoutConfig?.PayoutScheme != PayoutScheme.PPLNSBF)
-            response.Pool.PaymentProcessing.PayoutSchemeConfig.BlockFinderPercentage = null;
+        ConfigurePayoutSchemeConfig(response.Pool, payoutConfig);
 
-        if(lastBlockTime.HasValue)
+        if(ShouldCalculatePoolEffort(lastBlockTime, poolInstance))
         {
             var startTime = lastBlockTime.Value;
             var poolEffort = await cf.Run(con => shareRepo.GetEffortBetweenCreatedAsync(con, pool.Id, poolInstance.ShareMultiplier, startTime, clock.Now, ct));
@@ -175,6 +169,22 @@ public class PoolApiController : ApiControllerBase
             .ToArray();
 
         return response;
+    }
+
+    internal static void ConfigurePayoutSchemeConfig(PoolInfo poolInfo, PoolPaymentProcessingConfig payoutConfig)
+    {
+        poolInfo.PaymentProcessing ??= new ApiPoolPaymentProcessingConfig();
+        poolInfo.PaymentProcessing.PayoutSchemeConfig =
+            payoutConfig?.PayoutSchemeConfig?.ToObject<ApiPoolPayoutSchemeConfig>() ?? new ApiPoolPayoutSchemeConfig();
+
+        // display block finder percentage only if PPLNSBF is activated
+        if(payoutConfig?.PayoutScheme != PayoutScheme.PPLNSBF)
+            poolInfo.PaymentProcessing.PayoutSchemeConfig.BlockFinderPercentage = null;
+    }
+
+    internal static bool ShouldCalculatePoolEffort(DateTime? lastBlockTime, IMiningPool pool)
+    {
+        return lastBlockTime.HasValue && pool != null;
     }
 
     [HttpGet("{poolId}/performance")]

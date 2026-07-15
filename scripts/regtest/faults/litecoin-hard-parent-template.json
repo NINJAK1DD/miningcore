@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "method": "getblocktemplate",
+      "action": "patch_result",
+      "patch": {
+        "bits": "1f00ffff",
+        "target": "0000ffff00000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  ]
+}

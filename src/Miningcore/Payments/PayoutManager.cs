@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Data;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
@@ -21,7 +22,7 @@ namespace Miningcore.Payments;
 /// <summary>
 /// Coin agnostic payment processor
 /// </summary>
-public class PayoutManager : BackgroundService
+public class PayoutManager : ProcessStatusBackgroundService
 {
     public PayoutManager(IComponentContext ctx,
         IConnectionFactory cf,
@@ -29,7 +30,9 @@ public class PayoutManager : BackgroundService
         IShareRepository shareRepo,
         IBalanceRepository balanceRepo,
         ClusterConfig clusterConfig,
-        IMessageBus messageBus)
+        IMessageBus messageBus,
+        IPayoutManagerLease payoutLease,
+        IProcessStatus processStatus) : base(processStatus)
     {
         Contract.RequiresNonNull(ctx);
         Contract.RequiresNonNull(cf);
@@ -37,6 +40,7 @@ public class PayoutManager : BackgroundService
         Contract.RequiresNonNull(shareRepo);
         Contract.RequiresNonNull(balanceRepo);
         Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(payoutLease);
 
         this.ctx = ctx;
         this.cf = cf;
@@ -45,9 +49,26 @@ public class PayoutManager : BackgroundService
         this.balanceRepo = balanceRepo;
         this.messageBus = messageBus;
         this.clusterConfig = clusterConfig;
+        this.payoutLease = payoutLease;
 
         interval = TimeSpan.FromSeconds(clusterConfig.PaymentProcessing.Interval > 0 ?
             clusterConfig.PaymentProcessing.Interval : 600);
+    }
+
+    internal PayoutManager(IComponentContext ctx,
+        IConnectionFactory cf,
+        IBlockRepository blockRepo,
+        IShareRepository shareRepo,
+        IBalanceRepository balanceRepo,
+        ClusterConfig clusterConfig,
+        IMessageBus messageBus,
+        IPayoutManagerLease payoutLease,
+        IProcessStatus processStatus,
+        Func<CancellationToken, Task> executeOverride) :
+        this(ctx, cf, blockRepo, shareRepo, balanceRepo, clusterConfig, messageBus,
+            payoutLease, processStatus)
+    {
+        this.executeOverride = executeOverride;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
@@ -60,13 +81,49 @@ public class PayoutManager : BackgroundService
     private readonly TimeSpan interval;
     private readonly ConcurrentDictionary<string, IMiningPool> pools = new();
     private readonly ClusterConfig clusterConfig;
+    private readonly IPayoutManagerLease payoutLease;
+    private readonly Func<CancellationToken, Task> executeOverride;
     private readonly CompositeDisposable disposables = new();
+    internal static readonly TimeSpan MergedParentShareSettlementDelay =
+        TimeSpan.FromMinutes(1);
 
 #if !DEBUG
     private static readonly TimeSpan initialRunDelay = TimeSpan.FromMinutes(1);
 #else
     private static readonly TimeSpan initialRunDelay = TimeSpan.FromSeconds(15);
 #endif
+
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        if(!await payoutLease.TryAcquireAsync(ct))
+            throw new PoolStartupException(
+                "Another payout manager owns this PostgreSQL database, or a durable ownership marker remains after an unclean stop. " +
+                "Run exactly one payout/reconciliation processor per database. Clear a stale marker only after confirming the previous process is dead.");
+
+        try
+        {
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            await payoutLease.DisposeAsync();
+            throw;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            await payoutLease.DisposeAsync();
+        }
+    }
 
     private void AttachPool(IMiningPool pool)
     {
@@ -103,6 +160,11 @@ public class PayoutManager : BackgroundService
 
                 await UpdatePoolBalancesAsync(pool, poolConfig, handler, scheme, ct);
                 await PayoutPoolBalancesAsync(pool, poolConfig, handler, ct);
+            }
+
+            catch(PayoutOutcomeUncertainException)
+            {
+                throw;
             }
 
             catch(InvalidOperationException ex)
@@ -163,9 +225,15 @@ public class PayoutManager : BackgroundService
         {
             foreach(var block in updatedBlocks.OrderBy(x => x.Created))
             {
+                if(ShouldDeferMergedParentShareSettlement(block, DateTime.UtcNow))
+                {
+                    logger.Info(() => $"Deferring effort and status processing for merged parent block {block.BlockHeight} until its paired ordinary share has settled");
+                    continue;
+                }
+
                 logger.Info(() => $"Processing payments for pool {poolConfig.Id}, block {block.BlockHeight}");
 
-                await cf.RunTx(async (con, tx) =>
+                await RunBlockUpdateTransactionAsync(poolConfig, block, async (con, tx) =>
                 {
                     if(!block.Effort.HasValue)  // fill block effort if empty
                         await CalculateBlockEffortAsync(pool, poolConfig, block, handler, ct);
@@ -176,18 +244,15 @@ public class PayoutManager : BackgroundService
                     switch(block.Status)
                     {
                         case BlockStatus.Confirmed:
-                            // blockchains that do not support block-reward payments via coinbase Tx
-                            // must generate balance records for all reward recipients instead
-                            var blockReward = await handler.UpdateBlockRewardBalancesAsync(con, tx, pool, block, ct);
-
-                            await scheme.UpdateBalancesAsync(con, tx, pool, handler, block, blockReward, ct);
-                            await blockRepo.UpdateBlockAsync(con, tx, block);
-                            break;
+                            return await ApplyConfirmedBlockAsync(con, tx, pool, block,
+                                handler, scheme, ct);
 
                         case BlockStatus.Orphaned:
                         case BlockStatus.Pending:
-                            await blockRepo.UpdateBlockAsync(con, tx, block);
-                            break;
+                            return await blockRepo.UpdateBlockAsync(con, tx, block);
+
+                        default:
+                            return false;
                     }
                 });
             }
@@ -197,21 +262,139 @@ public class PayoutManager : BackgroundService
             logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
     }
 
-    private async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config, IPayoutHandler handler, CancellationToken ct)
+    internal static bool ShouldDeferMergedParentShareSettlement(Block block,
+        DateTime now)
+    {
+        if(block == null)
+            return false;
+
+        var isMergedParent = string.Equals(block.Type, "merged-parent",
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(block.Type, "merged-parent-uncertain",
+                StringComparison.OrdinalIgnoreCase);
+
+        // Synchronous block-only persistence precedes the ordinary share recorder on both
+        // direct and relay nodes. Always allow the normal five-second share buffer to settle
+        // before effort or a terminal status can be frozen.
+        return isMergedParent &&
+            now - block.Created < MergedParentShareSettlementDelay;
+    }
+
+    internal async Task RunBlockUpdateTransactionAsync(PoolConfig poolConfig, Block block,
+        Func<IDbConnection, IDbTransaction, Task<bool>> action)
+    {
+        var updated = await cf.RunTx(async (con, tx) =>
+        {
+            // Serialize classification and crediting on the persisted block row. A second
+            // process that classified the same pending block must wait, then observes the
+            // committed terminal status and performs no balance changes or notifications.
+            var persisted = await blockRepo.GetBlockByIdForUpdateAsync(con, tx, block.Id);
+
+            if(persisted == null || persisted.Status != BlockStatus.Pending)
+                return false;
+
+            return await action(con, tx);
+        });
+
+        if(updated && block.NotifyBlockFoundOnUpdate)
+            TryNotifyPostCommit(poolConfig.Id, block, "block-found",
+                () => messageBus.NotifyBlockFound(poolConfig.Id, block, poolConfig.Template));
+
+        if(updated && block.NotifyBlockConfirmationProgressOnUpdate)
+            TryNotifyPostCommit(poolConfig.Id, block, "block-confirmation-progress",
+                () => messageBus.NotifyBlockConfirmationProgress(poolConfig.Id, block,
+                    poolConfig.Template));
+
+        if(updated && block.NotifyBlockUnlockedOnUpdate)
+            TryNotifyPostCommit(poolConfig.Id, block, "block-unlocked",
+                () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
+    }
+
+    internal async Task<bool> ApplyConfirmedBlockAsync(IDbConnection con, IDbTransaction tx,
+        IMiningPool pool, Block block, IPayoutHandler handler, IPayoutScheme scheme,
+        CancellationToken ct)
+    {
+        // A guarded transition (notably auxpow-claim promotion) must win before
+        // any reward side effects are applied. Everything remains in this transaction,
+        // so a later balance failure rolls the block transition back too.
+        if(!await blockRepo.UpdateBlockAsync(con, tx, block))
+            return false;
+
+        // Blockchains that do not support block-reward payments via coinbase Tx
+        // must generate balance records for all reward recipients instead.
+        var blockReward = await handler.UpdateBlockRewardBalancesAsync(con, tx, pool,
+            block, ct);
+
+        await scheme.UpdateBalancesAsync(con, tx, pool, handler, block, blockReward, ct);
+        return true;
+    }
+
+    private static void TryNotifyPostCommit(string poolId, Block block, string notification,
+        Action action)
+    {
+        try
+        {
+            action();
+        }
+
+        catch(Exception ex)
+        {
+            logger.Error(ex, () => $"Unable to emit post-commit {notification} notification for pool {poolId}, block {block.BlockHeight} [{block.Hash}]");
+        }
+    }
+
+    internal async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config,
+        IPayoutHandler handler, CancellationToken ct)
     {
         var poolBalancesOverMinimum = await cf.Run(con =>
             balanceRepo.GetPoolBalancesOverThresholdAsync(con, config.Id, config.PaymentProcessing.MinimumPayment));
 
         if(poolBalancesOverMinimum.Length > 0)
         {
+            payoutLease.BeginFinancialOperation();
+
             try
             {
                 await handler.PayoutAsync(pool, poolBalancesOverMinimum, ct);
+                payoutLease.CompleteFinancialOperation();
+            }
+
+            catch(PayoutOutcomeUncertainException ex)
+            {
+                payoutLease.MarkFinancialOutcomeUncertain();
+
+                try
+                {
+                    await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                }
+
+                catch(Exception notificationEx)
+                {
+                    logger.Error(notificationEx, () =>
+                        $"Unable to emit payout-failure notification for pool {config.Id}");
+                }
+
+                throw;
             }
 
             catch(Exception ex)
             {
-                await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                // No handler may throw an ordinary exception after an ambiguous submission.
+                // Such outcomes must be classified explicitly above. This path is therefore a
+                // conclusive pre-submission/configuration failure and must not strand ownership.
+                payoutLease.CompleteFinancialOperation();
+
+                try
+                {
+                    await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                }
+
+                catch(Exception notificationEx)
+                {
+                    logger.Error(notificationEx, () =>
+                        $"Unable to emit payout-failure notification for pool {config.Id}");
+                }
+
                 throw;
             }
         }
@@ -276,8 +459,14 @@ public class PayoutManager : BackgroundService
             block.MinerEffort = handler.AdjustBlockEffort(block.MinerEffort.Value);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteCoreAsync(CancellationToken ct)
     {
+        if(executeOverride != null)
+        {
+            await executeOverride(ct);
+            return;
+        }
+
         try
         {
             // monitor pool lifetime
@@ -294,9 +483,19 @@ public class PayoutManager : BackgroundService
 
             do
             {
+                // Refuse to begin another cycle if either the advisory session or durable
+                // ownership token has been lost. Replacement startup remains fail-closed.
+                await payoutLease.EnsureHeldAsync(ct);
+
                 try
                 {
                     await ProcessPoolsAsync(ct);
+                }
+
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    logger.Fatal(ex, () => "Payout processing stopped with an unknown wallet outcome. Durable ownership will be retained until wallet reconciliation");
+                    throw;
                 }
 
                 catch(OperationCanceledException)

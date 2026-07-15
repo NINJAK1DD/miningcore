@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Bitcoin;
@@ -265,6 +266,9 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                 await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.SelectWallet, ct, new[] { walletName });
             var result = await rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendMany, ct, args);
 
+            WalletSubmissionOutcome.ThrowIfUnknown(result.Error,
+                HandshakeWalletCommands.SendMany);
+
             if(result.Error == null)
             {
                 if(didUnlockWallet)
@@ -275,12 +279,9 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                 }
 
                 // check result
-                var txId = result.Response;
-
-                if(string.IsNullOrEmpty(txId))
-                    logger.Error(() => $"[{LogCategory}] {HandshakeWalletCommands.SendMany} did not return a transaction id!");
-                else
-                    logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
+                var txId = WalletSubmissionOutcome.RequireTransactionId(result.Response,
+                    HandshakeWalletCommands.SendMany);
+                logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                 await PersistPaymentsAsync(balances, txId);
 
@@ -329,8 +330,9 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
 
         else
         {
-            var txFailures = new List<Tuple<KeyValuePair<string, decimal>, Exception>>();
-            var successBalances = new Dictionary<Balance, string>();
+            var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
+            var unknownOutcomes = new ConcurrentBag<PayoutOutcomeUncertainException>();
+            var successBalances = new ConcurrentDictionary<Balance, string>();
 
             var parallelOptions = new ParallelOptions
             {
@@ -358,15 +360,17 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     // check result
                     var txId = result.Response;
 
+                    WalletSubmissionOutcome.ThrowIfUnknown(result.Error,
+                        HandshakeWalletCommands.SendToAddress);
+
                     if(result.Error != null)
                         throw new Exception($"[{transferId}] {HandshakeWalletCommands.SendToAddress} returned error: {result.Error.Message} code {result.Error.Code}");
 
-                    if(string.IsNullOrEmpty(txId))
-                        throw new Exception($"[{transferId}] {HandshakeWalletCommands.SendToAddress} did not return a transaction id!");
-                    else
-                        logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
+                    txId = WalletSubmissionOutcome.RequireTransactionId(txId,
+                        HandshakeWalletCommands.SendToAddress);
+                    logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
 
-                    successBalances.Add(new Balance
+                    successBalances.TryAdd(new Balance
                     {
                         PoolId = poolConfig.Id,
                         Address = address,
@@ -374,13 +378,22 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     }, txId);
                 }, ex =>
                 {
-                    txFailures.Add(Tuple.Create(x, ex));
+                    try
+                    {
+                        WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                            HandshakeWalletCommands.SendToAddress);
+                        txFailures.Add(Tuple.Create(x, ex));
+                    }
+                    catch(PayoutOutcomeUncertainException uncertain)
+                    {
+                        unknownOutcomes.Add(uncertain);
+                    }
                 });
             });
 
             if(successBalances.Any())
             {
-                await PersistPaymentsAsync(successBalances);
+                await PersistPaymentsAsync(successBalances.ToDictionary(x => x.Key, x => x.Value));
 
                 NotifyPayoutSuccess(poolConfig.Id, successBalances.Keys.ToArray(), successBalances.Values.ToArray(), null);
             }
@@ -394,6 +407,9 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
 
                 NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
             }
+
+            if(unknownOutcomes.TryPeek(out var unknown))
+                throw unknown;
         }
     }
 

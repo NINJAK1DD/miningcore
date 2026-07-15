@@ -19,6 +19,22 @@ public class PaymentRepository : IPaymentRepository
 
     private readonly IMapper mapper;
 
+    public async Task<bool> TryBeginPaymentBatchAsync(IDbConnection con, IDbTransaction tx,
+        string poolId, string transactionConfirmationData, DateTime created)
+    {
+        const string query = @"INSERT INTO payment_batches(
+                poolid, transactionconfirmationdata, created)
+            VALUES(@poolId, @transactionConfirmationData, @created)
+            ON CONFLICT(poolid, transactionconfirmationdata) DO NOTHING";
+
+        return await con.ExecuteAsync(query, new
+        {
+            poolId,
+            transactionConfirmationData,
+            created,
+        }, tx) > 0;
+    }
+
     public async Task InsertAsync(IDbConnection con, IDbTransaction tx, Payment payment)
     {
         var mapped = mapper.Map<Entities.Payment>(payment);

@@ -1,8 +1,13 @@
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Data;
 using System.Data.Common;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
 using System.Text;
 using AutoMapper;
 using Microsoft.Extensions.Hosting;
@@ -26,7 +31,7 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Asynchronously persist shares produced by all pools for processing by coin-specific payment processor(s)
 /// </summary>
-public class ShareRecorder : BackgroundService
+public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
 {
     public ShareRecorder(IConnectionFactory cf,
         IMapper mapper,
@@ -34,7 +39,8 @@ public class ShareRecorder : BackgroundService
         IShareRepository shareRepo,
         IBlockRepository blockRepo,
         ClusterConfig clusterConfig,
-        IMessageBus messageBus)
+        IMessageBus messageBus,
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null)
     {
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(mapper);
@@ -47,6 +53,8 @@ public class ShareRecorder : BackgroundService
         this.mapper = mapper;
         this.jsonSerializerSettings = jsonSerializerSettings;
         this.messageBus = messageBus;
+        this.candidateFailureHandler = candidateFailureHandler ??
+            NullCandidatePersistenceFailureHandler.Instance;
         this.clusterConfig = clusterConfig;
 
         this.shareRepo = shareRepo;
@@ -56,6 +64,9 @@ public class ShareRecorder : BackgroundService
 
         BuildFaultHandlingPolicy();
         ConfigureRecovery();
+        var recoveryPath = Path.GetFullPath(recoveryFilename);
+        recoveryWriteGate = RecoveryWriteGates.GetOrAdd(recoveryPath,
+            _ => new SemaphoreSlim(1, 1));
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
@@ -64,6 +75,7 @@ public class ShareRecorder : BackgroundService
     private readonly IConnectionFactory cf;
     private readonly JsonSerializerSettings jsonSerializerSettings;
     private readonly IMessageBus messageBus;
+    private readonly ICandidatePersistenceFailureHandler candidateFailureHandler;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
@@ -74,6 +86,22 @@ public class ShareRecorder : BackgroundService
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
     private bool notifiedAdminOnPolicyFallback = false;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RecoveryWriteGates =
+        new(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+    private readonly SemaphoreSlim recoveryWriteGate;
+    private readonly CancellationTokenSource blockCandidateShutdown = new();
+    private int blockCandidateShutdownStarted;
+    internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
+        TimeSpan.FromSeconds(5);
+    internal SemaphoreSlim RecoveryWriteGate => recoveryWriteGate;
+    private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "auxpow-claim",
+        "parent-uncertain",
+        "merged-parent-uncertain",
+    };
 
     private async Task PersistSharesAsync(IList<Share> shares)
     {
@@ -82,30 +110,239 @@ public class ShareRecorder : BackgroundService
         await faultPolicy.ExecuteAsync(ctx => PersistSharesCoreAsync((IList<Share>) ctx[PolicyContextKeyShares]), context);
     }
 
-    private async Task PersistSharesCoreAsync(IList<Share> shares)
+    public Task PersistBlockCandidateAsync(Share share)
     {
-        await cf.RunTx(async (con, tx) =>
+        ArgumentNullException.ThrowIfNull(share);
+
+        if(!share.BlockOnly || !share.IsBlockCandidate)
+            throw new ArgumentException(
+                "Synchronous block persistence requires a block-only candidate", nameof(share));
+
+        return PersistBlockCandidateDurablyAsync(new[] { share });
+    }
+
+    public void BeginShutdown()
+    {
+        if(Interlocked.Exchange(ref blockCandidateShutdownStarted, 1) == 0)
+            blockCandidateShutdown.Cancel();
+    }
+
+    private bool IsBlockCandidateShutdown =>
+        Volatile.Read(ref blockCandidateShutdownStarted) != 0;
+
+    private async Task PersistBlockCandidateDurablyAsync(IList<Share> shares)
+    {
+        Exception lastError = null;
+        var unexpectedDatabaseFailure = false;
+
+        for(var attempt = 0; attempt <= RetryCount; attempt++)
         {
-            // Insert shares
-            var mapped = shares.Select(mapper.Map<Persistence.Model.Share>).ToArray();
+            var databaseAttempt = PersistSharesCoreAsync(shares);
+
+            try
+            {
+                await AwaitCandidateDatabaseAttemptAsync(databaseAttempt);
+                return;
+            }
+            catch(Exception ex) when(IsRetryablePersistenceException(ex))
+            {
+                lastError = ex;
+
+                if(ex is TimeoutException && IsBlockCandidateShutdown &&
+                    !databaseAttempt.IsCompleted)
+                    _ = ObserveLateCandidateDatabaseAttemptAsync(databaseAttempt);
+            }
+            catch(Exception ex)
+            {
+                // A candidate is financially significant regardless of the exception type.
+                // Preserve it in the journal even when the database failure falls outside the
+                // normal retry policy, then stop the cluster because the pipeline is unhealthy.
+                lastError = ex;
+                unexpectedDatabaseFailure = true;
+                break;
+            }
+
+            // Once shutdown starts, do not spend another fourteen seconds in retry delays.
+            // The current database attempt was already given its bounded grace period; move
+            // directly to the forced recovery-journal flush.
+            if(IsBlockCandidateShutdown || attempt == RetryCount)
+                break;
+
+            var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt + 1));
+            OnPolicyRetry(lastError, delay, attempt + 1, null);
+
+            try
+            {
+                await Task.Delay(delay, blockCandidateShutdown.Token);
+            }
+            catch(OperationCanceledException) when(IsBlockCandidateShutdown)
+            {
+                break;
+            }
+        }
+
+        Exception journalError = null;
+
+        try
+        {
+            await WriteRecoveryJournalAsync(shares);
+            NotifyAdminOnPolicyFallbackSafely();
+        }
+        catch(Exception ex)
+        {
+            journalError = ex;
+
+            if(!hasLoggedPolicyFallbackFailure)
+            {
+                logger.Fatal(ex, "Fatal error during candidate recovery fallback. Block candidate will be lost!");
+                hasLoggedPolicyFallbackFailure = true;
+            }
+        }
+
+        if(journalError != null)
+        {
+            candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
+                journalError, false);
+
+            RethrowCandidatePersistenceFailure(lastError, journalError);
+        }
+
+        if(unexpectedDatabaseFailure)
+        {
+            candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
+                null, true);
+
+            RethrowCandidatePersistenceFailure(lastError, null);
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.DoesNotReturn]
+    private static void RethrowCandidatePersistenceFailure(Exception databaseError,
+        Exception journalError)
+    {
+        var primary = databaseError ?? journalError ??
+            new IOException("Unknown block-candidate persistence failure");
+
+        if(databaseError != null && journalError != null)
+            databaseError.Data["RecoveryJournalException"] = journalError;
+
+        ExceptionDispatchInfo.Capture(primary).Throw();
+        throw new InvalidOperationException("Unreachable candidate-persistence path");
+    }
+
+    private async Task AwaitCandidateDatabaseAttemptAsync(Task databaseAttempt)
+    {
+        if(!IsBlockCandidateShutdown)
+        {
+            try
+            {
+                await databaseAttempt.WaitAsync(blockCandidateShutdown.Token);
+                return;
+            }
+            catch(OperationCanceledException) when(IsBlockCandidateShutdown)
+            {
+                // Shutdown owns a separate bounded database grace period below. Cancelling this
+                // wait does not cancel the database command or its transaction.
+            }
+        }
+
+        await databaseAttempt.WaitAsync(ShutdownDatabaseAttemptTimeout);
+    }
+
+    private static bool IsRetryablePersistenceException(Exception ex) =>
+        ex is DbException or SocketException or TimeoutException or BrokenCircuitException;
+
+    private static async Task ObserveLateCandidateDatabaseAttemptAsync(Task databaseAttempt)
+    {
+        try
+        {
+            await databaseAttempt;
+        }
+        catch(Exception ex)
+        {
+            logger.Warn(ex, () => "Late PostgreSQL candidate attempt failed after recovery-journal fallback");
+        }
+    }
+
+    internal async Task PersistSharesCoreAsync(IList<Share> shares)
+    {
+        var insertedBlocks = await cf.RunTx((con, tx) =>
+            PersistSharesBatchAsync(con, tx, shares));
+
+        NotifyPersistedBlocks(insertedBlocks);
+    }
+
+    private async Task<List<(string PoolId, Block Block)>> PersistSharesBatchAsync(
+        IDbConnection con, IDbTransaction tx, IList<Share> shares)
+    {
+        var result = new List<(string PoolId, Block Block)>();
+
+        // Block-only candidates are sent through the share message pipeline so they can reuse
+        // normal block persistence and notifications without creating a duplicate standalone
+        // share row or distorting hashrate, effort, and share statistics.
+        var mapped = GetSharesForPersistence(shares)
+            .Select(mapper.Map<Persistence.Model.Share>)
+            .ToArray();
+
+        if(mapped.Length > 0)
             await shareRepo.BatchInsertAsync(con, tx, mapped, CancellationToken.None);
 
-            // Insert blocks
-            foreach(var share in shares)
+        // Insert blocks
+        foreach(var share in shares)
+        {
+            if(!share.IsBlockCandidate || share.BlockRecordEmitted)
+                continue;
+
+            var blockEntity = mapper.Map<Block>(share);
+            blockEntity.Status = BlockStatus.Pending;
+            var inserted = await blockRepo.InsertAsync(con, tx, blockEntity);
+
+            if(!inserted)
+                continue;
+
+            if(IsUncertainBlockType(blockEntity.Type))
+                continue;
+
+            result.Add((share.PoolId, blockEntity));
+        }
+
+        return result;
+    }
+
+    private void NotifyPersistedBlocks(
+        IEnumerable<(string PoolId, Block Block)> insertedBlocks)
+    {
+        foreach(var (poolId, block) in insertedBlocks)
+        {
+            try
             {
-                if(!share.IsBlockCandidate)
-                    continue;
-
-                var blockEntity = mapper.Map<Block>(share);
-                blockEntity.Status = BlockStatus.Pending;
-                await blockRepo.InsertAsync(con, tx, blockEntity);
-
-                if(pools.TryGetValue(share.PoolId, out var poolConfig))
-                    messageBus.NotifyBlockFound(share.PoolId, blockEntity, poolConfig.Template);
+                if(pools.TryGetValue(poolId, out var poolConfig) &&
+                    poolConfig.Template != null)
+                    messageBus.NotifyBlockFound(poolId, block, poolConfig.Template);
+                else if(poolConfig != null)
+                    logger.Warn(() =>
+                        $"Block-found notification skipped for pool {poolId} because its coin template is unavailable");
                 else
-                    logger.Warn(()=> $"Block found for unknown pool {share.PoolId}");
+                    logger.Warn(()=> $"Block found for unknown pool {poolId}");
             }
-        });
+
+            catch(Exception ex)
+            {
+                logger.Error(ex, () => $"Unable to emit block-found notification for pool {poolId}, block {block.BlockHeight} [{block.Hash}] after persistence committed");
+            }
+        }
+    }
+
+    internal static bool IsUncertainBlockType(string type)
+    {
+        return !string.IsNullOrEmpty(type) && UncertainBlockTypes.Contains(type);
+    }
+
+    internal static IEnumerable<Share> GetSharesForPersistence(IEnumerable<Share> shares)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+
+        return shares.Where(x => !x.BlockOnly);
     }
 
     private static void OnPolicyRetry(Exception ex, TimeSpan timeSpan, int retry, object context)
@@ -125,22 +362,8 @@ public class ShareRecorder : BackgroundService
 
         try
         {
-            await using(var stream = new FileStream(recoveryFilename, FileMode.Append, FileAccess.Write))
-            {
-                await using(var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-                {
-                    if(stream.Length == 0)
-                        WriteRecoveryFileheader(writer);
-
-                    foreach(var share in shares)
-                    {
-                        var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
-                        await writer.WriteLineAsync(json);
-                    }
-                }
-            }
-
-            NotifyAdminOnPolicyFallback();
+            await WriteRecoveryJournalAsync(shares);
+            NotifyAdminOnPolicyFallbackSafely();
         }
 
         catch(Exception ex)
@@ -150,6 +373,45 @@ public class ShareRecorder : BackgroundService
                 logger.Fatal(ex, "Fatal error during policy fallback execution. Share(s) will be lost!");
                 hasLoggedPolicyFallbackFailure = true;
             }
+
+            if(shares.Any(x => x.BlockOnly))
+                throw new IOException(
+                    "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
+                    ex);
+        }
+    }
+
+    internal async Task WriteRecoveryJournalAsync(IList<Share> shares)
+    {
+        await recoveryWriteGate.WaitAsync(CancellationToken.None);
+
+        try
+        {
+            await using var stream = new FileStream(recoveryFilename, new FileStreamOptions
+            {
+                Mode = FileMode.Append,
+                Access = FileAccess.Write,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+            });
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false),
+                1024, true);
+
+            if(stream.Length == 0)
+                WriteRecoveryFileheader(writer);
+
+            foreach(var share in shares)
+            {
+                var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
+                await writer.WriteLineAsync(json);
+            }
+
+            await writer.FlushAsync();
+            stream.Flush(true);
+        }
+        finally
+        {
+            recoveryWriteGate.Release();
         }
     }
 
@@ -160,110 +422,245 @@ public class ShareRecorder : BackgroundService
         writer.WriteLine("# miningcore -c <path-to-config> -rs <path-to-this-file>\n");
     }
 
-    public async Task RecoverSharesAsync(string filename)
+    public async Task<string> RecoverSharesAsync(string filename)
     {
         logger.Info(() => $"Recovering shares using {filename} ...");
 
         try
         {
-            var successCount = 0;
-            var failCount = 0;
-            const int bufferSize = 100;
+            List<(string PoolId, Block Block)> insertedBlocks;
+            int validatedCount;
+            string fileHash;
 
-            await using(var stream = new FileStream(filename, FileMode.Open, FileAccess.Read))
+            // Hold one read-only handle across both passes. FileShare.Read permits diagnostics
+            // and backups, but prevents the recovery source from being changed between validation
+            // and import.
+            await using(var stream = new FileStream(filename, new FileStreamOptions
             {
-                using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+            }))
+            using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
+            {
+                // Pass one validates every record before a database transaction is opened.
+                var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
+                validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
                 {
-                    var shares = new List<Share>();
-                    var lastProgressUpdate = DateTime.UtcNow;
+                    validationHash.Append(shares);
+                    return Task.CompletedTask;
+                });
+                fileHash = validationHash.GetHash();
 
-                    while(!reader.EndOfStream)
+                reader.DiscardBufferedData();
+                stream.Seek(0, SeekOrigin.Begin);
+
+                // Pass two imports every batch through one transaction. Any parse or database
+                // failure rolls back the complete file, making a non-zero exit safe to retry.
+                insertedBlocks = await cf.RunTx(async (con, tx) =>
+                {
+                    var registered = await shareRepo.TryRegisterRecoveryImportAsync(con,
+                        tx, fileHash, Path.GetFileName(filename), validatedCount,
+                        CancellationToken.None);
+
+                    if(!registered)
+                        throw new InvalidOperationException(
+                            $"Recovery content from {filename} was already imported [{fileHash}]");
+
+                    var result = new List<(string PoolId, Block Block)>();
+                    int importedCount;
+                    string importedHash;
+
+                    var importHash = new RecoveryContentHasher(jsonSerializerSettings);
+                    importedCount = await ProcessRecoveryRecordsAsync(reader,
+                        async shares =>
+                        {
+                            importHash.Append(shares);
+                            result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
+                        });
+                    importedHash = importHash.GetHash();
+
+                    if(importedCount != validatedCount ||
+                       !string.Equals(importedHash, fileHash,
+                           StringComparison.OrdinalIgnoreCase))
                     {
-                        var line = await reader.ReadLineAsync();
-
-                        if(string.IsNullOrEmpty(line))
-                            continue;
-
-                        // skip blank lines
-                        line = line.Trim();
-
-                        if(line.Length == 0)
-                            continue;
-
-                        // skip comments
-                        if(line.StartsWith("#"))
-                            continue;
-
-                        // parse
-                        try
-                        {
-                            var share = JsonConvert.DeserializeObject<Share>(line, jsonSerializerSettings);
-                            shares.Add(share);
-                        }
-
-                        catch(JsonException ex)
-                        {
-                            logger.Error(ex, () => $"Unable to parse share record: {line}");
-                            failCount++;
-                        }
-
-                        // import
-                        try
-                        {
-                            if(shares.Count == bufferSize)
-                            {
-                                await PersistSharesCoreAsync(shares);
-
-                                successCount += shares.Count;
-                                shares.Clear();
-                            }
-                        }
-
-                        catch(Exception ex)
-                        {
-                            logger.Error(ex, () => "Unable to import shares");
-                            failCount++;
-                        }
-
-                        // progress
-                        var now = DateTime.UtcNow;
-
-                        if(now - lastProgressUpdate > TimeSpan.FromSeconds(10))
-                        {
-                            logger.Info($"{successCount} shares imported");
-                            lastProgressUpdate = now;
-                        }
+                        throw new InvalidDataException(
+                            "Recovery source changed between validation and import");
                     }
 
-                    // import remaining shares
-                    try
-                    {
-                        if(shares.Count > 0)
-                        {
-                            await PersistSharesCoreAsync(shares);
-
-                            successCount += shares.Count;
-                        }
-                    }
-
-                    catch(Exception ex)
-                    {
-                        logger.Error(ex, () => "Unable to import shares");
-                        failCount++;
-                    }
-                }
+                    return result;
+                });
             }
 
-            if(failCount == 0)
-                logger.Info(() => $"Successfully imported {successCount} shares");
-            else
-                logger.Warn(() => $"Successfully imported {successCount} shares with {failCount} failures");
+            var archiveFilename = ArchiveImportedRecoveryFile(filename);
+            NotifyPersistedBlocks(insertedBlocks);
+            logger.Info(() => $"Successfully imported {validatedCount} shares" +
+                (archiveFilename != null ? $" and archived the source as {archiveFilename}" :
+                    "; the database import manifest will prevent replay"));
+            return archiveFilename;
         }
 
         catch(FileNotFoundException)
         {
             logger.Error(() => $"Recovery file {filename} was not found");
+            throw;
         }
+    }
+
+    internal sealed class RecoveryContentHasher
+    {
+        public RecoveryContentHasher(JsonSerializerSettings serializerSettings)
+        {
+            this.serializerSettings = serializerSettings;
+        }
+
+        private const int AccumulatorCount = 4;
+        private const int DigestSize = 32;
+        private static readonly byte[] ManifestDomain =
+            Encoding.ASCII.GetBytes("Miningcore recovery multiset v2");
+        private readonly JsonSerializerSettings serializerSettings;
+        private readonly byte[][] accumulatorSums = Enumerable.Range(0, AccumulatorCount)
+            .Select(_ => new byte[DigestSize])
+            .ToArray();
+
+        internal ulong RecordCount { get; private set; }
+        internal int AccumulatorStorageBytes => AccumulatorCount * DigestSize;
+
+        public void Append(IEnumerable<Share> shares)
+        {
+            foreach(var share in shares)
+            {
+                var json = JsonConvert.SerializeObject(share, Formatting.None,
+                    serializerSettings);
+                AppendNormalizedRecord(Encoding.UTF8.GetBytes(json));
+            }
+        }
+
+        internal void AppendNormalizedRecord(ReadOnlySpan<byte> record)
+        {
+            Span<byte> recordDigest = stackalloc byte[DigestSize];
+            SHA256.HashData(record, recordDigest);
+
+            Span<byte> domainInput = stackalloc byte[DigestSize + 1];
+            recordDigest.CopyTo(domainInput[1..]);
+            Span<byte> domainDigest = stackalloc byte[DigestSize];
+
+            // Four independently domain-separated 256-bit additive accumulators form a
+            // commutative multiset identity. Addition is modulo 2^256, so memory remains
+            // constant while record order is ignored. The final cardinality prevents a
+            // different duplicate count from sharing an otherwise equal accumulator state.
+            for(var domain = 0; domain < AccumulatorCount; domain++)
+            {
+                domainInput[0] = (byte) domain;
+                SHA256.HashData(domainInput, domainDigest);
+                AddModulo256(accumulatorSums[domain], domainDigest);
+            }
+
+            RecordCount = checked(RecordCount + 1);
+        }
+
+        public string GetHash()
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            hash.AppendData(ManifestDomain);
+
+            Span<byte> count = stackalloc byte[sizeof(ulong)];
+            BinaryPrimitives.WriteUInt64BigEndian(count, RecordCount);
+            hash.AppendData(count);
+
+            foreach(var accumulator in accumulatorSums)
+                hash.AppendData(accumulator);
+
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+
+        private static void AddModulo256(Span<byte> accumulator,
+            ReadOnlySpan<byte> value)
+        {
+            var carry = 0;
+            for(var i = DigestSize - 1; i >= 0; i--)
+            {
+                var sum = accumulator[i] + value[i] + carry;
+                accumulator[i] = (byte) sum;
+                carry = sum >> 8;
+            }
+        }
+    }
+
+    private static string ArchiveImportedRecoveryFile(string filename)
+    {
+        var archiveFilename = $"{filename}.imported-{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}";
+
+        try
+        {
+            File.Move(filename, archiveFilename);
+            return archiveFilename;
+        }
+
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            logger.Warn(ex, () => $"Unable to archive successfully imported recovery file {filename}. Do not retry it; the database import manifest will reject the same content");
+            return null;
+        }
+    }
+
+    private async Task<int> ProcessRecoveryRecordsAsync(StreamReader reader,
+        Func<IList<Share>, Task> processBatch)
+    {
+        const int bufferSize = 100;
+        var shares = new List<Share>(bufferSize);
+        var recordCount = 0;
+        var lineNumber = 0;
+
+        while(!reader.EndOfStream)
+        {
+            var line = await reader.ReadLineAsync();
+            lineNumber++;
+
+            if(string.IsNullOrWhiteSpace(line))
+                continue;
+
+            line = line.Trim();
+
+            if(line.StartsWith("#"))
+                continue;
+
+            Share share;
+
+            try
+            {
+                share = JsonConvert.DeserializeObject<Share>(line,
+                    jsonSerializerSettings);
+            }
+
+            catch(JsonException ex)
+            {
+                throw new InvalidDataException(
+                    $"Unable to parse recovery record at line {lineNumber}", ex);
+            }
+
+            if(share == null)
+                throw new InvalidDataException(
+                    $"Recovery record at line {lineNumber} is null");
+
+            shares.Add(share);
+
+            if(shares.Count < bufferSize)
+                continue;
+
+            await processBatch(shares);
+            recordCount += shares.Count;
+            shares.Clear();
+        }
+
+        if(shares.Count > 0)
+        {
+            await processBatch(shares);
+            recordCount += shares.Count;
+        }
+
+        return recordCount;
     }
 
     private void NotifyAdminOnPolicyFallback()
@@ -276,6 +673,19 @@ public class ShareRecorder : BackgroundService
 
             messageBus.SendMessage(new AdminNotification("Share Recorder Policy Fallback",
                 $"The Share Recorder's Policy Fallback has been engaged. Check share recovery file {recoveryFilename}."));
+        }
+    }
+
+    private void NotifyAdminOnPolicyFallbackSafely()
+    {
+        try
+        {
+            NotifyAdminOnPolicyFallback();
+        }
+        catch(Exception ex)
+        {
+            logger.Error(ex,
+                "Unable to emit share-recorder fallback notification after the recovery journal was durably flushed");
         }
     }
 
@@ -319,6 +729,12 @@ public class ShareRecorder : BackgroundService
             Policy.WrapAsync(fallback, breaker, retry));
     }
 
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        BeginShutdown();
+        await base.StopAsync(ct);
+    }
+
     protected override Task ExecuteAsync(CancellationToken ct)
     {
         logger.Info(() => "Online");
@@ -326,9 +742,16 @@ public class ShareRecorder : BackgroundService
         return messageBus.Listen<Share>()
             .ObserveOn(TaskPoolScheduler.Default)
             .Where(x => x != null)
-            .Select(x => x)
-            .Buffer(TimeSpan.FromSeconds(5), 250)
-            .Where(shares => shares.Any())
+            .Publish(shares => shares
+                // Minimize the in-memory durability window for accepted or uncertain block
+                // candidates. Ordinary shares retain the existing batching behavior.
+                .Where(x => x.BlockOnly)
+                .Select(x => (IList<Share>) new[] { x })
+                .Merge(shares
+                    .Where(x => !x.BlockOnly)
+                    .Buffer(TimeSpan.FromSeconds(5), 250)
+                    .Where(batch => batch.Any())
+                    .Select(batch => (IList<Share>) batch)))
             .Select(shares => Observable.FromAsync(() =>
                 Guard(() =>
                         PersistSharesAsync(shares),

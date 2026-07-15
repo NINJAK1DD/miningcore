@@ -18,6 +18,73 @@ public class ShareRepository : IShareRepository
 
     private readonly IMapper mapper;
 
+    public Task<bool> HasRecoveryImportSchemaAsync(IDbConnection con,
+        CancellationToken ct)
+    {
+        const string query = @"SELECT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation
+              ON relation.oid = constraint_record.conrelid
+            JOIN pg_index index_record
+              ON index_record.indexrelid = constraint_record.conindid
+            WHERE relation.oid = to_regclass('share_recovery_imports')
+              AND relation.relkind IN ('r', 'p')
+              AND constraint_record.contype = 'p'
+              AND NOT constraint_record.condeferrable
+              AND index_record.indisunique
+              AND index_record.indisvalid
+              AND index_record.indisready
+              AND index_record.indimmediate
+              AND pg_get_constraintdef(constraint_record.oid) ILIKE
+                  'PRIMARY KEY (filehash)%'
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'filehash'
+                    AND attribute.atttypid = 'text'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'filename'
+                    AND attribute.atttypid = 'text'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'recordcount'
+                    AND attribute.atttypid = 'integer'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+              AND EXISTS (
+                  SELECT 1 FROM pg_attribute attribute
+                  WHERE attribute.attrelid = relation.oid
+                    AND attribute.attname = 'created'
+                    AND attribute.atttypid = 'timestamp with time zone'::regtype
+                    AND attribute.attnotnull AND NOT attribute.attisdropped)
+        )";
+
+        return con.QuerySingleAsync<bool>(new CommandDefinition(query,
+            cancellationToken: ct));
+    }
+
+    public async Task<bool> TryRegisterRecoveryImportAsync(IDbConnection con,
+        IDbTransaction tx, string fileHash, string filename, int recordCount,
+        CancellationToken ct)
+    {
+        const string query = @"INSERT INTO share_recovery_imports(
+                filehash, filename, recordcount, created)
+            VALUES(@fileHash, @filename, @recordCount, now())
+            ON CONFLICT(filehash) DO NOTHING";
+
+        return await con.ExecuteAsync(new CommandDefinition(query, new
+        {
+            fileHash,
+            filename,
+            recordCount,
+        }, tx, cancellationToken: ct)) > 0;
+    }
+
     public async Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Share> shares, CancellationToken ct)
     {
         // NOTE: Even though the tx parameter is completely ignored here,
@@ -143,14 +210,14 @@ public class ShareRepository : IShareRepository
 
     public Task<double?> GetMinerShareDifficultyBetweenAsync(IDbConnection con, string poolId, string miner, DateTime start, DateTime end, CancellationToken ct)
     {
-        const string query = "SELECT SUM(difficulty / networkdifficulty) FROM shares WHERE poolid = @poolId AND miner = @miner AND created > @start AND created < @end";
+        const string query = "SELECT SUM(difficulty / networkdifficulty) FROM shares WHERE poolid = @poolId AND miner = @miner AND created > @start AND created <= @end";
 
         return con.QuerySingleAsync<double?>(new CommandDefinition(query, new { poolId, miner, start, end }, cancellationToken: ct));
     }
 
     public Task<double?> GetEffectiveAccumulatedShareDifficultyBetweenAsync(IDbConnection con, string poolId, DateTime start, DateTime end, CancellationToken ct)
     {
-        const string query = "SELECT SUM(difficulty / networkdifficulty) FROM shares WHERE poolid = @poolId AND created > @start AND created < @end";
+        const string query = "SELECT SUM(difficulty / networkdifficulty) FROM shares WHERE poolid = @poolId AND created > @start AND created <= @end";
 
         return con.QuerySingleAsync<double?>(new CommandDefinition(query, new { poolId, start, end }, cancellationToken: ct));
     }
