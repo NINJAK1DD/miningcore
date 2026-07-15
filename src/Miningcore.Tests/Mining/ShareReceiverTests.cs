@@ -94,6 +94,7 @@ public class ShareReceiverTests
         ShareReceiver.NormalizeCreatedTimestamp(share, DateTime.UtcNow);
 
         Assert.Equal(created, share.Created);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
     }
 
     [Fact]
@@ -105,6 +106,7 @@ public class ShareReceiverTests
         ShareReceiver.NormalizeCreatedTimestamp(share, received);
 
         Assert.Equal(received, share.Created);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
     }
 
     [Fact]
@@ -121,6 +123,7 @@ public class ShareReceiverTests
         ShareReceiver.NormalizeCreatedTimestamp(share, DateTime.UtcNow);
 
         Assert.Equal(created, share.Created);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
     }
 
     [Fact]
@@ -137,6 +140,36 @@ public class ShareReceiverTests
         ShareReceiver.NormalizeCreatedTimestamp(share, DateTime.UtcNow);
 
         Assert.Equal(created, share.Created);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
+    }
+
+    [Fact]
+    public void PreservedRelayTimestamp_WithUnspecifiedKind_IsMarkedUtcWithoutChangingTicks()
+    {
+        var created = DateTime.SpecifyKind(DateTime.UtcNow.AddSeconds(-10),
+            DateTimeKind.Unspecified);
+        var share = new Share
+        {
+            Created = created,
+            PreserveCreated = true,
+        };
+
+        ShareReceiver.NormalizeCreatedTimestamp(share, DateTime.UtcNow);
+
+        Assert.Equal(created.Ticks, share.Created.Ticks);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
+    }
+
+    [Fact]
+    public void OrdinaryRelayShare_WithLocalReceiverTimestamp_IsConvertedToUtc()
+    {
+        var received = DateTime.SpecifyKind(DateTime.Now, DateTimeKind.Local);
+        var share = new Share { Created = DateTime.UnixEpoch };
+
+        ShareReceiver.NormalizeCreatedTimestamp(share, received);
+
+        Assert.Equal(received.ToUniversalTime(), share.Created);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
     }
 
     private static async Task<(ShareRelay Relay, MessageBus Bus)> StartRelayAsync(
@@ -182,6 +215,7 @@ public class ShareReceiverTests
         Assert.Equal("regtest-sender", share.Source);
         Assert.True(share.BlockOnly);
         Assert.Equal(DateTime.UnixEpoch, share.Created);
+        Assert.Equal(DateTimeKind.Utc, share.Created.Kind);
     }
 
     private static int GetFreePort()

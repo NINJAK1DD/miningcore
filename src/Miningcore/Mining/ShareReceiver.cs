@@ -345,13 +345,25 @@ public class ShareReceiver : BackgroundService
 
     internal static void NormalizeCreatedTimestamp(Share share, DateTime receivedAt)
     {
+        if(share == null)
+            return;
+
         // Ordinary shares normally retain the receiver-local timestamp used by existing
         // hashrate accounting. A merged-parent statistical share or a share whose block record
         // was persisted independently must keep the sender timestamp so it remains on the
         // correct side of the block-effort boundary even if relay/recorder delivery is later.
-        if(share?.BlockOnly != true && share?.BlockRecordEmitted != true &&
-           share?.PreserveCreated != true)
-            share.Created = receivedAt;
+        var preserveCreated = share.BlockOnly || share.BlockRecordEmitted || share.PreserveCreated;
+        var created = preserveCreated ? share.Created : receivedAt;
+
+        // protobuf-net reconstructs DateTime values without preserving DateTimeKind. The relay
+        // wire contract carries UTC timestamps, so an unspecified value must be marked as UTC
+        // without shifting its ticks. Npgsql rejects non-UTC DateTimes for timestamptz columns.
+        share.Created = created.Kind switch
+        {
+            DateTimeKind.Utc => created,
+            DateTimeKind.Local => created.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(created, DateTimeKind.Utc),
+        };
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
