@@ -150,6 +150,10 @@ public class AutofacModule : Module
             .As<IBlockCandidateRecorder>()
             .SingleInstance();
 
+        builder.RegisterType<CandidatePersistenceFailureHandler>()
+            .As<ICandidatePersistenceFailureHandler>()
+            .SingleInstance();
+
         builder.RegisterType<ShareReceiver>()
             .SingleInstance();
 

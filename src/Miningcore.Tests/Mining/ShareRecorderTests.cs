@@ -16,6 +16,7 @@ using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using NSubstitute;
 using ProtoBuf;
@@ -552,6 +553,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
+        var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
         var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
             .CreateMapper();
         var databaseAttempt = new TaskCompletionSource<IDbConnection>(
@@ -571,7 +573,7 @@ public class ShareRecorderTests
             {
                 Pools = Array.Empty<PoolConfig>(),
                 ShareRecoveryFile = recoveryFilename,
-            }, messageBus)
+            }, messageBus, failureHandler)
         {
             ShutdownDatabaseAttemptTimeout = TimeSpan.FromMilliseconds(100),
         };
@@ -609,6 +611,7 @@ public class ShareRecorderTests
                 persisted.TransactionConfirmationData);
             Assert.True(persisted.BlockOnly);
             Assert.True(persisted.IsBlockCandidate);
+            Assert.Empty(failureHandler.ReceivedCalls());
         }
         finally
         {
@@ -914,6 +917,126 @@ public class ShareRecorderTests
         messageBus.DidNotReceive().SendMessage(Arg.Any<BlockFoundNotification>(),
             Arg.Any<string>());
     }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_UnexpectedDatabaseFailureJournalsAndStopsCluster()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw new InvalidOperationException("unexpected persistence pipeline failure"));
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, Substitute.For<IMessageBus>(), failureHandler);
+        var candidate = CreateDurableCandidate("unexpected-db-block", "auxpow");
+
+        try
+        {
+            var ex = await Assert.ThrowsAsync<IOException>(() =>
+                recorder.PersistBlockCandidateAsync(candidate));
+
+            Assert.IsType<InvalidOperationException>(ex.InnerException);
+            var failureCall = Assert.Single(failureHandler.ReceivedCalls());
+            var failureArguments = failureCall.GetArguments();
+            var failedCandidates = Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
+                failureArguments[0]);
+            Assert.Equal(candidate.BlockHash, Assert.Single(failedCandidates).BlockHash);
+            Assert.Contains("unexpected persistence",
+                Assert.IsType<InvalidOperationException>(failureArguments[1]).Message);
+            Assert.Null(failureArguments[2]);
+            Assert.True(Assert.IsType<bool>(failureArguments[3]));
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(candidate.BlockHash, persisted.BlockHash);
+            Assert.Equal(candidate.Miner, persisted.Miner);
+            Assert.Equal(candidate.BlockType, persisted.BlockType);
+            Assert.Equal(candidate.TransactionConfirmationData,
+                persisted.TransactionConfirmationData);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_DatabaseAndJournalFailureStopsCluster()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw new InvalidOperationException("unexpected database failure"));
+        var recorder = new ShareRecorder(connectionFactory, mapper,
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = Path.Combine(missingDirectory, "recovery.txt"),
+            }, Substitute.For<IMessageBus>(), failureHandler);
+        var candidate = CreateDurableCandidate("lost-candidate-block");
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            recorder.PersistBlockCandidateAsync(candidate));
+
+        var failureCall = Assert.Single(failureHandler.ReceivedCalls());
+        var failureArguments = failureCall.GetArguments();
+        Assert.Equal(candidate.BlockHash,
+            Assert.Single(Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
+                failureArguments[0])).BlockHash);
+        Assert.Contains("database failure",
+            Assert.IsType<InvalidOperationException>(failureArguments[1]).Message);
+        Assert.Contains(missingDirectory,
+            Assert.IsType<DirectoryNotFoundException>(failureArguments[2]).Message);
+        Assert.False(Assert.IsType<bool>(failureArguments[3]));
+    }
+
+    [Fact]
+    public void CandidatePersistenceFailureHandler_StopsProcessOnlyOnceForDualTargetFailure()
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = new CandidatePersistenceFailureHandler(processStatus,
+            applicationLifetime, messageBus);
+
+        handler.StopCluster(new[] { CreateDurableCandidate("ltc-parent") },
+            new InvalidOperationException("parent failed"), null, true);
+        handler.StopCluster(new[] { CreateDurableCandidate("doge-aux") },
+            new InvalidOperationException("aux failed"),
+            new IOException("journal failed"), false);
+
+        Assert.Equal(1, processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+        messageBus.Received(1).SendMessage(Arg.Any<AdminNotification>(),
+            Arg.Any<string>());
+    }
+
+    private static Share CreateDurableCandidate(string hash,
+        string type = "merged-parent") => new()
+    {
+        PoolId = type == "auxpow" ? "doge-solo" : "ltc-solo",
+        Miner = type == "auxpow" ? "DFinancialBeneficiary" : "LFinancialBeneficiary",
+        BlockHeight = 123,
+        BlockHash = hash,
+        BlockType = type,
+        IsBlockCandidate = true,
+        BlockOnly = true,
+        TransactionConfirmationData = type == "auxpow"
+            ? $"auxpow-block:{hash}"
+            : "coinbase-transaction",
+    };
 
     private static RecoveryFixture CreateRecoveryFixture()
     {

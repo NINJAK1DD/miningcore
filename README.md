@@ -373,8 +373,11 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   host shutdown. Once quiescing starts, candidate persistence skips the ordinary 2/4/8-second retry
   delays, grants the active PostgreSQL attempt at most five seconds, then writes and force-flushes the
   recovery journal. Ordinary-share and candidate persistence use the same recorder singleton and a
-  canonical-filename journal lock. Configure the service manager's stop timeout above 45 seconds;
-  the supplied systemd example uses 60 seconds.
+  canonical-filename journal lock. If an unexpected candidate database failure requires emergency
+  journalling, Miningcore stops the cluster because the accounting pipeline is no longer trusted. If
+  both PostgreSQL and the journal fail, the cluster also stops with exit status 1 instead of leaving
+  other miners online without durable block accounting. Configure the service manager's stop timeout
+  above 45 seconds; the supplied systemd example uses 60 seconds.
 
 ## Production operation
 

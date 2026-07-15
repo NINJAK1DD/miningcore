@@ -38,7 +38,8 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         IShareRepository shareRepo,
         IBlockRepository blockRepo,
         ClusterConfig clusterConfig,
-        IMessageBus messageBus)
+        IMessageBus messageBus,
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null)
     {
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(mapper);
@@ -51,6 +52,8 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         this.mapper = mapper;
         this.jsonSerializerSettings = jsonSerializerSettings;
         this.messageBus = messageBus;
+        this.candidateFailureHandler = candidateFailureHandler ??
+            NullCandidatePersistenceFailureHandler.Instance;
         this.clusterConfig = clusterConfig;
 
         this.shareRepo = shareRepo;
@@ -71,6 +74,7 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
     private readonly IConnectionFactory cf;
     private readonly JsonSerializerSettings jsonSerializerSettings;
     private readonly IMessageBus messageBus;
+    private readonly ICandidatePersistenceFailureHandler candidateFailureHandler;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
@@ -128,6 +132,7 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
     private async Task PersistBlockCandidateDurablyAsync(IList<Share> shares)
     {
         Exception lastError = null;
+        var unexpectedDatabaseFailure = false;
 
         for(var attempt = 0; attempt <= RetryCount; attempt++)
         {
@@ -145,6 +150,15 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
                 if(ex is TimeoutException && IsBlockCandidateShutdown &&
                     !databaseAttempt.IsCompleted)
                     _ = ObserveLateCandidateDatabaseAttemptAsync(databaseAttempt);
+            }
+            catch(Exception ex)
+            {
+                // A candidate is financially significant regardless of the exception type.
+                // Preserve it in the journal even when the database failure falls outside the
+                // normal retry policy, then stop the cluster because the pipeline is unhealthy.
+                lastError = ex;
+                unexpectedDatabaseFailure = true;
+                break;
             }
 
             // Once shutdown starts, do not spend another fourteen seconds in retry delays.
@@ -166,22 +180,43 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
             }
         }
 
+        Exception journalError = null;
+
         try
         {
             await WriteRecoveryJournalAsync(shares);
-            NotifyAdminOnPolicyFallback();
+            NotifyAdminOnPolicyFallbackSafely();
         }
         catch(Exception ex)
         {
+            journalError = ex;
+
             if(!hasLoggedPolicyFallbackFailure)
             {
                 logger.Fatal(ex, "Fatal error during candidate recovery fallback. Block candidate will be lost!");
                 hasLoggedPolicyFallbackFailure = true;
             }
+        }
+
+        if(journalError != null)
+        {
+            candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
+                journalError, false);
 
             throw new IOException(
                 "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
-                ex);
+                new AggregateException(new[] { lastError, journalError }
+                    .Where(x => x != null)));
+        }
+
+        if(unexpectedDatabaseFailure)
+        {
+            candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
+                null, true);
+
+            throw new IOException(
+                "Block candidate was recovered to the journal after an unexpected PostgreSQL failure; the cluster is stopping",
+                lastError);
         }
     }
 
@@ -318,7 +353,7 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         try
         {
             await WriteRecoveryJournalAsync(shares);
-            NotifyAdminOnPolicyFallback();
+            NotifyAdminOnPolicyFallbackSafely();
         }
 
         catch(Exception ex)
@@ -628,6 +663,19 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
 
             messageBus.SendMessage(new AdminNotification("Share Recorder Policy Fallback",
                 $"The Share Recorder's Policy Fallback has been engaged. Check share recovery file {recoveryFilename}."));
+        }
+    }
+
+    private void NotifyAdminOnPolicyFallbackSafely()
+    {
+        try
+        {
+            NotifyAdminOnPolicyFallback();
+        }
+        catch(Exception ex)
+        {
+            logger.Error(ex,
+                "Unable to emit share-recorder fallback notification after the recovery journal was durably flushed");
         }
     }
 
