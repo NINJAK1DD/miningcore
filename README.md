@@ -237,6 +237,13 @@ Back up before upgrades:
 pg_dump -h 127.0.0.1 -U miningcore -Fc miningcore > miningcore-backup.dump
 ```
 
+> [!IMPORTANT]
+> This revision is a breaking database upgrade for every deployment that enables payment
+> processing, even when LTC/DOGE merged mining is not enabled. Stop Miningcore and apply
+> `add_payout_manager_ownership.sql` before starting the upgraded binary. Recovery-only nodes that
+> use `-rs` require the same migration. Missing ownership/idempotency schema fails startup with the
+> migration filename instead of running payouts without protection.
+
 For an existing database, stop writers and payout managers before applying the migrations required by
 this revision. The [database and upgrade guide](docs/database.md) gives the exact commands, restore
 procedure, merged-mining indexes, payout-manager ownership rules and optional advanced partitioning.

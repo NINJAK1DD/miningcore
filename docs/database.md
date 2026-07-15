@@ -54,6 +54,11 @@ A backup is not proven until it has been restored and checked.
 
 ## Upgrade an existing database
 
+> [!IMPORTANT]
+> This revision changes the payout safety contract for every coin family. The payout-manager
+> ownership migration is mandatory before starting any node with payment processing enabled, not
+> only an LTC/DOGE node. Treat this as a breaking upgrade and schedule a maintenance window.
+
 Stop Miningcore block writers, recovery importers and payout managers, take a verified backup, then
 apply the migrations with `ON_ERROR_STOP`:
 
