@@ -15,13 +15,11 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class MergedMiningIndexIntegrationTests
 {
-    [Fact]
+    [PostgresIntegrationFact]
     public async Task PayoutOwnershipMigrationAndPreflight_RejectDeferrablePaymentBatchKey()
     {
         var connectionString = Environment.GetEnvironmentVariable(
             "MININGCORE_TEST_POSTGRES");
-        if(string.IsNullOrWhiteSpace(connectionString))
-            return;
 
         var schema = $"miningcore_payout_{Guid.NewGuid():N}";
         await using var connection = new NpgsqlConnection(connectionString);
@@ -89,13 +87,11 @@ public class MergedMiningIndexIntegrationTests
         }
     }
 
-    [Fact]
+    [PostgresIntegrationFact]
     public async Task Migration_DropsOnlyIndexesOwnedByResolvedBlocksSchema()
     {
         var connectionString = Environment.GetEnvironmentVariable(
             "MININGCORE_TEST_POSTGRES");
-        if(string.IsNullOrWhiteSpace(connectionString))
-            return;
 
         var suffix = Guid.NewGuid().ToString("N");
         var shadowSchema = $"miningcore_shadow_{suffix}";
@@ -165,16 +161,11 @@ public class MergedMiningIndexIntegrationTests
         }
     }
 
-    [Fact]
+    [PostgresIntegrationFact]
     public async Task Preflight_UsesBlocksResolvedByCurrentSearchPath()
     {
         var connectionString = Environment.GetEnvironmentVariable(
             "MININGCORE_TEST_POSTGRES");
-
-        // The GitHub workflow supplies PostgreSQL. Local runs remain self-contained when an
-        // integration database has not been explicitly provided.
-        if(string.IsNullOrWhiteSpace(connectionString))
-            return;
 
         var suffix = Guid.NewGuid().ToString("N");
         var validSchema = $"miningcore_valid_{suffix}";
