@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
@@ -381,6 +382,23 @@ public class BitcoinJobTests : TestBase
         Assert.NotNull(result.Share);
     }
 
+    [Fact]
+    public void SerializeHeader_VersionRollingAppliesMaskToExactSerializedVersion()
+    {
+        var (baseJob, _) = CreateJob();
+        var job = Assert.IsType<VersionSerializationBitcoinJob>(baseJob);
+        const uint templateVersion = 0x20002000;
+        const uint mask = 0x00006000;
+        const uint submittedBits = 0x00004000;
+        job.SetTemplateVersion(templateVersion);
+
+        var serializedVersion = job.SerializeVersion(mask, submittedBits);
+        var expected = (templateVersion & ~mask) | (submittedBits & mask);
+
+        Assert.Equal(expected, serializedVersion);
+        Assert.Equal(templateVersion, job.SerializeVersion(null, null));
+    }
+
     [Theory]
     [InlineData(null, "missing version_bits")]
     [InlineData("0000200", "incorrect size of version_bits")]
@@ -441,7 +459,7 @@ public class BitcoinJobTests : TestBase
 
     private (BitcoinJob, StratumConnection) CreateJob(double difficulty = 0.01d)
     {
-        var job = new BitcoinJob();
+        var job = new VersionSerializationBitcoinJob();
         var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["dash"];
         var pc = new PoolConfig { Template = coin };
 
@@ -476,6 +494,18 @@ public class BitcoinJobTests : TestBase
             {
                 CurTime = 1665423220,
             };
+        }
+    }
+
+    private sealed class VersionSerializationBitcoinJob : BitcoinJob
+    {
+        public void SetTemplateVersion(uint version) => BlockTemplate.Version = version;
+
+        public uint SerializeVersion(uint? versionMask, uint? versionBits)
+        {
+            var header = SerializeHeader(new byte[32], BlockTemplate.CurTime, 0,
+                versionMask, versionBits);
+            return BinaryPrimitives.ReadUInt32LittleEndian(header);
         }
     }
 }

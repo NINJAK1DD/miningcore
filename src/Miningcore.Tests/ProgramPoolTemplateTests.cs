@@ -348,6 +348,143 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
+    public async Task CandidatePersistenceFailure_StopsRealHostAndDrainsSiblingPool()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var processStatus = new ProcessStatus();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
+            .CreateMapper();
+        var databaseAttempt = new TaskCompletionSource<IDbConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingCancelled = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var candidateAvailable = new TaskCompletionSource<Task>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var candidateDrained = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Exception reportedFailure = null;
+        connectionFactory.OpenConnectionAsync().Returns(databaseAttempt.Task);
+
+        async Task RunSiblingPoolAsync(CancellationToken ct)
+        {
+            siblingStarted.TrySetResult(true);
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested)
+            {
+                siblingCancelled.TrySetResult(true);
+            }
+
+            var candidateOperation = await candidateAvailable.Task;
+
+            try
+            {
+                await candidateOperation;
+            }
+            catch(InvalidOperationException)
+            {
+                // The manager drain observes the original candidate-persistence failure after
+                // the fatal handler has requested host shutdown.
+            }
+
+            candidateDrained.TrySetResult(true);
+        }
+
+        try
+        {
+            using var host = new HostBuilder()
+                .ConfigureServices(services =>
+                {
+                    services.AddSingleton<IProcessStatus>(processStatus);
+                    Program.ConfigureHostShutdown(services);
+                    services.AddSingleton(sp => new Program(
+                        Substitute.For<IComponentContext>(),
+                        sp.GetRequiredService<IHostApplicationLifetime>(),
+                        processStatus, RunSiblingPoolAsync));
+                    Program.ConfigureMiningShutdownCoordinator(services);
+                })
+                .Build();
+            var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+            var applicationStopping = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using var stoppingRegistration = lifetime.ApplicationStopping.Register(() =>
+                applicationStopping.TrySetResult(true));
+            var failureHandler = new CandidatePersistenceFailureHandler(processStatus,
+                lifetime, messageBus);
+            var recorder = new ShareRecorder(connectionFactory, mapper,
+                new JsonSerializerSettings(), shareRepository, blockRepository,
+                new ClusterConfig
+                {
+                    Pools = Array.Empty<PoolConfig>(),
+                    ShareRecoveryFile = recoveryFilename,
+                }, messageBus, failureHandler);
+            var candidate = new Miningcore.Blockchain.Share
+            {
+                PoolId = "doge-solo",
+                Miner = "DFullHostBeneficiary",
+                BlockHeight = 456,
+                BlockHash = "full-host-doge-block",
+                BlockType = "auxpow",
+                IsBlockCandidate = true,
+                BlockOnly = true,
+                TransactionConfirmationData =
+                    "auxpow-block:full-host-doge-block",
+            };
+            var hostRun = Program.RunStartupBoundaryAsync(
+                () => host.RunAsync(),
+                ex =>
+                {
+                    reportedFailure = ex;
+                    return Task.CompletedTask;
+                },
+                () => processStatus.ExitCode);
+
+            await siblingStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var candidatePersistence = recorder.PersistBlockCandidateAsync(candidate);
+            candidateAvailable.TrySetResult(candidatePersistence);
+            databaseAttempt.TrySetException(new InvalidOperationException(
+                "simulated full-host candidate database failure"));
+
+            var persistenceError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                candidatePersistence).WaitAsync(TimeSpan.FromSeconds(2));
+            var exitCode = await hostRun.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Contains("full-host candidate", persistenceError.Message);
+            Assert.Equal(1, exitCode);
+            Assert.Equal(1, processStatus.ExitCode);
+            Assert.Null(reportedFailure);
+            Assert.True(applicationStopping.Task.IsCompletedSuccessfully);
+            Assert.True(siblingCancelled.Task.IsCompletedSuccessfully);
+            Assert.True(candidateDrained.Task.IsCompletedSuccessfully);
+            var recovered = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(line => !string.IsNullOrWhiteSpace(line) &&
+                    !line.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Miningcore.Blockchain.Share>)
+                .Single();
+            Assert.Equal(candidate.PoolId, recovered.PoolId);
+            Assert.Equal(candidate.Miner, recovered.Miner);
+            Assert.Equal(candidate.BlockHash, recovered.BlockHash);
+            Assert.Equal(candidate.BlockType, recovered.BlockType);
+            Assert.Equal(candidate.TransactionConfirmationData,
+                recovered.TransactionConfirmationData);
+        }
+        finally
+        {
+            databaseAttempt.TrySetCanceled();
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
     public async Task NormalStopApplication_RealHostReturnsSuccess()
     {
         var processStatus = new ProcessStatus();
