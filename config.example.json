@@ -1,29 +1,50 @@
 {
   // Copy this file to config.json and replace every CHANGE_ME value.
   // Miningcore accepts comments, although strict JSON tools may not.
+
+  // Friendly name included in logs, metrics, notifications and relayed shares.
   "clusterName": "btcpool-local",
+
+  // Optional numeric identity for this Miningcore process in a multi-node cluster.
+  // Give each node a different value; omit it for a simple single-node deployment.
   "instanceId": 1,
 
+  // Application and API request logging.
   "logging": {
+    // Minimum level: trace, debug, info, warn, error or fatal.
     "level": "info",
+    // Write log events to stdout/stderr. Keep this enabled under systemd or Docker.
     "enableConsoleLog": true,
+    // Use coloured console output when the terminal supports it.
     "enableConsoleColors": true,
+    // Main log filename. Set to null to use console output only.
     "logFile": "miningcore.log",
+    // Separate API-request log. Set to null to use the main log destination.
     "apiLogFile": "miningcore-api.log",
+    // Directory for relative log filenames. Absolute paths may also be used.
     "logBaseDirectory": "logs",
+    // Also create <pool-id>.log for every configured pool.
     "perPoolLogFile": false
   },
 
+  // Public API, metrics, WebSocket notification and administrative API settings.
   "api": {
+    // Set false to run Miningcore without its HTTP API.
     "enabled": true,
     // Use "127.0.0.1" when a host reverse proxy is the only API client.
     // "*" is useful in a container but requires firewall/reverse-proxy protection.
     "listenAddress": "*",
+    // Main public API and WebSocket port.
     "port": 4000,
+    // Administrative API port. Restrict this with both the whitelist and a firewall.
     "adminPort": 4001,
+    // Prometheus metrics port.
     "metricsPort": 4002,
+    // Clients allowed to use administrative API endpoints.
     "adminIpWhitelist": [ "127.0.0.1" ],
+    // Clients allowed to scrape Prometheus metrics.
     "metricsIpWhitelist": [ "127.0.0.1" ],
+    // Restore the older API's null-property serialization when required by a legacy UI.
     "legacyNullValueHandling": false,
     // Uncomment after placing the certificate where Miningcore can read it:
     // "tls": {
@@ -31,56 +52,84 @@
     //   "tlsPfxFile": "/etc/miningcore/api-certificate.pfx",
     //   "tlsPfxPassword": "CHANGE_ME_API_CERTIFICATE_PASSWORD"
     // },
+    // Per-client API request limiting.
     "rateLimiting": {
+      // Disabling this exposes the API without application-level throttling.
       "disabled": false,
+      // Addresses in this list bypass all rate-limit rules.
       "ipWhitelist": [ "127.0.0.1" ],
+      // Rules are evaluated per source IP. Keep limits suitable for the chosen frontend.
       "rules": [
         {
+          // Wildcard applies to every API endpoint.
           "endpoint": "*",
+          // Counting window understood by AspNetCoreRateLimit.
           "period": "1s",
+          // Maximum requests from one IP during the window.
           "limit": 20
         }
       ]
     }
   },
 
+  // Connection-level abuse protection shared by all pools.
   "banning": {
+    // Integrated uses Miningcore's in-process ban manager.
     "manager": "Integrated",
+    // Ban clients sending data that cannot be parsed as Stratum requests.
     "banOnJunkReceive": true,
+    // Allow pool-level invalid-share thresholds to ban abusive clients.
     "banOnInvalidShares": true,
+    // Allow repeated invalid login attempts to trigger a ban.
     "banOnLoginFailure": true
   },
 
+  // PostgreSQL stores shares, blocks, balances, payments and operational ownership.
   "persistence": {
     "postgres": {
+      // Database endpoint as seen from Miningcore (not necessarily the daemon host).
       "host": "127.0.0.1",
       "port": 5432,
       "user": "miningcore",
       "password": "CHANGE_ME_POSTGRES_PASSWORD",
       "database": "miningcore",
+      // Maximum duration in seconds for database commands.
       "commandTimeout": 60,
+      // Enable PostgreSQL transport encryption.
       "tls": false,
+      // Never enable in production unless certificate validation is handled elsewhere.
       "tlsNoValidate": false
     }
   },
 
   // This cluster-wide switch must be enabled on the single node that owns payouts.
   "paymentProcessing": {
+    // Starts block reconciliation and payout processing on this node.
     "enabled": true,
+    // Seconds between payment-processing cycles.
     "interval": 600,
+    // Optional text included in supported coinbase transactions.
     "coinbaseString": "BTCPool.co.uk"
   },
 
+  // Periodic pool, miner and network statistic aggregation.
   "statistics": {
+    // Seconds between statistics updates.
     "updateInterval": 60,
+    // Minutes of recent shares used to calculate displayed hashrate.
     "hashrateCalculationWindow": 5,
+    // Hours between statistics cleanup/maintenance cycles.
     "gcInterval": 24,
+    // Retain detailed statistics for this many days.
     "cleanupDays": 30
   },
 
+  // Email, administrative and Pushover event delivery.
   "notifications": {
+    // Master notification switch. Individual channels also have their own settings.
     "enabled": false,
     "email": {
+      // SMTP server used for email notifications.
       "host": "smtp.example.com",
       "port": 587,
       "user": "CHANGE_ME_SMTP_USER",
@@ -89,140 +138,218 @@
       "fromName": "BTCPool operator"
     },
     "admin": {
+      // Operational alerts for block, payment and persistence events.
       "enabled": false,
       "emailAddress": "operator@example.com",
       "notifyBlockFound": true,
       "notifyPaymentSuccess": true
     },
     "pushover": {
+      // Optional Pushover destination for supported notifications.
       "enabled": false,
       "user": "CHANGE_ME_PUSHOVER_USER",
       "token": "CHANGE_ME_PUSHOVER_TOKEN"
     }
   },
 
+  // NiceHash compatibility and automatic difficulty negotiation.
   "nicehash": {
     "enableAutoDiff": true
   },
 
-  // Written when an ordinary share batch cannot be persisted. Protect and monitor this file.
+  // Write-through emergency journal for shares or block candidates that cannot reach PostgreSQL.
+  // Use a process-local, writable, monitored path and protect it as financial accounting data.
+  // Recover it with: ./Miningcore -c config.json -rs recovered-shares.txt
   "shareRecoveryFile": "recovered-shares.txt",
 
   // Advanced relay sender example (leave commented for a direct node):
+  // 192.0.2.20 is a documentation-only address; replace it with the real relay host.
   // "shareRelay": {
-  //   "publishUrl": "tcp://10.0.0.20:5555",
+  //   "publishUrl": "tcp://192.0.2.20:5555",
+  //   // false binds/listens; true connects to an already-bound relay endpoint.
   //   "connect": false,
+  //   // Replace with the real 40-character ZeroMQ shared key.
   //   "sharedEncryptionKey": "CHANGE_ME_40_CHARACTER_ZMQ_CURVE_KEY"
   // },
-  // Advanced receiver example:
+  // Advanced central receiver/recorder example:
   // "shareRelays": [
   //   {
-  //     "url": "tcp://10.0.0.20:5555",
+  //     "url": "tcp://192.0.2.20:5555",
   //     "sharedEncryptionKey": "CHANGE_ME_40_CHARACTER_ZMQ_CURVE_KEY"
   //   }
   // ],
 
+  // Each entry defines one coin pool. The LTC entry below is the parent Stratum pool;
+  // the DOGE entry supplies the auxiliary daemon, wallet and SOLO accounting policy.
   "pools": [
     {
+      // Stable database/API identifier. Do not change after a production pool starts.
       "id": "ltc-solo",
+      // Disabled pools remain in the file but are not started.
       "enabled": true,
+      // Key from src/Miningcore/coins.json.
       "coin": "litecoin",
+      // Pool-controlled Litecoin wallet address receiving parent-chain rewards.
       "address": "CHANGE_ME_LTC_POOL_WALLET_ADDRESS",
+      // Expose this pool's configured Stratum ports to miners.
       "enableInternalStratum": true,
+      // Milliseconds between getblocktemplate polls. ZMQ notifications can supplement polling.
       "blockRefreshInterval": 1000,
+      // Re-send the current job after this many seconds without a new template; 0 disables it.
       "jobRebroadcastTimeout": 10,
+      // Disconnect workers silent for this many seconds, limiting zombie socket usage.
       "clientConnectionTimeout": 600,
+      // Seconds between checks for idle VarDiff connections.
       "vardiffIdleSweepInterval": 30,
+      // Optional fixed reward splits (for example pool fees). Percentages reduce miner reward.
+      // Example: [ { "address": "LTC_FEE_ADDRESS", "percentage": 1.0 } ]
       "rewardRecipients": [],
+      // One pool may expose several ports with different initial/variable difficulties.
       "ports": {
+        // JSON property name is the TCP port miners connect to.
         "3032": {
+          // Human-readable port label shown through the API.
           "name": "LTC-DOGE-SOLO",
+          // "*" listens on every interface. Restrict this if a proxy is the only client.
           "listenAddress": "*",
+          // Initial fixed difficulty assigned when a miner connects.
           "difficulty": 65536,
+          // Optional automatic per-miner difficulty adjustment.
           "varDiff": {
+            // Never retarget below this difficulty.
             "minDiff": 65536,
+            // Maximum difficulty; null means no configured ceiling.
             "maxDiff": null,
+            // Maximum single retarget change; null uses the implementation default.
             "maxDelta": null,
+            // Aim for one accepted share per miner in this many seconds.
             "targetTime": 15,
+            // Recalculate difficulty at this interval in seconds.
             "retargetTime": 90,
+            // Do not retarget while observed share time is within this percentage of target.
             "variancePercent": 30
           },
+          // Enable TLS for this Stratum port. Supply tlsPfxFile/tlsPfxPassword when true.
           "tls": false,
+          // Accept both TLS and plaintext miners by detecting the initial TLS handshake.
           "tlsAuto": false,
-          // When TLS is enabled, add tlsPfxFile and tlsPfxPassword here.
+          // When TLS is enabled, uncomment and replace both values:
+          // "tlsPfxFile": "/etc/miningcore/stratum-certificate.pfx",
+          // "tlsPfxPassword": "CHANGE_ME_STRATUM_CERTIFICATE_PASSWORD",
+          // Accept HAProxy PROXY protocol information from explicitly trusted proxies only.
           "tcpProxyProtocol": {
+            // Parse PROXY headers on this port.
             "enable": false,
+            // Reject connections that do not supply a valid PROXY header.
             "mandatory": false,
+            // Only these direct peers may assert a miner's original address.
             "proxyAddresses": [ "127.0.0.1" ]
           }
         }
       },
+      // Litecoin Core JSON-RPC endpoints. Keep RPC private and wallet-enabled for payouts.
       "daemons": [
         {
           "host": "127.0.0.1",
           "port": 9332,
           "user": "CHANGE_ME_LITECOIN_RPC_USER",
           "password": "CHANGE_ME_LITECOIN_RPC_PASSWORD",
+          // Optional: must exactly match litecoin.conf's zmqpubhashblock endpoint.
+          // "zmqBlockNotifySocket": "tcp://127.0.0.1:29332",
+          // Use HTTPS for RPC when the daemon or trusted proxy provides it.
           "ssl": false,
+          // Enable only when the endpoint is known to support HTTP/2 correctly.
           "http2": false
         }
       ],
+      // Pool-specific invalid-share ban threshold.
       "banning": {
         "enabled": true,
+        // Evaluate the ratio after this many submitted shares.
         "checkThreshold": 50,
+        // Ban when invalid shares meet or exceed this percentage.
         "invalidPercent": 50,
+        // Ban duration in seconds.
         "time": 600
       },
+      // Parent-chain block reconciliation and miner payouts.
       "paymentProcessing": {
+        // Must be true for this merged-mining SOLO parent pool.
         "enabled": true,
+        // Smallest LTC balance paid automatically, denominated in whole LTC.
         "minimumPayment": 0.01,
+        // LTC/DOGE merged mining currently requires SOLO on both pools.
         "payoutScheme": "SOLO"
       },
+      // Link this Litecoin parent pool to the Dogecoin auxiliary pool below.
       "mergedMining": {
+        // Set false to operate this as an ordinary Litecoin pool.
         "enabled": true,
+        // Must exactly match the auxiliary pool's stable id.
         "auxPoolId": "doge-solo",
+        // Password key used by miners: d=<difficulty>;doge=<DOGE address>
         "addressParameter": "doge",
+        // Require and daemon-validate a DOGE beneficiary during authorisation.
+        // Setting false permits parent-only mining without a DOGE address; auxiliary
+        // submission is skipped for workers that do not supply one.
         "requireAuxAddress": true,
+        // Milliseconds allowed for recurring createauxblock polling after startup.
         "auxiliaryTemplatePollTimeoutMs": 500
       }
     },
     {
+      // Auxiliary pool identity referenced by ltc-solo.mergedMining.auxPoolId.
       "id": "doge-solo",
       "enabled": true,
       "coin": "dogecoin",
+      // Pool-controlled Dogecoin wallet address receiving auxiliary rewards before payout.
       "address": "CHANGE_ME_DOGE_POOL_WALLET_ADDRESS",
       // Merged miners connect to the LTC port. Set true only if a separate DOGE Stratum is wanted.
       "enableInternalStratum": false,
+      // Normal Dogecoin template polling interval for this pool in milliseconds.
       "blockRefreshInterval": 1000,
+      // Normal Dogecoin job rebroadcast interval in seconds; 0 disables it.
       "jobRebroadcastTimeout": 10,
+      // Disconnect silent direct-DOGE workers after this many seconds.
       "clientConnectionTimeout": 600,
+      // Optional DOGE fee/donation recipients, using the same format as the LTC pool.
       "rewardRecipients": [],
       // A ports object is part of the pool contract even when internal Stratum is disabled.
       "ports": {
         "3033": {
+          // This port is not opened while enableInternalStratum is false.
           "name": "DOGE-SOLO-DISABLED",
           "listenAddress": "127.0.0.1",
           "difficulty": 65536
         }
       },
+      // Dogecoin Core RPC used for createauxblock, submitauxblock, proof attribution,
+      // address validation, maturity checks and wallet payments. Configure one authoritative
+      // auxiliary endpoint: merged mining warns and uses the first when several are supplied.
       "daemons": [
         {
           "host": "127.0.0.1",
           "port": 22555,
           "user": "CHANGE_ME_DOGECOIN_RPC_USER",
           "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD",
+          // Optional: must exactly match dogecoin.conf's zmqpubhashblock endpoint.
+          // "zmqBlockNotifySocket": "tcp://127.0.0.1:44556",
           "ssl": false,
           "http2": false
         }
       ],
+      // Applies to miners only when direct Dogecoin Stratum is enabled.
       "banning": {
         "enabled": true,
         "checkThreshold": 50,
         "invalidPercent": 50,
         "time": 600
       },
+      // Auxiliary block reconciliation and DOGE SOLO payouts.
       "paymentProcessing": {
+        // Must remain enabled so AuxPoW blocks mature, credit and pay normally.
         "enabled": true,
+        // Smallest automatic payout, denominated in whole DOGE.
         "minimumPayment": 1.0,
         "payoutScheme": "SOLO"
       }
