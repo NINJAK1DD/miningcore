@@ -1,13 +1,7 @@
 #!/bin/bash
 
-# Install .NET 10 from Canonical's Ubuntu 22.04 backports feed.
-
-# install install-dependencies
-sudo apt-get update && \
-  sudo apt-get -y install software-properties-common
-
-# add dotnet repo
-sudo add-apt-repository -y ppa:dotnet/backports
+# Install .NET 10 from Ubuntu's Canonical-maintained package feed. Do not add
+# Microsoft's package feed on Ubuntu 24.04 or mix the two package sources.
 
 # install dev-dependencies
 sudo apt-get update && \

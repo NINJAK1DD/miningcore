@@ -10,7 +10,6 @@ using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using AutoMapper;
-using Microsoft.Extensions.Hosting;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
@@ -31,7 +30,7 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Asynchronously persist shares produced by all pools for processing by coin-specific payment processor(s)
 /// </summary>
-public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
+public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder
 {
     public ShareRecorder(IConnectionFactory cf,
         IMapper mapper,
@@ -613,9 +612,13 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         var recordCount = 0;
         var lineNumber = 0;
 
-        while(!reader.EndOfStream)
+        while(true)
         {
             var line = await reader.ReadLineAsync();
+
+            if(line == null)
+                break;
+
             lineNumber++;
 
             if(string.IsNullOrWhiteSpace(line))
@@ -737,33 +740,45 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
 
     protected override Task ExecuteAsync(CancellationToken ct)
     {
-        logger.Info(() => "Online");
+        try
+        {
+            logger.Info(() => "Online");
 
-        return messageBus.Listen<Share>()
-            .ObserveOn(TaskPoolScheduler.Default)
-            .Where(x => x != null)
-            .Publish(shares => shares
-                // Minimize the in-memory durability window for accepted or uncertain block
-                // candidates. Ordinary shares retain the existing batching behavior.
-                .Where(x => x.BlockOnly)
-                .Select(x => (IList<Share>) new[] { x })
-                .Merge(shares
-                    .Where(x => !x.BlockOnly)
-                    .Buffer(TimeSpan.FromSeconds(5), 250)
-                    .Where(batch => batch.Any())
-                    .Select(batch => (IList<Share>) batch)))
-            .Select(shares => Observable.FromAsync(() =>
-                Guard(() =>
-                        PersistSharesAsync(shares),
-                    ex => logger.Error(ex))))
-            .Concat()
-            .ToTask(ct)
-            .ContinueWith(task =>
-            {
-                if(task.IsFaulted)
-                    logger.Fatal(() => $"Terminated due to error {task.Exception?.InnerException ?? task.Exception}");
-                else
-                    logger.Info(() => "Offline");
-            }, ct);
+            var processing = messageBus.Listen<Share>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Where(x => x != null)
+                .Publish(shares => shares
+                    // Minimize the in-memory durability window for accepted or uncertain block
+                    // candidates. Ordinary shares retain the existing batching behavior.
+                    .Where(x => x.BlockOnly)
+                    .Select(x => (IList<Share>) new[] { x })
+                    .Merge(shares
+                        .Where(x => !x.BlockOnly)
+                        .Buffer(TimeSpan.FromSeconds(5), 250)
+                        .Where(batch => batch.Any())
+                        .Select(batch => (IList<Share>) batch)))
+                .Select(shares => Observable.FromAsync(() =>
+                    Guard(() =>
+                            PersistSharesAsync(shares),
+                        ex => logger.Error(ex))))
+                .Concat()
+                .ToTask(ct)
+                .ContinueWith(task =>
+                {
+                    if(task.IsFaulted)
+                        logger.Fatal(() => $"Terminated due to error {task.Exception?.InnerException ?? task.Exception}");
+                    else
+                        logger.Info(() => "Offline");
+                }, ct);
+
+            SignalStartupReady();
+            return processing;
+        }
+
+        catch(Exception ex)
+        {
+            SignalStartupFailure(ex);
+            return Task.FromException(ex);
+        }
     }
 }

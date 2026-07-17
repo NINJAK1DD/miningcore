@@ -60,6 +60,7 @@ public class ShareReceiver : BackgroundService
     private readonly CompositeDisposable disposables = new();
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
     private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
+    internal int AttachedPoolCount => pools.Count;
 
     readonly JsonSerializer serializer = new()
     {
@@ -90,6 +91,46 @@ public class ShareReceiver : BackgroundService
     {
         if(notification.Status == PoolStatus.Online)
             AttachPool(notification.Pool);
+    }
+
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if(clusterConfig.ShareRelays != null)
+        {
+            // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+            // Subscribe before StartAsync returns so pool-online notifications cannot be lost
+            // while the socket and message-processing loops are being scheduled.
+            disposables.Add(messageBus.Listen<PoolStatusNotification>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Subscribe(OnPoolStatusNotification));
+        }
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            disposables.Dispose();
+            throw;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            disposables.Dispose();
+        }
     }
 
     private Task StartMessageReceiver(CancellationToken ct)
@@ -372,11 +413,6 @@ public class ShareReceiver : BackgroundService
         {
             try
             {
-                // monitor pool lifetime
-                disposables.Add(messageBus.Listen<PoolStatusNotification>()
-                    .ObserveOn(TaskPoolScheduler.Default)
-                    .Subscribe(OnPoolStatusNotification));
-
                 // process messages
                 await Task.WhenAll(
                     StartMessageReceiver(ct),

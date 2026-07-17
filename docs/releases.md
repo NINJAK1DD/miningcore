@@ -2,13 +2,19 @@
 
 GitHub Releases provide a tested, framework-dependent build for **Ubuntu 22.04 x64** and a container
 image built from that same archive. The archive saves compilation time, but it still requires the
-.NET 6 ASP.NET Core runtime and Miningcore's native runtime libraries. Windows and other Linux
+.NET 10 ASP.NET Core runtime and Miningcore's native runtime libraries. Windows and other Linux
 distributions are not represented as binary-compatible by this package; use the source-build guide
 in the root README for those environments.
 
-> **Runtime warning:** .NET 6 is out of support. These packages reproduce the current application
-> target; they do not make that runtime production-supported. Migrating Miningcore to a supported
-> .NET release remains separate work.
+> **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
+> documented Ubuntu package source and keep it updated with normal security maintenance.
+
+TLS-enabled Stratum endpoints rely on the host security policy and accept TLS 1.2 or TLS 1.3 on
+supported, patched hosts. Legacy miners limited to TLS 1.0 or TLS 1.1 must be upgraded or replaced.
+
+If this replaces an existing .NET 6 deployment, first follow the dedicated
+[.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
+commands below as an instruction to overwrite a live configuration or database.
 
 ## Choose a version
 
@@ -41,21 +47,15 @@ gh attestation verify "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.t
 
 ## Install runtime dependencies
 
-Install Microsoft's Ubuntu 22.04 package repository if it is not already configured, then install
-the framework and native libraries:
+Enable Canonical's supported .NET backports PPA, then install the framework and native libraries:
 
 ```console
-wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb \
-  -O packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb
-rm packages-microsoft-prod.deb
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-6.0 libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:dotnet/backports
+sudo apt-get update
+sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
 ```
-
-Microsoft may remove unsupported .NET 6 packages from normal support channels in future. If that
-happens, build the current source in a controlled environment or complete the planned .NET upgrade;
-do not download an unverified runtime from an unofficial mirror.
 
 ## Install the archive
 
@@ -122,6 +122,10 @@ daemon credentials.
 
 ## Upgrade or roll back
 
+For a major-runtime upgrade from .NET 6, use the more detailed
+[.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). The sequence below is the shorter
+procedure for routine upgrades after the deployment layout and runtime are already suitable.
+
 1. Back up PostgreSQL, the configuration, and recovery journal.
 2. Download and verify the new archive.
 3. Stop Miningcore and confirm no other payout manager owns the same pools/database.
@@ -165,9 +169,11 @@ from the container network.
 ## Maintainer release procedure
 
 The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.1` or
-`v0.1.0`. It rebuilds on Ubuntu 22.04, runs the complete PostgreSQL-backed and ZeroMQ test suite,
-validates native runtime links, packages the result, smoke-tests the image, then publishes both
-artifacts with provenance. Prefer a signed annotated tag:
+`v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
+runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
+packages the result, smoke-tests the packaged image, and publishes both artifacts with provenance.
+This additional source-container gate makes release runs longer but catches Dockerfile-only build
+failures before publication. Prefer a signed annotated tag:
 
 ```console
 git switch dev

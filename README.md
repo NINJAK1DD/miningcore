@@ -12,8 +12,9 @@ primary integration branch. It builds on the
 [upstream Miningcore project](https://github.com/blackmennewstyle/miningcore) and retains credit to
 the original authors and contributors.
 
-> **Production status:** the software is usable for development and regtest, but this branch still
-> targets the unsupported .NET 6 runtime. Read [Production operation](#production-operation) and the
+> **Production status:** the software targets the supported .NET 10 LTS runtime, but production
+> deployment still requires the operational controls below. Read
+> [Production operation](#production-operation) and the
 > live [merged-mining validation record](docs/merged-mining-regtest-validation.md) before using real
 > funds.
 
@@ -115,8 +116,13 @@ The pool validates both addresses before authorising the worker. See the comment
 Download a release archive and `SHA256SUMS` from the
 [releases page](https://github.com/NINJAK1DD/miningcore/releases), verify it, and follow the
 [prebuilt installation and upgrade guide](docs/releases.md). The binary is framework-dependent and
-therefore still needs the documented .NET 6 and native runtime dependencies. No Windows or generic
+therefore still needs the documented .NET 10 and native runtime dependencies. No Windows or generic
 cross-distribution binary compatibility is claimed.
+
+Already running Miningcore on .NET 6? Read the
+[.NET 6 to .NET 10 operator migration guide](docs/dotnet-6-to-10-migration.md) before changing the
+runtime, application files, service or database. It covers release archives, source deployments and
+containers, including rollback planning and preserving an existing configuration.
 
 ### Debian and Ubuntu
 
@@ -126,10 +132,8 @@ the native build dependencies and .NET SDK, then publishes Miningcore into `buil
 | Operating system | Command | Guidance |
 | --- | --- | --- |
 | Debian 12 | `./build-debian-12.sh` | **Recommended script path** |
+| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | **Recommended Ubuntu script path** |
 | Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Recommended Ubuntu script path |
-| Debian 11 | `./build-debian-11.sh` | Older compatibility path |
-| Ubuntu 20.04 LTS | `./build-ubuntu-20.04.sh` | Older compatibility path |
-| Ubuntu 21.04 | `./build-ubuntu-21.04.sh` | Historical/EOL; do not use for production |
 
 For example:
 
@@ -139,16 +143,15 @@ chmod +x build-debian-12.sh
 ls build/Miningcore
 ```
 
-These scripts reproduce the repository's existing .NET 6 build and are not a statement that .NET 6
-or an end-of-life operating system is safe for a new production deployment. GitHub Actions
+These scripts install the .NET 10 SDK and publish the `net10.0` application. GitHub Actions
 ([workflow source](.github/workflows/dotnet.yml)) is the authoritative automated build-and-test path.
 
 ### Windows development
 
 Windows is supported for development and testing, not recommended for hosting a production pool.
 
-1. Install the [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0).
-2. Optionally install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the
+1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+2. Optionally install [Visual Studio 2026](https://visualstudio.microsoft.com/vs/) with the
    **.NET desktop build tools** and **Desktop development with C++** workloads.
 3. Clone the repository and open [Miningcore.sln](src/Miningcore.sln), or run:
 
@@ -400,7 +403,7 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
 ## Caveats
 
 - **Linux is the production target.** Windows builds are intended for development and testing.
-- **.NET 6 is out of support.** Framework modernisation is intentionally deferred to a separate PR.
+- **Keep .NET 10 serviced.** Apply supported runtime security and servicing updates promptly.
 - **Coin support is not identical.** Read the coin definition and daemon documentation before
   enabling a currency. Some families require extra native files or configuration.
 - **CryptoNote/RandomX coins** can require significant memory per configured VM and CPU-specific
@@ -436,7 +439,7 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
 
 Before advertising a public pool:
 
-- Run Miningcore on a maintained Linux release and plan migration from .NET 6.
+- Run Miningcore on a maintained Linux release with a serviced .NET 10 runtime.
 - Isolate daemon, wallet, PostgreSQL, admin API and relay ports with host/network firewalls.
 - Put the public API and website behind an HTTPS reverse proxy; do not expose the admin API port.
 - Keep hot-wallet balances limited and test encrypted wallet, database and configuration backups.

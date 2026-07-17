@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain;
@@ -16,6 +17,39 @@ namespace Miningcore.Tests.Mining;
 
 public class ShareReceiverTests
 {
+    [Fact]
+    public async Task StartAsync_ReceivesImmediatePoolOnlineAndDisposesSubscription()
+    {
+        var notifications = new Subject<PoolStatusNotification>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<PoolStatusNotification>().Returns(notifications);
+        var receiver = new ShareReceiver(new ClusterConfig
+        {
+            ShareRelays = new[]
+            {
+                new ShareRelayEndpointConfig { Url = "tcp://127.0.0.1:1" },
+            },
+        }, new MockMasterClock { CurrentTime = DateTime.UtcNow }, messageBus,
+            TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(50));
+        var pool = Substitute.For<IMiningPool>();
+        pool.Config.Returns(new PoolConfig { Id = "immediate-pool" });
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await receiver.StartAsync(stop.Token);
+        Assert.True(notifications.HasObservers);
+
+        notifications.OnNext(new PoolStatusNotification
+        {
+            Pool = pool,
+            Status = PoolStatus.Online,
+        });
+
+        await WaitUntilAsync(() => receiver.AttachedPoolCount == 1, stop.Token);
+        await receiver.StopAsync(stop.Token);
+
+        Assert.False(notifications.HasObservers);
+    }
+
     [Fact]
     public async Task RelayReceiver_ReconnectsAfterPublisherRestart()
     {
@@ -225,5 +259,11 @@ public class ShareReceiverTests
         var port = ((IPEndPoint) listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
+    {
+        while(!condition())
+            await Task.Delay(10, ct);
     }
 }

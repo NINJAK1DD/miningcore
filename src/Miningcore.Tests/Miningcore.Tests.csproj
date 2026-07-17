@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <Platforms>AnyCPU</Platforms>
     <AssemblyName>Miningcore.Tests</AssemblyName>
@@ -35,7 +35,7 @@
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.13.4" />
     <PackageReference Include="BenchmarkDotNet.Annotations" Version="0.13.4" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.4.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageReference Include="Microsoft.Reactive.Testing" Version="5.0.0" />
     <PackageReference Include="NLog" Version="5.4.0" />
     <PackageReference Include="Npgsql" Version="9.0.3" />

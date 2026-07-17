@@ -71,6 +71,7 @@ public class StatsRecorder : BackgroundService
     private readonly TimeSpan updateInterval;
     private readonly TimeSpan cleanupDays;
     private readonly TimeSpan gcInterval;
+    internal int AttachedPoolCount => pools.Count;
     private readonly TimeSpan hashrateCalculationWindow;
     private const int RetryCount = 4;
     private IAsyncPolicy readFaultPolicy;
@@ -373,15 +374,46 @@ public class StatsRecorder : BackgroundService
         logger.Warn(() => $"Retry {retry} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
     }
 
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+        // Subscribe before StartAsync returns so immediate pool-online events cannot be lost.
+        disposables.Add(messageBus.Listen<PoolStatusNotification>()
+            .ObserveOn(TaskPoolScheduler.Default)
+            .Subscribe(OnPoolStatusNotification));
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            disposables.Dispose();
+            throw;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            disposables.Dispose();
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try
         {
-            // monitor pool lifetime
-            disposables.Add(messageBus.Listen<PoolStatusNotification>()
-                .ObserveOn(TaskPoolScheduler.Default)
-                .Subscribe(OnPoolStatusNotification));
-
             logger.Info(() => "Online");
 
             // warm-up delay

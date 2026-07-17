@@ -1,7 +1,6 @@
 using System.IO.Compression;
 using System.Reactive.Disposables;
 using System.Text;
-using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Cryptonote.Configuration;
 using Miningcore.Configuration;
@@ -18,12 +17,20 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Receives ready made block templates from GBTRelay
 /// </summary>
-public class BtStreamReceiver : BackgroundService
+public class BtStreamReceiver : StartupGatedBackgroundService
 {
     public BtStreamReceiver(
         IMasterClock clock,
         IMessageBus messageBus,
-        ClusterConfig clusterConfig)
+        ClusterConfig clusterConfig) : this(clock, messageBus, clusterConfig, null)
+    {
+    }
+
+    internal BtStreamReceiver(
+        IMasterClock clock,
+        IMessageBus messageBus,
+        ClusterConfig clusterConfig,
+        Action beforeSocketSetup)
     {
         Contract.RequiresNonNull(clock);
         Contract.RequiresNonNull(messageBus);
@@ -31,12 +38,14 @@ public class BtStreamReceiver : BackgroundService
         this.clock = clock;
         this.messageBus = messageBus;
         this.clusterConfig = clusterConfig;
+        this.beforeSocketSetup = beforeSocketSetup;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IMasterClock clock;
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
+    private readonly Action beforeSocketSetup;
 
     private static ZSocket SetupSubSocket(ZmqPubSubEndpointConfig relay, bool silent = false)
     {
@@ -101,7 +110,10 @@ public class BtStreamReceiver : BackgroundService
             .ToArray();
 
         if(!endpoints.Any())
+        {
+            SignalStartupReady();
             return;
+        }
 
         await Task.Run(() =>
         {
@@ -122,11 +134,13 @@ public class BtStreamReceiver : BackgroundService
                 try
                 {
                     // setup sockets
-                    var sockets = relays.Select(x=> SetupSubSocket(x)).ToArray();
+                    beforeSocketSetup?.Invoke();
+                    var sockets = relays.Select(x => SetupSubSocket(x)).ToArray();
 
                     using(new CompositeDisposable(sockets))
                     {
                         var pollItems = sockets.Select(_ => ZPollItem.CreateReceiver()).ToArray();
+                        SignalStartupReady();
 
                         while(!ct.IsCancellationRequested)
                         {
@@ -160,7 +174,7 @@ public class BtStreamReceiver : BackgroundService
                                 }
 
                                 if(error != null)
-                                    logger.Error(() => $"{nameof(ShareReceiver)}: {error.Name} [{error.Name}] during receive");
+                                    logger.Error(() => $"{nameof(BtStreamReceiver)}: {error.Name} [{error.Name}] during receive");
                             }
 
                             else
@@ -187,7 +201,10 @@ public class BtStreamReceiver : BackgroundService
 
                 catch(Exception ex)
                 {
-                    logger.Error(() => $"{nameof(ShareReceiver)}: {ex}");
+                    if(SignalStartupFailure(ex))
+                        throw;
+
+                    logger.Error(() => $"{nameof(BtStreamReceiver)}: {ex}");
 
                     if(!ct.IsCancellationRequested)
                         Thread.Sleep(1000);

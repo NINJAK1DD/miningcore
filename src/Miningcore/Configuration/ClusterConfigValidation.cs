@@ -84,7 +84,7 @@ public class PoolEndpointValidator : AbstractValidator<PoolEndpoint>
             {
                 try
                 {
-                    var tlsCert = new X509Certificate2(h, j.TlsPfxPassword);
+                    using var tlsCert = X509CertificateLoader.LoadPkcs12FromFile(h, j.TlsPfxPassword);
                     return tlsCert.HasPrivateKey;
                 }
                 catch

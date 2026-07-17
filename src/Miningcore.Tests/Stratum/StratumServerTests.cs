@@ -1,6 +1,13 @@
 using System;
+using System.IO;
+using System.Linq;
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Reactive;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -18,6 +25,8 @@ namespace Miningcore.Tests.Stratum;
 
 public class StratumServerTests
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task RunAsync_WhenCancelled_StopsIdleListenerPromptly()
     {
@@ -31,7 +40,116 @@ public class StratumServerTests
         // resulting AcceptAsync continuation still needs a thread-pool turn. Native hashing
         // tests can briefly saturate constrained CI runners, so retain a strict shutdown bound
         // without making scheduler latency look like a listener leak.
-        await runTask.WaitAsync(TimeSpan.FromSeconds(10));
+        await runTask.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
+    public async Task RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake()
+    {
+        const string pfxPassword = "miningcore-test-password";
+        var pfxFile = Path.Combine(Path.GetTempPath(), $"miningcore-tls-{Guid.NewGuid():N}.pfx");
+        var endpoint = new PoolEndpoint
+        {
+            Difficulty = 1,
+            Tls = true,
+            TlsPfxFile = pfxFile,
+            TlsPfxPassword = pfxPassword,
+        };
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        Task runTask = null;
+
+        try
+        {
+            using var certificate = CreateServerCertificate();
+            await File.WriteAllBytesAsync(pfxFile,
+                certificate.Export(X509ContentType.Pfx, pfxPassword));
+
+            var validation = await new PoolEndpointValidator().ValidateAsync(endpoint);
+            Assert.True(validation.IsValid,
+                string.Join(Environment.NewLine, validation.Errors.Select(x => x.ErrorMessage)));
+
+            var port = GetFreePort();
+            runTask = server.RunListenerAsync(cts.Token, new StratumEndpoint(
+                new IPEndPoint(IPAddress.Loopback, port), endpoint));
+
+            var cachedCertificate = server.GetCachedCertificate(pfxFile);
+            Assert.NotNull(cachedCertificate);
+            Assert.True(cachedCertificate.HasPrivateKey);
+
+            X509Certificate presentedCertificate = null;
+            using(var client = new TcpClient(AddressFamily.InterNetwork))
+            {
+                await client.ConnectAsync(IPAddress.Loopback, port, cts.Token)
+                    .AsTask()
+                    .WaitAsync(TestTimeout);
+
+                await using var sslStream = new SslStream(client.GetStream(), false,
+                    (_, certificate, _, _) =>
+                    {
+                        presentedCertificate = certificate;
+                        return true;
+                    });
+
+                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = "localhost",
+                    EnabledSslProtocols = SslProtocols.None,
+                    CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                }, cts.Token).WaitAsync(TestTimeout);
+
+                Assert.True(sslStream.IsAuthenticated);
+                Assert.True(sslStream.IsEncrypted);
+                Assert.True(sslStream.SslProtocol is SslProtocols.Tls12 or SslProtocols.Tls13,
+                    $"Unexpected OS-selected TLS protocol {sslStream.SslProtocol}");
+                Assert.NotNull(presentedCertificate);
+                using var presentedCertificate2 = X509CertificateLoader.LoadCertificate(
+                    presentedCertificate.GetRawCertData());
+                Assert.Equal(certificate.Thumbprint, presentedCertificate2.Thumbprint);
+            }
+
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+        }
+
+        finally
+        {
+            cts.Cancel();
+
+            if(runTask != null)
+                await runTask.WaitAsync(TestTimeout);
+
+            server.RemoveCachedCertificate(pfxFile)?.Dispose();
+            File.Delete(pfxFile);
+        }
+    }
+
+    private static X509Certificate2 CreateServerCertificate()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=localhost", rsa,
+            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+            new OidCollection { new("1.3.6.1.5.5.7.3.1") }, false));
+
+        var subjectAlternativeName = new SubjectAlternativeNameBuilder();
+        subjectAlternativeName.AddDnsName("localhost");
+        subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
+        request.CertificateExtensions.Add(subjectAlternativeName.Build());
+
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddDays(1));
+    }
+
+    private static int GetFreePort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint) listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
     }
 
     private sealed class TestStratumServer : StratumServer
@@ -43,12 +161,39 @@ public class StratumServerTests
             Substitute.For<IMasterClock>())
         {
             logger = LogManager.GetCurrentClassLogger();
+            clusterConfig = new ClusterConfig { Logging = new ClusterLoggingConfig() };
+            poolConfig = new PoolConfig { Id = "tls-test" };
         }
 
         public Task RunListenerAsync(CancellationToken ct)
         {
-            return RunAsync(ct, new StratumEndpoint(
+            return RunListenerAsync(ct, new StratumEndpoint(
                 new IPEndPoint(IPAddress.Loopback, 0), new PoolEndpoint()));
+        }
+
+        public Task RunListenerAsync(CancellationToken ct, StratumEndpoint endpoint)
+        {
+            return RunAsync(ct, endpoint);
+        }
+
+        public X509Certificate2 GetCachedCertificate(string path)
+        {
+            certs.TryGetValue(path, out var certificate);
+            return certificate;
+        }
+
+        public X509Certificate2 RemoveCachedCertificate(string path)
+        {
+            certs.TryRemove(path, out var certificate);
+            return certificate;
+        }
+
+        public async Task WaitForNoConnectionsAsync(TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+
+            while(!connections.IsEmpty)
+                await Task.Delay(10, timeoutCts.Token);
         }
 
         protected override Task OnRequestAsync(StratumConnection connection,

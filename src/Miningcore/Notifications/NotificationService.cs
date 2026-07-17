@@ -3,7 +3,6 @@ using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using MailKit.Net.Smtp;
-using Microsoft.Extensions.Hosting;
 using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -15,7 +14,7 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
-public class NotificationService : BackgroundService
+public class NotificationService : StartupGatedBackgroundService
 {
     public NotificationService(
         ClusterConfig clusterConfig,
@@ -142,22 +141,37 @@ public class NotificationService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var obs = new List<IObservable<IObservable<Unit>>>();
-
-        if(clusterConfig.Notifications?.Admin?.Enabled == true)
+        try
         {
-            obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
-            obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
-            obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
+            var obs = new List<IObservable<IObservable<Unit>>>();
+
+            if(clusterConfig.Notifications?.Admin?.Enabled == true)
+            {
+                obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
+                obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
+                obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
+            }
+
+            if(obs.Count > 0)
+            {
+                var processing = obs
+                    .Merge()
+                    .ObserveOn(TaskPoolScheduler.Default)
+                    .Concat()
+                    .ToTask(ct);
+
+                SignalStartupReady();
+                await processing;
+            }
+
+            else
+                SignalStartupReady();
         }
 
-        if(obs.Count > 0)
+        catch(Exception ex)
         {
-            await obs
-                .Merge()
-                .ObserveOn(TaskPoolScheduler.Default)
-                .Concat()
-                .ToTask(ct);
+            SignalStartupFailure(ex);
+            throw;
         }
     }
 }

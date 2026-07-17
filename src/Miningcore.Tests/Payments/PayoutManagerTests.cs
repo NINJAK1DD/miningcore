@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -250,6 +251,53 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_ReceivesImmediatePoolOnlineAndDisposesSubscription()
+    {
+        var notifications = new Subject<PoolStatusNotification>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<PoolStatusNotification>().Returns(notifications);
+        var fixture = CreateFixture(messageBusOverride: messageBus);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await fixture.Manager.StartAsync(stop.Token);
+        Assert.True(notifications.HasObservers);
+
+        notifications.OnNext(new PoolStatusNotification
+        {
+            Pool = fixture.MiningPool,
+            Status = PoolStatus.Online,
+        });
+
+        await WaitUntilAsync(() => fixture.Manager.AttachedPoolCount == 1,
+            stop.Token);
+        await fixture.Manager.StopAsync(stop.Token);
+
+        Assert.False(notifications.HasObservers);
+    }
+
+    [Fact]
+    public async Task StartAsync_CancellationAfterLeaseAcquisitionDisposesLease()
+    {
+        var notifications = new Subject<PoolStatusNotification>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<PoolStatusNotification>().Returns(notifications);
+        var fixture = CreateFixture(messageBusOverride: messageBus);
+        using var canceled = new CancellationTokenSource();
+        fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                canceled.Cancel();
+                return true;
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Manager.StartAsync(canceled.Token));
+
+        Assert.False(notifications.HasObservers);
+        await fixture.PayoutLease.Received(1).DisposeAsync();
+    }
+
+    [Fact]
     public async Task SuccessfulPayout_CompletesFinancialOperation()
     {
         var fixture = CreateFixture();
@@ -380,7 +428,8 @@ public class PayoutManagerTests
     }
 
     private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending,
-        Func<CancellationToken, Task> executeOverride = null)
+        Func<CancellationToken, Task> executeOverride = null,
+        IMessageBus messageBusOverride = null)
     {
         var context = Substitute.For<IComponentContext>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -389,7 +438,7 @@ public class PayoutManagerTests
         var blockRepository = Substitute.For<IBlockRepository>();
         var shareRepository = Substitute.For<IShareRepository>();
         var balanceRepository = Substitute.For<IBalanceRepository>();
-        var messageBus = Substitute.For<IMessageBus>();
+        var messageBus = messageBusOverride ?? Substitute.For<IMessageBus>();
         var payoutLease = Substitute.For<IPayoutManagerLease>();
         var processStatus = new ProcessStatus();
         payoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(true);
@@ -435,7 +484,7 @@ public class PayoutManagerTests
                 processStatus)
             : new PayoutManager(context, connectionFactory, blockRepository,
                 shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease,
-                processStatus, executeOverride);
+                processStatus, executeOverride, subscribeToPoolStatus: false);
 
         return new Fixture(manager, miningPool, pool, block, connection, transaction,
             blockRepository, balanceRepository, messageBus, payoutLease, processStatus);
@@ -447,4 +496,10 @@ public class PayoutManagerTests
         IBalanceRepository BalanceRepository,
         IMessageBus MessageBus, IPayoutManagerLease PayoutLease,
         ProcessStatus ProcessStatus);
+
+    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
+    {
+        while(!condition())
+            await Task.Delay(10, ct);
+    }
 }

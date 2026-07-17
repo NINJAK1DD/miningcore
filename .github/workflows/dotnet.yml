@@ -41,7 +41,7 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 6.0.x
+        dotnet-version: 10.0.x
 
     - name: Restore dependencies
       run: dotnet restore src
@@ -55,8 +55,8 @@ jobs:
       run: |
         set -euo pipefail
 
-        APP_OUT="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
-        TEST_OUT="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
+        APP_OUT="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net10.0"
+        TEST_OUT="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net10.0"
 
         echo "Miningcore output directory: $APP_OUT"
         echo "Miningcore.Tests output directory: $TEST_OUT"
@@ -108,7 +108,7 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       env:
-        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
       run: >-
         dotnet test --no-build --verbosity normal
         --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
@@ -117,6 +117,37 @@ jobs:
     - name: Test
       shell: bash
       env:
-        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
+
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Restore dependencies
+      run: dotnet restore src/Miningcore/Miningcore.csproj --runtime win-x64
+
+    - name: Publish Windows build
+      run: >-
+        dotnet publish src/Miningcore/Miningcore.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --runtime win-x64
+        --self-contained false
+        --output build/windows-x64
+
+    - name: Smoke-test Windows build
+      run: .\build\windows-x64\Miningcore.exe --version

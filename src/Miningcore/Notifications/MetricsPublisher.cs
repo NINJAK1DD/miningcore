@@ -2,7 +2,6 @@ using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
-using Microsoft.Extensions.Hosting;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
 using NLog;
@@ -11,7 +10,7 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
-public class MetricsPublisher : BackgroundService
+public class MetricsPublisher : StartupGatedBackgroundService
 {
     public MetricsPublisher(IMessageBus messageBus)
     {
@@ -133,17 +132,28 @@ public class MetricsPublisher : BackgroundService
 
     protected override Task ExecuteAsync(CancellationToken ct)
     {
-        var telemetryEvents = messageBus.Listen<TelemetryEvent>()
-            .ObserveOn(TaskPoolScheduler.Default)
-            .Do(x=> Guard(()=> OnTelemetryEvent(x), ex=> logger.Error(ex.Message)))
-            .Select(_=> Unit.Default);
+        try
+        {
+            var telemetryEvents = messageBus.Listen<TelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x=> Guard(()=> OnTelemetryEvent(x), ex=> logger.Error(ex.Message)))
+                .Select(_=> Unit.Default);
 
-        var hashrateNotifications = messageBus.Listen<HashrateNotification>()
-            .ObserveOn(TaskPoolScheduler.Default)
-            .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> logger.Error(ex.Message)))
-            .Select(_=> Unit.Default);
+            var hashrateNotifications = messageBus.Listen<HashrateNotification>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> logger.Error(ex.Message)))
+                .Select(_=> Unit.Default);
 
-        return Observable.Merge(telemetryEvents, hashrateNotifications)
-            .ToTask(ct);
+            var processing = Observable.Merge(telemetryEvents, hashrateNotifications)
+                .ToTask(ct);
+            SignalStartupReady();
+            return processing;
+        }
+
+        catch(Exception ex)
+        {
+            SignalStartupFailure(ex);
+            return Task.FromException(ex);
+        }
     }
 }
