@@ -133,6 +133,7 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         finally
         {
+            disposables.Dispose();
             await payoutLease.DisposeAsync();
         }
     }

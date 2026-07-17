@@ -119,6 +119,19 @@ public class ShareReceiver : BackgroundService
         }
     }
 
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            disposables.Dispose();
+        }
+    }
+
     private Task StartMessageReceiver(CancellationToken ct)
     {
         return Task.Run(() =>

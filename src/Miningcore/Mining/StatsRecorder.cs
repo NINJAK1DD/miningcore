@@ -393,6 +393,19 @@ public class StatsRecorder : BackgroundService
         }
     }
 
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            disposables.Dispose();
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try
