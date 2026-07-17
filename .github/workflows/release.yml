@@ -195,7 +195,18 @@ jobs:
             fi
           done < <(find publish -maxdepth 1 -type f \( -name 'Miningcore' -o -name '*.so' \) -print0)
 
-          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/publish" ./publish/Miningcore --version
+          version_output="$(LD_LIBRARY_PATH="$GITHUB_WORKSPACE/publish" ./publish/Miningcore --version)"
+          printf '%s\n' "$version_output"
+
+          if [[ "$version_output" != *"$GITHUB_SHA"* ]]; then
+            echo "Published binary does not report source commit $GITHUB_SHA"
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* && "$version_output" != *"${GITHUB_REF_NAME#v}"* ]]; then
+            echo "Published binary does not report release version ${GITHUB_REF_NAME#v}"
+            exit 1
+          fi
 
       - name: Assemble release archive
         env:
