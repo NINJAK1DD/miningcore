@@ -176,7 +176,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum --check dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
           tar -tzf dist/miningcore-*-linux-x64-ubuntu-22.04.tar.gz
 
       - name: Upload tested release assets
