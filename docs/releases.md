@@ -45,6 +45,20 @@ gh attestation verify "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.t
   --repo NINJAK1DD/miningcore
 ```
 
+After extraction, compare the packaged metadata with the binary before changing the live service:
+
+```console
+cat "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04/BUILD-INFO"
+LD_LIBRARY_PATH="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04" \
+  "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04/Miningcore" --version
+```
+
+`BUILD-INFO` must name the selected release and source commit. Releases published after the
+version-reporting validation was introduced must report the same semantic version (without the
+tag's leading `v`) and full commit SHA. Older releases, including `v0.1.0-rc.2`, can show the legacy
+`0.1.0.0-BRANCH` format; match their full embedded SHA to `BUILD-INFO` instead. A branch label such
+as `dev` is not sufficient release provenance by itself.
+
 ## Install runtime dependencies
 
 Enable Canonical's supported .NET backports PPA, then install the framework and native libraries:
@@ -171,7 +185,8 @@ from the container network.
 The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.1` or
 `v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
 runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
-packages the result, smoke-tests the packaged image, and publishes both artifacts with provenance.
+checks that the binary reports the release version and source commit, packages the result,
+smoke-tests the packaged image, and publishes both artifacts with provenance.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
 

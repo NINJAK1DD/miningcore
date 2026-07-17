@@ -669,15 +669,22 @@ public class Program : ProcessStatusBackgroundService
 
         if(gitVersionInformationType != null)
         {
-            var assemblySemVer = gitVersionInformationType.GetField("AssemblySemVer").GetValue(null);
-            var branchName = gitVersionInformationType.GetField("BranchName").GetValue(null);
-            var sha = gitVersionInformationType.GetField("Sha").GetValue(null);
+            var fullSemVer = gitVersionInformationType.GetField("FullSemVer")?.GetValue(null)?.ToString();
+            var sha = gitVersionInformationType.GetField("Sha")?.GetValue(null)?.ToString();
 
-            return $"{assemblySemVer}-{branchName} [{sha}]";
+            return FormatVersion(fullSemVer, sha);
         }
 
         else
             return "unknown";
+    }
+
+    internal static string FormatVersion(string fullSemVer, string sha)
+    {
+        if(string.IsNullOrWhiteSpace(fullSemVer) || string.IsNullOrWhiteSpace(sha))
+            return "unknown";
+
+        return $"{fullSemVer} [{sha}]";
     }
 
     private static void ValidateConfig()

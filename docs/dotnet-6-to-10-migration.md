@@ -57,7 +57,8 @@ Also record:
 Inspect the installed .NET packages and APT sources before adding another source:
 
 ```console
-dpkg-query -W 'dotnet*' 'aspnetcore*' 'netstandard*' 2>/dev/null || true
+dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Version}\n' \
+  'dotnet*' 'aspnetcore*' 'netstandard*' 2>/dev/null | awk '$1 ~ /^ii/ {print}'
 grep -RhsE 'packages\.microsoft\.com|ppa\.launchpadcontent\.net/.*/dotnet' \
   /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true
 apt-cache policy aspnetcore-runtime-10.0 dotnet-runtime-10.0 dotnet-sdk-10.0
@@ -66,7 +67,9 @@ apt-cache policy aspnetcore-runtime-10.0 dotnet-runtime-10.0 dotnet-sdk-10.0
 Canonical warns against mixing .NET installation methods because runtime resolution and servicing
 can become unreliable. Determine whether the current .NET 6 installation came from Ubuntu, a PPA,
 Microsoft packages, Snap, `dotnet-install.sh`, a manual archive or a container. Use one deliberate
-method for .NET 10 and do not delete a package-managed installation by hand.
+method for .NET 10 and do not delete a package-managed installation by hand. Filtering on the
+`ii` status is important: an unfiltered `dpkg-query` wildcard can include packages known to the
+package database that are not currently installed.
 
 ## 2. Prepare rollback and backups
 
@@ -165,14 +168,36 @@ Verify the staged application and native library loader without starting mining:
 ```console
 cd /opt/miningcore/releases/new-dotnet10
 LD_LIBRARY_PATH="$PWD" dotnet Miningcore.dll --version
-for library in ./*.so; do
-  ldd "$library" | grep 'not found' && exit 1 || true
-done
+missing="$(
+  find . -maxdepth 1 -type f \( -name Miningcore -o -name '*.so' \) -exec ldd {} \; |
+  grep 'not found' || true
+)"
+if [ -n "$missing" ]; then
+  echo "STOP: missing native dependencies"
+  echo "$missing"
+else
+  echo "OK: all native dependencies resolved"
+fi
 ```
 
 The version command must report the intended release/commit, and `ldd` must report no missing
 dependencies. Native libraries built on a newer distribution may not run on an older host; build on
 the oldest supported target or use the tested Ubuntu 22.04 release archive.
+
+For a source build, verify the checkout and the resulting binary together before deployment:
+
+```console
+cd ~/miningcore
+git describe --tags --exact-match HEAD
+git rev-parse HEAD
+./build/Miningcore --version
+```
+
+The first command must print the intended tag and the second its commit. Releases published after
+the version-reporting validation was introduced must report the same semantic version (without the
+tag's leading `v`) and full commit SHA. Older releases can show the legacy `0.1.0.0-BRANCH` format;
+for those builds, match the full embedded SHA to the tagged commit. If the exact-tag command fails,
+do not describe the build as that release even when the commit is otherwise on `dev`.
 
 ## 5. Stop writers and migrate the database
 
