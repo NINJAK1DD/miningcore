@@ -69,6 +69,37 @@ CREATE TABLE IF NOT EXISTS payout_manager_ownership
 INSERT INTO payout_manager_ownership(id) VALUES(1)
 ON CONFLICT(id) DO NOTHING;
 
+-- The documented upgrade command is intentionally run by a PostgreSQL administrator so it can
+-- repair installations whose existing objects have mixed ownership. Newly created relations would
+-- otherwise remain owned by that administrator and the application role could not use them. Keep
+-- these relations aligned with the database owner, which createdb.sql and the installation guide
+-- define as the Miningcore application role.
+DO $$
+DECLARE
+    database_owner NAME;
+    target_schema NAME := current_schema();
+    relation_name NAME;
+BEGIN
+    SELECT pg_get_userbyid(datdba)
+    INTO database_owner
+    FROM pg_database
+    WHERE datname = current_database();
+
+    IF database_owner IS NULL THEN
+        RAISE EXCEPTION 'Could not resolve the owner of database %', current_database();
+    END IF;
+
+    FOREACH relation_name IN ARRAY ARRAY[
+        'share_recovery_imports'::NAME,
+        'payment_batches'::NAME,
+        'payout_manager_ownership'::NAME
+    ]
+    LOOP
+        EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
+            target_schema, relation_name, database_owner);
+    END LOOP;
+END $$;
+
 COMMIT;
 
 -- An ownership row is cleared automatically only after a clean Miningcore stop.

@@ -188,6 +188,18 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql before enabling payment processing.", ex);
             }
 
+            catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+            {
+                candidate.Dispose();
+                throw new InvalidOperationException(
+                    "The configured PostgreSQL role cannot use the payout-manager ownership schema. " +
+                    "The database owner should match persistence.postgres.user; rerun " +
+                    "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql " +
+                    "as a PostgreSQL administrator after correcting ownership, or grant that role " +
+                    "SELECT, INSERT and UPDATE on payout_manager_ownership plus SELECT and INSERT " +
+                    "on payment_batches and share_recovery_imports.", ex);
+            }
+
             catch
             {
                 candidate.Dispose();

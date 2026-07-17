@@ -234,8 +234,13 @@ Then place the same connection details in `config.json`:
 Back up before upgrades:
 
 ```console
-pg_dump -h 127.0.0.1 -U miningcore -Fc miningcore > miningcore-backup.dump
+sudo -u postgres pg_dump -Fc -d miningcore > miningcore-backup.dump
+pg_restore --list miningcore-backup.dump > /dev/null
 ```
+
+Using the local PostgreSQL administrator ensures the archive also contains partition tables or
+other administrator-created objects that the runtime role may not be allowed to lock directly. For
+a remote database, use a dedicated backup role with read and lock access to every schema object.
 
 > [!IMPORTANT]
 > This revision is a breaking database upgrade for every deployment that enables payment
@@ -246,7 +251,8 @@ pg_dump -h 127.0.0.1 -U miningcore -Fc miningcore > miningcore-backup.dump
 
 For an existing database, stop writers and payout managers before applying the migrations required by
 this revision. The [database and upgrade guide](docs/database.md) gives the exact commands, restore
-procedure, merged-mining indexes, payout-manager ownership rules and optional advanced partitioning.
+procedure, post-migration ownership check, merged-mining indexes, payout-manager ownership rules and
+optional advanced partitioning.
 
 ## Configuration
 
