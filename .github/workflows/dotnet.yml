@@ -137,7 +137,7 @@ jobs:
         dotnet-version: 10.0.x
 
     - name: Restore dependencies
-      run: dotnet restore src/Miningcore/Miningcore.csproj
+      run: dotnet restore src/Miningcore/Miningcore.csproj --runtime win-x64
 
     - name: Publish Windows build
       run: >-
@@ -145,4 +145,9 @@ jobs:
         --no-restore
         --configuration Release
         --framework net10.0
+        --runtime win-x64
+        --self-contained false
         --output build/windows-x64
+
+    - name: Smoke-test Windows build
+      run: .\build\windows-x64\Miningcore.exe --version

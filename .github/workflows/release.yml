@@ -8,6 +8,8 @@ on:
     branches: [ dev ]
     paths:
       - '.github/workflows/release.yml'
+      - '.dockerignore'
+      - 'Dockerfile'
       - 'global.json'
       - 'src/**'
       - 'packaging/**'
@@ -23,6 +25,33 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  source-container-check:
+    name: Test source container
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build source container
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: miningcore-source-test:${{ github.sha }}
+          cache-from: type=gha,scope=source-container
+          cache-to: type=gha,mode=max,scope=source-container
+
+      - name: Smoke-test source container
+        run: docker run --rm miningcore-source-test:${{ github.sha }} --version
+
   build-release:
     name: Test and package Ubuntu 22.04 x64
     runs-on: ubuntu-22.04
