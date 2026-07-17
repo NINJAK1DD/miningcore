@@ -142,6 +142,110 @@ Use these queries for inspection only. Never repair balances or payments with ad
 
 The optional
 [`createdb_postgresql_11_appendix.sql`](../src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql)
-converts `shares` to a partitioned layout. It deletes and rebuilds that table. Read the complete script,
-stop writers, take a verified backup and test the operation on a restored copy before considering it.
-It is not needed for a first installation.
+converts `shares` to a list-partitioned layout. This can improve a large multipool cluster because
+most Miningcore queries are scoped to one pool. It is not needed for a first installation or a
+small pool.
+
+> [!CAUTION]
+> The appendix deletes and rebuilds `shares`. Stop every recorder and recovery importer first.
+> Take a verified, restorable backup and practise the complete procedure on a restored database.
+> Do not run it against a live production database with active writers.
+
+### 1. Back up the shares and record the baseline
+
+Create both the normal full backup described above and a focused shares archive:
+
+```console
+sudo -u postgres pg_dump -Fc -d miningcore -t public.shares \
+  > shares-before-partition.dump
+pg_restore --list shares-before-partition.dump > /dev/null
+```
+
+Record the count for every pool so the restored result can be compared:
+
+```console
+sudo -u postgres psql -d miningcore -c "
+SELECT poolid, count(*)
+FROM public.shares
+GROUP BY poolid
+ORDER BY poolid;"
+```
+
+### 2. Convert the parent table
+
+From the repository root, with Miningcore stopped:
+
+```console
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql
+```
+
+The script is transactional, but a successful run intentionally leaves the new parent empty and
+without child partitions.
+
+### 3. Create one partition for every pool ID
+
+This step is mandatory. The text in `FOR VALUES IN (...)` must exactly match the pool's `id` in
+`config.json`. The child table name is an ordinary PostgreSQL identifier and may replace hyphens
+with underscores:
+
+```console
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore
+```
+
+```sql
+SET ROLE miningcore;
+
+CREATE TABLE public.shares_btc1_solo
+PARTITION OF public.shares
+FOR VALUES IN ('btc1-solo');
+
+CREATE TABLE public.shares_ltc1_solo
+PARTITION OF public.shares
+FOR VALUES IN ('ltc1-solo');
+
+CREATE TABLE public.shares_doge1_solo
+PARTITION OF public.shares
+FOR VALUES IN ('doge1-solo');
+
+RESET ROLE;
+```
+
+Use your actual enabled pool IDs, not the examples. Create a partition before enabling any new
+pool later. An auxiliary DOGE block-only record does not create an ordinary share, but a DOGE pool
+that can accept direct miners still needs its own partition.
+
+Miningcore now checks this during startup on direct recorder nodes, share-relay receivers and
+recovery imports. If an enabled pool has no matching partition, startup fails before Stratum opens
+or recovery data is imported. Sender-only share-relay nodes skip this local check because their
+ordinary shares are recorded elsewhere.
+
+A PostgreSQL `DEFAULT` partition is also routable and therefore passes the preflight, but dedicated
+per-pool partitions preserve the performance and operational isolation this layout is intended to
+provide.
+
+### 4. Restore and verify the shares
+
+Restore the saved rows only after every required partition exists:
+
+```console
+sudo -u postgres pg_restore --exit-on-error --data-only \
+  --table=public.shares -d miningcore shares-before-partition.dump
+```
+
+List the partition bounds and owners:
+
+```console
+sudo -u postgres psql -d miningcore -c "
+SELECT child.relname AS partition_name,
+       pg_get_userbyid(child.relowner) AS owner,
+       pg_get_expr(child.relpartbound, child.oid) AS partition_bound
+FROM pg_inherits
+JOIN pg_class parent ON parent.oid = inhparent
+JOIN pg_class child ON child.oid = inhrelid
+WHERE parent.oid = 'public.shares'::regclass
+ORDER BY child.relname;"
+```
+
+Repeat the per-pool count query from step 1 and compare every result before restarting Miningcore.
+Keep the backup until normal share persistence and statistics have been observed successfully.

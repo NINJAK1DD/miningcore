@@ -18,6 +18,49 @@ public class ShareRepository : IShareRepository
 
     private readonly IMapper mapper;
 
+    public async Task<string[]> GetMissingSharePartitionsAsync(IDbConnection con,
+        IEnumerable<string> poolIds, CancellationToken ct)
+    {
+        const string query = @"WITH configured_pool AS (
+                SELECT DISTINCT unnest(@poolIds::text[]) AS poolid
+            ),
+            shares_relation AS (
+                SELECT relation.oid, relation.relkind
+                FROM pg_class relation
+                WHERE relation.oid = to_regclass('shares')
+            ),
+            partition_bound AS (
+                SELECT pg_get_expr(child.relpartbound, child.oid, true) AS expression
+                FROM shares_relation parent
+                JOIN pg_inherits inheritance
+                  ON inheritance.inhparent = parent.oid
+                JOIN pg_class child
+                  ON child.oid = inheritance.inhrelid
+            )
+            SELECT configured_pool.poolid
+            FROM configured_pool
+            WHERE EXISTS (
+                    SELECT 1 FROM shares_relation WHERE relkind = 'p')
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM partition_bound
+                    WHERE expression = 'DEFAULT'
+                       OR strpos(expression,
+                           quote_literal(configured_pool.poolid)) > 0)
+            ORDER BY configured_pool.poolid";
+
+        var ids = poolIds?
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? Array.Empty<string>();
+
+        if(ids.Length == 0)
+            return Array.Empty<string>();
+
+        return (await con.QueryAsync<string>(new CommandDefinition(query,
+            new { poolIds = ids }, cancellationToken: ct))).ToArray();
+    }
+
     public Task<bool> HasRecoveryImportSchemaAsync(IDbConnection con,
         CancellationToken ct)
     {
