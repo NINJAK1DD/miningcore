@@ -155,6 +155,87 @@ public class ProgramPoolTemplateTests
         await connectionFactory.DidNotReceive().OpenConnectionAsync();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecorderNode_MissingEnabledPoolSharePartitionFailsStartup(
+        bool relayReceiver)
+    {
+        var config = MergedMiningCluster(relayReceiver: relayReceiver);
+        config.Pools = config.Pools.Concat(new[]
+        {
+            new PoolConfig { Id = "disabled-pool", Enabled = false },
+        }).ToArray();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        shareRepository.GetMissingSharePartitionsAsync(connection,
+                Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { "ltc-solo" });
+
+        var ex = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            Program.EnsureSharePartitionsAsync(false, config, connectionFactory,
+                shareRepository, CancellationToken.None));
+
+        Assert.Contains("ltc-solo", ex.Message);
+        Assert.Contains("docs/database.md", ex.Message);
+        await shareRepository.Received(1).GetMissingSharePartitionsAsync(connection,
+            Arg.Is<IEnumerable<string>>(ids => ids.SequenceEqual(new[] { "ltc-solo" })),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UnpartitionedOrCompleteShareTablePassesStartup()
+    {
+        var config = MergedMiningCluster();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        shareRepository.GetMissingSharePartitionsAsync(connection,
+                Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<string>());
+
+        await Program.EnsureSharePartitionsAsync(false, config, connectionFactory,
+            shareRepository, CancellationToken.None);
+
+        await connectionFactory.Received(1).OpenConnectionAsync();
+    }
+
+    [Fact]
+    public async Task RelaySender_DoesNotRequireLocalSharePartitions()
+    {
+        var config = MergedMiningCluster(shareRelaySender: true);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var shareRepository = Substitute.For<IShareRepository>();
+
+        await Program.EnsureSharePartitionsAsync(false, config, connectionFactory,
+            shareRepository, CancellationToken.None);
+
+        await connectionFactory.DidNotReceive().OpenConnectionAsync();
+        await shareRepository.DidNotReceive().GetMissingSharePartitionsAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IEnumerable<string>>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RecoveryEntryPoint_MissingSharePartitionReturnsFailureAndPreservesJournal()
+    {
+        var config = MergedMiningCluster(shareRelaySender: true);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        shareRepository.GetMissingSharePartitionsAsync(connection,
+                Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { "ltc-solo" });
+
+        await AssertRecoveryPreflightFailurePreservesJournal(() =>
+            Program.EnsureSharePartitionsAsync(true, config, connectionFactory,
+                shareRepository, CancellationToken.None));
+    }
+
     [Fact]
     public async Task RecoveryEntryPoint_MalformedDatabaseConfigurationReturnsFailureAndPreservesJournal()
     {

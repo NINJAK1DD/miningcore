@@ -1013,6 +1013,10 @@ public class Program : ProcessStatusBackgroundService
     {
         await ConfigurePostgresCompatibilityOptions(services);
 
+        await EnsureSharePartitionsAsync(isShareRecoveryMode, clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IShareRepository>(), CancellationToken.None);
+
         await EnsureShareRecoverySchemaAsync(isShareRecoveryMode, clusterConfig,
             services.GetService<IConnectionFactory>(),
             services.GetService<IShareRepository>(), CancellationToken.None);
@@ -1102,6 +1106,47 @@ public class Program : ProcessStatusBackgroundService
 
         // Configure SccPow
         Miningcore.Crypto.Hashing.Progpow.Sccpow.Cache.messageBus = messageBus;
+    }
+
+    internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,
+        ClusterConfig config, IConnectionFactory cf, IShareRepository shareRepo,
+        CancellationToken ct)
+    {
+        // A relay sender publishes ordinary shares instead of recording them locally. It may
+        // still have PostgreSQL solely to own payout processing, so do not require local share
+        // partitions unless this is an explicit recovery import.
+        var writesSharesLocally = recoveryMode || config?.ShareRelay == null;
+
+        if(config?.Persistence?.Postgres == null || !writesSharesLocally)
+            return;
+
+        if(cf == null || shareRepo == null)
+            throw new PoolStartupException(
+                "PostgreSQL share persistence is configured but its repository services are unavailable.");
+
+        var poolIds = config.Pools?
+            .Where(x => x.Enabled)
+            .Select(x => x.Id)
+            .ToArray() ?? Array.Empty<string>();
+
+        var missing = await cf.Run(con =>
+            shareRepo.GetMissingSharePartitionsAsync(con, poolIds, ct)) ??
+            Array.Empty<string>();
+
+        if(missing.Length == 0)
+            return;
+
+        var formattedPoolIds = string.Join(", ", missing
+            .Select(x => JsonConvert.SerializeObject(x)));
+        var failureBoundary = recoveryMode
+            ? "The recovery journal has not been imported."
+            : "Startup stopped before the share recorder or Stratum opened.";
+
+        throw new PoolStartupException(
+            $"The partitioned PostgreSQL shares table has no partition for enabled pool ID(s): " +
+            $"{formattedPoolIds}. Create one LIST partition per pool before starting Miningcore " +
+            "or importing a recovery journal. See 'Advanced share-table partitioning' in " +
+            $"docs/database.md. {failureBoundary}");
     }
 
     internal static async Task EnsureShareRecoverySchemaAsync(bool recoveryMode,

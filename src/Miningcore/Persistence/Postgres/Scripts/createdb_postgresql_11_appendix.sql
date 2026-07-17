@@ -1,3 +1,17 @@
+\set ON_ERROR_STOP on
+
+-- CAUTION: This optional multipool optimization deletes and rebuilds the shares table.
+-- Stop every writer, take a verified backup and read docs/database.md before running it.
+-- A successful conversion still requires one LIST partition for every enabled pool ID before
+-- Miningcore is restarted or recovery data is imported. Example:
+--
+--   SET ROLE miningcore;
+--   CREATE TABLE public.shares_ltc1_solo
+--     PARTITION OF public.shares FOR VALUES IN ('ltc1-solo');
+--   RESET ROLE;
+
+BEGIN;
+
 SET ROLE miningcore;
 
 DROP TABLE shares;
@@ -27,3 +41,6 @@ CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_ACTUALDIFFICULTY ON shares(poolid, min
 CREATE INDEX IDX_SHARES_POOL_MINER_SESSION_CREATED ON shares(poolid, miner, sessionid, created DESC);
 CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SESSION_CREATED ON shares(poolid, miner, worker, sessionid, created DESC);
 
+RESET ROLE;
+
+COMMIT;

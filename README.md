@@ -254,6 +254,12 @@ this revision. The [database and upgrade guide](docs/database.md) gives the exac
 procedure, post-migration ownership check, merged-mining indexes, payout-manager ownership rules and
 optional advanced partitioning.
 
+> [!IMPORTANT]
+> If you opt into the advanced partitioned `shares` layout, create a partition whose bound exactly
+> matches every enabled pool ID before starting Miningcore. Startup now fails fast when a direct
+> recorder, relay receiver or recovery import is missing one; see the database guide for the
+> backup, conversion, partition creation and restore sequence.
+
 ## Configuration
 
 Copy [config.example.json](config.example.json) to `config.json`. It is a JSON-with-comments example
