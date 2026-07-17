@@ -6,6 +6,8 @@
 
 [Dd]ebug/
 [Rr]elease/
+!scripts/release/
+!scripts/release/**
 x64/
 build/
 [Bb]in/
