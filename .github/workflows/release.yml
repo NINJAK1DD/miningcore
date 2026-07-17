@@ -95,15 +95,15 @@ jobs:
         run: dotnet restore src
 
       - name: Build
-        run: dotnet build --no-restore src
+        run: dotnet build --configuration Release --no-restore src
 
       - name: Stage Linux native libraries for tests
         shell: bash
         run: |
           set -euo pipefail
 
-          app_out="$GITHUB_WORKSPACE/src/Miningcore/bin/Debug/net6.0"
-          test_out="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Debug/net6.0"
+          app_out="$GITHUB_WORKSPACE/src/Miningcore/bin/Release/net6.0"
+          test_out="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Release/net6.0"
           mkdir -p "$test_out"
 
           if ! compgen -G "$app_out/*.so" > /dev/null; then
@@ -115,17 +115,20 @@ jobs:
 
       - name: Smoke-test ZeroMQ relay runtime
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net6.0
         run: >-
-          dotnet test --no-build --verbosity normal
+          dotnet test --configuration Release --no-build --verbosity normal
           --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
           src/Miningcore.Tests/Miningcore.Tests.csproj
 
       - name: Run complete test suite
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net6.0
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net6.0
           MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
-        run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
+        run: >-
+          dotnet test --configuration Release
+          --logger:"console;verbosity=detailed"
+          --no-build --verbosity normal src
 
       - name: Publish framework-dependent Linux x64 build
         run: >-
@@ -133,7 +136,7 @@ jobs:
           --configuration Release
           --framework net6.0
           --self-contained false
-          --no-restore
+          --no-build
           --output publish
 
       - name: Validate published runtime
