@@ -1,0 +1,12 @@
+/build/
+/**/bin/
+/**/obj/
+/logs/
+/*.dump
+/*.log
+/config.json
+/pool.json
+/.env
+/.env.*
+/.vs/
+/.vscode/

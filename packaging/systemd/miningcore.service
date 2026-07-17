@@ -1,0 +1,37 @@
+[Unit]
+Description=Miningcore Pool Service
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/miningcore/config.json
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=miningcore
+Group=miningcore
+WorkingDirectory=/opt/miningcore
+ExecStart=/usr/bin/dotnet /opt/miningcore/Miningcore.dll -c /etc/miningcore/config.json
+
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStartSec=30
+TimeoutStopSec=60
+
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=LD_LIBRARY_PATH=/opt/miningcore
+
+StateDirectory=miningcore
+StateDirectoryMode=0750
+LogsDirectory=miningcore
+LogsDirectoryMode=0750
+UMask=0027
+LimitNOFILE=65536
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 # BTCPool.co.uk Miningcore
 
 [![.NET](https://github.com/NINJAK1DD/miningcore/actions/workflows/dotnet.yml/badge.svg?branch=dev)](https://github.com/NINJAK1DD/miningcore/actions/workflows/dotnet.yml)
+[![Release](https://img.shields.io/github/v/release/NINJAK1DD/miningcore?include_prereleases)](https://github.com/NINJAK1DD/miningcore/releases)
 [![License](https://img.shields.io/github/license/NINJAK1DD/miningcore)](LICENSE)
 
 <img src="logo.png" width="150" alt="Miningcore logo">
@@ -31,7 +32,12 @@ the original authors and contributors.
 
 ## Quick start
 
-The shortest route to a local build is:
+For Ubuntu 22.04 x64, the quickest tested route is the
+[prebuilt GitHub Release](docs/releases.md). It includes the binary, example configuration,
+database scripts, documentation, checksum, provenance, and a systemd unit. A matching non-root
+container image is published to `ghcr.io/ninjak1dd/miningcore`.
+
+To build from source instead:
 
 ```console
 git clone https://github.com/NINJAK1DD/miningcore.git
@@ -104,6 +110,14 @@ The pool validates both addresses before authorising the worker. See the comment
 
 ## Build and installation
 
+### Prebuilt Ubuntu 22.04 x64 release
+
+Download a release archive and `SHA256SUMS` from the
+[releases page](https://github.com/NINJAK1DD/miningcore/releases), verify it, and follow the
+[prebuilt installation and upgrade guide](docs/releases.md). The binary is framework-dependent and
+therefore still needs the documented .NET 6 and native runtime dependencies. No Windows or generic
+cross-distribution binary compatibility is claimed.
+
 ### Debian and Ubuntu
 
 Run the script matching the installed operating system from the repository root. The script installs
@@ -147,20 +161,45 @@ The published files are written to `build`.
 ### Docker Engine
 
 Install [Docker Engine for your Linux distribution](https://docs.docker.com/engine/install/) and
-confirm it works before building Miningcore:
+confirm it works:
 
 ```console
 sudo docker run --rm hello-world
+sudo docker pull ghcr.io/ninjak1dd/miningcore:v0.1.0-rc.1
+```
+
+Pin a published version rather than copying the example version indefinitely. Copy and edit the
+configuration, then run the image. This example publishes the API and merged-mining LTC Stratum
+port; publish every additional port used by your configuration:
+
+```console
+sudo mkdir -p /etc/miningcore /var/lib/miningcore
+sudo curl -fL \
+  https://raw.githubusercontent.com/NINJAK1DD/miningcore/v0.1.0-rc.1/config.example.json \
+  -o /etc/miningcore/config.json
+sudo chown root:10001 /etc/miningcore/config.json
+sudo chmod 0640 /etc/miningcore/config.json
+sudo chown 10001:10001 /var/lib/miningcore
+sudo docker run -d \
+  --name miningcore \
+  --restart unless-stopped \
+  -p 4000:4000 \
+  -p 3032:3032 \
+  -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
+  -v /var/lib/miningcore:/var/lib/miningcore \
+  ghcr.io/ninjak1dd/miningcore:v0.1.0-rc.1
+```
+
+To build the same source locally instead:
+
+```console
 git clone https://github.com/NINJAK1DD/miningcore.git
 cd miningcore
 git checkout dev
 sudo docker build -t btcpool-miningcore:local .
-cp config.example.json config.json
 ```
 
-Edit `config.json`, then run the container. This example publishes the API and the merged-mining LTC
-Stratum port; publish any additional ports used by your configuration. The example keeps the separate
-DOGE Stratum listener disabled because merged miners connect to LTC:
+Run it with the same `/etc/miningcore/config.json` and `/var/lib/miningcore` mounts:
 
 ```console
 sudo docker run -d \
@@ -168,7 +207,8 @@ sudo docker run -d \
   --restart unless-stopped \
   -p 4000:4000 \
   -p 3032:3032 \
-  -v "$(pwd)/config.json:/app/config.json:ro" \
+  -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
+  -v /var/lib/miningcore:/var/lib/miningcore \
   btcpool-miningcore:local
 ```
 
@@ -183,7 +223,8 @@ sudo docker rm miningcore
 
 The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
 means the container itself, not the Docker host. Build on hardware compatible with the production
-host because native hashing libraries can be affected by CPU architecture and features.
+host because native hashing libraries can be affected by CPU architecture and features. The full
+release, checksum, provenance, container and update procedure is in [the release guide](docs/releases.md).
 
 ## Database setup
 
