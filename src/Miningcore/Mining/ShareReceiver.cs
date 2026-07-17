@@ -92,8 +92,10 @@ public class ShareReceiver : BackgroundService
             AttachPool(notification.Pool);
     }
 
-    public override Task StartAsync(CancellationToken ct)
+    public override async Task StartAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
         if(clusterConfig.ShareRelays != null)
         {
             // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
@@ -104,7 +106,17 @@ public class ShareReceiver : BackgroundService
                 .Subscribe(OnPoolStatusNotification));
         }
 
-        return base.StartAsync(ct);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            disposables.Dispose();
+            throw;
+        }
     }
 
     private Task StartMessageReceiver(CancellationToken ct)

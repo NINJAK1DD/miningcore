@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.IO;
 using System.Linq;
+using System.Reactive.Subjects;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -28,6 +29,42 @@ namespace Miningcore.Tests.Mining;
 
 public class ShareRecorderTests
 {
+    [Fact]
+    public async Task StartAsync_ReceivesImmediateShareAndDisposesSubscription()
+    {
+        var shares = new Subject<Share>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<Share>().Returns(shares);
+        var fixture = CreateRecoveryFixture(messageBus);
+        var persisted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.ShareRepository.BatchInsertAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                persisted.TrySetResult();
+                return Task.CompletedTask;
+            });
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await fixture.Recorder.StartAsync(stop.Token);
+        Assert.True(shares.HasObservers);
+
+        shares.OnNext(new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "immediate-miner",
+            Difficulty = 1,
+            Created = DateTime.UtcNow,
+        });
+
+        await persisted.Task.WaitAsync(stop.Token);
+        await fixture.Recorder.StopAsync(stop.Token);
+
+        Assert.False(shares.HasObservers);
+    }
+
     [Fact]
     public void BitcoinPool_DoesNotRepublishManagerEmittedStatisticalShare()
     {
@@ -1041,14 +1078,14 @@ public class ShareRecorderTests
             : "coinbase-transaction",
     };
 
-    private static RecoveryFixture CreateRecoveryFixture()
+    private static RecoveryFixture CreateRecoveryFixture(IMessageBus messageBusOverride = null)
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
-        var messageBus = Substitute.For<IMessageBus>();
+        var messageBus = messageBusOverride ?? Substitute.For<IMessageBus>();
         var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
             .CreateMapper();
         var pool = new PoolConfig

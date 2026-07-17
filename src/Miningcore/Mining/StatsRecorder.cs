@@ -373,13 +373,24 @@ public class StatsRecorder : BackgroundService
         logger.Warn(() => $"Retry {retry} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
     }
 
-    public override Task StartAsync(CancellationToken ct)
+    public override async Task StartAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         disposables.Add(messageBus.Listen<PoolStatusNotification>()
             .ObserveOn(TaskPoolScheduler.Default)
             .Subscribe(OnPoolStatusNotification));
 
-        return base.StartAsync(ct);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            disposables.Dispose();
+            throw;
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)

@@ -144,6 +144,7 @@ public class NotificationService : BackgroundService
 
     public override async Task StartAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         await base.StartAsync(ct);
         await startupReady.Task.WaitAsync(ct);
     }

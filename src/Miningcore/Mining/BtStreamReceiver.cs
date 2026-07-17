@@ -105,6 +105,7 @@ public class BtStreamReceiver : BackgroundService
 
     public override async Task StartAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         await base.StartAsync(ct);
         await startupReady.Task.WaitAsync(ct);
     }
@@ -183,7 +184,7 @@ public class BtStreamReceiver : BackgroundService
                                 }
 
                                 if(error != null)
-                                    logger.Error(() => $"{nameof(ShareReceiver)}: {error.Name} [{error.Name}] during receive");
+                                    logger.Error(() => $"{nameof(BtStreamReceiver)}: {error.Name} [{error.Name}] during receive");
                             }
 
                             else
@@ -213,7 +214,7 @@ public class BtStreamReceiver : BackgroundService
                     if(startupReady.TrySetException(ex))
                         throw;
 
-                    logger.Error(() => $"{nameof(ShareReceiver)}: {ex}");
+                    logger.Error(() => $"{nameof(BtStreamReceiver)}: {ex}");
 
                     if(!ct.IsCancellationRequested)
                         Thread.Sleep(1000);

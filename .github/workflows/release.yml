@@ -8,6 +8,8 @@ on:
     branches: [ dev ]
     paths:
       - '.github/workflows/release.yml'
+      - 'global.json'
+      - 'src/**'
       - 'packaging/**'
       - 'scripts/release/**'
       - 'docs/**'

@@ -95,6 +95,8 @@ public class PayoutManager : ProcessStatusBackgroundService
 
     public override async Task StartAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
         if(!await payoutLease.TryAcquireAsync(ct))
             throw new PoolStartupException(
                 "Another payout manager owns this PostgreSQL database, or a durable ownership marker remains after an unclean stop. " +
@@ -102,6 +104,8 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         try
         {
+            ct.ThrowIfCancellationRequested();
+
             if(executeOverride == null)
             {
                 disposables.Add(messageBus.Listen<PoolStatusNotification>()
