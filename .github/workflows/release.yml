@@ -89,7 +89,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 6.0.x
+          dotnet-version: 10.0.x
 
       - name: Restore dependencies
         run: dotnet restore src
@@ -102,8 +102,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          app_out="$GITHUB_WORKSPACE/src/Miningcore/bin/Release/net6.0"
-          test_out="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Release/net6.0"
+          app_out="$GITHUB_WORKSPACE/src/Miningcore/bin/Release/net10.0"
+          test_out="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Release/net10.0"
           mkdir -p "$test_out"
 
           if ! compgen -G "$app_out/*.so" > /dev/null; then
@@ -115,7 +115,7 @@ jobs:
 
       - name: Smoke-test ZeroMQ relay runtime
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net6.0
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0
         run: >-
           dotnet test --configuration Release --no-build --verbosity normal
           --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
@@ -123,7 +123,7 @@ jobs:
 
       - name: Run complete test suite
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net6.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net6.0
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0
           MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
         run: >-
           dotnet test --configuration Release
@@ -134,7 +134,7 @@ jobs:
         run: >-
           dotnet publish src/Miningcore/Miningcore.csproj
           --configuration Release
-          --framework net6.0
+          --framework net10.0
           --self-contained false
           --no-build
           --output publish
@@ -320,7 +320,7 @@ jobs:
 
           notes='This release contains a tested, framework-dependent **Ubuntu 22.04 x64** build.
 
-          Read the packaged `INSTALL.md` or the [release installation guide](https://github.com/NINJAK1DD/miningcore/blob/dev/docs/releases.md) before deployment. Miningcore still targets the unsupported .NET 6 runtime; install the documented runtime dependencies and complete all required PostgreSQL migrations before startup.'
+          Read the packaged `INSTALL.md` or the [release installation guide](https://github.com/NINJAK1DD/miningcore/blob/dev/docs/releases.md) before deployment. Miningcore targets the supported .NET 10 LTS runtime; install the documented runtime dependencies and complete all required PostgreSQL migrations before startup.'
 
           release_args=(
             "$GITHUB_REF_NAME"

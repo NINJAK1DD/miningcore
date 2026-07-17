@@ -59,7 +59,7 @@ cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version
 Source commit: $source_commit
 Target: Ubuntu 22.04 x64
-Framework: net6.0 framework-dependent
+Framework: net10.0 framework-dependent
 Build epoch: $source_date_epoch
 EOF
 

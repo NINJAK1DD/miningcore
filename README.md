@@ -12,8 +12,9 @@ primary integration branch. It builds on the
 [upstream Miningcore project](https://github.com/blackmennewstyle/miningcore) and retains credit to
 the original authors and contributors.
 
-> **Production status:** the software is usable for development and regtest, but this branch still
-> targets the unsupported .NET 6 runtime. Read [Production operation](#production-operation) and the
+> **Production status:** the software targets the supported .NET 10 LTS runtime, but production
+> deployment still requires the operational controls below. Read
+> [Production operation](#production-operation) and the
 > live [merged-mining validation record](docs/merged-mining-regtest-validation.md) before using real
 > funds.
 
@@ -115,7 +116,7 @@ The pool validates both addresses before authorising the worker. See the comment
 Download a release archive and `SHA256SUMS` from the
 [releases page](https://github.com/NINJAK1DD/miningcore/releases), verify it, and follow the
 [prebuilt installation and upgrade guide](docs/releases.md). The binary is framework-dependent and
-therefore still needs the documented .NET 6 and native runtime dependencies. No Windows or generic
+therefore still needs the documented .NET 10 and native runtime dependencies. No Windows or generic
 cross-distribution binary compatibility is claimed.
 
 ### Debian and Ubuntu
@@ -397,7 +398,7 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
 ## Caveats
 
 - **Linux is the production target.** Windows builds are intended for development and testing.
-- **.NET 6 is out of support.** Framework modernisation is intentionally deferred to a separate PR.
+- **Keep .NET 10 serviced.** Apply supported runtime security and servicing updates promptly.
 - **Coin support is not identical.** Read the coin definition and daemon documentation before
   enabling a currency. Some families require extra native files or configuration.
 - **CryptoNote/RandomX coins** can require significant memory per configured VM and CPU-specific
@@ -433,7 +434,7 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
 
 Before advertising a public pool:
 
-- Run Miningcore on a maintained Linux release and plan migration from .NET 6.
+- Run Miningcore on a maintained Linux release with a serviced .NET 10 runtime.
 - Isolate daemon, wallet, PostgreSQL, admin API and relay ports with host/network firewalls.
 - Put the public API and website behind an HTTPS reverse proxy; do not expose the admin API port.
 - Keep hot-wallet balances limited and test encrypted wallet, database and configuration backups.

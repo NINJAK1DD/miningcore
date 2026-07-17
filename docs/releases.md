@@ -2,13 +2,12 @@
 
 GitHub Releases provide a tested, framework-dependent build for **Ubuntu 22.04 x64** and a container
 image built from that same archive. The archive saves compilation time, but it still requires the
-.NET 6 ASP.NET Core runtime and Miningcore's native runtime libraries. Windows and other Linux
+.NET 10 ASP.NET Core runtime and Miningcore's native runtime libraries. Windows and other Linux
 distributions are not represented as binary-compatible by this package; use the source-build guide
 in the root README for those environments.
 
-> **Runtime warning:** .NET 6 is out of support. These packages reproduce the current application
-> target; they do not make that runtime production-supported. Migrating Miningcore to a supported
-> .NET release remains separate work.
+> **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
+> documented Ubuntu package source and keep it updated with normal security maintenance.
 
 ## Choose a version
 
@@ -41,21 +40,15 @@ gh attestation verify "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.t
 
 ## Install runtime dependencies
 
-Install Microsoft's Ubuntu 22.04 package repository if it is not already configured, then install
-the framework and native libraries:
+Enable Canonical's supported .NET backports PPA, then install the framework and native libraries:
 
 ```console
-wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb \
-  -O packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb
-rm packages-microsoft-prod.deb
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-6.0 libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y ppa:dotnet/backports
+sudo apt-get update
+sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
 ```
-
-Microsoft may remove unsupported .NET 6 packages from normal support channels in future. If that
-happens, build the current source in a controlled environment or complete the planned .NET upgrade;
-do not download an unverified runtime from an unofficial mirror.
 
 ## Install the archive
 
