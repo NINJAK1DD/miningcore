@@ -127,17 +127,11 @@ jobs:
           MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
         run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
 
-      - name: Restore Linux x64 publish runtime
-        run: >-
-          dotnet restore src/Miningcore/Miningcore.csproj
-          --runtime linux-x64
-
       - name: Publish framework-dependent Linux x64 build
         run: >-
           dotnet publish src/Miningcore/Miningcore.csproj
           --configuration Release
           --framework net6.0
-          --runtime linux-x64
           --self-contained false
           --no-restore
           --output publish
