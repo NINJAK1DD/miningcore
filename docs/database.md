@@ -39,9 +39,14 @@ machines. Do not expose port 5432 to the internet.
 Create a compressed logical backup before every schema change:
 
 ```console
-pg_dump -h 127.0.0.1 -U miningcore -Fc miningcore > miningcore-$(date +%F).dump
+sudo -u postgres pg_dump -Fc -d miningcore > miningcore-$(date +%F).dump
 pg_restore --list miningcore-$(date +%F).dump > /dev/null
 ```
+
+The local administrator form includes partitions and other objects created by an administrative
+role even when the runtime `miningcore` role cannot lock those objects directly. For a remote
+database, use a dedicated backup role with read and lock access to every schema object instead of a
+superuser.
 
 Restore into an empty database during a tested recovery exercise:
 
@@ -69,6 +74,31 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
 ```
+
+The ownership migration assigns its three new tables to the owner of the current database. Confirm
+that this is the same role configured under `persistence.postgres.user` and inspect the resulting
+owners before restarting Miningcore:
+
+```console
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore -c "
+SELECT current_database() AS database,
+       pg_get_userbyid(datdba) AS database_owner
+FROM pg_database
+WHERE datname = current_database();
+
+SELECT schemaname, tablename, tableowner
+FROM pg_tables
+WHERE tablename IN (
+  'share_recovery_imports',
+  'payment_batches',
+  'payout_manager_ownership'
+)
+ORDER BY schemaname, tablename;"
+```
+
+If the database owner is not the configured application role, correct the database ownership or
+grant that application role the required table privileges before startup. Do not solve this by
+making the Miningcore runtime role a PostgreSQL superuser.
 
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
 recovery-only deployments using the `-rs` importer. The AuxPoW migration is required before enabling

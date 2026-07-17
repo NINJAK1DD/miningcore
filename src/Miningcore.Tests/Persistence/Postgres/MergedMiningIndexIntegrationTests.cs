@@ -15,6 +15,25 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class MergedMiningIndexIntegrationTests
 {
+    [Fact]
+    public async Task PayoutOwnershipMigration_AssignsRelationsToDatabaseOwner()
+    {
+        var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+            "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+        var migration = await File.ReadAllTextAsync(migrationPath);
+
+        Assert.Contains("pg_get_userbyid(datdba)", migration,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ALTER TABLE %I.%I OWNER TO %I", migration,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'share_recovery_imports'::NAME", migration,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'payment_batches'::NAME", migration,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'payout_manager_ownership'::NAME", migration,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [PostgresIntegrationFact]
     public async Task RecoveryImportPreflight_RequiresImmediateFileHashPrimaryKey()
     {
