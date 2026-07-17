@@ -2,7 +2,6 @@ using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
-using Microsoft.Extensions.Hosting;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
 using NLog;
@@ -11,7 +10,7 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
-public class MetricsPublisher : BackgroundService
+public class MetricsPublisher : StartupGatedBackgroundService
 {
     public MetricsPublisher(IMessageBus messageBus)
     {
@@ -23,8 +22,6 @@ public class MetricsPublisher : BackgroundService
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
 
     private readonly IMessageBus messageBus;
-    private readonly TaskCompletionSource startupReady = new(
-        TaskCreationOptions.RunContinuationsAsynchronously);
 
     private Summary btStreamLatencySummary;
     private Counter shareCounter;
@@ -133,13 +130,6 @@ public class MetricsPublisher : BackgroundService
         poolHashrateGauge.WithLabels(msg.PoolId).Set(msg.Hashrate);
     }
 
-    public override async Task StartAsync(CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        await base.StartAsync(ct);
-        await startupReady.Task.WaitAsync(ct);
-    }
-
     protected override Task ExecuteAsync(CancellationToken ct)
     {
         try
@@ -156,13 +146,13 @@ public class MetricsPublisher : BackgroundService
 
             var processing = Observable.Merge(telemetryEvents, hashrateNotifications)
                 .ToTask(ct);
-            startupReady.TrySetResult();
+            SignalStartupReady();
             return processing;
         }
 
         catch(Exception ex)
         {
-            startupReady.TrySetException(ex);
+            SignalStartupFailure(ex);
             return Task.FromException(ex);
         }
     }

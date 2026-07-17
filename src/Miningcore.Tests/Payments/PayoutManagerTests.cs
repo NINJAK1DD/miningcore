@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
-using System.Reflection;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
@@ -269,7 +268,7 @@ public class PayoutManagerTests
             Status = PoolStatus.Online,
         });
 
-        await WaitUntilAsync(() => GetAttachedPoolCount(fixture.Manager) == 1,
+        await WaitUntilAsync(() => fixture.Manager.AttachedPoolCount == 1,
             stop.Token);
         await fixture.Manager.StopAsync(stop.Token);
 
@@ -485,7 +484,7 @@ public class PayoutManagerTests
                 processStatus)
             : new PayoutManager(context, connectionFactory, blockRepository,
                 shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease,
-                processStatus, executeOverride);
+                processStatus, executeOverride, subscribeToPoolStatus: false);
 
         return new Fixture(manager, miningPool, pool, block, connection, transaction,
             blockRepository, balanceRepository, messageBus, payoutLease, processStatus);
@@ -497,14 +496,6 @@ public class PayoutManagerTests
         IBalanceRepository BalanceRepository,
         IMessageBus MessageBus, IPayoutManagerLease PayoutLease,
         ProcessStatus ProcessStatus);
-
-    private static int GetAttachedPoolCount(PayoutManager manager)
-    {
-        var field = typeof(PayoutManager).GetField("pools",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        var value = field!.GetValue(manager)!;
-        return (int) value.GetType().GetProperty("Count")!.GetValue(value)!;
-    }
 
     private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
     {

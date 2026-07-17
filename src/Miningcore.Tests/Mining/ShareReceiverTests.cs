@@ -1,7 +1,6 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,7 +44,7 @@ public class ShareReceiverTests
             Status = PoolStatus.Online,
         });
 
-        await WaitUntilAsync(() => GetAttachedPoolCount(receiver) == 1, stop.Token);
+        await WaitUntilAsync(() => receiver.AttachedPoolCount == 1, stop.Token);
         await receiver.StopAsync(stop.Token);
 
         Assert.False(notifications.HasObservers);
@@ -260,14 +259,6 @@ public class ShareReceiverTests
         var port = ((IPEndPoint) listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
-    }
-
-    private static int GetAttachedPoolCount(ShareReceiver receiver)
-    {
-        var field = typeof(ShareReceiver).GetField("pools",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        var value = field!.GetValue(receiver)!;
-        return (int) value.GetType().GetProperty("Count")!.GetValue(value)!;
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)

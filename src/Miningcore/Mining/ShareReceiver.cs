@@ -60,6 +60,7 @@ public class ShareReceiver : BackgroundService
     private readonly CompositeDisposable disposables = new();
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
     private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
+    internal int AttachedPoolCount => pools.Count;
 
     readonly JsonSerializer serializer = new()
     {

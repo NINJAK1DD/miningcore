@@ -3,7 +3,6 @@ using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using MailKit.Net.Smtp;
-using Microsoft.Extensions.Hosting;
 using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -15,7 +14,7 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
-public class NotificationService : BackgroundService
+public class NotificationService : StartupGatedBackgroundService
 {
     public NotificationService(
         ClusterConfig clusterConfig,
@@ -40,8 +39,6 @@ public class NotificationService : BackgroundService
     private readonly Dictionary<string, PoolConfig> poolConfigs;
     private readonly string adminEmail;
     private readonly IMessageBus messageBus;
-    private readonly TaskCompletionSource startupReady = new(
-        TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly EmailSenderConfig emailSenderConfig;
     private readonly PushoverClient pushoverClient;
 
@@ -142,13 +139,6 @@ public class NotificationService : BackgroundService
                 Guard(()=> handler(msg, ct), LogGuarded)));
     }
 
-    public override async Task StartAsync(CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        await base.StartAsync(ct);
-        await startupReady.Task.WaitAsync(ct);
-    }
-
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try
@@ -170,17 +160,17 @@ public class NotificationService : BackgroundService
                     .Concat()
                     .ToTask(ct);
 
-                startupReady.TrySetResult();
+                SignalStartupReady();
                 await processing;
             }
 
             else
-                startupReady.TrySetResult();
+                SignalStartupReady();
         }
 
         catch(Exception ex)
         {
-            startupReady.TrySetException(ex);
+            SignalStartupFailure(ex);
             throw;
         }
     }

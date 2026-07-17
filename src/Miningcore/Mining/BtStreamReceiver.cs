@@ -1,7 +1,6 @@
 using System.IO.Compression;
 using System.Reactive.Disposables;
 using System.Text;
-using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Cryptonote.Configuration;
 using Miningcore.Configuration;
@@ -18,7 +17,7 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Receives ready made block templates from GBTRelay
 /// </summary>
-public class BtStreamReceiver : BackgroundService
+public class BtStreamReceiver : StartupGatedBackgroundService
 {
     public BtStreamReceiver(
         IMasterClock clock,
@@ -47,8 +46,6 @@ public class BtStreamReceiver : BackgroundService
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
     private readonly Action beforeSocketSetup;
-    private readonly TaskCompletionSource startupReady = new(
-        TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static ZSocket SetupSubSocket(ZmqPubSubEndpointConfig relay, bool silent = false)
     {
@@ -103,13 +100,6 @@ public class BtStreamReceiver : BackgroundService
         messageBus.SendMessage(new BtStreamMessage(topic, content, sent, DateTime.UtcNow));
     }
 
-    public override async Task StartAsync(CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        await base.StartAsync(ct);
-        await startupReady.Task.WaitAsync(ct);
-    }
-
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         var endpoints = clusterConfig.Pools.Select(x =>
@@ -121,7 +111,7 @@ public class BtStreamReceiver : BackgroundService
 
         if(!endpoints.Any())
         {
-            startupReady.TrySetResult();
+            SignalStartupReady();
             return;
         }
 
@@ -150,7 +140,7 @@ public class BtStreamReceiver : BackgroundService
                     using(new CompositeDisposable(sockets))
                     {
                         var pollItems = sockets.Select(_ => ZPollItem.CreateReceiver()).ToArray();
-                        startupReady.TrySetResult();
+                        SignalStartupReady();
 
                         while(!ct.IsCancellationRequested)
                         {
@@ -211,7 +201,7 @@ public class BtStreamReceiver : BackgroundService
 
                 catch(Exception ex)
                 {
-                    if(startupReady.TrySetException(ex))
+                    if(SignalStartupFailure(ex))
                         throw;
 
                     logger.Error(() => $"{nameof(BtStreamReceiver)}: {ex}");

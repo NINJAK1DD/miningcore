@@ -71,6 +71,7 @@ public class StatsRecorder : BackgroundService
     private readonly TimeSpan updateInterval;
     private readonly TimeSpan cleanupDays;
     private readonly TimeSpan gcInterval;
+    internal int AttachedPoolCount => pools.Count;
     private readonly TimeSpan hashrateCalculationWindow;
     private const int RetryCount = 4;
     private IAsyncPolicy readFaultPolicy;
@@ -376,6 +377,9 @@ public class StatsRecorder : BackgroundService
     public override async Task StartAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+
+        // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+        // Subscribe before StartAsync returns so immediate pool-online events cannot be lost.
         disposables.Add(messageBus.Listen<PoolStatusNotification>()
             .ObserveOn(TaskPoolScheduler.Default)
             .Subscribe(OnPoolStatusNotification));

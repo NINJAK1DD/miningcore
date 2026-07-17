@@ -9,6 +9,9 @@ in the root README for those environments.
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
 
+TLS-enabled Stratum endpoints rely on the host security policy and accept TLS 1.2 or TLS 1.3 on
+supported, patched hosts. Legacy miners limited to TLS 1.0 or TLS 1.1 must be upgraded or replaced.
+
 If this replaces an existing .NET 6 deployment, first follow the dedicated
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
 commands below as an instruction to overwrite a live configuration or database.
@@ -166,9 +169,11 @@ from the container network.
 ## Maintainer release procedure
 
 The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.1` or
-`v0.1.0`. It rebuilds on Ubuntu 22.04, runs the complete PostgreSQL-backed and ZeroMQ test suite,
-validates native runtime links, packages the result, smoke-tests the image, then publishes both
-artifacts with provenance. Prefer a signed annotated tag:
+`v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
+runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
+packages the result, smoke-tests the packaged image, and publishes both artifacts with provenance.
+This additional source-container gate makes release runs longer but catches Dockerfile-only build
+failures before publication. Prefer a signed annotated tag:
 
 ```console
 git switch dev

@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
@@ -49,7 +48,7 @@ public class HostedServiceStartupTests
             Status = PoolStatus.Online,
         });
 
-        await WaitUntilAsync(() => GetPrivateCollectionCount(recorder, "pools") == 1,
+        await WaitUntilAsync(() => recorder.AttachedPoolCount == 1,
             stop.Token);
         await recorder.StopAsync(stop.Token);
 
@@ -143,12 +142,23 @@ public class HostedServiceStartupTests
         messageBus.DidNotReceive().Listen<AdminNotification>();
     }
 
-    private static int GetPrivateCollectionCount(object instance, string fieldName)
+    [Fact]
+    public async Task StartupGate_RejectsExecutionThatCompletesBeforeReadinessSignal()
     {
-        var field = instance.GetType().GetField(fieldName,
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        var value = field!.GetValue(instance)!;
-        return (int) value.GetType().GetProperty("Count")!.GetValue(value)!;
+        var service = new CompletesBeforeReadyService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.StartAsync(CancellationToken.None));
+
+        Assert.Contains(nameof(CompletesBeforeReadyService), ex.Message);
+    }
+
+    private sealed class CompletesBeforeReadyService : StartupGatedBackgroundService
+    {
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)

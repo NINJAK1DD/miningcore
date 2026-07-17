@@ -205,6 +205,11 @@ sudo systemctl status miningcore --no-pager
 sudo journalctl -u miningcore --since '10 minutes ago' --no-pager
 ```
 
+Miningcore now delegates TLS protocol selection to the operating system. On supported, patched
+hosts this means TLS 1.2 or TLS 1.3; miners limited to TLS 1.0 or TLS 1.1 can no longer connect to a
+TLS-enabled Stratum endpoint. Inventory legacy mining hardware before the maintenance window and
+test at least one representative client against every TLS-enabled endpoint.
+
 Before returning normal traffic, confirm:
 
 - the service stays active and reports the intended Miningcore commit;

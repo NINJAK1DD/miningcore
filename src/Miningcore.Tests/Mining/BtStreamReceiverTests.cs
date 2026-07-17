@@ -40,6 +40,18 @@ public class BtStreamReceiverTests
     }
 
     [Fact]
+    public async Task StartAsync_PropagatesFailureBeforeReadinessSignal()
+    {
+        var receiver = new BtStreamReceiver(
+            new MockMasterClock { CurrentTime = DateTime.UtcNow },
+            new MessageBus(),
+            new ClusterConfig { Pools = null });
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            receiver.StartAsync(CancellationToken.None).WaitAsync(TestTimeout));
+    }
+
+    [Fact]
     public async Task StartAsync_RejectsCanceledStartupBeforeSocketSetup()
     {
         var socketSetupCalled = false;

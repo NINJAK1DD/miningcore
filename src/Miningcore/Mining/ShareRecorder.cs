@@ -10,7 +10,6 @@ using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using AutoMapper;
-using Microsoft.Extensions.Hosting;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
@@ -31,7 +30,7 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Asynchronously persist shares produced by all pools for processing by coin-specific payment processor(s)
 /// </summary>
-public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
+public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder
 {
     public ShareRecorder(IConnectionFactory cf,
         IMapper mapper,
@@ -75,8 +74,6 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
     private readonly IConnectionFactory cf;
     private readonly JsonSerializerSettings jsonSerializerSettings;
     private readonly IMessageBus messageBus;
-    private readonly TaskCompletionSource startupReady = new(
-        TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly ICandidatePersistenceFailureHandler candidateFailureHandler;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> pools;
@@ -741,13 +738,6 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
         await base.StopAsync(ct);
     }
 
-    public override async Task StartAsync(CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        await base.StartAsync(ct);
-        await startupReady.Task.WaitAsync(ct);
-    }
-
     protected override Task ExecuteAsync(CancellationToken ct)
     {
         try
@@ -781,13 +771,13 @@ public class ShareRecorder : BackgroundService, IBlockCandidateRecorder
                         logger.Info(() => "Offline");
                 }, ct);
 
-            startupReady.TrySetResult();
+            SignalStartupReady();
             return processing;
         }
 
         catch(Exception ex)
         {
-            startupReady.TrySetException(ex);
+            SignalStartupFailure(ex);
             return Task.FromException(ex);
         }
     }

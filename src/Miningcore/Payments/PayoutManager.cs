@@ -50,6 +50,7 @@ public class PayoutManager : ProcessStatusBackgroundService
         this.messageBus = messageBus;
         this.clusterConfig = clusterConfig;
         this.payoutLease = payoutLease;
+        subscribeToPoolStatus = true;
 
         interval = TimeSpan.FromSeconds(clusterConfig.PaymentProcessing.Interval > 0 ?
             clusterConfig.PaymentProcessing.Interval : 600);
@@ -64,11 +65,13 @@ public class PayoutManager : ProcessStatusBackgroundService
         IMessageBus messageBus,
         IPayoutManagerLease payoutLease,
         IProcessStatus processStatus,
-        Func<CancellationToken, Task> executeOverride) :
+        Func<CancellationToken, Task> executeOverride,
+        bool subscribeToPoolStatus) :
         this(ctx, cf, blockRepo, shareRepo, balanceRepo, clusterConfig, messageBus,
             payoutLease, processStatus)
     {
         this.executeOverride = executeOverride;
+        this.subscribeToPoolStatus = subscribeToPoolStatus;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
@@ -83,9 +86,11 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;
     private readonly Func<CancellationToken, Task> executeOverride;
+    private readonly bool subscribeToPoolStatus;
     private readonly CompositeDisposable disposables = new();
     internal static readonly TimeSpan MergedParentShareSettlementDelay =
         TimeSpan.FromMinutes(1);
+    internal int AttachedPoolCount => pools.Count;
 
 #if !DEBUG
     private static readonly TimeSpan initialRunDelay = TimeSpan.FromMinutes(1);
@@ -106,7 +111,9 @@ public class PayoutManager : ProcessStatusBackgroundService
         {
             ct.ThrowIfCancellationRequested();
 
-            if(executeOverride == null)
+            // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+            // Subscribe before StartAsync returns so immediate pool-online events cannot be lost.
+            if(subscribeToPoolStatus)
             {
                 disposables.Add(messageBus.Listen<PoolStatusNotification>()
                     .ObserveOn(TaskPoolScheduler.Default)
