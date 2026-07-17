@@ -350,6 +350,10 @@ public class ProgramPoolTemplateTests
     [Fact]
     public async Task CandidatePersistenceFailure_StopsRealHostAndDrainsSiblingPool()
     {
+        // This is a deadlock watchdog, not a production timing assertion. The test performs a
+        // write-through recovery-journal flush while the complete test assembly (including native
+        // hashing and PostgreSQL integration tests) runs in parallel on shared CI hardware.
+        var hostTestTimeout = TimeSpan.FromSeconds(10);
         var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         var processStatus = new ProcessStatus();
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -448,15 +452,15 @@ public class ProgramPoolTemplateTests
                 },
                 () => processStatus.ExitCode);
 
-            await siblingStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await siblingStarted.Task.WaitAsync(hostTestTimeout);
             var candidatePersistence = recorder.PersistBlockCandidateAsync(candidate);
             candidateAvailable.TrySetResult(candidatePersistence);
             databaseAttempt.TrySetException(new InvalidOperationException(
                 "simulated full-host candidate database failure"));
 
             var persistenceError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                candidatePersistence).WaitAsync(TimeSpan.FromSeconds(2));
-            var exitCode = await hostRun.WaitAsync(TimeSpan.FromSeconds(3));
+                candidatePersistence).WaitAsync(hostTestTimeout);
+            var exitCode = await hostRun.WaitAsync(hostTestTimeout);
 
             Assert.Contains("full-host candidate", persistenceError.Message);
             Assert.Equal(1, exitCode);
