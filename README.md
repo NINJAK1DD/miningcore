@@ -119,6 +119,11 @@ Download a release archive and `SHA256SUMS` from the
 therefore still needs the documented .NET 10 and native runtime dependencies. No Windows or generic
 cross-distribution binary compatibility is claimed.
 
+Already running Miningcore on .NET 6? Read the
+[.NET 6 to .NET 10 operator migration guide](docs/dotnet-6-to-10-migration.md) before changing the
+runtime, application files, service or database. It covers release archives, source deployments and
+containers, including rollback planning and preserving an existing configuration.
+
 ### Debian and Ubuntu
 
 Run the script matching the installed operating system from the repository root. The script installs

@@ -9,6 +9,10 @@ in the root README for those environments.
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
 
+If this replaces an existing .NET 6 deployment, first follow the dedicated
+[.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
+commands below as an instruction to overwrite a live configuration or database.
+
 ## Choose a version
 
 Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying
@@ -114,6 +118,10 @@ the complete journal before restarting; repeated restarts do not repair missing 
 daemon credentials.
 
 ## Upgrade or roll back
+
+For a major-runtime upgrade from .NET 6, use the more detailed
+[.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). The sequence below is the shorter
+procedure for routine upgrades after the deployment layout and runtime are already suitable.
 
 1. Back up PostgreSQL, the configuration, and recovery journal.
 2. Download and verify the new archive.

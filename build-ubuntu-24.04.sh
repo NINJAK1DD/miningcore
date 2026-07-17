@@ -1,16 +1,10 @@
 #!/bin/bash
 
-# install install-dependencies
-sudo apt-get update; \
-  sudo apt-get -y install wget
-
-# add dotnet repo
-wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb
-rm packages-microsoft-prod.deb
+# Install .NET 10 from Ubuntu's Canonical-maintained package feed. Do not add
+# Microsoft's package feed on Ubuntu 24.04 or mix the two package sources.
 
 # install dev-dependencies
-sudo apt-get update; \
+sudo apt-get update && \
   sudo apt-get -y install dotnet-sdk-10.0 git cmake ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libzmq3-dev libgmp-dev
 
 (cd src/Miningcore && \
