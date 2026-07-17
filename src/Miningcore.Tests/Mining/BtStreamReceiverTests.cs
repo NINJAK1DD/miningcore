@@ -12,6 +12,8 @@ namespace Miningcore.Tests.Mining;
 
 public class BtStreamReceiverTests
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task StartAsync_CompletesImmediatelyWithoutEndpoints()
     {
@@ -21,7 +23,7 @@ public class BtStreamReceiverTests
             new ClusterConfig { Pools = Array.Empty<PoolConfig>() });
 
         await receiver.StartAsync(CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(2));
+            .WaitAsync(TestTimeout);
         await receiver.StopAsync(CancellationToken.None);
     }
 

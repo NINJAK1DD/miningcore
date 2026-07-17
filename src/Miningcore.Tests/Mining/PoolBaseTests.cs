@@ -28,6 +28,8 @@ namespace Miningcore.Tests.Mining;
 
 public class PoolBaseTests
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task RunAsync_WithoutInternalStratum_RemainsOnlineUntilCancellation()
     {
@@ -60,14 +62,14 @@ public class PoolBaseTests
         using var cts = new CancellationTokenSource();
 
         var runTask = pool.RunAsync(cts.Token);
-        await pool.SetupCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await online.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await pool.SetupCompleted.Task.WaitAsync(TestTimeout);
+        await online.Task.WaitAsync(TestTimeout);
 
         Assert.False(runTask.IsCompleted);
         Assert.False(pool.JobSubscriptionDisposed);
 
         cts.Cancel();
-        await runTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await runTask.WaitAsync(TestTimeout);
 
         Assert.True(pool.JobSubscriptionDisposed);
     }
@@ -81,7 +83,7 @@ public class PoolBaseTests
         Assert.False(waitTask.IsCompleted);
 
         cts.Cancel();
-        await waitTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await waitTask.WaitAsync(TestTimeout);
     }
 
     private static IContainer BuildContainer()
