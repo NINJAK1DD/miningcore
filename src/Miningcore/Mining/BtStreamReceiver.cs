@@ -23,7 +23,15 @@ public class BtStreamReceiver : BackgroundService
     public BtStreamReceiver(
         IMasterClock clock,
         IMessageBus messageBus,
-        ClusterConfig clusterConfig)
+        ClusterConfig clusterConfig) : this(clock, messageBus, clusterConfig, null)
+    {
+    }
+
+    internal BtStreamReceiver(
+        IMasterClock clock,
+        IMessageBus messageBus,
+        ClusterConfig clusterConfig,
+        Action beforeSocketSetup)
     {
         Contract.RequiresNonNull(clock);
         Contract.RequiresNonNull(messageBus);
@@ -31,12 +39,16 @@ public class BtStreamReceiver : BackgroundService
         this.clock = clock;
         this.messageBus = messageBus;
         this.clusterConfig = clusterConfig;
+        this.beforeSocketSetup = beforeSocketSetup;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IMasterClock clock;
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
+    private readonly Action beforeSocketSetup;
+    private readonly TaskCompletionSource startupReady = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static ZSocket SetupSubSocket(ZmqPubSubEndpointConfig relay, bool silent = false)
     {
@@ -91,6 +103,12 @@ public class BtStreamReceiver : BackgroundService
         messageBus.SendMessage(new BtStreamMessage(topic, content, sent, DateTime.UtcNow));
     }
 
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        await base.StartAsync(ct);
+        await startupReady.Task.WaitAsync(ct);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         var endpoints = clusterConfig.Pools.Select(x =>
@@ -101,7 +119,10 @@ public class BtStreamReceiver : BackgroundService
             .ToArray();
 
         if(!endpoints.Any())
+        {
+            startupReady.TrySetResult();
             return;
+        }
 
         await Task.Run(() =>
         {
@@ -122,11 +143,13 @@ public class BtStreamReceiver : BackgroundService
                 try
                 {
                     // setup sockets
-                    var sockets = relays.Select(x=> SetupSubSocket(x)).ToArray();
+                    beforeSocketSetup?.Invoke();
+                    var sockets = relays.Select(x => SetupSubSocket(x)).ToArray();
 
                     using(new CompositeDisposable(sockets))
                     {
                         var pollItems = sockets.Select(_ => ZPollItem.CreateReceiver()).ToArray();
+                        startupReady.TrySetResult();
 
                         while(!ct.IsCancellationRequested)
                         {
@@ -187,6 +210,9 @@ public class BtStreamReceiver : BackgroundService
 
                 catch(Exception ex)
                 {
+                    if(startupReady.TrySetException(ex))
+                        throw;
+
                     logger.Error(() => $"{nameof(ShareReceiver)}: {ex}");
 
                     if(!ct.IsCancellationRequested)
