@@ -147,23 +147,42 @@ sudo systemctl reset-failed miningcore
 pgrep -af 'Miningcore|Miningcore.dll' || true
 ```
 
-Run the following read-only queries against the exact database and schema selected by
-`persistence.postgres`. Use the configured application connection for a remote server, or an
-administrative local connection such as the example:
+Run the following read-only queries against the exact database and role selected by
+`persistence.postgres`. Miningcore does not configure a PostgreSQL schema explicitly; relation
+resolution follows the application role's effective `search_path`. Prefer connecting as that role,
+then record the resolved schema before inspecting any ownership data:
 
 ```console
-sudo -u postgres psql -d miningcore -x -c "
+psql -h REPLACE_WITH_HOST -U REPLACE_WITH_MININGCORE_ROLE \
+  -d REPLACE_WITH_DATABASE -x -c "
+SELECT current_database(),
+       current_user,
+       current_schema(),
+       current_setting('search_path');
+
+SELECT namespace.nspname AS resolved_schema,
+       relation.relname AS resolved_relation
+FROM pg_class relation
+JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+WHERE relation.oid = to_regclass('payout_manager_ownership');
+
 SELECT id, generation, owner_id, owner_host, owner_process_id,
        acquired, released
-FROM payout_manager_ownership
+FROM REPLACE_WITH_SCHEMA.payout_manager_ownership
 WHERE id = 1;"
 ```
+
+Replace `REPLACE_WITH_SCHEMA` with the `resolved_schema` value that was verified using the
+Miningcore application role. Stop if the relation does not resolve or resolves to an unexpected
+schema. If an administrative role is required later for the guarded update, keep using this
+explicitly inspected schema; do not rely on the administrator's different `search_path`.
 
 The companion advisory lock uses the stable two-key identity `19779, 5259609`. Inspect it without
 trying to terminate its PostgreSQL backend:
 
 ```console
-sudo -u postgres psql -d miningcore -x -c "
+psql -h REPLACE_WITH_HOST -U REPLACE_WITH_MININGCORE_ROLE \
+  -d REPLACE_WITH_DATABASE -x -c "
 SELECT activity.pid AS postgres_backend_pid,
        activity.usename,
        activity.application_name,
@@ -187,15 +206,56 @@ WHERE lock.locktype = 'advisory'
 - No advisory-lock row plus a populated `owner_id` means the database session is gone but the
   durable marker remains. Confirm the process is absent on the recorded host and on every node
   configured for the same database.
-- An empty `owner_id` means this schema has no durable owner. If startup still reports a conflict,
-  verify that the inspection used the same database, role and `search_path` as Miningcore.
+- An empty `owner_id` means this explicitly inspected schema has no durable owner. If startup still
+  reports a conflict, verify the database, application role and schema again.
 
-Use the recorded process ID and acquisition time to capture the complete previous journal. For a
-systemd service, `_PID` selects that exact process:
+Use the recorded acquisition time and the known stop or database-failure time to define a log
+window with a safety margin. A process ID is supporting evidence only: numeric PIDs can be reused,
+including across boots, and do not identify a container's host journal records reliably.
+
+For a systemd deployment, select the unit and bounded time window together:
 
 ```console
-sudo journalctl _PID=REPLACE_WITH_OWNER_PROCESS_ID --no-pager -o short-iso
+sudo journalctl \
+  -u miningcore.service \
+  --since 'REPLACE_WITH_ACQUIRED_TIME_MINUS_MARGIN' \
+  --until 'REPLACE_WITH_STOP_OR_DATABASE_FAILURE_TIME_PLUS_MARGIN' \
+  --no-pager -o short-iso-precise
 ```
+
+Also constrain the search to the relevant boot (`journalctl --list-boots` and `-b`) or
+`_SYSTEMD_INVOCATION_ID` when that identity is available. Add `_PID=...` only after the unit,
+boot or invocation, and time boundaries are established; never treat `_PID` alone as exact process
+identity.
+
+For a Docker deployment, first identify the exact container and logging driver, then use the same
+bounded window:
+
+```console
+docker inspect --format '{{.Id}} {{.Name}} {{.HostConfig.LogConfig.Type}}' \
+  REPLACE_WITH_CONTAINER
+docker logs \
+  --since 'REPLACE_WITH_ACQUIRED_TIME_MINUS_MARGIN' \
+  --until 'REPLACE_WITH_STOP_OR_DATABASE_FAILURE_TIME_PLUS_MARGIN' \
+  REPLACE_WITH_CONTAINER
+```
+
+When Docker uses the `journald` logging driver, query the recorded `CONTAINER_ID_FULL` or verified
+`CONTAINER_NAME` plus the time window instead. A host PID is not the container identity.
+
+```console
+sudo journalctl \
+  CONTAINER_ID_FULL=REPLACE_WITH_FULL_CONTAINER_ID \
+  --since 'REPLACE_WITH_ACQUIRED_TIME_MINUS_MARGIN' \
+  --until 'REPLACE_WITH_STOP_OR_DATABASE_FAILURE_TIME_PLUS_MARGIN' \
+  --no-pager -o short-iso-precise
+```
+
+Miningcore may write payout-cycle evidence to `logging.logFile` instead of the console. If console
+logging was disabled, or a file path was configured, inspect that file and its rotated files over
+the same time window. An empty systemd or Docker log is not proof that no wallet submission occurred
+until every configured logging destination and the correct service/container invocation have been
+checked.
 
 Review every payout cycle after ownership was acquired. If the log only reports `No balances over
 configured minimum payout`, no wallet submission began. If it processed payable balances, reported
@@ -205,9 +265,9 @@ reconcile the daemon or wallet transaction history with Miningcore's `payments` 
 
 After proving that every previous payout manager is dead and completing any required wallet
 reconciliation, release only the owner token and generation that were inspected. Run this block in
-`psql` after replacing both placeholders. The transaction-level advisory lock prevents a new
-payout manager from racing the release, and the expected token/generation prevents an operator
-from clearing a newer owner accidentally:
+`psql` after replacing the explicitly inspected schema, owner token and generation placeholders.
+The transaction-level advisory lock prevents a new payout manager from racing the release, and the
+expected token/generation prevents an operator from clearing a newer owner accidentally:
 
 ```sql
 BEGIN;
@@ -220,7 +280,7 @@ BEGIN
         RAISE EXCEPTION 'A payout manager still holds the advisory lock';
     END IF;
 
-    UPDATE payout_manager_ownership
+    UPDATE REPLACE_WITH_SCHEMA.payout_manager_ownership
     SET owner_id = NULL,
         owner_host = NULL,
         owner_process_id = NULL,
@@ -249,10 +309,45 @@ sudo systemctl status miningcore --no-pager
 sudo journalctl -u miningcore --since '10 minutes ago' --no-pager
 ```
 
-If mining and share recording must resume before wallet reconciliation is complete, set only the
-top-level `paymentProcessing.enabled` value to `false`, validate the JSON, and start Miningcore with
-payouts paused. This does not clear or supersede the durable marker. Restore payment processing only
-after the ownership recovery is complete and exactly one designated node is ready to acquire it.
+If mining and share recording must resume before wallet reconciliation is complete, pause payout
+execution without violating the deployment's startup validation:
+
+- On a node without enabled LTC-DOGE merged mining, or on a share-relay sender with the top-level
+  `shareRelay` configured, set the top-level `paymentProcessing.enabled` value to `false`.
+- On a direct pool or share-relay receiver/recorder with LTC-DOGE merged mining enabled (no
+  top-level `shareRelay`), keep the top-level `paymentProcessing.enabled` value `true` and
+  temporarily set `paymentProcessing.enabled` to `false` inside **every enabled pool**. Direct and
+  receiver nodes require the cluster-level switch for merged-block reconciliation validation, while
+  disabling all pool-level switches prevents `PayoutManager` from being registered.
+
+For the merged-mining case, preserve every other payment setting and change only each pool's
+`enabled` value:
+
+```json
+{
+  "paymentProcessing": {
+    "enabled": true
+  },
+  "pools": [
+    {
+      "id": "ltc",
+      "paymentProcessing": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "doge",
+      "paymentProcessing": {
+        "enabled": false
+      }
+    }
+  ]
+}
+```
+
+Validate the complete JSON before starting Miningcore. Either procedure pauses payouts but does not
+clear or supersede the durable marker. Restore the original configuration only after ownership
+recovery is complete and exactly one designated node is ready to acquire it.
 
 ## Routine inspection
 
