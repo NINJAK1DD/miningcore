@@ -210,6 +210,12 @@ sudo systemctl is-active miningcore
 pgrep -af 'Miningcore|Miningcore.dll' || true
 ```
 
+Stop Miningcore before stopping or restarting PostgreSQL. A clean application shutdown releases
+its durable payout-manager owner; taking PostgreSQL down first destroys the advisory-lock session
+and intentionally leaves the marker fail-closed. If a marker remains, follow the guarded
+[payout-manager ownership recovery](database.md#recover-payout-manager-ownership-safely) instead of
+restarting repeatedly or clearing it without inspecting the previous process and wallet history.
+
 Follow [Database setup and upgrades](database.md) and apply every migration required between the old
 commit and the target release with `ON_ERROR_STOP`. Do not run `createdb.sql` over an existing
 database. The current release requires payout-manager ownership changes for payment-processing and
