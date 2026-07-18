@@ -199,6 +199,11 @@ tag's leading `v`) and full commit SHA. Older releases can show the legacy `0.1.
 for those builds, match the full embedded SHA to the tagged commit. If the exact-tag command fails,
 do not describe the build as that release even when the commit is otherwise on `dev`.
 
+The supported Linux build scripts inject this release identity only when `HEAD` has exactly one
+SemVer release tag and the checkout is clean. Untagged branch builds retain GitVersion's calculated
+prerelease version. A dirty or ambiguously tagged release checkout is rejected so locally modified
+code cannot be labelled as an official release.
+
 ## 5. Stop writers and migrate the database
 
 Schedule a maintenance window. Stop Miningcore on every node that writes shares, blocks, payments or

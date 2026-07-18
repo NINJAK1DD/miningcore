@@ -10,6 +10,7 @@ on:
       - '.github/workflows/release.yml'
       - '.dockerignore'
       - 'Dockerfile'
+      - 'build-*.sh'
       - 'global.json'
       - 'src/**'
       - 'packaging/**'
@@ -131,6 +132,9 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
+
+      - name: Test source-build identity resolution
+        run: bash scripts/release/test-source-build-identity.sh
 
       - name: Restore dependencies
         run: dotnet restore src
