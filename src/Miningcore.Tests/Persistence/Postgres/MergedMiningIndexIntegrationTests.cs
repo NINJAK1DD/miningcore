@@ -13,6 +13,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
+[Collection(PayoutManagerLeaseIntegrationCollection.Name)]
 public class MergedMiningIndexIntegrationTests
 {
     [Fact]

@@ -9,6 +9,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
+[Collection(PayoutManagerLeaseIntegrationCollection.Name)]
 public class PayoutManagerLeaseIntegrationTests
 {
     [PostgresIntegrationFact]

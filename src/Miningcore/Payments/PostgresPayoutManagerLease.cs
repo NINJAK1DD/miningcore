@@ -98,6 +98,8 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             AcquisitionFailure = null;
 
             var candidate = await cf.OpenConnectionAsync();
+            var advisoryLockHeld = false;
+            var retainCandidate = false;
 
             try
             {
@@ -106,13 +108,13 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     new { lockNamespace = LockNamespace, lockKey = LockKey },
                     cancellationToken: ct);
                 var locked = await candidate.ExecuteScalarAsync<bool>(command);
+                advisoryLockHeld = locked;
 
                 if(!locked)
                 {
                     var currentOwner = await TryReadOwnershipAsync(candidate, null, ct);
                     AcquisitionFailure = DescribeOwnershipConflict(currentOwner, true);
                     logger.Warn(() => AcquisitionFailure);
-                    candidate.Dispose();
                     return false;
                 }
 
@@ -180,13 +182,11 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                 }
 
                 if(generation == 0)
-                {
-                    candidate.Dispose();
                     return false;
-                }
 
                 connection = candidate;
                 acquired = true;
+                retainCandidate = true;
                 AcquisitionFailure = null;
                 logger.Info(() => $"Acquired durable PostgreSQL payout-manager ownership generation {generation} [{ownerId}]");
                 return true;
@@ -194,7 +194,6 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
             catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.UndefinedTable)
             {
-                candidate.Dispose();
                 throw new InvalidOperationException(
                     "The payout-manager ownership schema is missing. Apply " +
                     "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql before enabling payment processing.", ex);
@@ -202,7 +201,6 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
             catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
             {
-                candidate.Dispose();
                 throw new InvalidOperationException(
                     "The configured PostgreSQL role cannot use the payout-manager ownership schema. " +
                     "The database owner should match persistence.postgres.user; rerun " +
@@ -212,16 +210,49 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     "on payment_batches and share_recovery_imports.", ex);
             }
 
-            catch
+            finally
             {
-                candidate.Dispose();
-                throw;
+                if(!retainCandidate)
+                {
+                    if(advisoryLockHeld)
+                        await ReleaseAdvisoryLockAsync(candidate);
+
+                    candidate.Dispose();
+                }
             }
         }
 
         finally
         {
             gate.Release();
+        }
+    }
+
+    private static async Task ReleaseAdvisoryLockAsync(IDbConnection candidate)
+    {
+        if(candidate.State != ConnectionState.Open)
+            return;
+
+        try
+        {
+            const string release =
+                "SELECT pg_advisory_unlock(@lockNamespace, @lockKey)";
+            var released = await candidate.ExecuteScalarAsync<bool>(new CommandDefinition(
+                release, new { lockNamespace = LockNamespace, lockKey = LockKey },
+                commandTimeout: 5));
+
+            if(!released)
+                logger.Warn(() => "The PostgreSQL payout-manager guard session no longer held its advisory lock during cleanup");
+        }
+
+        catch(Exception ex)
+        {
+            // A pooled session must never be returned while it may still own the lock.
+            // Clearing its pool forces this connector closed when it is disposed below.
+            if(candidate is NpgsqlConnection npgsqlConnection)
+                NpgsqlConnection.ClearPool(npgsqlConnection);
+
+            logger.Error(ex, () => "Unable to release the PostgreSQL payout-manager advisory lock; the guard connection will not be reused");
         }
     }
 
@@ -370,7 +401,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     logger.Error(() => "Retaining durable payout-manager ownership because a wallet submission is still active or has an unknown outcome. Reconcile wallet history before manual release");
                 }
 
-                // The session advisory lock is released when this connection closes.
+                await ReleaseAdvisoryLockAsync(connection);
                 connection.Dispose();
                 connection = null;
             }
