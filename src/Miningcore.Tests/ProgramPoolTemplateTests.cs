@@ -985,6 +985,22 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
+    public void ProductionContainer_AutoMapperResolvesSameSingleton()
+    {
+        using var host = new HostBuilder()
+            .UseServiceProviderFactory(new AutofacServiceProviderFactory())
+            .ConfigureServices(services => services.AddLogging())
+            .ConfigureContainer<ContainerBuilder>(builder =>
+                Program.ConfigureAutoMapper(builder))
+            .Build();
+
+        var first = host.Services.GetRequiredService<IMapper>();
+        var second = host.Services.GetRequiredService<IMapper>();
+
+        Assert.Same(first, second);
+    }
+
+    [Fact]
     public void MergedMining_LegacyNonDurableAcknowledgementIsNoLongerRequired()
     {
         var config = MergedMiningCluster();

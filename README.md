@@ -478,6 +478,15 @@ for earlier work.
 
 Third-party dependencies retain their own licence terms. AutoMapper 16 is distributed under
 [AutoMapper's dual-licensing model](https://automapper.io/). Review those terms for your deployment.
-If your use requires a commercial licence key, provide it to the Miningcore service through the
-`MININGCORE_AUTOMAPPER_LICENSE_KEY` environment variable. Do not store the key in `pool.json`, source
-control or logs.
+If your use requires a commercial licence key, provide it through AutoMapper's standard
+`AUTOMAPPER_LICENSE_KEY` environment variable, or `LUCKYPENNY_LICENSE_KEY` for a bundle that includes
+AutoMapper. AutoMapper checks the product-specific variable first. Do not store the key in
+`pool.json` or source control.
+
+Without a key, AutoMapper writes a warning under `LuckyPennySoftware.AutoMapper.License`; it does not
+contact a licence server, disable features or otherwise change runtime behaviour. Source deployments
+that intentionally suppress the message can add a `Microsoft.Extensions.Logging` filter for that
+category, but operators remain responsible for complying with the applicable licence terms.
+
+See [Dependency security](docs/dependency-security.md) for NuGet audit policy and the documented risk
+acceptance for the legacy Zcash cryptography dependency.

@@ -378,14 +378,17 @@ public class Program : ProcessStatusBackgroundService
         builder.RegisterInstance(pools);
         builder.RegisterInstance(gcStats);
 
-        // AutoMapper
-        builder.Register(ctx => AutoMapperFactory.CreateMapper(
-                ctx.Resolve<Microsoft.Extensions.Logging.ILoggerFactory>(),
-                Environment.GetEnvironmentVariable("MININGCORE_AUTOMAPPER_LICENSE_KEY")))
-            .As<IMapper>()
-            .SingleInstance();
+        ConfigureAutoMapper(builder);
 
         ConfigurePersistence(builder);
+    }
+
+    internal static void ConfigureAutoMapper(ContainerBuilder builder)
+    {
+        builder.Register(ctx => AutoMapperFactory.CreateMapper(
+                ctx.Resolve<ILoggerFactory>()))
+            .As<IMapper>()
+            .SingleInstance();
     }
 
     protected override async Task ExecuteCoreAsync(CancellationToken ct)

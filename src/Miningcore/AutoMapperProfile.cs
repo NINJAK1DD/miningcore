@@ -3,32 +3,10 @@ using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Model.Projections;
-using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
 using MinerStats = Miningcore.Persistence.Model.Projections.MinerStats;
 
 namespace Miningcore;
-
-internal static class AutoMapperFactory
-{
-    public static MapperConfiguration CreateConfiguration(
-        Microsoft.Extensions.Logging.ILoggerFactory loggerFactory = null,
-        string licenseKey = null)
-    {
-        loggerFactory ??= NullLoggerFactory.Instance;
-
-        return new MapperConfiguration(cfg =>
-            {
-                if(!string.IsNullOrWhiteSpace(licenseKey))
-                    cfg.LicenseKey = licenseKey.Trim();
-
-                cfg.AddProfile(new AutoMapperProfile());
-            }, loggerFactory);
-    }
-
-    public static IMapper CreateMapper(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory = null,
-        string licenseKey = null) => CreateConfiguration(loggerFactory, licenseKey).CreateMapper();
-}
 
 public class AutoMapperProfile : Profile
 {
