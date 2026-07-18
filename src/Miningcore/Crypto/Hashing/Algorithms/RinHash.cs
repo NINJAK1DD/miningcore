@@ -1,10 +1,10 @@
 using System;
 using System.Security.Cryptography;
-using Isopoh.Cryptography.Argon2;
-using Miningcore.Contracts;
-using SHA3.Net;
 using System.Text;
 using Blake3;
+using Isopoh.Cryptography.Argon2;
+using Miningcore.Contracts;
+using Org.BouncyCastle.Crypto.Digests;
 
 namespace Miningcore.Crypto.Hashing.Algorithms;
 
@@ -14,6 +14,7 @@ namespace Miningcore.Crypto.Hashing.Algorithms;
 [Identifier("rinhash")]
 public unsafe class RinHash : IHashAlgorithm
 {
+    private static readonly bool PlatformSha3Supported = SHA3_256.IsSupported;
     private static readonly byte[] Salt;
 
     static RinHash()
@@ -47,7 +48,23 @@ public unsafe class RinHash : IHashAlgorithm
         var arresult = argon2.Hash();
 
         // 3. SHA3-256
-        var sha3 = Sha3.Sha3256().ComputeHash(arresult.Buffer);
-        sha3.ToArray().CopyTo(result);
+        HashSha3(arresult.Buffer, result, PlatformSha3Supported);
+    }
+
+    internal static void HashSha3(ReadOnlySpan<byte> data, Span<byte> result, bool platformSha3Supported)
+    {
+        Contract.Requires<ArgumentException>(result.Length >= 32);
+        var destination = result[..32];
+
+        if(platformSha3Supported)
+        {
+            SHA3_256.HashData(data, destination);
+            return;
+        }
+
+        var digest = new Sha3Digest(256);
+
+        digest.BlockUpdate(data);
+        digest.DoFinal(destination);
     }
 }

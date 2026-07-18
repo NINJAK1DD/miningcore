@@ -234,6 +234,8 @@ jobs:
             fi
           fi
 
+          bash scripts/release/validate-managed-dependencies.sh publish
+
       - name: Assemble release archive
         env:
           SOURCE_COMMIT: ${{ github.sha }}

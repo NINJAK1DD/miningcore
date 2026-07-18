@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
@@ -201,6 +202,33 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("bd75a82b9957d6d043076dea52262635042693f1fe23bcadadaecc908e1e5cc6", result);
+    }
+
+    [Fact]
+    public void RinHash_Uses_Managed_Sha3_Fallback()
+    {
+        var hash = new byte[32];
+
+        RinHash.HashSha3(Encoding.ASCII.GetBytes("abc"), hash, false);
+
+        Assert.Equal("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+            hash.ToHexString());
+    }
+
+    [Fact]
+    public void RinHash_Sha3_Implementations_Agree()
+    {
+        if(!SHA3_256.IsSupported)
+            return;
+
+        var data = Enumerable.Range(0, 256).Select(x => (byte) x).ToArray();
+        var managed = new byte[32];
+        var platform = new byte[32];
+
+        RinHash.HashSha3(data, managed, false);
+        RinHash.HashSha3(data, platform, true);
+
+        Assert.Equal(managed.ToHexString(), platform.ToHexString());
     }
 
     [Fact]

@@ -61,9 +61,7 @@ public class MergedMiningIndexIntegrationTests
         {
             await connection.ExecuteAsync($"CREATE SCHEMA {schema}; " +
                 $"SET search_path TO {schema};");
-            var mapper = new MapperConfiguration(cfg =>
-                    cfg.AddProfile(new AutoMapperProfile()))
-                .CreateMapper();
+            var mapper = AutoMapperFactory.CreateMapper();
             var repository = new ShareRepository(mapper);
 
             Assert.False(await repository.HasRecoveryImportSchemaAsync(connection,
@@ -227,9 +225,7 @@ public class MergedMiningIndexIntegrationTests
                 "../../../../Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql"));
             await connection.ExecuteAsync(await File.ReadAllTextAsync(migrationPath));
 
-            var mapper = new MapperConfiguration(cfg =>
-                    cfg.AddProfile(new AutoMapperProfile()))
-                .CreateMapper();
+            var mapper = AutoMapperFactory.CreateMapper();
             var repository = new BlockRepository(mapper);
             Assert.True(await repository.HasMergedMiningBlockIndexesAsync(connection,
                 CancellationToken.None));
@@ -314,9 +310,7 @@ public class MergedMiningIndexIntegrationTests
                     ON {staleSchema}.blocks(poolid, hash);
             ");
 
-            var mapper = new MapperConfiguration(cfg =>
-                    cfg.AddProfile(new AutoMapperProfile()))
-                .CreateMapper();
+            var mapper = AutoMapperFactory.CreateMapper();
             var repository = new BlockRepository(mapper);
 
             await connection.ExecuteAsync(

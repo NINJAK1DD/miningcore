@@ -19,8 +19,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task InsertAsync_DeduplicatesAuxPowBlocksByPoolAndHash()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection();
         var block = new Block
@@ -46,8 +45,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task InsertAsync_DeduplicatesOnlyIdenticalAuxPowClaims()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection();
         var block = new Block
@@ -71,8 +69,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task InsertAsync_OrdinaryBlocksDoNotRequireAuxPowIndex()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection();
         var block = new Block
@@ -97,8 +94,7 @@ public class BlockRepositoryTests
     [InlineData("merged-parent-uncertain")]
     public async Task InsertAsync_DeduplicatesMergedParentBlocksByPoolAndHash(string type)
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection();
         var block = new Block
@@ -127,8 +123,7 @@ public class BlockRepositoryTests
     [InlineData("GetLastMinerBlockTimeAsync")]
     public async Task PublicStatistics_ExcludeUnresolvedMergedMiningClaims(string method)
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection { ScalarResult = 0 };
 
@@ -163,8 +158,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task HasMergedMiningBlockIndexesAsync_ChecksAllRequiredIndexes()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection { ScalarResult = true };
 
@@ -203,8 +197,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task UpdateBlockAsync_PersistsTransactionConfirmationData()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection();
         var block = new Block
@@ -228,8 +221,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task UpdateBlockAsync_ReturnsFalseWhenPromotionGuardDoesNotUpdateRow()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection { NonQueryResult = 0 };
         var block = new Block
@@ -255,8 +247,7 @@ public class BlockRepositoryTests
     [Fact]
     public async Task GetBlockBeforeCountAsync_UsesCountScalar()
     {
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var repository = new BlockRepository(mapper);
         var connection = new RecordingDbConnection { ScalarResult = 0 };
 

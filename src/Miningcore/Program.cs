@@ -378,11 +378,17 @@ public class Program : ProcessStatusBackgroundService
         builder.RegisterInstance(pools);
         builder.RegisterInstance(gcStats);
 
-        // AutoMapper
-        var amConf = new MapperConfiguration(cfg => { cfg.AddProfile(new AutoMapperProfile()); });
-        builder.Register((ctx, parms) => amConf.CreateMapper());
+        ConfigureAutoMapper(builder);
 
         ConfigurePersistence(builder);
+    }
+
+    internal static void ConfigureAutoMapper(ContainerBuilder builder)
+    {
+        builder.Register(ctx => AutoMapperFactory.CreateMapper(
+                ctx.Resolve<ILoggerFactory>()))
+            .As<IMapper>()
+            .SingleInstance();
     }
 
     protected override async Task ExecuteCoreAsync(CancellationToken ct)
