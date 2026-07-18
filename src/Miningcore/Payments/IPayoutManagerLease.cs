@@ -6,6 +6,7 @@ namespace Miningcore.Payments;
 /// </summary>
 public interface IPayoutManagerLease : IAsyncDisposable
 {
+    string AcquisitionFailure { get; }
     Task<bool> TryAcquireAsync(CancellationToken ct);
     Task EnsureHeldAsync(CancellationToken ct);
     void BeginFinancialOperation();

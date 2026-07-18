@@ -238,6 +238,20 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_ReportsLeaseAcquisitionFailure()
+    {
+        var fixture = CreateFixture();
+        const string reason = "A durable payout-manager ownership marker remains for host pool-1 process 42";
+        fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(false);
+        fixture.PayoutLease.AcquisitionFailure.Returns(reason);
+
+        var ex = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            fixture.Manager.StartAsync(CancellationToken.None));
+
+        Assert.Equal(reason, ex.Message);
+    }
+
+    [Fact]
     public async Task StartAndStop_HoldLeaseForServiceLifetime()
     {
         var fixture = CreateFixture();

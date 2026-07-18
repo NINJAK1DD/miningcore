@@ -13,6 +13,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
+[Collection(PayoutManagerLeaseIntegrationCollection.Name)]
 public class MergedMiningIndexIntegrationTests
 {
     [Fact]
@@ -31,6 +32,19 @@ public class MergedMiningIndexIntegrationTests
         Assert.Contains("'payment_batches'::NAME", migration,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'payout_manager_ownership'::NAME", migration,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PayoutOwnershipMigration_DoesNotPublishUnguardedLeaseRelease()
+    {
+        var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+            "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+        var migration = await File.ReadAllTextAsync(migrationPath);
+
+        Assert.DoesNotContain("SET owner_id = NULL", migration,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("docs/database.md#recover-payout-manager-ownership-safely", migration,
             StringComparison.OrdinalIgnoreCase);
     }
 
@@ -159,6 +173,8 @@ public class MergedMiningIndexIntegrationTests
                 StringComparison.OrdinalIgnoreCase);
             Assert.Null(await connection.ExecuteScalarAsync<Guid?>(
                 "SELECT owner_id FROM payout_manager_ownership WHERE id = 1"));
+            await PayoutManagerLeaseIntegrationAssertions
+                .AssertAdvisoryLockAvailableAsync(connectionString);
         }
         finally
         {

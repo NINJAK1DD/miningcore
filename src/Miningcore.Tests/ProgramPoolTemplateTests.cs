@@ -751,6 +751,71 @@ public class ProgramPoolTemplateTests
         Assert.Contains("cluster-level payment processing", ex.Message);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MergedMining_DirectAndReceiverNodes_PausePayoutManagerWithPoolPaymentsDisabled(
+        bool relayReceiver)
+    {
+        var config = MergedMiningCluster(relayReceiver: relayReceiver);
+        config.Pools[0].PaymentProcessing.Enabled = false;
+
+        Program.ValidateMergedMiningDeployment(config);
+
+        Assert.True(config.PaymentProcessing.Enabled);
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+    }
+
+    [Fact]
+    public void MergedMining_MultiPoolPause_RequiresEveryPoolPaymentSwitchDisabled()
+    {
+        var config = MergedMiningCluster();
+        config.Pools = config.Pools.Concat(new[]
+        {
+            new PoolConfig
+            {
+                Id = "other-pool",
+                Enabled = true,
+                PaymentProcessing = new PoolPaymentProcessingConfig
+                {
+                    Enabled = true,
+                },
+            },
+        }).ToArray();
+        config.Pools[0].PaymentProcessing.Enabled = false;
+
+        Program.ValidateMergedMiningDeployment(config);
+
+        Assert.True(Program.ShouldRunPaymentProcessor(config));
+
+        config.Pools[1].PaymentProcessing.Enabled = false;
+
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+    }
+
+    [Fact]
+    public void MergedMining_MultiPoolPause_IgnoresDisabledPoolPaymentSwitch()
+    {
+        var config = MergedMiningCluster();
+        config.Pools = config.Pools.Concat(new[]
+        {
+            new PoolConfig
+            {
+                Id = "disabled-pool",
+                Enabled = false,
+                PaymentProcessing = new PoolPaymentProcessingConfig
+                {
+                    Enabled = true,
+                },
+            },
+        }).ToArray();
+        config.Pools[0].PaymentProcessing.Enabled = false;
+
+        Program.ValidateMergedMiningDeployment(config);
+
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+    }
+
     [Fact]
     public async Task HostShutdown_WaitsBeyondLegacyTimeoutUntilCandidateJournalIsDurable()
     {

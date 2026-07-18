@@ -36,6 +36,8 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private int activeFinancialOperations;
     private bool financialOutcomeUncertain;
 
+    public string AcquisitionFailure { get; private set; }
+
     internal bool CanReleaseOwnership
     {
         get
@@ -93,7 +95,11 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             if(acquired)
                 return true;
 
+            AcquisitionFailure = null;
+
             var candidate = await cf.OpenConnectionAsync();
+            var advisoryLockHeld = false;
+            var retainCandidate = false;
 
             try
             {
@@ -102,15 +108,19 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     new { lockNamespace = LockNamespace, lockKey = LockKey },
                     cancellationToken: ct);
                 var locked = await candidate.ExecuteScalarAsync<bool>(command);
+                advisoryLockHeld = locked;
 
                 if(!locked)
                 {
-                    candidate.Dispose();
+                    var currentOwner = await TryReadOwnershipAsync(candidate, null, ct);
+                    AcquisitionFailure = DescribeOwnershipConflict(currentOwner, true);
+                    logger.Warn(() => AcquisitionFailure);
                     return false;
                 }
 
                 using(var tx = candidate.BeginTransaction())
                 {
+                    PayoutManagerOwnership currentOwner = null;
                     const string verifyPaymentBatchSchema = @"SELECT EXISTS(
                         SELECT 1
                         FROM pg_constraint con
@@ -162,27 +172,28 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                     if(generation == 0)
                     {
+                        currentOwner = await ReadOwnershipAsync(candidate, tx, ct);
                         tx.Rollback();
+                        AcquisitionFailure = DescribeOwnershipConflict(currentOwner, false);
+                        logger.Warn(() => AcquisitionFailure);
                     }
                     else
                         tx.Commit();
                 }
 
                 if(generation == 0)
-                {
-                    candidate.Dispose();
                     return false;
-                }
 
                 connection = candidate;
                 acquired = true;
+                retainCandidate = true;
+                AcquisitionFailure = null;
                 logger.Info(() => $"Acquired durable PostgreSQL payout-manager ownership generation {generation} [{ownerId}]");
                 return true;
             }
 
             catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.UndefinedTable)
             {
-                candidate.Dispose();
                 throw new InvalidOperationException(
                     "The payout-manager ownership schema is missing. Apply " +
                     "src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql before enabling payment processing.", ex);
@@ -190,7 +201,6 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
             catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
             {
-                candidate.Dispose();
                 throw new InvalidOperationException(
                     "The configured PostgreSQL role cannot use the payout-manager ownership schema. " +
                     "The database owner should match persistence.postgres.user; rerun " +
@@ -200,10 +210,15 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     "on payment_batches and share_recovery_imports.", ex);
             }
 
-            catch
+            finally
             {
-                candidate.Dispose();
-                throw;
+                if(!retainCandidate)
+                {
+                    if(advisoryLockHeld)
+                        await ReleaseAdvisoryLockAsync(candidate);
+
+                    candidate.Dispose();
+                }
             }
         }
 
@@ -211,6 +226,93 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
         {
             gate.Release();
         }
+    }
+
+    private static async Task ReleaseAdvisoryLockAsync(IDbConnection candidate)
+    {
+        if(candidate.State != ConnectionState.Open)
+            return;
+
+        try
+        {
+            const string release =
+                "SELECT pg_advisory_unlock(@lockNamespace, @lockKey)";
+            var released = await candidate.ExecuteScalarAsync<bool>(new CommandDefinition(
+                release, new { lockNamespace = LockNamespace, lockKey = LockKey },
+                commandTimeout: 5));
+
+            if(!released)
+                logger.Warn(() => "The PostgreSQL payout-manager guard session no longer held its advisory lock during cleanup");
+        }
+
+        catch(Exception ex)
+        {
+            // A pooled session must never be returned while it may still own the lock.
+            // Clearing its pool forces this connector closed when it is disposed below.
+            if(candidate is NpgsqlConnection npgsqlConnection)
+                NpgsqlConnection.ClearPool(npgsqlConnection);
+
+            logger.Error(ex, () => "Unable to release the PostgreSQL payout-manager advisory lock; the guard connection will not be reused");
+        }
+    }
+
+    private static async Task<PayoutManagerOwnership> TryReadOwnershipAsync(
+        IDbConnection candidate, IDbTransaction tx, CancellationToken ct)
+    {
+        try
+        {
+            return await ReadOwnershipAsync(candidate, tx, ct);
+        }
+
+        catch(Exception ex) when(ex is not OperationCanceledException)
+        {
+            logger.Debug(ex, () => "Unable to read the durable payout-manager owner while reporting an advisory-lock conflict");
+            return null;
+        }
+    }
+
+    private static Task<PayoutManagerOwnership> ReadOwnershipAsync(IDbConnection candidate,
+        IDbTransaction tx, CancellationToken ct)
+    {
+        const string query = @"SELECT generation AS Generation,
+                owner_id AS OwnerId,
+                owner_host AS OwnerHost,
+                owner_process_id AS OwnerProcessId,
+                acquired AS Acquired
+            FROM payout_manager_ownership
+            WHERE id = 1";
+
+        return candidate.QuerySingleOrDefaultAsync<PayoutManagerOwnership>(
+            new CommandDefinition(query, transaction: tx, cancellationToken: ct));
+    }
+
+    private static string DescribeOwnershipConflict(PayoutManagerOwnership owner,
+        bool advisoryLockHeld)
+    {
+        var conflict = advisoryLockHeld
+            ? "Another payout manager currently holds the PostgreSQL advisory lock."
+            : "A durable payout-manager ownership marker remains without the advisory lock.";
+        var recovery = "Run exactly one payout/reconciliation processor per database. " +
+            "Clear a durable marker only after confirming the recorded process is dead and reconciling any wallet submission with an uncertain outcome.";
+
+        if(owner?.OwnerId == null)
+            return $"{conflict} {recovery}";
+
+        var host = string.IsNullOrWhiteSpace(owner.OwnerHost) ? "unknown" : owner.OwnerHost;
+        var process = owner.OwnerProcessId?.ToString() ?? "unknown";
+        var acquired = owner.Acquired?.ToString("O") ?? "unknown";
+
+        return $"{conflict} Recorded owner: generation {owner.Generation}, host {host}, " +
+            $"process {process}, acquired {acquired}, token {owner.OwnerId}. {recovery}";
+    }
+
+    private sealed class PayoutManagerOwnership
+    {
+        public long Generation { get; set; }
+        public Guid? OwnerId { get; set; }
+        public string OwnerHost { get; set; }
+        public int? OwnerProcessId { get; set; }
+        public DateTime? Acquired { get; set; }
     }
 
     public async Task EnsureHeldAsync(CancellationToken ct)
@@ -299,7 +401,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     logger.Error(() => "Retaining durable payout-manager ownership because a wallet submission is still active or has an unknown outcome. Reconcile wallet history before manual release");
                 }
 
-                // The session advisory lock is released when this connection closes.
+                await ReleaseAdvisoryLockAsync(connection);
                 connection.Dispose();
                 connection = null;
             }

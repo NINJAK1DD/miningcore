@@ -132,7 +132,9 @@ sudo journalctl -u miningcore -f
 The unit expects `/opt/miningcore` and `/etc/miningcore/config.json`. It creates writable
 `/var/lib/miningcore` and `/var/log/miningcore` directories through systemd. If startup fails, read
 the complete journal before restarting; repeated restarts do not repair missing migrations or bad
-daemon credentials.
+daemon credentials. For a local database, stop Miningcore before PostgreSQL so the payout manager
+can release its durable owner cleanly. If ownership remains after a database-session or process
+loss, use the guarded [payout-manager recovery runbook](database.md#recover-payout-manager-ownership-safely).
 
 ## Upgrade or roll back
 

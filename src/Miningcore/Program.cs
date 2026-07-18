@@ -1239,7 +1239,7 @@ public class Program : ProcessStatusBackgroundService
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
     {
         var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
-            config.Pools?.Any(x => x.PaymentProcessing?.Enabled == true) == true;
+            config.Pools?.Any(x => x.Enabled && x.PaymentProcessing?.Enabled == true) == true;
 
         if(!paymentEnabled)
             return false;
