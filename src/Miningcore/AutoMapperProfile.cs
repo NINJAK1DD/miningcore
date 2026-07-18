@@ -26,16 +26,33 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.Reward, opt => opt.MapFrom(src => src.BlockReward))
             .ForMember(dest => dest.Hash, opt => opt.MapFrom(src => src.BlockHash))
             .ForMember(dest => dest.Type, opt => opt.MapFrom(src => src.BlockType))
-            .ForMember(dest => dest.Status, opt => opt.Ignore());
+            .ForMember(dest => dest.Id, opt => opt.Ignore())
+            .ForMember(dest => dest.Status, opt => opt.Ignore())
+            .ForMember(dest => dest.ConfirmationProgress, opt => opt.Ignore())
+            .ForMember(dest => dest.Effort, opt => opt.Ignore())
+            .ForMember(dest => dest.MinerEffort, opt => opt.Ignore())
+            .ForMember(dest => dest.NotifyBlockFoundOnUpdate, opt => opt.Ignore())
+            .ForMember(dest => dest.NotifyBlockConfirmationProgressOnUpdate, opt => opt.Ignore())
+            .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore());
 
         CreateMap<BlockStatus, string>().ConvertUsing(e => e.ToString().ToLower());
 
         CreateMap<Mining.PoolStats, PoolStats>()
+            .ForMember(dest => dest.Id, opt => opt.Ignore())
             .ForMember(dest => dest.PoolId, opt => opt.Ignore())
+            .ForMember(dest => dest.NetworkHashrate, opt => opt.Ignore())
+            .ForMember(dest => dest.NetworkDifficulty, opt => opt.Ignore())
+            .ForMember(dest => dest.LastNetworkBlockTime, opt => opt.Ignore())
+            .ForMember(dest => dest.BlockHeight, opt => opt.Ignore())
+            .ForMember(dest => dest.ConnectedPeers, opt => opt.Ignore())
             .ForMember(dest => dest.Created, opt => opt.Ignore());
 
         CreateMap<BlockchainStats, PoolStats>()
+            .ForMember(dest => dest.Id, opt => opt.Ignore())
             .ForMember(dest => dest.PoolId, opt => opt.Ignore())
+            .ForMember(dest => dest.ConnectedMiners, opt => opt.Ignore())
+            .ForMember(dest => dest.PoolHashrate, opt => opt.Ignore())
+            .ForMember(dest => dest.SharesPerSecond, opt => opt.Ignore())
             .ForMember(dest => dest.Created, opt => opt.Ignore());
 
         // API
@@ -52,19 +69,41 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.Algorithm, opt => opt.MapFrom(src => src.GetAlgorithmName()));
 
         CreateMap<PoolConfig, Api.Responses.PoolInfo>()
-            .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template));
+            .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template))
+            .ForMember(dest => dest.ShareBasedBanning, opt => opt.MapFrom(src => src.Banning))
+            .ForMember(dest => dest.PoolFeePercent, opt => opt.Ignore())
+            .ForMember(dest => dest.AddressInfoLink, opt => opt.Ignore())
+            .ForMember(dest => dest.PoolStats, opt => opt.Ignore())
+            .ForMember(dest => dest.NetworkStats, opt => opt.Ignore())
+            .ForMember(dest => dest.TopMiners, opt => opt.Ignore())
+            .ForMember(dest => dest.TotalPaid, opt => opt.Ignore())
+            .ForMember(dest => dest.TotalBlocks, opt => opt.Ignore())
+            .ForMember(dest => dest.TotalConfirmedBlocks, opt => opt.Ignore())
+            .ForMember(dest => dest.TotalPendingBlocks, opt => opt.Ignore())
+            .ForMember(dest => dest.BlockReward, opt => opt.Ignore())
+            .ForMember(dest => dest.LastPoolBlockTime, opt => opt.Ignore())
+            .ForMember(dest => dest.PoolEffort, opt => opt.Ignore());
 
-        CreateMap<PoolStats, Api.Responses.PoolInfo>();
-        CreateMap<PoolStats, Api.Responses.AggregatedPoolStats>();
-        CreateMap<Block, Api.Responses.Block>();
+        CreateMap<PoolStats, Api.Responses.AggregatedPoolStats>()
+            .ForMember(dest => dest.ValidSharesPerSecond,
+                opt => opt.MapFrom(src => src.SharesPerSecond));
+
+        CreateMap<Block, Api.Responses.Block>()
+            .ForMember(dest => dest.InfoLink, opt => opt.Ignore());
+
         CreateMap<MinerSettings, Api.Responses.MinerSettings>();
-        CreateMap<Payment, Api.Responses.Payment>();
+
+        CreateMap<Payment, Api.Responses.Payment>()
+            .ForMember(dest => dest.AddressInfoLink, opt => opt.Ignore())
+            .ForMember(dest => dest.TransactionInfoLink, opt => opt.Ignore());
+
         CreateMap<BalanceChange, Api.Responses.BalanceChange>();
         CreateMap<PoolPaymentProcessingConfig, Api.Responses.ApiPoolPaymentProcessingConfig>();
 
         CreateMap<MinerStats, Api.Responses.MinerStats>()
             .ForMember(dest => dest.LastPayment, opt => opt.Ignore())
             .ForMember(dest => dest.LastPaymentLink, opt => opt.Ignore())
+            .ForMember(dest => dest.PerformanceSamples, opt => opt.Ignore())
             .ForMember(dest => dest.TotalConfirmedBlocks, opt => opt.MapFrom(src => src.TotalConfirmedBlocks))
             .ForMember(dest => dest.TotalPendingBlocks, opt => opt.MapFrom(src => src.TotalPendingBlocks));
 
@@ -81,17 +120,25 @@ public class AutoMapperProfile : Profile
         CreateMap<PoolStats, Persistence.Postgres.Entities.PoolStats>();
 
         CreateMap<MinerWorkerPerformanceStats, Persistence.Postgres.Entities.MinerWorkerPerformanceStats>()
-            .ForMember(dest => dest.Id, opt => opt.Ignore());
+            .ForMember(dest => dest.Id, opt => opt.Ignore())
+            .ForMember(dest => dest.Partition, opt => opt.Ignore());
 
         //////////////////////
         // incoming mappings
 
         // API
-        CreateMap<Api.Responses.MinerSettings, MinerSettings>();
+        CreateMap<Api.Responses.MinerSettings, MinerSettings>()
+            .ForMember(dest => dest.PoolId, opt => opt.Ignore())
+            .ForMember(dest => dest.Address, opt => opt.Ignore())
+            .ForMember(dest => dest.Created, opt => opt.Ignore())
+            .ForMember(dest => dest.Updated, opt => opt.Ignore());
 
         // PostgreSQL
         CreateMap<Persistence.Postgres.Entities.Share, Persistence.Model.Share>();
-        CreateMap<Persistence.Postgres.Entities.Block, Block>();
+        CreateMap<Persistence.Postgres.Entities.Block, Block>()
+            .ForMember(dest => dest.NotifyBlockFoundOnUpdate, opt => opt.Ignore())
+            .ForMember(dest => dest.NotifyBlockConfirmationProgressOnUpdate, opt => opt.Ignore())
+            .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore());
         CreateMap<Persistence.Postgres.Entities.Balance, Balance>();
         CreateMap<Persistence.Postgres.Entities.Payment, Payment>();
         CreateMap<Persistence.Postgres.Entities.BalanceChange, BalanceChange>();
@@ -100,11 +147,14 @@ public class AutoMapperProfile : Profile
         CreateMap<Persistence.Postgres.Entities.MinerWorkerPerformanceStats, MinerWorkerPerformanceStats>();
         CreateMap<Persistence.Postgres.Entities.MinerWorkerPerformanceStats, Api.Responses.MinerPerformanceStats>();
 
-        CreateMap<PoolStats, Mining.PoolStats>();
-        CreateMap<BlockchainStats, Mining.PoolStats>();
+        CreateMap<PoolStats, Mining.PoolStats>()
+            .ForMember(dest => dest.LastPoolBlockTime, opt => opt.Ignore());
 
         CreateMap<PoolStats, BlockchainStats>()
             .ForMember(dest => dest.RewardType, opt => opt.Ignore())
-            .ForMember(dest => dest.NetworkType, opt => opt.Ignore());
+            .ForMember(dest => dest.NetworkType, opt => opt.Ignore())
+            .ForMember(dest => dest.NextNetworkTarget, opt => opt.Ignore())
+            .ForMember(dest => dest.NextNetworkBits, opt => opt.Ignore())
+            .ForMember(dest => dest.NodeVersion, opt => opt.Ignore());
     }
 }

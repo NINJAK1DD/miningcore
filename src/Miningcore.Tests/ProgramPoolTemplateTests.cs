@@ -998,6 +998,15 @@ public class ProgramPoolTemplateTests
         var second = host.Services.GetRequiredService<IMapper>();
 
         Assert.Same(first, second);
+        first.ConfigurationProvider.AssertConfigurationIsValid();
+
+        var stats = first.Map<global::Miningcore.Api.Responses.AggregatedPoolStats>(
+            new global::Miningcore.Persistence.Model.PoolStats
+            {
+                SharesPerSecond = 12.5
+            });
+
+        Assert.Equal(12.5, stats.ValidSharesPerSecond);
     }
 
     [Fact]
