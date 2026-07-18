@@ -164,18 +164,26 @@ SELECT namespace.nspname AS resolved_schema,
        relation.relname AS resolved_relation
 FROM pg_class relation
 JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-WHERE relation.oid = to_regclass('payout_manager_ownership');
+WHERE relation.oid = to_regclass('payout_manager_ownership');"
+```
 
+Stop if the relation does not resolve or resolves to an unexpected schema. Replace
+`REPLACE_WITH_SCHEMA` in this separate inspection command with the discovered `resolved_schema`:
+
+```console
+psql -h REPLACE_WITH_HOST -U REPLACE_WITH_MININGCORE_ROLE \
+  -d REPLACE_WITH_DATABASE -x -c "
 SELECT id, generation, owner_id, owner_host, owner_process_id,
        acquired, released
 FROM REPLACE_WITH_SCHEMA.payout_manager_ownership
 WHERE id = 1;"
 ```
 
-Replace `REPLACE_WITH_SCHEMA` with the `resolved_schema` value that was verified using the
-Miningcore application role. Stop if the relation does not resolve or resolves to an unexpected
-schema. If an administrative role is required later for the guarded update, keep using this
-explicitly inspected schema; do not rely on the administrator's different `search_path`.
+Use the schema identifier exactly as PostgreSQL reports it. Double-quote mixed-case or otherwise
+non-standard identifiers. Within the double-quoted `psql -c` shell command shown above, escape those
+quotes as `\"PoolData\".payout_manager_ownership`. If an administrative role is required later for
+the guarded update, keep using this explicitly inspected schema; do not rely on the administrator's
+different `search_path`.
 
 The companion advisory lock uses the stable two-key identity `19779, 5259609`. Inspect it without
 trying to terminate its PostgreSQL backend:
@@ -309,8 +317,8 @@ sudo systemctl status miningcore --no-pager
 sudo journalctl -u miningcore --since '10 minutes ago' --no-pager
 ```
 
-If mining and share recording must resume before wallet reconciliation is complete, pause payout
-execution without violating the deployment's startup validation:
+If mining and share recording must resume before wallet reconciliation is complete, pause the
+payout-manager pipeline without violating the deployment's startup validation:
 
 - On a node without enabled LTC-DOGE merged mining, or on a share-relay sender with the top-level
   `shareRelay` configured, set the top-level `paymentProcessing.enabled` value to `false`.
@@ -345,9 +353,13 @@ For the merged-mining case, preserve every other payment setting and change only
 }
 ```
 
-Validate the complete JSON before starting Miningcore. Either procedure pauses payouts but does not
-clear or supersede the durable marker. Restore the original configuration only after ownership
-recovery is complete and exactly one designated node is ready to acquire it.
+Validate the complete JSON before starting Miningcore. This emergency configuration pauses the
+entire payout-manager pipeline: pending-block classification, uncertain merged-block reconciliation,
+maturity processing, balance credit and wallet payouts. Newly persisted block candidates remain in
+PostgreSQL and are processed after the original configuration is restored. It does not clear or
+supersede the durable marker. Keep this mode temporary, inspect the pending block backlog before
+re-enabling the pipeline, and restore the original configuration only after ownership recovery is
+complete and exactly one designated node is ready to acquire it.
 
 ## Routine inspection
 
