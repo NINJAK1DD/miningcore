@@ -475,3 +475,9 @@ upstream commercial services are maintained separately and are not support offer
 Miningcore is distributed under the terms in [LICENSE](LICENSE). This distribution derives from
 Miningcore and acknowledges its original maintainers and contributors; consult the upstream history
 for earlier work.
+
+Third-party dependencies retain their own licence terms. AutoMapper 16 is distributed under
+[AutoMapper's dual-licensing model](https://automapper.io/). Review those terms for your deployment.
+If your use requires a commercial licence key, provide it to the Miningcore service through the
+`MININGCORE_AUTOMAPPER_LICENSE_KEY` environment variable. Do not store the key in `pool.json`, source
+control or logs.
