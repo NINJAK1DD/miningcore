@@ -5,7 +5,6 @@
 /*.dump
 /*.log
 /config.json
-/pool.json
 /.env
 /.env.*
 /.vs/

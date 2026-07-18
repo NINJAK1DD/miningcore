@@ -484,7 +484,7 @@ replace those terms. Review them for your deployment and obtain independent lega
 If you use the commercial option, provide its licence key through AutoMapper's standard
 `AUTOMAPPER_LICENSE_KEY` environment variable, or `LUCKYPENNY_LICENSE_KEY` for a bundle that includes
 AutoMapper. AutoMapper checks the product-specific variable first. Do not store the key in
-`pool.json` or source control.
+`config.json` or source control.
 
 Without a key, AutoMapper writes a warning under `LuckyPennySoftware.AutoMapper.License`; it does not
 contact a licence server, disable features or otherwise change runtime behaviour. Source deployments
