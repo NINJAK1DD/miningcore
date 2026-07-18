@@ -10,11 +10,11 @@ publish_dir="$(realpath "$1")"
 
 test -f "$publish_dir/BouncyCastle.Cryptography.dll"
 test -f "$publish_dir/BouncyCastle.Crypto.dll"
-grep -Fq '"Portable.BouncyCastle/1.8.2"' "$publish_dir/Miningcore.deps.json"
+grep -Fq '"Portable.BouncyCastle/1.9.0"' "$publish_dir/Miningcore.deps.json"
 
 smoke_output="$(mktemp -d)"
 smoke_assembly="$publish_dir/Miningcore.ManagedDependencySmoke.dll"
-trap 'rm -f -- "$smoke_assembly"' EXIT
+trap 'rm -rf -- "$smoke_output"; rm -f -- "$smoke_assembly"' EXIT
 
 dotnet build scripts/release/managed-dependency-smoke/Miningcore.ManagedDependencySmoke.csproj \
   --configuration Release \
