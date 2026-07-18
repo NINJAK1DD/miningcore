@@ -103,9 +103,14 @@ public class PayoutManager : ProcessStatusBackgroundService
         ct.ThrowIfCancellationRequested();
 
         if(!await payoutLease.TryAcquireAsync(ct))
-            throw new PoolStartupException(
-                "Another payout manager owns this PostgreSQL database, or a durable ownership marker remains after an unclean stop. " +
-                "Run exactly one payout/reconciliation processor per database. Clear a stale marker only after confirming the previous process is dead.");
+        {
+            var reason = payoutLease.AcquisitionFailure;
+
+            throw new PoolStartupException(string.IsNullOrWhiteSpace(reason)
+                ? "Another payout manager owns this PostgreSQL database, or a durable ownership marker remains after an unclean stop. " +
+                  "Run exactly one payout/reconciliation processor per database. Clear a stale marker only after confirming the previous process is dead."
+                : reason);
+        }
 
         try
         {

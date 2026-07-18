@@ -36,6 +36,8 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private int activeFinancialOperations;
     private bool financialOutcomeUncertain;
 
+    public string AcquisitionFailure { get; private set; }
+
     internal bool CanReleaseOwnership
     {
         get
@@ -93,6 +95,8 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             if(acquired)
                 return true;
 
+            AcquisitionFailure = null;
+
             var candidate = await cf.OpenConnectionAsync();
 
             try
@@ -105,12 +109,16 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                 if(!locked)
                 {
+                    var currentOwner = await TryReadOwnershipAsync(candidate, null, ct);
+                    AcquisitionFailure = DescribeOwnershipConflict(currentOwner, true);
+                    logger.Warn(() => AcquisitionFailure);
                     candidate.Dispose();
                     return false;
                 }
 
                 using(var tx = candidate.BeginTransaction())
                 {
+                    PayoutManagerOwnership currentOwner = null;
                     const string verifyPaymentBatchSchema = @"SELECT EXISTS(
                         SELECT 1
                         FROM pg_constraint con
@@ -162,7 +170,10 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                     if(generation == 0)
                     {
+                        currentOwner = await ReadOwnershipAsync(candidate, tx, ct);
                         tx.Rollback();
+                        AcquisitionFailure = DescribeOwnershipConflict(currentOwner, false);
+                        logger.Warn(() => AcquisitionFailure);
                     }
                     else
                         tx.Commit();
@@ -176,6 +187,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                 connection = candidate;
                 acquired = true;
+                AcquisitionFailure = null;
                 logger.Info(() => $"Acquired durable PostgreSQL payout-manager ownership generation {generation} [{ownerId}]");
                 return true;
             }
@@ -211,6 +223,65 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
         {
             gate.Release();
         }
+    }
+
+    private static async Task<PayoutManagerOwnership> TryReadOwnershipAsync(
+        IDbConnection candidate, IDbTransaction tx, CancellationToken ct)
+    {
+        try
+        {
+            return await ReadOwnershipAsync(candidate, tx, ct);
+        }
+
+        catch(Exception ex) when(ex is not OperationCanceledException)
+        {
+            logger.Debug(ex, () => "Unable to read the durable payout-manager owner while reporting an advisory-lock conflict");
+            return null;
+        }
+    }
+
+    private static Task<PayoutManagerOwnership> ReadOwnershipAsync(IDbConnection candidate,
+        IDbTransaction tx, CancellationToken ct)
+    {
+        const string query = @"SELECT generation AS Generation,
+                owner_id AS OwnerId,
+                owner_host AS OwnerHost,
+                owner_process_id AS OwnerProcessId,
+                acquired AS Acquired
+            FROM payout_manager_ownership
+            WHERE id = 1";
+
+        return candidate.QuerySingleOrDefaultAsync<PayoutManagerOwnership>(
+            new CommandDefinition(query, transaction: tx, cancellationToken: ct));
+    }
+
+    private static string DescribeOwnershipConflict(PayoutManagerOwnership owner,
+        bool advisoryLockHeld)
+    {
+        var conflict = advisoryLockHeld
+            ? "Another payout manager currently holds the PostgreSQL advisory lock."
+            : "A durable payout-manager ownership marker remains without the advisory lock.";
+        var recovery = "Run exactly one payout/reconciliation processor per database. " +
+            "Clear a durable marker only after confirming the recorded process is dead and reconciling any wallet submission with an uncertain outcome.";
+
+        if(owner?.OwnerId == null)
+            return $"{conflict} {recovery}";
+
+        var host = string.IsNullOrWhiteSpace(owner.OwnerHost) ? "unknown" : owner.OwnerHost;
+        var process = owner.OwnerProcessId?.ToString() ?? "unknown";
+        var acquired = owner.Acquired?.ToString("O") ?? "unknown";
+
+        return $"{conflict} Recorded owner: generation {owner.Generation}, host {host}, " +
+            $"process {process}, acquired {acquired}, token {owner.OwnerId}. {recovery}";
+    }
+
+    private sealed class PayoutManagerOwnership
+    {
+        public long Generation { get; set; }
+        public Guid? OwnerId { get; set; }
+        public string OwnerHost { get; set; }
+        public int? OwnerProcessId { get; set; }
+        public DateTime? Acquired { get; set; }
     }
 
     public async Task EnsureHeldAsync(CancellationToken ct)
