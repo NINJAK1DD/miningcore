@@ -123,6 +123,8 @@ public class PayoutManagerLeaseIntegrationTests
                 Assert.Contains("generation 6", staleMarkerLease.AcquisitionFailure);
                 Assert.Contains("host pool-host", staleMarkerLease.AcquisitionFailure);
                 Assert.Contains("process 4242", staleMarkerLease.AcquisitionFailure);
+                Assert.Contains("acquired 2026-07-17T09:55:49.0000000Z",
+                    staleMarkerLease.AcquisitionFailure);
                 Assert.Contains(ownerId.ToString(), staleMarkerLease.AcquisitionFailure);
             }
 
