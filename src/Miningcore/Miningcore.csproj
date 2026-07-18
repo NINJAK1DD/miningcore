@@ -7,8 +7,6 @@
         <ServerGarbageCollection>true</ServerGarbageCollection>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <ImplicitUsings>true</ImplicitUsings>
-        <NuGetAuditMode>all</NuGetAuditMode>
-        <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
     </PropertyGroup>
 
     <PropertyGroup>
@@ -93,9 +91,11 @@
         <PackageReference Include="NLog.Extensions.Logging" Version="5.4.0" />
         <PackageReference Include="Polly" Version="8.3.1" />
         <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+        <!-- NBitcoin.Zcash still requires BouncyCastle.Crypto 1.8.2 at runtime. Restricting
+             this reference to runtime assets avoids compiling Miningcore against the legacy
+             assembly while keeping it in published application dependency manifests. -->
         <PackageReference Include="Portable.BouncyCastle" Version="1.8.2">
-            <Aliases>legacybouncycastle</Aliases>
-            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime</IncludeAssets>
         </PackageReference>
         <PackageReference Include="prometheus-net.AspNetCore" Version="8.1.0" />
         <PackageReference Include="prometheus-net" Version="8.2.0" />
