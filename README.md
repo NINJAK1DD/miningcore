@@ -476,9 +476,12 @@ Miningcore is distributed under the terms in [LICENSE](LICENSE). This distributi
 Miningcore and acknowledges its original maintainers and contributors; consult the upstream history
 for earlier work.
 
-Third-party dependencies retain their own licence terms. AutoMapper 16 is distributed under
-[AutoMapper's dual-licensing model](https://automapper.io/). Review those terms for your deployment.
-If your use requires a commercial licence key, provide it through AutoMapper's standard
+Third-party dependencies retain their own licence terms. AutoMapper's licence states that version 16
+source and binaries are governed by the
+[Reciprocal Public License 1.5](https://github.com/LuckyPennySoftware/AutoMapper/blob/dfa6dd587c5854b4beee5934beb39ba6e9569b84/LICENSE.md),
+unless they are used under AutoMapper's commercial licence agreement. Miningcore's licence does not
+replace those terms. Review them for your deployment and obtain independent legal advice if needed.
+If you use the commercial option, provide its licence key through AutoMapper's standard
 `AUTOMAPPER_LICENSE_KEY` environment variable, or `LUCKYPENNY_LICENSE_KEY` for a bundle that includes
 AutoMapper. AutoMapper checks the product-specific variable first. Do not store the key in
 `pool.json` or source control.
@@ -488,5 +491,5 @@ contact a licence server, disable features or otherwise change runtime behaviour
 that intentionally suppress the message can add a `Microsoft.Extensions.Logging` filter for that
 category, but operators remain responsible for complying with the applicable licence terms.
 
-See [Dependency security](docs/dependency-security.md) for NuGet audit policy and the documented risk
-acceptance for the legacy Zcash cryptography dependency.
+See [Dependency security](docs/dependency-security.md) for NuGet audit policy, the AutoMapper dependency
+decision and the documented risk acceptance for the legacy Zcash cryptography dependency.
