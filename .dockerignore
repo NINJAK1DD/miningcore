@@ -5,6 +5,8 @@
 /*.dump
 /*.log
 /config.json
+# Legacy local configuration name; may contain credentials.
+/pool.json
 /.env
 /.env.*
 /.vs/
