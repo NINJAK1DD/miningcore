@@ -33,6 +33,9 @@ The release gate verifies that both assemblies are present and executes the NBit
 binding under Miningcore's published dependency manifest. That test detects packaging and type-binding
 regressions; it does not remove the security risk of an unsupported cryptography library.
 
+Risk owner: Miningcore repository maintainers. Reassess this acceptance during every major dependency
+or security refresh and track replacement work when a viable NBitcoin.Zcash migration path exists.
+
 Remove `Portable.BouncyCastle` when `NBitcoin.Zcash` is upgraded, replaced, or changed so it no longer
 requires the legacy assembly. Until then, keep the dependency runtime-only and do not use its
 `Org.BouncyCastle.*` types from Miningcore source.
