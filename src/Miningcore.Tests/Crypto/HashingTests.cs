@@ -204,6 +204,17 @@ public class HashingTests : TestBase
     }
 
     [Fact]
+    public void RinHash_Uses_Managed_Sha3_Fallback()
+    {
+        var hash = new byte[32];
+
+        RinHash.HashSha3(Encoding.ASCII.GetBytes("abc"), hash, false);
+
+        Assert.Equal("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+            hash.ToHexString());
+    }
+
+    [Fact]
     public void Sha512256D_Hash()
     {
         var hasher = new Sha512256D();

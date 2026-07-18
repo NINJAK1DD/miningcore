@@ -1,9 +1,10 @@
 using System;
 using System.Security.Cryptography;
-using Isopoh.Cryptography.Argon2;
-using Miningcore.Contracts;
 using System.Text;
 using Blake3;
+using Isopoh.Cryptography.Argon2;
+using Miningcore.Contracts;
+using Org.BouncyCastle.Crypto.Digests;
 
 namespace Miningcore.Crypto.Hashing.Algorithms;
 
@@ -46,6 +47,23 @@ public unsafe class RinHash : IHashAlgorithm
         var arresult = argon2.Hash();
 
         // 3. SHA3-256
-        SHA3_256.HashData(arresult.Buffer).CopyTo(result);
+        HashSha3(arresult.Buffer, result, SHA3_256.IsSupported);
+    }
+
+    internal static void HashSha3(ReadOnlySpan<byte> data, Span<byte> result, bool platformSha3Supported)
+    {
+        if(platformSha3Supported)
+        {
+            SHA3_256.HashData(data).CopyTo(result);
+            return;
+        }
+
+        var input = data.ToArray();
+        var hash = new byte[32];
+        var digest = new Sha3Digest(256);
+
+        digest.BlockUpdate(input, 0, input.Length);
+        digest.DoFinal(hash, 0);
+        hash.CopyTo(result);
     }
 }
