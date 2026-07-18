@@ -794,6 +794,29 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
+    public void MergedMining_MultiPoolPause_IgnoresDisabledPoolPaymentSwitch()
+    {
+        var config = MergedMiningCluster();
+        config.Pools = config.Pools.Concat(new[]
+        {
+            new PoolConfig
+            {
+                Id = "disabled-pool",
+                Enabled = false,
+                PaymentProcessing = new PoolPaymentProcessingConfig
+                {
+                    Enabled = true,
+                },
+            },
+        }).ToArray();
+        config.Pools[0].PaymentProcessing.Enabled = false;
+
+        Program.ValidateMergedMiningDeployment(config);
+
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+    }
+
+    [Fact]
     public async Task HostShutdown_WaitsBeyondLegacyTimeoutUntilCandidateJournalIsDurable()
     {
         var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
