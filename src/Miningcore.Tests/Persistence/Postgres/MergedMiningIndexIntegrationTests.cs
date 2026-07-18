@@ -160,6 +160,8 @@ public class MergedMiningIndexIntegrationTests
                 StringComparison.OrdinalIgnoreCase);
             Assert.Null(await connection.ExecuteScalarAsync<Guid?>(
                 "SELECT owner_id FROM payout_manager_ownership WHERE id = 1"));
+            await PayoutManagerLeaseIntegrationAssertions
+                .AssertAdvisoryLockAvailableAsync(connectionString);
         }
         finally
         {

@@ -13,6 +13,64 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class PayoutManagerLeaseIntegrationTests
 {
     [PostgresIntegrationFact]
+    public async Task DisposeAsync_ReleasesAdvisoryLock()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_payout_dispose_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, public;
+                CREATE TABLE payment_batches(
+                    poolid text NOT NULL,
+                    transactionconfirmationdata text NOT NULL,
+                    created timestamptz NOT NULL,
+                    PRIMARY KEY(poolid, transactionconfirmationdata));
+                CREATE TABLE payout_manager_ownership(
+                    id smallint NOT NULL PRIMARY KEY CHECK(id = 1),
+                    generation bigint NOT NULL DEFAULT 0,
+                    owner_id uuid NULL,
+                    owner_host text NULL,
+                    owner_process_id int NULL,
+                    acquired timestamptz NULL,
+                    released timestamptz NULL);");
+
+            var leaseConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
+            {
+                SearchPath = $"{schema},public",
+            }.ConnectionString;
+            var lease = new PostgresPayoutManagerLease(
+                new PgConnectionFactory(leaseConnectionString));
+
+            try
+            {
+                Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+            }
+
+            finally
+            {
+                await lease.DisposeAsync();
+            }
+
+            Assert.Null(await connection.ExecuteScalarAsync<Guid?>(
+                "SELECT owner_id FROM payout_manager_ownership WHERE id = 1"));
+            await PayoutManagerLeaseIntegrationAssertions
+                .AssertAdvisoryLockAvailableAsync(connectionString);
+        }
+
+        finally
+        {
+            await connection.ExecuteAsync("SET search_path TO public");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task AcquisitionFailure_DistinguishesDurableMarkerFromActiveLock()
     {
         var connectionString = Environment.GetEnvironmentVariable(
