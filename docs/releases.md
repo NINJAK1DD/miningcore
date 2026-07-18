@@ -187,6 +187,9 @@ The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1
 runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
 checks that the binary reports the release version and source commit, packages the result,
 smoke-tests the packaged image, and publishes both artifacts with provenance.
+The tagged build injects the validated tag and commit as assembly metadata because development
+branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
+exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
 

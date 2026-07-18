@@ -79,6 +79,9 @@ namespace Miningcore;
 
 public class Program : ProcessStatusBackgroundService
 {
+    private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
+    private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
+
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
 
     public static async Task<int> Main(string[] args)
@@ -665,18 +668,33 @@ public class Program : ProcessStatusBackgroundService
     private static string GetVersion()
     {
         var assembly = Assembly.GetEntryAssembly();
+        var releaseVersion = GetAssemblyMetadata(assembly, ReleaseVersionMetadataKey);
+        var releaseSha = GetAssemblyMetadata(assembly, SourceCommitMetadataKey);
         var gitVersionInformationType = assembly.GetType("GitVersionInformation");
+        string fullSemVer = null;
+        string sha = null;
 
         if(gitVersionInformationType != null)
         {
-            var fullSemVer = gitVersionInformationType.GetField("FullSemVer")?.GetValue(null)?.ToString();
-            var sha = gitVersionInformationType.GetField("Sha")?.GetValue(null)?.ToString();
-
-            return FormatVersion(fullSemVer, sha);
+            fullSemVer = gitVersionInformationType.GetField("FullSemVer")?.GetValue(null)?.ToString();
+            sha = gitVersionInformationType.GetField("Sha")?.GetValue(null)?.ToString();
         }
 
-        else
-            return "unknown";
+        return SelectVersion(releaseVersion, releaseSha, fullSemVer, sha);
+    }
+
+    private static string GetAssemblyMetadata(Assembly assembly, string key)
+    {
+        return assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(x => x.Key == key)?.Value;
+    }
+
+    internal static string SelectVersion(string releaseVersion, string releaseSha, string fullSemVer, string sha)
+    {
+        if(!string.IsNullOrWhiteSpace(releaseVersion) || !string.IsNullOrWhiteSpace(releaseSha))
+            return FormatVersion(releaseVersion, releaseSha);
+
+        return FormatVersion(fullSemVer, sha);
     }
 
     internal static string FormatVersion(string fullSemVer, string sha)

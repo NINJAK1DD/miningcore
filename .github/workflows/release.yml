@@ -94,6 +94,12 @@ jobs:
             exit 1
           fi
 
+          tagged_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "Release tag $GITHUB_REF_NAME resolves to $tagged_commit instead of $GITHUB_SHA"
+            exit 1
+          fi
+
           git fetch --no-tags origin dev
           if ! git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/dev; then
             echo "Release tag $GITHUB_REF_NAME does not point to a commit reachable from dev"
@@ -130,7 +136,22 @@ jobs:
         run: dotnet restore src
 
       - name: Build
-        run: dotnet build --configuration Release --no-restore src
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_identity_args=()
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            build_identity_args+=(
+              "-p:MiningcoreReleaseVersion=${GITHUB_REF_NAME#v}"
+              "-p:MiningcoreSourceCommit=$GITHUB_SHA"
+            )
+          fi
+
+          dotnet build src \
+            --configuration Release \
+            --no-restore \
+            "${build_identity_args[@]}"
 
       - name: Stage Linux native libraries for tests
         shell: bash
