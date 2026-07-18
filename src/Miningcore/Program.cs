@@ -379,8 +379,11 @@ public class Program : ProcessStatusBackgroundService
         builder.RegisterInstance(gcStats);
 
         // AutoMapper
-        var amConf = new MapperConfiguration(cfg => { cfg.AddProfile(new AutoMapperProfile()); });
-        builder.Register((ctx, parms) => amConf.CreateMapper());
+        builder.Register(ctx => AutoMapperFactory.CreateMapper(
+                ctx.Resolve<Microsoft.Extensions.Logging.ILoggerFactory>(),
+                Environment.GetEnvironmentVariable("MININGCORE_AUTOMAPPER_LICENSE_KEY")))
+            .As<IMapper>()
+            .SingleInstance();
 
         ConfigurePersistence(builder);
     }

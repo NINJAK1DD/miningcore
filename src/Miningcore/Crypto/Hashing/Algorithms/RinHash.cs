@@ -2,7 +2,6 @@ using System;
 using System.Security.Cryptography;
 using Isopoh.Cryptography.Argon2;
 using Miningcore.Contracts;
-using SHA3.Net;
 using System.Text;
 using Blake3;
 
@@ -47,7 +46,6 @@ public unsafe class RinHash : IHashAlgorithm
         var arresult = argon2.Hash();
 
         // 3. SHA3-256
-        var sha3 = Sha3.Sha3256().ComputeHash(arresult.Buffer);
-        sha3.ToArray().CopyTo(result);
+        SHA3_256.HashData(arresult.Buffer).CopyTo(result);
     }
 }

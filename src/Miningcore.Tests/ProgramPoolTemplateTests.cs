@@ -441,8 +441,7 @@ public class ProgramPoolTemplateTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var databaseAttempt = new TaskCompletionSource<IDbConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var siblingStarted = new TaskCompletionSource<bool>(
@@ -824,8 +823,7 @@ public class ProgramPoolTemplateTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var databaseAttempt = new TaskCompletionSource<IDbConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var databaseAttemptStarted = new TaskCompletionSource<bool>(
@@ -957,8 +955,7 @@ public class ProgramPoolTemplateTests
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var config = new ClusterConfig { Pools = Array.Empty<PoolConfig>() };
 
         using var host = new HostBuilder()

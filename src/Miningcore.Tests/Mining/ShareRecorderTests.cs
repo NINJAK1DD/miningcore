@@ -479,7 +479,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
@@ -510,7 +510,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
@@ -553,8 +553,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
         blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>()).Returns(true);
@@ -591,8 +590,7 @@ public class ShareRecorderTests
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
         var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var databaseAttempt = new TaskCompletionSource<IDbConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var databaseAttemptStarted = new TaskCompletionSource<bool>(
@@ -663,8 +661,7 @@ public class ShareRecorderTests
     public async Task RecoveryJournal_ConcurrentRecorderInstancesSerializeByCanonicalFilename()
     {
         var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var config = new ClusterConfig
         {
             Pools = Array.Empty<PoolConfig>(),
@@ -752,7 +749,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var pool = new PoolConfig
         {
             Id = "doge-solo",
@@ -792,7 +789,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var pool = new PoolConfig
         {
             Id = "doge-solo",
@@ -835,7 +832,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var pool = new PoolConfig
         {
             Id = "doge-solo",
@@ -877,7 +874,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var pool = new PoolConfig
         {
             Id = "doge-solo",
@@ -922,7 +919,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile())).CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var pool = new PoolConfig
         {
             Id = "doge-solo",
@@ -961,8 +958,7 @@ public class ShareRecorderTests
         var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
             throw new InvalidOperationException("unexpected persistence pipeline failure"));
         var recorder = new ShareRecorder(connectionFactory, mapper,
@@ -1011,8 +1007,7 @@ public class ShareRecorderTests
         var missingDirectory = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
             throw new InvalidOperationException("unexpected database failure"));
         var recorder = new ShareRecorder(connectionFactory, mapper,
@@ -1086,8 +1081,7 @@ public class ShareRecorderTests
         var shareRepository = Substitute.For<IShareRepository>();
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = messageBusOverride ?? Substitute.For<IMessageBus>();
-        var mapper = new MapperConfiguration(cfg => cfg.AddProfile(new AutoMapperProfile()))
-            .CreateMapper();
+        var mapper = AutoMapperFactory.CreateMapper();
         var pool = new PoolConfig
         {
             Id = "doge-solo",

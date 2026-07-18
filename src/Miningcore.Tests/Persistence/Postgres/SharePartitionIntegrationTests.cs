@@ -76,9 +76,7 @@ public class SharePartitionIntegrationTests
                 CREATE TABLE shares(poolid text NOT NULL);
             ");
 
-            var mapper = new MapperConfiguration(cfg =>
-                    cfg.AddProfile(new AutoMapperProfile()))
-                .CreateMapper();
+            var mapper = AutoMapperFactory.CreateMapper();
             var repository = new ShareRepository(mapper);
             var configuredPools = new[]
             {
