@@ -14,6 +14,7 @@ namespace Miningcore.Crypto.Hashing.Algorithms;
 [Identifier("rinhash")]
 public unsafe class RinHash : IHashAlgorithm
 {
+    private static readonly bool PlatformSha3Supported = SHA3_256.IsSupported;
     private static readonly byte[] Salt;
 
     static RinHash()
@@ -47,23 +48,23 @@ public unsafe class RinHash : IHashAlgorithm
         var arresult = argon2.Hash();
 
         // 3. SHA3-256
-        HashSha3(arresult.Buffer, result, SHA3_256.IsSupported);
+        HashSha3(arresult.Buffer, result, PlatformSha3Supported);
     }
 
     internal static void HashSha3(ReadOnlySpan<byte> data, Span<byte> result, bool platformSha3Supported)
     {
+        Contract.Requires<ArgumentException>(result.Length >= 32);
+        var destination = result[..32];
+
         if(platformSha3Supported)
         {
-            SHA3_256.HashData(data).CopyTo(result);
+            SHA3_256.HashData(data, destination);
             return;
         }
 
-        var input = data.ToArray();
-        var hash = new byte[32];
         var digest = new Sha3Digest(256);
 
-        digest.BlockUpdate(input, 0, input.Length);
-        digest.DoFinal(hash, 0);
-        hash.CopyTo(result);
+        digest.BlockUpdate(data);
+        digest.DoFinal(destination);
     }
 }
