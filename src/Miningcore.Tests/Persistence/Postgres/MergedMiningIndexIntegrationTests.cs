@@ -35,6 +35,19 @@ public class MergedMiningIndexIntegrationTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task PayoutOwnershipMigration_DoesNotPublishUnguardedLeaseRelease()
+    {
+        var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+            "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+        var migration = await File.ReadAllTextAsync(migrationPath);
+
+        Assert.DoesNotContain("SET owner_id = NULL", migration,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("docs/database.md#recover-payout-manager-ownership-safely", migration,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [PostgresIntegrationFact]
     public async Task RecoveryImportPreflight_RequiresImmediateFileHashPrimaryKey()
     {

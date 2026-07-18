@@ -112,7 +112,8 @@ and an idempotent payment ledger. Only a clean shutdown clears the durable owner
 
 1. Prove the previous process is no longer running.
 2. Reconcile wallet history for a payout that may have been submitted before its response was lost.
-3. Follow the release statement in `add_payout_manager_ownership.sql` only after that reconciliation.
+3. Follow the [guarded ownership recovery procedure](#recover-payout-manager-ownership-safely) only
+   after that reconciliation.
 4. Start exactly one payout manager for the pool/database set.
 
 Automatic hot-standby payout takeover is intentionally unsupported.

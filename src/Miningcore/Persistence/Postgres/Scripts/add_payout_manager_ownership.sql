@@ -103,10 +103,6 @@ END $$;
 COMMIT;
 
 -- An ownership row is cleared automatically only after a clean Miningcore stop.
--- After an unclean stop, first prove that the previous process is no longer alive
--- and reconcile wallet history for any payout that may have been submitted but not
--- persisted. Only then release the stale marker explicitly:
---
--- UPDATE payout_manager_ownership
--- SET owner_id = NULL, owner_host = NULL, owner_process_id = NULL, released = now()
--- WHERE id = 1;
+-- Never clear a stale marker with an unconditional UPDATE. After an unclean stop,
+-- follow the advisory-lock, owner-ID and generation guarded recovery procedure in
+-- docs/database.md#recover-payout-manager-ownership-safely.
