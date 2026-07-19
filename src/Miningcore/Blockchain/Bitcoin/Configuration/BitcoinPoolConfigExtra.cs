@@ -26,6 +26,12 @@ public class BitcoinPoolConfigExtra
     public bool HasBrokenSendMany { get; set; } = false;
 
     /// <summary>
+    /// Allow an isolated Bitcoin-family regtest daemon to start without peers.
+    /// Ignored unless getblockchaininfo reports the regtest chain.
+    /// </summary>
+    public bool AllowPeerlessRegtest { get; set; } = false;
+
+    /// <summary>
     /// Arbitrary string appended at end of coinbase tx
     /// Overrides property of same name from BitcoinTemplate
     /// </summary>

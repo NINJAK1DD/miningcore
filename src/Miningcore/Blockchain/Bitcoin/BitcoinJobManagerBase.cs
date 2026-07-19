@@ -48,6 +48,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected BitcoinPoolPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
     protected DateTime? lastJobRebroadcast;
     protected bool hasSubmitBlockMethod;
+    protected string daemonChain;
     protected bool isPoS;
     protected bool forcePoolAddressDestinationWithPubKey;
     protected TimeSpan jobRebroadcastTimeout;
@@ -537,11 +538,15 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         var response = await rpc.ExecuteAsync<BlockchainInfo>(logger, BitcoinCommands.GetBlockchainInfo, ct);
 
-        if(response.Error != null)
+        if(response.Error != null || response.Response == null)
         {
-            logger.Error(() => $"Daemon reports: {response.Error.Message}");
+            logger.Error(() => response.Error != null
+                ? $"Daemon reports: {response.Error.Message}"
+                : "Daemon returned no blockchain information");
             return false;
         }
+
+        daemonChain = response.Response.Chain;
         return true;
     }
 
@@ -552,12 +557,29 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         var response = await rpc.ExecuteAsync<NetworkInfo>(logger, BitcoinCommands.GetNetworkInfo, ct);
 
+        if(response.Error != null || response.Response == null)
+            return false;
+
         // update stats
         if(!string.IsNullOrEmpty(response.Response.Version))
-            BlockchainStats.NodeVersion = (string) response.Response?.Version;
+            BlockchainStats.NodeVersion = response.Response.Version;
 
-        return response.Error == null && response.Response?.Connections > 0;
+        if(HasRequiredPeerConnection(response.Response.Connections, daemonChain,
+               extraPoolConfig?.AllowPeerlessRegtest == true))
+        {
+            if(response.Response.Connections == 0)
+                logger.Warn(() => "Starting with no daemon peers because allowPeerlessRegtest is enabled on regtest");
+
+            return true;
+        }
+
+        return false;
     }
+
+    internal static bool HasRequiredPeerConnection(int connections, string chain,
+        bool allowPeerlessRegtest) =>
+        connections > 0 || (allowPeerlessRegtest &&
+            string.Equals(chain, "regtest", StringComparison.OrdinalIgnoreCase));
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
     {

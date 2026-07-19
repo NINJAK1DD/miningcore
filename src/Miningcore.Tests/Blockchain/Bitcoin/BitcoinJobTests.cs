@@ -19,6 +19,20 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinJobTests : TestBase
 {
     [Theory]
+    [InlineData(1, "main", false, true)]
+    [InlineData(0, "regtest", true, true)]
+    [InlineData(0, "REGTEST", true, true)]
+    [InlineData(0, "regtest", false, false)]
+    [InlineData(0, "main", true, false)]
+    [InlineData(0, null, true, false)]
+    public void PeerReadiness_BypassesOnlyExplicitRegtest(int connections, string chain,
+        bool allowPeerlessRegtest, bool expected)
+    {
+        Assert.Equal(expected, BitcoinJobManagerBase<BitcoinJob>.HasRequiredPeerConnection(
+            connections, chain, allowPeerlessRegtest));
+    }
+
+    [Theory]
     [InlineData("duplicate")]
     [InlineData("DUPLICATE")]
     [InlineData("duplicate-inconclusive")]
