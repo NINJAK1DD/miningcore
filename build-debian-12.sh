@@ -16,4 +16,7 @@ sudo apt-get update; \
 (cd src/Miningcore && \
 BUILDIR=${1:-../../build} && \
 echo "Building into $BUILDIR" && \
-dotnet publish -c Release --framework net10.0 -o $BUILDIR)
+source ../../scripts/release/source-build-identity.sh && \
+BUILD_IDENTITY_ARGS=() && \
+miningcore_resolve_source_build_identity ../.. BUILD_IDENTITY_ARGS && \
+dotnet publish -c Release --framework net10.0 -o "$BUILDIR" "${BUILD_IDENTITY_ARGS[@]}")
