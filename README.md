@@ -481,15 +481,11 @@ source and binaries are governed by the
 [Reciprocal Public License 1.5](https://github.com/LuckyPennySoftware/AutoMapper/blob/dfa6dd587c5854b4beee5934beb39ba6e9569b84/LICENSE.md),
 unless they are used under AutoMapper's commercial licence agreement. Miningcore's licence does not
 replace those terms. Review them for your deployment and obtain independent legal advice if needed.
-If you use the commercial option, provide its licence key through AutoMapper's standard
-`AUTOMAPPER_LICENSE_KEY` environment variable, or `LUCKYPENNY_LICENSE_KEY` for a bundle that includes
-AutoMapper. AutoMapper checks the product-specific variable first. Do not store the key in
-`config.json` or source control.
-
-Without a key, AutoMapper writes a warning under `LuckyPennySoftware.AutoMapper.License`; it does not
-contact a licence server, disable features or otherwise change runtime behaviour. Source deployments
-that intentionally suppress the message can add a `Microsoft.Extensions.Logging` filter for that
-category, but operators remain responsible for complying with the applicable licence terms.
+If you use a Lucky Penny licence, follow the
+[licence-key configuration guide](docs/lucky-penny-licence.md) for systemd and Docker setup,
+verification, rotation and troubleshooting. Do not store a key in `config.json` or source control.
+Without a key, AutoMapper logs a warning but does not disable runtime features; operators remain
+responsible for complying with the applicable licence terms.
 
 See [Dependency security](docs/dependency-security.md) for NuGet audit policy, the AutoMapper dependency
 decision and the documented risk acceptance for the legacy Zcash cryptography dependency.
