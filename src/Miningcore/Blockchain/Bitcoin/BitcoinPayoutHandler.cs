@@ -83,6 +83,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         CancellationToken ct) =>
         rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendToAddress, ct, args);
 
+    protected virtual Task<RpcResponse<JToken>> GetMempoolEntryAsync(string txId,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.GetMempoolEntry, ct,
+            new object[] { txId });
+
+    protected virtual Task<RpcResponse<Transaction>> GetWalletTransactionAsync(string txId,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<Transaction>(logger, BitcoinCommands.GetTransaction, ct,
+            new object[] { txId });
+
     protected override string LogCategory => "Bitcoin Payout Handler";
 
     #region IPayoutHandler
@@ -633,6 +643,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                 await PersistPaymentsAsync(balances, txId);
+                await EnsurePayoutTransactionBroadcastAsync(txId, ct);
 
                 NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
@@ -745,6 +756,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 await PersistPaymentsAsync(persistedBalances);
 
+                foreach(var txId in persistedBalances.Values.Distinct())
+                    await EnsurePayoutTransactionBroadcastAsync(txId, ct);
+
                 NotifyPayoutSuccess(poolConfig.Id, persistedBalances.Keys.ToArray(),
                     persistedBalances.Values.ToArray(), null);
             }
@@ -767,6 +781,36 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     throw unknownOutcome;
             }
         }
+    }
+
+    private async Task EnsurePayoutTransactionBroadcastAsync(string txId, CancellationToken ct)
+    {
+        var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
+
+        if(mempoolResponse.Error == null)
+            return;
+
+        if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+        {
+            logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
+                $"cannot verify that payout transaction {txId} was broadcast");
+            return;
+        }
+
+        var walletResponse = await GetWalletTransactionAsync(txId, ct);
+
+        if(walletResponse.Error == null && walletResponse.Response?.Confirmations > 0)
+            return;
+
+        var verificationError = walletResponse.Error != null
+            ? $"{BitcoinCommands.GetTransaction} returned {walletResponse.Error.Code}: {walletResponse.Error.Message}"
+            : $"wallet confirmations: {walletResponse.Response?.Confirmations ?? 0}";
+
+        throw new PayoutOutcomeUncertainException(
+            $"Wallet accepted payout transaction {txId}, but it is neither in the local mempool nor confirmed " +
+            $"({BitcoinCommands.GetMempoolEntry}: {mempoolResponse.Error.Code} {mempoolResponse.Error.Message}; " +
+            $"{verificationError}). Its payment record was persisted to prevent a duplicate payout. " +
+            "Confirm wallet broadcasting is enabled, then broadcast or reconcile the transaction manually");
     }
 
     public double AdjustBlockEffort(double effort)
