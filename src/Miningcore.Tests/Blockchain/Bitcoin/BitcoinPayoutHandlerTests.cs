@@ -149,6 +149,56 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_UnbroadcastMempoolEntry_PersistsThenFailsStop()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject
+        {
+            ["unbroadcast"] = true,
+        });
+        fixture.Handler.WalletTransactionResponse = new RpcResponse<Transaction>(new Transaction
+        {
+            TxId = "payout-txid",
+            Confirmations = 0,
+        });
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, CancellationToken.None));
+
+        Assert.Contains("unbroadcast=true", exception.Message);
+        Assert.Contains("persisted to prevent a duplicate payout", exception.Message);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(null)]
+    public async Task Payout_BroadcastMempoolEntry_PersistsAndSucceeds(bool? unbroadcast)
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        var mempoolEntry = new JObject();
+
+        if(unbroadcast.HasValue)
+            mempoolEntry["unbroadcast"] = unbroadcast.Value;
+
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(mempoolEntry);
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        Assert.Equal(0, fixture.Handler.WalletTransactionCalls);
+    }
+
+    [Fact]
     public async Task Payout_LegacyDaemonWithoutMempoolEntry_PreservesCompatibility()
     {
         var fixture = await CreateFixtureAsync();

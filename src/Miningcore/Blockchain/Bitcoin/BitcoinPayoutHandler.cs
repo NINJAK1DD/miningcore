@@ -786,15 +786,31 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private async Task EnsurePayoutTransactionBroadcastAsync(string txId, CancellationToken ct)
     {
         var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
+        string mempoolStatus;
 
         if(mempoolResponse.Error == null)
-            return;
-
-        if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
         {
-            logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
-                $"cannot verify that payout transaction {txId} was broadcast");
-            return;
+            if(mempoolResponse.Response is JObject mempoolEntry)
+            {
+                if(mempoolEntry.Value<bool?>("unbroadcast") != true)
+                    return;
+
+                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} reported unbroadcast=true";
+            }
+            else
+                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
+        }
+        else
+        {
+            if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+            {
+                logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
+                    $"cannot verify that payout transaction {txId} was broadcast");
+                return;
+            }
+
+            mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned {mempoolResponse.Error.Code}: " +
+                mempoolResponse.Error.Message;
         }
 
         var walletResponse = await GetWalletTransactionAsync(txId, ct);
@@ -808,7 +824,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
         throw new PayoutOutcomeUncertainException(
             $"Wallet accepted payout transaction {txId}, but it is neither in the local mempool nor confirmed " +
-            $"({BitcoinCommands.GetMempoolEntry}: {mempoolResponse.Error.Code} {mempoolResponse.Error.Message}; " +
+            $"({mempoolStatus}; " +
             $"{verificationError}). Its payment record was persisted to prevent a duplicate payout. " +
             "Confirm wallet broadcasting is enabled, then broadcast or reconcile the transaction manually");
     }
