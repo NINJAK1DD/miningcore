@@ -71,6 +71,21 @@ Dogecoin auxiliary reward. They are validated independently. Read
 [`merged-mining-litecoin-dogecoin.md`](merged-mining-litecoin-dogecoin.md) for daemon, persistence,
 reconciliation and deployment requirements.
 
+## Isolated Bitcoin-family regtest
+
+Miningcore normally waits for every Bitcoin-family daemon to have at least one peer before starting
+a pool. A deliberately isolated regtest daemon can opt out of that readiness check:
+
+```json
+"extra": {
+  "allowPeerlessRegtest": true
+}
+```
+
+The option is disabled by default and is honored only when `getblockchaininfo` reports `regtest`.
+It cannot bypass the peer requirement on mainnet, testnet or an unidentified legacy daemon. Do not
+enable it for production pools.
+
 ## Validate changes safely
 
 1. Keep a known-good copy of the current configuration outside the repository.
