@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Data;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -78,6 +81,336 @@ public class BitcoinPayoutHandlerTests : TestBase
             {
                 new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
             }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Payout_TransactionInMempool_PersistsAndSucceeds()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        Assert.Equal(0, fixture.Handler.WalletTransactionCalls);
+    }
+
+    [Fact]
+    public async Task Payout_ConfirmationBetweenMempoolAndWalletQueries_PersistsAndSucceeds()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(null,
+            new JsonRpcError(-5, "Transaction not in mempool", null));
+        fixture.Handler.WalletTransactionResponse = new RpcResponse<Transaction>(new Transaction
+        {
+            TxId = "payout-txid",
+            Confirmations = 1,
+        });
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        Assert.Equal(1, fixture.Handler.WalletTransactionCalls);
+    }
+
+    [Fact]
+    public async Task Payout_TransientMempoolError_RetriesAndSucceeds()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponseSequence.Enqueue(new RpcResponse<JToken>(null,
+            new JsonRpcError(-500, "RPC timeout", null)));
+        fixture.Handler.MempoolResponseSequence.Enqueue(
+            new RpcResponse<JToken>(new JObject()));
+        fixture.Handler.WalletTransactionResponseSequence.Enqueue(
+            new RpcResponse<Transaction>(new Transaction
+            {
+                TxId = "payout-txid",
+                Confirmations = 0,
+            }));
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        Assert.Equal(2, fixture.Handler.MempoolTransactionIds.Count);
+        Assert.Equal(1, fixture.Handler.WalletTransactionCalls);
+        Assert.Equal(1, fixture.Handler.VerificationDelayCalls);
+    }
+
+    [Fact]
+    public async Task Payout_WalletOnlyTransaction_PersistsThenFailsStop()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(null,
+            new JsonRpcError(-5, "Transaction not in mempool", null));
+        fixture.Handler.WalletTransactionResponse = new RpcResponse<Transaction>(new Transaction
+        {
+            TxId = "payout-txid",
+            Confirmations = 0,
+        });
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, CancellationToken.None));
+
+        Assert.Contains("remained absent from the local mempool", exception.Message);
+        Assert.Contains("after 3 verification attempts", exception.Message);
+        Assert.Contains("persisted to prevent a duplicate payout", exception.Message);
+        Assert.Equal(3, fixture.Handler.MempoolTransactionIds.Count);
+        Assert.Equal(3, fixture.Handler.WalletTransactionCalls);
+        Assert.Equal(2, fixture.Handler.VerificationDelayCalls);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+    }
+
+    [Fact]
+    public async Task Payout_CancellationDuringMempoolLookup_IsUncertain()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.ThrowCancellationFromMempoolLookup = true;
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, CancellationToken.None));
+
+        Assert.Contains("payout-txid", exception.Message);
+        Assert.Contains("interrupted", exception.Message);
+        Assert.IsAssignableFrom<OperationCanceledException>(exception.InnerException);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+    }
+
+    [Fact]
+    public async Task Payout_CancellationDuringVerificationDelay_IsUncertain()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(null,
+            new JsonRpcError(-5, "Transaction not in mempool", null));
+        fixture.Handler.WalletTransactionResponse = new RpcResponse<Transaction>(new Transaction
+        {
+            TxId = "payout-txid",
+            Confirmations = 0,
+        });
+        fixture.Handler.ThrowCancellationFromVerificationDelay = true;
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, CancellationToken.None));
+
+        Assert.Contains("payout-txid", exception.Message);
+        Assert.Contains("interrupted", exception.Message);
+        Assert.IsAssignableFrom<OperationCanceledException>(exception.InnerException);
+        Assert.Equal(1, fixture.Handler.VerificationDelayCalls);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+    }
+
+    [Fact]
+    public async Task Payout_SendManySuccessNotificationFailure_DoesNotPropagate()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+        fixture.MessageBus.When(x => x.SendMessage(
+                Arg.Is<PaymentNotification>(notification => notification.Error == null),
+                Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("success subscriber failed"));
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(null)]
+    public async Task Payout_MempoolEntry_PersistsAndSucceedsRegardlessOfRelayState(
+        bool? unbroadcast)
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        var mempoolEntry = new JObject();
+
+        if(unbroadcast.HasValue)
+            mempoolEntry["unbroadcast"] = unbroadcast.Value;
+
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(mempoolEntry);
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        Assert.Equal(0, fixture.Handler.WalletTransactionCalls);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_VerifiesEveryPersistedTransactionBeforeFailStop()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("payout-txid-1");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>("payout-txid-2");
+
+        foreach(var txId in new[] { "payout-txid-1", "payout-txid-2" })
+        {
+            fixture.Handler.MempoolResponses[txId] = new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Transaction not in mempool", null));
+            fixture.Handler.WalletTransactionResponses[txId] =
+                new RpcResponse<Transaction>(new Transaction
+                {
+                    TxId = txId,
+                    Confirmations = 0,
+                });
+        }
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, CancellationToken.None));
+
+        Assert.Contains("payout-txid-1", exception.Message);
+        Assert.Contains("payout-txid-2", exception.Message);
+        Assert.Equal(new[]
+        {
+            (TransactionId: "payout-txid-1", Count: 3),
+            (TransactionId: "payout-txid-2", Count: 3),
+        }, fixture.Handler.MempoolTransactionIds
+            .GroupBy(x => x)
+            .OrderBy(x => x.Key)
+            .Select(x => (TransactionId: x.Key, Count: x.Count())));
+
+        var events = fixture.Events.ToArray();
+        var persistenceCommit = Array.FindIndex(events, x => x == "commit");
+        var firstVerification = Array.FindIndex(events, x => x.StartsWith("verify:"));
+        Assert.True(persistenceCommit >= 0);
+        Assert.True(firstVerification > persistenceCommit);
+
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_BroadcastUncertainty_FailureNotificationCannotMaskFailStop()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("payout-txid");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>(null, new JsonRpcError(-5, "rejected", null));
+        fixture.Handler.MempoolResponses["payout-txid"] = new RpcResponse<JToken>(null,
+            new JsonRpcError(-5, "Transaction not in mempool", null));
+        fixture.Handler.WalletTransactionResponses["payout-txid"] =
+            new RpcResponse<Transaction>(new Transaction
+            {
+                TxId = "payout-txid",
+                Confirmations = 0,
+            });
+        fixture.MessageBus.When(x => x.SendMessage(
+                Arg.Is<PaymentNotification>(notification => notification.Error != null),
+                Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("failure subscriber failed"));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, CancellationToken.None));
+
+        Assert.Contains("payout-txid", exception.Message);
+        Assert.DoesNotContain("failure subscriber failed", exception.Message);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error != null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_UnknownSubmission_SuccessNotificationCannotMaskFailStop()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("payout-txid");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
+        fixture.Handler.MempoolResponses["payout-txid"] =
+            new RpcResponse<JToken>(new JObject());
+        fixture.MessageBus.When(x => x.SendMessage(
+                Arg.Is<PaymentNotification>(notification => notification.Error == null),
+                Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("success subscriber failed"));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, CancellationToken.None));
+
+        Assert.Contains("response lost", exception.Message);
+        Assert.DoesNotContain("success subscriber failed", exception.Message);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_LegacyDaemonWithoutMempoolEntry_PreservesCompatibility()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(null,
+            new JsonRpcError((int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND,
+                "Method not found", null));
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        Assert.Equal(0, fixture.Handler.WalletTransactionCalls);
     }
 
     [Fact]
@@ -1026,7 +1359,8 @@ public class BitcoinPayoutHandlerTests : TestBase
 
     private async Task<HandlerFixture> CreateFixtureAsync(
         IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker = null,
-        DateTime? now = null)
+        DateTime? now = null,
+        bool hasBrokenSendMany = false)
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var mapper = container.Resolve<IMapper>();
@@ -1034,6 +1368,19 @@ public class BitcoinPayoutHandlerTests : TestBase
         var blockRepository = Substitute.For<IBlockRepository>();
         var balanceRepository = Substitute.For<IBalanceRepository>();
         var paymentRepository = Substitute.For<IPaymentRepository>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var events = new ConcurrentQueue<string>();
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        transaction.When(x => x.Commit()).Do(_ => events.Enqueue("commit"));
+        paymentRepository.TryBeginPaymentBatchAsync(Arg.Any<IDbConnection>(),
+            Arg.Any<IDbTransaction>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateTime>())
+            .Returns(call =>
+            {
+                events.Enqueue($"persist:{call.ArgAt<string>(3)}");
+                return true;
+            });
         var clock = Substitute.For<IMasterClock>();
         var currentTime = now ?? DateTime.UtcNow;
         clock.Now.Returns(currentTime);
@@ -1041,6 +1388,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         var handler = new TestBitcoinPayoutHandler(container, connectionFactory, mapper,
             shareRepository, blockRepository, balanceRepository, paymentRepository, clock, messageBus,
             activeBlockGracePeriodTracker ?? new ActiveBlockGracePeriodTracker());
+        handler.Events = events;
         var config = new PoolConfig
         {
             Id = "doge-test",
@@ -1048,6 +1396,9 @@ public class BitcoinPayoutHandlerTests : TestBase
             Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 22555 } },
             PaymentProcessing = new PoolPaymentProcessingConfig(),
             RewardRecipients = Array.Empty<RewardRecipient>(),
+            Extra = hasBrokenSendMany
+                ? new Dictionary<string, object> { ["hasBrokenSendMany"] = true }
+                : null,
         };
         await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
 
@@ -1055,7 +1406,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         pool.Config.Returns(config);
 
         return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository,
-            messageBus, currentTime);
+            paymentRepository, messageBus, events, currentTime);
     }
 
     private static void ConfigureUnavailableWalletGrace(HandlerFixture fixture,
@@ -1102,7 +1453,8 @@ public class BitcoinPayoutHandlerTests : TestBase
 
     private sealed record HandlerFixture(TestBitcoinPayoutHandler Handler, IMiningPool Pool,
         PoolConfig Config, IShareRepository ShareRepository, IBalanceRepository BalanceRepository,
-        IMessageBus MessageBus, DateTime Now);
+        IPaymentRepository PaymentRepository, IMessageBus MessageBus,
+        ConcurrentQueue<string> Events, DateTime Now);
 
     private sealed class TestBitcoinPayoutHandler : BitcoinPayoutHandler
     {
@@ -1119,8 +1471,21 @@ public class BitcoinPayoutHandlerTests : TestBase
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
+        public RpcResponse<JToken> MempoolResponse { get; set; }
+        public RpcResponse<Transaction> WalletTransactionResponse { get; set; }
+        public Dictionary<string, RpcResponse<string>> SendToAddressResponses { get; } = new();
+        public Dictionary<string, RpcResponse<JToken>> MempoolResponses { get; } = new();
+        public Dictionary<string, RpcResponse<Transaction>> WalletTransactionResponses { get; } = new();
+        public ConcurrentQueue<RpcResponse<JToken>> MempoolResponseSequence { get; } = new();
+        public ConcurrentQueue<RpcResponse<Transaction>> WalletTransactionResponseSequence { get; } = new();
+        public ConcurrentBag<string> MempoolTransactionIds { get; } = new();
+        public ConcurrentQueue<string> Events { get; set; } = new();
         public int BlockCalls { get; private set; }
         public int TransactionCalls { get; private set; }
+        public int WalletTransactionCalls { get; private set; }
+        public int VerificationDelayCalls { get; private set; }
+        public bool ThrowCancellationFromMempoolLookup { get; set; }
+        public bool ThrowCancellationFromVerificationDelay { get; set; }
 
         protected override Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
             CancellationToken ct)
@@ -1146,6 +1511,54 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             return Task.FromResult(PayoutResponse);
+        }
+
+        protected override Task<RpcResponse<string>> SendToAddressAsync(object[] args,
+            CancellationToken ct)
+        {
+            var address = args[0]?.ToString();
+            return Task.FromResult(SendToAddressResponses[address]);
+        }
+
+        protected override Task<RpcResponse<JToken>> GetMempoolEntryAsync(string txId,
+            CancellationToken ct)
+        {
+            MempoolTransactionIds.Add(txId);
+            Events.Enqueue($"verify:{txId}");
+
+            if(ThrowCancellationFromMempoolLookup)
+                return Task.FromException<RpcResponse<JToken>>(new OperationCanceledException());
+
+            if(MempoolResponseSequence.TryDequeue(out var sequencedResponse))
+                return Task.FromResult(sequencedResponse);
+
+            return Task.FromResult(MempoolResponses.TryGetValue(txId, out var response)
+                ? response
+                : MempoolResponse);
+        }
+
+        protected override Task<RpcResponse<Transaction>> GetWalletTransactionAsync(string txId,
+            CancellationToken ct)
+        {
+            WalletTransactionCalls++;
+
+            if(WalletTransactionResponseSequence.TryDequeue(out var sequencedResponse))
+                return Task.FromResult(sequencedResponse);
+
+            return Task.FromResult(WalletTransactionResponses.TryGetValue(txId, out var response)
+                ? response
+                : WalletTransactionResponse);
+        }
+
+        protected override Task DelayPayoutVerificationAsync(TimeSpan delay,
+            CancellationToken ct)
+        {
+            VerificationDelayCalls++;
+
+            if(ThrowCancellationFromVerificationDelay)
+                return Task.FromException(new OperationCanceledException());
+
+            return Task.CompletedTask;
         }
     }
 }

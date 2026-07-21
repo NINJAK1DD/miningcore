@@ -272,6 +272,120 @@ an unknown wallet outcome, lost transport after submission, or stopped during pa
 reconcile the daemon or wallet transaction history with Miningcore's `payments` and
 `payment_batches` records before proceeding. Do not repair balances or payment rows with ad-hoc SQL.
 
+### Reconcile a Bitcoin-family payout
+
+Use the bounded log window established above. The following read-only query lists transaction IDs
+that Miningcore received from the wallet and durably persisted during that window. Replace the
+schema and timestamps with the values already inspected; keep the explicit schema even when it is
+`public`:
+
+```sql
+SELECT batch.poolid,
+       batch.transactionconfirmationdata AS transaction_id,
+       batch.created AS batch_created,
+       COUNT(payment.id) AS recipient_count,
+       COALESCE(SUM(payment.amount), 0) AS recorded_amount
+FROM REPLACE_WITH_SCHEMA.payment_batches AS batch
+LEFT JOIN REPLACE_WITH_SCHEMA.payments AS payment
+  ON payment.poolid = batch.poolid
+ AND payment.transactionconfirmationdata = batch.transactionconfirmationdata
+WHERE batch.created >= TIMESTAMPTZ 'REPLACE_WITH_WINDOW_START'
+  AND batch.created <= TIMESTAMPTZ 'REPLACE_WITH_WINDOW_END'
+GROUP BY batch.poolid, batch.transactionconfirmationdata, batch.created
+ORDER BY batch.created, batch.poolid, batch.transactionconfirmationdata;
+```
+
+Inspect the recorded recipients for one candidate transaction without changing accounting data:
+
+```sql
+SELECT poolid,
+       address,
+       amount,
+       transactionconfirmationdata AS transaction_id,
+       created
+FROM REPLACE_WITH_SCHEMA.payments
+WHERE poolid = 'REPLACE_WITH_POOL_ID'
+  AND transactionconfirmationdata = 'REPLACE_WITH_TRANSACTION_ID'
+ORDER BY id;
+```
+
+A `payment_batches` row and its `payments` rows are committed together. A batch with no matching
+payment rows is an accounting anomaly: stop and investigate instead of releasing ownership. No
+matching batch does **not** prove that the wallet submitted nothing. When a transport failure loses
+the wallet response, Miningcore may never receive the transaction ID and therefore cannot persist
+it; use the unknown-ID procedure below.
+
+For a known transaction ID, query the node mempool and the exact wallet that Miningcore uses. These
+commands are read-only. Supply the same RPC authentication, network and wallet-selection arguments
+as the production daemon; omit `-rpcwallet` only when that daemon has no named wallet:
+
+```console
+TXID='REPLACE_WITH_TRANSACTION_ID'
+
+bitcoin-cli getmempoolentry "$TXID"
+bitcoin-cli -rpcwallet='REPLACE_WITH_WALLET' gettransaction "$TXID" true
+```
+
+Interpret the two results together:
+
+- A valid `getmempoolentry` result means the node accepted the transaction. An `unbroadcast: true`
+  field only means that no peer has acknowledged initial relay yet; it is not a wallet-only payout.
+- `getmempoolentry` returning transaction-not-found while `gettransaction` reports positive
+  confirmations means the payout is mined and completed.
+- Transaction-not-found plus zero confirmations means the wallet knows the transaction but the
+  node has not accepted or mined it. Inspect `walletconflicts`, the raw transaction and daemon
+  configuration before deciding whether to rebroadcast it.
+- Negative confirmations or a non-empty conflicting-wallet transaction require conflict
+  reconciliation. Do not clear ownership merely because the original transaction is absent.
+
+For an unknown transaction ID, search the production wallet over the same bounded UTC window.
+Increase the `listtransactions` count when the wallet has more than 1,000 recent entries. The `jq`
+filter is optional but makes sent transactions easier to group by ID:
+
+```console
+FROM_EPOCH=$(date --utc --date='REPLACE_WITH_WINDOW_START' +%s)
+TO_EPOCH=$(date --utc --date='REPLACE_WITH_WINDOW_END' +%s)
+
+bitcoin-cli -rpcwallet='REPLACE_WITH_WALLET' \
+  listtransactions '*' 1000 0 true |
+jq --argjson from "$FROM_EPOCH" --argjson to "$TO_EPOCH" '
+  [.[]
+   | select(.category == "send")
+   | select(.time >= $from and .time <= $to)]
+  | group_by(.txid)
+  | map({
+      transaction_id: .[0].txid,
+      time: .[0].time,
+      confirmations: .[0].confirmations,
+      wallet_conflicts: .[0].walletconflicts,
+      recipients: map({address, amount, fee})
+    })'
+```
+
+Compare candidate recipients and amounts with the bounded Miningcore logs and the unpaid balances
+that triggered the cycle. Wallet send amounts are normally negative, fees may appear on only one
+entry, and a single `sendmany` transaction can have several recipient entries. Run the known-ID
+queries for every candidate. If the initial search finds nothing, expand the wallet-history range
+and inspect daemon or RPC-proxy logs; absence from the first page is not proof of no submission.
+
+If a known transaction is wallet-only, fully signed, conflict-free and confirmed to be the exact
+persisted payout, rebroadcasting the **same raw transaction** preserves its transaction ID. Inspect
+its decoded outputs before taking the mutating step:
+
+```console
+RAW_TX=$(bitcoin-cli -rpcwallet='REPLACE_WITH_WALLET' \
+  gettransaction "$TXID" true | jq -er '.hex')
+
+bitcoin-cli decoderawtransaction "$RAW_TX"
+# After verifying every output and correcting the cause of failed relay:
+bitcoin-cli sendrawtransaction "$RAW_TX"
+```
+
+Never run `sendmany` or `sendtoaddress` as a substitute for rebroadcasting a known payout: those
+commands create a new financial operation. If the original transaction cannot safely be broadcast,
+document and complete an operator-approved compensation procedure before releasing ownership. Do
+not alter Miningcore balances, payments or batch rows ad hoc.
+
 After proving that every previous payout manager is dead and completing any required wallet
 reconciliation, release only the owner token and generation that were inspected. Run this block in
 `psql` after replacing the explicitly inspected schema, owner token and generation placeholders.

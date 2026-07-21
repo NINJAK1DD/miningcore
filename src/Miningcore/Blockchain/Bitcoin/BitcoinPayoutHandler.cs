@@ -70,7 +70,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private CoinTemplate coin;
     private int minConfirmations;
     private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan PayoutVerificationRetryDelay = TimeSpan.FromSeconds(1);
     private const int MinimumDefinitiveMisses = 3;
+    private const int PayoutVerificationAttempts = 3;
 
     internal static bool IsUnknownWalletSubmission(JsonRpcError error) =>
         WalletSubmissionOutcome.IsUnknown(error);
@@ -82,6 +84,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     protected virtual Task<RpcResponse<string>> SendToAddressAsync(object[] args,
         CancellationToken ct) =>
         rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendToAddress, ct, args);
+
+    protected virtual Task<RpcResponse<JToken>> GetMempoolEntryAsync(string txId,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.GetMempoolEntry, ct,
+            new object[] { txId });
+
+    protected virtual Task<RpcResponse<Transaction>> GetWalletTransactionAsync(string txId,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<Transaction>(logger, BitcoinCommands.GetTransaction, ct,
+            new object[] { txId });
+
+    protected virtual Task DelayPayoutVerificationAsync(TimeSpan delay, CancellationToken ct) =>
+        Task.Delay(delay, ct);
 
     protected override string LogCategory => "Bitcoin Payout Handler";
 
@@ -633,11 +648,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                 await PersistPaymentsAsync(balances, txId);
+                await EnsurePayoutTransactionAcceptedAsync(txId, ct);
 
-                NotifyPayoutSuccess(poolConfig.Id, balances, new[]
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
                     txId
-                }, null);
+                }, null), "success");
             }
 
             else
@@ -685,6 +701,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
+            Dictionary<Balance, string> persistedBalances = null;
+            PayoutOutcomeUncertainException acceptanceVerificationFailure = null;
 
             var parallelOptions = new ParallelOptions
             {
@@ -741,31 +759,174 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             if(successBalances.Any())
             {
-                var persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
+                persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
 
                 await PersistPaymentsAsync(persistedBalances);
 
-                NotifyPayoutSuccess(poolConfig.Id, persistedBalances.Keys.ToArray(),
-                    persistedBalances.Values.ToArray(), null);
+                try
+                {
+                    await EnsurePayoutTransactionsAcceptedAsync(
+                        persistedBalances.Values.Distinct(), ct);
+                }
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    acceptanceVerificationFailure = ex;
+                }
             }
 
-            if(txFailures.Any())
+            var failedTransfers = txFailures.ToArray();
+            var walletSubmissionFailure = failedTransfers
+                .Select(x => x.Item2)
+                .OfType<PayoutOutcomeUncertainException>()
+                .FirstOrDefault();
+            PayoutOutcomeUncertainException uncertainFailure;
+
+            if(walletSubmissionFailure != null && acceptanceVerificationFailure != null)
             {
-                var failureBalances = txFailures.Select(x=> new Balance { Amount = x.Item1.Value }).ToArray();
-                var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
-
-                logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
-
-                NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
-
-                var unknownOutcome = txFailures
-                    .Select(x => x.Item2)
-                    .OfType<PayoutOutcomeUncertainException>()
-                    .FirstOrDefault();
-
-                if(unknownOutcome != null)
-                    throw unknownOutcome;
+                uncertainFailure = new PayoutOutcomeUncertainException(
+                    "Multiple payout outcomes require reconciliation: " +
+                    $"{walletSubmissionFailure.Message} | {acceptanceVerificationFailure.Message}",
+                    new AggregateException(walletSubmissionFailure, acceptanceVerificationFailure));
             }
+            else
+                uncertainFailure = walletSubmissionFailure ?? acceptanceVerificationFailure;
+
+            // Classify the financial outcome before emitting any best-effort notifications.
+            // A subscriber failure must never replace an already-detected uncertain outcome.
+            if(persistedBalances != null && acceptanceVerificationFailure == null)
+            {
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
+                    persistedBalances.Keys.ToArray(), persistedBalances.Values.ToArray(), null),
+                    "success");
+            }
+
+            if(failedTransfers.Length > 0)
+            {
+                var failureBalances = failedTransfers
+                    .Select(x => new Balance { Amount = x.Item1.Value }).ToArray();
+                var error = string.Join(", ", failedTransfers.Select(x =>
+                    $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
+
+                logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: {error}");
+
+                TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, failureBalances,
+                    error, null), "failure");
+            }
+
+            if(uncertainFailure != null)
+                throw uncertainFailure;
+        }
+    }
+
+    private void TryNotifyPayout(Action notify, string outcome)
+    {
+        try
+        {
+            notify();
+        }
+        catch(Exception ex)
+        {
+            logger.Error(ex, () =>
+                $"[{LogCategory}] Unable to emit payout {outcome} notification");
+        }
+    }
+
+    private async Task EnsurePayoutTransactionsAcceptedAsync(IEnumerable<string> txIds,
+        CancellationToken ct)
+    {
+        var failures = new List<PayoutOutcomeUncertainException>();
+
+        foreach(var txId in txIds)
+        {
+            try
+            {
+                await EnsurePayoutTransactionAcceptedAsync(txId, ct);
+            }
+            catch(PayoutOutcomeUncertainException ex)
+            {
+                failures.Add(ex);
+            }
+        }
+
+        if(failures.Count == 1)
+            throw failures[0];
+
+        if(failures.Count > 1)
+        {
+            throw new PayoutOutcomeUncertainException(
+                $"Payout acceptance verification failed for {failures.Count} persisted transactions: " +
+                string.Join(" | ", failures.Select(x => x.Message)),
+                new AggregateException(failures));
+        }
+    }
+
+    private async Task EnsurePayoutTransactionAcceptedAsync(string txId, CancellationToken ct)
+    {
+        var attempt = 0;
+
+        try
+        {
+            for(attempt = 1; ; attempt++)
+            {
+                var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
+                string mempoolStatus;
+
+                if(mempoolResponse.Error == null)
+                {
+                    // Local mempool membership is sufficient acceptance evidence. Bitcoin Core's
+                    // unbroadcast flag only means that no peer has acknowledged initial relay yet;
+                    // the node retains the transaction and continues attempting relay.
+                    if(mempoolResponse.Response is JObject)
+                        return;
+
+                    mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
+                }
+                else
+                {
+                    if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+                    {
+                        logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
+                            $"cannot verify local acceptance of payout transaction {txId}");
+                        return;
+                    }
+
+                    mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned {mempoolResponse.Error.Code}: " +
+                        mempoolResponse.Error.Message;
+                }
+
+                var walletResponse = await GetWalletTransactionAsync(txId, ct);
+
+                if(walletResponse.Error == null && walletResponse.Response?.Confirmations > 0)
+                    return;
+
+                var verificationError = walletResponse.Error != null
+                    ? $"{BitcoinCommands.GetTransaction} returned {walletResponse.Error.Code}: {walletResponse.Error.Message}"
+                    : $"wallet confirmations: {walletResponse.Response?.Confirmations ?? 0}";
+
+                if(attempt >= PayoutVerificationAttempts)
+                {
+                    throw new PayoutOutcomeUncertainException(
+                        $"Wallet accepted payout transaction {txId}, but it remained absent from the local mempool " +
+                        $"and unconfirmed after {PayoutVerificationAttempts} verification attempts " +
+                        $"({mempoolStatus}; {verificationError}). Its payment record was persisted to prevent a " +
+                        "duplicate payout. Confirm wallet broadcasting is enabled, then broadcast or reconcile " +
+                        "the transaction manually");
+                }
+
+                logger.Warn(() => $"[{LogCategory}] Payout transaction {txId} could not be verified on " +
+                    $"attempt {attempt} of {PayoutVerificationAttempts} ({mempoolStatus}; {verificationError}); " +
+                    $"retrying in {PayoutVerificationRetryDelay.TotalSeconds:0} second(s)");
+
+                await DelayPayoutVerificationAsync(PayoutVerificationRetryDelay, ct);
+            }
+        }
+        catch(OperationCanceledException ex)
+        {
+            // Once a payout is persisted, interrupted verification is financially uncertain.
+            // Preserve that classification so PayoutManager retains durable ownership.
+            throw new PayoutOutcomeUncertainException(
+                $"Payout verification for persisted transaction {txId} was interrupted after " +
+                $"attempt {attempt} of {PayoutVerificationAttempts}", ex);
         }
     }
 
