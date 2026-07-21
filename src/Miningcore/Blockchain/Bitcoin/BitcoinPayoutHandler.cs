@@ -696,6 +696,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
+            PayoutOutcomeUncertainException broadcastVerificationFailure = null;
+            PayoutOutcomeUncertainException walletSubmissionFailure = null;
 
             var parallelOptions = new ParallelOptions
             {
@@ -756,11 +758,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 await PersistPaymentsAsync(persistedBalances);
 
-                foreach(var txId in persistedBalances.Values.Distinct())
-                    await EnsurePayoutTransactionBroadcastAsync(txId, ct);
+                try
+                {
+                    await EnsurePayoutTransactionsBroadcastAsync(
+                        persistedBalances.Values.Distinct(), ct);
+                }
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    broadcastVerificationFailure = ex;
+                }
 
-                NotifyPayoutSuccess(poolConfig.Id, persistedBalances.Keys.ToArray(),
-                    persistedBalances.Values.ToArray(), null);
+                if(broadcastVerificationFailure == null)
+                {
+                    NotifyPayoutSuccess(poolConfig.Id, persistedBalances.Keys.ToArray(),
+                        persistedBalances.Values.ToArray(), null);
+                }
             }
 
             if(txFailures.Any())
@@ -772,14 +784,54 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
 
-                var unknownOutcome = txFailures
+                walletSubmissionFailure = txFailures
                     .Select(x => x.Item2)
                     .OfType<PayoutOutcomeUncertainException>()
                     .FirstOrDefault();
-
-                if(unknownOutcome != null)
-                    throw unknownOutcome;
             }
+
+            if(walletSubmissionFailure != null && broadcastVerificationFailure != null)
+            {
+                throw new PayoutOutcomeUncertainException(
+                    "Multiple payout outcomes require reconciliation: " +
+                    $"{walletSubmissionFailure.Message} | {broadcastVerificationFailure.Message}",
+                    new AggregateException(walletSubmissionFailure, broadcastVerificationFailure));
+            }
+
+            if(walletSubmissionFailure != null)
+                throw walletSubmissionFailure;
+
+            if(broadcastVerificationFailure != null)
+                throw broadcastVerificationFailure;
+        }
+    }
+
+    private async Task EnsurePayoutTransactionsBroadcastAsync(IEnumerable<string> txIds,
+        CancellationToken ct)
+    {
+        var failures = new List<PayoutOutcomeUncertainException>();
+
+        foreach(var txId in txIds)
+        {
+            try
+            {
+                await EnsurePayoutTransactionBroadcastAsync(txId, ct);
+            }
+            catch(PayoutOutcomeUncertainException ex)
+            {
+                failures.Add(ex);
+            }
+        }
+
+        if(failures.Count == 1)
+            throw failures[0];
+
+        if(failures.Count > 1)
+        {
+            throw new PayoutOutcomeUncertainException(
+                $"Broadcast verification failed for {failures.Count} persisted payout transactions: " +
+                string.Join(" | ", failures.Select(x => x.Message)),
+                new AggregateException(failures));
         }
     }
 
@@ -790,15 +842,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
         if(mempoolResponse.Error == null)
         {
-            if(mempoolResponse.Response is JObject mempoolEntry)
-            {
-                if(mempoolEntry.Value<bool?>("unbroadcast") != true)
-                    return;
+            if(mempoolResponse.Response is JObject)
+                return;
 
-                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} reported unbroadcast=true";
-            }
-            else
-                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
+            mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
         }
         else
         {
