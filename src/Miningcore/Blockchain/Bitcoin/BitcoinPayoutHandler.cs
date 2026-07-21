@@ -648,7 +648,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                 await PersistPaymentsAsync(balances, txId);
-                await EnsurePayoutTransactionBroadcastAsync(txId, ct);
+                await EnsurePayoutTransactionAcceptedAsync(txId, ct);
 
                 NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
@@ -701,8 +701,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
-            PayoutOutcomeUncertainException broadcastVerificationFailure = null;
-            PayoutOutcomeUncertainException walletSubmissionFailure = null;
+            Dictionary<Balance, string> persistedBalances = null;
+            PayoutOutcomeUncertainException acceptanceVerificationFailure = null;
 
             var parallelOptions = new ParallelOptions
             {
@@ -759,59 +759,79 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             if(successBalances.Any())
             {
-                var persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
+                persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
 
                 await PersistPaymentsAsync(persistedBalances);
 
                 try
                 {
-                    await EnsurePayoutTransactionsBroadcastAsync(
+                    await EnsurePayoutTransactionsAcceptedAsync(
                         persistedBalances.Values.Distinct(), ct);
                 }
                 catch(PayoutOutcomeUncertainException ex)
                 {
-                    broadcastVerificationFailure = ex;
-                }
-
-                if(broadcastVerificationFailure == null)
-                {
-                    NotifyPayoutSuccess(poolConfig.Id, persistedBalances.Keys.ToArray(),
-                        persistedBalances.Values.ToArray(), null);
+                    acceptanceVerificationFailure = ex;
                 }
             }
 
-            if(txFailures.Any())
+            var failedTransfers = txFailures.ToArray();
+            var walletSubmissionFailure = failedTransfers
+                .Select(x => x.Item2)
+                .OfType<PayoutOutcomeUncertainException>()
+                .FirstOrDefault();
+            PayoutOutcomeUncertainException uncertainFailure;
+
+            if(walletSubmissionFailure != null && acceptanceVerificationFailure != null)
             {
-                var failureBalances = txFailures.Select(x=> new Balance { Amount = x.Item1.Value }).ToArray();
-                var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
-
-                logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
-
-                NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
-
-                walletSubmissionFailure = txFailures
-                    .Select(x => x.Item2)
-                    .OfType<PayoutOutcomeUncertainException>()
-                    .FirstOrDefault();
-            }
-
-            if(walletSubmissionFailure != null && broadcastVerificationFailure != null)
-            {
-                throw new PayoutOutcomeUncertainException(
+                uncertainFailure = new PayoutOutcomeUncertainException(
                     "Multiple payout outcomes require reconciliation: " +
-                    $"{walletSubmissionFailure.Message} | {broadcastVerificationFailure.Message}",
-                    new AggregateException(walletSubmissionFailure, broadcastVerificationFailure));
+                    $"{walletSubmissionFailure.Message} | {acceptanceVerificationFailure.Message}",
+                    new AggregateException(walletSubmissionFailure, acceptanceVerificationFailure));
+            }
+            else
+                uncertainFailure = walletSubmissionFailure ?? acceptanceVerificationFailure;
+
+            // Classify the financial outcome before emitting any best-effort notifications.
+            // A subscriber failure must never replace an already-detected uncertain outcome.
+            if(persistedBalances != null && acceptanceVerificationFailure == null)
+            {
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
+                    persistedBalances.Keys.ToArray(), persistedBalances.Values.ToArray(), null),
+                    "success");
             }
 
-            if(walletSubmissionFailure != null)
-                throw walletSubmissionFailure;
+            if(failedTransfers.Length > 0)
+            {
+                var failureBalances = failedTransfers
+                    .Select(x => new Balance { Amount = x.Item1.Value }).ToArray();
+                var error = string.Join(", ", failedTransfers.Select(x =>
+                    $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
-            if(broadcastVerificationFailure != null)
-                throw broadcastVerificationFailure;
+                logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: {error}");
+
+                TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, failureBalances,
+                    error, null), "failure");
+            }
+
+            if(uncertainFailure != null)
+                throw uncertainFailure;
         }
     }
 
-    private async Task EnsurePayoutTransactionsBroadcastAsync(IEnumerable<string> txIds,
+    private void TryNotifyPayout(Action notify, string outcome)
+    {
+        try
+        {
+            notify();
+        }
+        catch(Exception ex)
+        {
+            logger.Error(ex, () =>
+                $"[{LogCategory}] Unable to emit payout {outcome} notification");
+        }
+    }
+
+    private async Task EnsurePayoutTransactionsAcceptedAsync(IEnumerable<string> txIds,
         CancellationToken ct)
     {
         var failures = new List<PayoutOutcomeUncertainException>();
@@ -820,7 +840,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             try
             {
-                await EnsurePayoutTransactionBroadcastAsync(txId, ct);
+                await EnsurePayoutTransactionAcceptedAsync(txId, ct);
             }
             catch(PayoutOutcomeUncertainException ex)
             {
@@ -834,13 +854,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         if(failures.Count > 1)
         {
             throw new PayoutOutcomeUncertainException(
-                $"Broadcast verification failed for {failures.Count} persisted payout transactions: " +
+                $"Payout acceptance verification failed for {failures.Count} persisted transactions: " +
                 string.Join(" | ", failures.Select(x => x.Message)),
                 new AggregateException(failures));
         }
     }
 
-    private async Task EnsurePayoutTransactionBroadcastAsync(string txId, CancellationToken ct)
+    private async Task EnsurePayoutTransactionAcceptedAsync(string txId, CancellationToken ct)
     {
         for(var attempt = 1; ; attempt++)
         {
@@ -849,6 +869,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             if(mempoolResponse.Error == null)
             {
+                // Local mempool membership is sufficient acceptance evidence. Bitcoin Core's
+                // unbroadcast flag only means that no peer has acknowledged initial relay yet;
+                // the node retains the transaction and continues attempting relay.
                 if(mempoolResponse.Response is JObject)
                     return;
 
@@ -859,7 +882,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
                 {
                     logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
-                        $"cannot verify that payout transaction {txId} was broadcast");
+                        $"cannot verify local acceptance of payout transaction {txId}");
                     return;
                 }
 
