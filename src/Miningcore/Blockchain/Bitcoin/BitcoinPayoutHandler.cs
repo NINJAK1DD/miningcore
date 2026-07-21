@@ -70,7 +70,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private CoinTemplate coin;
     private int minConfirmations;
     private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan PayoutVerificationRetryDelay = TimeSpan.FromSeconds(1);
     private const int MinimumDefinitiveMisses = 3;
+    private const int PayoutVerificationAttempts = 3;
 
     internal static bool IsUnknownWalletSubmission(JsonRpcError error) =>
         WalletSubmissionOutcome.IsUnknown(error);
@@ -92,6 +94,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         CancellationToken ct) =>
         rpcClient.ExecuteAsync<Transaction>(logger, BitcoinCommands.GetTransaction, ct,
             new object[] { txId });
+
+    protected virtual Task DelayPayoutVerificationAsync(TimeSpan delay, CancellationToken ct) =>
+        Task.Delay(delay, ct);
 
     protected override string LogCategory => "Bitcoin Payout Handler";
 
@@ -837,43 +842,65 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private async Task EnsurePayoutTransactionBroadcastAsync(string txId, CancellationToken ct)
     {
-        var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
-        string mempoolStatus;
-
-        if(mempoolResponse.Error == null)
+        for(var attempt = 1; ; attempt++)
         {
-            if(mempoolResponse.Response is JObject)
-                return;
+            var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
+            string mempoolStatus;
 
-            mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
-        }
-        else
-        {
-            if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+            if(mempoolResponse.Error == null)
             {
-                logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
-                    $"cannot verify that payout transaction {txId} was broadcast");
-                return;
+                if(mempoolResponse.Response is JObject)
+                    return;
+
+                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
+            }
+            else
+            {
+                if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+                {
+                    logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
+                        $"cannot verify that payout transaction {txId} was broadcast");
+                    return;
+                }
+
+                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned {mempoolResponse.Error.Code}: " +
+                    mempoolResponse.Error.Message;
             }
 
-            mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned {mempoolResponse.Error.Code}: " +
-                mempoolResponse.Error.Message;
+            var walletResponse = await GetWalletTransactionAsync(txId, ct);
+
+            if(walletResponse.Error == null && walletResponse.Response?.Confirmations > 0)
+                return;
+
+            var verificationError = walletResponse.Error != null
+                ? $"{BitcoinCommands.GetTransaction} returned {walletResponse.Error.Code}: {walletResponse.Error.Message}"
+                : $"wallet confirmations: {walletResponse.Response?.Confirmations ?? 0}";
+
+            if(attempt >= PayoutVerificationAttempts)
+            {
+                throw new PayoutOutcomeUncertainException(
+                    $"Wallet accepted payout transaction {txId}, but it remained absent from the local mempool " +
+                    $"and unconfirmed after {PayoutVerificationAttempts} verification attempts " +
+                    $"({mempoolStatus}; {verificationError}). Its payment record was persisted to prevent a " +
+                    "duplicate payout. Confirm wallet broadcasting is enabled, then broadcast or reconcile " +
+                    "the transaction manually");
+            }
+
+            logger.Warn(() => $"[{LogCategory}] Payout transaction {txId} could not be verified on " +
+                $"attempt {attempt} of {PayoutVerificationAttempts} ({mempoolStatus}; {verificationError}); " +
+                $"retrying in {PayoutVerificationRetryDelay.TotalSeconds:0} second(s)");
+
+            try
+            {
+                await DelayPayoutVerificationAsync(PayoutVerificationRetryDelay, ct);
+            }
+            catch(OperationCanceledException ex)
+            {
+                throw new PayoutOutcomeUncertainException(
+                    $"Payout verification for persisted transaction {txId} was interrupted after " +
+                    $"attempt {attempt} of {PayoutVerificationAttempts}", ex);
+            }
         }
-
-        var walletResponse = await GetWalletTransactionAsync(txId, ct);
-
-        if(walletResponse.Error == null && walletResponse.Response?.Confirmations > 0)
-            return;
-
-        var verificationError = walletResponse.Error != null
-            ? $"{BitcoinCommands.GetTransaction} returned {walletResponse.Error.Code}: {walletResponse.Error.Message}"
-            : $"wallet confirmations: {walletResponse.Response?.Confirmations ?? 0}";
-
-        throw new PayoutOutcomeUncertainException(
-            $"Wallet accepted payout transaction {txId}, but it is neither in the local mempool nor confirmed " +
-            $"({mempoolStatus}; " +
-            $"{verificationError}). Its payment record was persisted to prevent a duplicate payout. " +
-            "Confirm wallet broadcasting is enabled, then broadcast or reconcile the transaction manually");
     }
 
     public double AdjustBlockEffort(double effort)
