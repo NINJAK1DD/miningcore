@@ -110,7 +110,7 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
     }
 
     [BitcoinCoreIntegrationFact]
-    public async Task BrokenSendMany_ReportsEveryUnbroadcastIndividualTransaction()
+    public async Task BrokenSendMany_ReportsEveryWalletOnlyTransaction()
     {
         await using var node = await BitcoinCoreRegtestNode.StartAsync(walletBroadcast: false);
         var fixture = await CreateFixtureAsync(node, hasBrokenSendMany: true);

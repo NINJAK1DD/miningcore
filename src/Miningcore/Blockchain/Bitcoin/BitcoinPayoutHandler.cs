@@ -650,10 +650,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 await PersistPaymentsAsync(balances, txId);
                 await EnsurePayoutTransactionAcceptedAsync(txId, ct);
 
-                NotifyPayoutSuccess(poolConfig.Id, balances, new[]
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
                     txId
-                }, null);
+                }, null), "success");
             }
 
             else
@@ -862,67 +862,71 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private async Task EnsurePayoutTransactionAcceptedAsync(string txId, CancellationToken ct)
     {
-        for(var attempt = 1; ; attempt++)
+        var attempt = 0;
+
+        try
         {
-            var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
-            string mempoolStatus;
-
-            if(mempoolResponse.Error == null)
+            for(attempt = 1; ; attempt++)
             {
-                // Local mempool membership is sufficient acceptance evidence. Bitcoin Core's
-                // unbroadcast flag only means that no peer has acknowledged initial relay yet;
-                // the node retains the transaction and continues attempting relay.
-                if(mempoolResponse.Response is JObject)
-                    return;
+                var mempoolResponse = await GetMempoolEntryAsync(txId, ct);
+                string mempoolStatus;
 
-                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
-            }
-            else
-            {
-                if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+                if(mempoolResponse.Error == null)
                 {
-                    logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
-                        $"cannot verify local acceptance of payout transaction {txId}");
-                    return;
+                    // Local mempool membership is sufficient acceptance evidence. Bitcoin Core's
+                    // unbroadcast flag only means that no peer has acknowledged initial relay yet;
+                    // the node retains the transaction and continues attempting relay.
+                    if(mempoolResponse.Response is JObject)
+                        return;
+
+                    mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned no valid entry";
+                }
+                else
+                {
+                    if(mempoolResponse.Error.Code == (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND)
+                    {
+                        logger.Warn(() => $"[{LogCategory}] Daemon does not support {BitcoinCommands.GetMempoolEntry}; " +
+                            $"cannot verify local acceptance of payout transaction {txId}");
+                        return;
+                    }
+
+                    mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned {mempoolResponse.Error.Code}: " +
+                        mempoolResponse.Error.Message;
                 }
 
-                mempoolStatus = $"{BitcoinCommands.GetMempoolEntry} returned {mempoolResponse.Error.Code}: " +
-                    mempoolResponse.Error.Message;
-            }
+                var walletResponse = await GetWalletTransactionAsync(txId, ct);
 
-            var walletResponse = await GetWalletTransactionAsync(txId, ct);
+                if(walletResponse.Error == null && walletResponse.Response?.Confirmations > 0)
+                    return;
 
-            if(walletResponse.Error == null && walletResponse.Response?.Confirmations > 0)
-                return;
+                var verificationError = walletResponse.Error != null
+                    ? $"{BitcoinCommands.GetTransaction} returned {walletResponse.Error.Code}: {walletResponse.Error.Message}"
+                    : $"wallet confirmations: {walletResponse.Response?.Confirmations ?? 0}";
 
-            var verificationError = walletResponse.Error != null
-                ? $"{BitcoinCommands.GetTransaction} returned {walletResponse.Error.Code}: {walletResponse.Error.Message}"
-                : $"wallet confirmations: {walletResponse.Response?.Confirmations ?? 0}";
+                if(attempt >= PayoutVerificationAttempts)
+                {
+                    throw new PayoutOutcomeUncertainException(
+                        $"Wallet accepted payout transaction {txId}, but it remained absent from the local mempool " +
+                        $"and unconfirmed after {PayoutVerificationAttempts} verification attempts " +
+                        $"({mempoolStatus}; {verificationError}). Its payment record was persisted to prevent a " +
+                        "duplicate payout. Confirm wallet broadcasting is enabled, then broadcast or reconcile " +
+                        "the transaction manually");
+                }
 
-            if(attempt >= PayoutVerificationAttempts)
-            {
-                throw new PayoutOutcomeUncertainException(
-                    $"Wallet accepted payout transaction {txId}, but it remained absent from the local mempool " +
-                    $"and unconfirmed after {PayoutVerificationAttempts} verification attempts " +
-                    $"({mempoolStatus}; {verificationError}). Its payment record was persisted to prevent a " +
-                    "duplicate payout. Confirm wallet broadcasting is enabled, then broadcast or reconcile " +
-                    "the transaction manually");
-            }
+                logger.Warn(() => $"[{LogCategory}] Payout transaction {txId} could not be verified on " +
+                    $"attempt {attempt} of {PayoutVerificationAttempts} ({mempoolStatus}; {verificationError}); " +
+                    $"retrying in {PayoutVerificationRetryDelay.TotalSeconds:0} second(s)");
 
-            logger.Warn(() => $"[{LogCategory}] Payout transaction {txId} could not be verified on " +
-                $"attempt {attempt} of {PayoutVerificationAttempts} ({mempoolStatus}; {verificationError}); " +
-                $"retrying in {PayoutVerificationRetryDelay.TotalSeconds:0} second(s)");
-
-            try
-            {
                 await DelayPayoutVerificationAsync(PayoutVerificationRetryDelay, ct);
             }
-            catch(OperationCanceledException ex)
-            {
-                throw new PayoutOutcomeUncertainException(
-                    $"Payout verification for persisted transaction {txId} was interrupted after " +
-                    $"attempt {attempt} of {PayoutVerificationAttempts}", ex);
-            }
+        }
+        catch(OperationCanceledException ex)
+        {
+            // Once a payout is persisted, interrupted verification is financially uncertain.
+            // Preserve that classification so PayoutManager retains durable ownership.
+            throw new PayoutOutcomeUncertainException(
+                $"Payout verification for persisted transaction {txId} was interrupted after " +
+                $"attempt {attempt} of {PayoutVerificationAttempts}", ex);
         }
     }
 
