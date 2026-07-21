@@ -330,6 +330,96 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_BrokenSendMany_CancellationAfterWalletResponses_PersistsBeforeFailStop()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        var secondSubmissionStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationTriggered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        fixture.Handler.SendToAddressOverride = async (address, _) =>
+        {
+            if(address == "DTest1")
+            {
+                await secondSubmissionStarted.Task;
+                cts.Cancel();
+                cancellationTriggered.TrySetResult();
+                return new RpcResponse<string>("payout-txid-1");
+            }
+
+            secondSubmissionStarted.TrySetResult();
+            await cancellationTriggered.Task;
+            return new RpcResponse<string>("payout-txid-2");
+        };
+        fixture.Handler.ThrowCancellationFromMempoolLookup = true;
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, cts.Token));
+
+        Assert.Contains("interrupted", exception.Message);
+        Assert.Equal(new[] { "DTest1", "DTest2" },
+            fixture.Handler.SendToAddressAddresses.OrderBy(x => x));
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-1", fixture.Now);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-2", fixture.Now);
+
+        var events = fixture.Events.ToArray();
+        var persistenceCommit = Array.FindIndex(events, x => x == "commit");
+        var firstVerification = Array.FindIndex(events, x => x.StartsWith("verify:"));
+        Assert.True(persistenceCommit >= 0);
+        Assert.True(firstVerification > persistenceCommit);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_PreCanceled_DoesNotStartWalletSubmission()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+            }, cts.Token));
+
+        Assert.Empty(fixture.Handler.SendToAddressAddresses);
+        Assert.DoesNotContain(fixture.Events, x => x.StartsWith("persist:"));
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_CancellationDuringWalletCall_IsUncertain()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.SendToAddressOverride = (_, _) =>
+        {
+            cts.Cancel();
+            return Task.FromException<RpcResponse<string>>(
+                new OperationCanceledException(cts.Token));
+        };
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+            }, cts.Token));
+
+        Assert.Contains(BitcoinCommands.SendToAddress, exception.Message);
+        Assert.Contains("interrupted", exception.Message);
+        Assert.IsAssignableFrom<OperationCanceledException>(exception.InnerException);
+    }
+
+    [Fact]
     public async Task Payout_BroadcastUncertainty_FailureNotificationCannotMaskFailStop()
     {
         var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
@@ -1474,6 +1564,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         public RpcResponse<JToken> MempoolResponse { get; set; }
         public RpcResponse<Transaction> WalletTransactionResponse { get; set; }
         public Dictionary<string, RpcResponse<string>> SendToAddressResponses { get; } = new();
+        public Func<string, CancellationToken, Task<RpcResponse<string>>> SendToAddressOverride { get; set; }
+        public ConcurrentBag<string> SendToAddressAddresses { get; } = new();
         public Dictionary<string, RpcResponse<JToken>> MempoolResponses { get; } = new();
         public Dictionary<string, RpcResponse<Transaction>> WalletTransactionResponses { get; } = new();
         public ConcurrentQueue<RpcResponse<JToken>> MempoolResponseSequence { get; } = new();
@@ -1517,6 +1609,11 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             var address = args[0]?.ToString();
+            SendToAddressAddresses.Add(address);
+
+            if(SendToAddressOverride != null)
+                return SendToAddressOverride(address, ct);
+
             return Task.FromResult(SendToAddressResponses[address]);
         }
 

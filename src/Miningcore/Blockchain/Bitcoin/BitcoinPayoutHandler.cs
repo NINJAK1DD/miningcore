@@ -703,6 +703,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             var successBalances = new ConcurrentDictionary<Balance, string>();
             Dictionary<Balance, string> persistedBalances = null;
             PayoutOutcomeUncertainException acceptanceVerificationFailure = null;
+            var startedSubmissions = 0;
 
             var parallelOptions = new ParallelOptions
             {
@@ -710,52 +711,73 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 CancellationToken = ct
             };
 
-            await Parallel.ForEachAsync(amounts, parallelOptions, async (x, _ct) =>
+            try
             {
-                var (address, amount) = x;
-
-                await Guard(async () =>
+                await Parallel.ForEachAsync(amounts, parallelOptions, async (x, _ct) =>
                 {
+                    var (address, amount) = x;
+
                     // use a common id for all log entries related to this transfer
                     var transferId = CorrelationIdGenerator.GetNextId();
 
-                    logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
-
-                    var result = await SendToAddressAsync(new object[]
+                    await Guard(async () =>
                     {
-                        address,
-                        amount,
-                    }, ct);
+                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
+                        Interlocked.Increment(ref startedSubmissions);
 
-                    // check result
-                    var txId = result.Response;
+                        var result = await SendToAddressAsync(new object[]
+                        {
+                            address,
+                            amount,
+                        }, _ct);
 
-                    if(result.Error != null)
-                    {
-                        if(IsUnknownWalletSubmission(result.Error))
+                        // check result
+                        var txId = result.Response;
+
+                        if(result.Error != null)
+                        {
+                            if(IsUnknownWalletSubmission(result.Error))
+                                throw new PayoutOutcomeUncertainException(
+                                    $"[{transferId}] {BitcoinCommands.SendToAddress} outcome is unknown: {result.Error.Message}");
+
+                            throw new Exception($"[{transferId}] {BitcoinCommands.SendToAddress} returned error: {result.Error.Message} code {result.Error.Code}");
+                        }
+
+                        if(string.IsNullOrEmpty(txId))
                             throw new PayoutOutcomeUncertainException(
-                                $"[{transferId}] {BitcoinCommands.SendToAddress} outcome is unknown: {result.Error.Message}");
+                                $"[{transferId}] {BitcoinCommands.SendToAddress} returned success without a transaction id");
+                        else
+                            logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
 
-                        throw new Exception($"[{transferId}] {BitcoinCommands.SendToAddress} returned error: {result.Error.Message} code {result.Error.Code}");
-                    }
-
-                    if(string.IsNullOrEmpty(txId))
-                        throw new PayoutOutcomeUncertainException(
-                            $"[{transferId}] {BitcoinCommands.SendToAddress} returned success without a transaction id");
-                    else
-                        logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
-
-                    successBalances.TryAdd(new Balance
+                        successBalances.TryAdd(new Balance
+                        {
+                            PoolId = poolConfig.Id,
+                            Address = address,
+                            Amount = amount,
+                        }, txId);
+                    }, ex =>
                     {
-                        PoolId = poolConfig.Id,
-                        Address = address,
-                        Amount = amount,
-                    }, txId);
-                }, ex =>
-                {
-                    txFailures.Add(Tuple.Create(x, ex));
+                        if(ex is OperationCanceledException)
+                        {
+                            ex = new PayoutOutcomeUncertainException(
+                                $"[{transferId}] {BitcoinCommands.SendToAddress} was interrupted after wallet submission began; its outcome is unknown",
+                                ex);
+                        }
+
+                        txFailures.Add(Tuple.Create(x, ex));
+                    });
                 });
-            });
+            }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested &&
+                Volatile.Read(ref startedSubmissions) > 0)
+            {
+                // Parallel.ForEachAsync drains active delegates before surfacing cancellation.
+                // Continue through persistence and outcome classification so returned transaction
+                // ids are never abandoned and interrupted wallet calls retain payout ownership.
+                logger.Warn(() => $"[{LogCategory}] Payout submission was cancelled after " +
+                    $"{Volatile.Read(ref startedSubmissions)} wallet call(s) started; " +
+                    "reconciling completed outcomes before stopping");
+            }
 
             if(successBalances.Any())
             {
