@@ -994,7 +994,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }).ToArray();
                 var submittedAmount = persistedBalances.Keys.Sum(x => x.Amount);
 
-                if(!loopCancelled && failedTransfers.Length == 0)
+                if(!loopCancelled)
                     LogPrecisionSkippedBalances(precisionSkippedBalances);
 
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,

@@ -974,6 +974,16 @@ public class BitcoinPayoutHandlerTests : TestBase
     public async Task Payout_BrokenSendMany_ConclusiveMixedOutcomes_NotifiesEachSubset()
     {
         var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var logFactory = new NLog.LogFactory();
+        var logTarget = new NLog.Targets.MemoryTarget
+        {
+            Layout = "${level}|${message}",
+        };
+        var logConfig = new NLog.Config.LoggingConfiguration();
+        logConfig.AddRule(NLog.LogLevel.Debug, NLog.LogLevel.Debug, logTarget);
+        logFactory.Configuration = logConfig;
+        fixture.Handler.UseLogger(logFactory.GetLogger(nameof(
+            Payout_BrokenSendMany_ConclusiveMixedOutcomes_NotifiesEachSubset)));
         fixture.Handler.SendToAddressResponses["DTest1"] =
             new RpcResponse<string>("payout-txid");
         fixture.Handler.SendToAddressResponses["DTest2"] =
@@ -985,6 +995,12 @@ public class BitcoinPayoutHandlerTests : TestBase
         {
             new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
             new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DBelowPrecision",
+                Amount = 0.00009m,
+            },
         }, CancellationToken.None);
 
         fixture.MessageBus.Received(1).SendMessage(
@@ -997,6 +1013,11 @@ public class BitcoinPayoutHandlerTests : TestBase
             Arg.Any<string>());
         fixture.MessageBus.Received(2).SendMessage(
             Arg.Any<PaymentNotification>(), Arg.Any<string>());
+        var diagnostic = Assert.Single(logTarget.Logs);
+        Assert.Equal("Debug|[Bitcoin Payout Handler] Conclusive payout retained " +
+            "1 precision-skipped balance(s) for a future payout because they are below " +
+            "the configured payout precision (payoutDecimalPlaces=4): " +
+            "DBelowPrecision 0.00009 DOGE", diagnostic);
     }
 
     [Fact]
