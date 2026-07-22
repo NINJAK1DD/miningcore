@@ -421,6 +421,8 @@ public class PayoutManagerTests
         fixture.PayoutLease.Received(1).BeginFinancialOperation();
         fixture.PayoutLease.Received(1).CompleteFinancialOperation();
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
     [Theory]
