@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Text;
 using MailKit.Net.Smtp;
 using MimeKit;
 using Miningcore.Configuration;
@@ -74,20 +76,22 @@ public class NotificationService : StartupGatedBackgroundService
     private async Task OnPaymentNotificationAsync(PaymentNotification notification, CancellationToken ct)
     {
         var coin = poolConfigs[notification.PoolId].Template;
-        var (subject, message, isSuccess) = FormatPaymentNotification(notification,
+        var (subject, emailMessage, pushoverMessage, isSuccess) =
+            FormatPaymentNotification(notification,
             coin.Symbol, coin.ExplorerTxLink);
 
         if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
             return;
 
-        await Guard(()=> SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
+        await Guard(()=> SendEmailAsync(adminEmail, subject, emailMessage, ct), LogGuarded);
 
         if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-            await Guard(()=> pushoverClient.PushMessage(subject, message,
+            await Guard(()=> pushoverClient.PushMessage(subject, pushoverMessage,
                 PushoverMessagePriority.None, ct), LogGuarded);
     }
 
-    internal static (string Subject, string Message, bool IsSuccess)
+    internal static (string Subject, string EmailMessage, string PushoverMessage,
+        bool IsSuccess)
         FormatPaymentNotification(PaymentNotification notification, string symbol,
         string explorerTxLink)
     {
@@ -109,7 +113,7 @@ public class NotificationService : StartupGatedBackgroundService
                 $"{notification.PoolId} to {notification.RecipientsCount} recipients in " +
                 $"transaction(s) {string.Join(", ", txLinks)}";
 
-            return (subject, message, true);
+            return (subject, message, TruncateForPushover(message), true);
         }
 
         if(outcome == PaymentNotificationOutcome.Uncertain)
@@ -117,7 +121,7 @@ public class NotificationService : StartupGatedBackgroundService
             const string subject = "Payout Outcome Uncertain Notification";
             var sections = new List<string>
             {
-                $"Payout batch totalling {FormatCoinAmount(notification.Amount, symbol)} from " +
+                $"Payout batch totalling {FormatExactAmount(notification.Amount, symbol)} from " +
                 $"pool {notification.PoolId} has an uncertain outcome and requires " +
                 "reconciliation.",
             };
@@ -128,16 +132,35 @@ public class NotificationService : StartupGatedBackgroundService
                 notification.Reconciliation?.Failed, symbol);
             AppendReconciliationSection(sections, "Uncertain",
                 notification.Reconciliation?.Uncertain, symbol);
+            AppendReconciliationSection(sections, "Not attempted",
+                notification.Reconciliation?.NotAttempted, symbol);
 
             if(!string.IsNullOrWhiteSpace(notification.Error))
                 sections.Add($"Reason: {notification.Error}");
 
-            return (subject, string.Join("<br/>", sections), false);
+            var pushoverSections = new List<string>
+            {
+                $"Payout batch {FormatExactAmount(notification.Amount, symbol)} from pool " +
+                $"{notification.PoolId} is uncertain; reconcile before releasing ownership.",
+            };
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Accepted/persisted", notification.Reconciliation?.Accepted, symbol);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Failed", notification.Reconciliation?.Failed, symbol);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Uncertain", notification.Reconciliation?.Uncertain, symbol);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Not attempted", notification.Reconciliation?.NotAttempted, symbol);
+            pushoverSections.Add("See email and logs for recipient, transaction, and error details.");
+
+            return (subject, string.Join("<br/>", sections),
+                TruncateForPushover(string.Join("\n", pushoverSections)), false);
         }
 
-        return ("Payout Failure Notification",
-            $"Failed to pay out {notification.Amount} {symbol} from pool " +
-            $"{notification.PoolId}: {notification.Error}", false);
+        var failureMessage = $"Failed to pay out {notification.Amount} {symbol} from pool " +
+            $"{notification.PoolId}: {notification.Error}";
+        return ("Payout Failure Notification", failureMessage,
+            TruncateForPushover(failureMessage), false);
     }
 
     private static void AppendReconciliationSection(List<string> sections, string heading,
@@ -150,7 +173,7 @@ public class NotificationService : StartupGatedBackgroundService
         {
             var parts = new List<string>
             {
-                $"{FormatCoinAmount(x.Amount, symbol)} to {x.Address}",
+                $"{FormatExactAmount(x.Amount, symbol)} to {x.Address}",
             };
 
             if(!string.IsNullOrWhiteSpace(x.TransactionId))
@@ -165,9 +188,36 @@ public class NotificationService : StartupGatedBackgroundService
         sections.Add($"{heading}: {string.Join("; ", details)}");
     }
 
+    private static void AppendPushoverReconciliationSummary(List<string> sections,
+        string heading, PayoutReconciliationEntry[] entries, string symbol)
+    {
+        if(entries == null || entries.Length == 0)
+            return;
+
+        sections.Add($"{heading}: {FormatExactAmount(entries.Sum(x => x.Amount), symbol)} " +
+            $"({entries.Length} recipient(s))");
+    }
+
     private static string FormatCoinAmount(decimal amount, string symbol)
     {
         return $"{amount:0.#####} {symbol}";
+    }
+
+    private static string FormatExactAmount(decimal amount, string symbol)
+    {
+        return $"{amount.ToString(CultureInfo.InvariantCulture)} {symbol}";
+    }
+
+    internal static string TruncateForPushover(string message)
+    {
+        const int maxCharacters = 1024;
+        var characters = message.EnumerateRunes().ToArray();
+
+        if(characters.Length <= maxCharacters)
+            return message;
+
+        return string.Concat(characters.Take(maxCharacters - 1)
+            .Select(x => x.ToString())) + "…";
     }
 
     public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -811,15 +812,193 @@ public class BitcoinPayoutHandlerTests : TestBase
         var rendered = NotificationService.FormatPaymentNotification(notification,
             fixture.Config.Template.Symbol, fixture.Config.Template.ExplorerTxLink);
         Assert.Equal("Payout Outcome Uncertain Notification", rendered.Subject);
-        Assert.Contains("Payout batch totalling 3 DOGE", rendered.Message);
+        Assert.Contains("Payout batch totalling 3 DOGE", rendered.EmailMessage);
         Assert.Contains("Accepted and persisted: 1 DOGE to DTest1, transaction payout-txid",
-            rendered.Message);
-        Assert.Contains("Uncertain: 2 DOGE to DTest2", rendered.Message);
-        Assert.DoesNotContain("Failed to pay out", rendered.Message);
+            rendered.EmailMessage);
+        Assert.Contains("Uncertain: 2 DOGE to DTest2", rendered.EmailMessage);
+        Assert.DoesNotContain("Failed to pay out", rendered.EmailMessage);
+        Assert.DoesNotContain("<br/>", rendered.PushoverMessage);
+        Assert.Contains("Accepted/persisted: 1 DOGE (1 recipient(s))",
+            rendered.PushoverMessage);
+        Assert.Contains("Uncertain: 2 DOGE (1 recipient(s))",
+            rendered.PushoverMessage);
 
         await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
             Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
             "payout-txid", fixture.Now);
+    }
+
+    [Fact]
+    public async Task PayoutManager_HighPrecisionUncertainty_PreservesExactAmount()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true,
+            coinTemplate: "kylacoin");
+        var balances = new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "KTest",
+                Amount = 0.000000123456m,
+            },
+        };
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(fixture.Connection,
+                fixture.Config.Id, Arg.Any<decimal>())
+            .Returns(balances);
+        fixture.Handler.SendToAddressResponses["KTest"] =
+            new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
+        PaymentNotification notification = null;
+        fixture.MessageBus.When(x => x.SendMessage(Arg.Any<PaymentNotification>(),
+                Arg.Any<string>()))
+            .Do(call => notification = call.ArgAt<PaymentNotification>(0));
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.Pool, fixture.Config,
+                fixture.Handler, CancellationToken.None));
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            fixture.Config.Template.Symbol, fixture.Config.Template.ExplorerTxLink);
+        Assert.Contains("0.000000123456 KCN", rendered.EmailMessage);
+        Assert.Contains("0.000000123456 KCN", rendered.PushoverMessage);
+        Assert.DoesNotContain("0 KCN", rendered.EmailMessage);
+    }
+
+    [Fact]
+    public async Task Payout_SendManyPersistenceFailure_PreservesKnownTransactionId()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.PaymentRepository.TryBeginPaymentBatchAsync(Arg.Any<IDbConnection>(),
+                Arg.Any<IDbTransaction>(), fixture.Config.Id, "payout-txid", fixture.Now)
+            .Returns(Task.FromException<bool>(
+                new InvalidOperationException("database unavailable")));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance
+                {
+                    PoolId = fixture.Config.Id,
+                    Address = "DTest",
+                    Amount = 1,
+                },
+            }, CancellationToken.None));
+
+        var uncertain = Assert.Single(exception.Reconciliation.Uncertain);
+        Assert.Equal("DTest", uncertain.Address);
+        Assert.Equal(1, uncertain.Amount);
+        Assert.Equal("payout-txid", uncertain.TransactionId);
+        Assert.Contains("could not be persisted", uncertain.Detail);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendManyPersistenceFailure_PreservesEveryKnownOutcome()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("payout-txid");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>(null, new JsonRpcError(-5, "rejected", null));
+        fixture.Handler.SendToAddressResponses["DTest3"] =
+            new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
+        fixture.PaymentRepository.TryBeginPaymentBatchAsync(Arg.Any<IDbConnection>(),
+                Arg.Any<IDbTransaction>(), fixture.Config.Id, "payout-txid", fixture.Now)
+            .Returns(Task.FromException<bool>(
+                new InvalidOperationException("database unavailable")));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest3", Amount = 3 },
+            }, CancellationToken.None));
+
+        var submitted = Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTest1");
+        Assert.Equal("payout-txid", submitted.TransactionId);
+        Assert.Contains("could not be persisted", submitted.Detail);
+        var unknown = Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTest3");
+        Assert.Null(unknown.TransactionId);
+        Assert.Contains("response lost", unknown.Detail);
+        var failed = Assert.Single(exception.Reconciliation.Failed);
+        Assert.Equal("DTest2", failed.Address);
+        Assert.Contains("rejected", failed.Detail);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendManyCancellation_ClassifiesUnstartedRecipients()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        var firstWaveStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = 0;
+        fixture.Handler.SendToAddressOverride = async (_, _) =>
+        {
+            if(Interlocked.Increment(ref started) == 8)
+            {
+                cts.Cancel();
+                firstWaveStarted.TrySetResult();
+            }
+
+            await firstWaveStarted.Task;
+            return new RpcResponse<string>(null,
+                new JsonRpcError(-500, "response lost", null));
+        };
+        var balances = Enumerable.Range(1, 9)
+            .Select(x => new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = $"DTest{x}",
+                Amount = x,
+            }).ToArray();
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, balances, cts.Token));
+
+        Assert.Equal(8, exception.Reconciliation.Uncertain.Length);
+        var notAttempted = Assert.Single(exception.Reconciliation.NotAttempted);
+        Assert.Equal("DTest9", notAttempted.Address);
+        Assert.Equal(9, notAttempted.Amount);
+        Assert.Contains("was not started", notAttempted.Detail);
+        Assert.Equal(balances.Sum(x => x.Amount),
+            exception.Reconciliation.Uncertain.Sum(x => x.Amount) +
+            exception.Reconciliation.NotAttempted.Sum(x => x.Amount));
+    }
+
+    [Fact]
+    public void PaymentNotification_PushoverSummary_IsPlainTextAndBounded()
+    {
+        var notification = new PaymentNotification("doge-test", "unknown", 1, "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTest",
+                        Amount = 1,
+                        Detail = new string('x', 2000),
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("<br/>", rendered.EmailMessage);
+        Assert.DoesNotContain("<br/>", rendered.PushoverMessage);
+        Assert.Contains("Uncertain: 1 DOGE (1 recipient(s))", rendered.PushoverMessage);
+        Assert.True(rendered.PushoverMessage.EnumerateRunes().Count() <= 1024);
+
+        var truncated = NotificationService.TruncateForPushover(new string('x', 1100));
+        Assert.Equal(1024, truncated.EnumerateRunes().Count());
+        Assert.EndsWith("…", truncated);
     }
 
     [Fact]

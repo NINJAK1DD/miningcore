@@ -16,4 +16,6 @@ public record PayoutReconciliation
         Array.Empty<PayoutReconciliationEntry>();
     public PayoutReconciliationEntry[] Uncertain { get; init; } =
         Array.Empty<PayoutReconciliationEntry>();
+    public PayoutReconciliationEntry[] NotAttempted { get; init; } =
+        Array.Empty<PayoutReconciliationEntry>();
 }
