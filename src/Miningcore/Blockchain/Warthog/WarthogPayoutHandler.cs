@@ -254,6 +254,11 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         // build args
         var amounts = balances
             .Where(x => x.Amount > 0)
@@ -392,6 +397,14 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                     Signature = fullSignatureBytes.ToHexString()
                 };
 
+                var submittedBalance = new Balance
+                {
+                    PoolId = poolConfig.Id,
+                    Address = address,
+                    Amount = amount,
+                };
+                TrackPayoutSubmission(submittedBalance);
+
                 var response = await restClient.Post<WarthogSendTransactionResponse>(WarthogCommands.SendTransaction, sendTransaction, ct);
                 if(response?.Error != null)
                     throw new Exception($"[{nonceId}] {WarthogCommands.SendTransaction} returned error: {response.Error} (Code {response?.Code})");
@@ -400,16 +413,21 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                     response?.Data?.TxHash, WarthogCommands.SendTransaction);
                 logger.Info(() => $"[{LogCategory}] [{nonceId}] Payment transaction id: {txHash}");
 
-                successBalances.TryAdd(new Balance
-                {
-                    PoolId = poolConfig.Id,
-                    Address = address,
-                    Amount = amount,
-                }, txHash);
+                TrackPayoutTransaction(new[] { submittedBalance }, txHash);
+                successBalances.TryAdd(submittedBalance, txHash);
             }, ex =>
             {
                 WalletSubmissionOutcome.RethrowIfUnknown(ex,
                     WarthogCommands.SendTransaction);
+                TrackPayoutFailure(new[]
+                {
+                    new Balance
+                    {
+                        PoolId = poolConfig.Id,
+                        Address = x.Key,
+                        Amount = x.Value,
+                    },
+                }, ex.Message);
                 txFailures.Add(Tuple.Create(x, ex));
             });
         });
@@ -423,7 +441,12 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
 
         if(txFailures.Any())
         {
-            var failureBalances = txFailures.Select(x=> new Balance { Amount = x.Item1.Value }).ToArray();
+            var failureBalances = txFailures.Select(x => new Balance
+            {
+                PoolId = poolConfig.Id,
+                Address = x.Item1.Key,
+                Amount = x.Item1.Value,
+            }).ToArray();
             var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
             logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");

@@ -157,6 +157,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
         logger.Info(() => $"[{LogCategory}] [batch] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses:\n{string.Join("\n", balances.OrderByDescending(x => x.Amount).Select(x => $"{FormatAmount(x.Amount)} to {x.Address}"))}");
 
         // send command
+        TrackPayoutSubmission(balances);
         var sendTransactionResponse = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct, request);
 
         return await HandleSendTransactionResponseAsync(sendTransactionResponse, balances);
@@ -220,6 +221,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
             logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balance.Amount)} to integrated address {balance.Address}");
 
         // send command
+        TrackPayoutSubmission(balance);
         var result = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct, request);
 
         return await HandleSendTransactionResponseAsync(result, balance);
@@ -380,6 +382,14 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+
+        // save wallet
+        await rpcClientWallet.ExecuteAsync<JToken>(logger, ConcealWalletCommands.Save, ct);
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         var coin = poolConfig.Template.As<ConcealCoinTemplate>();
 
 #if !DEBUG // ensure we have peers
@@ -488,8 +498,6 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
                 break;
         }
 
-        // save wallet
-        await rpcClientWallet.ExecuteAsync<JToken>(logger, ConcealWalletCommands.Save, ct);
     }
 
     public double AdjustBlockEffort(double effort)

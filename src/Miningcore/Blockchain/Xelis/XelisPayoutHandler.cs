@@ -237,6 +237,11 @@ public class XelisPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         // ensure we have enough peers
         var enoughPeers = await EnsureDaemonsSynchedAsync(ct);
         if(!enoughPeers)
@@ -355,6 +360,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 };
             }
 
+            TrackPayoutSubmission(page);
             var buildTransactionResponse = await rpcClientWallet.ExecuteAsync<BuildTransactionResponse>(logger, XelisWalletCommands.BuildTransaction, ct, buildTransactionRequest);
             WalletSubmissionOutcome.ThrowIfUnknown(buildTransactionResponse.Error,
                 XelisWalletCommands.BuildTransaction);

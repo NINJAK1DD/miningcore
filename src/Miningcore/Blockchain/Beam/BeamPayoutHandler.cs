@@ -132,6 +132,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         };
         
         // send command
+        TrackPayoutSubmission(balance);
         var response = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, BeamWalletCommands.SendTransaction, ct, request);
         
         WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -297,6 +298,12 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         if(!await EnsureBalance(balances.Sum(x => x.Amount), coin, ct))
             return;
         
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
+        var successfulBalances = new List<Balance>();
         var txHashes = new List<string>();
 
         foreach(var balance in balances)
@@ -304,6 +311,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
             try
             {
                 var txHash = await PayoutAsync(balance, ct);
+                successfulBalances.Add(balance);
                 txHashes.Add(txHash);
             }
 
@@ -319,7 +327,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         }
 
         if(txHashes.Any())
-            NotifyPayoutSuccess(poolConfig.Id, balances, txHashes.ToArray(), null);
+            NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
+                txHashes.ToArray(), null);
     }
 
     public double AdjustBlockEffort(double effort)

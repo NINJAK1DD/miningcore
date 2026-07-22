@@ -349,6 +349,12 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         if(!enoughPeers)
             return;
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
+        var successfulBalances = new List<Balance>();
         var txHashes = new List<string>();
 
         foreach(var balance in balances)
@@ -356,6 +362,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
             try
             {
                 var txHash = await PayoutAsync(balance, ct);
+                successfulBalances.Add(balance);
                 txHashes.Add(txHash);
             }
 
@@ -371,7 +378,8 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         }
 
         if(txHashes.Any())
-            NotifyPayoutSuccess(poolConfig.Id, balances, txHashes.ToArray(), null);
+            NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
+                txHashes.ToArray(), null);
     }
 
     public double AdjustBlockEffort(double effort)
@@ -669,6 +677,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         }
 
         RpcResponse<string> response;
+        TrackPayoutSubmission(balance);
         if(extraPoolConfig?.ChainTypeOverride == "Pink")
         {
             var requestPink = new SendTransactionRequestPink

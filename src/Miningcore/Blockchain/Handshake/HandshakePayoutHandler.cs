@@ -213,6 +213,11 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         // build args
         var amounts = balances
             .Where(x => x.Amount > 0)
@@ -264,6 +269,8 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             logger.Debug(() => $"[{LogCategory}] Current wallet: {walletInfo.Response?.WalletId} [{walletName}]");
             if(walletInfo.Response?.WalletId != walletName)
                 await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.SelectWallet, ct, new[] { walletName });
+
+            TrackPayoutSubmission(balances);
             var result = await rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendMany, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(result.Error,
@@ -271,6 +278,12 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
 
             if(result.Error == null)
             {
+                // Capture the wallet identity before any post-submission wallet-lock call can be
+                // interrupted so reconciliation retains the known transaction.
+                var txId = WalletSubmissionOutcome.RequireTransactionId(result.Response,
+                    HandshakeWalletCommands.SendMany);
+                TrackPayoutTransaction(balances, txId);
+
                 if(didUnlockWallet)
                 {
                     // lock wallet
@@ -278,9 +291,6 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.WalletLock, ct);
                 }
 
-                // check result
-                var txId = WalletSubmissionOutcome.RequireTransactionId(result.Response,
-                    HandshakeWalletCommands.SendMany);
                 logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                 await PersistPaymentsAsync(balances, txId);
@@ -295,6 +305,8 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             {
                 if(result.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
+                    TrackPayoutSubmissionNotStarted(balances);
+
                     if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
                     {
                         logger.Info(() => $"[{LogCategory}] Unlocking wallet");
@@ -312,11 +324,21 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         }
 
                         else
-                            logger.Error(() => $"[{LogCategory}] {HandshakeWalletCommands.WalletPassPhrase} returned error: {result.Error.Message} code {result.Error.Code}");
+                        {
+                            logger.Error(() => $"[{LogCategory}] {HandshakeWalletCommands.WalletPassPhrase} returned error: {unlockResult.Error.Message} code {unlockResult.Error.Code}");
+                            NotifyPayoutFailure(poolConfig.Id, balances,
+                                $"{HandshakeWalletCommands.WalletPassPhrase} returned error: " +
+                                $"{unlockResult.Error.Message} code {unlockResult.Error.Code}", null);
+                        }
                     }
 
                     else
+                    {
                         logger.Error(() => $"[{LogCategory}] Wallet is locked but walletPassword was not configured. Unable to send funds.");
+                        NotifyPayoutFailure(poolConfig.Id, balances,
+                            "Wallet is locked but walletPassword was not configured. Unable to send funds.",
+                            null);
+                    }
                 }
 
                 else
@@ -351,6 +373,14 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
 
                     logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
 
+                    var submittedBalance = new Balance
+                    {
+                        PoolId = poolConfig.Id,
+                        Address = address,
+                        Amount = amount,
+                    };
+                    TrackPayoutSubmission(submittedBalance);
+
                     var result = await rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendToAddress, ct, new object[]
                     {
                         address,
@@ -370,18 +400,23 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         HandshakeWalletCommands.SendToAddress);
                     logger.Info(() => $"[{LogCategory}] [{transferId}] Payment transaction id: {txId}");
 
-                    successBalances.TryAdd(new Balance
-                    {
-                        PoolId = poolConfig.Id,
-                        Address = address,
-                        Amount = amount,
-                    }, txId);
+                    TrackPayoutTransaction(new[] { submittedBalance }, txId);
+                    successBalances.TryAdd(submittedBalance, txId);
                 }, ex =>
                 {
                     try
                     {
                         WalletSubmissionOutcome.RethrowIfUnknown(ex,
                             HandshakeWalletCommands.SendToAddress);
+                        TrackPayoutFailure(new[]
+                        {
+                            new Balance
+                            {
+                                PoolId = poolConfig.Id,
+                                Address = x.Key,
+                                Amount = x.Value,
+                            },
+                        }, ex.Message);
                         txFailures.Add(Tuple.Create(x, ex));
                     }
                     catch(PayoutOutcomeUncertainException uncertain)
@@ -400,7 +435,12 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
 
             if(txFailures.Any())
             {
-                var failureBalances = txFailures.Select(x=> new Balance { Amount = x.Item1.Value }).ToArray();
+                var failureBalances = txFailures.Select(x => new Balance
+                {
+                    PoolId = poolConfig.Id,
+                    Address = x.Item1.Key,
+                    Amount = x.Item1.Value,
+                }).ToArray();
                 var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
                 logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");

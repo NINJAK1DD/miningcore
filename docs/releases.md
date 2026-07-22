@@ -30,6 +30,12 @@ It no longer exposes `error` or recipient-level reconciliation because those fie
 errors, addresses and transaction mappings. Update front ends that consumed the old `error` field
 before deploying this release; see the [payment event contract](api.md#payment-event-contract).
 
+Uncertain payout notification ownership and partial-batch reconciliation now apply across supported
+coin families, including paged and per-recipient wallet APIs. Known persisted, rejected, in-flight
+and untouched recipients remain distinct when a later submission becomes uncertain. Administrative
+amounts use exact invariant decimal formatting with insignificant trailing zeroes removed, and
+duplicate transaction IDs returned by separate per-recipient submissions fail closed.
+
 ## Choose a version
 
 Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying

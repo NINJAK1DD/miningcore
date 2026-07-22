@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -222,8 +221,12 @@ public class NotificationService : StartupGatedBackgroundService
     private static void AppendSubmittedAmountSummary(List<string> sections,
         PaymentNotification notification, string symbol, bool html)
     {
-        if(!notification.SubmittedAmount.HasValue ||
-            notification.PrecisionAdjustment.GetValueOrDefault() == 0)
+        if(!notification.SubmittedAmount.HasValue)
+            return;
+
+        // A zero adjustment means the wallet request equals the attempted amount owed. Repeating
+        // that total adds no reconciliation information, so only adjusted requests get a summary.
+        if(notification.PrecisionAdjustment.GetValueOrDefault() == 0)
             return;
 
         var adjustment = notification.PrecisionAdjustment ?? 0;
@@ -307,7 +310,7 @@ public class NotificationService : StartupGatedBackgroundService
 
     private static string FormatExactAmount(decimal amount, string symbol)
     {
-        return $"{amount.ToString(CultureInfo.InvariantCulture)} {symbol}";
+        return $"{PayoutAmountFormatter.FormatExact(amount)} {symbol}";
     }
 
     private static string FormatSignedExactAmount(decimal amount, string symbol)
@@ -318,7 +321,7 @@ public class NotificationService : StartupGatedBackgroundService
 
     private static string FormatExactHtmlAmount(decimal amount, string symbol)
     {
-        return $"{amount.ToString(CultureInfo.InvariantCulture)} {HtmlEncode(symbol)}";
+        return $"{PayoutAmountFormatter.FormatExact(amount)} {HtmlEncode(symbol)}";
     }
 
     private static string FormatSignedExactHtmlAmount(decimal amount, string symbol)

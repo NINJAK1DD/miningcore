@@ -87,10 +87,13 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         
         // Some projects like Veruscoin does not require shielding before being able to spend coins.
         // They can also sends coins from a t-address to t-addresses and z-addresses
-        if(supportsSendCurrency)
-            await PayoutSendCurrencyAsync(pool, balances, ct);
-        else
-            await PayoutZSendManyAsync(pool, balances, ct);
+        await TrackPayoutAsync(balances, async () =>
+        {
+            if(supportsSendCurrency)
+                await PayoutSendCurrencyAsync(pool, balances, ct);
+            else
+                await PayoutZSendManyAsync(pool, balances, ct);
+        });
         
         // lock wallet
         logger.Info(() => $"[{LogCategory}] Locking wallet");
@@ -183,6 +186,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             // send command
             tryTransfer:
+            TrackPayoutSubmission(page);
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -215,8 +219,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                             if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
                             {
-                                logger.Error(() => $"Unrecognized operation status: {operationResult.Status}");
-                                break;
+                                throw new PayoutOutcomeUncertainException(
+                                    $"{EquihashCommands.ZSendMany} operation {operationId} returned " +
+                                    $"unrecognized status '{operationResult.Status}'");
                             }
 
                             switch(status)
@@ -262,6 +267,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             {
                 if(response.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
+                    TrackPayoutSubmissionNotStarted(page);
+
                     if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
                     {
                         logger.Info(() => $"[{LogCategory}] Unlocking wallet");
@@ -280,8 +287,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                         else
                         {
-                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}");
-                            NotifyPayoutFailure(poolConfig.Id, page, $"{BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}", null);
+                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {unlockResponse.Error.Message} code {unlockResponse.Error.Code}");
+                            NotifyPayoutFailure(poolConfig.Id, page, $"{BitcoinCommands.WalletPassphrase} returned error: {unlockResponse.Error.Message} code {unlockResponse.Error.Code}", null);
                             break;
                         }
                     }
@@ -347,6 +354,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             // send command
             trySendCurrencyTransfer:
+            TrackPayoutSubmission(page);
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.SendCurrency, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -379,8 +387,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                             if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
                             {
-                                logger.Error(() => $"Unrecognized operation status: {operationResult.Status}");
-                                break;
+                                throw new PayoutOutcomeUncertainException(
+                                    $"{EquihashCommands.SendCurrency} operation {operationId} returned " +
+                                    $"unrecognized status '{operationResult.Status}'");
                             }
 
                             switch(status)
@@ -426,6 +435,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             {
                 if(response.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
+                    TrackPayoutSubmissionNotStarted(page);
+
                     if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
                     {
                         logger.Info(() => $"[{LogCategory}] Unlocking wallet");
@@ -444,8 +455,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                         else
                         {
-                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}");
-                            NotifyPayoutFailure(poolConfig.Id, page, $"{BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}", null);
+                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {unlockResponse.Error.Message} code {unlockResponse.Error.Code}");
+                            NotifyPayoutFailure(poolConfig.Id, page, $"{BitcoinCommands.WalletPassphrase} returned error: {unlockResponse.Error.Message} code {unlockResponse.Error.Code}", null);
                             break;
                         }
                     }

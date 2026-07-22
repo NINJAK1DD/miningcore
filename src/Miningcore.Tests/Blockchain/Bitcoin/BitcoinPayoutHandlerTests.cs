@@ -730,6 +730,32 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_BrokenSendMany_DuplicateTransactionIdsFailClosedBeforePersistence()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("duplicate-txid");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>("duplicate-txid");
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, CancellationToken.None));
+
+        Assert.Contains("duplicate transaction id", exception.Message);
+        Assert.Empty(exception.Reconciliation.Accepted);
+        Assert.Equal(new[] { "DTest1", "DTest2" }, exception.Reconciliation.Uncertain
+            .Select(x => x.Address).OrderBy(x => x));
+        Assert.All(exception.Reconciliation.Uncertain,
+            entry => Assert.Equal("duplicate-txid", entry.TransactionId));
+        Assert.DoesNotContain(fixture.Events, x => x.StartsWith("persist:"));
+        Assert.Empty(fixture.Handler.MempoolTransactionIds);
+    }
+
+    [Fact]
     public async Task Payout_BrokenSendMany_CancellationAfterWalletResponses_VerifiesWithFreshToken()
     {
         var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
@@ -1538,7 +1564,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         var rendered = NotificationService.FormatPaymentNotification(notification,
             fixture.Config.Template.Symbol, fixture.Config.Template.ExplorerTxLink);
         Assert.StartsWith("Wallet request submitted for ", rendered.EmailMessage);
-        Assert.Contains("1.0000 DOGE", rendered.EmailMessage);
+        Assert.Contains("1 DOGE", rendered.EmailMessage);
         Assert.DoesNotContain("Paid ", rendered.EmailMessage);
     }
 

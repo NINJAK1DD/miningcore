@@ -367,7 +367,12 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
         Contract.RequiresNonNull(balances);
-        
+
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         // build args
         var amounts = balances
             .Where(x => x.Amount > 0)
@@ -485,6 +490,13 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                     logger.Info(()=> $"[{LogCategory}] [{transferId}] 3/3 Broadcast {signedTransaction.SignedTransactions.Count} signed transaction(s)");
 
                     broadcastRequest.Transactions.Add(signedTransaction.SignedTransactions);
+                    var submittedBalance = new Balance
+                    {
+                        PoolId = poolConfig.Id,
+                        Address = amount.Key,
+                        Amount = amount.Value,
+                    };
+                    TrackPayoutSubmission(submittedBalance);
                     var callBroadcast = walletRpc.BroadcastAsync(broadcastRequest);
                     broadcastTransaction = await Guard(() => callBroadcast.ResponseAsync,
                         ex =>
@@ -492,8 +504,13 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                             WalletSubmissionOutcome.RethrowIfUnknown(ex,
                                 "Kaspa wallet transaction broadcast");
                             logger.Warn(ex);
+                            TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
+                            txFailures.Add(Tuple.Create(amount, ex));
                         });
                     callBroadcast.Dispose();
+
+                    if(broadcastTransaction == null)
+                        continue;
 
                     logger.Debug(()=> $"[{LogCategory}] {(broadcastTransaction?.TxIDs == null ? 0 : broadcastTransaction?.TxIDs.Count)} transaction ID(s) returned");
 
@@ -505,12 +522,8 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
 
                         logger.Info(() => $"[{LogCategory}] [{amount.Key} - {FormatAmount(amount.Value)}] Payment transaction id: {txId}");
 
-                        successBalances.Add(new Balance
-                        {
-                            PoolId = poolConfig.Id,
-                            Address = amount.Key,
-                            Amount = amount.Value,
-                        }, txId);
+                        TrackPayoutTransaction(new[] { submittedBalance }, txId);
+                        successBalances.Add(submittedBalance, txId);
                     }
                     else
                         throw new PayoutOutcomeUncertainException(
@@ -528,7 +541,12 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
 
         if(txFailures.Any())
         {
-            var failureBalances = txFailures.Select(x=> new Balance { Amount = x.Item1.Value }).ToArray();
+            var failureBalances = txFailures.Select(x => new Balance
+            {
+                PoolId = poolConfig.Id,
+                Address = x.Item1.Key,
+                Amount = x.Item1.Value,
+            }).ToArray();
             var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
             logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");

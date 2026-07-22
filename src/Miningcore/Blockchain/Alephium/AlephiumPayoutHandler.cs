@@ -254,6 +254,13 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+
+        await LockWallet(ct);
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         var infosChainParams = await Guard(() => alephiumClient.GetInfosChainParamsAsync(ct));
 
         var info = await Guard(() => alephiumClient.GetInfosInterCliquePeerInfoAsync(ct));
@@ -603,6 +610,16 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         Signature = txSign.Signature,
                     };
 
+                    successBalances = groupingAmounts[j]
+                        .Select(x => new Balance
+                        {
+                            PoolId = poolConfig.Id,
+                            Address = x.Key,
+                            Amount = x.Value,
+                        })
+                        .ToArray();
+
+                    TrackPayoutSubmission(successBalances);
                     var txSubmit = await Guard(() => alephiumClient.PostTransactionsSubmitAsync(submitTxSign, ct), ex =>
                     {
                         RethrowSubmissionFailure("Alephium transaction submission",
@@ -614,22 +631,12 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     // payment successful
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
-                    successBalances = groupingAmounts[j]
-                        .Select(x => new Balance
-                        {
-                            PoolId = poolConfig.Id,
-                            Address = x.Key,
-                            Amount = x.Value,
-                        })
-                        .ToArray();
-
                     await PersistPaymentsAsync(successBalances, txId);
 
                     NotifyPayoutSuccess(poolConfig.Id, successBalances, new[] {txId}, ((estimatedGasAmount * AlephiumConstants.DefaultGasPrice) / AlephiumConstants.SmallestUnit));
                 }
             }
         
-        await LockWallet(ct);
     }
 
     internal static TransferResult[] ParseSweepResults(TransferResults sweep)

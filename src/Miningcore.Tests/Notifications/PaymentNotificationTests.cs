@@ -160,11 +160,11 @@ public class PaymentNotificationTests
         var rendered = NotificationService.FormatPaymentNotification(notification,
             "DOGE", null);
 
-        Assert.Contains("Payout batch totalling 3.58020 DOGE requested",
+        Assert.Contains("Payout batch totalling 3.5802 DOGE requested",
             rendered.EmailMessage);
         Assert.Contains("Wallet request total across attempted recipients: 3.5801 DOGE",
             rendered.EmailMessage);
-        Assert.Contains("precision adjustment: -0.00010 DOGE", rendered.EmailMessage);
+        Assert.Contains("precision adjustment: -0.0001 DOGE", rendered.EmailMessage);
         Assert.Contains("1.23454 DOGE to DTestBelow, wallet request 1.2345 DOGE",
             rendered.EmailMessage);
         Assert.Contains("2.34566 DOGE to DTestAbove, wallet request 2.3456 DOGE",
@@ -185,9 +185,42 @@ public class PaymentNotificationTests
             "DOGE", null);
 
         Assert.Contains("Wallet request for 3.5801 DOGE failed", rendered.EmailMessage);
-        Assert.Contains("amount owed 3.58020 DOGE", rendered.EmailMessage);
-        Assert.Contains("precision adjustment -0.00010 DOGE", rendered.EmailMessage);
+        Assert.Contains("amount owed 3.5802 DOGE", rendered.EmailMessage);
+        Assert.Contains("precision adjustment -0.0001 DOGE", rendered.EmailMessage);
         Assert.Equal(1, rendered.EmailMessage.Split("amount owed").Length - 1);
+    }
+
+    [Fact]
+    public void UncertainFormatting_ZeroAdjustmentDoesNotRepeatSubmittedTotal()
+    {
+        var notification = new PaymentNotification("doge-test", "unknown", 1.23450m,
+            "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 1.23450m,
+            PrecisionAdjustment = 0,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTest",
+                        Amount = 1.23450m,
+                        SubmittedAmount = 1.23450m,
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("Payout batch totalling 1.2345 DOGE requested",
+            rendered.EmailMessage);
+        Assert.Contains("Uncertain: 1.2345 DOGE to DTest", rendered.EmailMessage);
+        Assert.DoesNotContain("Wallet request total across attempted recipients",
+            rendered.EmailMessage);
     }
 
     private static PayoutReconciliationEntry Entry(string address, decimal amount,
