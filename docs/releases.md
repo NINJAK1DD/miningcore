@@ -16,6 +16,20 @@ If this replaces an existing .NET 6 deployment, first follow the dedicated
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
 commands below as an instruction to overwrite a live configuration or database.
 
+## Payout and WebSocket compatibility
+
+This release changes Bitcoin-family payout accounting from rounding to truncation at the configured
+`payoutDecimalPlaces`. The truncated wallet request is now also the payment-history amount and miner
+balance deduction; any residual remains on the balance for a later payout. Review the
+[configuration guidance](configuration.md#bitcoin-family-payout-precision), particularly when a
+template relies on the four-decimal fallback.
+
+The public WebSocket `payment` event is also revised. It adds `outcome`, `submittedAmount`,
+`precisionAdjustment` and safe accepted/failed/uncertain/not-attempted aggregate counts and amounts.
+It no longer exposes `error` or recipient-level reconciliation because those fields can reveal wallet
+errors, addresses and transaction mappings. Update front ends that consumed the old `error` field
+before deploying this release; see the [payment event contract](api.md#payment-event-contract).
+
 ## Choose a version
 
 Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying

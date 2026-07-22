@@ -223,10 +223,10 @@ public class NotificationService : StartupGatedBackgroundService
         PaymentNotification notification, string symbol, bool html)
     {
         if(!notification.SubmittedAmount.HasValue ||
-            notification.RoundingAdjustment.GetValueOrDefault() == 0)
+            notification.PrecisionAdjustment.GetValueOrDefault() == 0)
             return;
 
-        var adjustment = notification.RoundingAdjustment ?? 0;
+        var adjustment = notification.PrecisionAdjustment ?? 0;
         var amount = html
             ? FormatExactHtmlAmount(notification.SubmittedAmount.Value, symbol)
             : FormatExactAmount(notification.SubmittedAmount.Value, symbol);
@@ -291,7 +291,7 @@ public class NotificationService : StartupGatedBackgroundService
 
         return $" (amount owed {FormatExactHtmlAmount(notification.Amount, symbol)}; " +
             $"precision adjustment " +
-            $"{FormatSignedExactHtmlAmount(notification.RoundingAdjustment ?? 0, symbol)})";
+            $"{FormatSignedExactHtmlAmount(notification.PrecisionAdjustment ?? 0, symbol)})";
     }
 
     private static string FormatPrecisionDetail(PaymentNotification notification,
@@ -302,7 +302,7 @@ public class NotificationService : StartupGatedBackgroundService
 
         return $" (amount owed {FormatExactAmount(notification.Amount, symbol)}; " +
             $"precision adjustment " +
-            $"{FormatSignedExactAmount(notification.RoundingAdjustment ?? 0, symbol)})";
+            $"{FormatSignedExactAmount(notification.PrecisionAdjustment ?? 0, symbol)})";
     }
 
     private static string FormatExactAmount(decimal amount, string symbol)

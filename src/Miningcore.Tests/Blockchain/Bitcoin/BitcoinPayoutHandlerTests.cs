@@ -123,8 +123,8 @@ public class BitcoinPayoutHandlerTests : TestBase
 
         var warning = Assert.Single(logTarget.Logs);
         Assert.Equal("Warn|[Bitcoin Payout Handler] No payout submitted: all " +
-            "2 selected balance(s) are below the wallet's 4-decimal payout precision. " +
-            "Review minimumPayment", warning);
+            "2 selected balance(s) are below the configured payout precision " +
+            "(payoutDecimalPlaces=4). Review minimumPayment", warning);
         Assert.Null(fixture.Handler.LastSendManyArgs);
         Assert.Empty(fixture.Handler.SendToAddressAddresses);
     }

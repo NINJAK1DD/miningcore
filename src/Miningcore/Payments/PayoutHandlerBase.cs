@@ -242,7 +242,7 @@ public abstract class PayoutHandlerBase
 
     protected virtual void NotifyPayoutSuccess(string poolId, Balance[] balances,
         string[] txHashes, decimal? txFee, decimal? submittedAmount = null,
-        decimal? roundingAdjustment = null)
+        decimal? precisionAdjustment = null)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -256,13 +256,13 @@ public abstract class PayoutHandlerBase
             explorerLinks, txFee)
         {
             SubmittedAmount = submittedAmount,
-            RoundingAdjustment = roundingAdjustment,
+            PrecisionAdjustment = precisionAdjustment,
         });
     }
 
     protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances,
         string error, Exception ex, decimal? submittedAmount = null,
-        decimal? roundingAdjustment = null)
+        decimal? precisionAdjustment = null)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -270,7 +270,7 @@ public abstract class PayoutHandlerBase
             balances.Sum(x => x.Amount), coin.Symbol, balances.Length, null, null, null)
         {
             SubmittedAmount = submittedAmount,
-            RoundingAdjustment = roundingAdjustment,
+            PrecisionAdjustment = precisionAdjustment,
         });
     }
 }

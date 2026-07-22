@@ -74,6 +74,22 @@ ws://HOST:4000/notifications
 Use `wss://` when the API is behind HTTPS. Reverse proxies must explicitly pass WebSocket upgrade
 headers and use timeouts suitable for long-lived connections.
 
+### Payment event contract
+
+Payment notifications have `type: "payment"` and an `outcome` of `success`, `failure` or
+`uncertain`. `amount` is the original amount owed across the selected batch. When wallet precision
+changes the request, `submittedAmount` contains the attempted wallet total and
+`precisionAdjustment` contains `submittedAmount - amount`.
+
+Public clients can use `recipientsCount` and the outcome-aware `acceptedCount`, `acceptedAmount`,
+`failedCount`, `failedAmount`, `uncertainCount`, `uncertainAmount`, `notAttemptedCount` and
+`notAttemptedAmount` aggregates. Nullable fields are omitted when they do not apply.
+
+The public WebSocket payload intentionally excludes `error` and recipient-level `reconciliation`.
+Those values can contain wallet errors, addresses and transaction mappings and remain available only
+to administrative notification channels and logs. Front ends written against an older event shape
+must use `outcome` and the safe aggregate fields instead of displaying `error`.
+
 ## Metrics and administration
 
 When `metricsPort` is configured, Prometheus-compatible metrics are served from `/metrics` on that

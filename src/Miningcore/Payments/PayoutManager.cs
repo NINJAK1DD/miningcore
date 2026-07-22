@@ -469,17 +469,18 @@ public class PayoutManager : ProcessStatusBackgroundService
         var submittedAmount = attemptedEntries.Length > 0
             ? attemptedEntries.Sum(x => x.SubmittedAmount.Value)
             : (decimal?) null;
-        var roundingAdjustment = attemptedEntries.Length > 0
+        var precisionAdjustment = attemptedEntries.Length > 0
             ? attemptedEntries.Sum(x => x.SubmittedAmount.Value - x.Amount)
             : (decimal?) null;
 
         messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
-            balances.Sum(x => x.Amount), pool.Template.Symbol)
+            balances.Sum(x => x.Amount), pool.Template.Symbol, balances.Length,
+            null, null, null)
         {
             Outcome = PaymentNotificationOutcome.Uncertain,
             Reconciliation = reconciliation,
             SubmittedAmount = submittedAmount,
-            RoundingAdjustment = roundingAdjustment,
+            PrecisionAdjustment = precisionAdjustment,
         });
 
         return Task.CompletedTask;

@@ -34,6 +34,24 @@ The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff`
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
 
+## Bitcoin-family payout precision
+
+Bitcoin-family payouts truncate each positive miner balance to the coin template's
+`payoutDecimalPlaces` before calling the wallet. The submitted amount is also the amount written to
+payment history and subtracted from the miner balance, so Miningcore never requests more than the
+miner is owed. Any sub-precision residual remains on the balance for a later payout.
+
+If a Bitcoin-family template omits `payoutDecimalPlaces`, Miningcore uses four decimal places. The
+bundled Litecoin and Dogecoin templates currently use that fallback even though their wallets can
+accept additional decimals. Treat this value as Miningcore payout policy, not as a statement of wallet
+capability. Choose an explicit value in a custom coin template only after testing the wallet and
+payout workflow, and keep `minimumPayment` compatible with the chosen precision.
+
+Truncation can leave a residual after every payment. It is carried into a later qualifying payout,
+but can remain indefinitely when a miner stops before reaching the threshold again. When every
+selected balance is below the configured precision, Miningcore skips wallet submission and logs the
+active `payoutDecimalPlaces` value so the operator can review `minimumPayment`.
+
 ## LTC/DOGE merged mining
 
 Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled and use `SOLO`. The parent

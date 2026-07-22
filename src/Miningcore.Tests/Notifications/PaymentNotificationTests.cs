@@ -51,6 +51,8 @@ public class PaymentNotificationTests
             "DOGE")
         {
             Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 9.9999m,
+            PrecisionAdjustment = -0.0001m,
             Reconciliation = new PayoutReconciliation
             {
                 Accepted = new[]
@@ -77,6 +79,9 @@ public class PaymentNotificationTests
         Assert.Equal("payment", payload.Value<string>("type"));
         Assert.Equal("uncertain", payload.Value<string>("outcome"));
         Assert.Equal(10, payload.Value<decimal>("amount"));
+        Assert.Equal(9.9999m, payload.Value<decimal>("submittedAmount"));
+        Assert.Equal(-0.0001m, payload.Value<decimal>("precisionAdjustment"));
+        Assert.Null(payload["roundingAdjustment"]);
         Assert.Equal(1, payload.Value<int>("acceptedCount"));
         Assert.Equal(1, payload.Value<decimal>("acceptedAmount"));
         Assert.Equal(1, payload.Value<int>("failedCount"));
@@ -131,7 +136,7 @@ public class PaymentNotificationTests
         {
             Outcome = PaymentNotificationOutcome.Uncertain,
             SubmittedAmount = 3.5801m,
-            RoundingAdjustment = -0.00010m,
+            PrecisionAdjustment = -0.00010m,
             Reconciliation = new PayoutReconciliation
             {
                 Uncertain = new[]
@@ -173,7 +178,7 @@ public class PaymentNotificationTests
             "DOGE", 2, null, null, null)
         {
             SubmittedAmount = 3.5801m,
-            RoundingAdjustment = -0.00010m,
+            PrecisionAdjustment = -0.00010m,
         };
 
         var rendered = NotificationService.FormatPaymentNotification(notification,

@@ -594,8 +594,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             if(requestedAmounts.Count > 0)
             {
                 logger.Warn(() => $"[{LogCategory}] No payout submitted: all " +
-                    $"{requestedAmounts.Count} selected balance(s) are below the wallet's " +
-                    $"{payoutDecimalPlaces}-decimal payout precision. Review minimumPayment");
+                    $"{requestedAmounts.Count} selected balance(s) are below the configured " +
+                    $"payout precision (payoutDecimalPlaces={payoutDecimalPlaces}). " +
+                    $"Review minimumPayment");
             }
 
             return;

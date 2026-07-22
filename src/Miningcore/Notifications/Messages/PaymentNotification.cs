@@ -46,10 +46,9 @@ public record PaymentNotification
     public decimal Amount { get; set; }
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public decimal? SubmittedAmount { get; set; }
-    // Retains its original public name for WebSocket compatibility. Bitcoin-family
-    // handlers now calculate this as a non-positive truncation/precision adjustment.
+    // Bitcoin-family handlers calculate this as a non-positive truncation adjustment.
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
-    public decimal? RoundingAdjustment { get; set; }
+    public decimal? PrecisionAdjustment { get; set; }
     // Administrative error detail is consumed in-process and excluded from the public stream.
     [JsonIgnore]
     public string Error { get; set; }

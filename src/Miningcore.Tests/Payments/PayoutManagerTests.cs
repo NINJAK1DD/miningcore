@@ -358,6 +358,7 @@ public class PayoutManagerTests
                 notification.Error == "wallet response lost" &&
                 notification.Amount == 1 &&
                 notification.Symbol == fixture.Pool.Template.Symbol &&
+                notification.RecipientsCount == 1 &&
                 notification.Outcome == PaymentNotificationOutcome.Uncertain &&
                 notification.Reconciliation.Uncertain.Single().Address == "miner"),
             Arg.Any<string>());
