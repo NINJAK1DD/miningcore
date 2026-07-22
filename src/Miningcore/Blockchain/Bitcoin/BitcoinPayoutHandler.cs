@@ -614,7 +614,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             Amount = amounts[x.Address],
         }).ToArray();
 
-        logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses");
+        logger.Info(() => $"[{LogCategory}] Preparing wallet request: " +
+            $"{FormatAmount(amounts.Values.Sum())} to {amounts.Count} payable address(es) " +
+            $"from {FormatAmount(requestedAmounts.Values.Sum())} owed across " +
+            $"{requestedAmounts.Count} selected balance(s)");
 
         object[] args;
 
@@ -685,7 +688,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // check result
                 var txId = result.Response;
 
-                if(string.IsNullOrEmpty(txId))
+                if(string.IsNullOrWhiteSpace(txId))
                 {
                     var detail = $"{BitcoinCommands.SendMany} returned success without a " +
                         "transaction id";
@@ -841,7 +844,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             throw new Exception($"[{transferId}] {BitcoinCommands.SendToAddress} returned error: {result.Error.Message} code {result.Error.Code}");
                         }
 
-                        if(string.IsNullOrEmpty(txId))
+                        if(string.IsNullOrWhiteSpace(txId))
                             throw new PayoutOutcomeUncertainException(
                                 $"[{transferId}] {BitcoinCommands.SendToAddress} returned success without a transaction id");
                         else

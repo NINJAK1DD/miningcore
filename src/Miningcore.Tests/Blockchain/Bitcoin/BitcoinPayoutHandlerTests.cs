@@ -72,17 +72,99 @@ public class BitcoinPayoutHandlerTests : TestBase
         }, CancellationToken.None);
     }
 
-    [Fact]
-    public async Task Payout_SuccessWithoutTransactionId_IsUnknown()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public async Task Payout_SuccessWithoutUsableTransactionId_IsUnknown(string transactionId)
     {
         var fixture = await CreateFixtureAsync();
-        fixture.Handler.PayoutResponse = new RpcResponse<string>(null);
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(transactionId);
 
-        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
             fixture.Handler.PayoutAsync(fixture.Pool, new[]
             {
                 new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
             }, CancellationToken.None));
+
+        Assert.Contains("success without a transaction id", exception.Message);
+    }
+
+    [Fact]
+    public async Task Payout_AllBalancesBelowWalletPrecision_LogsFocusedWarning()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var logFactory = new NLog.LogFactory();
+        var logTarget = new NLog.Targets.MemoryTarget
+        {
+            Layout = "${level}|${message}",
+        };
+        var logConfig = new NLog.Config.LoggingConfiguration();
+        logConfig.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Warn, logTarget);
+        logFactory.Configuration = logConfig;
+        fixture.Handler.UseLogger(logFactory.GetLogger(nameof(
+            Payout_AllBalancesBelowWalletPrecision_LogsFocusedWarning)));
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTest1",
+                Amount = 0.00009m,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTest2",
+                Amount = 0.00001m,
+            },
+        }, CancellationToken.None);
+
+        var warning = Assert.Single(logTarget.Logs);
+        Assert.Equal("Warn|[Bitcoin Payout Handler] No payout submitted: all " +
+            "2 selected balance(s) are below the wallet's 4-decimal payout precision. " +
+            "Review minimumPayment", warning);
+        Assert.Null(fixture.Handler.LastSendManyArgs);
+        Assert.Empty(fixture.Handler.SendToAddressAddresses);
+    }
+
+    [Fact]
+    public async Task Payout_MixedPrecision_LogsOwedAndWalletRequestTotals()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var logFactory = new NLog.LogFactory();
+        var logTarget = new NLog.Targets.MemoryTarget
+        {
+            Layout = "${level}|${message}",
+        };
+        var logConfig = new NLog.Config.LoggingConfiguration();
+        logConfig.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Info, logTarget);
+        logFactory.Configuration = logConfig;
+        fixture.Handler.UseLogger(logFactory.GetLogger(nameof(
+            Payout_MixedPrecision_LogsOwedAndWalletRequestTotals)));
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DPayable",
+                Amount = 1m,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DBelowPrecision",
+                Amount = 0.00009m,
+            },
+        }, CancellationToken.None);
+
+        Assert.Contains("Info|[Bitcoin Payout Handler] Preparing wallet request: " +
+            "1 DOGE to 1 payable address(es) from 1.00009 DOGE owed across " +
+            "2 selected balance(s)", logTarget.Logs);
     }
 
     [Fact]
@@ -700,6 +782,36 @@ public class BitcoinPayoutHandlerTests : TestBase
             }, CancellationToken.None));
 
         Assert.Contains("KTest 0.000000123456 KCN", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public async Task Payout_BrokenSendMany_SuccessWithoutUsableTransactionId_IsUnknown(
+        string transactionId)
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest"] =
+            new RpcResponse<string>(transactionId);
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance
+                {
+                    PoolId = fixture.Config.Id,
+                    Address = "DTest",
+                    Amount = 1,
+                },
+            }, CancellationToken.None));
+
+        Assert.Contains("success without a transaction id", exception.Message);
+        Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTest" && x.TransactionId == null);
+        await fixture.PaymentRepository.DidNotReceive().TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<DateTime>());
     }
 
     [Fact]
@@ -2569,6 +2681,11 @@ public class BitcoinPayoutHandlerTests : TestBase
         protected override TimeSpan PostCancellationVerificationGracePeriod =>
             PostCancellationVerificationGracePeriodOverride ??
             base.PostCancellationVerificationGracePeriod;
+
+        public void UseLogger(NLog.ILogger value)
+        {
+            logger = value;
+        }
 
         protected override Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
             CancellationToken ct)
