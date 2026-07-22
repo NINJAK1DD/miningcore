@@ -655,8 +655,26 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 await PersistPaymentsAsync(balances, txId);
 
-                await RunPayoutVerificationAsync(ct, verificationToken =>
-                    EnsurePayoutTransactionAcceptedAsync(txId, verificationToken));
+                try
+                {
+                    await RunPayoutVerificationAsync(ct, verificationToken =>
+                        EnsurePayoutTransactionAcceptedAsync(txId, verificationToken));
+                }
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    throw new PayoutOutcomeUncertainException(ex.Message,
+                        ex.InnerException ?? ex,
+                        new PayoutReconciliation
+                        {
+                            Uncertain = balances.Select(x => new PayoutReconciliationEntry
+                            {
+                                Address = x.Address,
+                                Amount = x.Amount,
+                                TransactionId = txId,
+                                Detail = ex.Message,
+                            }).ToArray(),
+                        });
+                }
 
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
@@ -710,8 +728,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
             Dictionary<Balance, string> persistedBalances = null;
-            IReadOnlyList<PayoutOutcomeUncertainException> acceptanceVerificationFailures =
-                Array.Empty<PayoutOutcomeUncertainException>();
+            IReadOnlyDictionary<string, PayoutOutcomeUncertainException>
+                acceptanceVerificationFailures =
+                    new Dictionary<string, PayoutOutcomeUncertainException>();
             var startedSubmissions = 0;
 
             var parallelOptions = new ParallelOptions
@@ -812,7 +831,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Select(x => new PayoutOutcomeUncertainException(
                     $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)} requires reconciliation: " +
                     x.Item2.Message, x.Item2))
-                .Concat(acceptanceVerificationFailures)
+                .Concat(acceptanceVerificationFailures.Values)
                 .ToArray();
             PayoutOutcomeUncertainException uncertainFailure = null;
 
@@ -858,7 +877,46 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         string.Join(" | ", conclusiveFailures), uncertainFailure);
                 }
 
-                throw uncertainFailure;
+                var reconciliation = new PayoutReconciliation
+                {
+                    Accepted = persistedBalances?
+                        .Where(x => !acceptanceVerificationFailures.ContainsKey(x.Value))
+                        .Select(x => new PayoutReconciliationEntry
+                        {
+                            Address = x.Key.Address,
+                            Amount = x.Key.Amount,
+                            TransactionId = x.Value,
+                        }).ToArray() ?? Array.Empty<PayoutReconciliationEntry>(),
+                    Failed = failedTransfers
+                        .Where(x => x.Item2 is not PayoutOutcomeUncertainException)
+                        .Select(x => new PayoutReconciliationEntry
+                        {
+                            Address = x.Item1.Key,
+                            Amount = x.Item1.Value,
+                            Detail = x.Item2.Message,
+                        }).ToArray(),
+                    Uncertain = (persistedBalances?
+                            .Where(x => acceptanceVerificationFailures.ContainsKey(x.Value))
+                            .Select(x => new PayoutReconciliationEntry
+                            {
+                                Address = x.Key.Address,
+                                Amount = x.Key.Amount,
+                                TransactionId = x.Value,
+                                Detail = acceptanceVerificationFailures[x.Value].Message,
+                            }) ?? Enumerable.Empty<PayoutReconciliationEntry>())
+                        .Concat(failedTransfers
+                            .Where(x => x.Item2 is PayoutOutcomeUncertainException)
+                            .Select(x => new PayoutReconciliationEntry
+                            {
+                                Address = x.Item1.Key,
+                                Amount = x.Item1.Value,
+                                Detail = x.Item2.Message,
+                            }))
+                        .ToArray(),
+                };
+
+                throw new PayoutOutcomeUncertainException(uncertainFailure.Message,
+                    uncertainFailure.InnerException ?? uncertainFailure, reconciliation);
             }
 
             if(persistedBalances != null && acceptanceVerificationFailures.Count == 0)
@@ -912,11 +970,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
     }
 
-    private async Task<IReadOnlyList<PayoutOutcomeUncertainException>>
+    private async Task<IReadOnlyDictionary<string, PayoutOutcomeUncertainException>>
         CollectPayoutTransactionAcceptanceFailuresAsync(IEnumerable<string> txIds,
         CancellationToken ct)
     {
-        var failures = new List<PayoutOutcomeUncertainException>();
+        var failures = new Dictionary<string, PayoutOutcomeUncertainException>();
 
         foreach(var txId in txIds)
         {
@@ -926,7 +984,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             }
             catch(PayoutOutcomeUncertainException ex)
             {
-                failures.Add(ex);
+                failures[txId] = ex;
             }
         }
 

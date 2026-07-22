@@ -14,6 +14,7 @@ using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Payments.PaymentSchemes;
@@ -749,6 +750,76 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Contains("response lost", exception.Message);
         fixture.MessageBus.DidNotReceive().SendMessage(
             Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PayoutManager_MixedUnknownSubmission_EmitsOneReconciliationSafeNotification()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        var balances = new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTest1",
+                Amount = 1,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTest2",
+                Amount = 2,
+            },
+        };
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(fixture.Connection,
+                fixture.Config.Id, Arg.Any<decimal>())
+            .Returns(balances);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("payout-txid");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
+        fixture.Handler.MempoolResponses["payout-txid"] =
+            new RpcResponse<JToken>(new JObject());
+        PaymentNotification notification = null;
+        fixture.MessageBus.When(x => x.SendMessage(Arg.Any<PaymentNotification>(),
+                Arg.Any<string>()))
+            .Do(call => notification = call.ArgAt<PaymentNotification>(0));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.Pool, fixture.Config,
+                fixture.Handler, CancellationToken.None));
+
+        Assert.Contains("DTest2", exception.Message);
+        Assert.Contains("response lost", exception.Message);
+        fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
+        fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+
+        Assert.NotNull(notification);
+        Assert.Equal(PaymentNotificationOutcome.Uncertain, notification.Outcome);
+        Assert.Equal(3, notification.Amount);
+        var accepted = Assert.Single(notification.Reconciliation.Accepted);
+        Assert.Equal("DTest1", accepted.Address);
+        Assert.Equal(1, accepted.Amount);
+        Assert.Equal("payout-txid", accepted.TransactionId);
+        var uncertain = Assert.Single(notification.Reconciliation.Uncertain);
+        Assert.Equal("DTest2", uncertain.Address);
+        Assert.Equal(2, uncertain.Amount);
+        Assert.Empty(notification.Reconciliation.Failed);
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            fixture.Config.Template.Symbol, fixture.Config.Template.ExplorerTxLink);
+        Assert.Equal("Payout Outcome Uncertain Notification", rendered.Subject);
+        Assert.Contains("Payout batch totalling 3 DOGE", rendered.Message);
+        Assert.Contains("Accepted and persisted: 1 DOGE to DTest1, transaction payout-txid",
+            rendered.Message);
+        Assert.Contains("Uncertain: 2 DOGE to DTest2", rendered.Message);
+        Assert.DoesNotContain("Failed to pay out", rendered.Message);
+
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
     }
 
     [Fact]
@@ -1759,13 +1830,23 @@ public class BitcoinPayoutHandlerTests : TestBase
                 ? new Dictionary<string, object> { ["hasBrokenSendMany"] = true }
                 : null,
         };
-        await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
+        var clusterConfig = new ClusterConfig
+        {
+            PaymentProcessing = new ClusterPaymentProcessingConfig(),
+        };
+        await handler.ConfigureAsync(clusterConfig, config, CancellationToken.None);
 
         var pool = Substitute.For<IMiningPool>();
         pool.Config.Returns(config);
 
+        var payoutLease = Substitute.For<IPayoutManagerLease>();
+        var manager = new PayoutManager(container, connectionFactory, blockRepository,
+            shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease,
+            new ProcessStatus());
+
         return new HandlerFixture(handler, pool, config, shareRepository, balanceRepository,
-            paymentRepository, messageBus, events, currentTime);
+            paymentRepository, messageBus, events, currentTime, manager, payoutLease,
+            connection);
     }
 
     private static void ConfigureUnavailableWalletGrace(HandlerFixture fixture,
@@ -1813,7 +1894,8 @@ public class BitcoinPayoutHandlerTests : TestBase
     private sealed record HandlerFixture(TestBitcoinPayoutHandler Handler, IMiningPool Pool,
         PoolConfig Config, IShareRepository ShareRepository, IBalanceRepository BalanceRepository,
         IPaymentRepository PaymentRepository, IMessageBus MessageBus,
-        ConcurrentQueue<string> Events, DateTime Now);
+        ConcurrentQueue<string> Events, DateTime Now, PayoutManager Manager,
+        IPayoutManagerLease PayoutLease, IDbConnection Connection);
 
     private sealed class TestBitcoinPayoutHandler : BitcoinPayoutHandler
     {

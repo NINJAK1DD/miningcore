@@ -1,4 +1,13 @@
+using Miningcore.Payments;
+
 namespace Miningcore.Notifications.Messages;
+
+public enum PaymentNotificationOutcome
+{
+    Success,
+    Failure,
+    Uncertain,
+}
 
 public record PaymentNotification
 {
@@ -12,6 +21,9 @@ public record PaymentNotification
         TxFee = txFee;
         Symbol = symbol;
         TxExplorerLinks = txExplorerLinks;
+        Outcome = string.IsNullOrEmpty(error)
+            ? PaymentNotificationOutcome.Success
+            : PaymentNotificationOutcome.Failure;
     }
 
     public PaymentNotification(string poolId, string error, decimal amount, string symbol) : this(poolId, error, amount, symbol, 0, null, null, null)
@@ -30,4 +42,6 @@ public record PaymentNotification
     public int RecipientsCount { get; set; }
     public decimal Amount { get; set; }
     public string Error { get; set; }
+    public PaymentNotificationOutcome Outcome { get; set; }
+    public PayoutReconciliation Reconciliation { get; set; }
 }

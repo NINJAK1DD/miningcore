@@ -390,13 +390,13 @@ public class PayoutManager : ProcessStatusBackgroundService
 
                 try
                 {
-                    await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                    await NotifyPayoutUncertainAsync(poolBalancesOverMinimum, config, ex);
                 }
 
                 catch(Exception notificationEx)
                 {
                     logger.Error(notificationEx, () =>
-                        $"Unable to emit payout-failure notification for pool {config.Id}");
+                        $"Unable to emit payout-uncertain notification for pool {config.Id}");
                 }
 
                 throw;
@@ -440,6 +440,29 @@ public class PayoutManager : ProcessStatusBackgroundService
     private Task NotifyPayoutFailureAsync(Balance[] balances, PoolConfig pool, Exception ex)
     {
         messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message, balances.Sum(x => x.Amount), pool.Template.Symbol));
+
+        return Task.CompletedTask;
+    }
+
+    private Task NotifyPayoutUncertainAsync(Balance[] balances, PoolConfig pool,
+        PayoutOutcomeUncertainException ex)
+    {
+        var reconciliation = ex.Reconciliation ?? new PayoutReconciliation
+        {
+            Uncertain = balances.Select(x => new PayoutReconciliationEntry
+            {
+                Address = x.Address,
+                Amount = x.Amount,
+                Detail = ex.Message,
+            }).ToArray(),
+        };
+
+        messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
+            balances.Sum(x => x.Amount), pool.Template.Symbol)
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = reconciliation,
+        });
 
         return Task.CompletedTask;
     }

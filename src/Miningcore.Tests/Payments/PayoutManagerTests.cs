@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
@@ -356,7 +357,9 @@ public class PayoutManagerTests
                 notification.PoolId == fixture.Pool.Id &&
                 notification.Error == "wallet response lost" &&
                 notification.Amount == 1 &&
-                notification.Symbol == fixture.Pool.Template.Symbol),
+                notification.Symbol == fixture.Pool.Template.Symbol &&
+                notification.Outcome == PaymentNotificationOutcome.Uncertain &&
+                notification.Reconciliation.Uncertain.Single().Address == "miner"),
             Arg.Any<string>());
     }
 

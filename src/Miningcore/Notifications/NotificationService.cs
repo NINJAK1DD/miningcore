@@ -8,6 +8,7 @@ using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
+using Miningcore.Payments;
 using Miningcore.Pushover;
 using NLog;
 using static Miningcore.Util.ActionUtils;
@@ -72,38 +73,101 @@ public class NotificationService : StartupGatedBackgroundService
 
     private async Task OnPaymentNotificationAsync(PaymentNotification notification, CancellationToken ct)
     {
-        if(string.IsNullOrEmpty(notification.Error))
+        var coin = poolConfigs[notification.PoolId].Template;
+        var (subject, message, isSuccess) = FormatPaymentNotification(notification,
+            coin.Symbol, coin.ExplorerTxLink);
+
+        if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
+            return;
+
+        await Guard(()=> SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
+
+        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+            await Guard(()=> pushoverClient.PushMessage(subject, message,
+                PushoverMessagePriority.None, ct), LogGuarded);
+    }
+
+    internal static (string Subject, string Message, bool IsSuccess)
+        FormatPaymentNotification(PaymentNotification notification, string symbol,
+        string explorerTxLink)
+    {
+        var outcome = notification.Outcome;
+
+        // Preserve the legacy object-initializer contract where Error alone represented failure.
+        if(outcome == PaymentNotificationOutcome.Success &&
+            !string.IsNullOrEmpty(notification.Error))
+            outcome = PaymentNotificationOutcome.Failure;
+
+        if(outcome == PaymentNotificationOutcome.Success)
         {
-            var coin = poolConfigs[notification.PoolId].Template;
-
-            // prepare tx links
-            var txLinks = Array.Empty<string>();
-
-            if(!string.IsNullOrEmpty(coin.ExplorerTxLink))
-                txLinks = notification.TxIds.Select(txHash => string.Format(coin.ExplorerTxLink, txHash)).ToArray();
-
+            var txIds = notification.TxIds ?? Array.Empty<string>();
+            var txLinks = string.IsNullOrEmpty(explorerTxLink)
+                ? Array.Empty<string>()
+                : txIds.Select(txHash => string.Format(explorerTxLink, txHash)).ToArray();
             const string subject = "Payout Success Notification";
-            var message = $"Paid {FormatAmount(notification.Amount, notification.PoolId)} from pool {notification.PoolId} to {notification.RecipientsCount} recipients in transaction(s) {(string.Join(", ", txLinks))}";
+            var message = $"Paid {FormatCoinAmount(notification.Amount, symbol)} from pool " +
+                $"{notification.PoolId} to {notification.RecipientsCount} recipients in " +
+                $"transaction(s) {string.Join(", ", txLinks)}";
 
-            if(clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess == true)
-            {
-                await Guard(() => SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
-
-                if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-                    await Guard(() => pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
-            }
+            return (subject, message, true);
         }
 
-        else
+        if(outcome == PaymentNotificationOutcome.Uncertain)
         {
-            const string subject = "Payout Failure Notification";
-            var message = $"Failed to pay out {notification.Amount} {poolConfigs[notification.PoolId].Template.Symbol} from pool {notification.PoolId}: {notification.Error}";
+            const string subject = "Payout Outcome Uncertain Notification";
+            var sections = new List<string>
+            {
+                $"Payout batch totalling {FormatCoinAmount(notification.Amount, symbol)} from " +
+                $"pool {notification.PoolId} has an uncertain outcome and requires " +
+                "reconciliation.",
+            };
 
-            await Guard(()=> SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
+            AppendReconciliationSection(sections, "Accepted and persisted",
+                notification.Reconciliation?.Accepted, symbol);
+            AppendReconciliationSection(sections, "Conclusively failed",
+                notification.Reconciliation?.Failed, symbol);
+            AppendReconciliationSection(sections, "Uncertain",
+                notification.Reconciliation?.Uncertain, symbol);
 
-            if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-                await Guard(()=> pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
+            if(!string.IsNullOrWhiteSpace(notification.Error))
+                sections.Add($"Reason: {notification.Error}");
+
+            return (subject, string.Join("<br/>", sections), false);
         }
+
+        return ("Payout Failure Notification",
+            $"Failed to pay out {notification.Amount} {symbol} from pool " +
+            $"{notification.PoolId}: {notification.Error}", false);
+    }
+
+    private static void AppendReconciliationSection(List<string> sections, string heading,
+        PayoutReconciliationEntry[] entries, string symbol)
+    {
+        if(entries == null || entries.Length == 0)
+            return;
+
+        var details = entries.Select(x =>
+        {
+            var parts = new List<string>
+            {
+                $"{FormatCoinAmount(x.Amount, symbol)} to {x.Address}",
+            };
+
+            if(!string.IsNullOrWhiteSpace(x.TransactionId))
+                parts.Add($"transaction {x.TransactionId}");
+
+            if(!string.IsNullOrWhiteSpace(x.Detail))
+                parts.Add(x.Detail);
+
+            return string.Join(", ", parts);
+        });
+
+        sections.Add($"{heading}: {string.Join("; ", details)}");
+    }
+
+    private static string FormatCoinAmount(decimal amount, string symbol)
+    {
+        return $"{amount:0.#####} {symbol}";
     }
 
     public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
