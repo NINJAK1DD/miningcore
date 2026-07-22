@@ -353,7 +353,6 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
         else
         {
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
-            var unknownOutcomes = new ConcurrentBag<PayoutOutcomeUncertainException>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
 
             var parallelOptions = new ParallelOptions
@@ -381,11 +380,11 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     };
                     TrackPayoutSubmission(submittedBalance);
 
-                    var result = await rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendToAddress, ct, new object[]
+                    var result = await SendToAddressAsync(new object[]
                     {
                         address,
                         amount,
-                    });
+                    }, ct);
 
                     // check result
                     var txId = result.Response;
@@ -404,25 +403,20 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     successBalances.TryAdd(submittedBalance, txId);
                 }, ex =>
                 {
-                    try
+                    // Unknown outcomes, including duplicate transaction identities, must abort
+                    // the batch before any successful subset is persisted.
+                    WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                        HandshakeWalletCommands.SendToAddress);
+                    TrackPayoutFailure(new[]
                     {
-                        WalletSubmissionOutcome.RethrowIfUnknown(ex,
-                            HandshakeWalletCommands.SendToAddress);
-                        TrackPayoutFailure(new[]
+                        new Balance
                         {
-                            new Balance
-                            {
-                                PoolId = poolConfig.Id,
-                                Address = x.Key,
-                                Amount = x.Value,
-                            },
-                        }, ex.Message);
-                        txFailures.Add(Tuple.Create(x, ex));
-                    }
-                    catch(PayoutOutcomeUncertainException uncertain)
-                    {
-                        unknownOutcomes.Add(uncertain);
-                    }
+                            PoolId = poolConfig.Id,
+                            Address = x.Key,
+                            Amount = x.Value,
+                        },
+                    }, ex.Message);
+                    txFailures.Add(Tuple.Create(x, ex));
                 });
             });
 
@@ -447,11 +441,13 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
 
                 NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
             }
-
-            if(unknownOutcomes.TryPeek(out var unknown))
-                throw unknown;
         }
     }
+
+    protected virtual Task<RpcResponse<string>> SendToAddressAsync(object[] args,
+        CancellationToken ct) =>
+        rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendToAddress,
+            ct, args);
 
     public double AdjustBlockEffort(double effort)
     {
