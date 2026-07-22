@@ -551,11 +551,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(2, aggregate.InnerExceptions.Count);
         Assert.All(aggregate.InnerExceptions,
             inner => Assert.IsType<PayoutOutcomeUncertainException>(inner));
-        fixture.MessageBus.Received(1).SendMessage(
-            Arg.Is<PaymentNotification>(notification =>
-                notification.Error.Contains("DTest1") &&
-                notification.Error.Contains("DTest2")),
-            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
     [Fact]
@@ -622,6 +619,37 @@ public class BitcoinPayoutHandlerTests : TestBase
             "payout-txid-1", fixture.Now);
         Assert.Equal(new[] { "payout-txid-1" }, fixture.Handler.MempoolTransactionIds);
         Assert.All(fixture.Handler.MempoolCancellationStates, Assert.False);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_ConclusiveMixedOutcomes_NotifiesEachSubset()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTest1"] =
+            new RpcResponse<string>("payout-txid");
+        fixture.Handler.SendToAddressResponses["DTest2"] =
+            new RpcResponse<string>(null, new JsonRpcError(-5, "rejected", null));
+        fixture.Handler.MempoolResponses["payout-txid"] =
+            new RpcResponse<JToken>(new JObject());
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+        }, CancellationToken.None);
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification =>
+                notification.Error == null && notification.Amount == 1),
+            Arg.Any<string>());
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification =>
+                notification.Error != null && notification.Amount == 2),
+            Arg.Any<string>());
+        fixture.MessageBus.Received(2).SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
     [Fact]
@@ -672,7 +700,7 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Payout_BroadcastUncertainty_FailureNotificationCannotMaskFailStop()
+    public async Task Payout_BroadcastUncertainty_DefersNotificationToPayoutManager()
     {
         var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
         fixture.Handler.SendToAddressResponses["DTest1"] =
@@ -687,11 +715,6 @@ public class BitcoinPayoutHandlerTests : TestBase
                 TxId = "payout-txid",
                 Confirmations = 0,
             });
-        fixture.MessageBus.When(x => x.SendMessage(
-                Arg.Is<PaymentNotification>(notification => notification.Error != null),
-                Arg.Any<string>()))
-            .Do(_ => throw new InvalidOperationException("failure subscriber failed"));
-
         var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
             fixture.Handler.PayoutAsync(fixture.Pool, new[]
             {
@@ -700,14 +723,14 @@ public class BitcoinPayoutHandlerTests : TestBase
             }, CancellationToken.None));
 
         Assert.Contains("payout-txid", exception.Message);
-        Assert.DoesNotContain("failure subscriber failed", exception.Message);
-        fixture.MessageBus.Received(1).SendMessage(
-            Arg.Is<PaymentNotification>(notification => notification.Error != null),
-            Arg.Any<string>());
+        Assert.Contains("DTest2", exception.Message);
+        Assert.Contains("rejected", exception.Message);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
     [Fact]
-    public async Task Payout_UnknownSubmission_SuccessNotificationCannotMaskFailStop()
+    public async Task Payout_UnknownSubmission_DefersNotificationToPayoutManager()
     {
         var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
         fixture.Handler.SendToAddressResponses["DTest1"] =
@@ -716,11 +739,6 @@ public class BitcoinPayoutHandlerTests : TestBase
             new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
         fixture.Handler.MempoolResponses["payout-txid"] =
             new RpcResponse<JToken>(new JObject());
-        fixture.MessageBus.When(x => x.SendMessage(
-                Arg.Is<PaymentNotification>(notification => notification.Error == null),
-                Arg.Any<string>()))
-            .Do(_ => throw new InvalidOperationException("success subscriber failed"));
-
         var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
             fixture.Handler.PayoutAsync(fixture.Pool, new[]
             {
@@ -729,10 +747,8 @@ public class BitcoinPayoutHandlerTests : TestBase
             }, CancellationToken.None));
 
         Assert.Contains("response lost", exception.Message);
-        Assert.DoesNotContain("success subscriber failed", exception.Message);
-        fixture.MessageBus.Received(1).SendMessage(
-            Arg.Is<PaymentNotification>(notification => notification.Error == null),
-            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
     [Fact]

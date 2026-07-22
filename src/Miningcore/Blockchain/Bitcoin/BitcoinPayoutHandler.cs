@@ -826,8 +826,41 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     new AggregateException(uncertainties));
             }
 
-            // Classify the financial outcome before emitting any best-effort notifications.
-            // A subscriber failure must never replace an already-detected uncertain outcome.
+            Balance[] failureBalances = null;
+            string transferFailureDetails = null;
+
+            if(failedTransfers.Length > 0)
+            {
+                failureBalances = failedTransfers
+                    .Select(x => new Balance { Amount = x.Item1.Value }).ToArray();
+                transferFailureDetails = string.Join(", ", failedTransfers.Select(x =>
+                    $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)}: {x.Item2.Message}"));
+
+                logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: " +
+                    transferFailureDetails);
+            }
+
+            // PayoutManager emits the single authoritative notification for an uncertain batch.
+            // Subset notifications are useful only when every wallet outcome is conclusive.
+            if(uncertainFailure != null)
+            {
+                var conclusiveFailures = failedTransfers
+                    .Where(x => x.Item2 is not PayoutOutcomeUncertainException)
+                    .Select(x => $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)}: " +
+                        x.Item2.Message)
+                    .ToArray();
+
+                if(conclusiveFailures.Length > 0)
+                {
+                    uncertainFailure = new PayoutOutcomeUncertainException(
+                        $"{uncertainFailure.Message} | {conclusiveFailures.Length} additional " +
+                        $"payout transfer(s) failed conclusively: " +
+                        string.Join(" | ", conclusiveFailures), uncertainFailure);
+                }
+
+                throw uncertainFailure;
+            }
+
             if(persistedBalances != null && acceptanceVerificationFailures.Count == 0)
             {
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
@@ -835,21 +868,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     "success");
             }
 
-            if(failedTransfers.Length > 0)
+            if(failureBalances != null)
             {
-                var failureBalances = failedTransfers
-                    .Select(x => new Balance { Amount = x.Item1.Value }).ToArray();
-                var error = string.Join(", ", failedTransfers.Select(x =>
-                    $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)}: {x.Item2.Message}"));
-
-                logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: {error}");
-
                 TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, failureBalances,
-                    error, null), "failure");
+                    transferFailureDetails, null), "failure");
             }
-
-            if(uncertainFailure != null)
-                throw uncertainFailure;
         }
     }
 
