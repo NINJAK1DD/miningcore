@@ -172,6 +172,60 @@ public class BitcoinPayoutHandlerTests : TestBase
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task Payout_PartialPrecisionSkipSuccess_LogsRetainedBalance(
+        bool hasBrokenSendMany)
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: hasBrokenSendMany);
+        using var logFactory = new NLog.LogFactory();
+        var logTarget = new NLog.Targets.MemoryTarget
+        {
+            Layout = "${level}|${message}",
+        };
+        var logConfig = new NLog.Config.LoggingConfiguration();
+        logConfig.AddRule(NLog.LogLevel.Debug, NLog.LogLevel.Debug, logTarget);
+        logFactory.Configuration = logConfig;
+        fixture.Handler.UseLogger(logFactory.GetLogger(nameof(
+            Payout_PartialPrecisionSkipSuccess_LogsRetainedBalance)));
+
+        if(hasBrokenSendMany)
+        {
+            fixture.Handler.SendToAddressResponses["DPayable"] =
+                new RpcResponse<string>("payout-txid");
+            fixture.Handler.MempoolResponses["payout-txid"] =
+                new RpcResponse<JToken>(new JObject());
+        }
+        else
+        {
+            fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+            fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+        }
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DPayable",
+                Amount = 1m,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DBelowPrecision",
+                Amount = 0.00009m,
+            },
+        }, CancellationToken.None);
+
+        var diagnostic = Assert.Single(logTarget.Logs);
+        Assert.Equal("Debug|[Bitcoin Payout Handler] Conclusive payout retained " +
+            "1 precision-skipped balance(s) for a future payout because they are below " +
+            "the configured payout precision (payoutDecimalPlaces=4): " +
+            "DBelowPrecision 0.00009 DOGE", diagnostic);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Payout_HighPrecisionAmount_LogsConfiguredPrecision(
         bool hasBrokenSendMany)
     {

@@ -725,6 +725,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             precisionSkippedBalances, amounts, txId, ex.Message));
                 }
 
+                LogPrecisionSkippedBalances(precisionSkippedBalances);
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, payableBalances, new[]
                 {
                     txId
@@ -993,6 +994,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }).ToArray();
                 var submittedAmount = persistedBalances.Keys.Sum(x => x.Amount);
 
+                if(!loopCancelled && failedTransfers.Length == 0)
+                    LogPrecisionSkippedBalances(precisionSkippedBalances);
+
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
                     acceptedBalances, persistedBalances.Values.ToArray(), null,
                     submittedAmount,
@@ -1080,6 +1084,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     {
         return $"{amount.ToString("0.############################", CultureInfo.InvariantCulture)} " +
             coin.Symbol;
+    }
+
+    private void LogPrecisionSkippedBalances(Balance[] precisionSkippedBalances)
+    {
+        if(precisionSkippedBalances.Length == 0)
+            return;
+
+        logger.Debug(() => $"[{LogCategory}] Conclusive payout retained " +
+            $"{precisionSkippedBalances.Length} precision-skipped balance(s) for a future " +
+            $"payout because they are below the configured payout precision " +
+            $"(payoutDecimalPlaces={payoutDecimalPlaces}): " +
+            string.Join(", ", precisionSkippedBalances.Select(x =>
+                $"{x.Address} {FormatExactPayoutAmount(x.Amount)}")));
     }
 
     private static PayoutReconciliation CreateBrokenSendManyReconciliation(
