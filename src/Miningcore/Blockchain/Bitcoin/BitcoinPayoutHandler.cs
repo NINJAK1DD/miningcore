@@ -98,6 +98,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     protected virtual Task DelayPayoutVerificationAsync(TimeSpan delay, CancellationToken ct) =>
         Task.Delay(delay, ct);
 
+    // Keep post-cancellation wallet reconciliation inside the host's 45-second shutdown budget.
+    protected virtual TimeSpan PostCancellationVerificationGracePeriod =>
+        TimeSpan.FromSeconds(15);
+
     protected override string LogCategory => "Bitcoin Payout Handler";
 
     #region IPayoutHandler
@@ -702,8 +706,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
             Dictionary<Balance, string> persistedBalances = null;
-            PayoutOutcomeUncertainException acceptanceVerificationFailure = null;
+            IReadOnlyList<PayoutOutcomeUncertainException> acceptanceVerificationFailures =
+                Array.Empty<PayoutOutcomeUncertainException>();
             var startedSubmissions = 0;
+            var cancellationObservedAfterSubmission = false;
 
             var parallelOptions = new ParallelOptions
             {
@@ -719,11 +725,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                     // use a common id for all log entries related to this transfer
                     var transferId = CorrelationIdGenerator.GetNextId();
+                    var walletSubmissionStarted = false;
 
                     await Guard(async () =>
                     {
-                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
+                        _ct.ThrowIfCancellationRequested();
+                        walletSubmissionStarted = true;
                         Interlocked.Increment(ref startedSubmissions);
+                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
 
                         var result = await SendToAddressAsync(new object[]
                         {
@@ -757,7 +766,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         }, txId);
                     }, ex =>
                     {
-                        if(ex is OperationCanceledException)
+                        if(ex is OperationCanceledException && walletSubmissionStarted)
                         {
                             ex = new PayoutOutcomeUncertainException(
                                 $"[{transferId}] {BitcoinCommands.SendToAddress} was interrupted after wallet submission began; its outcome is unknown",
@@ -771,13 +780,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             catch(OperationCanceledException) when(ct.IsCancellationRequested &&
                 Volatile.Read(ref startedSubmissions) > 0)
             {
+                cancellationObservedAfterSubmission = true;
+
                 // Parallel.ForEachAsync drains active delegates before surfacing cancellation.
                 // Continue through persistence and outcome classification so returned transaction
                 // ids are never abandoned and interrupted wallet calls retain payout ownership.
+                var startedCount = Volatile.Read(ref startedSubmissions);
                 logger.Warn(() => $"[{LogCategory}] Payout submission was cancelled after " +
-                    $"{Volatile.Read(ref startedSubmissions)} wallet call(s) started; " +
+                    $"{startedCount} wallet call(s) started; " +
                     "reconciling completed outcomes before stopping");
             }
+
+            cancellationObservedAfterSubmission |= ct.IsCancellationRequested &&
+                Volatile.Read(ref startedSubmissions) > 0;
 
             if(successBalances.Any())
             {
@@ -785,37 +800,46 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 await PersistPaymentsAsync(persistedBalances);
 
-                try
+                using var reconciliationCts = cancellationObservedAfterSubmission
+                    ? new CancellationTokenSource(PostCancellationVerificationGracePeriod)
+                    : null;
+                var verificationToken = reconciliationCts?.Token ?? ct;
+
+                if(reconciliationCts != null)
                 {
-                    await EnsurePayoutTransactionsAcceptedAsync(
-                        persistedBalances.Values.Distinct(), ct);
+                    logger.Warn(() => $"[{LogCategory}] Verifying persisted payout transactions " +
+                        $"for up to {PostCancellationVerificationGracePeriod.TotalSeconds:0} " +
+                        "second(s) after cancellation");
                 }
-                catch(PayoutOutcomeUncertainException ex)
-                {
-                    acceptanceVerificationFailure = ex;
-                }
+
+                acceptanceVerificationFailures =
+                    await CollectPayoutTransactionAcceptanceFailuresAsync(
+                        persistedBalances.Values.Distinct(), verificationToken);
             }
 
             var failedTransfers = txFailures.ToArray();
-            var walletSubmissionFailure = failedTransfers
-                .Select(x => x.Item2)
-                .OfType<PayoutOutcomeUncertainException>()
-                .FirstOrDefault();
-            PayoutOutcomeUncertainException uncertainFailure;
+            var uncertainties = failedTransfers
+                .Where(x => x.Item2 is PayoutOutcomeUncertainException)
+                .Select(x => new PayoutOutcomeUncertainException(
+                    $"{x.Item1.Key} {FormatAmount(x.Item1.Value)} requires reconciliation: " +
+                    x.Item2.Message, x.Item2))
+                .Concat(acceptanceVerificationFailures)
+                .ToArray();
+            PayoutOutcomeUncertainException uncertainFailure = null;
 
-            if(walletSubmissionFailure != null && acceptanceVerificationFailure != null)
+            if(uncertainties.Length == 1)
+                uncertainFailure = uncertainties[0];
+            else if(uncertainties.Length > 1)
             {
                 uncertainFailure = new PayoutOutcomeUncertainException(
-                    "Multiple payout outcomes require reconciliation: " +
-                    $"{walletSubmissionFailure.Message} | {acceptanceVerificationFailure.Message}",
-                    new AggregateException(walletSubmissionFailure, acceptanceVerificationFailure));
+                    $"{uncertainties.Length} payout outcomes require reconciliation: " +
+                    string.Join(" | ", uncertainties.Select(x => x.Message)),
+                    new AggregateException(uncertainties));
             }
-            else
-                uncertainFailure = walletSubmissionFailure ?? acceptanceVerificationFailure;
 
             // Classify the financial outcome before emitting any best-effort notifications.
             // A subscriber failure must never replace an already-detected uncertain outcome.
-            if(persistedBalances != null && acceptanceVerificationFailure == null)
+            if(persistedBalances != null && acceptanceVerificationFailures.Count == 0)
             {
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
                     persistedBalances.Keys.ToArray(), persistedBalances.Values.ToArray(), null),
@@ -853,7 +877,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
     }
 
-    private async Task EnsurePayoutTransactionsAcceptedAsync(IEnumerable<string> txIds,
+    private async Task<IReadOnlyList<PayoutOutcomeUncertainException>>
+        CollectPayoutTransactionAcceptanceFailuresAsync(IEnumerable<string> txIds,
         CancellationToken ct)
     {
         var failures = new List<PayoutOutcomeUncertainException>();
@@ -870,16 +895,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             }
         }
 
-        if(failures.Count == 1)
-            throw failures[0];
-
-        if(failures.Count > 1)
-        {
-            throw new PayoutOutcomeUncertainException(
-                $"Payout acceptance verification failed for {failures.Count} persisted transactions: " +
-                string.Join(" | ", failures.Select(x => x.Message)),
-                new AggregateException(failures));
-        }
+        return failures;
     }
 
     private async Task EnsurePayoutTransactionAcceptedAsync(string txId, CancellationToken ct)
