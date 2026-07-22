@@ -590,7 +590,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             .ToDictionary(x => x.Key, x => x.Value);
 
         if(amounts.Count == 0)
+        {
+            if(requestedAmounts.Count > 0)
+            {
+                logger.Warn(() => $"[{LogCategory}] No payout submitted: all " +
+                    $"{requestedAmounts.Count} selected balance(s) are below the wallet's " +
+                    $"{payoutDecimalPlaces}-decimal payout precision. Review minimumPayment");
+            }
+
             return;
+        }
 
         var payableBalances = balances
             .Where(x => amounts.ContainsKey(x.Address))
@@ -738,6 +747,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                         var unlockResult = await UnlockWalletAsync(
                             extraPoolPaymentProcessingConfig.WalletPassword, ct);
+                        ct.ThrowIfCancellationRequested();
 
                         if(unlockResult.Error == null)
                         {

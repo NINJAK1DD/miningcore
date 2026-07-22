@@ -430,6 +430,38 @@ public class BitcoinPayoutHandlerTests : TestBase
             Arg.Any<string>(), Arg.Any<DateTime>());
     }
 
+    [Fact]
+    public async Task Payout_CancellationDuringWalletUnlock_PropagatesWithoutFailureAlert()
+    {
+        var fixture = await CreateFixtureAsync(walletPassword: "configured-password");
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+            new JsonRpcError((int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED,
+                "wallet locked", null));
+        fixture.Handler.UnlockWalletOverride = (_, token) =>
+        {
+            Assert.Equal(cts.Token, token);
+            cts.Cancel();
+            return Task.FromResult(new RpcResponse<JToken>(null,
+                new JsonRpcError(-500, "Cancelled", null)));
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, cts.Token));
+
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+        await fixture.PaymentRepository.DidNotReceive().TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<DateTime>());
+        await fixture.BalanceRepository.DidNotReceive().AddAmountAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<decimal>(), Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -2505,6 +2537,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
         public RpcResponse<JToken> UnlockWalletResponse { get; set; }
+        public Func<string, CancellationToken, Task<RpcResponse<JToken>>>
+            UnlockWalletOverride { get; set; }
         public int UnlockWalletCalls { get; private set; }
         public string UnlockWalletPassword { get; private set; }
         public Func<CancellationToken, Task<RpcResponse<string>>> SendManyOverride { get; set; }
@@ -2572,6 +2606,10 @@ public class BitcoinPayoutHandlerTests : TestBase
         {
             UnlockWalletCalls++;
             UnlockWalletPassword = password;
+
+            if(UnlockWalletOverride != null)
+                return UnlockWalletOverride(password, ct);
+
             return Task.FromResult(UnlockWalletResponse);
         }
 
