@@ -572,11 +572,26 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         var requestedAmounts = balances
             .Where(x => x.Amount > 0)
             .ToDictionary(x => x.Address, x => x.Amount);
+        // Never ask the wallet to pay more than a miner is owed. Both sendmany modes
+        // persist and subtract these same truncated values, leaving any sub-precision
+        // remainder on the miner balance for a future payout.
         var amounts = requestedAmounts.ToDictionary(x => x.Key,
-            x => Math.Round(x.Value, payoutDecimalPlaces));
+                x => TruncatePayoutAmount(x.Value, payoutDecimalPlaces))
+            .Where(x => x.Value > 0)
+            .ToDictionary(x => x.Key, x => x.Value);
 
         if(amounts.Count == 0)
             return;
+
+        var payableBalances = balances
+            .Where(x => amounts.ContainsKey(x.Address))
+            .ToArray();
+        var submittedBalances = payableBalances.Select(x => new Balance
+        {
+            PoolId = x.PoolId,
+            Address = x.Address,
+            Amount = amounts[x.Address],
+        }).ToArray();
 
         logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses");
 
@@ -654,7 +669,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     var detail = $"{BitcoinCommands.SendMany} returned success without a " +
                         "transaction id";
                     throw new PayoutOutcomeUncertainException(detail, null,
-                        CreateSendManyUncertainReconciliation(balances, amounts, null,
+                        CreateSendManyUncertainReconciliation(payableBalances, amounts, null,
                             detail));
                 }
                 else
@@ -662,13 +677,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 try
                 {
-                    await PersistPaymentsAsync(balances, txId);
+                    await PersistPaymentsAsync(submittedBalances, txId);
                 }
                 catch(PayoutOutcomeUncertainException ex)
                 {
                     throw new PayoutOutcomeUncertainException(ex.Message,
                         ex.InnerException ?? ex,
-                        CreateSendManyUncertainReconciliation(balances, amounts, txId,
+                        CreateSendManyUncertainReconciliation(payableBalances, amounts, txId,
                             ex.Message));
                 }
 
@@ -681,15 +696,15 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 {
                     throw new PayoutOutcomeUncertainException(ex.Message,
                         ex.InnerException ?? ex,
-                        CreateSendManyUncertainReconciliation(balances, amounts, txId,
+                        CreateSendManyUncertainReconciliation(payableBalances, amounts, txId,
                             ex.Message));
                 }
 
-                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, payableBalances, new[]
                 {
                     txId
                 }, null, amounts.Values.Sum(),
-                    amounts.Values.Sum() - requestedAmounts.Values.Sum()), "success");
+                    amounts.Values.Sum() - payableBalances.Sum(x => x.Amount)), "success");
             }
 
             else
@@ -699,7 +714,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     var detail = $"{BitcoinCommands.SendMany} outcome is unknown: " +
                         result.Error.Message;
                     throw new PayoutOutcomeUncertainException(detail, null,
-                        CreateSendManyUncertainReconciliation(balances, amounts, null,
+                        CreateSendManyUncertainReconciliation(payableBalances, amounts, null,
                             detail));
                 }
 
@@ -733,11 +748,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 {
                     logger.Error(() => $"[{LogCategory}] {BitcoinCommands.SendMany} returned error: {result.Error.Message} code {result.Error.Code}");
 
-                    TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, balances,
+                    TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, payableBalances,
                         $"{BitcoinCommands.SendMany} returned error: " +
                         $"{result.Error.Message} code {result.Error.Code}", null,
                         amounts.Values.Sum(),
-                        amounts.Values.Sum() - requestedAmounts.Values.Sum()), "failure");
+                        amounts.Values.Sum() - payableBalances.Sum(x => x.Amount)), "failure");
                 }
             }
         }
@@ -752,6 +767,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 acceptanceVerificationFailures =
                     new Dictionary<string, PayoutOutcomeUncertainException>();
             var startedSubmissions = 0;
+            var loopCancelled = false;
 
             var parallelOptions = new ParallelOptions
             {
@@ -826,6 +842,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             catch(OperationCanceledException) when(ct.IsCancellationRequested &&
                 Volatile.Read(ref startedSubmissions) > 0)
             {
+                loopCancelled = true;
                 // Parallel.ForEachAsync drains active delegates before surfacing cancellation.
                 // Continue through persistence and outcome classification so returned transaction
                 // ids are never abandoned and interrupted wallet calls retain payout ownership.
@@ -955,6 +972,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     transferFailureDetails, null, submittedAmount,
                     submittedAmount - failureBalances.Sum(x => x.Amount)), "failure");
             }
+
+            if(loopCancelled)
+                ct.ThrowIfCancellationRequested();
         }
     }
 
@@ -990,6 +1010,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     Detail = detail,
                 }).ToArray(),
         };
+    }
+
+    internal static decimal TruncatePayoutAmount(decimal amount, int decimalPlaces)
+    {
+        if(decimalPlaces is < 0 or > 28)
+            throw new ArgumentOutOfRangeException(nameof(decimalPlaces));
+
+        var increment = 1m;
+
+        for(var i = 0; i < decimalPlaces; i++)
+            increment /= 10m;
+
+        return amount - amount % increment;
     }
 
     private string FormatPayoutAmount(decimal amount)
