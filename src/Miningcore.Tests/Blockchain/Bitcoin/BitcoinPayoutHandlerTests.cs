@@ -261,6 +261,61 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_SendManyCancellationDuringVerification_UsesGracePeriod()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        var verificationTokenCancelled = true;
+        fixture.Handler.MempoolEntryOverride = (_, verificationToken) =>
+        {
+            cts.Cancel();
+            verificationTokenCancelled = verificationToken.IsCancellationRequested;
+
+            return Task.FromResult(verificationTokenCancelled
+                ? new RpcResponse<JToken>(null, new JsonRpcError(-500, "Cancelled", null))
+                : new RpcResponse<JToken>(new JObject()));
+        };
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.False(verificationTokenCancelled);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_SendMany_PreCanceled_DoesNotStartWalletSubmission()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var cts = new CancellationTokenSource();
+        var walletSubmissionStarted = false;
+        fixture.Handler.SendManyOverride = _ =>
+        {
+            walletSubmissionStarted = true;
+            return Task.FromResult(new RpcResponse<string>("payout-txid"));
+        };
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, cts.Token));
+
+        Assert.False(walletSubmissionStarted);
+        Assert.DoesNotContain(fixture.Events, x => x.StartsWith("persist:"));
+    }
+
+    [Fact]
     public async Task Payout_SendManySuccessNotificationFailure_DoesNotPropagate()
     {
         var fixture = await CreateFixtureAsync();
@@ -501,6 +556,29 @@ public class BitcoinPayoutHandlerTests : TestBase
                 notification.Error.Contains("DTest1") &&
                 notification.Error.Contains("DTest2")),
             Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_UncertainAmountUsesConfiguredPrecision()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true,
+            coinTemplate: "kylacoin");
+        fixture.Handler.SendToAddressOverride = (_, _) =>
+            Task.FromResult(new RpcResponse<string>(null,
+                new JsonRpcError(-500, "response lost", null)));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance
+                {
+                    PoolId = fixture.Config.Id,
+                    Address = "KTest",
+                    Amount = 0.000000123456m,
+                },
+            }, CancellationToken.None));
+
+        Assert.Contains("KTest 0.000000123456 KCN", exception.Message);
     }
 
     [Fact]
@@ -1624,7 +1702,8 @@ public class BitcoinPayoutHandlerTests : TestBase
     private async Task<HandlerFixture> CreateFixtureAsync(
         IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker = null,
         DateTime? now = null,
-        bool hasBrokenSendMany = false)
+        bool hasBrokenSendMany = false,
+        string coinTemplate = "dogecoin")
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var mapper = container.Resolve<IMapper>();
@@ -1656,7 +1735,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         var config = new PoolConfig
         {
             Id = "doge-test",
-            Template = ModuleInitializer.CoinTemplates["dogecoin"],
+            Template = ModuleInitializer.CoinTemplates[coinTemplate],
             Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 22555 } },
             PaymentProcessing = new PoolPaymentProcessingConfig(),
             RewardRecipients = Array.Empty<RewardRecipient>(),

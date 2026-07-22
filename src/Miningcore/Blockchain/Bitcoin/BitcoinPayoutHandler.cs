@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -98,7 +99,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     protected virtual Task DelayPayoutVerificationAsync(TimeSpan delay, CancellationToken ct) =>
         Task.Delay(delay, ct);
 
-    // Keep post-cancellation wallet reconciliation inside the host's 45-second shutdown budget.
+    // Acceptance checks share one additional budget once persistence completes and shutdown is observed.
     protected virtual TimeSpan PostCancellationVerificationGracePeriod =>
         TimeSpan.FromSeconds(15);
 
@@ -631,6 +632,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             // send command
             tryTransfer:
+            ct.ThrowIfCancellationRequested();
             var result = await SendManyAsync(args, ct);
 
             if(result.Error == null)
@@ -653,11 +655,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 await PersistPaymentsAsync(balances, txId);
 
-                using(var reconciliationCts = CreatePayoutVerificationTokenSource(ct,
-                    out var verificationToken))
-                {
-                    await EnsurePayoutTransactionAcceptedAsync(txId, verificationToken);
-                }
+                await RunPayoutVerificationAsync(ct, verificationToken =>
+                    EnsurePayoutTransactionAcceptedAsync(txId, verificationToken));
 
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
@@ -799,20 +798,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 await PersistPaymentsAsync(persistedBalances);
 
-                using(var reconciliationCts = CreatePayoutVerificationTokenSource(ct,
-                    out var verificationToken))
+                await RunPayoutVerificationAsync(ct, async verificationToken =>
                 {
                     acceptanceVerificationFailures =
                         await CollectPayoutTransactionAcceptanceFailuresAsync(
                             persistedBalances.Values.Distinct(), verificationToken);
-                }
+                });
             }
 
             var failedTransfers = txFailures.ToArray();
             var uncertainties = failedTransfers
                 .Where(x => x.Item2 is PayoutOutcomeUncertainException)
                 .Select(x => new PayoutOutcomeUncertainException(
-                    $"{x.Item1.Key} {FormatAmount(x.Item1.Value)} requires reconciliation: " +
+                    $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)} requires reconciliation: " +
                     x.Item2.Message, x.Item2))
                 .Concat(acceptanceVerificationFailures)
                 .ToArray();
@@ -842,7 +840,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 var failureBalances = failedTransfers
                     .Select(x => new Balance { Amount = x.Item1.Value }).ToArray();
                 var error = string.Join(", ", failedTransfers.Select(x =>
-                    $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
+                    $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
                 logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: {error}");
 
@@ -855,22 +853,27 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
     }
 
-    private CancellationTokenSource CreatePayoutVerificationTokenSource(CancellationToken ct,
-        out CancellationToken verificationToken)
+    private async Task RunPayoutVerificationAsync(CancellationToken shutdownToken,
+        Func<CancellationToken, Task> action)
     {
-        if(!ct.IsCancellationRequested)
+        using var verificationCts = new CancellationTokenSource();
+        using var registration = shutdownToken.Register(() =>
         {
-            verificationToken = ct;
-            return null;
-        }
+            logger.Warn(() => $"[{LogCategory}] Shutdown began during persisted payout " +
+                $"verification; allowing up to " +
+                $"{PostCancellationVerificationGracePeriod.TotalSeconds:0} additional second(s)");
+            verificationCts.CancelAfter(PostCancellationVerificationGracePeriod);
+        });
 
-        var reconciliationCts =
-            new CancellationTokenSource(PostCancellationVerificationGracePeriod);
-        verificationToken = reconciliationCts.Token;
-        logger.Warn(() => $"[{LogCategory}] Verifying persisted payout transactions " +
-            $"for up to {PostCancellationVerificationGracePeriod.TotalSeconds:0} " +
-            "second(s) after cancellation");
-        return reconciliationCts;
+        await action(verificationCts.Token);
+    }
+
+    private string FormatPayoutAmount(decimal amount)
+    {
+        var format = payoutDecimalPlaces > 0
+            ? $"0.{new string('#', payoutDecimalPlaces)}"
+            : "0";
+        return $"{amount.ToString(format, CultureInfo.InvariantCulture)} {coin.Symbol}";
     }
 
     private void TryNotifyPayout(Action notify, string outcome)
