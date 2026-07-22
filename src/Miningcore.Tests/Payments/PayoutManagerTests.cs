@@ -401,6 +401,30 @@ public class PayoutManagerTests
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
     }
 
+    [Fact]
+    public async Task PreSubmissionCancellation_CompletesFinancialOperation()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+        handler.PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(), canceled.Token)
+            .Returns(Task.FromCanceled(canceled.Token));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
+                handler, canceled.Token));
+
+        fixture.PayoutLease.Received(1).BeginFinancialOperation();
+        fixture.PayoutLease.Received(1).CompleteFinancialOperation();
+        fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

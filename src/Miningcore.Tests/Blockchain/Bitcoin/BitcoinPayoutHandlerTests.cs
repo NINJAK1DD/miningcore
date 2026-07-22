@@ -232,6 +232,90 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_SendManyCancellationAfterWalletResponse_VerifiesWithFreshToken()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.SendManyOverride = _ =>
+        {
+            cts.Cancel();
+            return Task.FromResult(new RpcResponse<string>("payout-txid"));
+        };
+        fixture.Handler.ReturnCancelledRpcResponseForCancelledToken = true;
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.Equal(new[] { "payout-txid" }, fixture.Handler.MempoolTransactionIds);
+        Assert.All(fixture.Handler.MempoolCancellationStates, Assert.False);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_SendManyCancellationDuringVerification_UsesGracePeriod()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        var verificationTokenCancelled = true;
+        fixture.Handler.MempoolEntryOverride = (_, verificationToken) =>
+        {
+            cts.Cancel();
+            verificationTokenCancelled = verificationToken.IsCancellationRequested;
+
+            return Task.FromResult(verificationTokenCancelled
+                ? new RpcResponse<JToken>(null, new JsonRpcError(-500, "Cancelled", null))
+                : new RpcResponse<JToken>(new JObject()));
+        };
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.False(verificationTokenCancelled);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_SendMany_PreCanceled_DoesNotStartWalletSubmission()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var cts = new CancellationTokenSource();
+        var walletSubmissionStarted = false;
+        fixture.Handler.SendManyOverride = _ =>
+        {
+            walletSubmissionStarted = true;
+            return Task.FromResult(new RpcResponse<string>("payout-txid"));
+        };
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+            }, cts.Token));
+
+        Assert.False(walletSubmissionStarted);
+        Assert.DoesNotContain(fixture.Events, x => x.StartsWith("persist:"));
+    }
+
+    [Fact]
     public async Task Payout_SendManySuccessNotificationFailure_DoesNotPropagate()
     {
         var fixture = await CreateFixtureAsync();
@@ -327,6 +411,264 @@ public class BitcoinPayoutHandlerTests : TestBase
         fixture.MessageBus.DidNotReceive().SendMessage(
             Arg.Is<PaymentNotification>(notification => notification.Error == null),
             Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_CancellationAfterWalletResponses_VerifiesWithFreshToken()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        var secondSubmissionStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationTriggered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        fixture.Handler.SendToAddressOverride = async (address, _) =>
+        {
+            if(address == "DTest1")
+            {
+                await secondSubmissionStarted.Task;
+                cts.Cancel();
+                cancellationTriggered.TrySetResult();
+                return new RpcResponse<string>("payout-txid-1");
+            }
+
+            secondSubmissionStarted.TrySetResult();
+            await cancellationTriggered.Task;
+            return new RpcResponse<string>("payout-txid-2");
+        };
+        fixture.Handler.ReturnCancelledRpcResponseForCancelledToken = true;
+        fixture.Handler.MempoolResponses["payout-txid-1"] =
+            new RpcResponse<JToken>(new JObject());
+        fixture.Handler.MempoolResponses["payout-txid-2"] =
+            new RpcResponse<JToken>(new JObject());
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+        }, cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.Equal(new[] { "DTest1", "DTest2" },
+            fixture.Handler.SendToAddressAddresses.OrderBy(x => x));
+        Assert.Equal(new[] { "payout-txid-1", "payout-txid-2" },
+            fixture.Handler.MempoolTransactionIds.OrderBy(x => x));
+        Assert.All(fixture.Handler.MempoolCancellationStates, Assert.False);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-1", fixture.Now);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-2", fixture.Now);
+
+        var events = fixture.Events.ToArray();
+        var persistenceCommit = Array.FindIndex(events, x => x == "commit");
+        var firstVerification = Array.FindIndex(events, x => x.StartsWith("verify:"));
+        Assert.True(persistenceCommit >= 0);
+        Assert.True(firstVerification > persistenceCommit);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_PreCanceled_DoesNotStartWalletSubmission()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+            }, cts.Token));
+
+        Assert.Empty(fixture.Handler.SendToAddressAddresses);
+        Assert.DoesNotContain(fixture.Events, x => x.StartsWith("persist:"));
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_CancellationDuringWalletCall_IsUncertain()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.SendToAddressOverride = (_, _) =>
+        {
+            cts.Cancel();
+            return Task.FromException<RpcResponse<string>>(
+                new OperationCanceledException(cts.Token));
+        };
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+            }, cts.Token));
+
+        Assert.Contains(BitcoinCommands.SendToAddress, exception.Message);
+        Assert.Contains("interrupted", exception.Message);
+        Assert.IsType<PayoutOutcomeUncertainException>(exception.InnerException);
+        Assert.IsAssignableFrom<OperationCanceledException>(
+            exception.InnerException.InnerException);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_MultipleCancelledRpcResponses_AggregatesEveryRecipient()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        var bothSubmissionsStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedSubmissions = 0;
+
+        fixture.Handler.SendToAddressOverride = async (_, _) =>
+        {
+            if(Interlocked.Increment(ref startedSubmissions) == 2)
+            {
+                cts.Cancel();
+                bothSubmissionsStarted.TrySetResult();
+            }
+
+            await bothSubmissionsStarted.Task;
+            return new RpcResponse<string>(null,
+                new JsonRpcError(-500, "Cancelled", null));
+        };
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, cts.Token));
+
+        Assert.Contains("DTest1", exception.Message);
+        Assert.Contains("1 DOGE", exception.Message);
+        Assert.Contains("DTest2", exception.Message);
+        Assert.Contains("2 DOGE", exception.Message);
+        var aggregate = Assert.IsType<AggregateException>(exception.InnerException);
+        Assert.Equal(2, aggregate.InnerExceptions.Count);
+        Assert.All(aggregate.InnerExceptions,
+            inner => Assert.IsType<PayoutOutcomeUncertainException>(inner));
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification =>
+                notification.Error.Contains("DTest1") &&
+                notification.Error.Contains("DTest2")),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_UncertainAmountUsesConfiguredPrecision()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true,
+            coinTemplate: "kylacoin");
+        fixture.Handler.SendToAddressOverride = (_, _) =>
+            Task.FromResult(new RpcResponse<string>(null,
+                new JsonRpcError(-500, "response lost", null)));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance
+                {
+                    PoolId = fixture.Config.Id,
+                    Address = "KTest",
+                    Amount = 0.000000123456m,
+                },
+            }, CancellationToken.None));
+
+        Assert.Contains("KTest 0.000000123456 KCN", exception.Message);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_MixedKnownAndCancelled_VerifiesKnownBeforeFailStop()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        var bothSubmissionsStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedSubmissions = 0;
+
+        fixture.Handler.SendToAddressOverride = async (address, _) =>
+        {
+            if(Interlocked.Increment(ref startedSubmissions) == 2)
+            {
+                cts.Cancel();
+                bothSubmissionsStarted.TrySetResult();
+            }
+
+            await bothSubmissionsStarted.Task;
+            return address == "DTest1"
+                ? new RpcResponse<string>("payout-txid-1")
+                : new RpcResponse<string>(null,
+                    new JsonRpcError(-500, "Cancelled", null));
+        };
+        fixture.Handler.MempoolResponses["payout-txid-1"] =
+            new RpcResponse<JToken>(new JObject());
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, cts.Token));
+
+        Assert.Contains("DTest2", exception.Message);
+        Assert.Contains("2 DOGE", exception.Message);
+        Assert.DoesNotContain("DTest1", exception.Message);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-1", fixture.Now);
+        Assert.Equal(new[] { "payout-txid-1" }, fixture.Handler.MempoolTransactionIds);
+        Assert.All(fixture.Handler.MempoolCancellationStates, Assert.False);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendMany_PostCancellationVerificationTimeout_ReportsEveryTransaction()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.PostCancellationVerificationGracePeriodOverride =
+            TimeSpan.FromMilliseconds(20);
+        var bothSubmissionsStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedSubmissions = 0;
+        fixture.Handler.SendToAddressOverride = async (address, _) =>
+        {
+            if(Interlocked.Increment(ref startedSubmissions) == 2)
+            {
+                cts.Cancel();
+                bothSubmissionsStarted.TrySetResult();
+            }
+
+            await bothSubmissionsStarted.Task;
+            return new RpcResponse<string>(
+                address == "DTest1" ? "payout-txid-1" : "payout-txid-2");
+        };
+        fixture.Handler.MempoolEntryOverride = async (_, verificationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, verificationToken);
+            return new RpcResponse<JToken>(new JObject());
+        };
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, new[]
+            {
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest1", Amount = 1 },
+                new Balance { PoolId = fixture.Config.Id, Address = "DTest2", Amount = 2 },
+            }, cts.Token));
+
+        Assert.Contains("payout-txid-1", exception.Message);
+        Assert.Contains("payout-txid-2", exception.Message);
+        var aggregate = Assert.IsType<AggregateException>(exception.InnerException);
+        Assert.Equal(2, aggregate.InnerExceptions.Count);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-1", fixture.Now);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid-2", fixture.Now);
     }
 
     [Fact]
@@ -1360,7 +1702,8 @@ public class BitcoinPayoutHandlerTests : TestBase
     private async Task<HandlerFixture> CreateFixtureAsync(
         IActiveBlockGracePeriodTracker activeBlockGracePeriodTracker = null,
         DateTime? now = null,
-        bool hasBrokenSendMany = false)
+        bool hasBrokenSendMany = false,
+        string coinTemplate = "dogecoin")
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var mapper = container.Resolve<IMapper>();
@@ -1392,7 +1735,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         var config = new PoolConfig
         {
             Id = "doge-test",
-            Template = ModuleInitializer.CoinTemplates["dogecoin"],
+            Template = ModuleInitializer.CoinTemplates[coinTemplate],
             Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 22555 } },
             PaymentProcessing = new PoolPaymentProcessingConfig(),
             RewardRecipients = Array.Empty<RewardRecipient>(),
@@ -1471,14 +1814,19 @@ public class BitcoinPayoutHandlerTests : TestBase
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
+        public Func<CancellationToken, Task<RpcResponse<string>>> SendManyOverride { get; set; }
         public RpcResponse<JToken> MempoolResponse { get; set; }
         public RpcResponse<Transaction> WalletTransactionResponse { get; set; }
         public Dictionary<string, RpcResponse<string>> SendToAddressResponses { get; } = new();
+        public Func<string, CancellationToken, Task<RpcResponse<string>>> SendToAddressOverride { get; set; }
+        public ConcurrentBag<string> SendToAddressAddresses { get; } = new();
         public Dictionary<string, RpcResponse<JToken>> MempoolResponses { get; } = new();
         public Dictionary<string, RpcResponse<Transaction>> WalletTransactionResponses { get; } = new();
+        public Func<string, CancellationToken, Task<RpcResponse<JToken>>> MempoolEntryOverride { get; set; }
         public ConcurrentQueue<RpcResponse<JToken>> MempoolResponseSequence { get; } = new();
         public ConcurrentQueue<RpcResponse<Transaction>> WalletTransactionResponseSequence { get; } = new();
         public ConcurrentBag<string> MempoolTransactionIds { get; } = new();
+        public ConcurrentBag<bool> MempoolCancellationStates { get; } = new();
         public ConcurrentQueue<string> Events { get; set; } = new();
         public int BlockCalls { get; private set; }
         public int TransactionCalls { get; private set; }
@@ -1486,6 +1834,12 @@ public class BitcoinPayoutHandlerTests : TestBase
         public int VerificationDelayCalls { get; private set; }
         public bool ThrowCancellationFromMempoolLookup { get; set; }
         public bool ThrowCancellationFromVerificationDelay { get; set; }
+        public bool ReturnCancelledRpcResponseForCancelledToken { get; set; }
+        public TimeSpan? PostCancellationVerificationGracePeriodOverride { get; set; }
+
+        protected override TimeSpan PostCancellationVerificationGracePeriod =>
+            PostCancellationVerificationGracePeriodOverride ??
+            base.PostCancellationVerificationGracePeriod;
 
         protected override Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
             CancellationToken ct)
@@ -1510,6 +1864,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         protected override Task<RpcResponse<string>> SendManyAsync(object[] args,
             CancellationToken ct)
         {
+            if(SendManyOverride != null)
+                return SendManyOverride(ct);
+
             return Task.FromResult(PayoutResponse);
         }
 
@@ -1517,6 +1874,11 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             var address = args[0]?.ToString();
+            SendToAddressAddresses.Add(address);
+
+            if(SendToAddressOverride != null)
+                return SendToAddressOverride(address, ct);
+
             return Task.FromResult(SendToAddressResponses[address]);
         }
 
@@ -1524,10 +1886,20 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             MempoolTransactionIds.Add(txId);
+            MempoolCancellationStates.Add(ct.IsCancellationRequested);
             Events.Enqueue($"verify:{txId}");
 
             if(ThrowCancellationFromMempoolLookup)
                 return Task.FromException<RpcResponse<JToken>>(new OperationCanceledException());
+
+            if(ReturnCancelledRpcResponseForCancelledToken && ct.IsCancellationRequested)
+            {
+                return Task.FromResult(new RpcResponse<JToken>(null,
+                    new JsonRpcError(-500, "Cancelled", null)));
+            }
+
+            if(MempoolEntryOverride != null)
+                return MempoolEntryOverride(txId, ct);
 
             if(MempoolResponseSequence.TryDequeue(out var sequencedResponse))
                 return Task.FromResult(sequencedResponse);
@@ -1541,6 +1913,12 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             WalletTransactionCalls++;
+
+            if(ReturnCancelledRpcResponseForCancelledToken && ct.IsCancellationRequested)
+            {
+                return Task.FromResult(new RpcResponse<Transaction>(null,
+                    new JsonRpcError(-500, "Cancelled", null)));
+            }
 
             if(WalletTransactionResponseSequence.TryDequeue(out var sequencedResponse))
                 return Task.FromResult(sequencedResponse);
@@ -1557,6 +1935,9 @@ public class BitcoinPayoutHandlerTests : TestBase
 
             if(ThrowCancellationFromVerificationDelay)
                 return Task.FromException(new OperationCanceledException());
+
+            if(ReturnCancelledRpcResponseForCancelledToken && ct.IsCancellationRequested)
+                return Task.FromCanceled(ct);
 
             return Task.CompletedTask;
         }
