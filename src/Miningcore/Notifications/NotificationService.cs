@@ -194,7 +194,7 @@ public class NotificationService : StartupGatedBackgroundService
                 var adjustment = x.SubmittedAmount.Value - x.Amount;
                 parts.Add($"wallet request " +
                     $"{FormatExactHtmlAmount(x.SubmittedAmount.Value, symbol)} " +
-                    $"(rounding adjustment {FormatSignedExactHtmlAmount(adjustment, symbol)})");
+                    $"(precision adjustment {FormatSignedExactHtmlAmount(adjustment, symbol)})");
             }
 
             if(!string.IsNullOrWhiteSpace(x.TransactionId))
@@ -235,7 +235,7 @@ public class NotificationService : StartupGatedBackgroundService
             : FormatSignedExactAmount(adjustment, symbol);
 
         sections.Add($"Wallet request total across attempted recipients: {amount}; " +
-            $"rounding adjustment: {formattedAdjustment}.");
+            $"precision adjustment: {formattedAdjustment}.");
     }
 
     private static string FormatHtmlSuccessfulAmount(PaymentNotification notification,

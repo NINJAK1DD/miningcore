@@ -404,9 +404,10 @@ public class PayoutManager : ProcessStatusBackgroundService
 
             catch(OperationCanceledException) when(ct.IsCancellationRequested)
             {
-                // A handler must classify any interruption after an ambiguous wallet submission
-                // as PayoutOutcomeUncertainException. Host cancellation reaching this branch is
-                // therefore pre-submission and should release ownership without a failure alert.
+                // Cancellation reaching this branch may be pre-submission or may follow a
+                // conclusive, fully persisted partial batch. A handler must classify every
+                // ambiguous wallet outcome as PayoutOutcomeUncertainException instead, so no
+                // ambiguity remains here and durable ownership can be released safely.
                 payoutLease.CompleteFinancialOperation();
                 throw;
             }

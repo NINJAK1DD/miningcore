@@ -159,7 +159,7 @@ public class PaymentNotificationTests
             rendered.EmailMessage);
         Assert.Contains("Wallet request total across attempted recipients: 3.5801 DOGE",
             rendered.EmailMessage);
-        Assert.Contains("rounding adjustment: -0.00010 DOGE", rendered.EmailMessage);
+        Assert.Contains("precision adjustment: -0.00010 DOGE", rendered.EmailMessage);
         Assert.Contains("1.23454 DOGE to DTestBelow, wallet request 1.2345 DOGE",
             rendered.EmailMessage);
         Assert.Contains("2.34566 DOGE to DTestAbove, wallet request 2.3456 DOGE",

@@ -365,6 +365,71 @@ public class BitcoinPayoutHandlerTests : TestBase
             Arg.Any<string>());
     }
 
+    [Fact]
+    public async Task Payout_LockedWalletWithoutPassword_NotifiesBestEffort()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+            new JsonRpcError((int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED,
+                "wallet locked", null));
+        PaymentNotification notification = null;
+        fixture.MessageBus.When(x => x.SendMessage(Arg.Any<PaymentNotification>(),
+                Arg.Any<string>()))
+            .Do(call =>
+            {
+                notification = call.ArgAt<PaymentNotification>(0);
+                throw new InvalidOperationException("failure subscriber failed");
+            });
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        Assert.NotNull(notification);
+        Assert.Equal(PaymentNotificationOutcome.Failure, notification.Outcome);
+        Assert.Contains("walletPassword was not configured", notification.Error);
+        Assert.Equal(0, fixture.Handler.UnlockWalletCalls);
+        await fixture.PaymentRepository.DidNotReceive().TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<DateTime>());
+    }
+
+    [Fact]
+    public async Task Payout_WalletUnlockRejected_NotifiesActualUnlockErrorBestEffort()
+    {
+        var fixture = await CreateFixtureAsync(walletPassword: "wrong-password");
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+            new JsonRpcError((int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED,
+                "wallet locked", null));
+        fixture.Handler.UnlockWalletResponse = new RpcResponse<JToken>(null,
+            new JsonRpcError(-14, "incorrect passphrase", null));
+        PaymentNotification notification = null;
+        fixture.MessageBus.When(x => x.SendMessage(Arg.Any<PaymentNotification>(),
+                Arg.Any<string>()))
+            .Do(call =>
+            {
+                notification = call.ArgAt<PaymentNotification>(0);
+                throw new InvalidOperationException("failure subscriber failed");
+            });
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        Assert.NotNull(notification);
+        Assert.Equal(PaymentNotificationOutcome.Failure, notification.Outcome);
+        Assert.Contains("incorrect passphrase", notification.Error);
+        Assert.Contains("code -14", notification.Error);
+        Assert.DoesNotContain("wallet locked", notification.Error);
+        Assert.Equal(1, fixture.Handler.UnlockWalletCalls);
+        Assert.Equal("wrong-password", fixture.Handler.UnlockWalletPassword);
+        await fixture.PaymentRepository.DidNotReceive().TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<DateTime>());
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -985,6 +1050,72 @@ public class BitcoinPayoutHandlerTests : TestBase
             x => x.Address == "DTestBelow").SubmittedAmount);
         Assert.Equal(2.3456m, Assert.Single(exception.Reconciliation.Uncertain,
             x => x.Address == "DTestAbove").SubmittedAmount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PayoutManager_UncertainOutcome_AccountsForPrecisionSkippedRecipient(
+        bool hasBrokenSendMany)
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: hasBrokenSendMany);
+        var balances = new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DPayable",
+                Amount = 1.00000m,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DBelowPrecision",
+                Amount = 0.00009m,
+            },
+        };
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(fixture.Connection,
+                fixture.Config.Id, Arg.Any<decimal>())
+            .Returns(balances);
+
+        if(hasBrokenSendMany)
+        {
+            fixture.Handler.SendToAddressResponses["DPayable"] =
+                new RpcResponse<string>(null,
+                    new JsonRpcError(-500, "response lost", null));
+        }
+        else
+        {
+            fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+                new JsonRpcError(-500, "response lost", null));
+        }
+
+        PaymentNotification notification = null;
+        fixture.MessageBus.When(x => x.SendMessage(Arg.Any<PaymentNotification>(),
+                Arg.Any<string>()))
+            .Do(call => notification = call.ArgAt<PaymentNotification>(0));
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.Pool, fixture.Config,
+                fixture.Handler, CancellationToken.None));
+
+        Assert.NotNull(notification);
+        Assert.Equal(balances.Sum(x => x.Amount), notification.Amount);
+        var uncertain = Assert.Single(notification.Reconciliation.Uncertain);
+        Assert.Equal("DPayable", uncertain.Address);
+        var skipped = Assert.Single(notification.Reconciliation.NotAttempted);
+        Assert.Equal("DBelowPrecision", skipped.Address);
+        Assert.Equal(0.00009m, skipped.Amount);
+        Assert.Contains("below wallet precision", skipped.Detail);
+
+        var categories = notification.Reconciliation.Accepted
+            .Concat(notification.Reconciliation.Failed)
+            .Concat(notification.Reconciliation.Uncertain)
+            .Concat(notification.Reconciliation.NotAttempted)
+            .ToArray();
+        Assert.Equal(balances.Select(x => x.Address).OrderBy(x => x),
+            categories.Select(x => x.Address).OrderBy(x => x));
+        Assert.Equal(notification.Amount, categories.Sum(x => x.Amount));
     }
 
     [Theory]
@@ -2239,7 +2370,8 @@ public class BitcoinPayoutHandlerTests : TestBase
         DateTime? now = null,
         bool hasBrokenSendMany = false,
         string coinTemplate = "dogecoin",
-        bool minersPayTxFees = false)
+        bool minersPayTxFees = false,
+        string walletPassword = null)
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var mapper = container.Resolve<IMapper>();
@@ -2268,6 +2400,14 @@ public class BitcoinPayoutHandlerTests : TestBase
             shareRepository, blockRepository, balanceRepository, paymentRepository, clock, messageBus,
             activeBlockGracePeriodTracker ?? new ActiveBlockGracePeriodTracker());
         handler.Events = events;
+        var paymentExtra = new Dictionary<string, object>();
+
+        if(minersPayTxFees)
+            paymentExtra["minersPayTxFees"] = true;
+
+        if(walletPassword != null)
+            paymentExtra["walletPassword"] = walletPassword;
+
         var config = new PoolConfig
         {
             Id = "doge-test",
@@ -2275,9 +2415,7 @@ public class BitcoinPayoutHandlerTests : TestBase
             Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 22555 } },
             PaymentProcessing = new PoolPaymentProcessingConfig
             {
-                Extra = minersPayTxFees
-                    ? new Dictionary<string, object> { ["minersPayTxFees"] = true }
-                    : null,
+                Extra = paymentExtra.Count > 0 ? paymentExtra : null,
             },
             RewardRecipients = Array.Empty<RewardRecipient>(),
             Extra = hasBrokenSendMany
@@ -2366,6 +2504,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
+        public RpcResponse<JToken> UnlockWalletResponse { get; set; }
+        public int UnlockWalletCalls { get; private set; }
+        public string UnlockWalletPassword { get; private set; }
         public Func<CancellationToken, Task<RpcResponse<string>>> SendManyOverride { get; set; }
         public object[] LastSendManyArgs { get; private set; }
         public RpcResponse<JToken> MempoolResponse { get; set; }
@@ -2424,6 +2565,14 @@ public class BitcoinPayoutHandlerTests : TestBase
                 return SendManyOverride(ct);
 
             return Task.FromResult(PayoutResponse);
+        }
+
+        protected override Task<RpcResponse<JToken>> UnlockWalletAsync(string password,
+            CancellationToken ct)
+        {
+            UnlockWalletCalls++;
+            UnlockWalletPassword = password;
+            return Task.FromResult(UnlockWalletResponse);
         }
 
         protected override Task<RpcResponse<string>> SendToAddressAsync(object[] args,

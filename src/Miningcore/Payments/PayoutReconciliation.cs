@@ -3,7 +3,7 @@ namespace Miningcore.Payments;
 public record PayoutReconciliationEntry
 {
     public string Address { get; init; }
-    // Amount owed to the recipient before wallet-specific payout rounding.
+    // Amount owed to the recipient before wallet-precision adjustment.
     public decimal Amount { get; init; }
     // Amount passed to the wallet RPC. Null means submission was not started or the
     // handler cannot determine the submitted amount.

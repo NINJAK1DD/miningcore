@@ -42,10 +42,12 @@ public record PaymentNotification
     public string[] TxExplorerLinks { get; set; }
     public string Symbol { get; set; }
     public int RecipientsCount { get; set; }
-    // Requested/owed batch total before wallet-specific payout rounding.
+    // Requested/owed batch total before wallet-precision adjustment.
     public decimal Amount { get; set; }
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public decimal? SubmittedAmount { get; set; }
+    // Retains its original public name for WebSocket compatibility. Bitcoin-family
+    // handlers now calculate this as a non-positive truncation/precision adjustment.
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public decimal? RoundingAdjustment { get; set; }
     // Administrative error detail is consumed in-process and excluded from the public stream.
