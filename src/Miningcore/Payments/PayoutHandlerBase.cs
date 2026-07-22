@@ -66,8 +66,42 @@ public abstract class PayoutHandlerBase
     protected ILogger logger;
     protected PoolConfig poolConfig;
     private const int RetryCount = 8;
+    private static readonly TimeSpan WalletRelockTimeout = TimeSpan.FromSeconds(10);
 
     protected abstract string LogCategory { get; }
+
+    /// <summary>
+    /// Relocks a payout wallet after processing without allowing cleanup or notification errors
+    /// to replace the already-determined financial outcome.
+    /// </summary>
+    protected async Task RelockPayoutWalletSafelyAsync(
+        Func<CancellationToken, Task> lockWallet)
+    {
+        Contract.RequiresNonNull(lockWallet);
+
+        try
+        {
+            using var cts = new CancellationTokenSource(WalletRelockTimeout);
+            await lockWallet(cts.Token);
+        }
+        catch(Exception ex)
+        {
+            var message = $"Pool {poolConfig?.Id ?? "unknown"} could not relock its " +
+                $"payout wallet after payment processing: {ex.Message}";
+            logger.Error(ex, () => $"[{LogCategory}] {message}");
+
+            try
+            {
+                messageBus.SendMessage(new AdminNotification(
+                    "Payout wallet relock failed", message));
+            }
+            catch(Exception notificationError)
+            {
+                logger.Error(notificationError, () =>
+                    $"[{LogCategory}] Unable to publish payout-wallet relock alert");
+            }
+        }
+    }
 
     private RewardRecipient[] RewardRecipients =>
         poolConfig.RewardRecipients ?? Array.Empty<RewardRecipient>();
@@ -338,8 +372,12 @@ public abstract class PayoutHandlerBase
     /// Marks balances immediately before invoking a wallet submission RPC. An interrupted or
     /// otherwise ambiguous call is therefore distinguishable from recipients not yet attempted.
     /// </summary>
-    protected void TrackPayoutSubmission(params Balance[] balances)
+    protected void TrackPayoutSubmission(CancellationToken ct, params Balance[] balances)
     {
+        // Cancellation that was already requested before the wallet boundary is an ordinary
+        // shutdown. Only cancellation racing with a call after this check is financially
+        // ambiguous and may retain durable payout ownership for reconciliation.
+        ct.ThrowIfCancellationRequested();
         activePayout.Value?.MarkAttempting(balances);
     }
 

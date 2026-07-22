@@ -270,7 +270,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             if(walletInfo.Response?.WalletId != walletName)
                 await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.SelectWallet, ct, new[] { walletName });
 
-            TrackPayoutSubmission(balances);
+            TrackPayoutSubmission(ct, balances);
             var result = await rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendMany, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(result.Error,
@@ -378,7 +378,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         Address = address,
                         Amount = amount,
                     };
-                    TrackPayoutSubmission(submittedBalance);
+                    TrackPayoutSubmission(ct, submittedBalance);
 
                     var result = await SendToAddressAsync(new object[]
                     {

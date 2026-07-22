@@ -11,6 +11,7 @@ using Miningcore.Blockchain.Alephium;
 using Miningcore.Blockchain.Alephium.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
@@ -163,6 +164,148 @@ public class AlephiumPayoutHandlerTests
             Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
+    [Theory]
+    [InlineData("Alephium address UTXO lookup")]
+    [InlineData("Alephium transaction build")]
+    [InlineData("Alephium transaction signing")]
+    public async Task PreparedGroups_AcceptedThenPreparationFailure_FlushesSubsets(
+        string operation)
+    {
+        var fixture = CreatePayoutFixture();
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-accepted", fixture.Now)
+            .Returns(true);
+        fixture.Handler.EnqueuePreparationResult();
+        fixture.Handler.EnqueuePreparationException(
+            new InvalidOperationException("preparation rejected"));
+        fixture.Handler.EnqueueResult(new SubmitTxResult { TxId = "tx-accepted" });
+        var accepted = Balance(fixture.Pool.Id, "accepted", 1);
+        var failed = Balance(fixture.Pool.Id, "failed", 2);
+
+        await fixture.Handler.RunPreparedGroupsAsync(operation,
+            new[] { accepted }, new[] { failed });
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.Amount == 1 && x.RecipientsCount == 1),
+            Arg.Any<string>());
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure &&
+                x.Amount == 2 && x.RecipientsCount == 1 &&
+                x.Error.Contains(operation) &&
+                x.Error.Contains("preparation rejected")),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PreparedGroups_FailureThenUncertainSubmissionPreservesMembership()
+    {
+        var fixture = CreatePayoutFixture();
+        fixture.Handler.EnqueuePreparationException(
+            new InvalidOperationException("build rejected"));
+        fixture.Handler.EnqueuePreparationResult();
+        fixture.Handler.EnqueueException(new OperationCanceledException("response lost"));
+        var failed = Balance(fixture.Pool.Id, "failed", 1);
+        var uncertain = Balance(fixture.Pool.Id, "uncertain", 2);
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunPreparedGroupsAsync("Alephium transaction build",
+                new[] { failed }, new[] { uncertain }));
+
+        Assert.Equal(failed.Address,
+            Assert.Single(exception.Reconciliation.Failed).Address);
+        Assert.Equal(uncertain.Address,
+            Assert.Single(exception.Reconciliation.Uncertain).Address);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PayoutAsync_UncertainSubmissionStillRelocksWithFreshToken()
+    {
+        var fixture = CreatePayoutFixture();
+        var balance = Balance(fixture.Pool.Id, "uncertain", 1);
+        var lockCalls = 0;
+        var lockTokenWasCancelled = true;
+        fixture.Handler.SetPayoutAction((_, _) =>
+            throw new PayoutOutcomeUncertainException("wallet response lost"));
+        fixture.Handler.SetLockAction(ct =>
+        {
+            lockCalls++;
+            lockTokenWasCancelled = ct.IsCancellationRequested;
+            return Task.CompletedTask;
+        });
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+                new[] { balance }, cts.Token));
+
+        Assert.Equal(1, lockCalls);
+        Assert.False(lockTokenWasCancelled);
+    }
+
+    [Fact]
+    public async Task PayoutAsync_LockFailurePreservesUncertainOutcome()
+    {
+        var fixture = CreatePayoutFixture();
+        var balance = Balance(fixture.Pool.Id, "uncertain", 1);
+        fixture.Handler.SetPayoutAction((_, _) =>
+            throw new PayoutOutcomeUncertainException("wallet response lost"));
+        fixture.Handler.SetLockAction(_ =>
+            throw new InvalidOperationException("lock unavailable"));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+                new[] { balance }, CancellationToken.None));
+
+        Assert.Contains("wallet response lost", exception.Message);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(x =>
+                x.Subject == "Payout wallet relock failed" &&
+                x.Message.Contains("lock unavailable")),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PayoutAsync_SuccessThenLockFailureDoesNotReportPayoutFailure()
+    {
+        var fixture = CreatePayoutFixture();
+        var balance = Balance(fixture.Pool.Id, "accepted", 1);
+        fixture.Handler.SetPayoutAction((balances, _) =>
+        {
+            fixture.Handler.QueueSuccess(balances, "tx-accepted");
+            return Task.CompletedTask;
+        });
+        fixture.Handler.SetLockAction(_ =>
+            throw new InvalidOperationException("lock unavailable"));
+
+        await fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+            new[] { balance }, CancellationToken.None);
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success),
+            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure),
+            Arg.Any<string>());
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Any<AdminNotification>(), Arg.Any<string>());
+    }
+
+    private static Balance Balance(string poolId, string address, decimal amount) =>
+        new()
+        {
+            PoolId = poolId,
+            Address = address,
+            Amount = amount,
+        };
+
     private static PayoutFixture CreatePayoutFixture()
     {
         var cf = Substitute.For<IConnectionFactory>();
@@ -194,6 +337,9 @@ public class AlephiumPayoutHandlerTests
     private sealed class TestAlephiumPayoutHandler : AlephiumPayoutHandler
     {
         private readonly Queue<Func<Task<SubmitTxResult>>> submissions = new();
+        private readonly Queue<Func<Task<bool>>> preparations = new();
+        private Func<Balance[], CancellationToken, Task> payoutAction;
+        private Func<CancellationToken, Task> lockAction;
 
         public TestAlephiumPayoutHandler(IComponentContext ctx,
             IConnectionFactory cf, IMapper mapper, IShareRepository shareRepo,
@@ -218,6 +364,22 @@ public class AlephiumPayoutHandlerTests
         public void EnqueueException(Exception exception) =>
             submissions.Enqueue(() => Task.FromException<SubmitTxResult>(exception));
 
+        public void EnqueuePreparationResult() =>
+            preparations.Enqueue(() => Task.FromResult(true));
+
+        public void EnqueuePreparationException(Exception exception) =>
+            preparations.Enqueue(() => Task.FromException<bool>(exception));
+
+        public void SetPayoutAction(Func<Balance[], CancellationToken, Task> action) =>
+            payoutAction = action;
+
+        public void SetLockAction(Func<CancellationToken, Task> action) =>
+            lockAction = action;
+
+        public void QueueSuccess(Balance[] balances, string transactionId) =>
+            NotifyPayoutSuccess(poolConfig.Id, balances,
+                new[] { transactionId }, null);
+
         public Task RunGroupsAsync(params Balance[][] groups) =>
             TrackPayoutAsync(groups.SelectMany(x => x).ToArray(), async () =>
             {
@@ -226,8 +388,31 @@ public class AlephiumPayoutHandlerTests
                         CancellationToken.None);
             });
 
+        public Task RunPreparedGroupsAsync(string operation,
+            params Balance[][] groups) =>
+            TrackPayoutAsync(groups.SelectMany(x => x).ToArray(), async () =>
+            {
+                foreach(var group in groups)
+                {
+                    var (success, _) = await TryPayoutPreparationAsync(group,
+                        operation, preparations.Dequeue());
+                    if(success)
+                        await SubmitPayoutGroupAsync(group, new SubmitSettlement(), 0,
+                            CancellationToken.None);
+                }
+            });
+
         protected override Task<SubmitTxResult> SubmitTransactionAsync(
             SubmitSettlement request, CancellationToken ct) => submissions.Dequeue()();
+
+        protected override Task PayoutTrackedAsync(Balance[] balances,
+            CancellationToken ct) => payoutAction != null
+            ? payoutAction(balances, ct)
+            : base.PayoutTrackedAsync(balances, ct);
+
+        protected override Task LockWallet(CancellationToken ct) => lockAction != null
+            ? lockAction(ct)
+            : base.LockWallet(ct);
     }
 
     private sealed record PayoutFixture(TestAlephiumPayoutHandler Handler,

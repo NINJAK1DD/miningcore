@@ -496,7 +496,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                         Address = amount.Key,
                         Amount = amount.Value,
                     };
-                    TrackPayoutSubmission(submittedBalance);
+                    TrackPayoutSubmission(ct, submittedBalance);
                     var callBroadcast = walletRpc.BroadcastAsync(broadcastRequest);
                     broadcastTransaction = await Guard(() => callBroadcast.ResponseAsync,
                         ex =>

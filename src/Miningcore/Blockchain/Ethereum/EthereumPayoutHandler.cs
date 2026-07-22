@@ -677,7 +677,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         }
 
         RpcResponse<string> response;
-        TrackPayoutSubmission(balance);
+        TrackPayoutSubmission(ct, balance);
         if(extraPoolConfig?.ChainTypeOverride == "Pink")
         {
             var requestPink = new SendTransactionRequestPink

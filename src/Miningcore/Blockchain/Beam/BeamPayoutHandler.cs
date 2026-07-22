@@ -57,7 +57,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
 
     protected override string LogCategory => "Beam Payout Handler";
     
-    private async Task<(bool IsValid, bool IsOffline)> ValidateAddress(string address, CancellationToken ct)
+    protected virtual async Task<(bool IsValid, bool IsOffline)> ValidateAddress(
+        string address, CancellationToken ct)
     {
         if(string.IsNullOrEmpty(address))
             return (false, false);
@@ -114,7 +115,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         return true;
     }
 
-    private async Task<string> PayoutAsync(Balance balance, CancellationToken ct)
+    protected async Task<string> PayoutBalanceAsync(Balance balance,
+        CancellationToken ct)
     {
         // send transaction
         logger.Info(() => $"[{LogCategory}] Sending {FormatAmount(balance.Amount)} to {balance.Address}");
@@ -132,8 +134,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         };
         
         // send command
-        TrackPayoutSubmission(balance);
-        var response = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, BeamWalletCommands.SendTransaction, ct, request);
+        TrackPayoutSubmission(ct, balance);
+        var response = await SubmitTransactionAsync(request, ct);
         
         WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
             BeamWalletCommands.SendTransaction);
@@ -151,6 +153,11 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         // done
         return txHash;
     }
+
+    protected virtual Task<RpcResponse<SendTransactionResponse>> SubmitTransactionAsync(
+        SendTransactionRequest request, CancellationToken ct) =>
+        rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger,
+            BeamWalletCommands.SendTransaction, ct, request);
 
     #region IPayoutHandler
 
@@ -301,7 +308,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
     }
 
-    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances,
+        CancellationToken ct)
     {
         var successfulBalances = new List<Balance>();
         var txHashes = new List<string>();
@@ -310,7 +318,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         {
             try
             {
-                var txHash = await PayoutAsync(balance, ct);
+                var txHash = await PayoutBalanceAsync(balance, ct);
                 successfulBalances.Add(balance);
                 txHashes.Add(txHash);
             }

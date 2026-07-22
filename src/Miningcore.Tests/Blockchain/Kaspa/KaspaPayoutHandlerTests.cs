@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
@@ -117,7 +118,7 @@ public class KaspaPayoutHandlerTests
             TrackPayoutAsync(new[] { accepted, failed, uncertain, untouched },
                 async () =>
                 {
-                    TrackPayoutSubmission(accepted);
+                    TrackPayoutSubmission(CancellationToken.None, accepted);
                     await PersistPaymentsAsync(new[] { accepted }, "tx-accepted");
                     NotifyPayoutSuccess(poolConfig.Id, new[] { accepted },
                         new[] { "tx-accepted" }, null);
@@ -125,7 +126,7 @@ public class KaspaPayoutHandlerTests
                     RecordPreparationFailure(
                         new KeyValuePair<string, decimal>(failed.Address, failed.Amount),
                         failure, failures);
-                    TrackPayoutSubmission(uncertain);
+                    TrackPayoutSubmission(CancellationToken.None, uncertain);
                     throw new PayoutOutcomeUncertainException(
                         "Kaspa broadcast response was lost");
                 });

@@ -90,7 +90,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
         logger.Info(() => $"[{LogCategory}] Wallet unlocked");
     }
 
-    private async Task LockWallet(CancellationToken ct)
+    protected virtual async Task LockWallet(CancellationToken ct)
     {
         logger.Info(() => $"[{LogCategory}] Locking wallet");
 
@@ -302,18 +302,10 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
             return;
 
         var balancesTotal = amounts.Sum(x => x.Value);
-        var outcomeUncertain = false;
-
         try
         {
             await TrackPayoutAsync(balances, () =>
                 PayoutTrackedAsync(balances, amounts, balancesTotal, ct));
-        }
-
-        catch(PayoutOutcomeUncertainException)
-        {
-            outcomeUncertain = true;
-            throw;
         }
 
         catch(PaymentException ex)
@@ -325,19 +317,13 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
         finally
         {
-            try
-            {
-                await LockWallet(ct);
-            }
-            catch(Exception ex) when(outcomeUncertain)
-            {
-                logger.Warn(() =>
-                    $"[{LogCategory}] Unable to lock wallet while preserving an unknown payout outcome: {ex.Message}");
-            }
+            // Relocking is wallet-security cleanup, not part of the financial result. Use a
+            // fresh bounded token so shutdown cancellation cannot skip it or replace that result.
+            await RelockPayoutWalletSafelyAsync(LockWallet);
         }
     }
 
-    private async Task PayoutTrackedAsync(Balance[] balances,
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances,
         IReadOnlyDictionary<string, decimal> amounts, decimal balancesTotal,
         CancellationToken ct)
     {
@@ -383,7 +369,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
             Value = (long) (x.Value * ErgoConstants.SmallestUnit),
         }).ToArray();
 
-        TrackPayoutSubmission(balances);
+        TrackPayoutSubmission(ct, balances);
         var txId = await Guard(()=> ergoClient.WalletPaymentTransactionGenerateAndSendAsync(requests, ct), ex =>
         {
             WalletSubmissionOutcome.RethrowIfUnknown(ex,

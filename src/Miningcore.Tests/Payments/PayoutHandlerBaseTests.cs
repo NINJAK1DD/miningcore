@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
 using Miningcore.Configuration;
@@ -157,6 +158,26 @@ public class PayoutHandlerBaseTests
     }
 
     [Fact]
+    public async Task TrackPayout_AlreadyCancelledSubmissionIsNotMarkedInFlight()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () =>
+            {
+                fixture.Handler.StartSubmission(cts.Token, balance);
+                return Task.CompletedTask;
+            }));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task TrackPayout_ConclusivePreSubmissionRejectionClearsInFlightState()
     {
         var fixture = CreateFixture();
@@ -305,7 +326,10 @@ public class PayoutHandlerBaseTests
             TrackPayoutAsync(balances, action);
 
         public void StartSubmission(params Balance[] balances) =>
-            TrackPayoutSubmission(balances);
+            TrackPayoutSubmission(CancellationToken.None, balances);
+
+        public void StartSubmission(CancellationToken ct, params Balance[] balances) =>
+            TrackPayoutSubmission(ct, balances);
 
         public void SubmissionNotStarted(params Balance[] balances) =>
             TrackPayoutSubmissionNotStarted(balances);

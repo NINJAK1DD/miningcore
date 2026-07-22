@@ -157,7 +157,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
         logger.Info(() => $"[{LogCategory}] [batch] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses:\n{string.Join("\n", balances.OrderByDescending(x => x.Amount).Select(x => $"{FormatAmount(x.Amount)} to {x.Address}"))}");
 
         // send command
-        TrackPayoutSubmission(balances);
+        TrackPayoutSubmission(ct, balances);
         var sendTransactionResponse = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct, request);
 
         return await HandleSendTransactionResponseAsync(sendTransactionResponse, balances);
@@ -221,7 +221,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
             logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balance.Amount)} to integrated address {balance.Address}");
 
         // send command
-        TrackPayoutSubmission(balance);
+        TrackPayoutSubmission(ct, balance);
         var result = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct, request);
 
         return await HandleSendTransactionResponseAsync(result, balance);

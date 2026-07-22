@@ -186,7 +186,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             // send command
             tryTransfer:
-            TrackPayoutSubmission(page);
+            TrackPayoutSubmission(ct, page);
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -354,7 +354,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             // send command
             trySendCurrencyTransfer:
-            TrackPayoutSubmission(page);
+            TrackPayoutSubmission(ct, page);
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.SendCurrency, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,

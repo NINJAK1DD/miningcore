@@ -360,7 +360,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 };
             }
 
-            TrackPayoutSubmission(page);
+            TrackPayoutSubmission(ct, page);
             var buildTransactionResponse = await rpcClientWallet.ExecuteAsync<BuildTransactionResponse>(logger, XelisWalletCommands.BuildTransaction, ct, buildTransactionRequest);
             WalletSubmissionOutcome.ThrowIfUnknown(buildTransactionResponse.Error,
                 XelisWalletCommands.BuildTransaction);
