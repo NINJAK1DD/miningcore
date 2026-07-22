@@ -8,6 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
+using Miningcore.Api;
+using Miningcore.Api.WebSocketNotifications;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
@@ -1299,7 +1301,10 @@ public class BitcoinPayoutHandlerTests : TestBase
                 fixture.Handler, CancellationToken.None));
 
         Assert.NotNull(notification);
-        Assert.Equal(balances.Sum(x => x.Amount), notification.Amount);
+        Assert.Equal(1.00009m, notification.Amount);
+        Assert.Equal(2, notification.RecipientsCount);
+        Assert.Equal(1.00000m, notification.SubmittedAmount);
+        Assert.Equal(0m, notification.PrecisionAdjustment);
         var uncertain = Assert.Single(notification.Reconciliation.Uncertain);
         Assert.Equal("DPayable", uncertain.Address);
         var skipped = Assert.Single(notification.Reconciliation.NotAttempted);
@@ -1315,6 +1320,18 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(balances.Select(x => x.Address).OrderBy(x => x),
             categories.Select(x => x.Address).OrderBy(x => x));
         Assert.Equal(notification.Amount, categories.Sum(x => x.Amount));
+
+        var serializer = Newtonsoft.Json.JsonSerializer.Create(jsonSerializerSettings);
+        var payload = JObject.Parse(WebSocketNotificationSerializer.Serialize(
+            WsNotificationType.Payment, notification, serializer));
+        Assert.Equal(1.00009m, payload.Value<decimal>("amount"));
+        Assert.Equal(2, payload.Value<int>("recipientsCount"));
+        Assert.Equal(1.00000m, payload.Value<decimal>("submittedAmount"));
+        Assert.Equal(0m, payload.Value<decimal>("precisionAdjustment"));
+        Assert.Equal(1, payload.Value<int>("uncertainCount"));
+        Assert.Equal(1.00000m, payload.Value<decimal>("uncertainAmount"));
+        Assert.Equal(1, payload.Value<int>("notAttemptedCount"));
+        Assert.Equal(0.00009m, payload.Value<decimal>("notAttemptedAmount"));
     }
 
     [Theory]
