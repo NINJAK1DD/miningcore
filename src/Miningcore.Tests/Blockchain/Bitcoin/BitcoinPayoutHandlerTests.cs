@@ -217,7 +217,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         }, CancellationToken.None);
 
         var diagnostic = Assert.Single(logTarget.Logs);
-        Assert.Equal("Debug|[Bitcoin Payout Handler] Conclusive payout retained " +
+        Assert.Equal("Debug|[Bitcoin Payout Handler] Conclusive payout processing retained " +
             "1 precision-skipped balance(s) for a future payout because they are below " +
             "the configured payout precision (payoutDecimalPlaces=4): " +
             "DBelowPrecision 0.00009 DOGE", diagnostic);
@@ -1014,7 +1014,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         fixture.MessageBus.Received(2).SendMessage(
             Arg.Any<PaymentNotification>(), Arg.Any<string>());
         var diagnostic = Assert.Single(logTarget.Logs);
-        Assert.Equal("Debug|[Bitcoin Payout Handler] Conclusive payout retained " +
+        Assert.Equal("Debug|[Bitcoin Payout Handler] Conclusive payout processing retained " +
             "1 precision-skipped balance(s) for a future payout because they are below " +
             "the configured payout precision (payoutDecimalPlaces=4): " +
             "DBelowPrecision 0.00009 DOGE", diagnostic);

@@ -1091,7 +1091,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         if(precisionSkippedBalances.Length == 0)
             return;
 
-        logger.Debug(() => $"[{LogCategory}] Conclusive payout retained " +
+        logger.Debug(() => $"[{LogCategory}] Conclusive payout processing retained " +
             $"{precisionSkippedBalances.Length} precision-skipped balance(s) for a future " +
             $"payout because they are below the configured payout precision " +
             $"(payoutDecimalPlaces={payoutDecimalPlaces}): " +
