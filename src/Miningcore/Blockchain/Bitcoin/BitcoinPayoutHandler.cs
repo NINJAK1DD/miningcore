@@ -652,7 +652,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
                 await PersistPaymentsAsync(balances, txId);
-                await EnsurePayoutTransactionAcceptedAsync(txId, ct);
+
+                using(var reconciliationCts = CreatePayoutVerificationTokenSource(ct,
+                    out var verificationToken))
+                {
+                    await EnsurePayoutTransactionAcceptedAsync(txId, verificationToken);
+                }
 
                 TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
                 {
@@ -709,7 +714,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             IReadOnlyList<PayoutOutcomeUncertainException> acceptanceVerificationFailures =
                 Array.Empty<PayoutOutcomeUncertainException>();
             var startedSubmissions = 0;
-            var cancellationObservedAfterSubmission = false;
 
             var parallelOptions = new ParallelOptions
             {
@@ -780,8 +784,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             catch(OperationCanceledException) when(ct.IsCancellationRequested &&
                 Volatile.Read(ref startedSubmissions) > 0)
             {
-                cancellationObservedAfterSubmission = true;
-
                 // Parallel.ForEachAsync drains active delegates before surfacing cancellation.
                 // Continue through persistence and outcome classification so returned transaction
                 // ids are never abandoned and interrupted wallet calls retain payout ownership.
@@ -791,30 +793,19 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     "reconciling completed outcomes before stopping");
             }
 
-            cancellationObservedAfterSubmission |= ct.IsCancellationRequested &&
-                Volatile.Read(ref startedSubmissions) > 0;
-
             if(successBalances.Any())
             {
                 persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
 
                 await PersistPaymentsAsync(persistedBalances);
 
-                using var reconciliationCts = cancellationObservedAfterSubmission
-                    ? new CancellationTokenSource(PostCancellationVerificationGracePeriod)
-                    : null;
-                var verificationToken = reconciliationCts?.Token ?? ct;
-
-                if(reconciliationCts != null)
+                using(var reconciliationCts = CreatePayoutVerificationTokenSource(ct,
+                    out var verificationToken))
                 {
-                    logger.Warn(() => $"[{LogCategory}] Verifying persisted payout transactions " +
-                        $"for up to {PostCancellationVerificationGracePeriod.TotalSeconds:0} " +
-                        "second(s) after cancellation");
+                    acceptanceVerificationFailures =
+                        await CollectPayoutTransactionAcceptanceFailuresAsync(
+                            persistedBalances.Values.Distinct(), verificationToken);
                 }
-
-                acceptanceVerificationFailures =
-                    await CollectPayoutTransactionAcceptanceFailuresAsync(
-                        persistedBalances.Values.Distinct(), verificationToken);
             }
 
             var failedTransfers = txFailures.ToArray();
@@ -862,6 +853,24 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             if(uncertainFailure != null)
                 throw uncertainFailure;
         }
+    }
+
+    private CancellationTokenSource CreatePayoutVerificationTokenSource(CancellationToken ct,
+        out CancellationToken verificationToken)
+    {
+        if(!ct.IsCancellationRequested)
+        {
+            verificationToken = ct;
+            return null;
+        }
+
+        var reconciliationCts =
+            new CancellationTokenSource(PostCancellationVerificationGracePeriod);
+        verificationToken = reconciliationCts.Token;
+        logger.Warn(() => $"[{LogCategory}] Verifying persisted payout transactions " +
+            $"for up to {PostCancellationVerificationGracePeriod.TotalSeconds:0} " +
+            "second(s) after cancellation");
+        return reconciliationCts;
     }
 
     private void TryNotifyPayout(Action notify, string outcome)

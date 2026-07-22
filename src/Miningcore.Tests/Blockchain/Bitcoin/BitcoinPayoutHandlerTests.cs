@@ -232,6 +232,35 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_SendManyCancellationAfterWalletResponse_VerifiesWithFreshToken()
+    {
+        var fixture = await CreateFixtureAsync();
+        using var cts = new CancellationTokenSource();
+        fixture.Handler.SendManyOverride = _ =>
+        {
+            cts.Cancel();
+            return Task.FromResult(new RpcResponse<string>("payout-txid"));
+        };
+        fixture.Handler.ReturnCancelledRpcResponseForCancelledToken = true;
+        fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.Equal(new[] { "payout-txid" }, fixture.Handler.MempoolTransactionIds);
+        Assert.All(fixture.Handler.MempoolCancellationStates, Assert.False);
+        await fixture.PaymentRepository.Received(1).TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), fixture.Config.Id,
+            "payout-txid", fixture.Now);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification => notification.Error == null),
+            Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task Payout_SendManySuccessNotificationFailure_DoesNotPropagate()
     {
         var fixture = await CreateFixtureAsync();
@@ -1706,6 +1735,7 @@ public class BitcoinPayoutHandlerTests : TestBase
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
+        public Func<CancellationToken, Task<RpcResponse<string>>> SendManyOverride { get; set; }
         public RpcResponse<JToken> MempoolResponse { get; set; }
         public RpcResponse<Transaction> WalletTransactionResponse { get; set; }
         public Dictionary<string, RpcResponse<string>> SendToAddressResponses { get; } = new();
@@ -1755,6 +1785,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         protected override Task<RpcResponse<string>> SendManyAsync(object[] args,
             CancellationToken ct)
         {
+            if(SendManyOverride != null)
+                return SendManyOverride(ct);
+
             return Task.FromResult(PayoutResponse);
         }
 
