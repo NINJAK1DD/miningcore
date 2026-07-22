@@ -390,13 +390,13 @@ public class PayoutManager : ProcessStatusBackgroundService
 
                 try
                 {
-                    await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
+                    await NotifyPayoutUncertainAsync(poolBalancesOverMinimum, config, ex);
                 }
 
                 catch(Exception notificationEx)
                 {
                     logger.Error(notificationEx, () =>
-                        $"Unable to emit payout-failure notification for pool {config.Id}");
+                        $"Unable to emit payout-uncertain notification for pool {config.Id}");
                 }
 
                 throw;
@@ -404,9 +404,10 @@ public class PayoutManager : ProcessStatusBackgroundService
 
             catch(OperationCanceledException) when(ct.IsCancellationRequested)
             {
-                // A handler must classify any interruption after an ambiguous wallet submission
-                // as PayoutOutcomeUncertainException. Host cancellation reaching this branch is
-                // therefore pre-submission and should release ownership without a failure alert.
+                // Cancellation reaching this branch may be pre-submission or may follow a
+                // conclusive, fully persisted partial batch. A handler must classify every
+                // ambiguous wallet outcome as PayoutOutcomeUncertainException instead, so no
+                // ambiguity remains here and durable ownership can be released safely.
                 payoutLease.CompleteFinancialOperation();
                 throw;
             }
@@ -439,7 +440,48 @@ public class PayoutManager : ProcessStatusBackgroundService
 
     private Task NotifyPayoutFailureAsync(Balance[] balances, PoolConfig pool, Exception ex)
     {
-        messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message, balances.Sum(x => x.Amount), pool.Template.Symbol));
+        messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
+            balances.Sum(x => x.Amount), pool.Template.Symbol, balances.Length,
+            null, null, null));
+
+        return Task.CompletedTask;
+    }
+
+    private Task NotifyPayoutUncertainAsync(Balance[] balances, PoolConfig pool,
+        PayoutOutcomeUncertainException ex)
+    {
+        var reconciliation = ex.Reconciliation ?? new PayoutReconciliation
+        {
+            Uncertain = balances.Select(x => new PayoutReconciliationEntry
+            {
+                Address = x.Address,
+                Amount = x.Amount,
+                Detail = ex.Message,
+            }).ToArray(),
+        };
+
+        var attemptedEntries = (reconciliation.Accepted ??
+                Array.Empty<PayoutReconciliationEntry>())
+            .Concat(reconciliation.Failed ?? Array.Empty<PayoutReconciliationEntry>())
+            .Concat(reconciliation.Uncertain ?? Array.Empty<PayoutReconciliationEntry>())
+            .Where(x => x.SubmittedAmount.HasValue)
+            .ToArray();
+        var submittedAmount = attemptedEntries.Length > 0
+            ? attemptedEntries.Sum(x => x.SubmittedAmount.Value)
+            : (decimal?) null;
+        var precisionAdjustment = attemptedEntries.Length > 0
+            ? attemptedEntries.Sum(x => x.SubmittedAmount.Value - x.Amount)
+            : (decimal?) null;
+
+        messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
+            balances.Sum(x => x.Amount), pool.Template.Symbol, balances.Length,
+            null, null, null)
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = reconciliation,
+            SubmittedAmount = submittedAmount,
+            PrecisionAdjustment = precisionAdjustment,
+        });
 
         return Task.CompletedTask;
     }

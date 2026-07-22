@@ -74,6 +74,39 @@ ws://HOST:4000/notifications
 Use `wss://` when the API is behind HTTPS. Reverse proxies must explicitly pass WebSocket upgrade
 headers and use timeouts suitable for long-lived connections.
 
+### Payment event contract
+
+Payment notifications have `type: "payment"` and an `outcome` of `success`, `failure` or
+`uncertain`. `amount` and `recipientsCount` describe the recipients represented by that event. A
+manager-owned uncertain event covers every initially selected balance; handler-owned success and
+conclusive-failure events can cover only the payable subset after below-precision balances are
+omitted.
+
+All outcome aggregate amount fields (`acceptedAmount`, `failedAmount`, `uncertainAmount` and
+`notAttemptedAmount`) represent original amounts owed. `submittedAmount` is the sum requested from
+the wallet for attempted recipients whose submitted amount is known. `precisionAdjustment` is the
+sum of each attempted recipient's `SubmittedAmount - Amount`; it excludes every `NotAttempted`
+balance, including cancellation-skipped and below-precision recipients.
+
+For a complete uncertain Bitcoin-family reconciliation where `submittedAmount` is available, clients
+can validate the totals with:
+
+```text
+submittedAmount = amount - notAttemptedAmount + precisionAdjustment
+```
+
+Do not infer `precisionAdjustment` from `submittedAmount - amount` when `notAttemptedAmount` is
+nonzero.
+
+Public clients can use `recipientsCount` and the outcome-aware `acceptedCount`, `acceptedAmount`,
+`failedCount`, `failedAmount`, `uncertainCount`, `uncertainAmount`, `notAttemptedCount` and
+`notAttemptedAmount` aggregates. Nullable fields are omitted when they do not apply.
+
+The public WebSocket payload intentionally excludes `error` and recipient-level `reconciliation`.
+Those values can contain wallet errors, addresses and transaction mappings and remain available only
+to administrative notification channels and logs. Front ends written against an older event shape
+must use `outcome` and the safe aggregate fields instead of displaying `error`.
+
 ## Metrics and administration
 
 When `metricsPort` is configured, Prometheus-compatible metrics are served from `/metrics` on that

@@ -240,7 +240,9 @@ public abstract class PayoutHandlerBase
         return $"{amount:0.#####} {coin.Symbol}";
     }
 
-    protected virtual void NotifyPayoutSuccess(string poolId, Balance[] balances, string[] txHashes, decimal? txFee)
+    protected virtual void NotifyPayoutSuccess(string poolId, Balance[] balances,
+        string[] txHashes, decimal? txFee, decimal? submittedAmount = null,
+        decimal? precisionAdjustment = null)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -249,13 +251,26 @@ public abstract class PayoutHandlerBase
             txHashes.Select(x => string.Format(coin.ExplorerTxLink, x)).ToArray() :
             Array.Empty<string>();
 
-        messageBus.SendMessage(new PaymentNotification(poolId, null, balances.Sum(x => x.Amount), coin.Symbol, balances.Length, txHashes, explorerLinks, txFee));
+        messageBus.SendMessage(new PaymentNotification(poolId, null,
+            balances.Sum(x => x.Amount), coin.Symbol, balances.Length, txHashes,
+            explorerLinks, txFee)
+        {
+            SubmittedAmount = submittedAmount,
+            PrecisionAdjustment = precisionAdjustment,
+        });
     }
 
-    protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances, string error, Exception ex)
+    protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances,
+        string error, Exception ex, decimal? submittedAmount = null,
+        decimal? precisionAdjustment = null)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
-        messageBus.SendMessage(new PaymentNotification(poolId, error ?? ex?.Message, balances.Sum(x => x.Amount), coin.Symbol));
+        messageBus.SendMessage(new PaymentNotification(poolId, error ?? ex?.Message,
+            balances.Sum(x => x.Amount), coin.Symbol, balances.Length, null, null, null)
+        {
+            SubmittedAmount = submittedAmount,
+            PrecisionAdjustment = precisionAdjustment,
+        });
     }
 }

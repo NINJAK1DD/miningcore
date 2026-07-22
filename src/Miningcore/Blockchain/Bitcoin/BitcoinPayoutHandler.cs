@@ -86,6 +86,15 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         CancellationToken ct) =>
         rpcClient.ExecuteAsync<string>(logger, BitcoinCommands.SendToAddress, ct, args);
 
+    protected virtual Task<RpcResponse<JToken>> UnlockWalletAsync(string password,
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletPassphrase, ct,
+            new object[]
+            {
+                password,
+                5, // unlock for N seconds
+            });
+
     protected virtual Task<RpcResponse<JToken>> GetMempoolEntryAsync(string txId,
         CancellationToken ct) =>
         rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.GetMempoolEntry, ct,
@@ -569,14 +578,47 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         Contract.RequiresNonNull(balances);
 
         // build args
-        var amounts = balances
+        var requestedAmounts = balances
             .Where(x => x.Amount > 0)
-            .ToDictionary(x => x.Address, x => Math.Round(x.Amount, payoutDecimalPlaces));
+            .ToDictionary(x => x.Address, x => x.Amount);
+        // Never ask the wallet to pay more than a miner is owed. Both sendmany modes
+        // persist and subtract these same truncated values, leaving any sub-precision
+        // remainder on the miner balance for a future payout.
+        var amounts = requestedAmounts.ToDictionary(x => x.Key,
+                x => TruncatePayoutAmount(x.Value, payoutDecimalPlaces))
+            .Where(x => x.Value > 0)
+            .ToDictionary(x => x.Key, x => x.Value);
 
         if(amounts.Count == 0)
-            return;
+        {
+            if(requestedAmounts.Count > 0)
+            {
+                logger.Warn(() => $"[{LogCategory}] No payout submitted: all " +
+                    $"{requestedAmounts.Count} selected balance(s) are below the configured " +
+                    $"payout precision (payoutDecimalPlaces={payoutDecimalPlaces}). " +
+                    $"Review minimumPayment");
+            }
 
-        logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses");
+            return;
+        }
+
+        var payableBalances = balances
+            .Where(x => amounts.ContainsKey(x.Address))
+            .ToArray();
+        var precisionSkippedBalances = balances
+            .Where(x => x.Amount > 0 && !amounts.ContainsKey(x.Address))
+            .ToArray();
+        var submittedBalances = payableBalances.Select(x => new Balance
+        {
+            PoolId = x.PoolId,
+            Address = x.Address,
+            Amount = amounts[x.Address],
+        }).ToArray();
+
+        logger.Info(() => $"[{LogCategory}] Preparing wallet request: " +
+            $"{FormatPayoutAmount(amounts.Values.Sum())} to {amounts.Count} payable address(es) " +
+            $"from {FormatExactPayoutAmount(requestedAmounts.Values.Sum())} owed across " +
+            $"{requestedAmounts.Count} selected balance(s)");
 
         object[] args;
 
@@ -647,28 +689,60 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // check result
                 var txId = result.Response;
 
-                if(string.IsNullOrEmpty(txId))
-                    throw new PayoutOutcomeUncertainException(
-                        $"{BitcoinCommands.SendMany} returned success without a transaction id");
+                if(string.IsNullOrWhiteSpace(txId))
+                {
+                    var detail = $"{BitcoinCommands.SendMany} returned success without a " +
+                        "transaction id";
+                    throw new PayoutOutcomeUncertainException(detail, null,
+                        CreateSendManyUncertainReconciliation(payableBalances,
+                            precisionSkippedBalances, amounts, null, detail));
+                }
                 else
                     logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
 
-                await PersistPaymentsAsync(balances, txId);
+                try
+                {
+                    await PersistPaymentsAsync(submittedBalances, txId);
+                }
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    throw new PayoutOutcomeUncertainException(ex.Message,
+                        ex.InnerException ?? ex,
+                        CreateSendManyUncertainReconciliation(payableBalances,
+                            precisionSkippedBalances, amounts, txId, ex.Message));
+                }
 
-                await RunPayoutVerificationAsync(ct, verificationToken =>
-                    EnsurePayoutTransactionAcceptedAsync(txId, verificationToken));
+                try
+                {
+                    await RunPayoutVerificationAsync(ct, verificationToken =>
+                        EnsurePayoutTransactionAcceptedAsync(txId, verificationToken));
+                }
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    throw new PayoutOutcomeUncertainException(ex.Message,
+                        ex.InnerException ?? ex,
+                        CreateSendManyUncertainReconciliation(payableBalances,
+                            precisionSkippedBalances, amounts, txId, ex.Message));
+                }
 
-                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, balances, new[]
+                LogPrecisionSkippedBalances(precisionSkippedBalances);
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id, payableBalances, new[]
                 {
                     txId
-                }, null), "success");
+                }, null, amounts.Values.Sum(),
+                    amounts.Values.Sum() - payableBalances.Sum(x => x.Amount)), "success");
             }
 
             else
             {
                 if(IsUnknownWalletSubmission(result.Error))
-                    throw new PayoutOutcomeUncertainException(
-                        $"{BitcoinCommands.SendMany} outcome is unknown: {result.Error.Message}");
+                {
+                    var detail = $"{BitcoinCommands.SendMany} outcome is unknown: " +
+                        result.Error.Message;
+                    throw new PayoutOutcomeUncertainException(detail, null,
+                        CreateSendManyUncertainReconciliation(payableBalances,
+                            precisionSkippedBalances, amounts, null, detail));
+                }
 
                 if(result.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
@@ -676,11 +750,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     {
                         logger.Info(() => $"[{LogCategory}] Unlocking wallet");
 
-                        var unlockResult = await rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletPassphrase, ct, new[]
-                        {
-                            extraPoolPaymentProcessingConfig.WalletPassword,
-                            (object) 5 // unlock for N seconds
-                        });
+                        var unlockResult = await UnlockWalletAsync(
+                            extraPoolPaymentProcessingConfig.WalletPassword, ct);
+                        ct.ThrowIfCancellationRequested();
 
                         if(unlockResult.Error == null)
                         {
@@ -688,19 +760,34 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             goto tryTransfer;
                         }
 
-                        else
-                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {result.Error.Message} code {result.Error.Code}");
+                        var failure = $"{BitcoinCommands.WalletPassphrase} returned error: " +
+                            $"{unlockResult.Error.Message} code {unlockResult.Error.Code}";
+                        logger.Error(() => $"[{LogCategory}] {failure}");
+                        TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id,
+                            payableBalances, failure, null), "failure");
+                        return;
                     }
 
                     else
-                        logger.Error(() => $"[{LogCategory}] Wallet is locked but walletPassword was not configured. Unable to send funds.");
+                    {
+                        const string failure = "Wallet is locked but walletPassword was not " +
+                            "configured. Unable to send funds.";
+                        logger.Error(() => $"[{LogCategory}] {failure}");
+                        TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id,
+                            payableBalances, failure, null), "failure");
+                        return;
+                    }
                 }
 
                 else
                 {
                     logger.Error(() => $"[{LogCategory}] {BitcoinCommands.SendMany} returned error: {result.Error.Message} code {result.Error.Code}");
 
-                    NotifyPayoutFailure(poolConfig.Id, balances, $"{BitcoinCommands.SendMany} returned error: {result.Error.Message} code {result.Error.Code}", null);
+                    TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, payableBalances,
+                        $"{BitcoinCommands.SendMany} returned error: " +
+                        $"{result.Error.Message} code {result.Error.Code}", null,
+                        amounts.Values.Sum(),
+                        amounts.Values.Sum() - payableBalances.Sum(x => x.Amount)), "failure");
                 }
             }
         }
@@ -709,10 +796,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
             var successBalances = new ConcurrentDictionary<Balance, string>();
+            var attemptedAddresses = new ConcurrentDictionary<string, byte>();
             Dictionary<Balance, string> persistedBalances = null;
-            IReadOnlyList<PayoutOutcomeUncertainException> acceptanceVerificationFailures =
-                Array.Empty<PayoutOutcomeUncertainException>();
+            IReadOnlyDictionary<string, PayoutOutcomeUncertainException>
+                acceptanceVerificationFailures =
+                    new Dictionary<string, PayoutOutcomeUncertainException>();
             var startedSubmissions = 0;
+            var loopCancelled = false;
 
             var parallelOptions = new ParallelOptions
             {
@@ -734,8 +824,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     {
                         _ct.ThrowIfCancellationRequested();
                         walletSubmissionStarted = true;
+                        attemptedAddresses.TryAdd(address, 0);
                         Interlocked.Increment(ref startedSubmissions);
-                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
+                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending " +
+                            $"{FormatPayoutAmount(amount)} to {address}");
 
                         var result = await SendToAddressAsync(new object[]
                         {
@@ -755,7 +847,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             throw new Exception($"[{transferId}] {BitcoinCommands.SendToAddress} returned error: {result.Error.Message} code {result.Error.Code}");
                         }
 
-                        if(string.IsNullOrEmpty(txId))
+                        if(string.IsNullOrWhiteSpace(txId))
                             throw new PayoutOutcomeUncertainException(
                                 $"[{transferId}] {BitcoinCommands.SendToAddress} returned success without a transaction id");
                         else
@@ -769,7 +861,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         }, txId);
                     }, ex =>
                     {
-                        if(ex is OperationCanceledException && walletSubmissionStarted)
+                        if(ex is OperationCanceledException && !walletSubmissionStarted)
+                            return;
+
+                        if(ex is OperationCanceledException)
                         {
                             ex = new PayoutOutcomeUncertainException(
                                 $"[{transferId}] {BitcoinCommands.SendToAddress} was interrupted after wallet submission began; its outcome is unknown",
@@ -783,6 +878,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             catch(OperationCanceledException) when(ct.IsCancellationRequested &&
                 Volatile.Read(ref startedSubmissions) > 0)
             {
+                loopCancelled = true;
                 // Parallel.ForEachAsync drains active delegates before surfacing cancellation.
                 // Continue through persistence and outcome classification so returned transaction
                 // ids are never abandoned and interrupted wallet calls retain payout ownership.
@@ -792,11 +888,28 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     "reconciling completed outcomes before stopping");
             }
 
+            var failedTransfers = txFailures.ToArray();
+            var notAttemptedTransfers = amounts
+                .Where(x => !attemptedAddresses.ContainsKey(x.Key))
+                .ToArray();
+
             if(successBalances.Any())
             {
                 persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
 
-                await PersistPaymentsAsync(persistedBalances);
+                try
+                {
+                    await PersistPaymentsAsync(persistedBalances);
+                }
+                catch(PayoutOutcomeUncertainException ex)
+                {
+                    throw new PayoutOutcomeUncertainException(ex.Message,
+                        ex.InnerException ?? ex,
+                        CreateBrokenSendManyReconciliation(persistedBalances,
+                            failedTransfers, notAttemptedTransfers,
+                            new Dictionary<string, PayoutOutcomeUncertainException>(),
+                            requestedAmounts, precisionSkippedBalances, ex.Message));
+                }
 
                 await RunPayoutVerificationAsync(ct, async verificationToken =>
                 {
@@ -806,13 +919,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 });
             }
 
-            var failedTransfers = txFailures.ToArray();
             var uncertainties = failedTransfers
                 .Where(x => x.Item2 is PayoutOutcomeUncertainException)
                 .Select(x => new PayoutOutcomeUncertainException(
                     $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)} requires reconciliation: " +
                     x.Item2.Message, x.Item2))
-                .Concat(acceptanceVerificationFailures)
+                .Concat(acceptanceVerificationFailures.Values)
                 .ToArray();
             PayoutOutcomeUncertainException uncertainFailure = null;
 
@@ -826,30 +938,83 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     new AggregateException(uncertainties));
             }
 
-            // Classify the financial outcome before emitting any best-effort notifications.
-            // A subscriber failure must never replace an already-detected uncertain outcome.
-            if(persistedBalances != null && acceptanceVerificationFailures.Count == 0)
-            {
-                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
-                    persistedBalances.Keys.ToArray(), persistedBalances.Values.ToArray(), null),
-                    "success");
-            }
+            Balance[] failureBalances = null;
+            string transferFailureDetails = null;
 
             if(failedTransfers.Length > 0)
             {
-                var failureBalances = failedTransfers
-                    .Select(x => new Balance { Amount = x.Item1.Value }).ToArray();
-                var error = string.Join(", ", failedTransfers.Select(x =>
+                failureBalances = failedTransfers
+                    .Select(x => new Balance
+                    {
+                        PoolId = poolConfig.Id,
+                        Address = x.Item1.Key,
+                        Amount = requestedAmounts[x.Item1.Key],
+                    }).ToArray();
+                transferFailureDetails = string.Join(", ", failedTransfers.Select(x =>
                     $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
-                logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: {error}");
-
-                TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, failureBalances,
-                    error, null), "failure");
+                logger.Error(() => $"[{LogCategory}] Failed to transfer the following balances: " +
+                    transferFailureDetails);
             }
 
+            // PayoutManager emits the single authoritative notification for an uncertain batch.
+            // Subset notifications are useful only when every wallet outcome is conclusive.
             if(uncertainFailure != null)
-                throw uncertainFailure;
+            {
+                var conclusiveFailures = failedTransfers
+                    .Where(x => x.Item2 is not PayoutOutcomeUncertainException)
+                    .Select(x => $"{x.Item1.Key} {FormatPayoutAmount(x.Item1.Value)}: " +
+                        x.Item2.Message)
+                    .ToArray();
+
+                if(conclusiveFailures.Length > 0)
+                {
+                    uncertainFailure = new PayoutOutcomeUncertainException(
+                        $"{uncertainFailure.Message} | {conclusiveFailures.Length} additional " +
+                        $"payout transfer(s) failed conclusively: " +
+                        string.Join(" | ", conclusiveFailures), uncertainFailure);
+                }
+
+                var reconciliation = CreateBrokenSendManyReconciliation(
+                    persistedBalances, failedTransfers, notAttemptedTransfers,
+                    acceptanceVerificationFailures, requestedAmounts,
+                    precisionSkippedBalances);
+
+                throw new PayoutOutcomeUncertainException(uncertainFailure.Message,
+                    uncertainFailure.InnerException ?? uncertainFailure, reconciliation);
+            }
+
+            if(persistedBalances != null && acceptanceVerificationFailures.Count == 0)
+            {
+                var acceptedBalances = persistedBalances.Keys.Select(x => new Balance
+                {
+                    PoolId = x.PoolId,
+                    Address = x.Address,
+                    Amount = requestedAmounts[x.Address],
+                }).ToArray();
+                var submittedAmount = persistedBalances.Keys.Sum(x => x.Amount);
+
+                if(!loopCancelled)
+                    LogPrecisionSkippedBalances(precisionSkippedBalances);
+
+                TryNotifyPayout(() => NotifyPayoutSuccess(poolConfig.Id,
+                    acceptedBalances, persistedBalances.Values.ToArray(), null,
+                    submittedAmount,
+                    submittedAmount - acceptedBalances.Sum(x => x.Amount)),
+                    "success");
+            }
+
+            if(failureBalances != null)
+            {
+                var submittedAmount = failedTransfers.Sum(x => x.Item1.Value);
+
+                TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, failureBalances,
+                    transferFailureDetails, null, submittedAmount,
+                    submittedAmount - failureBalances.Sum(x => x.Amount)), "failure");
+            }
+
+            if(loopCancelled)
+                ct.ThrowIfCancellationRequested();
         }
     }
 
@@ -868,12 +1033,145 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         await action(verificationCts.Token);
     }
 
+    private static PayoutReconciliation CreateSendManyUncertainReconciliation(
+        IEnumerable<Balance> balances, IEnumerable<Balance> precisionSkippedBalances,
+        IReadOnlyDictionary<string, decimal> submittedAmounts, string txId, string detail)
+    {
+        return new PayoutReconciliation
+        {
+            Uncertain = balances
+                .Where(x => submittedAmounts.ContainsKey(x.Address))
+                .Select(x => new PayoutReconciliationEntry
+                {
+                    Address = x.Address,
+                    Amount = x.Amount,
+                    SubmittedAmount = submittedAmounts[x.Address],
+                    TransactionId = txId,
+                    Detail = detail,
+                }).ToArray(),
+            NotAttempted = precisionSkippedBalances
+                .Select(x => new PayoutReconciliationEntry
+                {
+                    Address = x.Address,
+                    Amount = x.Amount,
+                    Detail = "Wallet request omitted because the amount is below wallet precision",
+                }).ToArray(),
+        };
+    }
+
+    internal static decimal TruncatePayoutAmount(decimal amount, int decimalPlaces)
+    {
+        if(decimalPlaces is < 0 or > 28)
+            throw new ArgumentOutOfRangeException(nameof(decimalPlaces));
+
+        var increment = 1m;
+
+        for(var i = 0; i < decimalPlaces; i++)
+            increment /= 10m;
+
+        return amount - amount % increment;
+    }
+
     private string FormatPayoutAmount(decimal amount)
     {
         var format = payoutDecimalPlaces > 0
             ? $"0.{new string('#', payoutDecimalPlaces)}"
             : "0";
         return $"{amount.ToString(format, CultureInfo.InvariantCulture)} {coin.Symbol}";
+    }
+
+    private string FormatExactPayoutAmount(decimal amount)
+    {
+        return $"{amount.ToString("0.############################", CultureInfo.InvariantCulture)} " +
+            coin.Symbol;
+    }
+
+    private void LogPrecisionSkippedBalances(Balance[] precisionSkippedBalances)
+    {
+        if(precisionSkippedBalances.Length == 0)
+            return;
+
+        logger.Debug(() => $"[{LogCategory}] Conclusive payout processing retained " +
+            $"{precisionSkippedBalances.Length} precision-skipped balance(s) for a future " +
+            $"payout because they are below the configured payout precision " +
+            $"(payoutDecimalPlaces={payoutDecimalPlaces}): " +
+            string.Join(", ", precisionSkippedBalances.Select(x =>
+                $"{x.Address} {FormatExactPayoutAmount(x.Amount)}")));
+    }
+
+    private static PayoutReconciliation CreateBrokenSendManyReconciliation(
+        IReadOnlyDictionary<Balance, string> submittedBalances,
+        Tuple<KeyValuePair<string, decimal>, Exception>[] failedTransfers,
+        KeyValuePair<string, decimal>[] notAttemptedTransfers,
+        IReadOnlyDictionary<string, PayoutOutcomeUncertainException>
+            acceptanceVerificationFailures,
+        IReadOnlyDictionary<string, decimal> requestedAmounts,
+        IEnumerable<Balance> precisionSkippedBalances,
+        string persistenceFailure = null)
+    {
+        var submitted = submittedBalances ?? new Dictionary<Balance, string>();
+        var persistenceFailed = !string.IsNullOrEmpty(persistenceFailure);
+
+        return new PayoutReconciliation
+        {
+            Accepted = persistenceFailed
+                ? Array.Empty<PayoutReconciliationEntry>()
+                : submitted
+                    .Where(x => !acceptanceVerificationFailures.ContainsKey(x.Value))
+                    .Select(x => new PayoutReconciliationEntry
+                    {
+                        Address = x.Key.Address,
+                        Amount = requestedAmounts[x.Key.Address],
+                        SubmittedAmount = x.Key.Amount,
+                        TransactionId = x.Value,
+                    }).ToArray(),
+            Failed = failedTransfers
+                .Where(x => x.Item2 is not PayoutOutcomeUncertainException)
+                .Select(x => new PayoutReconciliationEntry
+                {
+                    Address = x.Item1.Key,
+                    Amount = requestedAmounts[x.Item1.Key],
+                    SubmittedAmount = x.Item1.Value,
+                    Detail = x.Item2.Message,
+                }).ToArray(),
+            Uncertain = submitted
+                .Where(x => persistenceFailed ||
+                    acceptanceVerificationFailures.ContainsKey(x.Value))
+                .Select(x => new PayoutReconciliationEntry
+                {
+                    Address = x.Key.Address,
+                    Amount = requestedAmounts[x.Key.Address],
+                    SubmittedAmount = x.Key.Amount,
+                    TransactionId = x.Value,
+                    Detail = persistenceFailed
+                        ? persistenceFailure
+                        : acceptanceVerificationFailures[x.Value].Message,
+                })
+                .Concat(failedTransfers
+                    .Where(x => x.Item2 is PayoutOutcomeUncertainException)
+                    .Select(x => new PayoutReconciliationEntry
+                    {
+                        Address = x.Item1.Key,
+                        Amount = requestedAmounts[x.Item1.Key],
+                        SubmittedAmount = x.Item1.Value,
+                        Detail = x.Item2.Message,
+                    }))
+                .ToArray(),
+            NotAttempted = notAttemptedTransfers
+                .Select(x => new PayoutReconciliationEntry
+                {
+                    Address = x.Key,
+                    Amount = requestedAmounts[x.Key],
+                    Detail = "Wallet submission was not started because payout processing was cancelled",
+                })
+                .Concat(precisionSkippedBalances.Select(x => new PayoutReconciliationEntry
+                {
+                    Address = x.Address,
+                    Amount = x.Amount,
+                    Detail = "Wallet request omitted because the amount is below wallet precision",
+                }))
+                .ToArray(),
+        };
     }
 
     private void TryNotifyPayout(Action notify, string outcome)
@@ -889,11 +1187,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
     }
 
-    private async Task<IReadOnlyList<PayoutOutcomeUncertainException>>
+    private async Task<IReadOnlyDictionary<string, PayoutOutcomeUncertainException>>
         CollectPayoutTransactionAcceptanceFailuresAsync(IEnumerable<string> txIds,
         CancellationToken ct)
     {
-        var failures = new List<PayoutOutcomeUncertainException>();
+        var failures = new Dictionary<string, PayoutOutcomeUncertainException>();
 
         foreach(var txId in txIds)
         {
@@ -903,7 +1201,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             }
             catch(PayoutOutcomeUncertainException ex)
             {
-                failures.Add(ex);
+                failures[txId] = ex;
             }
         }
 

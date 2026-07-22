@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
@@ -329,7 +330,7 @@ public class PayoutManagerTests
     }
 
     [Fact]
-    public async Task UnknownPayout_MarksFinancialOutcomeUncertain()
+    public async Task UnknownPayout_NotifiesOnceWithoutMaskingFinancialOutcome()
     {
         var fixture = CreateFixture();
         var handler = Substitute.For<IPayoutHandler>();
@@ -339,14 +340,28 @@ public class PayoutManagerTests
         handler.PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(),
                 Arg.Any<CancellationToken>())
             .Returns<Task>(_ => throw new PayoutOutcomeUncertainException("wallet response lost"));
+        fixture.MessageBus.When(x => x.SendMessage(
+                Arg.Any<PaymentNotification>(), Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("notification subscriber failed"));
 
-        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
             fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
                 handler, CancellationToken.None));
 
+        Assert.Equal("wallet response lost", exception.Message);
         fixture.PayoutLease.Received(1).BeginFinancialOperation();
         fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
         fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification =>
+                notification.PoolId == fixture.Pool.Id &&
+                notification.Error == "wallet response lost" &&
+                notification.Amount == 1 &&
+                notification.Symbol == fixture.Pool.Template.Symbol &&
+                notification.RecipientsCount == 1 &&
+                notification.Outcome == PaymentNotificationOutcome.Uncertain &&
+                notification.Reconciliation.Uncertain.Single().Address == "miner"),
+            Arg.Any<string>());
     }
 
     [Theory]

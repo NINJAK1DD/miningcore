@@ -1,13 +1,17 @@
+using System.Globalization;
+using System.Net;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Text;
 using MailKit.Net.Smtp;
 using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
+using Miningcore.Payments;
 using Miningcore.Pushover;
 using NLog;
 using static Miningcore.Util.ActionUtils;
@@ -72,38 +76,272 @@ public class NotificationService : StartupGatedBackgroundService
 
     private async Task OnPaymentNotificationAsync(PaymentNotification notification, CancellationToken ct)
     {
-        if(string.IsNullOrEmpty(notification.Error))
+        var coin = poolConfigs[notification.PoolId].Template;
+        var (subject, emailMessage, pushoverMessage, isSuccess) =
+            FormatPaymentNotification(notification,
+            coin.Symbol, coin.ExplorerTxLink);
+
+        if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
+            return;
+
+        await Guard(()=> SendEmailAsync(adminEmail, subject, emailMessage, ct), LogGuarded);
+
+        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+            await Guard(()=> pushoverClient.PushMessage(subject, pushoverMessage,
+                PushoverMessagePriority.None, ct), LogGuarded);
+    }
+
+    internal static (string Subject, string EmailMessage, string PushoverMessage,
+        bool IsSuccess)
+        FormatPaymentNotification(PaymentNotification notification, string symbol,
+        string explorerTxLink)
+    {
+        var outcome = notification.Outcome;
+
+        // Preserve the legacy object-initializer contract where Error alone represented failure.
+        if(outcome == PaymentNotificationOutcome.Success &&
+            !string.IsNullOrEmpty(notification.Error))
+            outcome = PaymentNotificationOutcome.Failure;
+
+        if(outcome == PaymentNotificationOutcome.Success)
         {
-            var coin = poolConfigs[notification.PoolId].Template;
-
-            // prepare tx links
-            var txLinks = Array.Empty<string>();
-
-            if(!string.IsNullOrEmpty(coin.ExplorerTxLink))
-                txLinks = notification.TxIds.Select(txHash => string.Format(coin.ExplorerTxLink, txHash)).ToArray();
-
+            var txIds = notification.TxIds ?? Array.Empty<string>();
+            var txLinks = string.IsNullOrEmpty(explorerTxLink)
+                ? Array.Empty<string>()
+                : txIds.Select(txHash => string.Format(explorerTxLink, txHash)).ToArray();
             const string subject = "Payout Success Notification";
-            var message = $"Paid {FormatAmount(notification.Amount, notification.PoolId)} from pool {notification.PoolId} to {notification.RecipientsCount} recipients in transaction(s) {(string.Join(", ", txLinks))}";
+            var emailAmount = FormatHtmlSuccessfulAmount(notification, symbol);
+            var pushoverAmount = FormatSuccessfulAmount(notification, symbol);
+            var emailMessage = emailAmount + " " +
+                $"from pool {HtmlEncode(notification.PoolId)} to " +
+                $"{notification.RecipientsCount} recipients in transaction(s) " +
+                $"{string.Join(", ", txLinks.Select(HtmlEncode))}";
+            var pushoverMessage = pushoverAmount + " " +
+                $"from pool {notification.PoolId} to {notification.RecipientsCount} " +
+                $"recipients in transaction(s) {string.Join(", ", txLinks)}";
 
-            if(clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess == true)
-            {
-                await Guard(() => SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
-
-                if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-                    await Guard(() => pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
-            }
+            return (subject, emailMessage, TruncateForPushover(pushoverMessage), true);
         }
 
-        else
+        if(outcome == PaymentNotificationOutcome.Uncertain)
         {
-            const string subject = "Payout Failure Notification";
-            var message = $"Failed to pay out {notification.Amount} {poolConfigs[notification.PoolId].Template.Symbol} from pool {notification.PoolId}: {notification.Error}";
+            const string subject = "Payout Outcome Uncertain Notification";
+            var sections = new List<string>
+            {
+                $"Payout batch totalling {FormatExactHtmlAmount(notification.Amount, symbol)} requested " +
+                $"from pool {HtmlEncode(notification.PoolId)} has an uncertain outcome and requires " +
+                "reconciliation.",
+            };
 
-            await Guard(()=> SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
+            AppendSubmittedAmountSummary(sections, notification, symbol, true);
 
-            if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-                await Guard(()=> pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
+            AppendReconciliationSection(sections, "Accepted and persisted",
+                notification.Reconciliation?.Accepted, symbol);
+            AppendReconciliationSection(sections, "Conclusively failed",
+                notification.Reconciliation?.Failed, symbol);
+            AppendReconciliationSection(sections, "Uncertain",
+                notification.Reconciliation?.Uncertain, symbol);
+            AppendReconciliationSection(sections, "Not attempted",
+                notification.Reconciliation?.NotAttempted, symbol);
+
+            if(!string.IsNullOrWhiteSpace(notification.Error))
+                sections.Add($"Reason: {HtmlEncode(notification.Error)}");
+
+            var pushoverSections = new List<string>
+            {
+                $"Payout batch {FormatExactAmount(notification.Amount, symbol)} requested from pool " +
+                $"{notification.PoolId} is uncertain; reconcile before releasing ownership.",
+            };
+            AppendSubmittedAmountSummary(pushoverSections, notification, symbol, false);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Accepted/persisted", notification.Reconciliation?.Accepted, symbol);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Failed", notification.Reconciliation?.Failed, symbol);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Uncertain", notification.Reconciliation?.Uncertain, symbol);
+            AppendPushoverReconciliationSummary(pushoverSections,
+                "Not attempted", notification.Reconciliation?.NotAttempted, symbol);
+            pushoverSections.Add("See email and logs for recipient, transaction, and error details.");
+
+            return (subject, string.Join("<br/>", sections),
+                TruncateForPushover(string.Join("\n", pushoverSections)), false);
         }
+
+        var emailFailureMessage = FormatHtmlFailedAmount(notification, symbol) + " " +
+            $"from pool {HtmlEncode(notification.PoolId)}: " +
+            HtmlEncode(notification.Error);
+        var pushoverFailureMessage = FormatFailedAmount(notification, symbol) + " " +
+            $"from pool {notification.PoolId}: {notification.Error}";
+        return ("Payout Failure Notification", emailFailureMessage,
+            TruncateForPushover(pushoverFailureMessage), false);
+    }
+
+    private static void AppendReconciliationSection(List<string> sections, string heading,
+        PayoutReconciliationEntry[] entries, string symbol)
+    {
+        if(entries == null || entries.Length == 0)
+            return;
+
+        var details = entries.Select(x =>
+        {
+            var parts = new List<string>
+            {
+                $"{FormatExactHtmlAmount(x.Amount, symbol)} to {HtmlEncode(x.Address)}",
+            };
+
+            if(x.SubmittedAmount.HasValue && x.SubmittedAmount.Value != x.Amount)
+            {
+                var adjustment = x.SubmittedAmount.Value - x.Amount;
+                parts.Add($"wallet request " +
+                    $"{FormatExactHtmlAmount(x.SubmittedAmount.Value, symbol)} " +
+                    $"(precision adjustment {FormatSignedExactHtmlAmount(adjustment, symbol)})");
+            }
+
+            if(!string.IsNullOrWhiteSpace(x.TransactionId))
+                parts.Add($"transaction {HtmlEncode(x.TransactionId)}");
+
+            if(!string.IsNullOrWhiteSpace(x.Detail))
+                parts.Add(HtmlEncode(x.Detail));
+
+            return string.Join(", ", parts);
+        });
+
+        sections.Add($"{heading}: {string.Join("; ", details)}");
+    }
+
+    private static void AppendPushoverReconciliationSummary(List<string> sections,
+        string heading, PayoutReconciliationEntry[] entries, string symbol)
+    {
+        if(entries == null || entries.Length == 0)
+            return;
+
+        sections.Add($"{heading}: {FormatExactAmount(entries.Sum(x => x.Amount), symbol)} " +
+            $"({entries.Length} recipient(s))");
+    }
+
+    private static void AppendSubmittedAmountSummary(List<string> sections,
+        PaymentNotification notification, string symbol, bool html)
+    {
+        if(!notification.SubmittedAmount.HasValue ||
+            notification.PrecisionAdjustment.GetValueOrDefault() == 0)
+            return;
+
+        var adjustment = notification.PrecisionAdjustment ?? 0;
+        var amount = html
+            ? FormatExactHtmlAmount(notification.SubmittedAmount.Value, symbol)
+            : FormatExactAmount(notification.SubmittedAmount.Value, symbol);
+        var formattedAdjustment = html
+            ? FormatSignedExactHtmlAmount(adjustment, symbol)
+            : FormatSignedExactAmount(adjustment, symbol);
+
+        sections.Add($"Wallet request total across attempted recipients: {amount}; " +
+            $"precision adjustment: {formattedAdjustment}.");
+    }
+
+    private static string FormatHtmlSuccessfulAmount(PaymentNotification notification,
+        string symbol)
+    {
+        if(!notification.SubmittedAmount.HasValue)
+            return $"Paid {FormatExactHtmlAmount(notification.Amount, symbol)}";
+
+        return $"Wallet request submitted for " +
+            $"{FormatExactHtmlAmount(notification.SubmittedAmount.Value, symbol)}" +
+            FormatHtmlPrecisionDetail(notification, symbol);
+    }
+
+    private static string FormatSuccessfulAmount(PaymentNotification notification,
+        string symbol)
+    {
+        if(!notification.SubmittedAmount.HasValue)
+            return $"Paid {FormatExactAmount(notification.Amount, symbol)}";
+
+        return $"Wallet request submitted for " +
+            $"{FormatExactAmount(notification.SubmittedAmount.Value, symbol)}" +
+            FormatPrecisionDetail(notification, symbol);
+    }
+
+    private static string FormatHtmlFailedAmount(PaymentNotification notification,
+        string symbol)
+    {
+        if(!notification.SubmittedAmount.HasValue)
+            return $"Failed to pay out " +
+                $"{FormatExactHtmlAmount(notification.Amount, symbol)}";
+
+        return $"Wallet request for " +
+            $"{FormatExactHtmlAmount(notification.SubmittedAmount.Value, symbol)} failed" +
+            FormatHtmlPrecisionDetail(notification, symbol);
+    }
+
+    private static string FormatFailedAmount(PaymentNotification notification,
+        string symbol)
+    {
+        if(!notification.SubmittedAmount.HasValue)
+            return $"Failed to pay out {FormatExactAmount(notification.Amount, symbol)}";
+
+        return $"Wallet request for " +
+            $"{FormatExactAmount(notification.SubmittedAmount.Value, symbol)} failed" +
+            FormatPrecisionDetail(notification, symbol);
+    }
+
+    private static string FormatHtmlPrecisionDetail(PaymentNotification notification,
+        string symbol)
+    {
+        if(notification.SubmittedAmount.Value == notification.Amount)
+            return string.Empty;
+
+        return $" (amount owed {FormatExactHtmlAmount(notification.Amount, symbol)}; " +
+            $"precision adjustment " +
+            $"{FormatSignedExactHtmlAmount(notification.PrecisionAdjustment ?? 0, symbol)})";
+    }
+
+    private static string FormatPrecisionDetail(PaymentNotification notification,
+        string symbol)
+    {
+        if(notification.SubmittedAmount.Value == notification.Amount)
+            return string.Empty;
+
+        return $" (amount owed {FormatExactAmount(notification.Amount, symbol)}; " +
+            $"precision adjustment " +
+            $"{FormatSignedExactAmount(notification.PrecisionAdjustment ?? 0, symbol)})";
+    }
+
+    private static string FormatExactAmount(decimal amount, string symbol)
+    {
+        return $"{amount.ToString(CultureInfo.InvariantCulture)} {symbol}";
+    }
+
+    private static string FormatSignedExactAmount(decimal amount, string symbol)
+    {
+        var sign = amount > 0 ? "+" : string.Empty;
+        return $"{sign}{FormatExactAmount(amount, symbol)}";
+    }
+
+    private static string FormatExactHtmlAmount(decimal amount, string symbol)
+    {
+        return $"{amount.ToString(CultureInfo.InvariantCulture)} {HtmlEncode(symbol)}";
+    }
+
+    private static string FormatSignedExactHtmlAmount(decimal amount, string symbol)
+    {
+        var sign = amount > 0 ? "+" : string.Empty;
+        return $"{sign}{FormatExactHtmlAmount(amount, symbol)}";
+    }
+
+    private static string HtmlEncode(string value)
+    {
+        return WebUtility.HtmlEncode(value);
+    }
+
+    internal static string TruncateForPushover(string message)
+    {
+        const int maxCharacters = 1024;
+        var characters = message.EnumerateRunes().ToArray();
+
+        if(characters.Length <= maxCharacters)
+            return message;
+
+        return string.Concat(characters.Take(maxCharacters - 1)
+            .Select(x => x.ToString())) + "…";
     }
 
     public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)

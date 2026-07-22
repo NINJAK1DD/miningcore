@@ -15,4 +15,12 @@ public class PayoutOutcomeUncertainException : Exception
         base(message, innerException)
     {
     }
+
+    public PayoutOutcomeUncertainException(string message, Exception innerException,
+        PayoutReconciliation reconciliation) : base(message, innerException)
+    {
+        Reconciliation = reconciliation;
+    }
+
+    public PayoutReconciliation Reconciliation { get; }
 }
