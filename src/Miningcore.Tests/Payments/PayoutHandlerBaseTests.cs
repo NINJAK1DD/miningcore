@@ -225,6 +225,21 @@ public class PayoutHandlerBaseTests
             entry => Assert.Equal("duplicate-txid", entry.TransactionId));
     }
 
+    [Fact]
+    public async Task TrackPayout_DirectUncertaintyPreservesOriginatingException()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+        var original = new PayoutOutcomeUncertainException("wallet response lost");
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () => throw original));
+
+        Assert.Same(original, exception.InnerException);
+        Assert.Equal("miner",
+            Assert.Single(exception.Reconciliation.NotAttempted).Address);
+    }
+
     private static Balance Balance(string address, decimal amount) => new()
     {
         PoolId = "ltc-test",

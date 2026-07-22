@@ -455,7 +455,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
 
             unsignedTransaction = await Guard(() => callUnsignedTransaction.ResponseAsync, ex =>
             {
-                txFailures.Add(Tuple.Create(amount, ex));
+                RecordPreparationFailure(amount, ex, txFailures);
             });
             callUnsignedTransaction.Dispose();
 
@@ -475,7 +475,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                 var callSignedTransaction = walletRpc.SignAsync(signRequest);
                 signedTransaction = await Guard(() => callSignedTransaction.ResponseAsync, ex =>
                 {
-                    txFailures.Add(Tuple.Create(amount, ex));
+                    RecordPreparationFailure(amount, ex, txFailures);
                 });
                 callSignedTransaction.Dispose();
 
@@ -553,6 +553,22 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
 
             NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
         }
+    }
+
+    protected void RecordPreparationFailure(KeyValuePair<string, decimal> amount,
+        Exception ex,
+        ICollection<Tuple<KeyValuePair<string, decimal>, Exception>> failures)
+    {
+        TrackPayoutFailure(new[]
+        {
+            new Balance
+            {
+                PoolId = poolConfig.Id,
+                Address = amount.Key,
+                Amount = amount.Value,
+            },
+        }, ex.Message);
+        failures.Add(Tuple.Create(amount, ex));
     }
 
     public override double AdjustShareDifficulty(double difficulty)

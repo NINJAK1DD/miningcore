@@ -619,21 +619,9 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         })
                         .ToArray();
 
-                    TrackPayoutSubmission(successBalances);
-                    var txSubmit = await Guard(() => alephiumClient.PostTransactionsSubmitAsync(submitTxSign, ct), ex =>
-                    {
-                        RethrowSubmissionFailure("Alephium transaction submission",
-                            "Submit signed transaction failed", ex);
-                    });
-                    var txId = WalletSubmissionOutcome.RequireTransactionId(txSubmit?.TxId,
-                        "Alephium transaction submission");
-
-                    // payment successful
-                    logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
-
-                    await PersistPaymentsAsync(successBalances, txId);
-
-                    NotifyPayoutSuccess(poolConfig.Id, successBalances, new[] {txId}, ((estimatedGasAmount * AlephiumConstants.DefaultGasPrice) / AlephiumConstants.SmallestUnit));
+                    await SubmitPayoutGroupAsync(successBalances, submitTxSign,
+                        (estimatedGasAmount * AlephiumConstants.DefaultGasPrice) /
+                        AlephiumConstants.SmallestUnit, ct);
                 }
             }
         
@@ -659,6 +647,47 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
         return results;
     }
+
+    protected async Task SubmitPayoutGroupAsync(Balance[] balances,
+        SubmitSettlement request, decimal transactionFee, CancellationToken ct)
+    {
+        TrackPayoutSubmission(balances);
+
+        SubmitTxResult txSubmit;
+
+        try
+        {
+            txSubmit = await Guard(() => SubmitTransactionAsync(request, ct), ex =>
+            {
+                RethrowSubmissionFailure("Alephium transaction submission",
+                    "Submit signed transaction failed", ex);
+            });
+        }
+        catch(PayoutOutcomeUncertainException)
+        {
+            throw;
+        }
+        catch(AlephiumApiException ex)
+        {
+            var detail = "Alephium transaction submission was conclusively rejected: " +
+                GetApiError(ex);
+            NotifyPayoutFailure(poolConfig.Id, balances, detail, ex);
+            return;
+        }
+
+        var txId = WalletSubmissionOutcome.RequireTransactionId(txSubmit?.TxId,
+            "Alephium transaction submission");
+
+        logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
+
+        await PersistPaymentsAsync(balances, txId);
+
+        NotifyPayoutSuccess(poolConfig.Id, balances, new[] { txId }, transactionFee);
+    }
+
+    protected virtual Task<SubmitTxResult> SubmitTransactionAsync(
+        SubmitSettlement request, CancellationToken ct) =>
+        alephiumClient.PostTransactionsSubmitAsync(request, ct);
     
     public override double AdjustShareDifficulty(double difficulty)
     {
@@ -681,16 +710,18 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
     private void ReportAndRethrowApiError(string action, Exception ex, bool rethrow = true)
     {
-        var error = ex.Message;
-
-        if(ex is AlephiumApiException apiException)
-            error = apiException.Response;
+        var error = GetApiError(ex);
 
         logger.Warn(() => $"{action}: {error}");
 
         if(rethrow)
             throw ex;
     }
+
+    private static string GetApiError(Exception ex) =>
+        ex is AlephiumApiException apiException
+            ? apiException.Response ?? apiException.Message
+            : ex.Message;
 
     private void RethrowSubmissionFailure(string operation, string action, Exception ex)
     {

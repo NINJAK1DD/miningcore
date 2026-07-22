@@ -148,7 +148,7 @@ internal sealed class PayoutReconciliationTracker
             };
 
             return new PayoutOutcomeUncertainException(exception.Message,
-                exception.InnerException, reconciliation);
+                exception.InnerException ?? exception, reconciliation);
         }
     }
 
