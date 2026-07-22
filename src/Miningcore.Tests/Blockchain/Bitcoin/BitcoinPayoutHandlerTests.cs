@@ -167,6 +167,61 @@ public class BitcoinPayoutHandlerTests : TestBase
             "2 selected balance(s)", logTarget.Logs);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Payout_HighPrecisionAmount_LogsConfiguredPrecision(
+        bool hasBrokenSendMany)
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: hasBrokenSendMany,
+            coinTemplate: "kylacoin");
+        using var logFactory = new NLog.LogFactory();
+        var logTarget = new NLog.Targets.MemoryTarget
+        {
+            Layout = "${level}|${message}",
+        };
+        var logConfig = new NLog.Config.LoggingConfiguration();
+        logConfig.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Info, logTarget);
+        logFactory.Configuration = logConfig;
+        fixture.Handler.UseLogger(logFactory.GetLogger(nameof(
+            Payout_HighPrecisionAmount_LogsConfiguredPrecision)));
+
+        if(hasBrokenSendMany)
+        {
+            fixture.Handler.SendToAddressResponses["KTest"] =
+                new RpcResponse<string>("payout-txid");
+            fixture.Handler.MempoolResponses["payout-txid"] =
+                new RpcResponse<JToken>(new JObject());
+        }
+        else
+        {
+            fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+            fixture.Handler.MempoolResponse = new RpcResponse<JToken>(new JObject());
+        }
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "KTest",
+                Amount = 0.000000123456m,
+            },
+        }, CancellationToken.None);
+
+        Assert.Contains("Info|[Bitcoin Payout Handler] Preparing wallet request: " +
+            "0.000000123456 KCN to 1 payable address(es) from 0.000000123456 KCN " +
+            "owed across 1 selected balance(s)", logTarget.Logs);
+
+        if(hasBrokenSendMany)
+        {
+            Assert.Contains(logTarget.Logs, message =>
+                message.Contains("Sending 0.000000123456 KCN to KTest"));
+        }
+
+        Assert.DoesNotContain(logTarget.Logs, message => message.Contains(" 0 KCN"));
+    }
+
     [Fact]
     public async Task Payout_TransactionInMempool_PersistsAndSucceeds()
     {

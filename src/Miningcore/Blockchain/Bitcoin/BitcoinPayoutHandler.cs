@@ -615,8 +615,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }).ToArray();
 
         logger.Info(() => $"[{LogCategory}] Preparing wallet request: " +
-            $"{FormatAmount(amounts.Values.Sum())} to {amounts.Count} payable address(es) " +
-            $"from {FormatAmount(requestedAmounts.Values.Sum())} owed across " +
+            $"{FormatPayoutAmount(amounts.Values.Sum())} to {amounts.Count} payable address(es) " +
+            $"from {FormatExactPayoutAmount(requestedAmounts.Values.Sum())} owed across " +
             $"{requestedAmounts.Count} selected balance(s)");
 
         object[] args;
@@ -824,7 +824,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         walletSubmissionStarted = true;
                         attemptedAddresses.TryAdd(address, 0);
                         Interlocked.Increment(ref startedSubmissions);
-                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending {FormatAmount(amount)} to {address}");
+                        logger.Info(()=> $"[{LogCategory}] [{transferId}] Sending " +
+                            $"{FormatPayoutAmount(amount)} to {address}");
 
                         var result = await SendToAddressAsync(new object[]
                         {
@@ -1072,6 +1073,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             ? $"0.{new string('#', payoutDecimalPlaces)}"
             : "0";
         return $"{amount.ToString(format, CultureInfo.InvariantCulture)} {coin.Symbol}";
+    }
+
+    private string FormatExactPayoutAmount(decimal amount)
+    {
+        return $"{amount.ToString("0.############################", CultureInfo.InvariantCulture)} " +
+            coin.Symbol;
     }
 
     private static PayoutReconciliation CreateBrokenSendManyReconciliation(
