@@ -439,7 +439,9 @@ public class PayoutManager : ProcessStatusBackgroundService
 
     private Task NotifyPayoutFailureAsync(Balance[] balances, PoolConfig pool, Exception ex)
     {
-        messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message, balances.Sum(x => x.Amount), pool.Template.Symbol));
+        messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
+            balances.Sum(x => x.Amount), pool.Template.Symbol, balances.Length,
+            null, null, null));
 
         return Task.CompletedTask;
     }
@@ -457,11 +459,26 @@ public class PayoutManager : ProcessStatusBackgroundService
             }).ToArray(),
         };
 
+        var attemptedEntries = (reconciliation.Accepted ??
+                Array.Empty<PayoutReconciliationEntry>())
+            .Concat(reconciliation.Failed ?? Array.Empty<PayoutReconciliationEntry>())
+            .Concat(reconciliation.Uncertain ?? Array.Empty<PayoutReconciliationEntry>())
+            .Where(x => x.SubmittedAmount.HasValue)
+            .ToArray();
+        var submittedAmount = attemptedEntries.Length > 0
+            ? attemptedEntries.Sum(x => x.SubmittedAmount.Value)
+            : (decimal?) null;
+        var roundingAdjustment = attemptedEntries.Length > 0
+            ? attemptedEntries.Sum(x => x.SubmittedAmount.Value - x.Amount)
+            : (decimal?) null;
+
         messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
             balances.Sum(x => x.Amount), pool.Template.Symbol)
         {
             Outcome = PaymentNotificationOutcome.Uncertain,
             Reconciliation = reconciliation,
+            SubmittedAmount = submittedAmount,
+            RoundingAdjustment = roundingAdjustment,
         });
 
         return Task.CompletedTask;

@@ -341,6 +341,30 @@ public class BitcoinPayoutHandlerTests : TestBase
             Arg.Any<string>());
     }
 
+    [Fact]
+    public async Task Payout_SendManyFailureNotificationFailure_DoesNotPropagate()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>(null,
+            new JsonRpcError(-5, "rejected", null));
+        fixture.MessageBus.When(x => x.SendMessage(
+                Arg.Is<PaymentNotification>(notification =>
+                    notification.Outcome == PaymentNotificationOutcome.Failure),
+                Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException("failure subscriber failed"));
+
+        await fixture.Handler.PayoutAsync(fixture.Pool, new[]
+        {
+            new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
+        }, CancellationToken.None);
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(notification =>
+                notification.Outcome == PaymentNotificationOutcome.Failure &&
+                notification.Error.Contains("rejected")),
+            Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -892,6 +916,77 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
+    public async Task Payout_SendManyReconciliation_DistinguishesRequestedAndRoundedAmounts()
+    {
+        var fixture = await CreateFixtureAsync();
+        fixture.Handler.PayoutResponse = new RpcResponse<string>("payout-txid");
+        fixture.PaymentRepository.TryBeginPaymentBatchAsync(Arg.Any<IDbConnection>(),
+                Arg.Any<IDbTransaction>(), fixture.Config.Id, "payout-txid", fixture.Now)
+            .Returns(Task.FromException<bool>(
+                new InvalidOperationException("database unavailable")));
+        var balances = new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTestBelow",
+                Amount = 1.23454m,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTestAbove",
+                Amount = 2.34566m,
+            },
+        };
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, balances, CancellationToken.None));
+
+        Assert.Equal(balances.Sum(x => x.Amount),
+            exception.Reconciliation.Uncertain.Sum(x => x.Amount));
+        Assert.Equal(1.2345m, Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTestBelow").SubmittedAmount);
+        Assert.Equal(2.3457m, Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTestAbove").SubmittedAmount);
+    }
+
+    [Fact]
+    public async Task Payout_BrokenSendManyReconciliation_DistinguishesRequestedAndRoundedAmounts()
+    {
+        var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
+        fixture.Handler.SendToAddressResponses["DTestBelow"] =
+            new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
+        fixture.Handler.SendToAddressResponses["DTestAbove"] =
+            new RpcResponse<string>(null, new JsonRpcError(-500, "response lost", null));
+        var balances = new[]
+        {
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTestBelow",
+                Amount = 1.23454m,
+            },
+            new Balance
+            {
+                PoolId = fixture.Config.Id,
+                Address = "DTestAbove",
+                Amount = 2.34566m,
+            },
+        };
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, balances, CancellationToken.None));
+
+        Assert.Equal(balances.Sum(x => x.Amount),
+            exception.Reconciliation.Uncertain.Sum(x => x.Amount));
+        Assert.Equal(1.2345m, Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTestBelow").SubmittedAmount);
+        Assert.Equal(2.3457m, Assert.Single(exception.Reconciliation.Uncertain,
+            x => x.Address == "DTestAbove").SubmittedAmount);
+    }
+
+    [Fact]
     public async Task Payout_BrokenSendManyPersistenceFailure_PreservesEveryKnownOutcome()
     {
         var fixture = await CreateFixtureAsync(hasBrokenSendMany: true);
@@ -966,6 +1061,18 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Equal(balances.Sum(x => x.Amount),
             exception.Reconciliation.Uncertain.Sum(x => x.Amount) +
             exception.Reconciliation.NotAttempted.Sum(x => x.Amount));
+
+        var categories = exception.Reconciliation.Accepted
+            .Concat(exception.Reconciliation.Failed)
+            .Concat(exception.Reconciliation.Uncertain)
+            .Concat(exception.Reconciliation.NotAttempted)
+            .ToArray();
+        Assert.Equal(balances.Length, categories.Length);
+        Assert.Equal(balances.Length,
+            categories.Select(x => x.Address).Distinct().Count());
+        Assert.Equal(balances.Select(x => x.Address).OrderBy(x => x),
+            categories.Select(x => x.Address).OrderBy(x => x));
+        Assert.Equal(balances.Sum(x => x.Amount), categories.Sum(x => x.Amount));
     }
 
     [Fact]

@@ -13,6 +13,38 @@ namespace Miningcore.Tests.Notifications;
 public class PaymentNotificationTests
 {
     [Fact]
+    public void WebSocketSerialization_NormalSuccessUsesOutcomeAwareAggregates()
+    {
+        var notification = new PaymentNotification("doge-test", null, 10, "DOGE", 4,
+            new[] { "txid" }, null, null);
+        var payload = SerializePayment(notification);
+
+        Assert.Equal("success", payload.Value<string>("outcome"));
+        Assert.Equal(4, payload.Value<int>("acceptedCount"));
+        Assert.Equal(10, payload.Value<decimal>("acceptedAmount"));
+        Assert.Null(payload["failedCount"]);
+        Assert.Null(payload["failedAmount"]);
+        Assert.Null(payload["uncertainCount"]);
+        Assert.Null(payload["notAttemptedCount"]);
+    }
+
+    [Fact]
+    public void WebSocketSerialization_NormalFailureUsesOutcomeAwareAggregates()
+    {
+        var notification = new PaymentNotification("doge-test", "rejected", 10,
+            "DOGE", 4, null, null, null);
+        var payload = SerializePayment(notification);
+
+        Assert.Equal("failure", payload.Value<string>("outcome"));
+        Assert.Equal(4, payload.Value<int>("failedCount"));
+        Assert.Equal(10, payload.Value<decimal>("failedAmount"));
+        Assert.Null(payload["acceptedCount"]);
+        Assert.Null(payload["acceptedAmount"]);
+        Assert.Null(payload["uncertainCount"]);
+        Assert.Null(payload["notAttemptedCount"]);
+    }
+
+    [Fact]
     public void WebSocketSerialization_ExposesOnlySafeReconciliationSummary()
     {
         var notification = new PaymentNotification("doge-test", "rpc secret", 10,
@@ -39,11 +71,8 @@ public class PaymentNotificationTests
                 },
             },
         };
-        var serializer = JsonSerializer.Create(Globals.JsonSerializerSettings);
-
-        var json = WebSocketNotificationSerializer.Serialize(
-            WsNotificationType.Payment, notification, serializer);
-        var payload = JObject.Parse(json);
+        var payload = SerializePayment(notification);
+        var json = payload.ToString(Formatting.None);
 
         Assert.Equal("payment", payload.Value<string>("type"));
         Assert.Equal("uncertain", payload.Value<string>("outcome"));
@@ -94,6 +123,49 @@ public class PaymentNotificationTests
         Assert.Contains("<br/>", rendered.EmailMessage);
     }
 
+    [Fact]
+    public void EmailFormatting_LabelsRequestedAndRoundedWalletTotals()
+    {
+        var notification = new PaymentNotification("doge-test", "unknown", 3.58020m,
+            "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 3.5803m,
+            RoundingAdjustment = 0.00010m,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTestBelow",
+                        Amount = 1.23454m,
+                        SubmittedAmount = 1.2345m,
+                    },
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTestAbove",
+                        Amount = 2.34566m,
+                        SubmittedAmount = 2.3458m,
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("Payout batch totalling 3.58020 DOGE requested",
+            rendered.EmailMessage);
+        Assert.Contains("Wallet request total across attempted recipients: 3.5803 DOGE",
+            rendered.EmailMessage);
+        Assert.Contains("rounding adjustment: +0.00010 DOGE", rendered.EmailMessage);
+        Assert.Contains("1.23454 DOGE to DTestBelow, wallet request 1.2345 DOGE",
+            rendered.EmailMessage);
+        Assert.Contains("2.34566 DOGE to DTestAbove, wallet request 2.3458 DOGE",
+            rendered.EmailMessage);
+    }
+
     private static PayoutReconciliationEntry Entry(string address, decimal amount,
         string transactionId, string detail)
     {
@@ -104,5 +176,14 @@ public class PaymentNotificationTests
             TransactionId = transactionId,
             Detail = detail,
         };
+    }
+
+    private static JObject SerializePayment(PaymentNotification notification)
+    {
+        var serializer = JsonSerializer.Create(Globals.JsonSerializerSettings);
+        var json = WebSocketNotificationSerializer.Serialize(
+            WsNotificationType.Payment, notification, serializer);
+
+        return JObject.Parse(json);
     }
 }

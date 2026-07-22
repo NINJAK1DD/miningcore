@@ -42,7 +42,12 @@ public record PaymentNotification
     public string[] TxExplorerLinks { get; set; }
     public string Symbol { get; set; }
     public int RecipientsCount { get; set; }
+    // Requested/owed batch total before wallet-specific payout rounding.
     public decimal Amount { get; set; }
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public decimal? SubmittedAmount { get; set; }
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public decimal? RoundingAdjustment { get; set; }
     // Administrative error detail is consumed in-process and excluded from the public stream.
     [JsonIgnore]
     public string Error { get; set; }
@@ -55,13 +60,44 @@ public record PaymentNotification
     [JsonIgnore]
     public PayoutReconciliation Reconciliation { get; set; }
 
-    public int AcceptedCount => Reconciliation?.Accepted?.Length ?? 0;
-    public decimal AcceptedAmount => Reconciliation?.Accepted?.Sum(x => x.Amount) ?? 0;
-    public int FailedCount => Reconciliation?.Failed?.Length ?? 0;
-    public decimal FailedAmount => Reconciliation?.Failed?.Sum(x => x.Amount) ?? 0;
-    public int UncertainCount => Reconciliation?.Uncertain?.Length ?? 0;
-    public decimal UncertainAmount => Reconciliation?.Uncertain?.Sum(x => x.Amount) ?? 0;
-    public int NotAttemptedCount => Reconciliation?.NotAttempted?.Length ?? 0;
-    public decimal NotAttemptedAmount =>
-        Reconciliation?.NotAttempted?.Sum(x => x.Amount) ?? 0;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public int? AcceptedCount => Reconciliation != null
+        ? Reconciliation.Accepted?.Length ?? 0
+        : Outcome == PaymentNotificationOutcome.Success
+            ? RecipientsCount
+            : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public decimal? AcceptedAmount => Reconciliation != null
+        ? Reconciliation.Accepted?.Sum(x => x.Amount) ?? 0
+        : Outcome == PaymentNotificationOutcome.Success
+            ? Amount
+            : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public int? FailedCount => Reconciliation != null
+        ? Reconciliation.Failed?.Length ?? 0
+        : Outcome == PaymentNotificationOutcome.Failure
+            ? RecipientsCount
+            : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public decimal? FailedAmount => Reconciliation != null
+        ? Reconciliation.Failed?.Sum(x => x.Amount) ?? 0
+        : Outcome == PaymentNotificationOutcome.Failure
+            ? Amount
+            : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public int? UncertainCount => Reconciliation != null
+        ? Reconciliation.Uncertain?.Length ?? 0
+        : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public decimal? UncertainAmount => Reconciliation != null
+        ? Reconciliation.Uncertain?.Sum(x => x.Amount) ?? 0
+        : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public int? NotAttemptedCount => Reconciliation != null
+        ? Reconciliation.NotAttempted?.Length ?? 0
+        : null;
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public decimal? NotAttemptedAmount => Reconciliation != null
+        ? Reconciliation.NotAttempted?.Sum(x => x.Amount) ?? 0
+        : null;
 }

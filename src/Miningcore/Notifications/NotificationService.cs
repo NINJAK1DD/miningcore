@@ -110,11 +110,16 @@ public class NotificationService : StartupGatedBackgroundService
                 ? Array.Empty<string>()
                 : txIds.Select(txHash => string.Format(explorerTxLink, txHash)).ToArray();
             const string subject = "Payout Success Notification";
-            var emailMessage = $"Paid {FormatHtmlCoinAmount(notification.Amount, symbol)} " +
+            var paidAmount = notification.SubmittedAmount ?? notification.Amount;
+            var emailAmountDetail = FormatHtmlRoundingDetail(notification, symbol);
+            var pushoverAmountDetail = FormatRoundingDetail(notification, symbol);
+            var emailMessage = $"Paid {FormatHtmlCoinAmount(paidAmount, symbol)}" +
+                emailAmountDetail + " " +
                 $"from pool {HtmlEncode(notification.PoolId)} to " +
                 $"{notification.RecipientsCount} recipients in transaction(s) " +
                 $"{string.Join(", ", txLinks.Select(HtmlEncode))}";
-            var pushoverMessage = $"Paid {FormatCoinAmount(notification.Amount, symbol)} " +
+            var pushoverMessage = $"Paid {FormatCoinAmount(paidAmount, symbol)}" +
+                pushoverAmountDetail + " " +
                 $"from pool {notification.PoolId} to {notification.RecipientsCount} " +
                 $"recipients in transaction(s) {string.Join(", ", txLinks)}";
 
@@ -126,10 +131,12 @@ public class NotificationService : StartupGatedBackgroundService
             const string subject = "Payout Outcome Uncertain Notification";
             var sections = new List<string>
             {
-                $"Payout batch totalling {FormatExactHtmlAmount(notification.Amount, symbol)} " +
+                $"Payout batch totalling {FormatExactHtmlAmount(notification.Amount, symbol)} requested " +
                 $"from pool {HtmlEncode(notification.PoolId)} has an uncertain outcome and requires " +
                 "reconciliation.",
             };
+
+            AppendSubmittedAmountSummary(sections, notification, symbol, true);
 
             AppendReconciliationSection(sections, "Accepted and persisted",
                 notification.Reconciliation?.Accepted, symbol);
@@ -145,9 +152,10 @@ public class NotificationService : StartupGatedBackgroundService
 
             var pushoverSections = new List<string>
             {
-                $"Payout batch {FormatExactAmount(notification.Amount, symbol)} from pool " +
+                $"Payout batch {FormatExactAmount(notification.Amount, symbol)} requested from pool " +
                 $"{notification.PoolId} is uncertain; reconcile before releasing ownership.",
             };
+            AppendSubmittedAmountSummary(pushoverSections, notification, symbol, false);
             AppendPushoverReconciliationSummary(pushoverSections,
                 "Accepted/persisted", notification.Reconciliation?.Accepted, symbol);
             AppendPushoverReconciliationSummary(pushoverSections,
@@ -162,10 +170,14 @@ public class NotificationService : StartupGatedBackgroundService
                 TruncateForPushover(string.Join("\n", pushoverSections)), false);
         }
 
-        var emailFailureMessage = $"Failed to pay out {notification.Amount} " +
-            $"{HtmlEncode(symbol)} from pool {HtmlEncode(notification.PoolId)}: " +
+        var emailFailureMessage = $"Failed to pay out " +
+            $"{FormatExactHtmlAmount(notification.Amount, symbol)} requested" +
+            FormatHtmlRoundingDetail(notification, symbol) + " " +
+            $"from pool {HtmlEncode(notification.PoolId)}: " +
             HtmlEncode(notification.Error);
-        var pushoverFailureMessage = $"Failed to pay out {notification.Amount} {symbol} " +
+        var pushoverFailureMessage = $"Failed to pay out " +
+            $"{FormatExactAmount(notification.Amount, symbol)} requested" +
+            FormatRoundingDetail(notification, symbol) + " " +
             $"from pool {notification.PoolId}: {notification.Error}";
         return ("Payout Failure Notification", emailFailureMessage,
             TruncateForPushover(pushoverFailureMessage), false);
@@ -183,6 +195,14 @@ public class NotificationService : StartupGatedBackgroundService
             {
                 $"{FormatExactHtmlAmount(x.Amount, symbol)} to {HtmlEncode(x.Address)}",
             };
+
+            if(x.SubmittedAmount.HasValue && x.SubmittedAmount.Value != x.Amount)
+            {
+                var adjustment = x.SubmittedAmount.Value - x.Amount;
+                parts.Add($"wallet request " +
+                    $"{FormatExactHtmlAmount(x.SubmittedAmount.Value, symbol)} " +
+                    $"(rounding adjustment {FormatSignedExactHtmlAmount(adjustment, symbol)})");
+            }
 
             if(!string.IsNullOrWhiteSpace(x.TransactionId))
                 parts.Add($"transaction {HtmlEncode(x.TransactionId)}");
@@ -206,6 +226,49 @@ public class NotificationService : StartupGatedBackgroundService
             $"({entries.Length} recipient(s))");
     }
 
+    private static void AppendSubmittedAmountSummary(List<string> sections,
+        PaymentNotification notification, string symbol, bool html)
+    {
+        if(!notification.SubmittedAmount.HasValue ||
+            notification.RoundingAdjustment.GetValueOrDefault() == 0)
+            return;
+
+        var adjustment = notification.RoundingAdjustment ?? 0;
+        var amount = html
+            ? FormatExactHtmlAmount(notification.SubmittedAmount.Value, symbol)
+            : FormatExactAmount(notification.SubmittedAmount.Value, symbol);
+        var formattedAdjustment = html
+            ? FormatSignedExactHtmlAmount(adjustment, symbol)
+            : FormatSignedExactAmount(adjustment, symbol);
+
+        sections.Add($"Wallet request total across attempted recipients: {amount}; " +
+            $"rounding adjustment: {formattedAdjustment}.");
+    }
+
+    private static string FormatHtmlRoundingDetail(PaymentNotification notification,
+        string symbol)
+    {
+        if(!notification.SubmittedAmount.HasValue ||
+            notification.SubmittedAmount.Value == notification.Amount)
+            return string.Empty;
+
+        return $" (requested {FormatExactHtmlAmount(notification.Amount, symbol)}; " +
+            $"rounding adjustment " +
+            $"{FormatSignedExactHtmlAmount(notification.RoundingAdjustment ?? 0, symbol)})";
+    }
+
+    private static string FormatRoundingDetail(PaymentNotification notification,
+        string symbol)
+    {
+        if(!notification.SubmittedAmount.HasValue ||
+            notification.SubmittedAmount.Value == notification.Amount)
+            return string.Empty;
+
+        return $" (requested {FormatExactAmount(notification.Amount, symbol)}; " +
+            $"rounding adjustment " +
+            $"{FormatSignedExactAmount(notification.RoundingAdjustment ?? 0, symbol)})";
+    }
+
     private static string FormatCoinAmount(decimal amount, string symbol)
     {
         return $"{amount:0.#####} {symbol}";
@@ -216,6 +279,12 @@ public class NotificationService : StartupGatedBackgroundService
         return $"{amount.ToString(CultureInfo.InvariantCulture)} {symbol}";
     }
 
+    private static string FormatSignedExactAmount(decimal amount, string symbol)
+    {
+        var sign = amount > 0 ? "+" : string.Empty;
+        return $"{sign}{FormatExactAmount(amount, symbol)}";
+    }
+
     private static string FormatHtmlCoinAmount(decimal amount, string symbol)
     {
         return $"{amount:0.#####} {HtmlEncode(symbol)}";
@@ -224,6 +293,12 @@ public class NotificationService : StartupGatedBackgroundService
     private static string FormatExactHtmlAmount(decimal amount, string symbol)
     {
         return $"{amount.ToString(CultureInfo.InvariantCulture)} {HtmlEncode(symbol)}";
+    }
+
+    private static string FormatSignedExactHtmlAmount(decimal amount, string symbol)
+    {
+        var sign = amount > 0 ? "+" : string.Empty;
+        return $"{sign}{FormatExactHtmlAmount(amount, symbol)}";
     }
 
     private static string HtmlEncode(string value)
