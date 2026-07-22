@@ -53,7 +53,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
     private EthereumPoolConfigExtra extraPoolConfig;
     private EthereumPoolPaymentProcessingConfigExtra extraConfig;
 
-    private EthereumCoinTemplate coin;
+    protected EthereumCoinTemplate coin;
 
     protected override string LogCategory => "Ethereum Payout Handler";
 
@@ -352,34 +352,47 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
     }
 
-    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances,
+        CancellationToken ct)
     {
         var successfulBalances = new List<Balance>();
         var txHashes = new List<string>();
 
-        foreach(var balance in balances)
+        try
         {
-            try
+            foreach(var balance in balances)
             {
-                var txHash = await PayoutAsync(balance, ct);
-                successfulBalances.Add(balance);
-                txHashes.Add(txHash);
-            }
+                try
+                {
+                    var txHash = await PayoutBalanceAsync(balance, ct);
+                    successfulBalances.Add(balance);
+                    txHashes.Add(txHash);
+                }
 
-            catch(Exception ex)
-            {
-                WalletSubmissionOutcome.RethrowIfUnknown(ex,
-                    coin.RpcMethodPrefix + EC.SendTx);
+                catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                {
+                    // RpcClient turns cancellation during eth_sendTransaction into transport
+                    // error -500. A direct cancellation here therefore occurred before the
+                    // submission boundary and must remain an ordinary shutdown.
+                    throw;
+                }
+                catch(Exception ex)
+                {
+                    WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                        coin.RpcMethodPrefix + EC.SendTx);
 
-                logger.Error(ex);
+                    logger.Error(ex);
 
-                NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                }
             }
         }
-
-        if(txHashes.Any())
-            NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
-                txHashes.ToArray(), null);
+        finally
+        {
+            if(txHashes.Any())
+                NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
+                    txHashes.ToArray(), null);
+        }
     }
 
     public double AdjustBlockEffort(double effort)
@@ -627,7 +640,8 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         EthereumUtils.DetectNetworkAndChain(netVersion, gethChain, out networkType, out chainType);
     }
 
-    private async Task<string> PayoutAsync(Balance balance, CancellationToken ct)
+    protected async Task<string> PayoutBalanceAsync(Balance balance,
+        CancellationToken ct)
     {
         // send transaction
         logger.Info(() => $"[{LogCategory}] Sending {FormatAmount(balance.Amount)} to {balance.Address}");
@@ -687,10 +701,10 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
                 Value = amount.ToString("x").TrimStart('0'),
                 Gas = extraConfig.Gas
             };
-            response = await rpcClient.ExecuteAsync<string>(logger, coin.RpcMethodPrefix + EC.SendTx, ct, new[] { requestPink });
+            response = await SubmitTransactionAsync(requestPink, ct);
         }  
         else {
-            response = await rpcClient.ExecuteAsync<string>(logger, coin.RpcMethodPrefix + EC.SendTx, ct, new[] { request });
+            response = await SubmitTransactionAsync(request, ct);
         }
 
         WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -712,4 +726,9 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
         // done
         return txHash;
     }
+
+    protected virtual Task<RpcResponse<string>> SubmitTransactionAsync(
+        object request, CancellationToken ct) =>
+        rpcClient.ExecuteAsync<string>(logger, coin.RpcMethodPrefix + EC.SendTx,
+            ct, new[] { request });
 }

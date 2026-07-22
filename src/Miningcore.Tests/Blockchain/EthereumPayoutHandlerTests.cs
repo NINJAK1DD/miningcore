@@ -1,14 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using Miningcore.Blockchain.Beam;
-using Miningcore.Blockchain.Beam.DaemonRequests;
-using Miningcore.Blockchain.Beam.DaemonResponses;
+using Miningcore.Blockchain.Ethereum;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
@@ -24,17 +21,17 @@ using Xunit;
 
 namespace Miningcore.Tests.Blockchain;
 
-public class BeamPayoutHandlerTests
+public class EthereumPayoutHandlerTests
 {
     [Fact]
-    public async Task PayoutBalance_AlreadyCancelledDoesNotInvokeWalletSubmission()
+    public async Task PayoutLoop_AlreadyCancelledDoesNotInvokeWalletSubmission()
     {
         var fixture = CreateFixture();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
         var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            fixture.Handler.RunBalancesAsync(cts.Token,
+            fixture.Handler.RunPayoutLoopAsync(cts.Token,
                 Balance(fixture.Pool.Id, "cancelled", 1)));
 
         Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
@@ -44,30 +41,29 @@ public class BeamPayoutHandlerTests
     }
 
     [Fact]
-    public async Task PayoutBalances_CancellationBetweenRecipientsRemainsConclusive()
+    public async Task PayoutLoop_CancellationBetweenRecipientsFlushesAcceptedSubset()
     {
         var fixture = CreateFixture();
         var first = Balance(fixture.Pool.Id, "accepted", 1);
         var second = Balance(fixture.Pool.Id, "cancelled", 2);
         using var cts = new CancellationTokenSource();
         fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
-                fixture.Transaction, fixture.Pool.Id, "tx-accepted", fixture.Now)
+                fixture.Transaction, fixture.Pool.Id, "0xabc", fixture.Now)
             .Returns(true);
         fixture.Handler.EnqueueSubmission((_, _) =>
         {
             cts.Cancel();
-            return Task.FromResult(new RpcResponse<SendTransactionResponse>(
-                new SendTransactionResponse { TxId = "tx-accepted" }));
+            return Task.FromResult(new RpcResponse<string>("0xabc"));
         });
 
         var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            fixture.Handler.RunBalancesAsync(cts.Token, first, second));
+            fixture.Handler.RunPayoutLoopAsync(cts.Token, first, second));
 
         Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
         Assert.Equal(1, fixture.Handler.SubmissionCalls);
         await fixture.PaymentRepo.Received(1).TryBeginPaymentBatchAsync(
-            fixture.Connection, fixture.Transaction, fixture.Pool.Id,
-            "tx-accepted", fixture.Now);
+            fixture.Connection, fixture.Transaction, fixture.Pool.Id, "0xabc",
+            fixture.Now);
         fixture.MessageBus.Received(1).SendMessage(
             Arg.Is<PaymentNotification>(x =>
                 x.Outcome == PaymentNotificationOutcome.Success &&
@@ -99,14 +95,19 @@ public class BeamPayoutHandlerTests
         var now = DateTime.UtcNow;
         clock.Now.Returns(now);
         var messageBus = Substitute.For<IMessageBus>();
-        var handler = new TestBeamPayoutHandler(Substitute.For<IComponentContext>(),
-            cf, Substitute.For<IMapper>(), Substitute.For<IShareRepository>(),
-            Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-            paymentRepo, clock, Substitute.For<IHttpClientFactory>(), messageBus);
+        var handler = new TestEthereumPayoutHandler(
+            Substitute.For<IComponentContext>(), cf, Substitute.For<IMapper>(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            Substitute.For<IBalanceRepository>(), paymentRepo, clock, messageBus);
         var pool = new PoolConfig
         {
-            Id = "beam-test",
-            Template = new BeamCoinTemplate { Symbol = "BEAM" },
+            Id = "eth-test",
+            Address = "0xpool",
+            Template = new EthereumCoinTemplate
+            {
+                Symbol = "ETH",
+                RpcMethodPrefix = "eth_",
+            },
             RewardRecipients = Array.Empty<RewardRecipient>(),
         };
         handler.Configure(pool);
@@ -115,18 +116,18 @@ public class BeamPayoutHandlerTests
             messageBus, now);
     }
 
-    private sealed class TestBeamPayoutHandler : BeamPayoutHandler
+    private sealed class TestEthereumPayoutHandler : EthereumPayoutHandler
     {
-        private readonly Queue<Func<SendTransactionRequest, CancellationToken,
-            Task<RpcResponse<SendTransactionResponse>>>> submissions = new();
+        private readonly Queue<Func<object, CancellationToken,
+            Task<RpcResponse<string>>>> submissions = new();
 
-        public TestBeamPayoutHandler(IComponentContext ctx, IConnectionFactory cf,
-            IMapper mapper, IShareRepository shareRepo, IBlockRepository blockRepo,
-            IBalanceRepository balanceRepo, IPaymentRepository paymentRepo,
-            IMasterClock clock, IHttpClientFactory httpClientFactory,
+        public TestEthereumPayoutHandler(IComponentContext ctx,
+            IConnectionFactory cf, IMapper mapper, IShareRepository shareRepo,
+            IBlockRepository blockRepo, IBalanceRepository balanceRepo,
+            IPaymentRepository paymentRepo, IMasterClock clock,
             IMessageBus messageBus) :
             base(ctx, cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo,
-                clock, httpClientFactory, messageBus)
+                clock, messageBus)
         {
         }
 
@@ -136,29 +137,26 @@ public class BeamPayoutHandlerTests
         {
             poolConfig = pool;
             clusterConfig = new ClusterConfig();
+            coin = (EthereumCoinTemplate) pool.Template;
             logger = LogManager.GetCurrentClassLogger();
         }
 
-        public void EnqueueSubmission(Func<SendTransactionRequest, CancellationToken,
-            Task<RpcResponse<SendTransactionResponse>>> submission) =>
-            submissions.Enqueue(submission);
+        public void EnqueueSubmission(Func<object, CancellationToken,
+            Task<RpcResponse<string>>> submission) => submissions.Enqueue(submission);
 
-        public Task RunBalancesAsync(CancellationToken ct, params Balance[] balances) =>
+        public Task RunPayoutLoopAsync(CancellationToken ct,
+            params Balance[] balances) =>
             TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
 
-        protected override Task<(bool IsValid, bool IsOffline)> ValidateAddress(
-            string address, CancellationToken ct) => Task.FromResult((true, false));
-
-        protected override Task<RpcResponse<SendTransactionResponse>>
-            SubmitTransactionAsync(SendTransactionRequest request,
-                CancellationToken ct)
+        protected override Task<RpcResponse<string>> SubmitTransactionAsync(
+            object request, CancellationToken ct)
         {
             SubmissionCalls++;
             return submissions.Dequeue()(request, ct);
         }
     }
 
-    private sealed record Fixture(TestBeamPayoutHandler Handler, PoolConfig Pool,
-        IDbConnection Connection, IDbTransaction Transaction,
+    private sealed record Fixture(TestEthereumPayoutHandler Handler,
+        PoolConfig Pool, IDbConnection Connection, IDbTransaction Transaction,
         IPaymentRepository PaymentRepo, IMessageBus MessageBus, DateTime Now);
 }

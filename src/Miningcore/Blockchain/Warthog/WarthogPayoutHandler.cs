@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Net;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Warthog.Configuration;
@@ -440,6 +441,13 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         }
         catch(Exception ex)
         {
+            if(ex is HttpRequestException { StatusCode: { } statusCode } &&
+                IsConclusiveHttpRejection(statusCode))
+            {
+                TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
+                return new RecipientPayoutResult(submittedBalance, null, ex);
+            }
+
             WalletSubmissionOutcome.RethrowIfUnknown(ex,
                 WarthogCommands.SendTransaction);
             TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
@@ -498,6 +506,14 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         WarthogSendTransactionRequest request, CancellationToken ct) =>
         restClient.Post<WarthogSendTransactionResponse>(
             WarthogCommands.SendTransaction, request, ct);
+
+    // Restrict conclusive classification to client/request statuses that prove rejection.
+    // Timeouts, throttling, conflicts and all server-side statuses remain fail-closed.
+    private static bool IsConclusiveHttpRejection(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or
+            HttpStatusCode.Forbidden or HttpStatusCode.NotFound or
+            HttpStatusCode.MethodNotAllowed or HttpStatusCode.RequestEntityTooLarge or
+            HttpStatusCode.UnsupportedMediaType or HttpStatusCode.UnprocessableEntity;
 
     private byte[] SerializePinHeightNonceIdFee(uint pinHeight, uint nonceId, ulong feeE8Encoded)
     {

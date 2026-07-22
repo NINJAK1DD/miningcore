@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -68,6 +69,24 @@ public class WarthogPayoutHandlerTests
 
         Assert.Equal("post-uncertain",
             Assert.Single(exception.Reconciliation.Uncertain).Address);
+        Assert.Equal(1, handler.SubmissionCalls);
+    }
+
+    [Fact]
+    public async Task PayoutRecipient_BadRequestResponseIsConclusiveRejection()
+    {
+        var handler = CreateHandler();
+        handler.EnqueuePreparation(PreparedTransaction);
+        handler.EnqueueSubmission((_, _) =>
+            throw new HttpRequestException("invalid transaction", null,
+                HttpStatusCode.BadRequest));
+
+        var errors = await handler.RunRecipientsAsync(CancellationToken.None,
+            ("post-rejected", 1m));
+
+        var error = Assert.Single(errors);
+        var rejection = Assert.IsType<HttpRequestException>(error);
+        Assert.Equal(HttpStatusCode.BadRequest, rejection.StatusCode);
         Assert.Equal(1, handler.SubmissionCalls);
     }
 

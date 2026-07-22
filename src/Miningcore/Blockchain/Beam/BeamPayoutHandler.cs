@@ -314,29 +314,43 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         var successfulBalances = new List<Balance>();
         var txHashes = new List<string>();
 
-        foreach(var balance in balances)
+        try
         {
-            try
+            foreach(var balance in balances)
             {
-                var txHash = await PayoutBalanceAsync(balance, ct);
-                successfulBalances.Add(balance);
-                txHashes.Add(txHash);
-            }
+                try
+                {
+                    var txHash = await PayoutBalanceAsync(balance, ct);
+                    successfulBalances.Add(balance);
+                    txHashes.Add(txHash);
+                }
 
-            catch(Exception ex)
-            {
-                WalletSubmissionOutcome.RethrowIfUnknown(ex,
-                    BeamWalletCommands.SendTransaction);
+                catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                {
+                    // TrackPayoutSubmission rejected cancellation before the wallet boundary.
+                    // RpcClient reports cancellation during the wallet call as transport error
+                    // -500, so a direct cancellation here is still pre-submission.
+                    throw;
+                }
+                catch(Exception ex)
+                {
+                    WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                        BeamWalletCommands.SendTransaction);
 
-                logger.Error(ex);
+                    logger.Error(ex);
 
-                NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                }
             }
         }
-
-        if(txHashes.Any())
-            NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
-                txHashes.ToArray(), null);
+        finally
+        {
+            // TrackPayoutAsync flushes this on conclusive completion or ordinary cancellation,
+            // and discards it if a later wallet outcome is genuinely uncertain.
+            if(txHashes.Any())
+                NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
+                    txHashes.ToArray(), null);
+        }
     }
 
     public double AdjustBlockEffort(double effort)
