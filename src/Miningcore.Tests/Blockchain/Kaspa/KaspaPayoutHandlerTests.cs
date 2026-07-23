@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -16,14 +17,83 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Time;
+using Google.Protobuf;
 using NLog;
 using NSubstitute;
 using Xunit;
+using kaspaWalletd = Miningcore.Blockchain.Kaspa.KaspaWalletd;
 
 namespace Miningcore.Tests.Blockchain.Kaspa;
 
 public class KaspaPayoutHandlerTests
 {
+    [Fact]
+    public async Task Payout_CancellationBeforeLaterBroadcastPersistsKnownTransaction()
+    {
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        cf.OpenConnectionAsync().Returns(connection);
+        var paymentRepo = Substitute.For<IPaymentRepository>();
+        paymentRepo.TryBeginPaymentBatchAsync(connection, transaction, "kas-test",
+                "tx-first", Arg.Any<DateTime>())
+            .Returns(true);
+        var balanceRepo = Substitute.For<IBalanceRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = new TestKaspaPayoutHandler(
+            Substitute.For<IComponentContext>(), cf, Substitute.For<IMapper>(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            balanceRepo, paymentRepo, Substitute.For<IMasterClock>(), messageBus);
+        handler.Configure(new PoolConfig
+        {
+            Id = "kas-test",
+            Template = new KaspaCoinTemplate { Symbol = "KAS" },
+            RewardRecipients = Array.Empty<RewardRecipient>(),
+        });
+        using var canceled = new CancellationTokenSource();
+        handler.EnqueueBroadcast("tx-first");
+        handler.SetBeforeSubmission((balance, _) =>
+        {
+            if(balance.Address == "later")
+                canceled.Cancel();
+        });
+        var balances = new[]
+        {
+            new Balance
+            {
+                PoolId = "kas-test", Address = "first", Amount = 1m,
+                Updated = DateTime.UtcNow.AddMinutes(-1),
+            },
+            new Balance
+            {
+                PoolId = "kas-test", Address = "later", Amount = 2m,
+                Updated = DateTime.UtcNow,
+            },
+        };
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            handler.RunPayoutLoopAsync(balances, canceled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(1, handler.BroadcastCalls);
+        await paymentRepo.Received(1).TryBeginPaymentBatchAsync(connection,
+            transaction, "kas-test", "tx-first", Arg.Any<DateTime>());
+        await balanceRepo.Received(1).AddAmountAsync(connection, transaction,
+            "kas-test", "first", -1m, "Balance reset after payment");
+        await balanceRepo.DidNotReceive().AddAmountAsync(connection, transaction,
+            "kas-test", "later", Arg.Any<decimal>(), Arg.Any<string>());
+        messageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.RecipientsCount == 1 && x.TxIds.Single() == "tx-first"),
+            Arg.Any<string>());
+        messageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Uncertain),
+            Arg.Any<string>());
+    }
+
     [Fact]
     public async Task MixedPerRecipientOutcome_PreservesEveryKnownState()
     {
@@ -97,6 +167,9 @@ public class KaspaPayoutHandlerTests
 
     private sealed class TestKaspaPayoutHandler : KaspaPayoutHandler
     {
+        private readonly Queue<string> broadcastTransactionIds = new();
+        private Action<Balance, CancellationToken> beforeSubmission;
+
         public TestKaspaPayoutHandler(IComponentContext ctx, IConnectionFactory cf,
             IMapper mapper, IShareRepository shareRepo, IBlockRepository blockRepo,
             IBalanceRepository balanceRepo, IPaymentRepository paymentRepo,
@@ -110,8 +183,20 @@ public class KaspaPayoutHandlerTests
         {
             poolConfig = pool;
             clusterConfig = new ClusterConfig();
+            network = "mainnet";
             logger = LogManager.GetCurrentClassLogger();
         }
+
+        public int BroadcastCalls { get; private set; }
+
+        public void EnqueueBroadcast(string transactionId) =>
+            broadcastTransactionIds.Enqueue(transactionId);
+
+        public void SetBeforeSubmission(Action<Balance, CancellationToken> action) =>
+            beforeSubmission = action;
+
+        public Task RunPayoutLoopAsync(Balance[] balances, CancellationToken ct) =>
+            TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
 
         public Task RunMixedOutcomeAsync(Balance accepted, Balance failed,
             Balance uncertain, Balance untouched, Exception failure) =>
@@ -130,5 +215,44 @@ public class KaspaPayoutHandlerTests
                     throw new PayoutOutcomeUncertainException(
                         "Kaspa broadcast response was lost");
                 });
+
+        protected override Task<kaspaWalletd.GetBalanceResponse>
+            GetPayoutWalletBalanceAsync(CancellationToken ct) =>
+            Task.FromResult(new kaspaWalletd.GetBalanceResponse
+            {
+                Available = (ulong) (100 * KaspaConstants.SmallestUnit),
+            });
+
+        protected override Task<kaspaWalletd.CreateUnsignedTransactionsResponse>
+            CreateUnsignedTransactionsAsync(
+                kaspaWalletd.CreateUnsignedTransactionsRequest request,
+                CancellationToken ct, Action<Exception> errorHandler)
+        {
+            var response = new kaspaWalletd.CreateUnsignedTransactionsResponse();
+            response.UnsignedTransactions.Add(ByteString.CopyFromUtf8("unsigned"));
+            return Task.FromResult(response);
+        }
+
+        protected override Task<kaspaWalletd.SignResponse> SignTransactionsAsync(
+            kaspaWalletd.SignRequest request, CancellationToken ct,
+            Action<Exception> errorHandler)
+        {
+            var response = new kaspaWalletd.SignResponse();
+            response.SignedTransactions.Add(ByteString.CopyFromUtf8("signed"));
+            return Task.FromResult(response);
+        }
+
+        protected override Task<kaspaWalletd.BroadcastResponse>
+            BroadcastTransactionAsync(kaspaWalletd.BroadcastRequest request,
+                CancellationToken ct, Action<Exception> errorHandler)
+        {
+            BroadcastCalls++;
+            var response = new kaspaWalletd.BroadcastResponse();
+            response.TxIDs.Add(broadcastTransactionIds.Dequeue());
+            return Task.FromResult(response);
+        }
+
+        protected override void BeforePayoutSubmission(Balance balance,
+            CancellationToken ct) => beforeSubmission?.Invoke(balance, ct);
     }
 }

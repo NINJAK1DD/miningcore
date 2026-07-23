@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -12,6 +13,7 @@ using Miningcore.Blockchain.Warthog.DaemonRequests;
 using Miningcore.Blockchain.Warthog.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
+using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -25,6 +27,98 @@ namespace Miningcore.Tests.Blockchain;
 
 public class WarthogPayoutHandlerTests
 {
+    [Fact]
+    public async Task Payout_AddressValidationCancellationRemainsPreSubmission()
+    {
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = CreateHandler(messageBus: messageBus);
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        handler.EnqueueAddressValidation((_, ct) =>
+            Task.FromCanceled<WarthogBlockTemplate>(ct));
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            handler.RunPayoutLoopAsync(new[] { Balance("address-cancelled", 1m) },
+                canceled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(0, handler.SubmissionCalls);
+        messageBus.DidNotReceive().SendMessage(Arg.Any<PaymentNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_WalletBalanceCancellationRemainsPreSubmission()
+    {
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = CreateHandler(messageBus: messageBus);
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        handler.EnqueueWalletBalance(ct =>
+            Task.FromCanceled<WarthogBalance>(ct));
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            handler.RunPayoutLoopAsync(new[] { Balance("balance-cancelled", 1m) },
+                canceled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(0, handler.SubmissionCalls);
+        messageBus.DidNotReceive().SendMessage(Arg.Any<PaymentNotification>(),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_CancellationBeforeLaterSubmissionPersistsKnownTransaction()
+    {
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        cf.OpenConnectionAsync().Returns(connection);
+        var paymentRepo = Substitute.For<IPaymentRepository>();
+        paymentRepo.TryBeginPaymentBatchAsync(connection, transaction, "wart-test",
+                "tx-first", Arg.Any<DateTime>())
+            .Returns(true);
+        var balanceRepo = Substitute.For<IBalanceRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = CreateHandler(cf, balanceRepo, paymentRepo, messageBus);
+        using var canceled = new CancellationTokenSource();
+        handler.EnqueuePreparation(PreparedTransaction);
+        handler.EnqueuePreparation(PreparedTransaction);
+        handler.EnqueueSubmission((_, _) => Task.FromResult(
+            new WarthogSendTransactionResponse
+            {
+                Data = new WarthogSendTransactionData { TxHash = "tx-first" },
+            }));
+        handler.SetBeforeSubmission((balance, _) =>
+        {
+            if(balance.Address == "later")
+                canceled.Cancel();
+        });
+        var balances = new[] { Balance("first", 1m), Balance("later", 2m) };
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            handler.RunPayoutLoopAsync(balances, canceled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(1, handler.SubmissionCalls);
+        await paymentRepo.Received(1).TryBeginPaymentBatchAsync(connection,
+            transaction, "wart-test", "tx-first", Arg.Any<DateTime>());
+        await balanceRepo.Received(1).AddAmountAsync(connection, transaction,
+            "wart-test", "first", -1m, "Balance reset after payment");
+        await balanceRepo.DidNotReceive().AddAmountAsync(connection, transaction,
+            "wart-test", "later", Arg.Any<decimal>(), Arg.Any<string>());
+        messageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.RecipientsCount == 1 && x.TxIds.Single() == "tx-first"),
+            Arg.Any<string>());
+        messageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Uncertain),
+            Arg.Any<string>());
+    }
+
     [Fact]
     public async Task PayoutRecipient_ChainInfoCancellationRemainsPreSubmission()
     {
@@ -120,14 +214,23 @@ public class WarthogPayoutHandlerTests
             NonceId = nonceId,
         });
 
-    private static TestWarthogPayoutHandler CreateHandler()
+    private static Balance Balance(string address, decimal amount) => new()
+    {
+        PoolId = "wart-test",
+        Address = address,
+        Amount = amount,
+    };
+
+    private static TestWarthogPayoutHandler CreateHandler(
+        IConnectionFactory cf = null, IBalanceRepository balanceRepo = null,
+        IPaymentRepository paymentRepo = null, IMessageBus messageBus = null)
     {
         var handler = new TestWarthogPayoutHandler(
-            Substitute.For<IComponentContext>(), Substitute.For<IConnectionFactory>(),
+            Substitute.For<IComponentContext>(), cf ?? Substitute.For<IConnectionFactory>(),
             Substitute.For<IMapper>(), Substitute.For<IShareRepository>(),
-            Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-            Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(),
-            Substitute.For<IHttpClientFactory>(), Substitute.For<IMessageBus>());
+            Substitute.For<IBlockRepository>(), balanceRepo ?? Substitute.For<IBalanceRepository>(),
+            paymentRepo ?? Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(),
+            Substitute.For<IHttpClientFactory>(), messageBus ?? Substitute.For<IMessageBus>());
         handler.Configure(new PoolConfig
         {
             Id = "wart-test",
@@ -143,6 +246,11 @@ public class WarthogPayoutHandlerTests
             Task<WarthogSendTransactionRequest>>> preparations = new();
         private readonly Queue<Func<WarthogSendTransactionRequest,
             CancellationToken, Task<WarthogSendTransactionResponse>>> submissions = new();
+        private readonly Queue<Func<string, CancellationToken,
+            Task<WarthogBlockTemplate>>> addressValidations = new();
+        private readonly Queue<Func<CancellationToken, Task<WarthogBalance>>>
+            walletBalances = new();
+        private Action<Balance, CancellationToken> beforeSubmission;
 
         public TestWarthogPayoutHandler(IComponentContext ctx, IConnectionFactory cf,
             IMapper mapper, IShareRepository shareRepo, IBlockRepository blockRepo,
@@ -170,6 +278,19 @@ public class WarthogPayoutHandlerTests
         public void EnqueueSubmission(Func<WarthogSendTransactionRequest,
             CancellationToken, Task<WarthogSendTransactionResponse>> submission) =>
             submissions.Enqueue(submission);
+
+        public void EnqueueAddressValidation(Func<string, CancellationToken,
+            Task<WarthogBlockTemplate>> validation) =>
+            addressValidations.Enqueue(validation);
+
+        public void EnqueueWalletBalance(Func<CancellationToken,
+            Task<WarthogBalance>> balance) => walletBalances.Enqueue(balance);
+
+        public void SetBeforeSubmission(Action<Balance, CancellationToken> action) =>
+            beforeSubmission = action;
+
+        public Task RunPayoutLoopAsync(Balance[] balances, CancellationToken ct) =>
+            TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
 
         public async Task<Exception[]> RunRecipientsAsync(CancellationToken ct,
             params (string Address, decimal Amount)[] recipients)
@@ -209,5 +330,31 @@ public class WarthogPayoutHandlerTests
             SubmissionCalls++;
             return submissions.Dequeue()(request, ct);
         }
+
+        protected override Task<WarthogBlockTemplate>
+            GetPayoutAddressTemplateAsync(string address, CancellationToken ct) =>
+            addressValidations.Count > 0
+                ? addressValidations.Dequeue()(address, ct)
+                : Task.FromResult(new WarthogBlockTemplate
+                {
+                    Data = new WarthogBlockTemplateData(),
+                });
+
+        protected override Task<WarthogBalance> GetPayoutWalletBalanceAsync(
+            CancellationToken ct) =>
+            walletBalances.Count > 0
+                ? walletBalances.Dequeue()(ct)
+                : Task.FromResult(new WarthogBalance
+                {
+                    Data = new WarthogBalanceData
+                    {
+                        Balance = (ulong) (100 * WarthogConstants.SmallestUnit),
+                    },
+                });
+
+        protected override void BeforePayoutSubmission(Balance balance,
+            CancellationToken ct) => beforeSubmission?.Invoke(balance, ct);
+
+        protected override int PayoutMaxDegreeOfParallelism => 1;
     }
 }

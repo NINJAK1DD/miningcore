@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Warthog.Configuration;
@@ -261,7 +262,8 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
     }
 
-    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances,
+        CancellationToken ct)
     {
         // build args
         var amounts = balances
@@ -280,30 +282,38 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             logger.Debug(() => $"[{LogCategory}] Address {pair.Key} with amount [{FormatAmount(pair.Value)}]");
             try
             {
-                var responseAddress = await restClient.Get<WarthogBlockTemplate>(WarthogCommands.GetBlockTemplate.Replace(WarthogCommands.DataLabel, pair.Key), ct);
+                var responseAddress = await GetPayoutAddressTemplateAsync(pair.Key, ct);
                 if(responseAddress?.Error != null)
                     logger.Warn(()=> $"[{LogCategory}] Address {pair.Key} is not valid: {responseAddress.Error} (Code {responseAddress?.Code})");
             }
 
-            catch(Exception e)
+            catch(OperationCanceledException)
+            {
+                throw;
+            }
+            catch(Exception ex)
             {
                 logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.DaemonName} - {WarthogCommands.GetBlockTemplate}' daemon does not seem to be running...");
-                throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {e}");
+                throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {ex.Message}", ex);
             }
         }
         
         WarthogBalance responseBalance;
         try
         {
-            responseBalance = await restClient.Get<WarthogBalance>(WarthogCommands.GetBalance.Replace(WarthogCommands.DataLabel, poolConfig.Address), ct);
+            responseBalance = await GetPayoutWalletBalanceAsync(ct);
             if(responseBalance?.Error != null)
                 logger.Warn(()=> $"[{LogCategory}] '{WarthogCommands.GetBalance}': {responseBalance.Error} (Code {responseBalance?.Code})");
         }
 
-        catch(Exception e)
+        catch(OperationCanceledException)
+        {
+            throw;
+        }
+        catch(Exception ex)
         {
             logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.DaemonName} - {WarthogCommands.GetBalance}' daemon does not seem to be running...");
-            throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {e}");
+            throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {ex.Message}", ex);
         }
 
         var walletBalance = (decimal) (responseBalance?.Data.Balance == null ? 0 : responseBalance?.Data.Balance) / WarthogConstants.SmallestUnit;
@@ -328,41 +338,52 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
 
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = extraPoolPaymentProcessingConfig?.MaxDegreeOfParallelPayouts ?? 2,
+            MaxDegreeOfParallelism = PayoutMaxDegreeOfParallelism,
             CancellationToken = ct
         };
 
-        await Parallel.ForEachAsync(amounts, parallelOptions, async (x, _ct) =>
+        OperationCanceledException loopCancellation = null;
+
+        try
         {
-            var (address, amount) = x;
-
-            uint nonceId = (uint) randomNonceId.NextInt64((long)uint.MinValue, (long)uint.MaxValue);
-
-            lock(nonceGenLock)
+            await Parallel.ForEachAsync(amounts, parallelOptions, async (x, _ct) =>
             {
-                bool IsSafeToContinue = false;
-                while(!IsSafeToContinue)
+                var (address, amount) = x;
+
+                uint nonceId = (uint) randomNonceId.NextInt64((long)uint.MinValue, (long)uint.MaxValue);
+
+                lock(nonceGenLock)
                 {
-                    if(!(usedNonceId.Contains(nonceId)))
+                    bool IsSafeToContinue = false;
+                    while(!IsSafeToContinue)
                     {
-                        logger.Debug(()=> $"[{LogCategory}] Transaction nonceId: [{nonceId}]");
+                        if(!(usedNonceId.Contains(nonceId)))
+                        {
+                            logger.Debug(()=> $"[{LogCategory}] Transaction nonceId: [{nonceId}]");
 
-                        usedNonceId.Add(nonceId);
-                        IsSafeToContinue = true;
+                            usedNonceId.Add(nonceId);
+                            IsSafeToContinue = true;
+                        }
+                        else
+                            nonceId = (uint) randomNonceId.NextInt64((long)uint.MinValue, (long)uint.MaxValue);
                     }
-                    else
-                        nonceId = (uint) randomNonceId.NextInt64((long)uint.MinValue, (long)uint.MaxValue);
                 }
-            }
 
-            logger.Info(()=> $"[{LogCategory}] [{nonceId}] Sending {FormatAmount(amount)} to {address}");
+                logger.Info(()=> $"[{LogCategory}] [{nonceId}] Sending {FormatAmount(amount)} to {address}");
 
-            var result = await PayoutRecipientAsync(address, amount, nonceId, _ct);
-            if(result.Error != null)
-                txFailures.Add(Tuple.Create(x, result.Error));
-            else
-                successBalances.TryAdd(result.Balance, result.TxHash);
-        });
+                var result = await PayoutRecipientAsync(address, amount, nonceId, _ct);
+                if(result.Error != null)
+                    txFailures.Add(Tuple.Create(x, result.Error));
+                else
+                    successBalances.TryAdd(result.Balance, result.TxHash);
+            });
+        }
+        catch(OperationCanceledException ex) when(ct.IsCancellationRequested)
+        {
+            // Parallel.ForEachAsync has drained active delegates. Persist transaction identities
+            // returned before a later recipient observed shutdown, then propagate cancellation.
+            loopCancellation = ex;
+        }
 
         if(successBalances.Any())
         {
@@ -385,6 +406,9 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
 
             NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
         }
+
+        if(loopCancellation != null)
+            ExceptionDispatchInfo.Capture(loopCancellation).Throw();
     }
 
     public double AdjustBlockEffort(double effort)
@@ -424,6 +448,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
 
         // Keep this outside the submission catch: an already-cancelled token must remain an
         // ordinary shutdown rather than being reclassified as an ambiguous POST.
+        BeforePayoutSubmission(submittedBalance, ct);
         TrackPayoutSubmission(ct, submittedBalance);
 
         try
@@ -454,6 +479,24 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             return new RecipientPayoutResult(submittedBalance, null, ex);
         }
     }
+
+    protected virtual Task<WarthogBlockTemplate> GetPayoutAddressTemplateAsync(
+        string address, CancellationToken ct) =>
+        restClient.Get<WarthogBlockTemplate>(WarthogCommands.GetBlockTemplate.Replace(
+            WarthogCommands.DataLabel, address), ct);
+
+    protected virtual Task<WarthogBalance> GetPayoutWalletBalanceAsync(
+        CancellationToken ct) =>
+        restClient.Get<WarthogBalance>(WarthogCommands.GetBalance.Replace(
+            WarthogCommands.DataLabel, poolConfig.Address), ct);
+
+    protected virtual void BeforePayoutSubmission(Balance balance,
+        CancellationToken ct)
+    {
+    }
+
+    protected virtual int PayoutMaxDegreeOfParallelism =>
+        extraPoolPaymentProcessingConfig?.MaxDegreeOfParallelPayouts ?? 2;
 
     protected virtual async Task<WarthogSendTransactionRequest>
         PreparePayoutTransactionAsync(string address, decimal amount, uint nonceId,
