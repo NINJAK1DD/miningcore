@@ -200,6 +200,41 @@ public class AlephiumPayoutHandlerTests
     }
 
     [Fact]
+    public async Task PreparedGroups_AcceptedThenActiveTimeout_FlushesConclusiveSubsets()
+    {
+        var fixture = CreatePayoutFixture();
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-accepted", fixture.Now)
+            .Returns(true);
+        fixture.Handler.EnqueuePreparationResult();
+        fixture.Handler.EnqueuePreparationException(
+            new TaskCanceledException("request timed out"));
+        fixture.Handler.EnqueueResult(new SubmitTxResult { TxId = "tx-accepted" });
+        var accepted = Balance(fixture.Pool.Id, "accepted", 1);
+        var failed = Balance(fixture.Pool.Id, "timed-out", 2);
+
+        await fixture.Handler.RunPreparedGroupsAsync(
+            "Alephium transaction build", CancellationToken.None,
+            new[] { accepted }, new[] { failed });
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.Amount == 1 && x.RecipientsCount == 1),
+            Arg.Any<string>());
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure &&
+                x.Amount == 2 && x.RecipientsCount == 1 &&
+                x.Error.Contains("request timed out")),
+            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Uncertain),
+            Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task PreparedGroups_FailureThenUncertainSubmissionPreservesMembership()
     {
         var fixture = CreatePayoutFixture();
@@ -390,15 +425,19 @@ public class AlephiumPayoutHandlerTests
 
         public Task RunPreparedGroupsAsync(string operation,
             params Balance[][] groups) =>
+            RunPreparedGroupsAsync(operation, CancellationToken.None, groups);
+
+        public Task RunPreparedGroupsAsync(string operation, CancellationToken ct,
+            params Balance[][] groups) =>
             TrackPayoutAsync(groups.SelectMany(x => x).ToArray(), async () =>
             {
                 foreach(var group in groups)
                 {
                     var (success, _) = await TryPayoutPreparationAsync(group,
-                        operation, preparations.Dequeue());
+                        operation, ct, preparations.Dequeue());
                     if(success)
                         await SubmitPayoutGroupAsync(group, new SubmitSettlement(), 0,
-                            CancellationToken.None);
+                            ct);
                 }
             });
 

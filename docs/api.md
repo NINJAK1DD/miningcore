@@ -117,6 +117,11 @@ transaction ID. Acceptance verification is keyed by that ID. A duplicate returne
 submissions is therefore treated as financially uncertain, includes the known ID in administrative
 reconciliation, and retains payout ownership rather than risking an incorrect recipient mapping.
 
+Kaspa can return an ordered transaction chain for one recipient. In that case `txIds` on the success
+event contains every returned identity in wallet order. The last ID is the recipient-facing canonical
+identity stored in payment history; prerequisite IDs remain in the success event and administrative
+reconciliation. Miningcore fails closed unless the returned list is complete, nonblank and unique.
+
 Public clients can use `recipientsCount` and the outcome-aware `acceptedCount`, `acceptedAmount`,
 `failedCount`, `failedAmount`, `uncertainCount`, `uncertainAmount`, `notAttemptedCount` and
 `notAttemptedAmount` aggregates. Nullable fields are omitted when they do not apply.

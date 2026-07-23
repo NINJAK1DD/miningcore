@@ -408,6 +408,27 @@ public abstract class PayoutHandlerBase
         activePayout.Value?.MarkSubmitted(balances, transactionId);
     }
 
+    /// <summary>
+    /// Retains every ordered transaction identity returned for a logical payout while selecting
+    /// the canonical identity used by payment persistence and idempotency.
+    /// </summary>
+    protected void TrackPayoutTransactions(Balance[] balances,
+        string canonicalTransactionId, string[] transactionIds)
+    {
+        activePayout.Value?.MarkSubmitted(balances, canonicalTransactionId,
+            transactionIds);
+    }
+
+    /// <summary>
+    /// Retains identities from a malformed response before fail-closed validation attaches the
+    /// reconciliation record.
+    /// </summary>
+    protected void TrackReturnedPayoutTransactions(Balance[] balances,
+        string[] transactionIds)
+    {
+        activePayout.Value?.MarkReturnedTransactionIds(balances, transactionIds);
+    }
+
     private void FlushPayoutNotifications(PayoutReconciliationTracker tracker)
     {
         tracker.FlushNotifications(ex => logger.Error(ex, () =>

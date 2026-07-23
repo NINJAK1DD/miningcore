@@ -223,6 +223,35 @@ public class PaymentNotificationTests
             rendered.EmailMessage);
     }
 
+    [Fact]
+    public void UncertainReconciliation_MultipleTransactionIdsRendersCompleteChain()
+    {
+        var notification = new PaymentNotification("kas-test", "response malformed",
+            1m, "KAS", 1, null, null, null)
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "kaspa:recipient",
+                        Amount = 1m,
+                        TransactionId = "tx-recipient",
+                        TransactionIds = new[] { "tx-split", "tx-recipient" },
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "KAS", "https://explorer.test/{0}");
+
+        Assert.Contains("transactions tx-split, tx-recipient " +
+            "(canonical tx-recipient)", rendered.EmailMessage);
+    }
+
     private static PayoutReconciliationEntry Entry(string address, decimal amount,
         string transactionId, string detail)
     {

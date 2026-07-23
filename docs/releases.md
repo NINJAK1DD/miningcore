@@ -35,6 +35,9 @@ coin families, including paged and per-recipient wallet APIs. Known persisted, r
 and untouched recipients remain distinct when a later submission becomes uncertain. Administrative
 amounts use exact invariant decimal formatting with insignificant trailing zeroes removed, and
 duplicate transaction IDs returned by separate per-recipient submissions fail closed.
+Kaspa multi-transaction payouts additionally require a complete ordered identity set, persist the
+final recipient-facing transaction as canonical, and retain every prerequisite ID for notification
+and reconciliation.
 
 ## Choose a version
 

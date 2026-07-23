@@ -42,10 +42,23 @@ internal sealed class PayoutReconciliationTracker
         {
             entry.State = PayoutState.Accepted;
             entry.TransactionId = transactionId;
+            if(entry.TransactionIds.Length == 0 ||
+                !entry.TransactionIds.Contains(transactionId, StringComparer.Ordinal))
+                entry.TransactionIds = new[] { transactionId };
             entry.Detail = null;
         });
 
     public void MarkSubmitted(IEnumerable<Balance> balances, string transactionId)
+        => MarkSubmitted(balances, transactionId, new[] { transactionId });
+
+    public void MarkReturnedTransactionIds(IEnumerable<Balance> balances,
+        IEnumerable<string> transactionIds) => Update(balances, entry =>
+    {
+        entry.TransactionIds = transactionIds?.ToArray() ?? Array.Empty<string>();
+    });
+
+    public void MarkSubmitted(IEnumerable<Balance> balances, string transactionId,
+        IEnumerable<string> transactionIds)
     {
         lock(gate)
         {
@@ -58,26 +71,50 @@ internal sealed class PayoutReconciliationTracker
             if(submittedEntries.Length == 0)
                 return;
 
-            var duplicate = entries.Any(x => !submittedEntries.Contains(x) &&
-                !string.IsNullOrWhiteSpace(x.TransactionId) &&
-                string.Equals(x.TransactionId, transactionId, StringComparison.Ordinal));
+            var suppliedIds = transactionIds?.ToArray() ?? Array.Empty<string>();
+            if(suppliedIds.Length == 0)
+                suppliedIds = new[] { transactionId };
 
-            if(duplicate)
+            var effectiveIds = submittedEntries
+                .SelectMany(entry => entry.TransactionIds.Length > 0 &&
+                    entry.TransactionIds.Contains(transactionId, StringComparer.Ordinal)
+                        ? entry.TransactionIds
+                        : suppliedIds)
+                .ToArray();
+            var duplicateWithinSubmission = effectiveIds
+                .GroupBy(x => x, StringComparer.Ordinal)
+                .Any(x => x.Count() > submittedEntries.Length);
+            var duplicateAcrossSubmissions = entries
+                .Where(x => !submittedEntries.Contains(x))
+                .SelectMany(x => x.TransactionIds.Length > 0
+                    ? x.TransactionIds
+                    : string.IsNullOrWhiteSpace(x.TransactionId)
+                        ? Array.Empty<string>()
+                        : new[] { x.TransactionId })
+                .Intersect(effectiveIds, StringComparer.Ordinal)
+                .Any();
+
+            if(duplicateWithinSubmission || duplicateAcrossSubmissions)
             {
                 foreach(var entry in submittedEntries)
                 {
                     entry.State = PayoutState.Attempting;
                     entry.TransactionId = transactionId;
+                    entry.TransactionIds = suppliedIds;
                 }
 
                 throw new PayoutOutcomeUncertainException(
-                    $"Separate wallet submissions returned duplicate transaction id {transactionId}");
+                    "Wallet submission returned one or more duplicate transaction ids");
             }
 
             foreach(var entry in submittedEntries)
             {
                 entry.State = PayoutState.Attempting;
                 entry.TransactionId = transactionId;
+                if(entry.TransactionIds.Length == 0 ||
+                    !entry.TransactionIds.Contains(transactionId,
+                        StringComparer.Ordinal))
+                    entry.TransactionIds = suppliedIds;
             }
         }
     }
@@ -181,6 +218,7 @@ internal sealed class PayoutReconciliationTracker
             entry.Amount = sourceEntry.Amount;
             entry.SubmittedAmount = sourceEntry.SubmittedAmount;
             entry.TransactionId = sourceEntry.TransactionId;
+            entry.TransactionIds = sourceEntry.TransactionIds ?? Array.Empty<string>();
             entry.Detail = sourceEntry.Detail;
         }
     }
@@ -228,6 +266,7 @@ internal sealed class PayoutReconciliationTracker
         public decimal Amount { get; set; }
         public decimal? SubmittedAmount { get; set; }
         public string TransactionId { get; set; }
+        public string[] TransactionIds { get; set; } = Array.Empty<string>();
         public string Detail { get; set; }
         public PayoutState State { get; set; }
 
@@ -238,6 +277,7 @@ internal sealed class PayoutReconciliationTracker
                 Amount = Amount,
                 SubmittedAmount = SubmittedAmount,
                 TransactionId = TransactionId,
+                TransactionIds = TransactionIds,
                 Detail = Detail ?? defaultDetail,
             };
     }

@@ -517,7 +517,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     // get address UTXOs
                     var (utxoLookupSucceeded, inputAddressUtxos) =
                         await TryPayoutPreparationAsync(groupBalances,
-                            "Alephium address UTXO lookup", () =>
+                            "Alephium address UTXO lookup", ct, () =>
                                 alephiumClient.GetAddressesAddressUtxosAsync(
                                     inputAddress.Address, ct));
                     if(!utxoLookupSucceeded)
@@ -606,7 +606,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     };
 
                     var (buildSucceeded, txBuild) = await TryPayoutPreparationAsync(
-                        groupBalances, "Alephium transaction build", () =>
+                        groupBalances, "Alephium transaction build", ct, () =>
                             alephiumClient.PostTransactionsBuildAsync(
                                 destinationsTransaction, ct));
                     if(!buildSucceeded)
@@ -628,7 +628,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                     };
 
                     var (signSucceeded, txSign) = await TryPayoutPreparationAsync(
-                        groupBalances, "Alephium transaction signing", () =>
+                        groupBalances, "Alephium transaction signing", ct, () =>
                             alephiumClient.NameSignAsync(
                                 extraPoolPaymentProcessingConfig.WalletName,
                                 signTxBuild, ct));
@@ -670,13 +670,14 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
         .ToArray();
 
     protected async Task<(bool Success, T Result)> TryPayoutPreparationAsync<T>(
-        Balance[] balances, string operation, Func<Task<T>> action)
+        Balance[] balances, string operation, CancellationToken ct,
+        Func<Task<T>> action)
     {
         try
         {
             return (true, await action());
         }
-        catch(OperationCanceledException)
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
         {
             throw;
         }

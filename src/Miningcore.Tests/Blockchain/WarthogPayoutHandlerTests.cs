@@ -120,14 +120,66 @@ public class WarthogPayoutHandlerTests
     }
 
     [Fact]
+    public async Task Payout_ActivePreparationTimeoutFailsRecipientAndPersistsKnownTransaction()
+    {
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        cf.OpenConnectionAsync().Returns(connection);
+        var paymentRepo = Substitute.For<IPaymentRepository>();
+        paymentRepo.TryBeginPaymentBatchAsync(connection, transaction, "wart-test",
+                "tx-first", Arg.Any<DateTime>())
+            .Returns(true);
+        var balanceRepo = Substitute.For<IBalanceRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = CreateHandler(cf, balanceRepo, paymentRepo, messageBus);
+        handler.EnqueuePreparation(PreparedTransaction);
+        handler.EnqueuePreparation((_, _, _, _) =>
+            throw new TaskCanceledException("request timed out"));
+        handler.EnqueueSubmission((_, _) => Task.FromResult(
+            new WarthogSendTransactionResponse
+            {
+                Data = new WarthogSendTransactionData { TxHash = "tx-first" },
+            }));
+
+        await handler.RunPayoutLoopAsync(
+            new[] { Balance("first", 1m), Balance("timed-out", 2m) },
+            CancellationToken.None);
+
+        Assert.Equal(1, handler.SubmissionCalls);
+        await paymentRepo.Received(1).TryBeginPaymentBatchAsync(connection,
+            transaction, "wart-test", "tx-first", Arg.Any<DateTime>());
+        await balanceRepo.Received(1).AddAmountAsync(connection, transaction,
+            "wart-test", "first", -1m, "Balance reset after payment");
+        await balanceRepo.DidNotReceive().AddAmountAsync(connection, transaction,
+            "wart-test", "timed-out", Arg.Any<decimal>(), Arg.Any<string>());
+        messageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.RecipientsCount == 1), Arg.Any<string>());
+        messageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure &&
+                x.RecipientsCount == 1 && x.Error.Contains("request timed out")),
+            Arg.Any<string>());
+        messageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Uncertain),
+            Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task PayoutRecipient_ChainInfoCancellationRemainsPreSubmission()
     {
         var handler = CreateHandler();
         handler.EnqueuePreparation((_, _, _, _) =>
             throw new OperationCanceledException("chain-info cancelled"));
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
 
         var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            handler.RunRecipientsAsync(CancellationToken.None,
+            handler.RunRecipientsAsync(canceled.Token,
                 ("chain-cancelled", 1m)));
 
         Assert.IsNotType<PayoutOutcomeUncertainException>(exception);

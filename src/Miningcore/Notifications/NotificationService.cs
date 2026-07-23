@@ -196,8 +196,23 @@ public class NotificationService : StartupGatedBackgroundService
                     $"(precision adjustment {FormatSignedExactHtmlAmount(adjustment, symbol)})");
             }
 
-            if(!string.IsNullOrWhiteSpace(x.TransactionId))
-                parts.Add($"transaction {HtmlEncode(x.TransactionId)}");
+            var transactionIds = (x.TransactionIds ?? Array.Empty<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToArray();
+            if(transactionIds.Length == 0 &&
+                !string.IsNullOrWhiteSpace(x.TransactionId))
+                transactionIds = new[] { x.TransactionId };
+
+            if(transactionIds.Length == 1)
+                parts.Add($"transaction {HtmlEncode(transactionIds[0])}");
+            else if(transactionIds.Length > 1)
+            {
+                var transactionDetail = $"transactions " +
+                    string.Join(", ", transactionIds.Select(HtmlEncode));
+                if(!string.IsNullOrWhiteSpace(x.TransactionId))
+                    transactionDetail += $" (canonical {HtmlEncode(x.TransactionId)})";
+                parts.Add(transactionDetail);
+            }
 
             if(!string.IsNullOrWhiteSpace(x.Detail))
                 parts.Add(HtmlEncode(x.Detail));

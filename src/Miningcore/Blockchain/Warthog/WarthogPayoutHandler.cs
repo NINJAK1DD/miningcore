@@ -287,7 +287,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                     logger.Warn(()=> $"[{LogCategory}] Address {pair.Key} is not valid: {responseAddress.Error} (Code {responseAddress?.Code})");
             }
 
-            catch(OperationCanceledException)
+            catch(OperationCanceledException) when(ct.IsCancellationRequested)
             {
                 throw;
             }
@@ -306,7 +306,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                 logger.Warn(()=> $"[{LogCategory}] '{WarthogCommands.GetBalance}': {responseBalance.Error} (Code {responseBalance?.Code})");
         }
 
-        catch(OperationCanceledException)
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
         {
             throw;
         }
@@ -434,7 +434,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         {
             request = await PreparePayoutTransactionAsync(address, amount, nonceId, ct);
         }
-        catch(OperationCanceledException)
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
         {
             throw;
         }
