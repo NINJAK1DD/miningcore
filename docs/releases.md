@@ -50,8 +50,11 @@ shutdown and conservatively attempt bounded relock when the unlock result is unk
 
 The bundled definitions now select StakeCubeCoin's current SCCPow implementation instead of a
 later duplicate legacy X11 entry, and Zetacoin's hybrid PoW/PoS definition now uses its current
-Scrypt proof-of-work algorithm. Coin-definition files containing the same identifier more than once
-are rejected at startup instead of silently allowing the final entry to override an earlier one.
+Scrypt proof-of-work algorithm. Duplicate JSON properties at any level within one coin-definition
+file—including coin identifiers, nested hasher settings, and network parameters—are rejected at
+startup instead of silently allowing the final value to override an earlier one. This is a
+deliberate fail-closed compatibility change; explicit redefinitions across separately loaded files
+remain supported.
 
 The stale HelpTheHomeless X16R definition has been removed because the maintained chain uses X25X,
 which is not included in the packaged native runtimes. DigiByte Odocrypt is likewise not advertised:

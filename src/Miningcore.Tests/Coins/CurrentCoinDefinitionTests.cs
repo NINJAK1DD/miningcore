@@ -1,7 +1,9 @@
 using System.IO;
+using System.Linq;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
-using Newtonsoft.Json;
+using Miningcore.Extensions;
+using Miningcore.Mining;
 using Xunit;
 
 namespace Miningcore.Tests.Coins;
@@ -24,6 +26,16 @@ public class CurrentCoinDefinitionTests : TestBase
             ModuleInitializer.CoinTemplates["zetacoin"]);
 
         Assert.IsType<Scrypt>(template.HeaderHasherValue);
+
+        var input = Enumerable.Repeat((byte) 0x80, 32).ToArray();
+        var output = new byte[32];
+
+        template.HeaderHasherValue.Digest(input, output);
+
+        Assert.Equal(
+            "b546d334422ff5fff98e8ba847a55bbc06271c64bb5e21107b1b225f6579d40a",
+            output.ToHexString());
+
         var blockHasher = Assert.IsType<DigestReverser>(template.BlockHasherValue);
         Assert.IsType<Sha256D>(blockHasher.Upstream);
         Assert.Null(template.PoSBlockHasher);
@@ -53,10 +65,47 @@ public class CurrentCoinDefinitionTests : TestBase
                 }
                 """);
 
-            var ex = Assert.Throws<JsonReaderException>(() =>
+            var ex = Assert.Throws<PoolStartupException>(() =>
                 CoinTemplateLoader.Load(container, new[] { path }));
 
             Assert.Contains("duplicate", ex.Message.ToLowerInvariant());
+            Assert.Contains(path, ex.Message);
+            Assert.IsType<Newtonsoft.Json.JsonReaderException>(ex.InnerException);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Loader_RejectsDuplicateNestedPropertiesWithinOneFile()
+    {
+        var path = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(path,
+                """
+                {
+                    "duplicate-nested": {
+                        "name": "Duplicate Nested",
+                        "symbol": "DUP",
+                        "family": "bitcoin",
+                        "headerHasher": {
+                            "hash": "scrypt",
+                            "hash": "sha256d"
+                        }
+                    }
+                }
+                """);
+
+            var ex = Assert.Throws<PoolStartupException>(() =>
+                CoinTemplateLoader.Load(container, new[] { path }));
+
+            Assert.Contains("hash", ex.Message.ToLowerInvariant());
+            Assert.Contains(path, ex.Message);
+            Assert.IsType<Newtonsoft.Json.JsonReaderException>(ex.InnerException);
         }
         finally
         {

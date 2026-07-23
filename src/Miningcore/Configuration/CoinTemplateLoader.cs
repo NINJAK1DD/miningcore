@@ -14,10 +14,20 @@ public static class CoinTemplateLoader
     {
         using var jreader = new JsonTextReader(File.OpenText(filename));
 
-        var jo = JObject.Load(jreader, new JsonLoadSettings
+        JObject jo;
+
+        try
         {
-            DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error,
-        });
+            jo = JObject.Load(jreader, new JsonLoadSettings
+            {
+                DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error,
+            });
+        }
+        catch(JsonReaderException ex)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template file '{filename}': {ex.Message}", ex);
+        }
 
         foreach(var o in jo)
         {
