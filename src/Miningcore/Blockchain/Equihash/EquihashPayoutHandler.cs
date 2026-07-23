@@ -84,21 +84,50 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
         Contract.RequiresNonNull(balances);
-        
-        // Some projects like Veruscoin does not require shielding before being able to spend coins.
-        // They can also sends coins from a t-address to t-addresses and z-addresses
-        await TrackPayoutAsync(balances, async () =>
+
+        try
         {
-            if(supportsSendCurrency)
-                await PayoutSendCurrencyAsync(pool, balances, ct);
-            else
-                await PayoutZSendManyAsync(pool, balances, ct);
-        });
-        
-        // lock wallet
+            await TrackPayoutAsync(balances, () =>
+                PayoutTrackedAsync(pool, balances, ct));
+        }
+        finally
+        {
+            // Relocking is wallet-security cleanup, not part of the financial result. Use a
+            // fresh bounded token so shutdown cancellation cannot skip it or replace that result.
+            await RelockPayoutWalletSafelyAsync(LockWallet);
+        }
+    }
+
+    protected virtual Task PayoutTrackedAsync(IMiningPool pool, Balance[] balances,
+        CancellationToken ct)
+    {
+        // Some projects like Veruscoin do not require shielding before being able to spend coins.
+        // They can also send coins from a t-address to t-addresses and z-addresses.
+        return supportsSendCurrency
+            ? PayoutSendCurrencyAsync(pool, balances, ct)
+            : PayoutZSendManyAsync(pool, balances, ct);
+    }
+
+    protected virtual async Task LockWallet(CancellationToken ct)
+    {
         logger.Info(() => $"[{LogCategory}] Locking wallet");
 
-        await rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletLock, ct);
+        var response = await rpcClient.ExecuteAsync<JToken>(logger,
+            BitcoinCommands.WalletLock, ct);
+        if(response.Error?.Code ==
+            (int) BitcoinRPCErrorCode.RPC_WALLET_WRONG_ENC_STATE)
+        {
+            logger.Debug(() =>
+                $"[{LogCategory}] Wallet does not require locking");
+            return;
+        }
+
+        if(response.Error != null)
+            throw new InvalidOperationException(
+                $"{BitcoinCommands.WalletLock} returned error: " +
+                $"{response.Error.Message} code {response.Error.Code}");
+
+        logger.Info(() => $"[{LogCategory}] Wallet locked");
     }
     
     private async Task PayoutZSendManyAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)

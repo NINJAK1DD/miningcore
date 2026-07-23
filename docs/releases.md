@@ -39,6 +39,9 @@ Kaspa multi-transaction payouts additionally require a complete ordered identity
 final recipient-facing transaction as canonical, and retain every prerequisite ID for notification
 and reconciliation. Kaspa success events preserve the existing flat `txIds` list and add an optional
 `recipientTransactionChains` mapping with each recipient address, canonical ID and ordered chain.
+Equihash payout wallets are relocked in bounded cleanup even when payout processing fails or the host
+is shutting down; relock errors raise a separate administrative alert without replacing the financial
+outcome.
 
 ## Choose a version
 
