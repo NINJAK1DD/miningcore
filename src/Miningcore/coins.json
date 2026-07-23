@@ -417,6 +417,35 @@
         "explorerTxLink": "http://explorer.btcd.io/#/TX?TX={0}",
         "explorerAccountLink": "http://explorer.btcd.io/#/address?address={0}"
     },
+    "bitcoin-ii": {
+        "name": "Bitcoin II",
+        "canonicalName": "Bitcoin-II",
+        "symbol": "BC2",
+        "family": "bitcoin",
+        "website": "https://bitcoin-ii.org/",
+        "github": "https://github.com/KvantaMechanic/BitcoinII",
+        "market": "https://www.coingecko.com/en/coins/bitcoinii",
+        "twitter": "https://x.com/bc2org",
+        "telegram": "https://t.me/+mc19GB_d5yo3Yjg5",
+        "discord": "https://discord.com/invite/zUSkQHNVyG",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "sha256d"
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "explorerBlockLink": "https://bitcoinii.ddns.net/explorer/block-height/$height$",
+        "explorerTxLink": "https://bitcoinii.ddns.net/explorer/tx/{0}",
+        "explorerAccountLink": "https://bitcoinii.ddns.net/explorer/address/{0}"
+    },
     "bitcoin-sv": {
         "name": "BitcoinSV",
         "canonicalName": "Bitcoin-SV",
