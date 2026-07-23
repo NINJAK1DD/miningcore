@@ -263,92 +263,93 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             }
 
             var didUnlockWallet = false;
-
-            // send command
-            tryTransfer:
-            var walletInfo = await rpcWallet.ExecuteAsync<WalletInfo>(logger, HandshakeWalletCommands.GetWalletInfo, ct);
-            var walletName = extraPoolPaymentProcessingConfig?.WalletName ?? HandshakeConstants.WalletDefaultName;
-            logger.Debug(() => $"[{LogCategory}] Current wallet: {walletInfo.Response?.WalletId} [{walletName}]");
-            if(walletInfo.Response?.WalletId != walletName)
-                await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.SelectWallet, ct, new[] { walletName });
-
-            TrackPayoutSubmission(ct, balances);
-            var result = await rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendMany, ct, args);
-
-            WalletSubmissionOutcome.ThrowIfUnknown(result.Error,
-                HandshakeWalletCommands.SendMany);
-
-            if(result.Error == null)
+            try
             {
-                // Capture the wallet identity before any post-submission wallet-lock call can be
-                // interrupted so reconciliation retains the known transaction.
-                var txId = WalletSubmissionOutcome.RequireTransactionId(result.Response,
-                    HandshakeWalletCommands.SendMany);
-                TrackPayoutTransaction(balances, txId);
+                // send command
+                tryTransfer:
+                var walletInfo = await GetWalletInfoAsync(ct);
+                var walletName = extraPoolPaymentProcessingConfig?.WalletName ??
+                    HandshakeConstants.WalletDefaultName;
+                logger.Debug(() => $"[{LogCategory}] Current wallet: " +
+                    $"{walletInfo.Response?.WalletId} [{walletName}]");
+                if(walletInfo.Response?.WalletId != walletName)
+                    await SelectWalletAsync(walletName, ct);
 
-                if(didUnlockWallet)
+                TrackPayoutSubmission(ct, balances);
+                var result = await SendManyAsync(args, ct);
+
+                WalletSubmissionOutcome.ThrowIfUnknown(result.Error,
+                    HandshakeWalletCommands.SendMany);
+
+                if(result.Error == null)
                 {
-                    // lock wallet
-                    logger.Info(() => $"[{LogCategory}] Locking wallet");
-                    await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.WalletLock, ct);
+                    var txId = WalletSubmissionOutcome.RequireTransactionId(
+                        result.Response, HandshakeWalletCommands.SendMany);
+                    TrackPayoutTransaction(balances, txId);
+
+                    logger.Info(() =>
+                        $"[{LogCategory}] Payment transaction id: {txId}");
+
+                    // Persist the already-broadcast transaction before wallet-security cleanup.
+                    await PersistPaymentsAsync(balances, txId);
+
+                    NotifyPayoutSuccess(poolConfig.Id, balances, new[] { txId }, null);
                 }
 
-                logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
-
-                await PersistPaymentsAsync(balances, txId);
-
-                NotifyPayoutSuccess(poolConfig.Id, balances, new[]
+                else
                 {
-                    txId
-                }, null);
-            }
-
-            else
-            {
-                if(result.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
-                {
-                    TrackPayoutSubmissionNotStarted(balances);
-
-                    if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
+                    if(result.Error.Code ==
+                        (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED &&
+                        !didUnlockWallet)
                     {
-                        logger.Info(() => $"[{LogCategory}] Unlocking wallet");
+                        TrackPayoutSubmissionNotStarted(balances);
 
-                        var unlockResult = await rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.WalletPassPhrase, ct, new[]
+                        if(!string.IsNullOrEmpty(
+                            extraPoolPaymentProcessingConfig?.WalletPassword))
                         {
-                            extraPoolPaymentProcessingConfig.WalletPassword,
-                            (object) 5 // unlock for N seconds
-                        });
+                            logger.Info(() => $"[{LogCategory}] Unlocking wallet");
 
-                        if(unlockResult.Error == null)
-                        {
-                            didUnlockWallet = true;
-                            goto tryTransfer;
+                            var unlockResult = await UnlockWalletAsync(ct);
+
+                            if(unlockResult.Error == null)
+                            {
+                                didUnlockWallet = true;
+                                goto tryTransfer;
+                            }
+
+                            logger.Error(() => $"[{LogCategory}] " +
+                                $"{HandshakeWalletCommands.WalletPassPhrase} returned " +
+                                $"error: {unlockResult.Error.Message} code " +
+                                $"{unlockResult.Error.Code}");
+                            NotifyPayoutFailure(poolConfig.Id, balances,
+                                $"{HandshakeWalletCommands.WalletPassPhrase} returned " +
+                                $"error: {unlockResult.Error.Message} code " +
+                                $"{unlockResult.Error.Code}", null);
                         }
 
                         else
                         {
-                            logger.Error(() => $"[{LogCategory}] {HandshakeWalletCommands.WalletPassPhrase} returned error: {unlockResult.Error.Message} code {unlockResult.Error.Code}");
-                            NotifyPayoutFailure(poolConfig.Id, balances,
-                                $"{HandshakeWalletCommands.WalletPassPhrase} returned error: " +
-                                $"{unlockResult.Error.Message} code {unlockResult.Error.Code}", null);
+                            const string error = "Wallet is locked but walletPassword " +
+                                "was not configured. Unable to send funds.";
+                            logger.Error(() => $"[{LogCategory}] {error}");
+                            NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                         }
                     }
 
                     else
                     {
-                        logger.Error(() => $"[{LogCategory}] Wallet is locked but walletPassword was not configured. Unable to send funds.");
-                        NotifyPayoutFailure(poolConfig.Id, balances,
-                            "Wallet is locked but walletPassword was not configured. Unable to send funds.",
-                            null);
+                        var error = $"{HandshakeWalletCommands.SendMany} returned " +
+                            $"error: {result.Error.Message} code {result.Error.Code}";
+                        logger.Error(() => $"[{LogCategory}] {error}");
+
+                        NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                     }
                 }
-
-                else
-                {
-                    logger.Error(() => $"[{LogCategory}] {HandshakeWalletCommands.SendMany} returned error: {result.Error.Message} code {result.Error.Code}");
-
-                    NotifyPayoutFailure(poolConfig.Id, balances, $"{HandshakeWalletCommands.SendMany} returned error: {result.Error.Message} code {result.Error.Code}", null);
-                }
+            }
+            finally
+            {
+                if(didUnlockWallet)
+                    await RelockPayoutWalletSafelyAsync(LockWallet);
             }
         }
 
@@ -461,6 +462,44 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             if(loopCancellation != null)
                 ExceptionDispatchInfo.Capture(loopCancellation).Throw();
         }
+    }
+
+    protected virtual Task<RpcResponse<WalletInfo>> GetWalletInfoAsync(
+        CancellationToken ct) =>
+        rpcWallet.ExecuteAsync<WalletInfo>(logger,
+            HandshakeWalletCommands.GetWalletInfo, ct);
+
+    protected virtual Task<RpcResponse<JToken>> SelectWalletAsync(string walletName,
+        CancellationToken ct) =>
+        rpcWallet.ExecuteAsync<JToken>(logger, HandshakeWalletCommands.SelectWallet,
+            ct, new[] { walletName });
+
+    protected virtual Task<RpcResponse<string>> SendManyAsync(object[] args,
+        CancellationToken ct) =>
+        rpcWallet.ExecuteAsync<string>(logger, HandshakeWalletCommands.SendMany,
+            ct, args);
+
+    protected virtual Task<RpcResponse<JToken>> UnlockWalletAsync(
+        CancellationToken ct) =>
+        rpcWallet.ExecuteAsync<JToken>(logger,
+            HandshakeWalletCommands.WalletPassPhrase, ct, new object[]
+            {
+                extraPoolPaymentProcessingConfig.WalletPassword,
+                5, // unlock for N seconds
+            });
+
+    protected virtual async Task LockWallet(CancellationToken ct)
+    {
+        logger.Info(() => $"[{LogCategory}] Locking wallet");
+
+        var response = await rpcWallet.ExecuteAsync<JToken>(logger,
+            HandshakeWalletCommands.WalletLock, ct);
+        if(response.Error != null)
+            throw new InvalidOperationException(
+                $"{HandshakeWalletCommands.WalletLock} returned error: " +
+                $"{response.Error.Message} code {response.Error.Code}");
+
+        logger.Info(() => $"[{LogCategory}] Wallet locked");
     }
 
     protected virtual Task<RpcResponse<string>> SendToAddressAsync(object[] args,

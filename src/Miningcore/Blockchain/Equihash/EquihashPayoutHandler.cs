@@ -46,6 +46,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     protected bool supportsZSendManyPrivacyPolicy;
     protected Network network;
     protected EquihashCoinTemplate.EquihashNetworkParams chainConfig;
+    private bool payoutWalletWasUnlocked;
     protected override string LogCategory => "Equihash Payout Handler";
     protected const decimal TransferFee = 0.0001m;
     protected const int ZMinConfirmations = 8;
@@ -84,6 +85,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
         Contract.RequiresNonNull(balances);
+        payoutWalletWasUnlocked = false;
 
         try
         {
@@ -92,9 +94,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         }
         finally
         {
-            // Relocking is wallet-security cleanup, not part of the financial result. Use a
-            // fresh bounded token so shutdown cancellation cannot skip it or replace that result.
-            await RelockPayoutWalletSafelyAsync(LockWallet);
+            if(payoutWalletWasUnlocked)
+            {
+                // Relocking is wallet-security cleanup, not part of the financial result. Use a
+                // fresh bounded token so shutdown cancellation cannot skip it or replace that result.
+                await RelockPayoutWalletSafelyAsync(LockWallet);
+            }
         }
     }
 
@@ -114,14 +119,6 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         var response = await rpcClient.ExecuteAsync<JToken>(logger,
             BitcoinCommands.WalletLock, ct);
-        if(response.Error?.Code ==
-            (int) BitcoinRPCErrorCode.RPC_WALLET_WRONG_ENC_STATE)
-        {
-            logger.Debug(() =>
-                $"[{LogCategory}] Wallet does not require locking");
-            return;
-        }
-
         if(response.Error != null)
             throw new InvalidOperationException(
                 $"{BitcoinCommands.WalletLock} returned error: " +
@@ -129,6 +126,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         logger.Info(() => $"[{LogCategory}] Wallet locked");
     }
+
+    protected void MarkPayoutWalletUnlocked() => payoutWalletWasUnlocked = true;
     
     private async Task PayoutZSendManyAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
@@ -311,6 +310,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                         if(unlockResponse.Error == null)
                         {
                             didUnlockWallet = true;
+                            MarkPayoutWalletUnlocked();
                             goto tryTransfer;
                         }
 
@@ -479,6 +479,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                         if(unlockResponse.Error == null)
                         {
                             didUnlockWallet = true;
+                            MarkPayoutWalletUnlocked();
                             goto trySendCurrencyTransfer;
                         }
 

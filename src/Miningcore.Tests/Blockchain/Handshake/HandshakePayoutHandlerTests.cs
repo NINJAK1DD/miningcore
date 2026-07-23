@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -8,7 +9,10 @@ using AutoMapper;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Handshake;
+using Miningcore.Blockchain.Handshake.Configuration;
+using Miningcore.Blockchain.Handshake.DaemonResponses;
 using Miningcore.Configuration;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -20,12 +24,93 @@ using Miningcore.Rpc;
 using Miningcore.Time;
 using NLog;
 using NSubstitute;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Handshake;
 
 public class HandshakePayoutHandlerTests
 {
+    [Fact]
+    public async Task SendMany_SuccessPersistsBeforeRelockFailureAndRemainsSuccess()
+    {
+        var fixture = CreateSendManyFixture();
+        var persisted = false;
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-accepted", fixture.Now)
+            .Returns(_ =>
+            {
+                persisted = true;
+                return true;
+            });
+        fixture.Handler.EnqueueSendMany(new RpcResponse<string>(null,
+            new JsonRpcError(
+                (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED,
+                "wallet locked", null)));
+        fixture.Handler.EnqueueSendMany(new RpcResponse<string>("tx-accepted"));
+        fixture.Handler.SetLockAction(_ =>
+        {
+            Assert.True(persisted);
+            return Task.FromException(
+                new InvalidOperationException("lock unavailable"));
+        });
+
+        await fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+            new[] { Balance(fixture.Pool.Id, "hs1accepted") },
+            CancellationToken.None);
+
+        Assert.Equal(1, fixture.Handler.LockCalls);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.TxIds.Single() == "tx-accepted"),
+            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure),
+            Arg.Any<string>());
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(x =>
+                x.Subject == "Payout wallet relock failed" &&
+                x.Message.Contains("lock unavailable")),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task SendMany_UncertainSubmissionStillRelocksWithFreshToken()
+    {
+        var fixture = CreateSendManyFixture();
+        using var cancelled = new CancellationTokenSource();
+        fixture.Handler.EnqueueSendMany(new RpcResponse<string>(null,
+            new JsonRpcError(
+                (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED,
+                "wallet locked", null)));
+        fixture.Handler.EnqueueSendMany((_, _) =>
+        {
+            cancelled.Cancel();
+            return Task.FromResult(new RpcResponse<string>(null,
+                new JsonRpcError(-500, "response lost", null)));
+        });
+        CancellationToken relockToken = default;
+        fixture.Handler.SetLockAction(ct =>
+        {
+            relockToken = ct;
+            return Task.CompletedTask;
+        });
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+                new[] { Balance(fixture.Pool.Id, "hs1uncertain") },
+                cancelled.Token));
+
+        Assert.Contains("response lost", exception.ToString());
+        Assert.Equal(1, fixture.Handler.LockCalls);
+        Assert.True(relockToken.CanBeCanceled);
+        Assert.False(relockToken.IsCancellationRequested);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
     [Fact]
     public async Task BrokenSendMany_DuplicateTransactionIdsAbortBeforePersistence()
     {
@@ -161,11 +246,52 @@ public class HandshakePayoutHandlerTests
         return handler;
     }
 
+    private static SendManyFixture CreateSendManyFixture()
+    {
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        cf.OpenConnectionAsync().Returns(connection);
+        var paymentRepo = Substitute.For<IPaymentRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var clock = Substitute.For<IMasterClock>();
+        var now = DateTime.UtcNow;
+        clock.Now.Returns(now);
+        var handler = new TestHandshakePayoutHandler(
+            Substitute.For<IComponentContext>(), cf, Substitute.For<IMapper>(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            Substitute.For<IBalanceRepository>(), paymentRepo, clock, messageBus);
+        var pool = new PoolConfig
+        {
+            Id = "hns-test",
+            Template = new BitcoinTemplate
+            {
+                Symbol = "HNS",
+                HasBrokenSendMany = false,
+            },
+            RewardRecipients = Array.Empty<RewardRecipient>(),
+        };
+        handler.Configure(pool, false);
+        return new SendManyFixture(handler, pool, connection, transaction,
+            paymentRepo, messageBus, now);
+    }
+
+    private static Balance Balance(string poolId, string address) => new()
+    {
+        PoolId = poolId,
+        Address = address,
+        Amount = 1,
+    };
+
     private sealed class TestHandshakePayoutHandler : HandshakePayoutHandler
     {
         private readonly Queue<Func<object[], CancellationToken,
             Task<RpcResponse<string>>>> submissions = new();
+        private readonly Queue<Func<object[], CancellationToken,
+            Task<RpcResponse<string>>>> sendManyResponses = new();
         private Action<Balance, CancellationToken> beforeSubmission;
+        private Func<CancellationToken, Task> lockAction = _ => Task.CompletedTask;
 
         public TestHandshakePayoutHandler(IComponentContext ctx,
             IConnectionFactory cf, IMapper mapper, IShareRepository shareRepo,
@@ -177,15 +303,25 @@ public class HandshakePayoutHandlerTests
         {
         }
 
-        public void Configure(PoolConfig pool)
+        public void Configure(PoolConfig pool, bool brokenSendMany = true)
         {
             poolConfig = pool;
             clusterConfig = new ClusterConfig();
-            extraPoolConfig = new BitcoinPoolConfigExtra { HasBrokenSendMany = true };
+            extraPoolConfig = new BitcoinPoolConfigExtra
+            {
+                HasBrokenSendMany = brokenSendMany,
+            };
+            extraPoolPaymentProcessingConfig =
+                new HandshakePoolPaymentProcessingConfigExtra
+                {
+                    WalletName = HandshakeConstants.WalletDefaultName,
+                    WalletPassword = "test-password",
+                };
             logger = LogManager.GetCurrentClassLogger();
         }
 
         public int SubmissionCalls { get; private set; }
+        public int LockCalls { get; private set; }
 
         public void SetBeforeSubmission(Action<Balance, CancellationToken> action) =>
             beforeSubmission = action;
@@ -193,10 +329,44 @@ public class HandshakePayoutHandlerTests
         public void EnqueueSubmission(Func<object[], CancellationToken,
             Task<RpcResponse<string>>> submission) => submissions.Enqueue(submission);
 
+        public void EnqueueSendMany(RpcResponse<string> response) =>
+            EnqueueSendMany((_, _) => Task.FromResult(response));
+
+        public void EnqueueSendMany(Func<object[], CancellationToken,
+            Task<RpcResponse<string>>> response) =>
+            sendManyResponses.Enqueue(response);
+
+        public void SetLockAction(Func<CancellationToken, Task> action) =>
+            lockAction = action;
+
         public void SetClock(DateTime now) => clock.Now.Returns(now);
 
         public Task RunPayoutLoopAsync(Balance[] balances, CancellationToken ct) =>
             TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+
+        protected override Task<RpcResponse<WalletInfo>> GetWalletInfoAsync(
+            CancellationToken ct) =>
+            Task.FromResult(new RpcResponse<WalletInfo>(new WalletInfo
+            {
+                WalletId = HandshakeConstants.WalletDefaultName,
+            }));
+
+        protected override Task<RpcResponse<JToken>> SelectWalletAsync(
+            string walletName, CancellationToken ct) =>
+            Task.FromResult(new RpcResponse<JToken>(null));
+
+        protected override Task<RpcResponse<string>> SendManyAsync(object[] args,
+            CancellationToken ct) => sendManyResponses.Dequeue()(args, ct);
+
+        protected override Task<RpcResponse<JToken>> UnlockWalletAsync(
+            CancellationToken ct) =>
+            Task.FromResult(new RpcResponse<JToken>(null));
+
+        protected override Task LockWallet(CancellationToken ct)
+        {
+            LockCalls++;
+            return lockAction(ct);
+        }
 
         protected override Task<RpcResponse<string>> SendToAddressAsync(object[] args,
             CancellationToken ct)
@@ -212,4 +382,8 @@ public class HandshakePayoutHandlerTests
 
         protected override int BrokenSendManyMaxDegreeOfParallelism => 1;
     }
+
+    private sealed record SendManyFixture(TestHandshakePayoutHandler Handler,
+        PoolConfig Pool, IDbConnection Connection, IDbTransaction Transaction,
+        IPaymentRepository PaymentRepo, IMessageBus MessageBus, DateTime Now);
 }
