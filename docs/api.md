@@ -118,18 +118,24 @@ submissions is therefore treated as financially uncertain, includes the known ID
 reconciliation, and retains payout ownership rather than risking an incorrect recipient mapping.
 
 Kaspa can return an ordered transaction chain for one recipient. In that case `txIds` on the success
-event contains every returned identity in wallet order. The last ID is the recipient-facing canonical
-identity stored in payment history; prerequisite IDs remain in the success event and administrative
-reconciliation. Miningcore fails closed unless the returned list is complete, nonblank and unique.
+event retains every returned identity in wallet order as a backwards-compatible batch-level list.
+The optional `recipientTransactionChains` array additionally maps each `address` to its ordered
+`transactionIds` and explicit `canonicalTransactionId`, allowing clients to automate per-recipient
+reconciliation without inferring chain boundaries. The canonical value is the final recipient-facing
+ID stored in payment history; prerequisite IDs remain in the success event and administrative
+reconciliation. Miningcore fails closed unless every returned list is complete, nonblank and unique,
+and transaction identities do not overlap between separate recipient submissions.
 
 Public clients can use `recipientsCount` and the outcome-aware `acceptedCount`, `acceptedAmount`,
 `failedCount`, `failedAmount`, `uncertainCount`, `uncertainAmount`, `notAttemptedCount` and
 `notAttemptedAmount` aggregates. Nullable fields are omitted when they do not apply.
 
-The public WebSocket payload intentionally excludes `error` and recipient-level `reconciliation`.
-Those values can contain wallet errors, addresses and transaction mappings and remain available only
-to administrative notification channels and logs. Front ends written against an older event shape
-must use `outcome` and the safe aggregate fields instead of displaying `error`.
+The public WebSocket payload intentionally excludes `error` and uncertain-outcome recipient-level
+`reconciliation`. Those values can contain wallet errors and ambiguous transaction mappings and
+remain available only to administrative notification channels and logs. A conclusive Kaspa success
+can include the optional recipient address and transaction-chain mapping described above. Front ends
+written against an older event shape must use `outcome` and the safe aggregate fields instead of
+displaying `error`.
 
 ## Metrics and administration
 

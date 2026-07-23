@@ -62,8 +62,89 @@ public class KaspaPayoutHandlerTests
         fixture.MessageBus.Received(1).SendMessage(
             Arg.Is<PaymentNotification>(x =>
                 x.Outcome == PaymentNotificationOutcome.Success &&
-                x.TxIds.SequenceEqual(new[] { "tx-split", "tx-recipient" })),
+                x.TxIds.SequenceEqual(new[] { "tx-split", "tx-recipient" }) &&
+                x.RecipientTransactionChains.Length == 1 &&
+                x.RecipientTransactionChains[0].Address == balance.Address &&
+                x.RecipientTransactionChains[0].CanonicalTransactionId ==
+                    "tx-recipient" &&
+                x.RecipientTransactionChains[0].TransactionIds.SequenceEqual(
+                    new[] { "tx-split", "tx-recipient" })),
             Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_MultipleRecipientChainsExposeBoundaries()
+    {
+        var fixture = CreatePayoutFixture();
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-recipient-a", fixture.Now)
+            .Returns(true);
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-recipient-b", fixture.Now)
+            .Returns(true);
+        fixture.Handler.EnqueueUnsignedTransactions(2);
+        fixture.Handler.EnqueueSignedTransactions(2);
+        fixture.Handler.EnqueueBroadcast("tx-split-a", "tx-recipient-a");
+        fixture.Handler.EnqueueUnsignedTransactions(2);
+        fixture.Handler.EnqueueSignedTransactions(2);
+        fixture.Handler.EnqueueBroadcast("tx-split-b", "tx-recipient-b");
+        var first = Balance("recipient-a", 1m, DateTime.UtcNow.AddMinutes(-1));
+        var second = Balance("recipient-b", 2m, DateTime.UtcNow);
+
+        await fixture.Handler.RunPayoutLoopAsync(new[] { first, second },
+            CancellationToken.None);
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.TxIds.SequenceEqual(new[]
+                {
+                    "tx-split-a", "tx-recipient-a",
+                    "tx-split-b", "tx-recipient-b",
+                }) &&
+                x.RecipientTransactionChains.Length == 2 &&
+                x.RecipientTransactionChains.Single(chain =>
+                    chain.Address == first.Address).TransactionIds.SequenceEqual(
+                    new[] { "tx-split-a", "tx-recipient-a" }) &&
+                x.RecipientTransactionChains.Single(chain =>
+                    chain.Address == second.Address).TransactionIds.SequenceEqual(
+                    new[] { "tx-split-b", "tx-recipient-b" })),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task Payout_OverlappingRecipientChainsFailClosedBeforePersistence()
+    {
+        var fixture = CreatePayoutFixture();
+        fixture.Handler.EnqueueUnsignedTransactions(2);
+        fixture.Handler.EnqueueSignedTransactions(2);
+        fixture.Handler.EnqueueBroadcast("tx-shared", "tx-recipient-a");
+        fixture.Handler.EnqueueUnsignedTransactions(2);
+        fixture.Handler.EnqueueSignedTransactions(2);
+        fixture.Handler.EnqueueBroadcast("tx-shared", "tx-recipient-b");
+        var first = Balance("recipient-a", 1m, DateTime.UtcNow.AddMinutes(-1));
+        var second = Balance("recipient-b", 2m, DateTime.UtcNow);
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunPayoutLoopAsync(new[] { first, second },
+                CancellationToken.None));
+
+        Assert.Contains("duplicate transaction ids", exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "tx-shared", "tx-recipient-a" },
+            exception.Reconciliation.Uncertain.Single(x =>
+                x.Address == first.Address).TransactionIds);
+        Assert.Equal(new[] { "tx-shared", "tx-recipient-b" },
+            exception.Reconciliation.Uncertain.Single(x =>
+                x.Address == second.Address).TransactionIds);
+        await fixture.PaymentRepo.DidNotReceive().InsertAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<Payment>());
+        await fixture.BalanceRepo.DidNotReceive().AddAmountAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<decimal>(),
+            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
     }
 
     [Theory]

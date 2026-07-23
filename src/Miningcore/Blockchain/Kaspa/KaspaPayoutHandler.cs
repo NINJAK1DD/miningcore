@@ -11,6 +11,7 @@ using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -584,11 +585,21 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
 
         if(successBalances.Any())
         {
-            await PersistPaymentsAsync(successBalances.ToDictionary(x => x.Key,
+            var successfulPayouts = successBalances.ToArray();
+
+            await PersistPaymentsAsync(successfulPayouts.ToDictionary(x => x.Key,
                 x => x.Value.CanonicalTransactionId));
 
-            NotifyPayoutSuccess(poolConfig.Id, successBalances.Keys.ToArray(),
-                successBalances.Values.SelectMany(x => x.TransactionIds).ToArray(), null);
+            NotifyPayoutSuccess(poolConfig.Id,
+                successfulPayouts.Select(x => x.Key).ToArray(),
+                successfulPayouts.SelectMany(x => x.Value.TransactionIds).ToArray(),
+                null, recipientTransactionChains: successfulPayouts.Select(x =>
+                    new PaymentRecipientTransactionChain
+                    {
+                        Address = x.Key.Address,
+                        CanonicalTransactionId = x.Value.CanonicalTransactionId,
+                        TransactionIds = x.Value.TransactionIds,
+                    }).ToArray());
         }
 
         if(txFailures.Any())

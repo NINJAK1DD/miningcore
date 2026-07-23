@@ -26,6 +26,47 @@ public class PaymentNotificationTests
         Assert.Null(payload["failedAmount"]);
         Assert.Null(payload["uncertainCount"]);
         Assert.Null(payload["notAttemptedCount"]);
+        Assert.Null(payload["recipientTransactionChains"]);
+    }
+
+    [Fact]
+    public void WebSocketSerialization_SuccessExposesOptionalRecipientTransactionChains()
+    {
+        var notification = new PaymentNotification("kas-test", null, 3, "KAS", 2,
+            new[] { "split-a", "recipient-a", "split-b", "recipient-b" },
+            null, null)
+        {
+            RecipientTransactionChains = new[]
+            {
+                new PaymentRecipientTransactionChain
+                {
+                    Address = "kaspa:recipient-a",
+                    CanonicalTransactionId = "recipient-a",
+                    TransactionIds = new[] { "split-a", "recipient-a" },
+                },
+                new PaymentRecipientTransactionChain
+                {
+                    Address = "kaspa:recipient-b",
+                    CanonicalTransactionId = "recipient-b",
+                    TransactionIds = new[] { "split-b", "recipient-b" },
+                },
+            },
+        };
+
+        var payload = SerializePayment(notification);
+        var chains = Assert.IsType<JArray>(payload["recipientTransactionChains"]);
+
+        Assert.Equal(2, chains.Count);
+        Assert.Equal("kaspa:recipient-a", chains[0].Value<string>("address"));
+        Assert.Equal("recipient-a",
+            chains[0].Value<string>("canonicalTransactionId"));
+        Assert.Equal(new[] { "split-a", "recipient-a" },
+            chains[0]["transactionIds"].Values<string>());
+        Assert.Equal("kaspa:recipient-b", chains[1].Value<string>("address"));
+        Assert.Equal("recipient-b",
+            chains[1].Value<string>("canonicalTransactionId"));
+        Assert.Equal(new[] { "split-b", "recipient-b" },
+            chains[1]["transactionIds"].Values<string>());
     }
 
     [Fact]

@@ -288,7 +288,8 @@ public abstract class PayoutHandlerBase
 
     protected virtual void NotifyPayoutSuccess(string poolId, Balance[] balances,
         string[] txHashes, decimal? txFee, decimal? submittedAmount = null,
-        decimal? precisionAdjustment = null)
+        decimal? precisionAdjustment = null,
+        PaymentRecipientTransactionChain[] recipientTransactionChains = null)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -303,6 +304,7 @@ public abstract class PayoutHandlerBase
         {
             SubmittedAmount = submittedAmount,
             PrecisionAdjustment = precisionAdjustment,
+            RecipientTransactionChains = recipientTransactionChains,
         });
     }
 

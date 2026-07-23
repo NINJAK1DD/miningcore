@@ -37,7 +37,8 @@ amounts use exact invariant decimal formatting with insignificant trailing zeroe
 duplicate transaction IDs returned by separate per-recipient submissions fail closed.
 Kaspa multi-transaction payouts additionally require a complete ordered identity set, persist the
 final recipient-facing transaction as canonical, and retain every prerequisite ID for notification
-and reconciliation.
+and reconciliation. Kaspa success events preserve the existing flat `txIds` list and add an optional
+`recipientTransactionChains` mapping with each recipient address, canonical ID and ordered chain.
 
 ## Choose a version
 
