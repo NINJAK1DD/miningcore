@@ -64,9 +64,9 @@ transactions. Miningcore therefore stores the final returned ID as the payment-h
 and payment-batch idempotency key. It retains the complete ordered ID list in success notifications
 and administrative reconciliation so every prerequisite transaction remains inspectable. This
 policy follows the upstream wallet's ordered
-[`broadcast`](https://github.com/kaspanet/kaspad/blob/master/cmd/kaspawallet/daemon/server/broadcast.go)
+[`broadcast`](https://github.com/kaspanet/kaspad/blob/v0.12.23/cmd/kaspawallet/daemon/server/broadcast.go)
 and
-[`split/merge`](https://github.com/kaspanet/kaspad/blob/master/cmd/kaspawallet/daemon/server/split_transaction.go)
+[`split/merge`](https://github.com/kaspanet/kaspad/blob/v0.12.23/cmd/kaspawallet/daemon/server/split_transaction.go)
 implementations.
 
 ## LTC/DOGE merged mining
