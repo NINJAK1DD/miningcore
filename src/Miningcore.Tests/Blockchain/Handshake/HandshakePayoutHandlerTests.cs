@@ -31,6 +31,150 @@ namespace Miningcore.Tests.Blockchain.Handshake;
 
 public class HandshakePayoutHandlerTests
 {
+    [Theory]
+    [InlineData(-500, "transport unavailable")]
+    [InlineData(-4, "wallet service rejected request")]
+    public async Task SendMany_GetWalletInfoFailureStopsBeforeSubmission(
+        int errorCode, string errorMessage)
+    {
+        var fixture = CreateSendManyFixture();
+        fixture.Handler.SetWalletInfoAction(_ =>
+            Task.FromResult(new RpcResponse<WalletInfo>(null,
+                new JsonRpcError(errorCode, errorMessage, null))));
+
+        await fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+            new[] { Balance(fixture.Pool.Id, "hs1preflight") },
+            CancellationToken.None);
+
+        await AssertConclusivePreflightFailure(fixture,
+            HandshakeWalletCommands.GetWalletInfo);
+    }
+
+    [Fact]
+    public async Task SendMany_EmptyWalletInfoStopsBeforeSubmission()
+    {
+        var fixture = CreateSendManyFixture();
+        fixture.Handler.SetWalletInfoAction(_ =>
+            Task.FromResult(new RpcResponse<WalletInfo>(null)));
+
+        await fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+            new[] { Balance(fixture.Pool.Id, "hs1emptywallet") },
+            CancellationToken.None);
+
+        await AssertConclusivePreflightFailure(fixture,
+            HandshakeWalletCommands.GetWalletInfo);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Error.Contains("empty response")),
+            Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData(-500, "transport unavailable")]
+    [InlineData(-4, "wallet selection rejected")]
+    public async Task SendMany_SelectWalletFailureStopsBeforeSubmission(
+        int errorCode, string errorMessage)
+    {
+        var fixture = CreateSendManyFixture();
+        fixture.Handler.SetWalletInfoAction(_ =>
+            Task.FromResult(new RpcResponse<WalletInfo>(new WalletInfo
+            {
+                WalletId = "other-wallet",
+            })));
+        fixture.Handler.SetSelectWalletAction((_, _) =>
+            Task.FromResult(new RpcResponse<JToken>(null,
+                new JsonRpcError(errorCode, errorMessage, null))));
+
+        await fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+            new[] { Balance(fixture.Pool.Id, "hs1selection") },
+            CancellationToken.None);
+
+        await AssertConclusivePreflightFailure(fixture,
+            HandshakeWalletCommands.SelectWallet);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SendMany_PreflightCancellationRemainsOrdinaryShutdown(
+        bool duringWalletSelection)
+    {
+        var fixture = CreateSendManyFixture();
+        using var cancelled = new CancellationTokenSource();
+
+        if(duringWalletSelection)
+        {
+            fixture.Handler.SetWalletInfoAction(_ =>
+                Task.FromResult(new RpcResponse<WalletInfo>(new WalletInfo
+                {
+                    WalletId = "other-wallet",
+                })));
+            fixture.Handler.SetSelectWalletAction((_, _) =>
+            {
+                cancelled.Cancel();
+                return Task.FromResult(new RpcResponse<JToken>(null,
+                    new JsonRpcError(-500, "Cancelled", null)));
+            });
+        }
+        else
+        {
+            fixture.Handler.SetWalletInfoAction(_ =>
+            {
+                cancelled.Cancel();
+                return Task.FromResult(new RpcResponse<WalletInfo>(null,
+                    new JsonRpcError(-500, "Cancelled", null)));
+            });
+        }
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+                new[] { Balance(fixture.Pool.Id, "hs1cancelled") },
+                cancelled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(0, fixture.Handler.SendManyCalls);
+        await AssertNothingPersisted(fixture);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task SendMany_UnlockCancellationRelocksWithoutRetryOrFailure()
+    {
+        var fixture = CreateSendManyFixture();
+        using var cancelled = new CancellationTokenSource();
+        fixture.Handler.EnqueueSendMany(new RpcResponse<string>(null,
+            new JsonRpcError(
+                (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED,
+                "wallet locked", null)));
+        fixture.Handler.SetUnlockAction(_ =>
+        {
+            cancelled.Cancel();
+            return Task.FromResult(new RpcResponse<JToken>(null,
+                new JsonRpcError(-500, "Cancelled", null)));
+        });
+        CancellationToken relockToken = default;
+        fixture.Handler.SetLockAction(ct =>
+        {
+            relockToken = ct;
+            return Task.CompletedTask;
+        });
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Handler.PayoutAsync(Substitute.For<IMiningPool>(),
+                new[] { Balance(fixture.Pool.Id, "hs1unlockcancelled") },
+                cancelled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(1, fixture.Handler.SendManyCalls);
+        Assert.Equal(1, fixture.Handler.LockCalls);
+        Assert.True(relockToken.CanBeCanceled);
+        Assert.False(relockToken.IsCancellationRequested);
+        await AssertNothingPersisted(fixture);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
     [Fact]
     public async Task SendMany_SuccessPersistsBeforeRelockFailureAndRemainsSuccess()
     {
@@ -284,6 +428,29 @@ public class HandshakePayoutHandlerTests
         Amount = 1,
     };
 
+    private static async Task AssertConclusivePreflightFailure(
+        SendManyFixture fixture, string operation)
+    {
+        Assert.Equal(0, fixture.Handler.SendManyCalls);
+        await AssertNothingPersisted(fixture);
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure &&
+                x.Error.Contains(operation)),
+            Arg.Any<string>());
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Uncertain),
+            Arg.Any<string>());
+    }
+
+    private static async Task AssertNothingPersisted(SendManyFixture fixture)
+    {
+        await fixture.PaymentRepo.DidNotReceive().TryBeginPaymentBatchAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateTime>());
+    }
+
     private sealed class TestHandshakePayoutHandler : HandshakePayoutHandler
     {
         private readonly Queue<Func<object[], CancellationToken,
@@ -291,6 +458,17 @@ public class HandshakePayoutHandlerTests
         private readonly Queue<Func<object[], CancellationToken,
             Task<RpcResponse<string>>>> sendManyResponses = new();
         private Action<Balance, CancellationToken> beforeSubmission;
+        private Func<CancellationToken, Task<RpcResponse<WalletInfo>>>
+            walletInfoAction = _ => Task.FromResult(
+                new RpcResponse<WalletInfo>(new WalletInfo
+                {
+                    WalletId = HandshakeConstants.WalletDefaultName,
+                }));
+        private Func<string, CancellationToken, Task<RpcResponse<JToken>>>
+            selectWalletAction = (_, _) =>
+                Task.FromResult(new RpcResponse<JToken>(null));
+        private Func<CancellationToken, Task<RpcResponse<JToken>>>
+            unlockAction = _ => Task.FromResult(new RpcResponse<JToken>(null));
         private Func<CancellationToken, Task> lockAction = _ => Task.CompletedTask;
 
         public TestHandshakePayoutHandler(IComponentContext ctx,
@@ -321,6 +499,7 @@ public class HandshakePayoutHandlerTests
         }
 
         public int SubmissionCalls { get; private set; }
+        public int SendManyCalls { get; private set; }
         public int LockCalls { get; private set; }
 
         public void SetBeforeSubmission(Action<Balance, CancellationToken> action) =>
@@ -339,28 +518,39 @@ public class HandshakePayoutHandlerTests
         public void SetLockAction(Func<CancellationToken, Task> action) =>
             lockAction = action;
 
+        public void SetWalletInfoAction(
+            Func<CancellationToken, Task<RpcResponse<WalletInfo>>> action) =>
+            walletInfoAction = action;
+
+        public void SetSelectWalletAction(
+            Func<string, CancellationToken, Task<RpcResponse<JToken>>> action) =>
+            selectWalletAction = action;
+
+        public void SetUnlockAction(
+            Func<CancellationToken, Task<RpcResponse<JToken>>> action) =>
+            unlockAction = action;
+
         public void SetClock(DateTime now) => clock.Now.Returns(now);
 
         public Task RunPayoutLoopAsync(Balance[] balances, CancellationToken ct) =>
             TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
 
         protected override Task<RpcResponse<WalletInfo>> GetWalletInfoAsync(
-            CancellationToken ct) =>
-            Task.FromResult(new RpcResponse<WalletInfo>(new WalletInfo
-            {
-                WalletId = HandshakeConstants.WalletDefaultName,
-            }));
+            CancellationToken ct) => walletInfoAction(ct);
 
         protected override Task<RpcResponse<JToken>> SelectWalletAsync(
             string walletName, CancellationToken ct) =>
-            Task.FromResult(new RpcResponse<JToken>(null));
+            selectWalletAction(walletName, ct);
 
         protected override Task<RpcResponse<string>> SendManyAsync(object[] args,
-            CancellationToken ct) => sendManyResponses.Dequeue()(args, ct);
+            CancellationToken ct)
+        {
+            SendManyCalls++;
+            return sendManyResponses.Dequeue()(args, ct);
+        }
 
         protected override Task<RpcResponse<JToken>> UnlockWalletAsync(
-            CancellationToken ct) =>
-            Task.FromResult(new RpcResponse<JToken>(null));
+            CancellationToken ct) => unlockAction(ct);
 
         protected override Task LockWallet(CancellationToken ct)
         {

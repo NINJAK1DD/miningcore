@@ -7,6 +7,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Equihash;
 using Miningcore.Blockchain.Equihash.Configuration;
 using Miningcore.Configuration;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -14,15 +15,56 @@ using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Rpc;
 using Miningcore.Time;
 using NLog;
 using NSubstitute;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain;
 
 public class EquihashPayoutHandlerTests
 {
+    [Fact]
+    public async Task PayoutAsync_UnlockCancellationRelocksWithoutRetryOrFailure()
+    {
+        var messageBus = Substitute.For<IMessageBus>();
+        var paymentRepo = Substitute.For<IPaymentRepository>();
+        var (handler, pool) = CreateHandler(messageBus, paymentRepo);
+        handler.UseWalletUnlockPath();
+        using var cancelled = new CancellationTokenSource();
+        handler.SetUnlockAction(_ =>
+        {
+            cancelled.Cancel();
+            return Task.FromResult(new RpcResponse<JToken>(null,
+                new JsonRpcError(-500, "Cancelled", null)));
+        });
+        CancellationToken relockToken = default;
+        handler.SetLockAction(ct =>
+        {
+            relockToken = ct;
+            return Task.CompletedTask;
+        });
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            handler.PayoutAsync(Substitute.For<IMiningPool>(),
+                new[] { Balance(pool.Id) }, cancelled.Token));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        Assert.Equal(1, handler.SubmissionCalls);
+        Assert.Equal(1, handler.UnlockCalls);
+        Assert.Equal(1, handler.LockCalls);
+        Assert.True(relockToken.CanBeCanceled);
+        Assert.False(relockToken.IsCancellationRequested);
+        await paymentRepo.DidNotReceive().TryBeginPaymentBatchAsync(
+            Arg.Any<System.Data.IDbConnection>(),
+            Arg.Any<System.Data.IDbTransaction>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<DateTime>());
+        messageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
     [Fact]
     public async Task PayoutAsync_UncertainSubmissionStillRelocksWithFreshToken()
     {
@@ -108,13 +150,15 @@ public class EquihashPayoutHandlerTests
     }
 
     private static (TestEquihashPayoutHandler Handler, PoolConfig Pool)
-        CreateHandler(IMessageBus messageBus)
+        CreateHandler(IMessageBus messageBus,
+            IPaymentRepository paymentRepo = null)
     {
+        paymentRepo ??= Substitute.For<IPaymentRepository>();
         var handler = new TestEquihashPayoutHandler(
             Substitute.For<IComponentContext>(), Substitute.For<IConnectionFactory>(),
             Substitute.For<IMapper>(), Substitute.For<IShareRepository>(),
             Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-            Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(),
+            paymentRepo, Substitute.For<IMasterClock>(),
             messageBus, Substitute.For<IActiveBlockGracePeriodTracker>());
         var pool = new PoolConfig
         {
@@ -136,6 +180,7 @@ public class EquihashPayoutHandlerTests
     private sealed class TestEquihashPayoutHandler : EquihashPayoutHandler
     {
         private Func<IMiningPool, Balance[], CancellationToken, Task> payoutAction;
+        private Func<CancellationToken, Task<RpcResponse<JToken>>> unlockAction;
         private Func<CancellationToken, Task> lockAction;
 
         public TestEquihashPayoutHandler(IComponentContext ctx, IConnectionFactory cf,
@@ -162,7 +207,24 @@ public class EquihashPayoutHandlerTests
         public void SetLockAction(Func<CancellationToken, Task> action) =>
             lockAction = action;
 
-        public void MarkWalletUnlocked() => MarkPayoutWalletUnlocked();
+        public void SetUnlockAction(
+            Func<CancellationToken, Task<RpcResponse<JToken>>> action) =>
+            unlockAction = action;
+
+        public int UnlockCalls { get; private set; }
+        public int LockCalls { get; private set; }
+        public int SubmissionCalls { get; private set; }
+
+        public void UseWalletUnlockPath() =>
+            payoutAction = async (_, balances, ct) =>
+            {
+                SubmissionCalls++;
+                TrackPayoutSubmission(ct, balances);
+                TrackPayoutSubmissionNotStarted(balances);
+                await UnlockPayoutWalletAsync(ct);
+            };
+
+        public void MarkWalletUnlocked() => MarkPayoutWalletForRelock();
 
         public void QueueSuccess(Balance[] balances, string transactionId) =>
             NotifyPayoutSuccess(poolConfig.Id, balances,
@@ -172,6 +234,17 @@ public class EquihashPayoutHandlerTests
             Balance[] balances, CancellationToken ct) =>
             payoutAction(pool, balances, ct);
 
-        protected override Task LockWallet(CancellationToken ct) => lockAction(ct);
+        protected override Task<RpcResponse<JToken>> ExecuteWalletUnlockAsync(
+            CancellationToken ct)
+        {
+            UnlockCalls++;
+            return unlockAction(ct);
+        }
+
+        protected override Task LockWallet(CancellationToken ct)
+        {
+            LockCalls++;
+            return lockAction(ct);
+        }
     }
 }

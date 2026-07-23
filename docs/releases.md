@@ -42,7 +42,9 @@ and reconciliation. Kaspa success events preserve the existing flat `txIds` list
 Equihash and Handshake payout wallets unlocked by Miningcore are relocked in bounded cleanup even
 when payout processing fails or the host is shutting down. Handshake persists a returned transaction
 before relock cleanup; relock errors raise a separate administrative alert without replacing the
-financial outcome.
+financial outcome. Handshake now requires successful wallet discovery or selection before `sendmany`.
+Handshake and Equihash treat cancellation during `walletpassphrase` as ordinary pre-submission
+shutdown and conservatively attempt bounded relock when the unlock result is unknown.
 
 ## Choose a version
 

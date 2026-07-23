@@ -9,6 +9,7 @@ using Miningcore.Blockchain.Handshake.Configuration;
 using Miningcore.Blockchain.Handshake.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Payments;
@@ -263,17 +264,44 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             }
 
             var didUnlockWallet = false;
+            var shouldRelockWallet = false;
             try
             {
                 // send command
                 tryTransfer:
                 var walletInfo = await GetWalletInfoAsync(ct);
+                ct.ThrowIfCancellationRequested();
+
                 var walletName = extraPoolPaymentProcessingConfig?.WalletName ??
                     HandshakeConstants.WalletDefaultName;
+
+                if(walletInfo?.Error != null || walletInfo?.Response == null)
+                {
+                    var error = FormatPreflightError(
+                        HandshakeWalletCommands.GetWalletInfo, walletInfo?.Error,
+                        walletInfo == null || walletInfo.Response == null);
+                    logger.Error(() => $"[{LogCategory}] {error}");
+                    NotifyPayoutFailure(poolConfig.Id, balances, error, null);
+                    return;
+                }
+
                 logger.Debug(() => $"[{LogCategory}] Current wallet: " +
                     $"{walletInfo.Response?.WalletId} [{walletName}]");
                 if(walletInfo.Response?.WalletId != walletName)
-                    await SelectWalletAsync(walletName, ct);
+                {
+                    var selection = await SelectWalletAsync(walletName, ct);
+                    ct.ThrowIfCancellationRequested();
+
+                    if(selection == null || selection.Error != null)
+                    {
+                        var error = FormatPreflightError(
+                            HandshakeWalletCommands.SelectWallet, selection?.Error,
+                            selection == null);
+                        logger.Error(() => $"[{LogCategory}] {error}");
+                        NotifyPayoutFailure(poolConfig.Id, balances, error, null);
+                        return;
+                    }
+                }
 
                 TrackPayoutSubmission(ct, balances);
                 var result = await SendManyAsync(args, ct);
@@ -309,22 +337,36 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         {
                             logger.Info(() => $"[{LogCategory}] Unlocking wallet");
 
-                            var unlockResult = await UnlockWalletAsync(ct);
+                            RpcResponse<JToken> unlockResult;
 
-                            if(unlockResult.Error == null)
+                            try
+                            {
+                                unlockResult = await UnlockWalletAsync(ct);
+                            }
+                            catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                            {
+                                // The daemon may have processed walletpassphrase before the
+                                // cancelled response was observed. Relock conservatively.
+                                shouldRelockWallet = true;
+                                throw;
+                            }
+
+                            shouldRelockWallet = unlockResult == null ||
+                                unlockResult.Error == null ||
+                                WalletSubmissionOutcome.IsUnknown(unlockResult.Error);
+                            ct.ThrowIfCancellationRequested();
+
+                            if(unlockResult?.Error == null && unlockResult != null)
                             {
                                 didUnlockWallet = true;
                                 goto tryTransfer;
                             }
 
-                            logger.Error(() => $"[{LogCategory}] " +
-                                $"{HandshakeWalletCommands.WalletPassPhrase} returned " +
-                                $"error: {unlockResult.Error.Message} code " +
-                                $"{unlockResult.Error.Code}");
-                            NotifyPayoutFailure(poolConfig.Id, balances,
-                                $"{HandshakeWalletCommands.WalletPassPhrase} returned " +
-                                $"error: {unlockResult.Error.Message} code " +
-                                $"{unlockResult.Error.Code}", null);
+                            var error = FormatPreflightError(
+                                HandshakeWalletCommands.WalletPassPhrase,
+                                unlockResult?.Error, unlockResult == null);
+                            logger.Error(() => $"[{LogCategory}] {error}");
+                            NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                         }
 
                         else
@@ -348,7 +390,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
             }
             finally
             {
-                if(didUnlockWallet)
+                if(shouldRelockWallet)
                     await RelockPayoutWalletSafelyAsync(LockWallet);
             }
         }
@@ -487,6 +529,17 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                 extraPoolPaymentProcessingConfig.WalletPassword,
                 5, // unlock for N seconds
             });
+
+    private static string FormatPreflightError(string operation,
+        JsonRpcError error, bool emptyResponse)
+    {
+        if(error != null)
+            return $"{operation} failed: {error.Message} code {error.Code}";
+
+        return emptyResponse
+            ? $"{operation} failed: empty response"
+            : $"{operation} failed";
+    }
 
     protected virtual async Task LockWallet(CancellationToken ct)
     {
