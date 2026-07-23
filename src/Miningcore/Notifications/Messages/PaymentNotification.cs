@@ -11,6 +11,13 @@ public enum PaymentNotificationOutcome
     Uncertain,
 }
 
+public record PaymentRecipientTransactionChain
+{
+    public string Address { get; init; }
+    public string CanonicalTransactionId { get; init; }
+    public string[] TransactionIds { get; init; } = Array.Empty<string>();
+}
+
 public record PaymentNotification
 {
     public PaymentNotification(string poolId, string error, decimal amount, string symbol, int recipientsCount, string[] txIds, string[] txExplorerLinks, decimal? txFee)
@@ -40,6 +47,10 @@ public record PaymentNotification
     public decimal? TxFee { get; set; }
     public string[] TxIds { get; set; }
     public string[] TxExplorerLinks { get; set; }
+    // Optional success-only mapping for handlers whose logical recipient payout spans
+    // multiple ordered wallet transactions.
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public PaymentRecipientTransactionChain[] RecipientTransactionChains { get; set; }
     public string Symbol { get; set; }
     public int RecipientsCount { get; set; }
     // Requested/owed batch total before wallet-precision adjustment.

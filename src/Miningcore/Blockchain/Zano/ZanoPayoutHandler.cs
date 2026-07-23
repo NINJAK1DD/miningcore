@@ -271,16 +271,20 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
         logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses:\n{string.Join("\n", balances.OrderByDescending(x => x.Amount).Select(x => $"{FormatAmount(x.Amount)} to {x.Address}"))}");
 
         // send command
+        TrackPayoutSubmission(ct, balances);
         var transferResponse = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.Transfer, ct, request);
 
         // gracefully handle error -4 (transaction would be too large. try /transfer_split)
         if(transferResponse.Error?.Code == -4)
         {
+            TrackPayoutSubmissionNotStarted(balances);
+
             if(walletSupportsTransferSplit)
             {
                 logger.Error(() => $"[{LogCategory}] Daemon command '{ZanoWalletCommands.Transfer}' returned error: {transferResponse.Error.Message} code {transferResponse.Error.Code}");
                 logger.Info(() => $"[{LogCategory}] Retrying transfer using {ZanoWalletCommands.TransferSplit}");
 
+                TrackPayoutSubmission(ct, balances);
                 var transferSplitResponse = await rpcClientWallet.ExecuteAsync<TransferSplitResponse>(logger, ZanoWalletCommands.TransferSplit, ct, request);
 
                 return await HandleTransferSplitResponseAsync(transferSplitResponse, balances);
@@ -376,6 +380,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
             logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balance.Amount)} to integrated address {balance.Address}");
 
         // send command
+        TrackPayoutSubmission(ct, balance);
         var result = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.Transfer, ct, request);
 
         if(walletSupportsTransferSplit)
@@ -385,6 +390,8 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
             {
                 logger.Info(() => $"[{LogCategory}] Retrying transfer using {ZanoWalletCommands.TransferSplit}");
 
+                TrackPayoutSubmissionNotStarted(balance);
+                TrackPayoutSubmission(ct, balance);
                 result = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.TransferSplit, ct, request);
             }
         }
@@ -527,6 +534,14 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+
+        // save wallet
+        await rpcClientWallet.ExecuteAsync<JToken>(logger, ZanoWalletCommands.Store, ct);
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         var coin = poolConfig.Template.As<ZanoCoinTemplate>();
 
 #if !DEBUG // ensure we have peers
@@ -648,8 +663,6 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
                 break;
         }
 
-        // save wallet
-        await rpcClientWallet.ExecuteAsync<JToken>(logger, ZanoWalletCommands.Store, ct);
     }
 
     public double AdjustBlockEffort(double effort)

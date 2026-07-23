@@ -8,7 +8,10 @@ public record PayoutReconciliationEntry
     // Amount passed to the wallet RPC. Null means submission was not started or the
     // handler cannot determine the submitted amount.
     public decimal? SubmittedAmount { get; init; }
+    // Canonical identity persisted with the payment record.
     public string TransactionId { get; init; }
+    // Complete ordered identity set when one logical payout requires multiple transactions.
+    public string[] TransactionIds { get; init; } = Array.Empty<string>();
     public string Detail { get; init; }
 }
 

@@ -82,6 +82,13 @@ manager-owned uncertain event covers every initially selected balance; handler-o
 conclusive-failure events can cover only the payable subset after below-precision balances are
 omitted.
 
+The payout manager is the sole notification owner for uncertain outcomes across supported coin
+families. Paged and per-recipient handlers preserve recipients already persisted as `accepted`,
+explicit wallet rejections as `failed`, the wallet call in progress as `uncertain`, and untouched
+recipients as `notAttempted`. Cancellation while a wallet submission is in flight is treated as
+uncertain and retains durable payout ownership; cancellation before submission remains a normal
+shutdown without a payout-failure event.
+
 All outcome aggregate amount fields (`acceptedAmount`, `failedAmount`, `uncertainAmount` and
 `notAttemptedAmount`) represent original amounts owed. `submittedAmount` is the sum requested from
 the wallet for attempted recipients whose submitted amount is known. `precisionAdjustment` is the
@@ -98,14 +105,37 @@ submittedAmount = amount - notAttemptedAmount + precisionAdjustment
 Do not infer `precisionAdjustment` from `submittedAmount - amount` when `notAttemptedAmount` is
 nonzero.
 
+Administrative reconciliation amounts and Bitcoin-family exact payout diagnostics use invariant
+decimal notation, preserve the complete decimal value, and remove insignificant trailing zeroes
+without rounding. For example, stored values `1.23450` and `0.000000123456` are displayed as
+`1.2345` and `0.000000123456`. An uncertain notification omits the wallet-request summary when
+`precisionAdjustment` is zero because the submitted total would only repeat the attempted amount
+owed.
+
+Handlers that submit one wallet transaction per recipient require each call to return a distinct
+transaction ID. Acceptance verification is keyed by that ID. A duplicate returned for separate
+submissions is therefore treated as financially uncertain, includes the known ID in administrative
+reconciliation, and retains payout ownership rather than risking an incorrect recipient mapping.
+
+Kaspa can return an ordered transaction chain for one recipient. In that case `txIds` on the success
+event retains every returned identity in wallet order as a backwards-compatible batch-level list.
+The optional `recipientTransactionChains` array additionally maps each `address` to its ordered
+`transactionIds` and explicit `canonicalTransactionId`, allowing clients to automate per-recipient
+reconciliation without inferring chain boundaries. The canonical value is the final recipient-facing
+ID stored in payment history; prerequisite IDs remain in the success event and administrative
+reconciliation. Miningcore fails closed unless every returned list is complete, nonblank and unique,
+and transaction identities do not overlap between separate recipient submissions.
+
 Public clients can use `recipientsCount` and the outcome-aware `acceptedCount`, `acceptedAmount`,
 `failedCount`, `failedAmount`, `uncertainCount`, `uncertainAmount`, `notAttemptedCount` and
 `notAttemptedAmount` aggregates. Nullable fields are omitted when they do not apply.
 
-The public WebSocket payload intentionally excludes `error` and recipient-level `reconciliation`.
-Those values can contain wallet errors, addresses and transaction mappings and remain available only
-to administrative notification channels and logs. Front ends written against an older event shape
-must use `outcome` and the safe aggregate fields instead of displaying `error`.
+The public WebSocket payload intentionally excludes `error` and uncertain-outcome recipient-level
+`reconciliation`. Those values can contain wallet errors and ambiguous transaction mappings and
+remain available only to administrative notification channels and logs. A conclusive Kaspa success
+can include the optional recipient address and transaction-chain mapping described above. Front ends
+written against an older event shape must use `outcome` and the safe aggregate fields instead of
+displaying `error`.
 
 ## Metrics and administration
 

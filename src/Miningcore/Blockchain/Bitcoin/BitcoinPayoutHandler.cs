@@ -897,6 +897,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             {
                 persistedBalances = successBalances.ToDictionary(x => x.Key, x => x.Value);
 
+                EnsureDistinctPayoutTransactionIds(persistedBalances,
+                    failedTransfers, notAttemptedTransfers, requestedAmounts,
+                    precisionSkippedBalances);
+
                 try
                 {
                     await PersistPaymentsAsync(persistedBalances);
@@ -1082,8 +1086,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private string FormatExactPayoutAmount(decimal amount)
     {
-        return $"{amount.ToString("0.############################", CultureInfo.InvariantCulture)} " +
-            coin.Symbol;
+        return $"{PayoutAmountFormatter.FormatExact(amount)} {coin.Symbol}";
     }
 
     private void LogPrecisionSkippedBalances(Balance[] precisionSkippedBalances)
@@ -1172,6 +1175,32 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }))
                 .ToArray(),
         };
+    }
+
+    private static void EnsureDistinctPayoutTransactionIds(
+        IReadOnlyDictionary<Balance, string> submittedBalances,
+        Tuple<KeyValuePair<string, decimal>, Exception>[] failedTransfers,
+        KeyValuePair<string, decimal>[] notAttemptedTransfers,
+        IReadOnlyDictionary<string, decimal> requestedAmounts,
+        IEnumerable<Balance> precisionSkippedBalances)
+    {
+        var duplicateTransactionIds = submittedBalances.Values
+            .GroupBy(x => x, StringComparer.Ordinal)
+            .Where(x => x.Count() > 1)
+            .Select(x => x.Key)
+            .ToArray();
+
+        if(duplicateTransactionIds.Length == 0)
+            return;
+
+        var detail = "Separate wallet submissions returned duplicate transaction id(s): " +
+            string.Join(", ", duplicateTransactionIds);
+        var reconciliation = CreateBrokenSendManyReconciliation(submittedBalances,
+            failedTransfers, notAttemptedTransfers,
+            new Dictionary<string, PayoutOutcomeUncertainException>(), requestedAmounts,
+            precisionSkippedBalances, detail);
+
+        throw new PayoutOutcomeUncertainException(detail, null, reconciliation);
     }
 
     private void TryNotifyPayout(Action notify, string outcome)

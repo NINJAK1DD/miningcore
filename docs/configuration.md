@@ -52,6 +52,23 @@ but can remain indefinitely when a miner stops before reaching the threshold aga
 selected balance is below the configured precision, Miningcore skips wallet submission and logs the
 active `payoutDecimalPlaces` value so the operator can review `minimumPayment`.
 
+## Kaspa multi-transaction payouts
+
+Kaspa wallet can auto-compound a large logical payout into an ordered transaction chain. Miningcore
+requires the wallet to return exactly one distinct, nonblank transaction ID for every signed
+transaction submitted. A null, partial, blank or duplicate identity response is financially
+uncertain and stops payout processing without resetting the miner balance.
+
+The wallet appends the recipient-facing merge transaction after its prerequisite split
+transactions. Miningcore therefore stores the final returned ID as the payment-history confirmation
+and payment-batch idempotency key. It retains the complete ordered ID list in success notifications
+and administrative reconciliation so every prerequisite transaction remains inspectable. This
+policy follows the upstream wallet's ordered
+[`broadcast`](https://github.com/kaspanet/kaspad/blob/v0.12.23/cmd/kaspawallet/daemon/server/broadcast.go)
+and
+[`split/merge`](https://github.com/kaspanet/kaspad/blob/v0.12.23/cmd/kaspawallet/daemon/server/split_transaction.go)
+implementations.
+
 ## LTC/DOGE merged mining
 
 Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled and use `SOLO`. The parent

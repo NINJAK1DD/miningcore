@@ -30,6 +30,22 @@ It no longer exposes `error` or recipient-level reconciliation because those fie
 errors, addresses and transaction mappings. Update front ends that consumed the old `error` field
 before deploying this release; see the [payment event contract](api.md#payment-event-contract).
 
+Uncertain payout notification ownership and partial-batch reconciliation now apply across supported
+coin families, including paged and per-recipient wallet APIs. Known persisted, rejected, in-flight
+and untouched recipients remain distinct when a later submission becomes uncertain. Administrative
+amounts use exact invariant decimal formatting with insignificant trailing zeroes removed, and
+duplicate transaction IDs returned by separate per-recipient submissions fail closed.
+Kaspa multi-transaction payouts additionally require a complete ordered identity set, persist the
+final recipient-facing transaction as canonical, and retain every prerequisite ID for notification
+and reconciliation. Kaspa success events preserve the existing flat `txIds` list and add an optional
+`recipientTransactionChains` mapping with each recipient address, canonical ID and ordered chain.
+Equihash and Handshake payout wallets unlocked by Miningcore are relocked in bounded cleanup even
+when payout processing fails or the host is shutting down. Handshake persists a returned transaction
+before relock cleanup; relock errors raise a separate administrative alert without replacing the
+financial outcome. Handshake now requires successful wallet discovery or selection before `sendmany`.
+Handshake and Equihash treat cancellation during `walletpassphrase` as ordinary pre-submission
+shutdown and conservatively attempt bounded relock when the unlock result is unknown.
+
 ## Choose a version
 
 Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying

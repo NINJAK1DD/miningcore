@@ -254,6 +254,20 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        try
+        {
+            await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+        }
+        finally
+        {
+            // Relocking is wallet-security cleanup, not part of the financial result. Use a
+            // fresh bounded token so shutdown cancellation cannot skip it or replace that result.
+            await RelockPayoutWalletSafelyAsync(LockWallet);
+        }
+    }
+
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         var infosChainParams = await Guard(() => alephiumClient.GetInfosChainParamsAsync(ct));
 
         var info = await Guard(() => alephiumClient.GetInfosInterCliquePeerInfoAsync(ct));
@@ -471,8 +485,6 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
             logger.Debug(() => $"[{LogCategory}] Pool wallet address {inputAddress.Address} is now the active address");
 
-            Balance[] successBalances;
-
             decimal groupTotalBalance;
 
             Terminus[] batchDestinations;
@@ -496,16 +508,33 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                 // Only groups containing addresses are processing
                 if(initialTotalAddresses > 0)
                 {
+                    var groupBalances = CreateGroupBalances(groupingAmounts[j]);
                     groupTotalBalance = groupingAmounts[j].Sum(x => x.Value);
                     logger.Info(() => $"[{LogCategory}] Processing group [{j}] containing {initialTotalAddresses} address(es), total amount [{FormatAmount(groupTotalBalance)}]");
 
                     logger.Info(() => $"[{LogCategory}] 1/3) Build the transaction");
 
                     // get address UTXOs
-                    var inputAddressUtxos = await alephiumClient.GetAddressesAddressUtxosAsync(inputAddress.Address, ct);
+                    var (utxoLookupSucceeded, inputAddressUtxos) =
+                        await TryPayoutPreparationAsync(groupBalances,
+                            "Alephium address UTXO lookup", ct, () =>
+                                alephiumClient.GetAddressesAddressUtxosAsync(
+                                    inputAddress.Address, ct));
+                    if(!utxoLookupSucceeded)
+                        continue;
+
+                    if(inputAddressUtxos?.Utxos == null)
+                    {
+                        RecordPayoutPreparationFailure(groupBalances,
+                            "Alephium address UTXO lookup returned no UTXO collection");
+                        continue;
+                    }
+
                     if(!string.IsNullOrEmpty(inputAddressUtxos?.Warning))
                     {
-                        logger.Warn(() => $"[{LogCategory}] Pool wallet address: {anyPoolAddress.Address} maybe can't be used anymore: {inputAddressUtxos.Warning}. Please fix it");
+                        RecordPayoutPreparationFailure(groupBalances,
+                            $"Alephium address UTXO lookup returned a warning: " +
+                            inputAddressUtxos.Warning);
                         continue;
                     }
 
@@ -538,7 +567,10 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         // No can do sir
                         if(numberOfAddressesToRemove >= initialTotalAddresses)
                         {
-                            logger.Warn(() => $"[{LogCategory}] We need to remove {numberOfAddressesToRemove} address(es). But we only have {initialTotalAddresses} address(es) to pay. We are in a serious pickle here.");
+                            RecordPayoutPreparationFailure(groupBalances,
+                                $"Alephium transaction requires removing " +
+                                $"{numberOfAddressesToRemove} address(es), but the group " +
+                                $"contains only {initialTotalAddresses}");
                             continue;
                         }
 
@@ -551,6 +583,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         logger.Info(() => $"[{LogCategory}] Group {j} containing now {groupingAmounts[j].Count} address(es), total amount [{FormatAmount(groupTotalBalance)}]");
 
                         estimatedGasAmount = AlephiumConstants.MaxGasPerTx;
+                        groupBalances = CreateGroupBalances(groupingAmounts[j]);
                     }
 
                     logger.Debug(() => $"[{LogCategory}] Estimated necessary gas amount: {estimatedGasAmount} [{FormatAmount(((estimatedGasAmount * AlephiumConstants.DefaultGasPrice) / AlephiumConstants.SmallestUnit))}]");
@@ -572,12 +605,19 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         GasAmount = estimatedGasAmount,
                     };
 
-                    var txBuild = await Guard(() => alephiumClient.PostTransactionsBuildAsync(destinationsTransaction, ct), ex =>
-                    {
-                        logger.Warn(() => $"[{LogCategory}] Build transaction failed");
-                    });
-                    if(string.IsNullOrEmpty(txBuild?.TxId))
+                    var (buildSucceeded, txBuild) = await TryPayoutPreparationAsync(
+                        groupBalances, "Alephium transaction build", ct, () =>
+                            alephiumClient.PostTransactionsBuildAsync(
+                                destinationsTransaction, ct));
+                    if(!buildSucceeded)
                         continue;
+
+                    if(string.IsNullOrEmpty(txBuild?.TxId))
+                    {
+                        RecordPayoutPreparationFailure(groupBalances,
+                            "Alephium transaction build returned no transaction id");
+                        continue;
+                    }
 
                     logger.Info(() => $"[{LogCategory}] Unsigned transaction {txBuild.UnsignedTx} with txId {txBuild.TxId}");
 
@@ -587,12 +627,20 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         Data = txBuild.TxId,
                     };
 
-                    var txSign = await Guard(() => alephiumClient.NameSignAsync(extraPoolPaymentProcessingConfig.WalletName, signTxBuild, ct), ex =>
-                    {
-                        logger.Warn(() => $"[{LogCategory}] Sign transaction failed");
-                    });
-                    if(string.IsNullOrEmpty(txSign?.Signature))
+                    var (signSucceeded, txSign) = await TryPayoutPreparationAsync(
+                        groupBalances, "Alephium transaction signing", ct, () =>
+                            alephiumClient.NameSignAsync(
+                                extraPoolPaymentProcessingConfig.WalletName,
+                                signTxBuild, ct));
+                    if(!signSucceeded)
                         continue;
+
+                    if(string.IsNullOrEmpty(txSign?.Signature))
+                    {
+                        RecordPayoutPreparationFailure(groupBalances,
+                            "Alephium transaction signing returned no signature");
+                        continue;
+                    }
 
                     logger.Info(() => $"[{LogCategory}] Unsigned transaction signature {txSign.Signature}");
 
@@ -603,33 +651,51 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                         Signature = txSign.Signature,
                     };
 
-                    var txSubmit = await Guard(() => alephiumClient.PostTransactionsSubmitAsync(submitTxSign, ct), ex =>
-                    {
-                        RethrowSubmissionFailure("Alephium transaction submission",
-                            "Submit signed transaction failed", ex);
-                    });
-                    var txId = WalletSubmissionOutcome.RequireTransactionId(txSubmit?.TxId,
-                        "Alephium transaction submission");
-
-                    // payment successful
-                    logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
-
-                    successBalances = groupingAmounts[j]
-                        .Select(x => new Balance
-                        {
-                            PoolId = poolConfig.Id,
-                            Address = x.Key,
-                            Amount = x.Value,
-                        })
-                        .ToArray();
-
-                    await PersistPaymentsAsync(successBalances, txId);
-
-                    NotifyPayoutSuccess(poolConfig.Id, successBalances, new[] {txId}, ((estimatedGasAmount * AlephiumConstants.DefaultGasPrice) / AlephiumConstants.SmallestUnit));
+                    await SubmitPayoutGroupAsync(groupBalances, submitTxSign,
+                        (estimatedGasAmount * AlephiumConstants.DefaultGasPrice) /
+                        AlephiumConstants.SmallestUnit, ct);
                 }
             }
         
-        await LockWallet(ct);
+    }
+
+    private Balance[] CreateGroupBalances(
+        IEnumerable<KeyValuePair<string, decimal>> amounts) => amounts
+        .Select(x => new Balance
+        {
+            PoolId = poolConfig.Id,
+            Address = x.Key,
+            Amount = x.Value,
+        })
+        .ToArray();
+
+    protected async Task<(bool Success, T Result)> TryPayoutPreparationAsync<T>(
+        Balance[] balances, string operation, CancellationToken ct,
+        Func<Task<T>> action)
+    {
+        try
+        {
+            return (true, await action());
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(Exception ex)
+        {
+            RecordPayoutPreparationFailure(balances,
+                $"{operation} failed before wallet submission: {GetApiError(ex)}", ex);
+            return (false, default);
+        }
+    }
+
+    private void RecordPayoutPreparationFailure(Balance[] balances, string detail,
+        Exception exception = null)
+    {
+        logger.Warn(() => exception == null
+            ? $"[{LogCategory}] {detail}"
+            : $"[{LogCategory}] {detail}: {exception}");
+        NotifyPayoutFailure(poolConfig.Id, balances, detail, exception);
     }
 
     internal static TransferResult[] ParseSweepResults(TransferResults sweep)
@@ -652,6 +718,47 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
         return results;
     }
+
+    protected async Task SubmitPayoutGroupAsync(Balance[] balances,
+        SubmitSettlement request, decimal transactionFee, CancellationToken ct)
+    {
+        TrackPayoutSubmission(ct, balances);
+
+        SubmitTxResult txSubmit;
+
+        try
+        {
+            txSubmit = await Guard(() => SubmitTransactionAsync(request, ct), ex =>
+            {
+                RethrowSubmissionFailure("Alephium transaction submission",
+                    "Submit signed transaction failed", ex);
+            });
+        }
+        catch(PayoutOutcomeUncertainException)
+        {
+            throw;
+        }
+        catch(AlephiumApiException ex)
+        {
+            var detail = "Alephium transaction submission was conclusively rejected: " +
+                GetApiError(ex);
+            NotifyPayoutFailure(poolConfig.Id, balances, detail, ex);
+            return;
+        }
+
+        var txId = WalletSubmissionOutcome.RequireTransactionId(txSubmit?.TxId,
+            "Alephium transaction submission");
+
+        logger.Info(() => $"[{LogCategory}] Payment transaction id: {txId}");
+
+        await PersistPaymentsAsync(balances, txId);
+
+        NotifyPayoutSuccess(poolConfig.Id, balances, new[] { txId }, transactionFee);
+    }
+
+    protected virtual Task<SubmitTxResult> SubmitTransactionAsync(
+        SubmitSettlement request, CancellationToken ct) =>
+        alephiumClient.PostTransactionsSubmitAsync(request, ct);
     
     public override double AdjustShareDifficulty(double difficulty)
     {
@@ -674,16 +781,18 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
     private void ReportAndRethrowApiError(string action, Exception ex, bool rethrow = true)
     {
-        var error = ex.Message;
-
-        if(ex is AlephiumApiException apiException)
-            error = apiException.Response;
+        var error = GetApiError(ex);
 
         logger.Warn(() => $"{action}: {error}");
 
         if(rethrow)
             throw ex;
     }
+
+    private static string GetApiError(Exception ex) =>
+        ex is AlephiumApiException apiException
+            ? apiException.Response ?? apiException.Message
+            : ex.Message;
 
     private void RethrowSubmissionFailure(string operation, string action, Exception ex)
     {
@@ -717,7 +826,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
         logger.Info(() => $"[{LogCategory}] Wallet: {extraPoolPaymentProcessingConfig.WalletName} unlocked");
     }
 
-    private async Task LockWallet(CancellationToken ct)
+    protected virtual async Task LockWallet(CancellationToken ct)
     {
         logger.Info(() => $"[{LogCategory}] Locking wallet: {extraPoolPaymentProcessingConfig.WalletName}");
 

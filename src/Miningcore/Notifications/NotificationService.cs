@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -197,8 +196,23 @@ public class NotificationService : StartupGatedBackgroundService
                     $"(precision adjustment {FormatSignedExactHtmlAmount(adjustment, symbol)})");
             }
 
-            if(!string.IsNullOrWhiteSpace(x.TransactionId))
-                parts.Add($"transaction {HtmlEncode(x.TransactionId)}");
+            var transactionIds = (x.TransactionIds ?? Array.Empty<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToArray();
+            if(transactionIds.Length == 0 &&
+                !string.IsNullOrWhiteSpace(x.TransactionId))
+                transactionIds = new[] { x.TransactionId };
+
+            if(transactionIds.Length == 1)
+                parts.Add($"transaction {HtmlEncode(transactionIds[0])}");
+            else if(transactionIds.Length > 1)
+            {
+                var transactionDetail = $"transactions " +
+                    string.Join(", ", transactionIds.Select(HtmlEncode));
+                if(!string.IsNullOrWhiteSpace(x.TransactionId))
+                    transactionDetail += $" (canonical {HtmlEncode(x.TransactionId)})";
+                parts.Add(transactionDetail);
+            }
 
             if(!string.IsNullOrWhiteSpace(x.Detail))
                 parts.Add(HtmlEncode(x.Detail));
@@ -222,8 +236,12 @@ public class NotificationService : StartupGatedBackgroundService
     private static void AppendSubmittedAmountSummary(List<string> sections,
         PaymentNotification notification, string symbol, bool html)
     {
-        if(!notification.SubmittedAmount.HasValue ||
-            notification.PrecisionAdjustment.GetValueOrDefault() == 0)
+        if(!notification.SubmittedAmount.HasValue)
+            return;
+
+        // A zero adjustment means the wallet request equals the attempted amount owed. Repeating
+        // that total adds no reconciliation information, so only adjusted requests get a summary.
+        if(notification.PrecisionAdjustment.GetValueOrDefault() == 0)
             return;
 
         var adjustment = notification.PrecisionAdjustment ?? 0;
@@ -307,7 +325,7 @@ public class NotificationService : StartupGatedBackgroundService
 
     private static string FormatExactAmount(decimal amount, string symbol)
     {
-        return $"{amount.ToString(CultureInfo.InvariantCulture)} {symbol}";
+        return $"{PayoutAmountFormatter.FormatExact(amount)} {symbol}";
     }
 
     private static string FormatSignedExactAmount(decimal amount, string symbol)
@@ -318,7 +336,7 @@ public class NotificationService : StartupGatedBackgroundService
 
     private static string FormatExactHtmlAmount(decimal amount, string symbol)
     {
-        return $"{amount.ToString(CultureInfo.InvariantCulture)} {HtmlEncode(symbol)}";
+        return $"{PayoutAmountFormatter.FormatExact(amount)} {HtmlEncode(symbol)}";
     }
 
     private static string FormatSignedExactHtmlAmount(decimal amount, string symbol)

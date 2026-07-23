@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
+using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -66,6 +69,205 @@ public class PayoutHandlerBaseTests
         fixture.Transaction.Received(1).Commit();
     }
 
+    [Fact]
+    public async Task TrackPayout_MixedPagedOutcomePreservesEveryRecipientState()
+    {
+        var fixture = CreateFixture();
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-accepted", fixture.Now)
+            .Returns(true);
+        var accepted = Balance("accepted", 1);
+        var failed = Balance("failed", 2);
+        var uncertain = Balance("uncertain", 3);
+        var notAttempted = Balance("not-attempted", 4);
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunTrackedAsync(
+                new[] { accepted, failed, uncertain, notAttempted }, async () =>
+                {
+                    fixture.Handler.StartSubmission(accepted);
+                    await fixture.Handler.PersistAsync(new[] { accepted }, "tx-accepted");
+                    fixture.Handler.Fail(failed, "wallet rejected");
+                    fixture.Handler.StartSubmission(uncertain);
+                    throw new PayoutOutcomeUncertainException("wallet response lost");
+                }));
+
+        var acceptedEntry = Assert.Single(exception.Reconciliation.Accepted);
+        Assert.Equal("accepted", acceptedEntry.Address);
+        Assert.Equal("tx-accepted", acceptedEntry.TransactionId);
+        Assert.Equal("failed", Assert.Single(exception.Reconciliation.Failed).Address);
+        Assert.Equal("uncertain", Assert.Single(exception.Reconciliation.Uncertain).Address);
+        Assert.Equal("not-attempted",
+            Assert.Single(exception.Reconciliation.NotAttempted).Address);
+        Assert.Equal(10, exception.Reconciliation.Accepted.Sum(x => x.Amount) +
+            exception.Reconciliation.Failed.Sum(x => x.Amount) +
+            exception.Reconciliation.Uncertain.Sum(x => x.Amount) +
+            exception.Reconciliation.NotAttempted.Sum(x => x.Amount));
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task TrackPayout_ConclusiveNotificationsFlushOnlyAfterCompletion()
+    {
+        var fixture = CreateFixture();
+        var failed = Balance("failed", 2);
+
+        await fixture.Handler.RunTrackedAsync(new[] { failed }, () =>
+        {
+            fixture.Handler.Fail(failed, "wallet rejected");
+            fixture.MessageBus.DidNotReceive().SendMessage(
+                Arg.Any<PaymentNotification>(), Arg.Any<string>());
+            return Task.CompletedTask;
+        });
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Failure &&
+                x.RecipientsCount == 1 &&
+                x.Amount == 2),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task TrackPayout_CancellationWithInFlightSubmissionBecomesUncertain()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () =>
+            {
+                fixture.Handler.StartSubmission(balance);
+                throw new OperationCanceledException("shutdown");
+            }));
+
+        Assert.Equal("miner", Assert.Single(exception.Reconciliation.Uncertain).Address);
+        Assert.IsType<OperationCanceledException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task TrackPayout_PreSubmissionCancellationRemainsConclusive()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () =>
+                throw new OperationCanceledException("shutdown")));
+    }
+
+    [Fact]
+    public async Task TrackPayout_AlreadyCancelledSubmissionIsNotMarkedInFlight()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () =>
+            {
+                fixture.Handler.StartSubmission(cts.Token, balance);
+                return Task.CompletedTask;
+            }));
+
+        Assert.IsNotType<PayoutOutcomeUncertainException>(exception);
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task TrackPayout_ConclusivePreSubmissionRejectionClearsInFlightState()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () =>
+            {
+                fixture.Handler.StartSubmission(balance);
+                fixture.Handler.SubmissionNotStarted(balance);
+                throw new OperationCanceledException("shutdown during wallet unlock");
+            }));
+
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<PaymentNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task TrackPayout_CancellationAfterPersistedSubsetFlushesSuccess()
+    {
+        var fixture = CreateFixture();
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-accepted", fixture.Now)
+            .Returns(true);
+        var accepted = Balance("accepted", 1);
+        var untouched = Balance("untouched", 2);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { accepted, untouched }, async () =>
+            {
+                fixture.Handler.StartSubmission(accepted);
+                await fixture.Handler.PersistAsync(new[] { accepted }, "tx-accepted");
+                fixture.Handler.Succeed(accepted, "tx-accepted");
+                throw new OperationCanceledException("shutdown");
+            }));
+
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<PaymentNotification>(x =>
+                x.Outcome == PaymentNotificationOutcome.Success &&
+                x.RecipientsCount == 1 &&
+                x.Amount == 1),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task TrackPayout_DuplicatePerRecipientTransactionIdsFailClosed()
+    {
+        var fixture = CreateFixture();
+        var first = Balance("first", 1);
+        var second = Balance("second", 2);
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { first, second }, () =>
+            {
+                fixture.Handler.StartSubmission(first);
+                fixture.Handler.RecordTransaction(new[] { first }, "duplicate-txid");
+                fixture.Handler.StartSubmission(second);
+                fixture.Handler.RecordTransaction(new[] { second }, "duplicate-txid");
+                return Task.CompletedTask;
+            }));
+
+        Assert.Contains("duplicate transaction id", exception.Message);
+        Assert.Equal(new[] { "first", "second" }, exception.Reconciliation.Uncertain
+            .Select(x => x.Address).OrderBy(x => x));
+        Assert.All(exception.Reconciliation.Uncertain,
+            entry => Assert.Equal("duplicate-txid", entry.TransactionId));
+    }
+
+    [Fact]
+    public async Task TrackPayout_DirectUncertaintyPreservesOriginatingException()
+    {
+        var fixture = CreateFixture();
+        var balance = Balance("miner", 1);
+        var original = new PayoutOutcomeUncertainException("wallet response lost");
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Handler.RunTrackedAsync(new[] { balance }, () => throw original));
+
+        Assert.Same(original, exception.InnerException);
+        Assert.Equal("miner",
+            Assert.Single(exception.Reconciliation.NotAttempted).Address);
+    }
+
+    private static Balance Balance(string address, decimal amount) => new()
+    {
+        PoolId = "ltc-test",
+        Address = address,
+        Amount = amount,
+    };
+
     private static Fixture CreateFixture()
     {
         var cf = Substitute.For<IConnectionFactory>();
@@ -94,7 +296,7 @@ public class PayoutHandlerBaseTests
         handler.Configure(pool);
 
         return new Fixture(handler, pool, connection, transaction, balanceRepo,
-            paymentRepo, now);
+            paymentRepo, messageBus, now);
     }
 
     private sealed class TestPayoutHandler : PayoutHandlerBase
@@ -119,10 +321,32 @@ public class PayoutHandlerBaseTests
 
         public Task PersistAsync(Balance[] balances, string transactionConfirmation) =>
             PersistPaymentsAsync(balances, transactionConfirmation);
+
+        public Task RunTrackedAsync(Balance[] balances, Func<Task> action) =>
+            TrackPayoutAsync(balances, action);
+
+        public void StartSubmission(params Balance[] balances) =>
+            TrackPayoutSubmission(CancellationToken.None, balances);
+
+        public void StartSubmission(CancellationToken ct, params Balance[] balances) =>
+            TrackPayoutSubmission(ct, balances);
+
+        public void SubmissionNotStarted(params Balance[] balances) =>
+            TrackPayoutSubmissionNotStarted(balances);
+
+        public void RecordTransaction(Balance[] balances, string transactionId) =>
+            TrackPayoutTransaction(balances, transactionId);
+
+        public void Fail(Balance balance, string detail) =>
+            NotifyPayoutFailure(poolConfig.Id, new[] { balance }, detail, null);
+
+        public void Succeed(Balance balance, string transactionId) =>
+            NotifyPayoutSuccess(poolConfig.Id, new[] { balance },
+                new[] { transactionId }, null);
     }
 
     private sealed record Fixture(TestPayoutHandler Handler, PoolConfig Pool,
         IDbConnection Connection, IDbTransaction Transaction,
         IBalanceRepository BalanceRepo, IPaymentRepository PaymentRepo,
-        DateTime Now);
+        IMessageBus MessageBus, DateTime Now);
 }

@@ -13,6 +13,7 @@ using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Rpc;
 using Miningcore.Time;
 using NBitcoin;
 using Newtonsoft.Json.Linq;
@@ -46,6 +47,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     protected bool supportsZSendManyPrivacyPolicy;
     protected Network network;
     protected EquihashCoinTemplate.EquihashNetworkParams chainConfig;
+    // PayoutManager invokes each handler serially. Reset this per PayoutAsync so a
+    // successful or ambiguous walletpassphrase can request bounded cleanup.
+    private bool payoutWalletShouldBeRelocked;
     protected override string LogCategory => "Equihash Payout Handler";
     protected const decimal TransferFee = 0.0001m;
     protected const int ZMinConfirmations = 8;
@@ -84,19 +88,86 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
         Contract.RequiresNonNull(balances);
-        
-        // Some projects like Veruscoin does not require shielding before being able to spend coins.
-        // They can also sends coins from a t-address to t-addresses and z-addresses
-        if(supportsSendCurrency)
-            await PayoutSendCurrencyAsync(pool, balances, ct);
-        else
-            await PayoutZSendManyAsync(pool, balances, ct);
-        
-        // lock wallet
+        payoutWalletShouldBeRelocked = false;
+
+        try
+        {
+            await TrackPayoutAsync(balances, () =>
+                PayoutTrackedAsync(pool, balances, ct));
+        }
+        finally
+        {
+            if(payoutWalletShouldBeRelocked)
+            {
+                // Relocking is wallet-security cleanup, not part of the financial result. Use a
+                // fresh bounded token so shutdown cancellation cannot skip it or replace that result.
+                await RelockPayoutWalletSafelyAsync(LockWallet);
+            }
+        }
+    }
+
+    protected virtual Task PayoutTrackedAsync(IMiningPool pool, Balance[] balances,
+        CancellationToken ct)
+    {
+        // Some projects like Veruscoin do not require shielding before being able to spend coins.
+        // They can also send coins from a t-address to t-addresses and z-addresses.
+        return supportsSendCurrency
+            ? PayoutSendCurrencyAsync(pool, balances, ct)
+            : PayoutZSendManyAsync(pool, balances, ct);
+    }
+
+    protected virtual async Task LockWallet(CancellationToken ct)
+    {
         logger.Info(() => $"[{LogCategory}] Locking wallet");
 
-        await rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletLock, ct);
+        var response = await rpcClient.ExecuteAsync<JToken>(logger,
+            BitcoinCommands.WalletLock, ct);
+        if(response.Error != null)
+            throw new InvalidOperationException(
+                $"{BitcoinCommands.WalletLock} returned error: " +
+                $"{response.Error.Message} code {response.Error.Code}");
+
+        logger.Info(() => $"[{LogCategory}] Wallet locked");
     }
+
+    protected void MarkPayoutWalletForRelock() =>
+        payoutWalletShouldBeRelocked = true;
+
+    protected async Task<RpcResponse<JToken>> UnlockPayoutWalletAsync(
+        CancellationToken ct)
+    {
+        RpcResponse<JToken> response;
+
+        try
+        {
+            response = await ExecuteWalletUnlockAsync(ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // The daemon may have processed walletpassphrase before the cancelled
+            // response was observed. Relock conservatively.
+            MarkPayoutWalletForRelock();
+            throw;
+        }
+
+        if(response == null || response.Error == null ||
+            WalletSubmissionOutcome.IsUnknown(response.Error))
+        {
+            MarkPayoutWalletForRelock();
+        }
+
+        ct.ThrowIfCancellationRequested();
+        return response;
+    }
+
+    protected virtual Task<RpcResponse<JToken>> ExecuteWalletUnlockAsync(
+        CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletPassphrase, ct,
+            new object[]
+            {
+                extraPoolPaymentProcessingConfig.WalletPassword,
+                5, // unlock for N seconds
+            });
     
     private async Task PayoutZSendManyAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
@@ -183,6 +254,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             // send command
             tryTransfer:
+            TrackPayoutSubmission(ct, page);
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -215,8 +287,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                             if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
                             {
-                                logger.Error(() => $"Unrecognized operation status: {operationResult.Status}");
-                                break;
+                                throw new PayoutOutcomeUncertainException(
+                                    $"{EquihashCommands.ZSendMany} operation {operationId} returned " +
+                                    $"unrecognized status '{operationResult.Status}'");
                             }
 
                             switch(status)
@@ -262,17 +335,15 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             {
                 if(response.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
+                    TrackPayoutSubmissionNotStarted(page);
+
                     if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
                     {
                         logger.Info(() => $"[{LogCategory}] Unlocking wallet");
 
-                        var unlockResponse = await rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletPassphrase, ct, new[]
-                        {
-                            extraPoolPaymentProcessingConfig.WalletPassword,
-                            (object) 5 // unlock for N seconds
-                        });
+                        var unlockResponse = await UnlockPayoutWalletAsync(ct);
 
-                        if(unlockResponse.Error == null)
+                        if(unlockResponse?.Error == null && unlockResponse != null)
                         {
                             didUnlockWallet = true;
                             goto tryTransfer;
@@ -280,8 +351,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                         else
                         {
-                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}");
-                            NotifyPayoutFailure(poolConfig.Id, page, $"{BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}", null);
+                            var error = unlockResponse?.Error != null
+                                ? $"{BitcoinCommands.WalletPassphrase} returned error: " +
+                                  $"{unlockResponse.Error.Message} code {unlockResponse.Error.Code}"
+                                : $"{BitcoinCommands.WalletPassphrase} returned an empty response";
+                            logger.Error(() => $"[{LogCategory}] {error}");
+                            NotifyPayoutFailure(poolConfig.Id, page, error, null);
                             break;
                         }
                     }
@@ -347,6 +422,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             // send command
             trySendCurrencyTransfer:
+            TrackPayoutSubmission(ct, page);
             var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.SendCurrency, ct, args);
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
@@ -379,8 +455,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                             if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
                             {
-                                logger.Error(() => $"Unrecognized operation status: {operationResult.Status}");
-                                break;
+                                throw new PayoutOutcomeUncertainException(
+                                    $"{EquihashCommands.SendCurrency} operation {operationId} returned " +
+                                    $"unrecognized status '{operationResult.Status}'");
                             }
 
                             switch(status)
@@ -426,17 +503,15 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             {
                 if(response.Error.Code == (int) BitcoinRPCErrorCode.RPC_WALLET_UNLOCK_NEEDED && !didUnlockWallet)
                 {
+                    TrackPayoutSubmissionNotStarted(page);
+
                     if(!string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPassword))
                     {
                         logger.Info(() => $"[{LogCategory}] Unlocking wallet");
 
-                        var unlockResponse = await rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.WalletPassphrase, ct, new[]
-                        {
-                            extraPoolPaymentProcessingConfig.WalletPassword,
-                            (object) 5 // unlock for N seconds
-                        });
+                        var unlockResponse = await UnlockPayoutWalletAsync(ct);
 
-                        if(unlockResponse.Error == null)
+                        if(unlockResponse?.Error == null && unlockResponse != null)
                         {
                             didUnlockWallet = true;
                             goto trySendCurrencyTransfer;
@@ -444,8 +519,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                         else
                         {
-                            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}");
-                            NotifyPayoutFailure(poolConfig.Id, page, $"{BitcoinCommands.WalletPassphrase} returned error: {response.Error.Message} code {response.Error.Code}", null);
+                            var error = unlockResponse?.Error != null
+                                ? $"{BitcoinCommands.WalletPassphrase} returned error: " +
+                                  $"{unlockResponse.Error.Message} code {unlockResponse.Error.Code}"
+                                : $"{BitcoinCommands.WalletPassphrase} returned an empty response";
+                            logger.Error(() => $"[{LogCategory}] {error}");
+                            NotifyPayoutFailure(poolConfig.Id, page, error, null);
                             break;
                         }
                     }

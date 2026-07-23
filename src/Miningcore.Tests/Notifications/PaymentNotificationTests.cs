@@ -26,6 +26,47 @@ public class PaymentNotificationTests
         Assert.Null(payload["failedAmount"]);
         Assert.Null(payload["uncertainCount"]);
         Assert.Null(payload["notAttemptedCount"]);
+        Assert.Null(payload["recipientTransactionChains"]);
+    }
+
+    [Fact]
+    public void WebSocketSerialization_SuccessExposesOptionalRecipientTransactionChains()
+    {
+        var notification = new PaymentNotification("kas-test", null, 3, "KAS", 2,
+            new[] { "split-a", "recipient-a", "split-b", "recipient-b" },
+            null, null)
+        {
+            RecipientTransactionChains = new[]
+            {
+                new PaymentRecipientTransactionChain
+                {
+                    Address = "kaspa:recipient-a",
+                    CanonicalTransactionId = "recipient-a",
+                    TransactionIds = new[] { "split-a", "recipient-a" },
+                },
+                new PaymentRecipientTransactionChain
+                {
+                    Address = "kaspa:recipient-b",
+                    CanonicalTransactionId = "recipient-b",
+                    TransactionIds = new[] { "split-b", "recipient-b" },
+                },
+            },
+        };
+
+        var payload = SerializePayment(notification);
+        var chains = Assert.IsType<JArray>(payload["recipientTransactionChains"]);
+
+        Assert.Equal(2, chains.Count);
+        Assert.Equal("kaspa:recipient-a", chains[0].Value<string>("address"));
+        Assert.Equal("recipient-a",
+            chains[0].Value<string>("canonicalTransactionId"));
+        Assert.Equal(new[] { "split-a", "recipient-a" },
+            chains[0]["transactionIds"].Values<string>());
+        Assert.Equal("kaspa:recipient-b", chains[1].Value<string>("address"));
+        Assert.Equal("recipient-b",
+            chains[1].Value<string>("canonicalTransactionId"));
+        Assert.Equal(new[] { "split-b", "recipient-b" },
+            chains[1]["transactionIds"].Values<string>());
     }
 
     [Fact]
@@ -160,11 +201,11 @@ public class PaymentNotificationTests
         var rendered = NotificationService.FormatPaymentNotification(notification,
             "DOGE", null);
 
-        Assert.Contains("Payout batch totalling 3.58020 DOGE requested",
+        Assert.Contains("Payout batch totalling 3.5802 DOGE requested",
             rendered.EmailMessage);
         Assert.Contains("Wallet request total across attempted recipients: 3.5801 DOGE",
             rendered.EmailMessage);
-        Assert.Contains("precision adjustment: -0.00010 DOGE", rendered.EmailMessage);
+        Assert.Contains("precision adjustment: -0.0001 DOGE", rendered.EmailMessage);
         Assert.Contains("1.23454 DOGE to DTestBelow, wallet request 1.2345 DOGE",
             rendered.EmailMessage);
         Assert.Contains("2.34566 DOGE to DTestAbove, wallet request 2.3456 DOGE",
@@ -185,9 +226,71 @@ public class PaymentNotificationTests
             "DOGE", null);
 
         Assert.Contains("Wallet request for 3.5801 DOGE failed", rendered.EmailMessage);
-        Assert.Contains("amount owed 3.58020 DOGE", rendered.EmailMessage);
-        Assert.Contains("precision adjustment -0.00010 DOGE", rendered.EmailMessage);
+        Assert.Contains("amount owed 3.5802 DOGE", rendered.EmailMessage);
+        Assert.Contains("precision adjustment -0.0001 DOGE", rendered.EmailMessage);
         Assert.Equal(1, rendered.EmailMessage.Split("amount owed").Length - 1);
+    }
+
+    [Fact]
+    public void UncertainFormatting_ZeroAdjustmentDoesNotRepeatSubmittedTotal()
+    {
+        var notification = new PaymentNotification("doge-test", "unknown", 1.23450m,
+            "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 1.23450m,
+            PrecisionAdjustment = 0,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTest",
+                        Amount = 1.23450m,
+                        SubmittedAmount = 1.23450m,
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("Payout batch totalling 1.2345 DOGE requested",
+            rendered.EmailMessage);
+        Assert.Contains("Uncertain: 1.2345 DOGE to DTest", rendered.EmailMessage);
+        Assert.DoesNotContain("Wallet request total across attempted recipients",
+            rendered.EmailMessage);
+    }
+
+    [Fact]
+    public void UncertainReconciliation_MultipleTransactionIdsRendersCompleteChain()
+    {
+        var notification = new PaymentNotification("kas-test", "response malformed",
+            1m, "KAS", 1, null, null, null)
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "kaspa:recipient",
+                        Amount = 1m,
+                        TransactionId = "tx-recipient",
+                        TransactionIds = new[] { "tx-split", "tx-recipient" },
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "KAS", "https://explorer.test/{0}");
+
+        Assert.Contains("transactions tx-split, tx-recipient " +
+            "(canonical tx-recipient)", rendered.EmailMessage);
     }
 
     private static PayoutReconciliationEntry Entry(string address, decimal amount,
