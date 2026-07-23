@@ -2,7 +2,6 @@ using Autofac;
 using Miningcore.Mining;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Serialization;
 using NLog;
 
 namespace Miningcore.Configuration;
@@ -11,11 +10,24 @@ public static class CoinTemplateLoader
 {
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
 
-    private static IEnumerable<KeyValuePair<string, CoinTemplate>> LoadTemplates(string filename, JsonSerializer serializer, IComponentContext ctx)
+    private static IEnumerable<KeyValuePair<string, CoinTemplate>> LoadTemplates(string filename, IComponentContext ctx)
     {
         using var jreader = new JsonTextReader(File.OpenText(filename));
-        
-        var jo = serializer.Deserialize<JObject>(jreader);
+
+        JObject jo;
+
+        try
+        {
+            jo = JObject.Load(jreader, new JsonLoadSettings
+            {
+                DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error,
+            });
+        }
+        catch(JsonReaderException ex)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template file '{filename}': {ex.Message}", ex);
+        }
 
         foreach(var o in jo)
         {
@@ -50,18 +62,11 @@ public static class CoinTemplateLoader
 
     public static Dictionary<string, CoinTemplate> Load(IComponentContext ctx, string[] coinDefs)
     {
-        var serializer = new JsonSerializer
-        {
-            ContractResolver = new CamelCasePropertyNamesContractResolver(),
-            Formatting = Formatting.Indented,
-            NullValueHandling = NullValueHandling.Ignore,
-        };
-
         var result = new Dictionary<string, CoinTemplate>();
 
         foreach(var filename in coinDefs)
         {
-            var definitions = LoadTemplates(filename, serializer, ctx).ToArray();
+            var definitions = LoadTemplates(filename, ctx).ToArray();
 
             foreach(var definition in definitions)
             {

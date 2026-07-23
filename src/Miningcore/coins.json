@@ -1515,36 +1515,6 @@
         "explorerTxLink": "https://e.hnsfans.com/tx/{0}",
         "explorerAccountLink": "https://e.hnsfans.com/address/{0}"
     },
-    "help-the-homeless": {
-        "name": "Help The Homeless",
-        "symbol": "HTH",
-        "family": "bitcoin",
-        "website": "http://hth.world/",
-        "github": "https://github.com/HTHcoin/helpthehomelesscoin",
-        "market": "",
-        "twitter": "https://twitter.com/hthcoin",
-        "telegram": "",
-        "discord": "https://discordapp.com/invite/qjcs5TP",
-        "coinbaseHasher": {
-            "hash": "sha256d"
-        },
-        "headerHasher": {
-            "hash": "x16r"
-        },
-        "blockHasher": {
-            "hash": "reverse",
-            "args": [
-                {
-                    "hash": "x16r"
-                }
-            ]
-        },
-        "shareMultiplier": 256,
-        "hasMasterNodes": true,
-        "explorerBlockLink": "http://explorer.hthcoin.world/block/$hash$",
-        "explorerTxLink": "http://explorer.hthcoin.world/tx/{0}",
-        "explorerAccountLink": "http://explorer.hthcoin.world/address/{0}"
-    },
     "hfrcoin": {
         "name": "HFRcoin",
         "canonicalName": "HFRcoin",
@@ -3534,36 +3504,6 @@
         "explorerTxLink": "https://chainz.cryptoid.info/spk/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/spk/address.dws?{0}.htm"
     },
-    "stakecube": {
-        "name": "StakeCube",
-        "canonicalName": "Stakecube",
-        "symbol": "SCC",
-        "family": "bitcoin",
-        "website": "https://stakecube.net/",
-        "github": "https://github.com/stakecube/StakeCubeCoin",
-        "market": "https://coinmarketcap.com/currencies/stakecubecoin",
-        "twitter": "https://twitter.com/stakecube",
-        "telegram": "https://t.me/Stakecube",
-        "discord": "https://discord.com/invite/hhQApC9",
-        "coinbaseHasher": {
-            "hash": "sha256d"
-        },
-        "headerHasher": {
-            "hash": "x11"
-        },
-        "blockHasher": {
-            "hash": "reverse",
-            "args": [
-                {
-                    "hash": "x11"
-                }
-            ]
-        },
-        "hasMasterNodes": true,
-        "explorerBlockLink": "https://scc.ccore.online/block/$height$",
-        "explorerTxLink": "https://scc.ccore.online/tx/{0}",
-        "explorerAccountLink": "https://scc.ccore.online/address/{0}"
-    },
     "susucoin": {
         "name": "Susucoin",
         "canonicalName": "Susucoin",
@@ -4399,7 +4339,11 @@
             "hash": "sha256d"
         },
         "headerHasher": {
-            "hash": "sha256d"
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
         },
         "blockHasher": {
             "hash": "reverse",
@@ -4409,6 +4353,7 @@
                 }
             ]
         },
+        "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/zet/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/zet/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/zet/address.dws?{0}.htm"

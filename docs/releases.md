@@ -46,6 +46,22 @@ financial outcome. Handshake now requires successful wallet discovery or selecti
 Handshake and Equihash treat cancellation during `walletpassphrase` as ordinary pre-submission
 shutdown and conservatively attempt bounded relock when the unlock result is unknown.
 
+## Coin definition accuracy
+
+The bundled definitions now select StakeCubeCoin's current SCCPow implementation instead of a
+later duplicate legacy X11 entry, and Zetacoin's hybrid PoW/PoS definition now uses its current
+Scrypt proof-of-work algorithm. Duplicate JSON properties at any level within one coin-definition
+file—including coin identifiers, nested hasher settings, and network parameters—are rejected at
+startup instead of silently allowing the final value to override an earlier one. This is a
+deliberate fail-closed compatibility change; explicit redefinitions across separately loaded files
+remain supported.
+
+The stale HelpTheHomeless X16R definition has been removed because the maintained chain uses X25X,
+which is not included in the packaged native runtimes. DigiByte Odocrypt is likewise not advertised:
+Miningcore's historical Odocrypt implementation was removed as non-working. MeowCoin's existing
+MeowPow definition remains valid; its newer Scrypt mode is AuxPoW-only and requires generalized
+merged-mining support before it can be offered as a Miningcore template.
+
 ## Choose a version
 
 Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying

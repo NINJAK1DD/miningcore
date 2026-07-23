@@ -9,6 +9,10 @@ public class PoolStartupException : Exception
         PoolId = poolId;
     }
 
+    public PoolStartupException(string msg, Exception innerException) : base(msg, innerException)
+    {
+    }
+
     public PoolStartupException()
     {
     }

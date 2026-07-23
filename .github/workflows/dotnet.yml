@@ -171,3 +171,14 @@ jobs:
 
     - name: Smoke-test Windows build
       run: .\build\windows-x64\Miningcore.exe --version
+
+    - name: Restore Windows native smoke test
+      run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
+
+    - name: Smoke-test Windows SCCPow runtime
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Native.SccPowTests"
