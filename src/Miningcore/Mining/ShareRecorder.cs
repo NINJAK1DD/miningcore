@@ -122,6 +122,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
     internal SemaphoreSlim RecoveryWriteGate => recoveryWriteGate;
+    internal Action<string> RecoveryDirectorySync { get; set; } =
+        ShareRecoveryFatalState.SyncDirectoryWhereSupported;
     private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "auxpow-claim",
@@ -434,22 +436,75 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         try
         {
-            await using var stream = new FileStream(recoveryFilename,
-                new FileStreamOptions
-            {
-                Mode = FileMode.OpenOrCreate,
-                Access = FileAccess.ReadWrite,
-                Share = FileShare.Read,
-                Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
-            });
+            FileStream stream;
 
-            EnsureRecoveryJournalAppendBoundary(stream, recoveryFilename);
-            var payload = BuildRecoveryJournalPayload(shares, stream.Length == 0);
-            await AppendRecoveryJournalAsync(stream, payload);
+            try
+            {
+                stream = new FileStream(recoveryFilename, new FileStreamOptions
+                {
+                    Mode = FileMode.Open,
+                    Access = FileAccess.ReadWrite,
+                    Share = FileShare.Read,
+                    Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+                });
+            }
+            catch(FileNotFoundException)
+            {
+                await CreateRecoveryJournalAsync(shares);
+                return;
+            }
+
+            await using(stream)
+            {
+                EnsureRecoveryJournalAppendBoundary(stream, recoveryFilename);
+                var payload = BuildRecoveryJournalPayload(shares,
+                    stream.Length == 0);
+                await AppendRecoveryJournalAsync(stream, payload);
+            }
         }
         finally
         {
             recoveryWriteGate.Release();
+        }
+    }
+
+    private async Task CreateRecoveryJournalAsync(IList<Share> shares)
+    {
+        var directory = Path.GetDirectoryName(recoveryFilename)!;
+        var temporary = Path.Combine(directory,
+            $".{Path.GetFileName(recoveryFilename)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            await using(var stream = new FileStream(temporary,
+                new FileStreamOptions
+                {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.ReadWrite,
+                    Share = FileShare.Read,
+                    Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+                }))
+            {
+                var payload = BuildRecoveryJournalPayload(shares, true);
+                await AppendRecoveryJournalAsync(stream, payload);
+            }
+
+            // A force-flushed file is not a durable first creation until its directory entry is
+            // atomically published and the containing directory is synchronised on Linux.
+            File.Move(temporary, recoveryFilename, false);
+            RecoveryDirectorySync(directory);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporary);
+            }
+            catch
+            {
+                // Preserve the original create, rename, or directory-sync exception. A stray
+                // temporary file is not treated as the active recovery journal.
+            }
         }
     }
 
@@ -472,115 +527,152 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 $"Recovery journal {filename} does not end at a newline boundary. " +
                 "Preserve it for reconciliation; refusing to append to possibly truncated data.");
 
-        var isVersionedJournal = StartsWithRecoveryJournalMagic(stream);
-        var framedTail = ReadLatestRecoveryBatch(stream);
-
-        if(framedTail == null)
-        {
-            if(isVersionedJournal)
-                throw new InvalidDataException(
-                    $"Recovery journal {filename} identifies the versioned format but contains " +
-                    "no complete framed batch. Preserve it for reconciliation; refusing to " +
-                    "treat a torn first append as a legacy journal.");
-
-            return;
-        }
-
-        var lines = framedTail
-            .Split('\n')
-            .Select(x => x.TrimEnd('\r'))
-            .ToArray();
-        var finalLineIndex = Array.FindLastIndex(lines,
-            line => !string.IsNullOrWhiteSpace(line));
-        var lastStartIndex = Array.FindLastIndex(lines,
-            line => line.StartsWith(RecoveryBatchStartPrefix,
-                StringComparison.Ordinal));
-
-        if(finalLineIndex <= lastStartIndex ||
-            !lines[finalLineIndex].StartsWith(RecoveryBatchEndPrefix,
-                StringComparison.Ordinal))
-            throw new InvalidDataException(
-                $"Recovery journal {filename} contains an incomplete framed batch. " +
-                "Preserve it for reconciliation; refusing to append after a partial batch.");
-
-        var startMetadata = ParseRecoveryBatchMetadata(lines[lastStartIndex],
-            RecoveryBatchStartPrefix, filename);
-        var endMetadata = ParseRecoveryBatchMetadata(lines[finalLineIndex],
-            RecoveryBatchEndPrefix, filename);
-        var recordLines = lines[(lastStartIndex + 1)..finalLineIndex];
-        var recordBytes = Encoding.UTF8.GetBytes(string.Join("\n", recordLines) + "\n");
-        var actualHash = Convert.ToHexString(SHA256.HashData(recordBytes));
-
-        if(startMetadata != endMetadata || recordLines.Length != startMetadata.Count ||
-            !string.Equals(actualHash, startMetadata.Hash, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException(
-                $"Recovery journal {filename} has a framed batch whose record count or hash " +
-                "does not match its durable trailer. Preserve it for reconciliation.");
+        ValidateRecoveryJournal(stream, filename);
     }
 
-    private static bool StartsWithRecoveryJournalMagic(Stream stream)
+    internal static bool ValidateRecoveryJournal(Stream stream, string filename)
     {
-        var expected = Encoding.UTF8.GetBytes(RecoveryJournalMagic + "\n");
+        ArgumentNullException.ThrowIfNull(stream);
 
-        if(stream.Length < expected.Length)
-            return false;
+        if(!stream.CanRead || !stream.CanSeek)
+            throw new ArgumentException(
+                "Recovery journal stream must be readable and seekable", nameof(stream));
 
-        var actual = new byte[expected.Length];
         stream.Position = 0;
-        stream.ReadExactly(actual);
-        return actual.AsSpan().SequenceEqual(expected);
-    }
+        using var reader = new StreamReader(stream,
+            new UTF8Encoding(false, true), leaveOpen: true);
 
-    private static string ReadLatestRecoveryBatch(Stream stream)
-    {
-        const int blockSize = 8192;
-        var marker = Encoding.ASCII.GetBytes(RecoveryBatchStartPrefix);
-        var searchEnd = stream.Length;
-
-        while(searchEnd > 0)
+        try
         {
-            var searchStart = Math.Max(0, searchEnd - blockSize);
-            var overlap = (int) Math.Min(marker.Length - 1,
-                stream.Length - searchEnd);
-            var length = checked((int) (searchEnd - searchStart)) + overlap;
-            var buffer = new byte[length];
-            stream.Position = searchStart;
-            stream.ReadExactly(buffer);
+            var firstLine = reader.ReadLine();
 
-            for(var index = buffer.Length - marker.Length; index >= 0; index--)
+            // Legacy journals may contain an unframed prefix followed by batches appended by a
+            // newer Miningcore revision. Validate every such frame while retaining newline-only
+            // compatibility for the original prefix.
+            if(!string.Equals(firstLine, RecoveryJournalMagic,
+                   StringComparison.Ordinal))
             {
-                if(!buffer.AsSpan(index, marker.Length).SequenceEqual(marker))
-                    continue;
-
-                var absoluteIndex = searchStart + index;
-
-                if(absoluteIndex > 0)
-                {
-                    stream.Position = absoluteIndex - 1;
-
-                    if(stream.ReadByte() != '\n')
-                        continue;
-                }
-
-                var tailLength = stream.Length - absoluteIndex;
-
-                if(tailLength > int.MaxValue)
-                    throw new InvalidDataException(
-                        "Recovery journal framed batch exceeds the supported validation size");
-
-                var tail = new byte[(int) tailLength];
-                stream.Position = absoluteIndex;
-                stream.ReadExactly(tail);
-                return Encoding.UTF8.GetString(tail);
+                ValidateRecoveryBatches(reader, filename, firstLine,
+                    allowLegacyPrefix: true, requireBatch: false);
+                return false;
             }
 
-            searchEnd = searchStart;
+            var expectedHeader = new[]
+            {
+                "# The existence of this file means shares could not be committed to the database.",
+                "# You should stop the pool cluster and run the following command:",
+                "# miningcore -c <path-to-config> -rs <path-to-this-file>",
+                string.Empty,
+            };
+
+            foreach(var expectedLine in expectedHeader)
+            {
+                var actualLine = reader.ReadLine();
+
+                if(!string.Equals(actualLine, expectedLine,
+                       StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        $"Recovery journal {filename} contains an incomplete or unexpected " +
+                        "versioned header. Preserve it for reconciliation.");
+            }
+
+            ValidateRecoveryBatches(reader, filename, null,
+                allowLegacyPrefix: false, requireBatch: true);
+            return true;
+        }
+        catch(DecoderFallbackException ex)
+        {
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains invalid UTF-8", ex);
+        }
+    }
+
+    private static bool ValidateRecoveryBatches(StreamReader reader,
+        string filename, string firstLine, bool allowLegacyPrefix,
+        bool requireBatch)
+    {
+        var sawBatch = false;
+        var line = firstLine;
+
+        while(line != null || (line = reader.ReadLine()) != null)
+        {
+            if(!line.StartsWith(RecoveryBatchStartPrefix,
+                   StringComparison.Ordinal))
+            {
+                if(allowLegacyPrefix && !sawBatch &&
+                   !IsRecoveryFrameMarker(line))
+                {
+                    line = null;
+                    continue;
+                }
+
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains unexpected content outside a " +
+                    "framed batch. Preserve it for reconciliation.");
+            }
+
+            sawBatch = true;
+            var startMetadata = ParseRecoveryBatchMetadata(line,
+                RecoveryBatchStartPrefix, filename);
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var count = 0;
+
+            while(true)
+            {
+                line = reader.ReadLine();
+
+                if(line == null)
+                    throw new InvalidDataException(
+                        $"Recovery journal {filename} contains an incomplete framed batch. " +
+                        "Preserve it for reconciliation.");
+
+                if(line.StartsWith(RecoveryBatchStartPrefix,
+                       StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        $"Recovery journal {filename} contains a nested framed batch. " +
+                        "Preserve it for reconciliation.");
+
+                if(line.StartsWith(RecoveryBatchEndPrefix,
+                       StringComparison.Ordinal))
+                {
+                    var endMetadata = ParseRecoveryBatchMetadata(line,
+                        RecoveryBatchEndPrefix, filename);
+                    var actualHash = Convert.ToHexString(hash.GetHashAndReset());
+
+                    if(startMetadata != endMetadata || count != startMetadata.Count ||
+                       !string.Equals(actualHash, startMetadata.Hash,
+                           StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException(
+                            $"Recovery journal {filename} has a framed batch whose record " +
+                            "count or hash does not match its durable metadata. Preserve it " +
+                            "for reconciliation.");
+
+                    line = null;
+                    break;
+                }
+
+                if(string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+                    throw new InvalidDataException(
+                        $"Recovery journal {filename} contains unexpected content inside a " +
+                        "framed batch. Preserve it for reconciliation.");
+
+                hash.AppendData(Encoding.UTF8.GetBytes(line));
+                hash.AppendData(new byte[] { (byte) '\n' });
+                count++;
+            }
         }
 
-        // Journals written by older versions have no batch framing. Preserve compatibility,
-        // but every batch written by this version has a matching count/hash trailer.
-        return null;
+        if(requireBatch && !sawBatch)
+            throw new InvalidDataException(
+                $"Recovery journal {filename} identifies the versioned format but contains " +
+                "no complete framed batch. Preserve it for reconciliation.");
+
+        return sawBatch;
     }
+
+    private static bool IsRecoveryFrameMarker(string line) =>
+        line?.StartsWith(RecoveryBatchStartPrefix, StringComparison.Ordinal) == true ||
+        line?.StartsWith(RecoveryBatchEndPrefix, StringComparison.Ordinal) == true;
 
     private static (int Count, string Hash) ParseRecoveryBatchMetadata(string line,
         string prefix, string filename)
@@ -593,11 +685,19 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             !int.TryParse(parts[0][6..], NumberStyles.None,
                 CultureInfo.InvariantCulture, out var count) || count < 0 ||
             !parts[1].StartsWith("sha256=", StringComparison.Ordinal) ||
-            parts[1].Length != 71)
+            parts[1].Length != 71 ||
+            !parts[1][7..].All(Uri.IsHexDigit))
             throw new InvalidDataException(
                 $"Recovery journal {filename} contains malformed batch metadata");
 
-        return (count, parts[1][7..]);
+        var hash = parts[1][7..];
+        var canonical = $"{prefix}count={count} sha256={hash}";
+
+        if(!string.Equals(line, canonical, StringComparison.Ordinal))
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains non-canonical batch metadata");
+
+        return (count, hash);
     }
 
     private byte[] BuildRecoveryJournalPayload(IEnumerable<Share> shares,
@@ -725,8 +825,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 Share = FileShare.Read,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
             }))
-            using(var reader = new StreamReader(stream, new UTF8Encoding(false)))
             {
+                // Enforce every count/hash frame before opening the database transaction. The
+                // same read-only handle remains locked for both semantic passes, preventing the
+                // source from changing after its byte-level integrity was established.
+                EnsureRecoveryJournalAppendBoundary(stream, filename);
+                stream.Seek(0, SeekOrigin.Begin);
+                using var reader = new StreamReader(stream, new UTF8Encoding(false));
+
                 // Pass one validates every record before a database transaction is opened.
                 var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
                 validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>

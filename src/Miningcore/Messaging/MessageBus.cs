@@ -161,10 +161,13 @@ public class MessageBus : IMessageBus
     /// </param>
     public void SendMessage<T>(T message, string contract = null)
     {
-        if(message is Share && failStopCoordinator?.IsFailStopRequested == true)
-            throw new OperationCanceledException(
-                "Share ingress is closed by the mining fail-stop gate",
-                failStopCoordinator.Token);
+        if(message is Share && failStopCoordinator != null)
+        {
+            using var acceptance = failStopCoordinator.AcquireSubmissionAcceptance();
+            acceptance.PublishShare(() =>
+                setupSubjectIfNecessary<T>(contract).OnNext(message));
+            return;
+        }
 
         setupSubjectIfNecessary<T>(contract).OnNext(message);
     }

@@ -10,6 +10,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Autofac;
 using Microsoft.IO;
+using Miningcore.Blockchain;
 using Miningcore.Banning;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
@@ -233,6 +234,36 @@ public abstract class StratumServer
         await OnRequestAsync(connection, tsRequest, ct);
 
         PublishTelemetry(TelemetryCategory.StratumRequest, request.Method, clock.Now - tsRequest.Timestamp);
+    }
+
+    /// <summary>
+    /// Admits an accepted share to the accounting pipeline before its positive Stratum response.
+    /// Both steps are serialized against the mining fail-stop transition. A gate closure between
+    /// them leaves the share published but deliberately unacknowledged.
+    /// </summary>
+    protected async Task PublishShareAndAcknowledgeAsync(Share share,
+        Func<Task> acknowledge, bool publishShare = true)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        ArgumentNullException.ThrowIfNull(acknowledge);
+
+        var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+
+        if(failStop == null)
+        {
+            if(publishShare)
+                messageBus.SendMessage(share);
+
+            await acknowledge();
+            return;
+        }
+
+        using var acceptance = failStop.AcquireSubmissionAcceptance();
+
+        if(publishShare)
+            acceptance.PublishShare(() => messageBus.SendMessage(share));
+
+        await acceptance.QueueResponseAsync(acknowledge);
     }
 
     protected void OnConnectionError(StratumConnection connection, Exception ex)

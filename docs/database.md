@@ -219,8 +219,9 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
-The importer ignores the framing comments, validates the complete file before opening its
-transaction, commits all records and its
+The importer validates every versioned frame's markers, count and SHA-256 before opening its
+transaction, then ignores those already-verified comment lines while deserializing records. It
+commits all records and its
 SHA-256 manifest atomically, and archives a successful source with an `.imported-*` suffix. Retain
 that archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
 import unexplained journals from old working directories or previous deployments; reconcile their

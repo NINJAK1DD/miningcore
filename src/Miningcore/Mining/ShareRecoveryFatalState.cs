@@ -213,7 +213,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
     }
 
-    private static void SyncDirectoryWhereSupported(string directory)
+    internal static void SyncDirectoryWhereSupported(string directory)
     {
         if(!OperatingSystem.IsLinux())
             return;
@@ -223,13 +223,13 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
         if(descriptor < 0)
             throw new IOException(
-                $"Unable to open fatal-state directory for durable sync (errno {Marshal.GetLastPInvokeError()})");
+                $"Unable to open directory for durable sync (errno {Marshal.GetLastPInvokeError()})");
 
         try
         {
             if(fsync(descriptor) != 0)
                 throw new IOException(
-                    $"Unable to durably sync fatal-state directory (errno {Marshal.GetLastPInvokeError()})");
+                    $"Unable to durably sync directory (errno {Marshal.GetLastPInvokeError()})");
         }
         finally
         {

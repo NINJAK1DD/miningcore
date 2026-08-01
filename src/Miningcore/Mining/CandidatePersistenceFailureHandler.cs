@@ -42,14 +42,12 @@ public sealed class CandidatePersistenceFailureHandler :
     {
         ArgumentNullException.ThrowIfNull(candidates);
 
-        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
-            return;
-
         var exitCode = journalSucceeded
             ? ProcessExitCodes.GeneralFailure
             : ProcessExitCodes.UnreconciledShareDurabilityLoss;
 
-        // Quiesce Stratum and share ingress before marker I/O or notification delivery.
+        // Every invocation reaches the coordinator so a later dual-target failure can upgrade
+        // an earlier general shutdown to the non-restart durability-loss status.
         failStopCoordinator.BeginFailStop(exitCode);
 
         var candidateDetails = string.Join("; ", candidates.Select(candidate =>
@@ -94,6 +92,11 @@ public sealed class CandidatePersistenceFailureHandler :
                     fatalState.FatalStateFilename, exitCode);
             }
         }
+
+        // The status and fatal latch above are safety-critical for every incident. Suppress only
+        // duplicate operator notifications once shutdown has already been announced.
+        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
+            return;
 
         var notification = new AdminNotification(
             "Fatal block-candidate persistence failure",

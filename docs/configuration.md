@@ -65,16 +65,23 @@ the journal and alert on both free bytes and free inodes well before exhaustion.
 Miningcore logs does not bound the journal or reserve space for it.
 
 Each caught append or force-flush failure is rolled back to the file's previous length and durably
-flushed. New journals begin with a format/version magic line before any explanatory text. New
-batches are framed by comment records containing the expected record count and SHA-256 hash. Before
-appending, Miningcore validates both the newline boundary and the most recent framed batch. The same
-validation runs during normal startup, so a crash cannot hide a partial framed append or torn first
-append merely because PostgreSQL recovered before the next fallback. Older journals without
-framing retain the legacy newline-only check until their first new framed batch. A newline alone is
-not proof that an older multi-record append completed.
+flushed. A journal's first batch is written to a force-flushed temporary file, atomically renamed to
+the active path and followed by a parent-directory `fsync` on Linux, so successful first creation
+includes the filename itself in the durability boundary. New journals begin with a format/version
+magic line before any explanatory text. New batches are framed by comment records containing the
+expected record count and SHA-256 hash. Before appending, during every normal startup and before a
+recovery import opens its database transaction, Miningcore streams and validates every frame in a
+versioned journal—not only the newest one. It rejects mismatched counts or hashes, nested or
+unclosed frames, records outside frames and unexpected trailing content. Older journals retain the
+legacy newline-only guarantee for their original unframed prefix; every newer frame appended after
+that prefix is validated in full. A newline alone is not proof that an older multi-record append
+completed.
 
-If PostgreSQL and the journal are both unavailable, Miningcore immediately closes Stratum response
-and share-ingress gates, writes an independent fatal latch under
+If PostgreSQL and the journal are both unavailable, Miningcore immediately closes a coordinated
+Stratum acceptance boundary. Every pool family publishes a validated share to the accounting
+pipeline before admitting its positive response; fail-stop is serialized against both operations,
+and queued responses are cancelled directly when the gate closes. Miningcore then writes an
+independent fatal latch under
 `shareRecoveryStateDirectory/share-recovery-fatal`, attempts the distinct
 `Fatal share-recovery fallback failure` administrative notification for up to five seconds, and
 exits with status 74. The latch filename is the SHA-256 of the absolute configured journal path and
@@ -87,7 +94,9 @@ directory on persistent storage so replacing the container cannot discard an unr
 The supplied unit has `RestartPreventExitStatus=74`, while the independently stored latch blocks
 every normal startup, including relay configurations. An inaccessible or uncertain state directory
 also blocks startup. Notification delivery can still fail or time out; the fatal log, exit status
-and latch are the authoritative signals. Preserve and reconcile the journal before deleting only
+and latch are the authoritative signals. A later dual-target candidate failure upgrades an earlier
+general shutdown to status 74 and creates the latch even when the first stop signal was already
+sent. Preserve and reconcile the journal before deleting only
 the exact fatal-state path reported by Miningcore as an explicit operator acknowledgement.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;

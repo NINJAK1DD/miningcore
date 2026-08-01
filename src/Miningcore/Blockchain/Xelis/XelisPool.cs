@@ -248,11 +248,8 @@ public class XelisPool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            // respond
-            await connection.RespondAsync(response);
-
-            // publish
-            messageBus.SendMessage(share);
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);

@@ -53,6 +53,8 @@ public class StratumConnection
     private readonly IMasterClock clock;
     private readonly CancellationToken failStopToken;
 
+    internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
+
     private const int MaxInboundRequestLength = 0x8000;
     public static readonly Encoding Encoding = new UTF8Encoding(false);
 
@@ -340,16 +342,24 @@ public class StratumConnection
         return false;
     }
 
-    private async Task ProcessSendQueueAsync(CancellationToken ct)
+    internal async Task ProcessSendQueueAsync(CancellationToken ct)
     {
-        while(!ct.IsCancellationRequested)
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct,
+            failStopToken);
+        var sendCt = linked.Token;
+
+        while(!sendCt.IsCancellationRequested)
         {
             if(sendQueue.Count >= SendQueueCapacity)
                 throw new IOException($"Send-queue overflow at {sendQueue.Count} of {SendQueueCapacity} items");
 
-            var msg = await sendQueue.ReceiveAsync(ct);
+            var msg = await sendQueue.ReceiveAsync(sendCt);
+            sendCt.ThrowIfCancellationRequested();
 
-            await SendMessage(msg, ct);
+            if(SendMessageOverride != null)
+                await SendMessageOverride(msg, sendCt);
+            else
+                await SendMessage(msg, sendCt);
         }
     }
 

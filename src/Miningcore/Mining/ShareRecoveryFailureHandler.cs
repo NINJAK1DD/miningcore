@@ -41,9 +41,6 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         ArgumentNullException.ThrowIfNull(shares);
         ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
 
-        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
-            return;
-
         failStopCoordinator.BeginFailStop(
             ProcessExitCodes.UnreconciledShareDurabilityLoss);
 
@@ -79,6 +76,11 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
                 fatalState.FatalStateFilename,
                 ProcessExitCodes.UnreconciledShareDurabilityLoss);
         }
+
+        // Always refresh the fail-closed state above. Only the slower operator alert is
+        // de-duplicated after the first incident.
+        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
+            return;
 
         var notification = new AdminNotification(
             "Fatal share-recovery fallback failure",
