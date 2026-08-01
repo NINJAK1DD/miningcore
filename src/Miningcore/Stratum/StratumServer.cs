@@ -15,6 +15,7 @@ using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Time;
 using Miningcore.Util;
@@ -156,6 +157,14 @@ public abstract class StratumServer
     {
         Task.Run(() => Guard(() =>
         {
+            var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+
+            if(failStop?.IsFailStopRequested == true)
+            {
+                socket.Close();
+                return;
+            }
+
             var remoteEndpoint = (IPEndPoint) socket.RemoteEndPoint;
 
             if(remoteEndpoint == null)
@@ -169,7 +178,9 @@ public abstract class StratumServer
                 return;
 
             // init connection
-            var connection = new StratumConnection(logger, rmsm, clock, CorrelationIdGenerator.GetNextId(), clusterConfig.Logging.GPDRCompliant);
+            var connection = new StratumConnection(logger, rmsm, clock,
+                CorrelationIdGenerator.GetNextId(),
+                clusterConfig.Logging.GPDRCompliant, failStop?.Token ?? default);
 
             logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging.GPDRCompliant)}:{remoteEndpoint.Port} ...");
 
@@ -200,6 +211,13 @@ public abstract class StratumServer
 
     protected async Task OnRequestAsync(StratumConnection connection, JsonRpcRequest request, CancellationToken ct)
     {
+        var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+
+        if(failStop?.IsFailStopRequested == true)
+            throw new OperationCanceledException(
+                "Stratum request rejected by the mining fail-stop gate",
+                failStop.Token);
+
         // boot pre-connected clients
         if(banManager?.IsBanned(connection.RemoteEndpoint.Address) == true)
         {

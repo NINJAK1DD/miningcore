@@ -954,6 +954,13 @@
         "null"
       ]
     },
+    "shareRecoveryStateDirectory": {
+      "description": "Independent service-owned directory for persistent share-recovery fatal latches. Defaults to systemd StateDirectory or the platform application-data directory.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "shareRelay": {
       "$ref": "#/definitions/ShareRelayConfig"
     },

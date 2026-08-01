@@ -27,7 +27,9 @@ namespace Miningcore.Stratum;
 
 public class StratumConnection
 {
-    public StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm, IMasterClock clock, string connectionId, bool gpdrCompliantLogging)
+    public StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm,
+        IMasterClock clock, string connectionId, bool gpdrCompliantLogging,
+        CancellationToken failStopToken = default)
     {
         this.logger = logger;
         this.rmsm = rmsm;
@@ -43,11 +45,13 @@ public class StratumConnection
         ConnectionId = connectionId;
         IsAlive = true;
         this.gpdrCompliantLogging = gpdrCompliantLogging;
+        this.failStopToken = failStopToken;
     }
 
     private readonly ILogger logger;
     private readonly RecyclableMemoryStreamManager rmsm;
     private readonly IMasterClock clock;
+    private readonly CancellationToken failStopToken;
 
     private const int MaxInboundRequestLength = 0x8000;
     public static readonly Encoding Encoding = new UTF8Encoding(false);
@@ -223,6 +227,11 @@ public class StratumConnection
     private Task SendAsync<T>(T payload)
     {
         Contract.RequiresNonNull(payload);
+
+        if(failStopToken.IsCancellationRequested)
+            throw new OperationCanceledException(
+                "Stratum response rejected by the mining fail-stop gate",
+                failStopToken);
 
         if(sendQueue.Count >= SendQueueCapacity)
             throw new IOException("Sendqueue stalled");

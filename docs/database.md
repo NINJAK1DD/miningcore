@@ -184,9 +184,10 @@ example blindly.
 If the incident produced `Share Recorder Policy Fallback`, `Fatal share-recovery fallback failure`
 or recovery-journal errors, reconcile the journal before restarting Miningcore. Use the
 absolute journal path reported when the Share Recorder came online. A dual-target failure exits
-with status 74 and creates that path plus `.fatal`; the supplied systemd unit deliberately will not
-restart it, and normal Miningcore startup will refuse to proceed while the marker exists. A normal
-fallback email proves
+with status 74 and creates an independent, hashed fatal latch below the service state directory;
+the exact path is printed in the fatal log and alert. The supplied systemd unit deliberately will
+not restart it, and normal Miningcore startup will refuse to proceed while the latch exists or its
+state cannot be read with certainty. A normal fallback email proves
 only that the batch which emitted it was force-flushed; it does not prove an earlier batch succeeded
 or reveal shares that failed before reaching either durable target. Review the entire outage window
 for both successful fallback and fatal fallback messages.
@@ -225,13 +226,27 @@ that archive and confirm the matching `share_recovery_imports` row and record co
 import unexplained journals from old working directories or previous deployments; reconcile their
 origin and existing manifest first.
 
-Only after the reviewed import and its manifest/count are verified, remove the fatal marker whose
-exact path was reported by Miningcore. Do not use a wildcard and do not remove the recovery journal
-or imported evidence as part of this acknowledgement:
+If the configured active journal is corrupt and a separate reviewed copy was imported, preserve the
+original evidence but remove it from the live journal path before clearing the latch. Prefer an
+atomic rename on the same filesystem, recording the before/after path and checksum. Alternatively,
+move it to a protected evidence directory on that filesystem or configure `shareRecoveryFile` to a
+fresh empty path. Never replace the live path with repaired content silently:
 
 ```console
-sudo test -f -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.fatal
-sudo rm -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.fatal
+sudo sha256sum -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE
+sudo mv -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE \
+  REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.corrupt-evidence-YYYYMMDDTHHMMSSZ
+sudo sha256sum -- \
+  REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.corrupt-evidence-YYYYMMDDTHHMMSSZ
+```
+
+Only after the reviewed import, its manifest/count, and the active-path disposition are verified,
+remove the fatal latch whose exact path was reported by Miningcore. Do not use a wildcard and do
+not delete the journal archive or imported/corrupt evidence as part of this acknowledgement:
+
+```console
+sudo test -f -- REPLACE_WITH_REPORTED_FATAL_STATE_FILE
+sudo rm -- REPLACE_WITH_REPORTED_FATAL_STATE_FILE
 ```
 
 Finally start Miningcore and inspect its complete startup, API health and pool state:

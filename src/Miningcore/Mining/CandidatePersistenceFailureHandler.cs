@@ -1,6 +1,5 @@
-using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain;
-using Miningcore.Messaging;
+using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
 using NLog;
 
@@ -8,37 +7,50 @@ namespace Miningcore.Mining;
 
 public interface ICandidatePersistenceFailureHandler
 {
-    void StopCluster(IReadOnlyCollection<Share> candidates, Exception databaseError,
-        Exception journalError, bool journalSucceeded);
+    Task StopClusterAsync(IReadOnlyCollection<Share> candidates,
+        Exception databaseError, Exception journalError, bool journalSucceeded);
 }
 
-public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFailureHandler
+public sealed class CandidatePersistenceFailureHandler :
+    ICandidatePersistenceFailureHandler
 {
-    public CandidatePersistenceFailureHandler(IProcessStatus processStatus,
-        IHostApplicationLifetime applicationLifetime, IMessageBus messageBus,
-        IShareRecoveryFatalState fatalState = null)
+    public CandidatePersistenceFailureHandler(
+        IMiningFailStopCoordinator failStopCoordinator,
+        Lazy<ICriticalNotificationSender> criticalNotificationSender,
+        IShareRecoveryFatalState fatalState)
     {
-        ArgumentNullException.ThrowIfNull(processStatus);
-        ArgumentNullException.ThrowIfNull(applicationLifetime);
-        ArgumentNullException.ThrowIfNull(messageBus);
+        ArgumentNullException.ThrowIfNull(failStopCoordinator);
+        ArgumentNullException.ThrowIfNull(criticalNotificationSender);
+        ArgumentNullException.ThrowIfNull(fatalState);
 
-        this.processStatus = processStatus;
-        this.applicationLifetime = applicationLifetime;
-        this.messageBus = messageBus;
+        this.failStopCoordinator = failStopCoordinator;
+        this.criticalNotificationSender = criticalNotificationSender;
         this.fatalState = fatalState;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
-    private readonly IProcessStatus processStatus;
-    private readonly IHostApplicationLifetime applicationLifetime;
-    private readonly IMessageBus messageBus;
+    private readonly IMiningFailStopCoordinator failStopCoordinator;
+    private readonly Lazy<ICriticalNotificationSender> criticalNotificationSender;
     private readonly IShareRecoveryFatalState fatalState;
     private int failureSignalled;
 
-    public void StopCluster(IReadOnlyCollection<Share> candidates,
+    internal TimeSpan CriticalNotificationTimeout { get; set; } =
+        TimeSpan.FromSeconds(5);
+
+    public async Task StopClusterAsync(IReadOnlyCollection<Share> candidates,
         Exception databaseError, Exception journalError, bool journalSucceeded)
     {
         ArgumentNullException.ThrowIfNull(candidates);
+
+        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
+            return;
+
+        var exitCode = journalSucceeded
+            ? ProcessExitCodes.GeneralFailure
+            : ProcessExitCodes.UnreconciledShareDurabilityLoss;
+
+        // Quiesce Stratum and share ingress before marker I/O or notification delivery.
+        failStopCoordinator.BeginFailStop(exitCode);
 
         var candidateDetails = string.Join("; ", candidates.Select(candidate =>
             $"pool={candidate.PoolId}, miner={candidate.Miner}, height={candidate.BlockHeight}, " +
@@ -63,14 +75,7 @@ public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFa
             durability, candidateDetails, databaseError?.Message ?? "(none)",
             journalError?.Message ?? "(none)");
 
-        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
-            return;
-
-        var exitCode = journalSucceeded
-            ? ProcessExitCodes.GeneralFailure
-            : ProcessExitCodes.UnreconciledShareDurabilityLoss;
-
-        if(!journalSucceeded && fatalState != null)
+        if(!journalSucceeded)
         {
             try
             {
@@ -85,23 +90,31 @@ public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFa
             catch(Exception ex)
             {
                 logger.Fatal(ex,
-                    "Unable to persist block-candidate fatal-state marker; dedicated exit status still prevents automatic restart");
+                    "Unable to persist block-candidate fatal-state marker {0}; exit status {1} remains active",
+                    fatalState.FatalStateFilename, exitCode);
             }
         }
 
+        var notification = new AdminNotification(
+            "Fatal block-candidate persistence failure",
+            $"Miningcore is stopping with exit status {exitCode}. {durability} " +
+            $"Candidates: {candidateDetails} Fatal state: " +
+            $"{(journalSucceeded ? "(not required; journal succeeded)" : fatalState.FatalStateFilename)}");
+
         try
         {
-            messageBus.SendMessage(new AdminNotification(
-                "Fatal block-candidate persistence failure",
-                $"Miningcore is stopping with exit status {exitCode}. {durability} Candidates: {candidateDetails}"));
+            using var timeout = new CancellationTokenSource(
+                CriticalNotificationTimeout);
+            await criticalNotificationSender.Value
+                .SendCriticalAdminNotificationAsync(notification, timeout.Token)
+                .WaitAsync(CriticalNotificationTimeout);
         }
         catch(Exception ex)
         {
-            logger.Error(ex, "Unable to emit fatal candidate-persistence notification");
+            logger.Error(ex,
+                "Critical block-candidate notification was not delivered within {0}; shutdown will continue",
+                CriticalNotificationTimeout);
         }
-
-        processStatus.MarkFailed(exitCode);
-        applicationLifetime.StopApplication();
     }
 }
 
@@ -110,8 +123,7 @@ internal sealed class NullCandidatePersistenceFailureHandler :
 {
     public static readonly NullCandidatePersistenceFailureHandler Instance = new();
 
-    public void StopCluster(IReadOnlyCollection<Share> candidates,
-        Exception databaseError, Exception journalError, bool journalSucceeded)
-    {
-    }
+    public Task StopClusterAsync(IReadOnlyCollection<Share> candidates,
+        Exception databaseError, Exception journalError, bool journalSucceeded) =>
+        Task.CompletedTask;
 }

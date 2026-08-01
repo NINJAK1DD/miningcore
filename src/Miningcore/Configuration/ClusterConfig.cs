@@ -1425,6 +1425,9 @@ public partial class ClusterConfig
     [Description("Write-through emergency share journal. In production use an absolute path on separately monitored or reserved storage when possible.")]
     public string ShareRecoveryFile { get; set; }
 
+    [Description("Independent service-owned directory for persistent share-recovery fatal latches. Defaults to systemd StateDirectory or the platform application-data directory.")]
+    public string ShareRecoveryStateDirectory { get; set; }
+
     [Required]
     public PoolConfig[] Pools { get; set; }
 }

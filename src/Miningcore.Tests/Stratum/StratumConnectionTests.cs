@@ -32,6 +32,20 @@ public class StratumConnectionTests : TestBase
     private static readonly ILogger logger = new NullLogger(LogManager.LogFactory);
 
     [Fact]
+    public void RespondAsync_FailStopTokenRejectsAcknowledgement()
+    {
+        using var failStop = new CancellationTokenSource();
+        failStop.Cancel();
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false, failStop.Token);
+
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            _ = connection.RespondAsync(true, 1);
+        });
+    }
+
+    [Fact]
     public async Task ProcessRequest_Handle_Valid_Request()
     {
         var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);

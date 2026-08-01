@@ -20,6 +20,7 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 | `notifications` | Email, Pushover and administrative events |
 | `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
 | `shareRecoveryFile` | Write-through emergency journal used when PostgreSQL is unavailable |
+| `shareRecoveryStateDirectory` | Independent service state for persistent fatal latches |
 | `shareRelay` / `shareRelays` | Advanced distributed sender/receiver topology |
 
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
@@ -64,20 +65,30 @@ the journal and alert on both free bytes and free inodes well before exhaustion.
 Miningcore logs does not bound the journal or reserve space for it.
 
 Each caught append or force-flush failure is rolled back to the file's previous length and durably
-flushed. New batches are framed by comment records containing the expected record count and SHA-256
-hash. Before appending, Miningcore validates both the newline boundary and the most recent framed
-batch. The same validation runs during normal startup, so a crash cannot hide a partial framed
+flushed. New journals begin with a format/version magic line before any explanatory text. New
+batches are framed by comment records containing the expected record count and SHA-256 hash. Before
+appending, Miningcore validates both the newline boundary and the most recent framed batch. The same
+validation runs during normal startup, so a crash cannot hide a partial framed append or torn first
 append merely because PostgreSQL recovered before the next fallback. Older journals without
 framing retain the legacy newline-only check until their first new framed batch. A newline alone is
 not proof that an older multi-record append completed.
 
-If PostgreSQL and the journal are both unavailable, Miningcore writes
-`<shareRecoveryFile>.fatal`, attempts the distinct `Fatal share-recovery fallback failure`
-administrative notification for up to five seconds, and exits with status 74. The supplied systemd
-unit has `RestartPreventExitStatus=74`, while the fatal marker independently blocks a manual normal
-startup. Notification delivery can still fail or time out; the fatal log, exit status and marker are
-the authoritative signals. Preserve and reconcile the journal before deleting only the `.fatal`
-file as an explicit operator acknowledgement.
+If PostgreSQL and the journal are both unavailable, Miningcore immediately closes Stratum response
+and share-ingress gates, writes an independent fatal latch under
+`shareRecoveryStateDirectory/share-recovery-fatal`, attempts the distinct
+`Fatal share-recovery fallback failure` administrative notification for up to five seconds, and
+exits with status 74. The latch filename is the SHA-256 of the absolute configured journal path and
+its content records both that path and hash. Under the supplied systemd unit the state directory is
+`/var/lib/miningcore`; outside systemd, set `shareRecoveryStateDirectory` explicitly when the
+platform application-data default is unsuitable. Keep this state on service-owned storage that is
+independent of the journal's expected failure domain. Container deployments should mount that state
+directory on persistent storage so replacing the container cannot discard an unreconciled latch.
+
+The supplied unit has `RestartPreventExitStatus=74`, while the independently stored latch blocks
+every normal startup, including relay configurations. An inaccessible or uncertain state directory
+also blocks startup. Notification delivery can still fail or time out; the fatal log, exit status
+and latch are the authoritative signals. Preserve and reconcile the journal before deleting only
+the exact fatal-state path reported by Miningcore as an explicit operator acknowledgement.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

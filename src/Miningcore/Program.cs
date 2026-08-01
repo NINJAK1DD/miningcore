@@ -555,6 +555,8 @@ public class Program : ProcessStatusBackgroundService
                 "Host shutdown timeout must be positive");
 
         services.TryAddSingleton<IProcessStatus, ProcessStatus>();
+        services.TryAddSingleton<IMiningFailStopCoordinator,
+            MiningFailStopCoordinator>();
         services.Configure<HostOptions>(options => options.ShutdownTimeout = timeout);
     }
 
@@ -582,7 +584,8 @@ public class Program : ProcessStatusBackgroundService
                 // A closed stderr stream must not turn a known startup failure into success.
             }
 
-            return 1;
+            var exitCode = (getExitCode ?? (() => Environment.ExitCode))();
+            return exitCode != 0 ? exitCode : ProcessExitCodes.GeneralFailure;
         }
     }
 
@@ -1043,7 +1046,7 @@ public class Program : ProcessStatusBackgroundService
 
     private static async Task PreFlightChecks(IServiceProvider services)
     {
-        if(!isShareRecoveryMode && clusterConfig.ShareRelay == null)
+        if(ShouldValidateShareRecoveryState(isShareRecoveryMode, clusterConfig))
             services.GetRequiredService<IShareRecoveryFatalState>()
                 .EnsureStartupAllowed();
 
@@ -1142,6 +1145,13 @@ public class Program : ProcessStatusBackgroundService
 
         // Configure SccPow
         Miningcore.Crypto.Hashing.Progpow.Sccpow.Cache.messageBus = messageBus;
+    }
+
+    internal static bool ShouldValidateShareRecoveryState(bool recoveryMode,
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return !recoveryMode;
     }
 
     internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,

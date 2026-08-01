@@ -29,13 +29,16 @@ It restores storage, PostgreSQL and coin daemons in dependency order before Mini
 the existing payout-ownership reconciliation procedure for an unclean database-session loss.
 
 Recovery-journal appends now roll back a partial write to the previous file length, force-flush the
-rollback, and refuse to extend a pre-existing incomplete line or framed batch. New batch trailers
-record the expected count and SHA-256 hash. If PostgreSQL and the recovery journal both fail,
-Miningcore writes a persistent `.fatal` marker, awaits a bounded critical administrative
-notification attempt, and exits with the dedicated status 74 instead of continuing without durable
-share accounting. The supplied systemd unit does not restart status 74, and normal startup remains
-blocked until reconciliation and explicit marker removal. Normal startup also validates the
-existing journal's final newline and most recent framed batch before pools start. Configure
+rollback, and refuse to extend a pre-existing incomplete line or framed batch. A first-byte format
+magic and new batch trailers record format identity, expected count and SHA-256 hash. If PostgreSQL
+and the recovery journal both fail, Miningcore synchronously closes share ingress and acknowledgement
+gates, writes a persistent hashed fatal latch in an independent service-owned state directory,
+awaits a bounded critical administrative notification attempt, and exits with dedicated status 74
+instead of continuing without durable share accounting. Candidate persistence uses the same direct
+alert and mandatory latch path. The supplied systemd unit does not restart status 74, and every
+normal startup—including relay nodes—remains blocked until reconciliation and explicit latch
+removal. State-directory I/O uncertainty also fails closed with status 74. Normal startup validates
+the existing journal's final newline and most recent framed batch before pools start. Configure
 `shareRecoveryFile` as an
 absolute path on separately monitored or reserved storage where possible; the recovery runbook
 explains evidence preservation and atomic, manifested import verification.

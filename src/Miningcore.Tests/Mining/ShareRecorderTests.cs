@@ -844,6 +844,100 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoveryJournal_FirstAppendPrefixesAreNeverAcceptedAsLegacy()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(),
+            Path.GetRandomFileName());
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, Substitute.For<IMessageBus>());
+
+        try
+        {
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "LFirst" },
+                new Share { PoolId = "btc-solo", Miner = "BSecond" },
+            });
+            var complete = await File.ReadAllTextAsync(recoveryFilename);
+            Assert.StartsWith(ShareRecorder.RecoveryJournalMagic + "\n", complete);
+            var trailerStart = complete.LastIndexOf(
+                "# miningcore-recovery-batch-v1 end ", StringComparison.Ordinal);
+            Assert.True(trailerStart > 0);
+
+            foreach(var boundary in complete.Select((character, index) =>
+                        (character, index))
+                        .Where(x => x.character == '\n' && x.index < trailerStart)
+                        .Select(x => x.index))
+            {
+                var prefix = Encoding.UTF8.GetBytes(complete[..(boundary + 1)]);
+                using var stream = new MemoryStream(prefix);
+                Assert.Throws<InvalidDataException>(() =>
+                    ShareRecorder.EnsureRecoveryJournalAppendBoundary(stream,
+                        recoveryFilename));
+            }
+
+            var frameStart = complete.IndexOf(
+                "# miningcore-recovery-batch-v1 start ", StringComparison.Ordinal);
+            var partialFrame = Encoding.UTF8.GetBytes(
+                complete[..(frameStart + 12)]);
+            using(var partialStream = new MemoryStream(partialFrame))
+            {
+                Assert.Throws<InvalidDataException>(() =>
+                    ShareRecorder.EnsureRecoveryJournalAppendBoundary(partialStream,
+                        recoveryFilename));
+            }
+
+            using var completeStream = new MemoryStream(
+                Encoding.UTF8.GetBytes(complete));
+            ShareRecorder.EnsureRecoveryJournalAppendBoundary(completeStream,
+                recoveryFilename);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
+    public void MiningFailStopGate_RejectsPostSignalShareBeforeQueueOrAcknowledgement()
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus,
+            applicationLifetime);
+        var messageBus = new MessageBus(coordinator);
+        var queued = new List<Share>();
+        using var subscription = messageBus.Listen<Share>().Subscribe(queued.Add);
+        var acknowledged = false;
+
+        messageBus.SendMessage(new Share { PoolId = "ltc-solo", Miner = "before" });
+        Assert.True(coordinator.BeginFailStop(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss));
+
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            messageBus.SendMessage(new Share
+            {
+                PoolId = "ltc-solo",
+                Miner = "after",
+            });
+            acknowledged = true;
+        });
+
+        Assert.False(acknowledged);
+        Assert.Equal("before", Assert.Single(queued).Miner);
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+    }
+
+    [Fact]
     public async Task RecoveryJournal_FlushFailureRollsBackSuccessfulWrite()
     {
         var original = Encoding.UTF8.GetBytes("# existing journal\n");
@@ -1328,36 +1422,40 @@ public class ShareRecorderTests
     }
 
     [Fact]
-    public void CandidatePersistenceFailureHandler_StopsProcessOnlyOnceForDualTargetFailure()
+    public async Task CandidatePersistenceFailureHandler_StopsProcessOnlyOnceForDualTargetFailure()
     {
         var processStatus = new ProcessStatus();
         var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
-        var messageBus = Substitute.For<IMessageBus>();
-        var handler = new CandidatePersistenceFailureHandler(processStatus,
-            applicationLifetime, messageBus);
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        var handler = new CandidatePersistenceFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() => notificationSender),
+            Substitute.For<IShareRecoveryFatalState>());
 
-        handler.StopCluster(new[] { CreateDurableCandidate("ltc-parent") },
+        await handler.StopClusterAsync(new[] { CreateDurableCandidate("ltc-parent") },
             new InvalidOperationException("parent failed"), null, true);
-        handler.StopCluster(new[] { CreateDurableCandidate("doge-aux") },
+        await handler.StopClusterAsync(new[] { CreateDurableCandidate("doge-aux") },
             new InvalidOperationException("aux failed"),
             new IOException("journal failed"), false);
 
         Assert.Equal(1, processStatus.ExitCode);
         applicationLifetime.Received(1).StopApplication();
-        messageBus.Received(1).SendMessage(Arg.Any<AdminNotification>(),
-            Arg.Any<string>());
+        await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
+            Arg.Any<AdminNotification>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public void CandidatePersistenceFailureHandler_DualTargetFailureUsesNonRestartStatus()
+    public async Task CandidatePersistenceFailureHandler_DualTargetFailureUsesNonRestartStatus()
     {
         var processStatus = new ProcessStatus();
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
-        var handler = new CandidatePersistenceFailureHandler(processStatus,
-            Substitute.For<IHostApplicationLifetime>(), Substitute.For<IMessageBus>(),
-            fatalState);
+        var handler = new CandidatePersistenceFailureHandler(
+            new MiningFailStopCoordinator(processStatus,
+                Substitute.For<IHostApplicationLifetime>()),
+            new Lazy<ICriticalNotificationSender>(() =>
+                Substitute.For<ICriticalNotificationSender>()), fatalState);
 
-        handler.StopCluster(new[] { CreateDurableCandidate("doge-aux", "auxpow") },
+        await handler.StopClusterAsync(new[] { CreateDurableCandidate("doge-aux", "auxpow") },
             new IOException("postgres failed"), new IOException("journal failed"),
             false);
 
@@ -1381,6 +1479,18 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public void CandidateFailureHandler_PublicConstructionRequiresFatalState()
+    {
+        var constructor = Assert.Single(
+            typeof(CandidatePersistenceFailureHandler).GetConstructors());
+        var parameter = Assert.Single(constructor.GetParameters(), x =>
+            x.ParameterType == typeof(IShareRecoveryFatalState));
+
+        Assert.False(parameter.IsOptional);
+        Assert.False(parameter.HasDefaultValue);
+    }
+
+    [Fact]
     public async Task ShareRecoveryFailureHandler_StopsAndNotifiesOnlyOnce()
     {
         var processStatus = new ProcessStatus();
@@ -1388,8 +1498,9 @@ public class ShareRecorderTests
         var notificationSender = Substitute.For<ICriticalNotificationSender>();
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
         fatalState.FatalStateFilename.Returns("/recovery/recovered-shares.txt.fatal");
-        var handler = new ShareRecoveryFailureHandler(processStatus,
-            applicationLifetime, new Lazy<ICriticalNotificationSender>(() =>
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() =>
                 notificationSender), fatalState);
         var shares = new[]
         {
@@ -1432,8 +1543,9 @@ public class ShareRecorderTests
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
         fatalState.FatalStateFilename.Returns(
             "/recovery/recovered-shares.txt.fatal");
-        var handler = new ShareRecoveryFailureHandler(processStatus,
-            applicationLifetime, new Lazy<ICriticalNotificationSender>(() =>
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() =>
                 notificationSender), fatalState);
 
         await handler.StopClusterAsync(new[]
@@ -1448,7 +1560,7 @@ public class ShareRecorderTests
     }
 
     [Fact]
-    public async Task ShareRecoveryFailureHandler_AwaitsCriticalDeliveryBeforeShutdown()
+    public async Task ShareRecoveryFailureHandler_QuiescesBeforeCriticalDelivery()
     {
         var processStatus = new ProcessStatus();
         var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
@@ -1468,8 +1580,9 @@ public class ShareRecorderTests
             });
         applicationLifetime.When(x => x.StopApplication())
             .Do(_ => stoppedBeforeDelivery = !delivered);
-        var handler = new ShareRecoveryFailureHandler(processStatus,
-            applicationLifetime, new Lazy<ICriticalNotificationSender>(() =>
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() =>
                 notificationSender), fatalState);
 
         await handler.StopClusterAsync(new[]
@@ -1479,7 +1592,7 @@ public class ShareRecorderTests
             new IOException("database full"), new IOException("journal full"));
 
         Assert.True(delivered);
-        Assert.False(stoppedBeforeDelivery);
+        Assert.True(stoppedBeforeDelivery);
         applicationLifetime.Received(1).StopApplication();
     }
 
@@ -1495,8 +1608,9 @@ public class ShareRecorderTests
                 call.Arg<CancellationToken>()));
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
         fatalState.FatalStateFilename.Returns("/recovery/recovered-shares.txt.fatal");
-        var handler = new ShareRecoveryFailureHandler(processStatus,
-            applicationLifetime, new Lazy<ICriticalNotificationSender>(() =>
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() =>
                 notificationSender), fatalState)
         {
             CriticalNotificationTimeout = TimeSpan.FromMilliseconds(25),
@@ -1532,8 +1646,10 @@ public class ShareRecorderTests
             var fatalState = Substitute.For<IShareRecoveryFatalState>();
             fatalState.FatalStateFilename.Returns(
                 "/recovery/recovered-shares.txt.fatal");
-            var handler = new ShareRecoveryFailureHandler(new ProcessStatus(),
-                Substitute.For<IHostApplicationLifetime>(),
+            var processStatus = new ProcessStatus();
+            var handler = new ShareRecoveryFailureHandler(
+                new MiningFailStopCoordinator(processStatus,
+                    Substitute.For<IHostApplicationLifetime>()),
                 new Lazy<ICriticalNotificationSender>(() =>
                     Substitute.For<ICriticalNotificationSender>()), fatalState);
             var journalError = new IOException("journal rollback failed",
@@ -1568,10 +1684,11 @@ public class ShareRecorderTests
         var absoluteRecoveryFile = Path.Combine(directory, "recovered-shares.txt");
         var relativeRecoveryFile = Path.GetRelativePath(Environment.CurrentDirectory,
             absoluteRecoveryFile);
+        var processStatus = new ProcessStatus();
         var state = new ShareRecoveryFatalState(new ClusterConfig
         {
             ShareRecoveryFile = relativeRecoveryFile,
-        });
+        }, processStatus, Path.Combine(directory, "state"));
         var sender = Substitute.For<ICriticalNotificationSender>();
         AdminNotification delivered = null;
         sender.SendCriticalAdminNotificationAsync(Arg.Any<AdminNotification>(),
@@ -1581,8 +1698,9 @@ public class ShareRecorderTests
                 delivered = call.Arg<AdminNotification>();
                 return Task.CompletedTask;
             });
-        var handler = new ShareRecoveryFailureHandler(new ProcessStatus(),
-            Substitute.For<IHostApplicationLifetime>(),
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus,
+                Substitute.For<IHostApplicationLifetime>()),
             new Lazy<ICriticalNotificationSender>(() => sender), state);
 
         try
@@ -1598,9 +1716,21 @@ public class ShareRecorderTests
                 new IOException("journal full"));
 
             Assert.True(File.Exists(state.FatalStateFilename));
+            Assert.True(state.FatalStateFilename.StartsWith(
+                Path.Combine(directory, "state"),
+                StringComparison.OrdinalIgnoreCase));
+            Assert.NotEqual(state.RecoveryFilename + ".fatal",
+                state.FatalStateFilename);
+            var marker = await File.ReadAllTextAsync(state.FatalStateFilename);
+            var recoveryPathHash = ShareRecoveryFatalState.ComputeRecoveryPathHash(
+                state.RecoveryFilename);
+            Assert.Contains($"recoveryFile={state.RecoveryFilename}", marker);
+            Assert.Contains($"recoveryPathSha256={recoveryPathHash}", marker);
             var startupError = Assert.Throws<PoolStartupException>(() =>
                 state.EnsureStartupAllowed());
             Assert.Contains(state.FatalStateFilename, startupError.Message);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
             Assert.Contains(state.RecoveryFilename, delivered.Message);
             Assert.Contains(state.FatalStateFilename, delivered.Message);
         }
@@ -1622,10 +1752,11 @@ public class ShareRecorderTests
             "# miningcore-recovery-batch-v1 start count=2 sha256=" +
             new string('A', 64) + "\n" +
             "{\"poolId\":\"ltc-solo\",\"miner\":\"first\"}\n");
+        var processStatus = new ProcessStatus();
         var state = new ShareRecoveryFatalState(new ClusterConfig
         {
             ShareRecoveryFile = recoveryFile,
-        });
+        }, processStatus, Path.Combine(directory, "state"));
 
         try
         {
@@ -1635,10 +1766,39 @@ public class ShareRecorderTests
             Assert.Contains("startup validation failed", error.Message);
             Assert.Contains("incomplete framed batch", error.Message);
             Assert.False(File.Exists(state.FatalStateFilename));
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
         }
         finally
         {
             Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryFatalState_BlocksStartupWhenStateCannotBeDetermined()
+    {
+        var inaccessibleStateRoot = Path.GetTempFileName();
+        var processStatus = new ProcessStatus();
+        var state = new ShareRecoveryFatalState(new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(Path.GetTempPath(),
+                Path.GetRandomFileName()),
+        }, processStatus, inaccessibleStateRoot);
+
+        try
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                state.EnsureStartupAllowed());
+
+            Assert.Contains("Unable to determine the share-recovery fatal state",
+                error.Message);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
+        }
+        finally
+        {
+            File.Delete(inaccessibleStateRoot);
         }
     }
 

@@ -109,6 +109,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "# miningcore-recovery-batch-v1 start ";
     private const string RecoveryBatchEndPrefix =
         "# miningcore-recovery-batch-v1 end ";
+    internal const string RecoveryJournalMagic =
+        "# miningcore-recovery-journal-v1";
     private bool notifiedAdminOnPolicyFallback = false;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RecoveryWriteGates =
         new(OperatingSystem.IsWindows()
@@ -225,7 +227,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         if(journalError != null)
         {
-            candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
+            await candidateFailureHandler.StopClusterAsync(shares.ToArray(), lastError,
                 journalError, false);
 
             RethrowCandidatePersistenceFailure(lastError, journalError);
@@ -233,7 +235,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         if(unexpectedDatabaseFailure)
         {
-            candidateFailureHandler.StopCluster(shares.ToArray(), lastError,
+            await candidateFailureHandler.StopClusterAsync(shares.ToArray(), lastError,
                 null, true);
 
             RethrowCandidatePersistenceFailure(lastError, null);
@@ -470,10 +472,19 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 $"Recovery journal {filename} does not end at a newline boundary. " +
                 "Preserve it for reconciliation; refusing to append to possibly truncated data.");
 
+        var isVersionedJournal = StartsWithRecoveryJournalMagic(stream);
         var framedTail = ReadLatestRecoveryBatch(stream);
 
         if(framedTail == null)
+        {
+            if(isVersionedJournal)
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} identifies the versioned format but contains " +
+                    "no complete framed batch. Preserve it for reconciliation; refusing to " +
+                    "treat a torn first append as a legacy journal.");
+
             return;
+        }
 
         var lines = framedTail
             .Split('\n')
@@ -505,6 +516,19 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidDataException(
                 $"Recovery journal {filename} has a framed batch whose record count or hash " +
                 "does not match its durable trailer. Preserve it for reconciliation.");
+    }
+
+    private static bool StartsWithRecoveryJournalMagic(Stream stream)
+    {
+        var expected = Encoding.UTF8.GetBytes(RecoveryJournalMagic + "\n");
+
+        if(stream.Length < expected.Length)
+            return false;
+
+        var actual = new byte[expected.Length];
+        stream.Position = 0;
+        stream.ReadExactly(actual);
+        return actual.AsSpan().SequenceEqual(expected);
     }
 
     private static string ReadLatestRecoveryBatch(Stream stream)
@@ -594,7 +618,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         };
 
         if(includeHeader)
+        {
+            // Format identity is the first durable content. Any first append torn after this
+            // line is rejected instead of being mistaken for a valid legacy journal.
+            writer.WriteLine(RecoveryJournalMagic);
             WriteRecoveryFileheader(writer);
+        }
 
         writer.WriteLine(RecoveryBatchStartPrefix + metadata);
         writer.Write(records);

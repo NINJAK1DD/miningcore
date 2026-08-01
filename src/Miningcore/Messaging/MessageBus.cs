@@ -5,6 +5,8 @@
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using Miningcore.Blockchain;
+using Miningcore.Mining;
 using Miningcore.Util;
 using NLog;
 
@@ -21,6 +23,12 @@ namespace Miningcore.Messaging;
 /// </summary>
 public class MessageBus : IMessageBus
 {
+    public MessageBus(IMiningFailStopCoordinator failStopCoordinator = null)
+    {
+        this.failStopCoordinator = failStopCoordinator;
+    }
+
+    private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly Dictionary<Tuple<Type, string>, NotAWeakReference> messageBus =
         new();
 
@@ -153,6 +161,11 @@ public class MessageBus : IMessageBus
     /// </param>
     public void SendMessage<T>(T message, string contract = null)
     {
+        if(message is Share && failStopCoordinator?.IsFailStopRequested == true)
+            throw new OperationCanceledException(
+                "Share ingress is closed by the mining fail-stop gate",
+                failStopCoordinator.Token);
+
         setupSubjectIfNecessary<T>(contract).OnNext(message);
     }
 

@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain;
 using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
@@ -14,25 +13,21 @@ public interface IShareRecoveryFailureHandler
 
 public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
 {
-    public ShareRecoveryFailureHandler(IProcessStatus processStatus,
-        IHostApplicationLifetime applicationLifetime,
+    public ShareRecoveryFailureHandler(IMiningFailStopCoordinator failStopCoordinator,
         Lazy<ICriticalNotificationSender> criticalNotificationSender,
         IShareRecoveryFatalState fatalState)
     {
-        ArgumentNullException.ThrowIfNull(processStatus);
-        ArgumentNullException.ThrowIfNull(applicationLifetime);
+        ArgumentNullException.ThrowIfNull(failStopCoordinator);
         ArgumentNullException.ThrowIfNull(criticalNotificationSender);
         ArgumentNullException.ThrowIfNull(fatalState);
 
-        this.processStatus = processStatus;
-        this.applicationLifetime = applicationLifetime;
+        this.failStopCoordinator = failStopCoordinator;
         this.criticalNotificationSender = criticalNotificationSender;
         this.fatalState = fatalState;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
-    private readonly IProcessStatus processStatus;
-    private readonly IHostApplicationLifetime applicationLifetime;
+    private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly Lazy<ICriticalNotificationSender> criticalNotificationSender;
     private readonly IShareRecoveryFatalState fatalState;
     private int failureSignalled;
@@ -48,6 +43,9 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
 
         if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
             return;
+
+        failStopCoordinator.BeginFailStop(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss);
 
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
         var pools = shares
@@ -70,8 +68,6 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             "Stopping cluster because neither PostgreSQL nor the recovery journal stored {0} share(s). Pools: {1}. Recovery file: {2}",
             shares.Count, poolSummary, absoluteRecoveryFilename);
 
-        processStatus.MarkFailed(ProcessExitCodes.UnreconciledShareDurabilityLoss);
-
         try
         {
             fatalState.MarkFatal(shares.Count, pools, databaseError, journalError);
@@ -91,7 +87,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             $"nor the recovery journal durably stored {shares.Count} share(s) for pool(s) " +
             $"{poolSummary}. Recovery file: {absoluteRecoveryFilename}. Fatal state: " +
             $"{fatalState.FatalStateFilename}. Preserve both files, investigate database and " +
-            "storage health, reconcile the incident, and remove only the .fatal marker before " +
+            "storage health, reconcile the incident, and remove only that exact fatal-state file before " +
             "restarting.");
 
         try
@@ -106,10 +102,6 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             logger.Error(ex,
                 "Critical share-recovery notification was not delivered within {0}; shutdown will continue",
                 CriticalNotificationTimeout);
-        }
-        finally
-        {
-            applicationLifetime.StopApplication();
         }
     }
 }
