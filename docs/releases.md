@@ -16,6 +16,18 @@ If this replaces an existing .NET 6 deployment, first follow the dedicated
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
 commands below as an instruction to overwrite a live configuration or database.
 
+## Logging and disk recovery
+
+Miningcore now rotates every configured NLog file natively before a write would grow it beyond
+512 MiB and retains four archives per file target. Remove legacy Miningcore `logrotate` rules that
+use `copytruncate`; combining both mechanisms can create sparse files, while restarting the service
+from `postrotate` disconnects miners. See
+[Log files and rotation](configuration.md#log-files-and-rotation) for capacity planning.
+
+The database guide now includes a guarded [disk-exhaustion recovery runbook](database.md#recover-after-disk-exhaustion).
+It restores storage, PostgreSQL and coin daemons in dependency order before Miningcore and links to
+the existing payout-ownership reconciliation procedure for an unclean database-session loss.
+
 ## Payout and WebSocket compatibility
 
 This release changes Bitcoin-family payout accounting from rounding to truncation at the configured

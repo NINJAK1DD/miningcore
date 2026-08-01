@@ -36,7 +36,11 @@ jobs:
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
       # libzmq5 package provides libzmq.so.5, while libzmq3-dev also provides the
       # unversioned linker/loader symlink required by relay integration tests.
-      run: sudo apt-get install -y cmake ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+      run: |
+        sudo apt-get -o Acquire::Retries=3 update
+        sudo apt-get -o Acquire::Retries=3 install -y \
+          cmake ninja-build build-essential libssl-dev pkg-config \
+          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
 
     - name: Install pinned Bitcoin Core regtest dependency
       shell: bash
@@ -174,6 +178,14 @@ jobs:
 
     - name: Restore Windows native smoke test
       run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
+
+    - name: Test Windows log rotation
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.ProgramLoggingTests"
 
     - name: Smoke-test Windows SCCPow runtime
       run: >-

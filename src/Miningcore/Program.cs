@@ -81,6 +81,8 @@ public class Program : ProcessStatusBackgroundService
 {
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
+    internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
+    internal const int MaxLogArchiveFiles = 4;
 
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
 
@@ -937,12 +939,7 @@ public class Program : ProcessStatusBackgroundService
             // Api Log
             if(!string.IsNullOrEmpty(config.ApiLogFile) && !isShareRecoveryMode)
             {
-                var target = new FileTarget("file")
-                {
-                    FileName = GetLogPath(config, config.ApiLogFile),
-                    FileNameKind = FilePathKind.Unknown,
-                    Layout = layout
-                };
+                var target = CreateFileTarget("api-file", GetLogPath(config, config.ApiLogFile), layout);
 
                 loggingConfig.AddTarget(target);
                 loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target, "Microsoft.AspNetCore.*", true);
@@ -999,12 +996,7 @@ public class Program : ProcessStatusBackgroundService
 
             if(!string.IsNullOrEmpty(config.LogFile) && !isShareRecoveryMode)
             {
-                var target = new FileTarget("file")
-                {
-                    FileName = GetLogPath(config, config.LogFile),
-                    FileNameKind = FilePathKind.Unknown,
-                    Layout = layout
-                };
+                var target = CreateFileTarget("main-file", GetLogPath(config, config.LogFile), layout);
 
                 loggingConfig.AddTarget(target);
                 loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
@@ -1014,12 +1006,8 @@ public class Program : ProcessStatusBackgroundService
             {
                 foreach(var poolConfig in clusterConfig.Pools)
                 {
-                    var target = new FileTarget(poolConfig.Id)
-                    {
-                        FileName = GetLogPath(config, poolConfig.Id + ".log"),
-                        FileNameKind = FilePathKind.Unknown,
-                        Layout = layout
-                    };
+                    var target = CreateFileTarget($"pool-{poolConfig.Id}-file",
+                        GetLogPath(config, poolConfig.Id + ".log"), layout);
 
                     loggingConfig.AddTarget(target);
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target, poolConfig.Id);
@@ -1030,6 +1018,19 @@ public class Program : ProcessStatusBackgroundService
         LogManager.Configuration = loggingConfig;
 
         logger = LogManager.GetLogger("Core");
+    }
+
+    internal static FileTarget CreateFileTarget(string targetName, Layout fileName, string layout)
+    {
+        return new FileTarget(targetName)
+        {
+            FileName = fileName,
+            FileNameKind = FilePathKind.Unknown,
+            Layout = layout,
+            ArchiveAboveSize = LogArchiveAboveSize,
+            MaxArchiveFiles = MaxLogArchiveFiles,
+            ArchiveOldFileOnStartup = false
+        };
     }
 
     private static Layout GetLogPath(ClusterLoggingConfig config, string name)

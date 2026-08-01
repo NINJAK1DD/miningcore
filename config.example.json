@@ -17,7 +17,9 @@
     "enableConsoleLog": true,
     // Use coloured console output when the terminal supports it.
     "enableConsoleColors": true,
-    // Main log filename. Set to null to use console output only.
+    // Main log filename. Set to null to use console output only. File logs rotate natively before
+    // a write would grow them beyond 512 MiB and retain four archives; do not also manage them with
+    // logrotate copytruncate.
     "logFile": "miningcore.log",
     // Separate API-request log. Set to null to use the main log destination.
     "apiLogFile": "miningcore-api.log",
