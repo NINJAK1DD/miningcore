@@ -41,10 +41,26 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         ClusterConfig clusterConfig,
         IMessageBus messageBus,
         ICandidatePersistenceFailureHandler candidateFailureHandler = null) :
-        this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo, clusterConfig,
+        this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo,
+            PrepareTestRecoveryState(clusterConfig),
             messageBus, MissingShareRecoveryFailureHandler.Instance,
             candidateFailureHandler)
     {
+    }
+
+    private static ClusterConfig PrepareTestRecoveryState(ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        // Tests using the compatibility constructor own temporary recovery files but do not run
+        // beneath systemd's STATE_DIRECTORY. Keep their independent anchor beside that temporary
+        // fixture rather than writing to the developer profile. Production DI cannot select this
+        // constructor because it supplies IShareRecoveryFailureHandler.
+        if(string.IsNullOrWhiteSpace(config.ShareRecoveryStateDirectory))
+            config.ShareRecoveryStateDirectory = Path.GetDirectoryName(
+                ShareRecoveryFatalState.ResolveRecoveryFilename(config));
+
+        return config;
     }
 
     public ShareRecorder(IConnectionFactory cf,
@@ -81,6 +97,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         BuildFaultHandlingPolicy();
         recoveryFilename = ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig);
+        recoveryTerminalState = new ShareRecoveryTerminalState(recoveryFilename,
+            ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
+        RecoveryTerminalStateWrite = recoveryTerminalState.Write;
         recoveryWriteState = RecoveryWriteStates.GetOrAdd(recoveryFilename,
             _ => new RecoveryJournalWriteState());
     }
@@ -124,16 +143,24 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal);
     private readonly RecoveryJournalWriteState recoveryWriteState;
+    private readonly ShareRecoveryTerminalState recoveryTerminalState;
+    internal string RecoveryTerminalStateFilename => recoveryTerminalState.Filename;
+    internal Action<long, string> RecoveryTerminalStateWrite { get; set; }
     private readonly CancellationTokenSource blockCandidateShutdown = new();
     private int blockCandidateShutdownStarted;
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
     internal int PersistenceQueueCapacity { get; set; } = 65_536;
+    internal int EmergencyJournalQueueCapacity { get; set; } = 1_024;
     internal int PersistenceQueueHighWatermark =>
         Volatile.Read(ref persistenceQueueHighWatermark);
     private int persistenceQueueHighWatermark;
     private IDisposable shareSubscription;
-    private ChannelWriter<Share> persistenceQueueWriter;
+    private ChannelWriter<QueuedShare> persistenceQueueWriter;
+    private ChannelWriter<QueuedShare> emergencyJournalQueueWriter;
+    private readonly CancellationTokenSource persistenceDrainCancellation = new();
+    private readonly ConcurrentDictionary<long, QueuedShare> unresolvedShares = new();
+    private long nextQueuedShareId;
     internal SemaphoreSlim RecoveryWriteGate => recoveryWriteState.Gate;
     internal long RecoveryValidationBytesRead =>
         Interlocked.Read(ref recoveryValidationBytesRead);
@@ -149,11 +176,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "merged-parent-uncertain",
     };
 
-    internal async Task PersistSharesAsync(IList<Share> shares)
+    internal async Task PersistSharesAsync(IList<Share> shares,
+        CancellationToken ct = default)
     {
         var context = new Dictionary<string, object> { { PolicyContextKeyShares, shares } };
 
-        await faultPolicy.ExecuteAsync(ctx => PersistSharesCoreAsync((IList<Share>) ctx[PolicyContextKeyShares]), context);
+        await faultPolicy.ExecuteAsync((ctx, token) =>
+                PersistSharesCoreAsync((IList<Share>) ctx[PolicyContextKeyShares], token),
+            context, ct);
     }
 
     public Task PersistBlockCandidateAsync(Share share)
@@ -310,16 +340,21 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
-    internal async Task PersistSharesCoreAsync(IList<Share> shares)
+    internal Task PersistSharesCoreAsync(IList<Share> shares) =>
+        PersistSharesCoreAsync(shares, CancellationToken.None);
+
+    private async Task PersistSharesCoreAsync(IList<Share> shares,
+        CancellationToken ct)
     {
         var insertedBlocks = await cf.RunTx((con, tx) =>
-            PersistSharesBatchAsync(con, tx, shares));
+            PersistSharesBatchAsync(con, tx, shares, ct));
 
         NotifyPersistedBlocks(insertedBlocks);
     }
 
     private async Task<List<(string PoolId, Block Block)>> PersistSharesBatchAsync(
-        IDbConnection con, IDbTransaction tx, IList<Share> shares)
+        IDbConnection con, IDbTransaction tx, IList<Share> shares,
+        CancellationToken ct = default)
     {
         var result = new List<(string PoolId, Block Block)>();
 
@@ -331,7 +366,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             .ToArray();
 
         if(mapped.Length > 0)
-            await shareRepo.BatchInsertAsync(con, tx, mapped, CancellationToken.None);
+            await shareRepo.BatchInsertAsync(con, tx, mapped, ct);
 
         // Insert blocks
         foreach(var share in shares)
@@ -500,8 +535,33 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 var payload = BuildRecoveryJournalPayload(shares,
                     stream.Length == 0, tail.Sequence + 1,
                     tail.FrameDigest);
+                var originalLength = stream.Length;
                 await AppendRecoveryJournalAsync(stream, payload.Bytes,
                     RecoveryJournalFlush);
+
+                try
+                {
+                    RecoveryTerminalStateWrite(payload.Sequence,
+                        payload.FrameDigest);
+                }
+                catch(Exception anchorError)
+                {
+                    try
+                    {
+                        stream.SetLength(originalLength);
+                        stream.Position = originalLength;
+                        await RecoveryJournalFlush(stream);
+                    }
+                    catch(Exception rollbackError)
+                    {
+                        throw new IOException(
+                            "Recovery-journal terminal-anchor commit failed and the appended frame could not be rolled back",
+                            new AggregateException(anchorError, rollbackError));
+                    }
+
+                    ExceptionDispatchInfo.Capture(anchorError).Throw();
+                }
+
                 // A Linux identity may include metadata populated by the completed append.
                 // Refresh it only after the frame is force-flushed and therefore trusted.
                 recoveryWriteState.Advance(RecoveryJournalFileIdentity.Read(stream),
@@ -548,6 +608,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 FileMode.Open, FileAccess.Read, FileShare.Read);
             var identity = RecoveryJournalFileIdentity.Read(active);
             var tail = ValidateRecoveryJournalDetailed(active, recoveryFilename);
+            RecoveryTerminalStateWrite(tail.Sequence, tail.FrameDigest);
             Interlocked.Add(ref recoveryValidationBytesRead, active.Length);
             recoveryWriteState.Trust(identity, active.Length, tail);
         }
@@ -597,7 +658,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 "Preserve it for reconciliation; refusing to append to possibly truncated data.");
     }
 
-    private static RecoveryJournalTail ValidateRecoveryJournalDetailed(Stream stream,
+    internal static RecoveryJournalTail ValidateRecoveryJournalDetailed(Stream stream,
         string filename)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -1060,7 +1121,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly record struct RecoveryJournalPayload(byte[] Bytes,
         long Sequence, string FrameDigest);
 
-    private readonly record struct RecoveryJournalTail(long Sequence,
+    internal readonly record struct RecoveryJournalTail(long Sequence,
         string FrameDigest, bool IsChainedFormat);
 
     private sealed class RecoveryJournalWriteState
@@ -1221,6 +1282,16 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // same read-only handle remains locked for both semantic passes, preventing the
                 // source from changing after its byte-level integrity was established.
                 EnsureRecoveryJournalAppendBoundary(stream, filename);
+                if(string.Equals(Path.GetFullPath(filename), recoveryFilename,
+                       OperatingSystem.IsWindows()
+                           ? StringComparison.OrdinalIgnoreCase
+                           : StringComparison.Ordinal))
+                {
+                    stream.Seek(0, SeekOrigin.Begin);
+                    var tail = ValidateRecoveryJournalDetailed(stream, filename);
+                    recoveryTerminalState.EnsureConsistent(tail.Sequence,
+                        tail.FrameDigest);
+                }
                 stream.Seek(0, SeekOrigin.Begin);
                 using var reader = new StreamReader(stream, new UTF8Encoding(false));
 
@@ -1274,6 +1345,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             }
 
             var archiveFilename = ArchiveImportedRecoveryFile(filename);
+            if(archiveFilename != null &&
+               string.Equals(Path.GetFullPath(filename), recoveryFilename,
+                   OperatingSystem.IsWindows()
+                       ? StringComparison.OrdinalIgnoreCase
+                       : StringComparison.Ordinal))
+                recoveryTerminalState.RemoveAfterArchive();
             NotifyPersistedBlocks(insertedBlocks);
             logger.Info(() => $"Successfully imported {validatedCount} shares" +
                 (archiveFilename != null ? $" and archived the source as {archiveFilename}" :
@@ -1514,7 +1591,25 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         BeginShutdown();
         Interlocked.Exchange(ref shareSubscription, null)?.Dispose();
         Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
-        await base.StopAsync(ct);
+        Volatile.Read(ref emergencyJournalQueueWriter)?.TryComplete();
+
+        try
+        {
+            if(ExecuteTask != null)
+                await ExecuteTask.WaitAsync(ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // The hosted-service deadline closes database work, not accounting. The queue worker
+            // catches this cancellation and force-flushes its complete unresolved registry to the
+            // recovery journal before StopAsync is allowed to finish.
+            persistenceDrainCancellation.Cancel();
+
+            if(ExecuteTask != null)
+                await ExecuteTask;
+        }
+
+        await base.StopAsync(CancellationToken.None);
     }
 
     protected override Task ExecuteAsync(CancellationToken ct)
@@ -1522,7 +1617,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             logger.Info(() => $"Online; recovery journal {recoveryFilename}");
-            var queue = Channel.CreateBounded<Share>(new BoundedChannelOptions(
+            var queue = Channel.CreateBounded<QueuedShare>(new BoundedChannelOptions(
                 PersistenceQueueCapacity)
             {
                 SingleReader = true,
@@ -1530,14 +1625,16 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 FullMode = BoundedChannelFullMode.Wait,
                 AllowSynchronousContinuations = false,
             });
-            var processing = RunPersistenceQueueAsync(queue, ct)
-                .ContinueWith(task =>
+            var emergencyQueue = Channel.CreateBounded<QueuedShare>(
+                new BoundedChannelOptions(EmergencyJournalQueueCapacity)
                 {
-                    if(task.IsFaulted)
-                        logger.Fatal(() => $"Terminated due to error {task.Exception?.InnerException ?? task.Exception}");
-                    else
-                        logger.Info(() => "Offline");
-                }, ct);
+                    SingleReader = true,
+                    SingleWriter = false,
+                    FullMode = BoundedChannelFullMode.Wait,
+                    AllowSynchronousContinuations = false,
+                });
+            var processing = ObservePersistenceQueuesAsync(
+                RunPersistenceQueuesAsync(queue, emergencyQueue));
 
             SignalStartupReady();
             return processing;
@@ -1550,32 +1647,82 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
-    private async Task RunPersistenceQueueAsync(Channel<Share> queue,
-        CancellationToken ct)
+    private static async Task ObservePersistenceQueuesAsync(Task processing)
+    {
+        try
+        {
+            await processing;
+            logger.Info(() => "Offline");
+        }
+        catch(Exception ex)
+        {
+            logger.Fatal(ex, "Share persistence queues terminated due to error");
+            throw;
+        }
+    }
+
+    private async Task RunPersistenceQueuesAsync(Channel<QueuedShare> queue,
+        Channel<QueuedShare> emergencyQueue)
     {
         var subscription = messageBus.Listen<Share>()
             .Where(x => x != null)
-            .Subscribe(share => EnqueueShareOrJournal(queue, share),
-                ex => queue.Writer.TryComplete(ex),
-                () => queue.Writer.TryComplete());
+            .Subscribe(share => EnqueueShare(queue, emergencyQueue, share),
+                ex =>
+                {
+                    queue.Writer.TryComplete(ex);
+                    emergencyQueue.Writer.TryComplete(ex);
+                },
+                () =>
+                {
+                    queue.Writer.TryComplete();
+                    emergencyQueue.Writer.TryComplete();
+                });
         Volatile.Write(ref persistenceQueueWriter, queue.Writer);
+        Volatile.Write(ref emergencyJournalQueueWriter,
+            emergencyQueue.Writer);
         Interlocked.Exchange(ref shareSubscription, subscription)?.Dispose();
 
         try
         {
-            await ProcessPersistenceQueueAsync(queue.Reader, ct);
+            var emergencyProcessing = ProcessEmergencyJournalQueueAsync(
+                emergencyQueue.Reader);
+
+            try
+            {
+                await ProcessPersistenceQueueAsync(queue.Reader,
+                    persistenceDrainCancellation.Token);
+            }
+            catch(OperationCanceledException) when(
+                persistenceDrainCancellation.IsCancellationRequested)
+            {
+                // Establish the emergency writer's final durable outcome before snapshotting the
+                // shared unresolved registry. This prevents a shutdown fallback from journalling
+                // an item that the emergency writer has just committed independently.
+                await emergencyProcessing;
+                await JournalUnresolvedSharesOnShutdownAsync();
+                return;
+            }
+
+            await emergencyProcessing;
         }
         finally
         {
             Interlocked.CompareExchange(ref shareSubscription, null,
                 subscription)?.Dispose();
             Volatile.Write(ref persistenceQueueWriter, null);
+            Volatile.Write(ref emergencyJournalQueueWriter, null);
         }
     }
 
-    private void EnqueueShareOrJournal(Channel<Share> queue, Share share)
+    private void EnqueueShare(Channel<QueuedShare> queue,
+        Channel<QueuedShare> emergencyQueue, Share share)
     {
-        if(queue.Writer.TryWrite(share))
+        var queued = new QueuedShare(
+            Interlocked.Increment(ref nextQueuedShareId), share);
+        unresolvedShares[queued.Id] = queued;
+        share.SetPersistenceAdmission(Task.CompletedTask);
+
+        if(queue.Writer.TryWrite(queued))
         {
             UpdatePersistenceQueueHighWatermark(queue.Reader.Count);
             return;
@@ -1583,22 +1730,52 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         var saturation = new IOException(
             $"The bounded share-persistence queue reached its {PersistenceQueueCapacity}-share limit");
+        var journalCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = journalCompletion.Task.ContinueWith(task => _ = task.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted |
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        queued.JournalCompletion = journalCompletion;
+        share.SetPersistenceAdmission(journalCompletion.Task);
 
-        try
+        if(emergencyQueue.Writer.TryWrite(queued))
+            return;
+
+        unresolvedShares.TryRemove(queued.Id, out _);
+        var journalError = new IOException(
+            $"The bounded emergency recovery-journal queue reached its " +
+            $"{EmergencyJournalQueueCapacity}-share limit");
+        journalCompletion.TrySetException(journalError);
+
+        throw new SharePersistenceBacklogFailureException(
+            recoveryFailureHandler, SnapshotUnresolvedShares(share),
+            recoveryFilename, saturation, journalError);
+    }
+
+    private async Task ProcessEmergencyJournalQueueAsync(
+        ChannelReader<QueuedShare> reader)
+    {
+        await foreach(var queued in reader.ReadAllAsync(CancellationToken.None))
         {
-            // Publication is synchronous with Stratum response admission. If the bounded queue is
-            // saturated, force-flush this share directly rather than accepting an unbounded
-            // in-memory durability window or acknowledging an unaccounted share.
-            WriteRecoveryJournalAsync(new[] { share }).GetAwaiter().GetResult();
-            NotifyAdminOnPolicyFallbackSafely();
-            logger.Warn(saturation,
-                "Persisted a share directly to the recovery journal because the bounded persistence queue was full");
-        }
-        catch(Exception journalError)
-        {
-            throw new SharePersistenceBacklogFailureException(
-                recoveryFailureHandler, share, recoveryFilename,
-                saturation, journalError);
+            try
+            {
+                await WriteRecoveryJournalAsync(new[] { queued.Share });
+                unresolvedShares.TryRemove(queued.Id, out _);
+                NotifyAdminOnPolicyFallbackSafely();
+                queued.JournalCompletion?.TrySetResult();
+                logger.Warn(
+                    "Persisted a share through the bounded emergency recovery-journal writer because the primary persistence queue was full");
+            }
+            catch(Exception journalError)
+            {
+                var saturation = new IOException(
+                    "The primary share-persistence queue was saturated");
+                await FailStopUnresolvedSharesAsync(saturation, journalError);
+                queued.JournalCompletion?.TrySetException(journalError);
+                throw;
+            }
         }
     }
 
@@ -1617,33 +1794,33 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
-    private async Task ProcessPersistenceQueueAsync(ChannelReader<Share> reader,
+    private async Task ProcessPersistenceQueueAsync(ChannelReader<QueuedShare> reader,
         CancellationToken ct)
     {
         const int batchSize = 250;
-        var batch = new List<Share>(batchSize);
+        var batch = new List<QueuedShare>(batchSize);
         var batchStarted = DateTime.UtcNow;
 
         while(await reader.WaitToReadAsync(ct))
         {
-            while(reader.TryRead(out var share))
+            while(reader.TryRead(out var queued))
             {
-                if(share.BlockOnly)
+                if(queued.Share.BlockOnly)
                 {
-                    // Preserve the prior immediate candidate lane: a candidate must not wait for
-                    // an earlier partial ordinary-share batch to fill or flush.
-                    await PersistSharesAsync(new[] { share });
+                    // Preserve the prior immediate candidate lane: a candidate must not wait
+                    // for an earlier partial ordinary-share batch to fill or flush.
+                    await PersistQueuedSharesAsync(new[] { queued }, ct);
                     continue;
                 }
 
                 if(batch.Count == 0)
                     batchStarted = DateTime.UtcNow;
 
-                batch.Add(share);
+                batch.Add(queued);
 
                 if(batch.Count >= batchSize)
                 {
-                    await PersistSharesAsync(batch.ToArray());
+                    await PersistQueuedSharesAsync(batch.ToArray(), ct);
                     batch.Clear();
                     batchStarted = DateTime.UtcNow;
                 }
@@ -1665,40 +1842,113 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     continue;
             }
 
-            await PersistSharesAsync(batch.ToArray());
+            await PersistQueuedSharesAsync(batch.ToArray(), ct);
             batch.Clear();
             batchStarted = DateTime.UtcNow;
         }
 
         if(batch.Count > 0)
-            await PersistSharesAsync(batch);
+            await PersistQueuedSharesAsync(batch, ct);
+    }
+
+    private async Task PersistQueuedSharesAsync(IReadOnlyCollection<QueuedShare> queued,
+        CancellationToken ct)
+    {
+        await PersistSharesAsync(queued.Select(x => x.Share).ToArray(), ct);
+
+        foreach(var item in queued)
+            unresolvedShares.TryRemove(item.Id, out _);
+    }
+
+    private async Task JournalUnresolvedSharesOnShutdownAsync()
+    {
+        var unresolved = SnapshotUnresolvedShares();
+
+        if(unresolved.Length == 0)
+            return;
+
+        var databaseError = new TimeoutException(
+            "The hosted-service shutdown deadline expired before PostgreSQL drained the admitted share backlog");
+
+        try
+        {
+            await WriteRecoveryJournalAsync(unresolved);
+            NotifyAdminOnPolicyFallbackSafely();
+
+            foreach(var item in unresolvedShares.ToArray())
+                unresolvedShares.TryRemove(item.Key, out _);
+        }
+        catch(Exception journalError)
+        {
+            await FailStopUnresolvedSharesAsync(databaseError, journalError);
+            throw;
+        }
+    }
+
+    private Share[] SnapshotUnresolvedShares(Share additional = null)
+    {
+        var shares = unresolvedShares.Values
+            .OrderBy(x => x.Id)
+            .Select(x => x.Share)
+            .ToList();
+
+        if(additional != null && !shares.Contains(additional))
+            shares.Add(additional);
+
+        return shares.ToArray();
+    }
+
+    private async Task FailStopUnresolvedSharesAsync(Exception databaseError,
+        Exception journalError)
+    {
+        persistenceDrainCancellation.Cancel();
+        var unresolved = SnapshotUnresolvedShares();
+
+        await recoveryFailureHandler.StopClusterAsync(unresolved,
+            recoveryFilename, databaseError, journalError);
+
+        foreach(var queued in unresolvedShares.Values)
+            queued.JournalCompletion?.TrySetException(journalError);
+    }
+
+    private sealed class QueuedShare
+    {
+        public QueuedShare(long id, Share share)
+        {
+            Id = id;
+            Share = share;
+        }
+
+        public long Id { get; }
+        public Share Share { get; }
+        public TaskCompletionSource JournalCompletion { get; set; }
     }
 
     private sealed class SharePersistenceBacklogFailureException : IOException,
         IMiningAdmissionFailure
     {
         public SharePersistenceBacklogFailureException(
-            IShareRecoveryFailureHandler failureHandler, Share share,
+            IShareRecoveryFailureHandler failureHandler, Share[] shares,
             string recoveryFilename, Exception backlogError,
             Exception journalError) :
             base("The bounded share-persistence queue and recovery journal were both unavailable",
                 journalError)
         {
             this.failureHandler = failureHandler;
-            this.share = share;
+            this.shares = shares;
             this.recoveryFilename = recoveryFilename;
             this.backlogError = backlogError;
             this.journalError = journalError;
         }
 
         private readonly IShareRecoveryFailureHandler failureHandler;
-        private readonly Share share;
+        private readonly Share[] shares;
         private readonly string recoveryFilename;
         private readonly Exception backlogError;
         private readonly Exception journalError;
 
         public Task HandleAfterAdmissionReleasedAsync() =>
-            failureHandler.StopClusterAsync(new[] { share }, recoveryFilename,
+            failureHandler.StopClusterAsync(shares, recoveryFilename,
                 backlogError, journalError);
     }
 }

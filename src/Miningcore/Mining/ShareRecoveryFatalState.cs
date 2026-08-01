@@ -35,10 +35,13 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         var pathHash = ComputeRecoveryPathHash(RecoveryFilename);
         FatalStateFilename = Path.Combine(StateDirectory,
             "share-recovery-fatal", pathHash + ".fatal");
+        terminalState = new ShareRecoveryTerminalState(RecoveryFilename,
+            StateDirectory);
     }
 
     private readonly IProcessStatus processStatus;
     private readonly object fatalStateGate = new();
+    private readonly ShareRecoveryTerminalState terminalState;
 
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
@@ -75,14 +78,20 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                     FileAccess.Read, FileShare.ReadWrite);
                 ShareRecorder.EnsureRecoveryJournalAppendBoundary(stream,
                     RecoveryFilename);
+                stream.Seek(0, SeekOrigin.Begin);
+                var tail = ShareRecorder.ValidateRecoveryJournalDetailed(stream,
+                    RecoveryFilename);
+                terminalState.EnsureConsistent(tail.Sequence, tail.FrameDigest);
             }
             catch(FileNotFoundException)
             {
                 // A journal is created only when PostgreSQL first needs the fallback.
+                terminalState.EnsureJournalMayBeMissing();
             }
             catch(DirectoryNotFoundException)
             {
                 // A not-yet-created configured journal parent is equivalent to no journal.
+                terminalState.EnsureJournalMayBeMissing();
             }
             catch(Exception ex) when(ex is IOException or InvalidDataException or
                 UnauthorizedAccessException)

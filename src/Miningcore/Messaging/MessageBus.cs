@@ -172,6 +172,12 @@ public class MessageBus : IMessageBus
         setupSubjectIfNecessary<T>(contract).OnNext(message);
     }
 
+    public void SendMessageWithinMiningAdmission<T>(T message,
+        string contract = null)
+    {
+        setupSubjectIfNecessary<T>(contract).OnNext(message);
+    }
+
     private ISubject<T> setupSubjectIfNecessary<T>(string contract)
     {
         ISubject<T> ret = null;

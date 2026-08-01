@@ -40,7 +40,7 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
     private readonly IHostApplicationLifetime applicationLifetime;
     private readonly CancellationTokenSource failStop = new();
     private readonly ReaderWriterLockSlim acceptanceGate =
-        new(LockRecursionPolicy.SupportsRecursion);
+        new(LockRecursionPolicy.NoRecursion);
     private int failStopRequested;
 
     public bool IsFailStopRequested =>

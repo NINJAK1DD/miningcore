@@ -20,7 +20,7 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 | `notifications` | Email, Pushover and administrative events |
 | `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
 | `shareRecoveryFile` | Write-through emergency journal used when PostgreSQL is unavailable |
-| `shareRecoveryStateDirectory` | Independent service state for persistent fatal latches |
+| `shareRecoveryStateDirectory` | Independent service state for fatal latches and journal-tail anchors |
 | `shareRelay` / `shareRelays` | Advanced distributed sender/receiver topology |
 
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
@@ -80,10 +80,25 @@ rejected without first allocating the complete hostile line.
 After the fallback tail is trusted, append work is linear: under the canonical-filename writer gate,
 Miningcore verifies the active file identity and expected length, hashes only the new frame, and
 advances its cached sequence/digest after the force-flush succeeds. Replacing, truncating or growing
-the active file outside Miningcore stops fallback rather than silently resetting that state. A
-bounded 65,536-share persistence queue prevents an unlimited in-memory outage backlog; if it fills,
-the publishing thread force-flushes that share directly to the journal before its positive response
-can be admitted. Failure of that direct write enters the same status-74 fatal path.
+the active file outside Miningcore stops fallback rather than silently resetting that state. Each
+force-flushed frame is committed with an atomically replaced sequence/digest anchor below
+`shareRecoveryStateDirectory/share-recovery-terminal`. A share diverted to fallback is not
+acknowledged until both files are durable. Startup and import reject a journal shorter than its
+anchor, including deletion of an otherwise valid final frame.
+
+A bounded 65,536-share persistence queue prevents an unlimited in-memory outage backlog. If it
+fills, publication transfers the share to one bounded 1,024-share emergency channel and one journal
+writer; filesystem work and waiting happen after the mining admission lock is released. A local
+Stratum response waits for that forced append. If both bounded capacities are exhausted, or the
+emergency append fails, Miningcore admits no positive response and enters the status-74 fatal path
+with the complete unresolved count and pool set.
+
+Graceful shutdown first closes share intake, disposes the subscription and completes both writers.
+The queue drain does not use the normal `BackgroundService` stopping token. If the service-manager
+deadline expires while PostgreSQL is still processing, Miningcore cancels that transaction and
+force-flushes the complete unresolved registry to the journal. Shutdown succeeds only after every
+admitted share reaches PostgreSQL or the journal; failure of both destinations writes the same
+status-74 latch for the full backlog.
 
 Older journals retain the legacy newline-only guarantee for their original unframed prefix and v1
 frames. The first v2 frame appended to an older journal anchors the complete normalised legacy
@@ -107,6 +122,9 @@ its content records both that path and hash. Under the supplied systemd unit the
 platform application-data default is unsuitable. Keep this state on service-owned storage that is
 independent of the journal's expected failure domain. Container deployments should mount that state
 directory on persistent storage so replacing the container cannot discard an unreconciled latch.
+The sibling `share-recovery-terminal` directory is equally authoritative. Do not delete or edit its
+hashed tail file independently; a successful import of the configured active journal archives the
+journal and removes its matching anchor as one operation.
 
 The supplied unit has `RestartPreventExitStatus=74`, while the independently stored latch blocks
 every normal startup, including relay configurations. An inaccessible or uncertain state directory

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Data;
 using System.IO;
 using System.Linq;
@@ -125,7 +126,10 @@ public class ShareRecorderTests
             await databaseEntered.Task.WaitAsync(timeout.Token);
             messageBus.SendMessage(new Share { PoolId = "ltc-solo", Miner = "queued-one" });
             messageBus.SendMessage(new Share { PoolId = "ltc-solo", Miner = "queued-two" });
-            messageBus.SendMessage(new Share { PoolId = "ltc-solo", Miner = "journal-overflow" });
+            var overflow = new Share
+                { PoolId = "ltc-solo", Miner = "journal-overflow" };
+            messageBus.SendMessage(overflow);
+            await overflow.PersistenceAdmission.WaitAsync(timeout.Token);
 
             Assert.Equal(2, recorder.PersistenceQueueHighWatermark);
             var journal = await File.ReadAllTextAsync(recoveryFilename,
@@ -142,6 +146,444 @@ public class ShareRecorderTests
         finally
         {
             releaseDatabase.TrySetResult();
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_DrainsPartialAcknowledgedBatchToPostgreSql()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var persisted = new ConcurrentBag<string>();
+        var messageBus = new MessageBus();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                foreach(var share in call.Arg<IEnumerable<PersistedShare>>())
+                    persisted.Add(share.Miner);
+                return Task.CompletedTask;
+            });
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+            }, messageBus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await recorder.StartAsync(timeout.Token);
+        for(var index = 0; index < 41; index++)
+            messageBus.SendMessage(new Share
+                { PoolId = "ltc-solo", Miner = $"partial-{index}" });
+
+        await recorder.StopAsync(timeout.Token);
+
+        Assert.Equal(41, persisted.Count);
+        Assert.Equal(41, persisted.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task StopAsync_DatabaseDeadlineJournalsCompleteUnresolvedBacklog()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-stop-drain-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var messageBus = new MessageBus();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                databaseEntered.TrySetResult();
+                return Task.Delay(Timeout.InfiniteTimeSpan,
+                    call.Arg<CancellationToken>());
+            });
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, messageBus)
+        {
+            PersistenceQueueCapacity = 64,
+        };
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 41; index++)
+                messageBus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"deadline-{index}" });
+
+            using var stop = new CancellationTokenSource();
+            var stopping = recorder.StopAsync(stop.Token);
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            stop.Cancel();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var journal = await File.ReadAllTextAsync(recoveryFilename);
+            for(var index = 0; index < 41; index++)
+                Assert.Contains($"deadline-{index}", journal);
+            Assert.True(File.Exists(recorder.RecoveryTerminalStateFilename));
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_DatabaseAndJournalFailureLatchesNearCapacityBacklog()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-stop-fatal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var processStatus = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus, lifetime);
+        var fatalState = new ShareRecoveryFatalState(config, processStatus,
+            config.ShareRecoveryStateDirectory);
+        var handler = new ShareRecoveryFailureHandler(coordinator,
+            new Lazy<ICriticalNotificationSender>(() =>
+                Substitute.For<ICriticalNotificationSender>()), fatalState);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                databaseEntered.TrySetResult();
+                return Task.Delay(Timeout.InfiniteTimeSpan,
+                    call.Arg<CancellationToken>());
+            });
+        var bus = new MessageBus(coordinator);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(), config, bus,
+            handler)
+        {
+            PersistenceQueueCapacity = 256,
+            RecoveryJournalFlush = _ => Task.FromException(
+                new IOException("injected shutdown journal failure")),
+        };
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 257; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"fatal-{index}" });
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            using var stop = new CancellationTokenSource();
+            var stopping = recorder.StopAsync(stop.Token);
+            stop.Cancel();
+            await Assert.ThrowsAnyAsync<IOException>(() =>
+                stopping.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.True(coordinator.IsFailStopRequested);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
+            lifetime.Received(1).StopApplication();
+            var latch = await File.ReadAllTextAsync(fatalState.FatalStateFilename);
+            Assert.Contains("shareCount=257", latch);
+            Assert.Contains("pools=ltc-solo", latch);
+        }
+        finally
+        {
+            try
+            {
+                await recorder.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+            }
+
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task ProductionAdmission_JournalFailureCompletesFailStopWithoutAcknowledgement()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-admission-failstop-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var processStatus = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus, lifetime);
+        var bus = new MessageBus(coordinator);
+        var fatalState = new ShareRecoveryFatalState(config, processStatus,
+            config.ShareRecoveryStateDirectory);
+        var handler = new ShareRecoveryFailureHandler(coordinator,
+            new Lazy<ICriticalNotificationSender>(() =>
+                Substitute.For<ICriticalNotificationSender>()), fatalState);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDatabase = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                databaseEntered.TrySetResult();
+                await releaseDatabase.Task;
+            });
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(), config, bus,
+            handler)
+        {
+            EmergencyJournalQueueCapacity = 2,
+            PersistenceQueueCapacity = 300,
+            RecoveryJournalFlush = _ => Task.FromException(
+                new IOException("injected journal failure")),
+        };
+        var acknowledged = false;
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 250; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"blocked-{index}" });
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            for(var index = 0; index < 300; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"queued-{index}" });
+
+            var overflow = new Share
+                { PoolId = "ltc-solo", Miner = "journal-failure" };
+            using var acceptance = coordinator.AcquireSubmissionAcceptance();
+            acceptance.PublishShare(() =>
+                bus.SendMessageWithinMiningAdmission(overflow));
+            await Assert.ThrowsAnyAsync<IOException>(() =>
+                overflow.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Throws<OperationCanceledException>(() =>
+                acceptance.QueueResponse(() => acknowledged = true));
+
+            Assert.False(acknowledged);
+            Assert.True(coordinator.IsFailStopRequested);
+            Assert.True(coordinator.Token.IsCancellationRequested);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
+            lifetime.Received(1).StopApplication();
+            Assert.True(File.Exists(fatalState.FatalStateFilename));
+            var latch = await File.ReadAllTextAsync(fatalState.FatalStateFilename);
+            Assert.Contains("shareCount=551", latch);
+            Assert.Contains("pools=ltc-solo", latch);
+            Assert.DoesNotContain(nameof(LockRecursionException), latch);
+        }
+        finally
+        {
+            releaseDatabase.TrySetResult();
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await recorder.StopAsync(stop.Token);
+            }
+            catch
+            {
+                // The injected journal failure deliberately faults the hosted service.
+            }
+
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryTerminalAnchor_RejectsDeletionOfFinalCompleteFrame()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-terminal-anchor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = stateDirectory,
+        };
+        var processStatus = new ProcessStatus();
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            config, Substitute.For<IMessageBus>());
+
+        try
+        {
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "frame-one" },
+            });
+            var firstFrame = await File.ReadAllBytesAsync(recoveryFilename);
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "frame-two" },
+            });
+            await File.WriteAllBytesAsync(recoveryFilename, firstFrame);
+
+            var state = new ShareRecoveryFatalState(config, processStatus,
+                stateDirectory);
+            var error = Assert.Throws<PoolStartupException>(() =>
+                state.EnsureStartupAllowed());
+
+            Assert.Contains("terminal anchor", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryTerminalAnchor_UpdateFailureRollsBackJournalFrame()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-terminal-rollback-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            config, Substitute.For<IMessageBus>());
+
+        try
+        {
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "anchored" },
+            });
+            var original = await File.ReadAllBytesAsync(recoveryFilename);
+            recorder.RecoveryTerminalStateWrite = (_, _) =>
+                throw new IOException("injected terminal-anchor failure");
+
+            var error = await Assert.ThrowsAsync<IOException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "not-acknowledged" },
+                }));
+
+            Assert.Contains("terminal-anchor failure", error.Message);
+            Assert.Equal(original, await File.ReadAllBytesAsync(recoveryFilename));
+            var processStatus = new ProcessStatus();
+            new ShareRecoveryFatalState(config, processStatus,
+                    config.ShareRecoveryStateDirectory)
+                .EnsureStartupAllowed();
+            Assert.Equal(0, processStatus.ExitCode);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverConfiguredJournal_ArchivesSourceAndRemovesTerminalAnchor()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-terminal-import-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.TryRegisterRecoveryImportAsync(connection, transaction,
+                Arg.Any<string>(), Arg.Any<string>(), 1,
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(), config,
+            Substitute.For<IMessageBus>());
+
+        try
+        {
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share
+                {
+                    PoolId = "ltc-solo",
+                    Miner = "imported",
+                    Created = DateTime.UtcNow,
+                },
+            });
+            Assert.True(File.Exists(recorder.RecoveryTerminalStateFilename));
+
+            var archive = await recorder.RecoverSharesAsync(recoveryFilename);
+
+            Assert.NotNull(archive);
+            Assert.True(File.Exists(archive));
+            Assert.False(File.Exists(recoveryFilename));
+            Assert.False(File.Exists(recorder.RecoveryTerminalStateFilename));
+        }
+        finally
+        {
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
         }
@@ -1683,6 +2125,7 @@ public class ShareRecorderTests
             {
                 Pools = Array.Empty<PoolConfig>(),
                 ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.GetDirectoryName(recoveryFilename),
                 Notifications = new NotificationsConfig
                 {
                     Admin = new AdminNotifications

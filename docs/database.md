@@ -230,10 +230,13 @@ that archive and confirm the matching `share_recovery_imports` row and record co
 import unexplained journals from old working directories or previous deployments; reconcile their
 origin and existing manifest first.
 
-Frame chains detect duplicated, missing and reordered middle frames. They do not prove that an
-offline actor never removed the final complete frame, and pure legacy/v1 journals cannot gain
-retroactive replay protection. Retain the incident checksum captured before repair/import and
-compare it with backups or monitoring evidence when terminal truncation is plausible.
+Frame chains detect duplicated, missing and reordered middle frames. New writes also commit the
+expected final sequence and digest under the independently stored
+`shareRecoveryStateDirectory/share-recovery-terminal` directory. Startup and import reject a
+shorter valid prefix, so preserve this anchor with the journal during inspection and restore. A
+legacy/v1 journal cannot gain retroactive protection for history written before its first anchored
+v2 append. Retain the incident checksum captured before repair/import and compare it with backups or
+monitoring evidence when earlier truncation is plausible.
 
 If the configured active journal is corrupt and a separate reviewed copy was imported, preserve the
 original evidence but remove it from the live journal path before clearing the latch. Prefer an

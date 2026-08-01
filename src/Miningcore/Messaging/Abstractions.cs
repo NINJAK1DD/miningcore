@@ -89,4 +89,10 @@ public interface IMessageBus
     /// identical types (i.e. "MyCoolViewModel") - if the message type is
     /// only used for one purpose, leave this as null.</param>
     void SendMessage<T>(T message, string contract = null);
+
+    /// <summary>
+    /// Publishes a message while the caller already owns the mining-submission admission.
+    /// This avoids recursively entering the fail-stop gate on the local Stratum path.
+    /// </summary>
+    void SendMessageWithinMiningAdmission<T>(T message, string contract = null);
 }

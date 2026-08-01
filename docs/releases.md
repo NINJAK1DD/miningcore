@@ -34,8 +34,12 @@ force-flushed temporary file, atomic rename and Linux parent-directory synchroni
 format magic and chained v2 batch trailers record contiguous sequence, previous-frame identity,
 expected count, record SHA-256 and deterministic frame digest. Every chain is streamed and verified
 at startup, on first fallback entry and before recovery import. Later appends verify cached file
-identity/length and only hash the new frame, avoiding quadratic outage I/O. A bounded persistence
-queue journals overflow shares directly instead of accepting unlimited memory backlog. If PostgreSQL
+identity/length and only hash the new frame, avoiding quadratic outage I/O. Each forced append also
+commits an independent terminal sequence/digest anchor, detecting removal of a complete final frame.
+A bounded persistence queue transfers overflow to one bounded emergency journal writer outside the
+mining admission lock instead of accepting unlimited memory or blocked-caller backlogs. Graceful stop
+drains acknowledged shares independently of hosted-service cancellation and journals the complete
+unresolved registry if the PostgreSQL drain exceeds the shutdown deadline. If PostgreSQL
 and the recovery journal both fail, Miningcore synchronously closes a coordinated share-acceptance
 boundary: validated shares enter accounting before positive responses, concurrent healthy
 admissions use shared access, fail-stop is exclusive, response queueing is synchronous, and queued
@@ -48,8 +52,8 @@ normal startup—including relay nodes—remains blocked until reconciliation an
 removal. A later dual-target candidate loss upgrades an already-started general shutdown to status
 74, appends a distinct incident identity to the latch and sends an escalation alert with the exact
 latch path. Journal readers cap individual recovery lines at 1,048,576 characters. Frame-content hashes normalise
-line endings to `\n`; chaining cannot independently detect offline removal of the terminal complete
-frame, so operators should retain incident checksums. State-directory I/O uncertainty also fails
+line endings to `\n`; the independent anchor closes the terminal-frame deletion gap for newly
+committed frames, while incident checksums remain necessary for legacy history. State-directory I/O uncertainty also fails
 closed with status 74. Configure
 `shareRecoveryFile` as an
 absolute path on separately monitored or reserved storage where possible; the recovery runbook

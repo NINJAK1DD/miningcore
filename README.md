@@ -429,9 +429,11 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   host shutdown. Once quiescing starts, candidate persistence skips the ordinary 2/4/8-second retry
   delays, grants the active PostgreSQL attempt at most five seconds, then writes and force-flushes the
   recovery journal. Ordinary-share and candidate persistence use the same recorder singleton and a
-  canonical-filename journal lock. If an unexpected candidate database failure requires emergency
-  journalling, Miningcore stops the cluster because the accounting pipeline is no longer trusted. If
-  both PostgreSQL and the journal fail, a concurrent-read/exclusive-stop boundary ensures every positive
+  canonical-filename journal lock. Graceful stop closes intake and drains the acknowledged queue
+  independently of the normal hosted-service cancellation token. If the shutdown deadline expires,
+  the complete unresolved registry is force-flushed to the journal. If an unexpected candidate
+  database failure requires emergency journalling, Miningcore stops the cluster because the
+  accounting pipeline is no longer trusted. If both PostgreSQL and the journal fail, a concurrent-read/exclusive-stop boundary ensures every positive
   share response follows accounting-pipeline admission, rejects new ingress and cancels queued
   acknowledgements. The cluster then writes a persistent fatal latch to its independent service
   state directory and stops with dedicated exit status 74 instead of leaving miners online without
@@ -440,8 +442,10 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   atomically publishes a force-flushed temporary file and syncs its directory on Linux. A first-byte
   format magic plus contiguous sequence/previous-digest/count/hash validation runs at first fallback
   entry, recovery import and every normal startup, including relay nodes. Trusted appends then verify
-  file identity/length and hash only the new frame, keeping prolonged fallback linear. The in-memory
-  persistence queue is bounded and force-flushes overflow shares directly. Configure
+  file identity/length and hash only the new frame, keeping prolonged fallback linear. Every forced
+  append also atomically updates an independent terminal sequence/digest anchor, so startup and import
+  detect deletion of a complete final frame. The in-memory persistence queue and its single emergency
+  journal writer are both bounded; storage I/O never runs while holding mining admission. Configure
   `shareRecoveryFile` as an absolute path on separately monitored or reserved storage where
   possible. Configure the service manager's stop timeout above 45 seconds; the supplied systemd
   example uses 60 seconds.
