@@ -18,10 +18,11 @@ commands below as an instruction to overwrite a live configuration or database.
 
 ## Logging and disk recovery
 
-Miningcore now rotates every configured NLog file natively after 512 MiB and retains four archives
-per file target. Remove legacy Miningcore `logrotate` rules that use `copytruncate`; combining both
-mechanisms can create sparse files, while restarting the service from `postrotate` disconnects
-miners. See [Log files and rotation](configuration.md#log-files-and-rotation) for capacity planning.
+Miningcore now rotates every configured NLog file natively before a write would grow it beyond
+512 MiB and retains four archives per file target. Remove legacy Miningcore `logrotate` rules that
+use `copytruncate`; combining both mechanisms can create sparse files, while restarting the service
+from `postrotate` disconnects miners. See
+[Log files and rotation](configuration.md#log-files-and-rotation) for capacity planning.
 
 The database guide now includes a guarded [disk-exhaustion recovery runbook](database.md#recover-after-disk-exhaustion).
 It restores storage, PostgreSQL and coin daemons in dependency order before Miningcore and links to

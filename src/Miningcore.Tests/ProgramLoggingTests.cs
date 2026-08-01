@@ -57,15 +57,60 @@ public class ProgramLoggingTests
             var files = Directory.GetFiles(directory);
             var archives = files.Where(x => !string.Equals(x, activeFile,
                 StringComparison.OrdinalIgnoreCase)).ToArray();
+            var archiveContents = archives.Select(File.ReadAllText).ToArray();
 
             Assert.True(File.Exists(activeFile));
-            Assert.NotEmpty(archives);
-            Assert.True(archives.Length <= 2);
+            Assert.Equal(2, archives.Length);
+            Assert.Contains(archiveContents, x => x.Contains("entry-09"));
+            Assert.Contains(archiveContents, x => x.Contains("entry-10"));
             Assert.Contains("entry-11", File.ReadAllText(activeFile));
         }
         finally
         {
             Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public void CreateFileTarget_RestartContinuesExistingActiveFile()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"miningcore-log-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var activeFile = Path.Combine(directory, "miningcore.log");
+
+            WriteRecordSession(activeFile, "before-restart");
+            var lengthBeforeRestart = new FileInfo(activeFile).Length;
+
+            WriteRecordSession(activeFile, "after-restart");
+
+            var files = Directory.GetFiles(directory);
+            var contents = File.ReadAllText(activeFile);
+
+            Assert.Single(files);
+            Assert.True(string.Equals(activeFile, files[0], StringComparison.OrdinalIgnoreCase));
+            Assert.True(new FileInfo(activeFile).Length > lengthBeforeRestart);
+            Assert.Contains("before-restart", contents);
+            Assert.Contains("after-restart", contents);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private static void WriteRecordSession(string activeFile, string record)
+    {
+        using var factory = new LogFactory();
+        var target = Program.CreateFileTarget("main-file", new SimpleLayout(activeFile), "${message}");
+        var config = new LoggingConfiguration(factory);
+        config.AddRuleForAllLevels(target);
+
+        factory.Configuration = config;
+        factory.GetLogger("restart-test").Info(record);
+        factory.Flush();
+        factory.Shutdown();
     }
 }

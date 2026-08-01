@@ -27,9 +27,15 @@ secrets. Restrict the file to the service account.
 ## Log files and rotation
 
 Every file configured by `logging.logFile`, `logging.apiLogFile` or `logging.perPoolLogFile` is
-rotated by Miningcore through NLog. An active file is archived after it grows beyond 512 MiB and no
-more than four archives are retained for each file target. Existing active logs are continued across
-an ordinary application restart instead of being archived merely because Miningcore started.
+rotated by Miningcore through NLog. An active file is archived before a write that would grow it
+beyond 512 MiB, and no more than four archives are retained for each file target. Existing active
+logs are continued across an ordinary application restart instead of being archived merely because
+Miningcore started.
+
+Configure a distinct physical path for every enabled target. In particular, do not point
+`logging.apiLogFile` and `logging.logFile` at the same file because their independent writers and
+archive lifecycles would compete. Set `logging.apiLogFile` to `null` when API events should flow into
+the main log instead of a separate API file.
 
 Do not apply an external `logrotate` rule using `copytruncate` to these same files. Truncating an open
 file underneath NLog can leave the process writing at its previous offset and create a large sparse
