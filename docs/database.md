@@ -118,6 +118,88 @@ and an idempotent payment ledger. Only a clean shutdown clears the durable owner
 
 Automatic hot-standby payout takeover is intentionally unsupported.
 
+## Recover after disk exhaustion
+
+A full filesystem can stop PostgreSQL and coin daemons before Miningcore itself fails. Miningcore
+may then show PostgreSQL connection refusals, daemon RPC errors and systemd restart throttling. Treat
+those as downstream symptoms: restore storage and dependencies before restarting the pool.
+
+First stop the restart loop and prove which filesystem is full. Check inodes as well as bytes, and
+inspect the filesystems that actually contain PostgreSQL data, daemon data and Miningcore logs rather
+than assuming they all reside under `/home`:
+
+```console
+sudo systemctl stop miningcore
+sudo systemctl reset-failed miningcore
+pgrep -af 'Miningcore|Miningcore.dll' || true
+
+df -hT
+df -i
+findmnt -T /var/lib/postgresql
+sudo du -xhd1 /var /home 2>/dev/null | sort -h
+sudo journalctl --disk-usage
+sudo lsof +L1
+```
+
+Free space only by removing or moving data whose purpose and recovery consequences are understood.
+Do not delete `postmaster.pid`, PostgreSQL WAL files or anything under `/var/lib/postgresql` merely
+to reclaim space. An open deleted file shown by `lsof +L1` continues consuming space until its owning
+process closes it; investigate that service rather than deleting unrelated database files. Confirm
+the affected filesystem now has both free blocks and free inodes before continuing.
+
+Recover PostgreSQL before Miningcore. Ubuntu installations can expose both the umbrella service and
+a versioned cluster, so inspect the actual cluster name before choosing a start command:
+
+```console
+pg_lsclusters
+sudo systemctl status postgresql --no-pager -l
+sudo systemctl start postgresql
+
+# If the cluster remains down, substitute the values shown by pg_lsclusters.
+sudo pg_ctlcluster REPLACE_WITH_VERSION REPLACE_WITH_CLUSTER start
+
+pg_isready -h 127.0.0.1 -p 5432
+psql -h 127.0.0.1 -U REPLACE_WITH_MININGCORE_ROLE \
+  -d REPLACE_WITH_DATABASE -c "SELECT now();"
+```
+
+If PostgreSQL still fails, read the service and kernel evidence before changing its data directory:
+
+```console
+sudo journalctl -u postgresql -u 'postgresql@*' -b --no-pager -n 200
+findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /var/lib/postgresql
+sudo journalctl -k -b --no-pager -n 200
+```
+
+Stop and investigate filesystem or hardware errors when the mount is read-only or the kernel reports
+I/O faults. Restore from a verified backup if PostgreSQL reports unrecoverable corruption; do not
+attempt speculative WAL or control-file deletion.
+
+Next recover every daemon required by the enabled pools and verify its RPC readiness. A daemon can
+accept a process start while still returning an initial-sync or loading-state RPC error, so wait for
+its normal blockchain-information call to succeed before starting Miningcore. Use the service names,
+CLI clients, RPC ports and authentication from the deployment rather than copying a coin-specific
+example blindly.
+
+Finally start Miningcore and inspect its complete startup, API health and pool state:
+
+```console
+sudo systemctl reset-failed miningcore
+sudo systemctl start miningcore
+sudo systemctl status miningcore --no-pager -l
+sudo journalctl -u miningcore -b --no-pager -n 200
+```
+
+If the database session disappeared during the outage, the durable payout-manager ownership marker
+may correctly remain set even though PostgreSQL is healthy again. Do not clear it merely to make the
+service start. Reconcile any possibly submitted wallet transaction, prove the old process is dead,
+then follow [Recover payout-manager ownership safely](#recover-payout-manager-ownership-safely).
+
+After recovery, verify a fresh PostgreSQL backup, retain the incident logs, and add monitoring for
+filesystem bytes, inodes, PostgreSQL readiness, daemon RPC readiness and the Miningcore service.
+Miningcore's [native file rotation](configuration.md#log-files-and-rotation) bounds its own configured
+file targets, but database, daemon, journal and reverse-proxy storage still require separate policy.
+
 ## Recover payout-manager ownership safely
 
 Miningcore holds both a PostgreSQL session advisory lock and one durable ownership row for the
