@@ -15,7 +15,8 @@ public interface ICandidatePersistenceFailureHandler
 public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFailureHandler
 {
     public CandidatePersistenceFailureHandler(IProcessStatus processStatus,
-        IHostApplicationLifetime applicationLifetime, IMessageBus messageBus)
+        IHostApplicationLifetime applicationLifetime, IMessageBus messageBus,
+        IShareRecoveryFatalState fatalState = null)
     {
         ArgumentNullException.ThrowIfNull(processStatus);
         ArgumentNullException.ThrowIfNull(applicationLifetime);
@@ -24,12 +25,14 @@ public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFa
         this.processStatus = processStatus;
         this.applicationLifetime = applicationLifetime;
         this.messageBus = messageBus;
+        this.fatalState = fatalState;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IProcessStatus processStatus;
     private readonly IHostApplicationLifetime applicationLifetime;
     private readonly IMessageBus messageBus;
+    private readonly IShareRecoveryFatalState fatalState;
     private int failureSignalled;
 
     public void StopCluster(IReadOnlyCollection<Share> candidates,
@@ -47,6 +50,14 @@ public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFa
         var failure = journalError ?? databaseError ??
             new IOException("Unknown candidate-persistence failure");
 
+        if(databaseError != null)
+            logger.Fatal(databaseError,
+                "PostgreSQL failed while persisting a block candidate");
+
+        if(journalError != null)
+            logger.Fatal(journalError,
+                "The recovery journal failed while persisting a block candidate");
+
         logger.Fatal(failure,
             "Stopping cluster after financially significant block-candidate persistence failure. {0} Candidates: {1}. Database error: {2}. Journal error: {3}",
             durability, candidateDetails, databaseError?.Message ?? "(none)",
@@ -55,18 +66,41 @@ public sealed class CandidatePersistenceFailureHandler : ICandidatePersistenceFa
         if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
             return;
 
+        var exitCode = journalSucceeded
+            ? ProcessExitCodes.GeneralFailure
+            : ProcessExitCodes.UnreconciledShareDurabilityLoss;
+
+        if(!journalSucceeded && fatalState != null)
+        {
+            try
+            {
+                var pools = candidates.Select(x => x.PoolId)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .ToArray();
+                fatalState.MarkFatal(candidates.Count, pools, databaseError,
+                    journalError);
+            }
+            catch(Exception ex)
+            {
+                logger.Fatal(ex,
+                    "Unable to persist block-candidate fatal-state marker; dedicated exit status still prevents automatic restart");
+            }
+        }
+
         try
         {
             messageBus.SendMessage(new AdminNotification(
                 "Fatal block-candidate persistence failure",
-                $"Miningcore is stopping with exit status 1. {durability} Candidates: {candidateDetails}"));
+                $"Miningcore is stopping with exit status {exitCode}. {durability} Candidates: {candidateDetails}"));
         }
         catch(Exception ex)
         {
             logger.Error(ex, "Unable to emit fatal candidate-persistence notification");
         }
 
-        processStatus.MarkFailed();
+        processStatus.MarkFailed(exitCode);
         applicationLifetime.StopApplication();
     }
 }

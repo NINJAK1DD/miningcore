@@ -28,12 +28,17 @@ The database guide now includes a guarded [disk-exhaustion recovery runbook](dat
 It restores storage, PostgreSQL and coin daemons in dependency order before Miningcore and links to
 the existing payout-ownership reconciliation procedure for an unclean database-session loss.
 
-Recovery-journal appends now roll back a partial write to the previous file length and refuse to
-extend a pre-existing incomplete line. If PostgreSQL and the recovery journal both fail, Miningcore
-emits a distinct administrative event and exits with status 1 instead of continuing without durable
-share accounting. Configure `shareRecoveryFile` as an absolute path on separately monitored or
-reserved storage where possible; the recovery runbook explains evidence preservation and atomic,
-manifested import verification.
+Recovery-journal appends now roll back a partial write to the previous file length, force-flush the
+rollback, and refuse to extend a pre-existing incomplete line or framed batch. New batch trailers
+record the expected count and SHA-256 hash. If PostgreSQL and the recovery journal both fail,
+Miningcore writes a persistent `.fatal` marker, awaits a bounded critical administrative
+notification attempt, and exits with the dedicated status 74 instead of continuing without durable
+share accounting. The supplied systemd unit does not restart status 74, and normal startup remains
+blocked until reconciliation and explicit marker removal. Normal startup also validates the
+existing journal's final newline and most recent framed batch before pools start. Configure
+`shareRecoveryFile` as an
+absolute path on separately monitored or reserved storage where possible; the recovery runbook
+explains evidence preservation and atomic, manifested import verification.
 
 ## Payout and WebSocket compatibility
 

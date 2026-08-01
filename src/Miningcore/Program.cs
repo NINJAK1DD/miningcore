@@ -1043,6 +1043,10 @@ public class Program : ProcessStatusBackgroundService
 
     private static async Task PreFlightChecks(IServiceProvider services)
     {
+        if(!isShareRecoveryMode && clusterConfig.ShareRelay == null)
+            services.GetRequiredService<IShareRecoveryFatalState>()
+                .EnsureStartupAllowed();
+
         await ConfigurePostgresCompatibilityOptions(services);
 
         await EnsureSharePartitionsAsync(isShareRecoveryMode, clusterConfig,

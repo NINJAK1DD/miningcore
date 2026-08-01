@@ -63,12 +63,21 @@ domain when database or log storage fills. If separate storage is unavailable, r
 the journal and alert on both free bytes and free inodes well before exhaustion. Rotation of
 Miningcore logs does not bound the journal or reserve space for it.
 
-Each caught append or force-flush failure is rolled back to the file's previous complete boundary.
-Miningcore also refuses to append when an existing non-empty journal does not end at a newline,
-because that can indicate an interrupted write from a crash or an older version. If PostgreSQL and
-the journal are both unavailable, Miningcore emits a `Fatal share-recovery fallback failure`
-administrative event and stops with exit status 1 instead of continuing to accept shares without a
-durable destination.
+Each caught append or force-flush failure is rolled back to the file's previous length and durably
+flushed. New batches are framed by comment records containing the expected record count and SHA-256
+hash. Before appending, Miningcore validates both the newline boundary and the most recent framed
+batch. The same validation runs during normal startup, so a crash cannot hide a partial framed
+append merely because PostgreSQL recovered before the next fallback. Older journals without
+framing retain the legacy newline-only check until their first new framed batch. A newline alone is
+not proof that an older multi-record append completed.
+
+If PostgreSQL and the journal are both unavailable, Miningcore writes
+`<shareRecoveryFile>.fatal`, attempts the distinct `Fatal share-recovery fallback failure`
+administrative notification for up to five seconds, and exits with status 74. The supplied systemd
+unit has `RestartPreventExitStatus=74`, while the fatal marker independently blocks a manual normal
+startup. Notification delivery can still fail or time out; the fatal log, exit status and marker are
+the authoritative signals. Preserve and reconcile the journal before deleting only the `.fatal`
+file as an explicit operator acknowledgement.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

@@ -15,6 +15,9 @@ ExecStart=/usr/bin/dotnet /opt/miningcore/Miningcore.dll -c /etc/miningcore/conf
 
 Restart=on-failure
 RestartSec=5
+# Exit 74 means accepted shares were stored by neither PostgreSQL nor the recovery journal.
+# Automatic restart is unsafe until the operator has reconciled the journal and fatal marker.
+RestartPreventExitStatus=74
 KillSignal=SIGTERM
 TimeoutStartSec=30
 TimeoutStopSec=60

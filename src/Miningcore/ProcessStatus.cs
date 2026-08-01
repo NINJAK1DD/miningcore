@@ -5,7 +5,17 @@ namespace Miningcore;
 public interface IProcessStatus
 {
     int ExitCode { get; }
-    void MarkFailed();
+    void MarkFailed(int exitCode = ProcessExitCodes.GeneralFailure);
+}
+
+public static class ProcessExitCodes
+{
+    public const int GeneralFailure = 1;
+
+    // EX_IOERR. The packaged systemd unit deliberately does not restart this status because
+    // Miningcore could not durably account for accepted shares in either PostgreSQL or the
+    // recovery journal. An operator must reconcile the incident before starting it again.
+    public const int UnreconciledShareDurabilityLoss = 74;
 }
 
 public sealed class ProcessStatus : IProcessStatus
@@ -14,9 +24,15 @@ public sealed class ProcessStatus : IProcessStatus
 
     public int ExitCode => Volatile.Read(ref exitCode);
 
-    public void MarkFailed()
+    public void MarkFailed(int failureExitCode = ProcessExitCodes.GeneralFailure)
     {
-        Interlocked.Exchange(ref exitCode, 1);
+        if(failureExitCode <= 0)
+            throw new ArgumentOutOfRangeException(nameof(failureExitCode));
+
+        if(failureExitCode == ProcessExitCodes.UnreconciledShareDurabilityLoss)
+            Interlocked.Exchange(ref exitCode, failureExitCode);
+        else
+            Interlocked.CompareExchange(ref exitCode, failureExitCode, 0);
     }
 }
 

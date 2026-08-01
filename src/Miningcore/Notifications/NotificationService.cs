@@ -17,7 +17,8 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
-public class NotificationService : StartupGatedBackgroundService
+public class NotificationService : StartupGatedBackgroundService,
+    ICriticalNotificationSender
 {
     public NotificationService(
         ClusterConfig clusterConfig,
@@ -57,6 +58,50 @@ public class NotificationService : StartupGatedBackgroundService
 
         if(clusterConfig.Notifications?.Pushover?.Enabled == true)
             await Guard(()=> pushoverClient.PushMessage(notification.Subject, notification.Message, PushoverMessagePriority.None, ct), LogGuarded);
+    }
+
+    public async Task SendCriticalAdminNotificationAsync(AdminNotification notification,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(notification);
+
+        if(clusterConfig.Notifications?.Admin?.Enabled != true)
+            return;
+
+        var errors = new List<Exception>();
+
+        if(!string.IsNullOrWhiteSpace(adminEmail))
+        {
+            try
+            {
+                await SendEmailAsync(adminEmail, notification.Subject,
+                    notification.Message, ct);
+            }
+            catch(Exception ex)
+            {
+                errors.Add(new IOException(
+                    "Critical administrative email delivery failed", ex));
+            }
+        }
+
+        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+        {
+            try
+            {
+                await pushoverClient.PushMessage(notification.Subject,
+                    notification.Message, PushoverMessagePriority.None, ct);
+            }
+            catch(Exception ex)
+            {
+                errors.Add(new IOException(
+                    "Critical administrative Pushover delivery failed", ex));
+            }
+        }
+
+        if(errors.Count > 0)
+            throw new AggregateException(
+                "One or more critical administrative notification transports failed",
+                errors);
     }
 
     private async Task OnBlockFoundNotificationAsync(BlockFoundNotification notification, CancellationToken ct)

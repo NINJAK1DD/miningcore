@@ -183,7 +183,10 @@ example blindly.
 
 If the incident produced `Share Recorder Policy Fallback`, `Fatal share-recovery fallback failure`
 or recovery-journal errors, reconcile the journal before restarting Miningcore. Use the
-absolute journal path reported when the Share Recorder came online. A normal fallback email proves
+absolute journal path reported when the Share Recorder came online. A dual-target failure exits
+with status 74 and creates that path plus `.fatal`; the supplied systemd unit deliberately will not
+restart it, and normal Miningcore startup will refuse to proceed while the marker exists. A normal
+fallback email proves
 only that the batch which emitted it was force-flushed; it does not prove an earlier batch succeeded
 or reveal shares that failed before reaching either durable target. Review the entire outage window
 for both successful fallback and fatal fallback messages.
@@ -199,8 +202,10 @@ sudo cp --preserve=all -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE \
   REPLACE_WITH_EVIDENCE_COPY
 ```
 
-Do not edit, truncate or import a corrupt original in place. A missing final newline or invalid JSON
-can represent a partial write. Retain the original and create a separate repaired input containing
+Do not edit, truncate or import a corrupt original in place. A missing final newline, invalid JSON,
+or batch count/hash mismatch can represent a partial write. Older unframed journals can only prove
+their final newline boundary, not that the final multi-record batch was complete. Retain the
+original and create a separate repaired input containing
 only complete, operator-reviewed records; do not guess missing fields or add braces merely to make a
 fragment parse. Ordinary share loss can affect reward accounting in proportional and PPLNS schemes,
 so do not dismiss incomplete records merely because no block candidate is present.
@@ -213,11 +218,21 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
-The importer validates the complete file before opening its transaction, commits all records and its
+The importer ignores the framing comments, validates the complete file before opening its
+transaction, commits all records and its
 SHA-256 manifest atomically, and archives a successful source with an `.imported-*` suffix. Retain
 that archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
 import unexplained journals from old working directories or previous deployments; reconcile their
 origin and existing manifest first.
+
+Only after the reviewed import and its manifest/count are verified, remove the fatal marker whose
+exact path was reported by Miningcore. Do not use a wildcard and do not remove the recovery journal
+or imported evidence as part of this acknowledgement:
+
+```console
+sudo test -f -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.fatal
+sudo rm -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.fatal
+```
 
 Finally start Miningcore and inspect its complete startup, API health and pool state:
 

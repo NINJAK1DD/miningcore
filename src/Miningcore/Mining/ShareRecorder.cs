@@ -33,6 +33,22 @@ namespace Miningcore.Mining;
 /// </summary>
 public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder
 {
+    // Test-only compatibility constructor. Production DI must provide the fail-stop handler;
+    // this sentinel throws if a test unexpectedly reaches the dual-durability-loss path.
+    internal ShareRecorder(IConnectionFactory cf,
+        IMapper mapper,
+        JsonSerializerSettings jsonSerializerSettings,
+        IShareRepository shareRepo,
+        IBlockRepository blockRepo,
+        ClusterConfig clusterConfig,
+        IMessageBus messageBus,
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null) :
+        this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo, clusterConfig,
+            messageBus, MissingShareRecoveryFailureHandler.Instance,
+            candidateFailureHandler)
+    {
+    }
+
     public ShareRecorder(IConnectionFactory cf,
         IMapper mapper,
         JsonSerializerSettings jsonSerializerSettings,
@@ -40,8 +56,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         IBlockRepository blockRepo,
         ClusterConfig clusterConfig,
         IMessageBus messageBus,
-        ICandidatePersistenceFailureHandler candidateFailureHandler = null,
-        IShareRecoveryFailureHandler recoveryFailureHandler = null)
+        IShareRecoveryFailureHandler recoveryFailureHandler,
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null)
     {
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(mapper);
@@ -49,6 +65,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         Contract.RequiresNonNull(blockRepo);
         Contract.RequiresNonNull(jsonSerializerSettings);
         Contract.RequiresNonNull(messageBus);
+        ArgumentNullException.ThrowIfNull(recoveryFailureHandler);
 
         this.cf = cf;
         this.mapper = mapper;
@@ -56,8 +73,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this.messageBus = messageBus;
         this.candidateFailureHandler = candidateFailureHandler ??
             NullCandidatePersistenceFailureHandler.Instance;
-        this.recoveryFailureHandler = recoveryFailureHandler ??
-            NullShareRecoveryFailureHandler.Instance;
+        this.recoveryFailureHandler = recoveryFailureHandler;
         this.clusterConfig = clusterConfig;
 
         this.shareRepo = shareRepo;
@@ -66,8 +82,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         pools = clusterConfig.Pools.ToDictionary(x => x.Id, x => x);
 
         BuildFaultHandlingPolicy();
-        ConfigureRecovery();
-        recoveryFilename = Path.GetFullPath(recoveryFilename);
+        recoveryFilename = ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig);
         recoveryWriteGate = RecoveryWriteGates.GetOrAdd(recoveryFilename,
             _ => new SemaphoreSlim(1, 1));
     }
@@ -90,6 +105,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
     private const string PolicyContextKeyDatabaseError = "database-error";
+    private const string RecoveryBatchStartPrefix =
+        "# miningcore-recovery-batch-v1 start ";
+    private const string RecoveryBatchEndPrefix =
+        "# miningcore-recovery-batch-v1 end ";
     private bool notifiedAdminOnPolicyFallback = false;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RecoveryWriteGates =
         new(OperatingSystem.IsWindows()
@@ -393,15 +412,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         catch(Exception ex)
         {
-            recoveryFailureHandler.StopCluster(shares.ToArray(), recoveryFilename,
-                databaseError, ex);
+            await recoveryFailureHandler.StopClusterAsync(shares.ToArray(),
+                recoveryFilename, databaseError, ex);
 
+            var causes = databaseError != null
+                ? new[] { databaseError, ex }
+                : new[] { ex };
             var failure = new IOException(
                 "Unable to durably persist shares to PostgreSQL or the recovery journal",
-                ex);
-
-            if(databaseError != null)
-                failure.Data["DatabaseException"] = databaseError;
+                new AggregateException(causes));
 
             throw failure;
         }
@@ -448,23 +467,138 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         if(stream.ReadByte() != '\n')
             throw new InvalidDataException(
-                $"Recovery journal {filename} does not end at a complete record boundary. " +
+                $"Recovery journal {filename} does not end at a newline boundary. " +
                 "Preserve it for reconciliation; refusing to append to possibly truncated data.");
+
+        var framedTail = ReadLatestRecoveryBatch(stream);
+
+        if(framedTail == null)
+            return;
+
+        var lines = framedTail
+            .Split('\n')
+            .Select(x => x.TrimEnd('\r'))
+            .ToArray();
+        var finalLineIndex = Array.FindLastIndex(lines,
+            line => !string.IsNullOrWhiteSpace(line));
+        var lastStartIndex = Array.FindLastIndex(lines,
+            line => line.StartsWith(RecoveryBatchStartPrefix,
+                StringComparison.Ordinal));
+
+        if(finalLineIndex <= lastStartIndex ||
+            !lines[finalLineIndex].StartsWith(RecoveryBatchEndPrefix,
+                StringComparison.Ordinal))
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains an incomplete framed batch. " +
+                "Preserve it for reconciliation; refusing to append after a partial batch.");
+
+        var startMetadata = ParseRecoveryBatchMetadata(lines[lastStartIndex],
+            RecoveryBatchStartPrefix, filename);
+        var endMetadata = ParseRecoveryBatchMetadata(lines[finalLineIndex],
+            RecoveryBatchEndPrefix, filename);
+        var recordLines = lines[(lastStartIndex + 1)..finalLineIndex];
+        var recordBytes = Encoding.UTF8.GetBytes(string.Join("\n", recordLines) + "\n");
+        var actualHash = Convert.ToHexString(SHA256.HashData(recordBytes));
+
+        if(startMetadata != endMetadata || recordLines.Length != startMetadata.Count ||
+            !string.Equals(actualHash, startMetadata.Hash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"Recovery journal {filename} has a framed batch whose record count or hash " +
+                "does not match its durable trailer. Preserve it for reconciliation.");
+    }
+
+    private static string ReadLatestRecoveryBatch(Stream stream)
+    {
+        const int blockSize = 8192;
+        var marker = Encoding.ASCII.GetBytes(RecoveryBatchStartPrefix);
+        var searchEnd = stream.Length;
+
+        while(searchEnd > 0)
+        {
+            var searchStart = Math.Max(0, searchEnd - blockSize);
+            var overlap = (int) Math.Min(marker.Length - 1,
+                stream.Length - searchEnd);
+            var length = checked((int) (searchEnd - searchStart)) + overlap;
+            var buffer = new byte[length];
+            stream.Position = searchStart;
+            stream.ReadExactly(buffer);
+
+            for(var index = buffer.Length - marker.Length; index >= 0; index--)
+            {
+                if(!buffer.AsSpan(index, marker.Length).SequenceEqual(marker))
+                    continue;
+
+                var absoluteIndex = searchStart + index;
+
+                if(absoluteIndex > 0)
+                {
+                    stream.Position = absoluteIndex - 1;
+
+                    if(stream.ReadByte() != '\n')
+                        continue;
+                }
+
+                var tailLength = stream.Length - absoluteIndex;
+
+                if(tailLength > int.MaxValue)
+                    throw new InvalidDataException(
+                        "Recovery journal framed batch exceeds the supported validation size");
+
+                var tail = new byte[(int) tailLength];
+                stream.Position = absoluteIndex;
+                stream.ReadExactly(tail);
+                return Encoding.UTF8.GetString(tail);
+            }
+
+            searchEnd = searchStart;
+        }
+
+        // Journals written by older versions have no batch framing. Preserve compatibility,
+        // but every batch written by this version has a matching count/hash trailer.
+        return null;
+    }
+
+    private static (int Count, string Hash) ParseRecoveryBatchMetadata(string line,
+        string prefix, string filename)
+    {
+        var parts = line[prefix.Length..].Split(' ',
+            StringSplitOptions.RemoveEmptyEntries);
+
+        if(parts.Length != 2 ||
+            !parts[0].StartsWith("count=", StringComparison.Ordinal) ||
+            !int.TryParse(parts[0][6..], NumberStyles.None,
+                CultureInfo.InvariantCulture, out var count) || count < 0 ||
+            !parts[1].StartsWith("sha256=", StringComparison.Ordinal) ||
+            parts[1].Length != 71)
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains malformed batch metadata");
+
+        return (count, parts[1][7..]);
     }
 
     private byte[] BuildRecoveryJournalPayload(IEnumerable<Share> shares,
         bool includeHeader)
     {
-        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        var shareRecords = shares
+            .Select(share => JsonConvert.SerializeObject(share,
+                jsonSerializerSettings))
+            .ToArray();
+        var records = shareRecords.Length > 0
+            ? string.Join("\n", shareRecords) + "\n"
+            : string.Empty;
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(records)));
+        var metadata = $"count={shareRecords.Length} sha256={hash}";
+        using var writer = new StringWriter(CultureInfo.InvariantCulture)
+        {
+            NewLine = "\n",
+        };
 
         if(includeHeader)
             WriteRecoveryFileheader(writer);
 
-        foreach(var share in shares)
-        {
-            var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
-            writer.WriteLine(json);
-        }
+        writer.WriteLine(RecoveryBatchStartPrefix + metadata);
+        writer.Write(records);
+        writer.WriteLine(RecoveryBatchEndPrefix + metadata);
 
         return new UTF8Encoding(false).GetBytes(writer.ToString());
     }
@@ -472,7 +606,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal static async Task AppendRecoveryJournalAsync(Stream stream,
         ReadOnlyMemory<byte> payload)
     {
+        await AppendRecoveryJournalAsync(stream, payload,
+            FlushRecoveryJournalAsync);
+    }
+
+    internal static async Task AppendRecoveryJournalAsync(Stream stream,
+        ReadOnlyMemory<byte> payload, Func<Stream, Task> flush)
+    {
         ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(flush);
 
         if(!stream.CanWrite || !stream.CanSeek)
             throw new ArgumentException(
@@ -484,7 +626,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             await stream.WriteAsync(payload, CancellationToken.None);
-            await FlushRecoveryJournalAsync(stream);
+            await flush(stream);
         }
         catch(Exception writeError)
         {
@@ -492,15 +634,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             {
                 stream.SetLength(originalLength);
                 stream.Position = originalLength;
-                await FlushRecoveryJournalAsync(stream);
+                await flush(stream);
             }
             catch(Exception rollbackError)
             {
-                var failure = new IOException(
+                throw new IOException(
                     "Recovery journal append failed and its partial write could not be rolled back",
-                    writeError);
-                failure.Data["RollbackException"] = rollbackError;
-                throw failure;
+                    new AggregateException(writeError, rollbackError));
             }
 
             ExceptionDispatchInfo.Capture(writeError).Throw();
@@ -523,6 +663,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         writer.WriteLine("# The existence of this file means shares could not be committed to the database.");
         writer.WriteLine("# You should stop the pool cluster and run the following command:");
         writer.WriteLine("# miningcore -c <path-to-config> -rs <path-to-this-file>\n");
+    }
+
+    private sealed class MissingShareRecoveryFailureHandler :
+        IShareRecoveryFailureHandler
+    {
+        public static readonly MissingShareRecoveryFailureHandler Instance = new();
+
+        public Task StopClusterAsync(IReadOnlyCollection<Share> shares,
+            string recoveryFilename, Exception databaseError, Exception journalError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
     }
 
     public async Task<string> RecoverSharesAsync(string filename)
@@ -794,13 +945,6 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             logger.Error(ex,
                 "Unable to emit share-recorder fallback notification after the recovery journal was durably flushed");
         }
-    }
-
-    private void ConfigureRecovery()
-    {
-        recoveryFilename = !string.IsNullOrEmpty(clusterConfig.ShareRecoveryFile)
-            ? clusterConfig.ShareRecoveryFile
-            : "recovered-shares.txt";
     }
 
     private void BuildFaultHandlingPolicy()
