@@ -1415,8 +1415,11 @@ public class ShareRecorderTests
         var active = 0;
         var peak = 0;
 
+        // Dedicated workers avoid thread-pool starvation from the deliberately blocked
+        // publication callbacks. The property under test is the admission gate, not the
+        // runner's hill-climbing latency under 32 synchronously blocked work items.
         var submissions = Enumerable.Range(0, submissionCount)
-            .Select(_ => Task.Run(() =>
+            .Select(_ => Task.Factory.StartNew(() =>
             {
                 using var acceptance = coordinator.AcquireSubmissionAcceptance();
                 acceptance.PublishShare(() =>
@@ -1436,7 +1439,8 @@ public class ShareRecorderTests
                     release.Wait();
                     Interlocked.Decrement(ref active);
                 });
-            }))
+            }, CancellationToken.None, TaskCreationOptions.LongRunning,
+                TaskScheduler.Default))
             .ToArray();
 
         try

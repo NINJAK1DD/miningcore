@@ -37,26 +37,30 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
 
     private static RecoveryJournalFileIdentity ReadLinux(SafeFileHandle handle)
     {
-        // Linux stat begins with st_dev and st_ino on every architecture supported by the
-        // published Miningcore packages. Allocate beyond the native structure size so libc can
-        // populate it without binding the managed code to the remainder of the ABI layout.
-        var buffer = Marshal.AllocHGlobal(256);
+        // statx has a fixed cross-architecture layout and exposes the file birth timestamp.
+        // The birth timestamp distinguishes a delete/recreate replacement even when Linux
+        // immediately recycles the same inode number for a same-length file.
+        const int atEmptyPath = 0x1000;
+        const uint statxInode = 0x0100;
+        const uint statxBirthTime = 0x0800;
+        const uint statxBasicStats = 0x07ff;
 
-        try
-        {
-            if(fstat(handle.DangerousGetHandle().ToInt32(), buffer) != 0)
-                throw new IOException("Unable to read recovery journal file identity",
-                    new Win32Exception(Marshal.GetLastPInvokeError()));
+        if(statx(handle.DangerousGetHandle().ToInt32(), string.Empty,
+               atEmptyPath, statxBasicStats | statxBirthTime, out var info) != 0)
+            throw new IOException("Unable to read recovery journal file identity",
+                new Win32Exception(Marshal.GetLastPInvokeError()));
 
-            var device = unchecked((ulong) Marshal.ReadInt64(buffer, 0));
-            var inode = unchecked((ulong) Marshal.ReadInt64(buffer, 8));
-            return new RecoveryJournalFileIdentity(
-                $"linux:{device:X16}:{inode:X16}");
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
+        if((info.Mask & statxInode) == 0)
+            throw new IOException(
+                "Linux did not return an inode for the recovery journal file");
+
+        var birth = (info.Mask & statxBirthTime) != 0
+            ? $"{info.BirthTime.Seconds:X16}:{info.BirthTime.Nanoseconds:X8}"
+            : "unavailable";
+        return new RecoveryJournalFileIdentity(
+            $"linux:{info.DeviceMajor:X8}:{info.DeviceMinor:X8}:" +
+            $"{info.Inode:X16}:{birth}:" +
+            $"{info.ChangeTime.Seconds:X16}:{info.ChangeTime.Nanoseconds:X8}");
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -74,11 +78,48 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
         public uint FileIndexLow;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StatxTimestamp
+    {
+        public long Seconds;
+        public uint Nanoseconds;
+        public int Reserved;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Size = 256)]
+    private struct StatxInformation
+    {
+        public uint Mask;
+        public uint BlockSize;
+        public ulong Attributes;
+        public uint LinkCount;
+        public uint UserId;
+        public uint GroupId;
+        public ushort Mode;
+        public ushort Spare0;
+        public ulong Inode;
+        public ulong Size;
+        public ulong Blocks;
+        public ulong AttributesMask;
+        public StatxTimestamp AccessTime;
+        public StatxTimestamp BirthTime;
+        public StatxTimestamp ChangeTime;
+        public StatxTimestamp ModificationTime;
+        public uint DeviceTypeMajor;
+        public uint DeviceTypeMinor;
+        public uint DeviceMajor;
+        public uint DeviceMinor;
+        public ulong MountId;
+        public uint DirectIoMemoryAlignment;
+        public uint DirectIoOffsetAlignment;
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle handle,
         out ByHandleFileInformation information);
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int fstat(int descriptor, IntPtr buffer);
+    [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int statx(int directoryFileDescriptor,
+        string path, int flags, uint mask, out StatxInformation information);
 }

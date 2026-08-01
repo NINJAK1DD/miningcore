@@ -502,7 +502,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     tail.FrameDigest);
                 await AppendRecoveryJournalAsync(stream, payload.Bytes,
                     RecoveryJournalFlush);
-                recoveryWriteState.Advance(identity, stream.Length,
+                // A Linux identity may include metadata populated by the completed append.
+                // Refresh it only after the frame is force-flushed and therefore trusted.
+                recoveryWriteState.Advance(RecoveryJournalFileIdentity.Read(stream),
+                    stream.Length,
                     new RecoveryJournalTail(payload.Sequence,
                         payload.FrameDigest, true));
             }
