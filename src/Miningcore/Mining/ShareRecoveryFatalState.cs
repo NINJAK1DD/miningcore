@@ -38,6 +38,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     }
 
     private readonly IProcessStatus processStatus;
+    private readonly object fatalStateGate = new();
 
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
@@ -58,7 +59,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                 throw new PoolStartupException(
                     $"Share-accounting durability remains unreconciled. Fatal state: " +
                     $"{FatalStateFilename}. Recovery journal: {RecoveryFilename}. Preserve both " +
-                    "files, reconcile PostgreSQL and the journal, then remove only the exact " +
+                    "files, reconcile every recorded incident against PostgreSQL and the journal, then remove only the exact " +
                     "fatal-state file as the explicit operator acknowledgement before restarting " +
                     "Miningcore.");
             }
@@ -110,10 +111,37 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     public void MarkFatal(int shareCount, IReadOnlyCollection<string> pools,
         Exception databaseError, Exception journalError)
     {
+        lock(fatalStateGate)
+            MarkFatalCore(shareCount, pools, databaseError, journalError);
+    }
+
+    private void MarkFatalCore(int shareCount, IReadOnlyCollection<string> pools,
+        Exception databaseError, Exception journalError)
+    {
         _ = EnsureFatalStateDirectoryAccessible();
         var recoveryPathHash = ComputeRecoveryPathHash(RecoveryFilename);
-        var content = new StringBuilder()
-            .AppendLine("Miningcore share-accounting durability failure")
+        var incidentId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}";
+        var previous = string.Empty;
+
+        try
+        {
+            previous = File.ReadAllText(FatalStateFilename, new UTF8Encoding(false, true));
+        }
+        catch(FileNotFoundException)
+        {
+            // First incident for this recovery-journal identity.
+        }
+
+        var content = new StringBuilder(previous);
+
+        if(content.Length == 0)
+            content.AppendLine("Miningcore share-accounting durability failure");
+        else if(content[content.Length - 1] != '\n')
+            content.AppendLine();
+
+        content
+            .AppendLine("[incident]")
+            .AppendLine($"incidentId={incidentId}")
             .AppendLine($"createdUtc={DateTimeOffset.UtcNow:O}")
             .AppendLine($"recoveryFile={RecoveryFilename}")
             .AppendLine($"recoveryPathSha256={recoveryPathHash}")
@@ -121,8 +149,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             .AppendLine($"pools={string.Join(",", pools)}")
             .AppendLine($"databaseError={databaseError?.GetType().FullName}: {databaseError?.Message}")
             .AppendLine($"journalError={journalError?.GetType().FullName}: {journalError?.Message}")
-            .AppendLine("Reconcile before deleting this marker and restarting Miningcore.")
-            .ToString();
+            .AppendLine("Reconcile every incident before deleting this marker and restarting Miningcore.");
         var directory = Path.GetDirectoryName(FatalStateFilename)!;
         var temporary = Path.Combine(directory,
             $".{Path.GetFileName(FatalStateFilename)}.{Guid.NewGuid():N}.tmp");
@@ -134,7 +161,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             using(var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024,
                 leaveOpen: true))
             {
-                writer.Write(content);
+                writer.Write(content.ToString());
                 writer.Flush();
                 stream.Flush(true);
             }

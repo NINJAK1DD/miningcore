@@ -68,19 +68,36 @@ Each caught append or force-flush failure is rolled back to the file's previous 
 flushed. A journal's first batch is written to a force-flushed temporary file, atomically renamed to
 the active path and followed by a parent-directory `fsync` on Linux, so successful first creation
 includes the filename itself in the durability boundary. New journals begin with a format/version
-magic line before any explanatory text. New batches are framed by comment records containing the
-expected record count and SHA-256 hash. Before appending, during every normal startup and before a
-recovery import opens its database transaction, Miningcore streams and validates every frame in a
-versioned journal—not only the newest one. It rejects mismatched counts or hashes, nested or
-unclosed frames, records outside frames and unexpected trailing content. Older journals retain the
-legacy newline-only guarantee for their original unframed prefix; every newer frame appended after
-that prefix is validated in full. A newline alone is not proof that an older multi-record append
-completed.
+magic line before any explanatory text. Each v2 batch records a contiguous sequence number, the
+previous frame digest, record count, record-content SHA-256 and deterministic current-frame digest
+in matching start/end markers. Startup, initial fallback entry and recovery import stream the
+complete chain and reject duplicated, missing or reordered middle frames as well as mismatched
+counts/hashes, nested or unclosed frames, records outside frames and unexpected trailing content.
+Record and legacy-prefix hashes deliberately normalise physical line endings to `\n`; they protect
+logical record content rather than the original newline bytes. Recovery lines above 1,048,576 characters are
+rejected without first allocating the complete hostile line.
+
+After the fallback tail is trusted, append work is linear: under the canonical-filename writer gate,
+Miningcore verifies the active file identity and expected length, hashes only the new frame, and
+advances its cached sequence/digest after the force-flush succeeds. Replacing, truncating or growing
+the active file outside Miningcore stops fallback rather than silently resetting that state. A
+bounded 65,536-share persistence queue prevents an unlimited in-memory outage backlog; if it fills,
+the publishing thread force-flushes that share directly to the journal before its positive response
+can be admitted. Failure of that direct write enters the same status-74 fatal path.
+
+Older journals retain the legacy newline-only guarantee for their original unframed prefix and v1
+frames. The first v2 frame appended to an older journal anchors the complete normalised legacy
+prefix, and all later frames are chained. A pure legacy/v1 source cannot retroactively prove that a
+complete frame was never duplicated before the upgrade. Frame chaining also cannot by itself detect
+offline deletion of the final complete frame; preserve incident checksums and monitor journal
+storage independently. A newline alone is not proof that an older multi-record append completed.
 
 If PostgreSQL and the journal are both unavailable, Miningcore immediately closes a coordinated
 Stratum acceptance boundary. Every pool family publishes a validated share to the accounting
-pipeline before admitting its positive response; fail-stop is serialized against both operations,
-and queued responses are cancelled directly when the gate closes. Miningcore then writes an
+pipeline before admitting its positive response. Healthy publications and synchronous response-
+queue admissions take concurrent read admissions, while fail-stop takes the exclusive transition;
+unrelated pools are therefore not serialized by one global monitor. Queued responses are cancelled
+directly when the gate closes. Miningcore then writes an
 independent fatal latch under
 `shareRecoveryStateDirectory/share-recovery-fatal`, attempts the distinct
 `Fatal share-recovery fallback failure` administrative notification for up to five seconds, and
@@ -95,8 +112,10 @@ The supplied unit has `RestartPreventExitStatus=74`, while the independently sto
 every normal startup, including relay configurations. An inaccessible or uncertain state directory
 also blocks startup. Notification delivery can still fail or time out; the fatal log, exit status
 and latch are the authoritative signals. A later dual-target candidate failure upgrades an earlier
-general shutdown to status 74 and creates the latch even when the first stop signal was already
-sent. Preserve and reconcile the journal before deleting only
+general shutdown to status 74, creates the latch and sends a distinct escalation alert containing
+the affected candidates and exact latch path even when the first stop signal was already sent.
+Repeated fatal-state writes retain append-only incident identifiers and prior incident details in
+the atomically replaced latch. Preserve and reconcile every recorded incident before deleting only
 the exact fatal-state path reported by Miningcore as an explicit operator acknowledgement.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;

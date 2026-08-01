@@ -32,7 +32,7 @@ public sealed class CandidatePersistenceFailureHandler :
     private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly Lazy<ICriticalNotificationSender> criticalNotificationSender;
     private readonly IShareRecoveryFatalState fatalState;
-    private int failureSignalled;
+    private int notifiedSeverity;
 
     internal TimeSpan CriticalNotificationTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
@@ -93,14 +93,23 @@ public sealed class CandidatePersistenceFailureHandler :
             }
         }
 
-        // The status and fatal latch above are safety-critical for every incident. Suppress only
-        // duplicate operator notifications once shutdown has already been announced.
-        if(Interlocked.Exchange(ref failureSignalled, 1) != 0)
+        // The status and fatal latch above are safety-critical for every incident. Alerts are
+        // de-duplicated by severity so a later dual-target loss always upgrades the earlier
+        // journalled-candidate notification seen by the operator.
+        var severity = journalSucceeded ? 1 : 2;
+        if(!TryClaimNotificationSeverity(severity, out var previousSeverity))
             return;
 
+        var escalated = severity == 2 && previousSeverity > 0;
         var notification = new AdminNotification(
-            "Fatal block-candidate persistence failure",
-            $"Miningcore is stopping with exit status {exitCode}. {durability} " +
+            escalated
+                ? "Escalated block-candidate durability loss"
+                : "Fatal block-candidate persistence failure",
+            $"Miningcore is stopping with exit status {exitCode}. " +
+            (escalated
+                ? "This escalates an earlier journalled-candidate shutdown: "
+                : string.Empty) +
+            $"{durability} " +
             $"Candidates: {candidateDetails} Fatal state: " +
             $"{(journalSucceeded ? "(not required; journal succeeded)" : fatalState.FatalStateFilename)}");
 
@@ -117,6 +126,22 @@ public sealed class CandidatePersistenceFailureHandler :
             logger.Error(ex,
                 "Critical block-candidate notification was not delivered within {0}; shutdown will continue",
                 CriticalNotificationTimeout);
+        }
+    }
+
+    private bool TryClaimNotificationSeverity(int severity,
+        out int previousSeverity)
+    {
+        while(true)
+        {
+            previousSeverity = Volatile.Read(ref notifiedSeverity);
+
+            if(previousSeverity >= severity)
+                return false;
+
+            if(Interlocked.CompareExchange(ref notifiedSeverity, severity,
+                   previousSeverity) == previousSeverity)
+                return true;
         }
     }
 }

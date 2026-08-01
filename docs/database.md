@@ -204,7 +204,7 @@ sudo cp --preserve=all -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE \
 ```
 
 Do not edit, truncate or import a corrupt original in place. A missing final newline, invalid JSON,
-or batch count/hash mismatch can represent a partial write. Older unframed journals can only prove
+or batch sequence/chain/count/hash mismatch can represent a partial write or replay. Older unframed journals can only prove
 their final newline boundary, not that the final multi-record batch was complete. Retain the
 original and create a separate repaired input containing
 only complete, operator-reviewed records; do not guess missing fields or add braces merely to make a
@@ -219,13 +219,21 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
-The importer validates every versioned frame's markers, count and SHA-256 before opening its
-transaction, then ignores those already-verified comment lines while deserializing records. It
+The importer validates every versioned frame's markers, contiguous sequence, previous-frame link,
+count, record SHA-256 and deterministic frame digest before opening its transaction, then ignores
+those already-verified comment lines while deserializing records. Hash validation normalises line
+endings to `\n`, so it protects logical records rather than preserving the original physical newline
+encoding. It
 commits all records and its
 SHA-256 manifest atomically, and archives a successful source with an `.imported-*` suffix. Retain
 that archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
 import unexplained journals from old working directories or previous deployments; reconcile their
 origin and existing manifest first.
+
+Frame chains detect duplicated, missing and reordered middle frames. They do not prove that an
+offline actor never removed the final complete frame, and pure legacy/v1 journals cannot gain
+retroactive replay protection. Retain the incident checksum captured before repair/import and
+compare it with backups or monitoring evidence when terminal truncation is plausible.
 
 If the configured active journal is corrupt and a separate reviewed copy was imported, preserve the
 original evidence but remove it from the live journal path before clearing the latch. Prefer an

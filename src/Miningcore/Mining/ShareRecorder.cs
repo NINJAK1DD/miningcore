@@ -4,12 +4,11 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Net.Sockets;
-using System.Reactive.Concurrency;
 using System.Reactive.Linq;
-using System.Reactive.Threading.Tasks;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Channels;
 using AutoMapper;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
@@ -24,7 +23,6 @@ using Polly;
 using Polly.CircuitBreaker;
 using Contract = Miningcore.Contracts.Contract;
 using Share = Miningcore.Blockchain.Share;
-using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Mining;
 
@@ -83,8 +81,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         BuildFaultHandlingPolicy();
         recoveryFilename = ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig);
-        recoveryWriteGate = RecoveryWriteGates.GetOrAdd(recoveryFilename,
-            _ => new SemaphoreSlim(1, 1));
+        recoveryWriteState = RecoveryWriteStates.GetOrAdd(recoveryFilename,
+            _ => new RecoveryJournalWriteState());
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
@@ -105,25 +103,45 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
     private const string PolicyContextKeyDatabaseError = "database-error";
-    private const string RecoveryBatchStartPrefix =
+    private const string RecoveryBatchV1StartPrefix =
         "# miningcore-recovery-batch-v1 start ";
-    private const string RecoveryBatchEndPrefix =
+    private const string RecoveryBatchV1EndPrefix =
         "# miningcore-recovery-batch-v1 end ";
-    internal const string RecoveryJournalMagic =
+    private const string RecoveryBatchV2StartPrefix =
+        "# miningcore-recovery-batch-v2 start ";
+    private const string RecoveryBatchV2EndPrefix =
+        "# miningcore-recovery-batch-v2 end ";
+    private const string RecoveryJournalMagicV1 =
         "# miningcore-recovery-journal-v1";
+    internal const string RecoveryJournalMagic =
+        "# miningcore-recovery-journal-v2";
+    internal const int MaxRecoveryRecordLineLength = 1024 * 1024;
+    private const string EmptyFrameDigest =
+        "0000000000000000000000000000000000000000000000000000000000000000";
     private bool notifiedAdminOnPolicyFallback = false;
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RecoveryWriteGates =
+    private static readonly ConcurrentDictionary<string, RecoveryJournalWriteState> RecoveryWriteStates =
         new(OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal);
-    private readonly SemaphoreSlim recoveryWriteGate;
+    private readonly RecoveryJournalWriteState recoveryWriteState;
     private readonly CancellationTokenSource blockCandidateShutdown = new();
     private int blockCandidateShutdownStarted;
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
-    internal SemaphoreSlim RecoveryWriteGate => recoveryWriteGate;
+    internal int PersistenceQueueCapacity { get; set; } = 65_536;
+    internal int PersistenceQueueHighWatermark =>
+        Volatile.Read(ref persistenceQueueHighWatermark);
+    private int persistenceQueueHighWatermark;
+    private IDisposable shareSubscription;
+    private ChannelWriter<Share> persistenceQueueWriter;
+    internal SemaphoreSlim RecoveryWriteGate => recoveryWriteState.Gate;
+    internal long RecoveryValidationBytesRead =>
+        Interlocked.Read(ref recoveryValidationBytesRead);
+    private long recoveryValidationBytesRead;
     internal Action<string> RecoveryDirectorySync { get; set; } =
         ShareRecoveryFatalState.SyncDirectoryWhereSupported;
+    internal Func<Stream, Task> RecoveryJournalFlush { get; set; } =
+        FlushRecoveryJournalAsync;
     private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "auxpow-claim",
@@ -432,7 +450,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     internal async Task WriteRecoveryJournalAsync(IList<Share> shares)
     {
-        await recoveryWriteGate.WaitAsync(CancellationToken.None);
+        await recoveryWriteState.Gate.WaitAsync(CancellationToken.None);
 
         try
         {
@@ -450,21 +468,48 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             }
             catch(FileNotFoundException)
             {
+                if(recoveryWriteState.IsTrusted)
+                    throw new InvalidDataException(
+                        $"Recovery journal {recoveryFilename} disappeared after its append tail was validated. " +
+                        "Preserve the surrounding storage for reconciliation; refusing to create a replacement.");
+
                 await CreateRecoveryJournalAsync(shares);
                 return;
             }
 
             await using(stream)
             {
-                EnsureRecoveryJournalAppendBoundary(stream, recoveryFilename);
+                var identity = RecoveryJournalFileIdentity.Read(stream);
+                RecoveryJournalTail tail;
+
+                if(!recoveryWriteState.IsTrusted)
+                {
+                    EnsureRecoveryJournalNewlineBoundary(stream, recoveryFilename);
+                    tail = ValidateRecoveryJournalDetailed(stream, recoveryFilename);
+                    Interlocked.Add(ref recoveryValidationBytesRead, stream.Length);
+                    recoveryWriteState.Trust(identity, stream.Length, tail);
+                }
+                else
+                {
+                    recoveryWriteState.Verify(identity, stream.Length,
+                        recoveryFilename);
+                    EnsureRecoveryJournalNewlineBoundary(stream, recoveryFilename);
+                    tail = recoveryWriteState.Tail;
+                }
+
                 var payload = BuildRecoveryJournalPayload(shares,
-                    stream.Length == 0);
-                await AppendRecoveryJournalAsync(stream, payload);
+                    stream.Length == 0, tail.Sequence + 1,
+                    tail.FrameDigest);
+                await AppendRecoveryJournalAsync(stream, payload.Bytes,
+                    RecoveryJournalFlush);
+                recoveryWriteState.Advance(identity, stream.Length,
+                    new RecoveryJournalTail(payload.Sequence,
+                        payload.FrameDigest, true));
             }
         }
         finally
         {
-            recoveryWriteGate.Release();
+            recoveryWriteState.Gate.Release();
         }
     }
 
@@ -485,14 +530,23 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
                 }))
             {
-                var payload = BuildRecoveryJournalPayload(shares, true);
-                await AppendRecoveryJournalAsync(stream, payload);
+                var payload = BuildRecoveryJournalPayload(shares, true,
+                    1, EmptyFrameDigest);
+                await AppendRecoveryJournalAsync(stream, payload.Bytes,
+                    RecoveryJournalFlush);
             }
 
             // A force-flushed file is not a durable first creation until its directory entry is
             // atomically published and the containing directory is synchronised on Linux.
             File.Move(temporary, recoveryFilename, false);
             RecoveryDirectorySync(directory);
+
+            await using var active = new FileStream(recoveryFilename,
+                FileMode.Open, FileAccess.Read, FileShare.Read);
+            var identity = RecoveryJournalFileIdentity.Read(active);
+            var tail = ValidateRecoveryJournalDetailed(active, recoveryFilename);
+            Interlocked.Add(ref recoveryValidationBytesRead, active.Length);
+            recoveryWriteState.Trust(identity, active.Length, tail);
         }
         finally
         {
@@ -517,6 +571,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new ArgumentException(
                 "Recovery journal stream must be readable and seekable", nameof(stream));
 
+        EnsureRecoveryJournalNewlineBoundary(stream, filename);
+        ValidateRecoveryJournal(stream, filename);
+    }
+
+    internal static bool ValidateRecoveryJournal(Stream stream, string filename)
+    {
+        return ValidateRecoveryJournalDetailed(stream, filename).IsChainedFormat;
+    }
+
+    private static void EnsureRecoveryJournalNewlineBoundary(Stream stream,
+        string filename)
+    {
         if(stream.Length == 0)
             return;
 
@@ -526,11 +592,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidDataException(
                 $"Recovery journal {filename} does not end at a newline boundary. " +
                 "Preserve it for reconciliation; refusing to append to possibly truncated data.");
-
-        ValidateRecoveryJournal(stream, filename);
     }
 
-    internal static bool ValidateRecoveryJournal(Stream stream, string filename)
+    private static RecoveryJournalTail ValidateRecoveryJournalDetailed(Stream stream,
+        string filename)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
@@ -538,47 +603,46 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new ArgumentException(
                 "Recovery journal stream must be readable and seekable", nameof(stream));
 
+        if(stream.Length == 0)
+            return new RecoveryJournalTail(0, EmptyFrameDigest, true);
+
         stream.Position = 0;
         using var reader = new StreamReader(stream,
             new UTF8Encoding(false, true), leaveOpen: true);
+        using var lines = new BoundedRecoveryLineReader(reader,
+            MaxRecoveryRecordLineLength, filename);
 
         try
         {
-            var firstLine = reader.ReadLine();
+            var firstLine = lines.ReadLine();
 
-            // Legacy journals may contain an unframed prefix followed by batches appended by a
-            // newer Miningcore revision. Validate every such frame while retaining newline-only
-            // compatibility for the original prefix.
-            if(!string.Equals(firstLine, RecoveryJournalMagic,
+            if(firstLine == null)
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains no complete record or header");
+
+            if(string.Equals(firstLine, RecoveryJournalMagic,
                    StringComparison.Ordinal))
             {
-                ValidateRecoveryBatches(reader, filename, firstLine,
-                    allowLegacyPrefix: true, requireBatch: false);
-                return false;
+                ValidateRecoveryHeader(lines, filename, null);
+                return ValidateRecoveryV2Frames(lines, filename,
+                    lines.ReadLine(), EmptyFrameDigest, requireBatch: true);
             }
 
-            var expectedHeader = new[]
-            {
-                "# The existence of this file means shares could not be committed to the database.",
-                "# You should stop the pool cluster and run the following command:",
-                "# miningcore -c <path-to-config> -rs <path-to-this-file>",
-                string.Empty,
-            };
+            using var legacyHash = IncrementalHash.CreateHash(
+                HashAlgorithmName.SHA256);
+            var isV1Journal = string.Equals(firstLine,
+                RecoveryJournalMagicV1, StringComparison.Ordinal);
 
-            foreach(var expectedLine in expectedHeader)
+            if(isV1Journal)
             {
-                var actualLine = reader.ReadLine();
-
-                if(!string.Equals(actualLine, expectedLine,
-                       StringComparison.Ordinal))
-                    throw new InvalidDataException(
-                        $"Recovery journal {filename} contains an incomplete or unexpected " +
-                        "versioned header. Preserve it for reconciliation.");
+                AppendNormalizedLine(legacyHash, firstLine);
+                ValidateRecoveryHeader(lines, filename, legacyHash);
+                firstLine = lines.ReadLine();
             }
 
-            ValidateRecoveryBatches(reader, filename, null,
-                allowLegacyPrefix: false, requireBatch: true);
-            return true;
+            return ValidateLegacyAndChainedFrames(lines, filename,
+                firstLine, legacyHash, allowUnframedPrefix: !isV1Journal,
+                requireV1Batch: isV1Journal);
         }
         catch(DecoderFallbackException ex)
         {
@@ -587,77 +651,204 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
-    private static bool ValidateRecoveryBatches(StreamReader reader,
-        string filename, string firstLine, bool allowLegacyPrefix,
-        bool requireBatch)
+    private static void ValidateRecoveryHeader(BoundedRecoveryLineReader lines,
+        string filename, IncrementalHash legacyHash)
     {
-        var sawBatch = false;
+        var expectedHeader = new[]
+        {
+            "# The existence of this file means shares could not be committed to the database.",
+            "# You should stop the pool cluster and run the following command:",
+            "# miningcore -c <path-to-config> -rs <path-to-this-file>",
+            string.Empty,
+        };
+
+        foreach(var expectedLine in expectedHeader)
+        {
+            var actualLine = lines.ReadLine();
+
+            if(!string.Equals(actualLine, expectedLine,
+                   StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains an incomplete or unexpected " +
+                    "versioned header. Preserve it for reconciliation.");
+
+            if(legacyHash != null)
+                AppendNormalizedLine(legacyHash, actualLine);
+        }
+    }
+
+    private static RecoveryJournalTail ValidateLegacyAndChainedFrames(
+        BoundedRecoveryLineReader lines, string filename, string firstLine,
+        IncrementalHash legacyHash, bool allowUnframedPrefix,
+        bool requireV1Batch)
+    {
+        var sawV1Batch = false;
         var line = firstLine;
 
-        while(line != null || (line = reader.ReadLine()) != null)
+        while(line != null)
         {
-            if(!line.StartsWith(RecoveryBatchStartPrefix,
+            if(line.StartsWith(RecoveryBatchV2StartPrefix,
                    StringComparison.Ordinal))
             {
-                if(allowLegacyPrefix && !sawBatch &&
-                   !IsRecoveryFrameMarker(line))
-                {
-                    line = null;
-                    continue;
-                }
+                var legacyDigest = Convert.ToHexString(
+                    legacyHash.GetHashAndReset());
+                return ValidateRecoveryV2Frames(lines, filename, line,
+                    legacyDigest, requireBatch: true);
+            }
 
+            AppendNormalizedLine(legacyHash, line);
+
+            if(line.StartsWith(RecoveryBatchV1StartPrefix,
+                   StringComparison.Ordinal))
+            {
+                sawV1Batch = true;
+                ValidateRecoveryV1Frame(lines, filename, line, legacyHash);
+            }
+            else if(IsRecoveryFrameMarker(line) ||
+                    !allowUnframedPrefix || sawV1Batch)
+            {
                 throw new InvalidDataException(
                     $"Recovery journal {filename} contains unexpected content outside a " +
                     "framed batch. Preserve it for reconciliation.");
             }
 
+            line = lines.ReadLine();
+        }
+
+        if(requireV1Batch && !sawV1Batch)
+            throw new InvalidDataException(
+                $"Recovery journal {filename} identifies the versioned v1 format but " +
+                "contains no complete framed batch. Preserve it for reconciliation.");
+
+        return new RecoveryJournalTail(0,
+            Convert.ToHexString(legacyHash.GetHashAndReset()), false);
+    }
+
+    private static void ValidateRecoveryV1Frame(BoundedRecoveryLineReader lines,
+        string filename, string startLine, IncrementalHash legacyHash)
+    {
+        var startMetadata = ParseRecoveryV1Metadata(startLine,
+            RecoveryBatchV1StartPrefix, filename);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var count = 0;
+
+        while(true)
+        {
+            var line = lines.ReadLine();
+
+            if(line == null)
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains an incomplete framed batch (v1). " +
+                    "Preserve it for reconciliation.");
+
+            AppendNormalizedLine(legacyHash, line);
+
+            if(line.StartsWith(RecoveryBatchV1StartPrefix,
+                   StringComparison.Ordinal) ||
+               line.StartsWith(RecoveryBatchV2StartPrefix,
+                   StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains a nested framed batch. " +
+                    "Preserve it for reconciliation.");
+
+            if(line.StartsWith(RecoveryBatchV1EndPrefix,
+                   StringComparison.Ordinal))
+            {
+                var endMetadata = ParseRecoveryV1Metadata(line,
+                    RecoveryBatchV1EndPrefix, filename);
+                var actualHash = Convert.ToHexString(hash.GetHashAndReset());
+
+                if(startMetadata != endMetadata || count != startMetadata.Count ||
+                   !string.Equals(actualHash, startMetadata.Hash,
+                       StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException(
+                        $"Recovery journal {filename} has a v1 frame whose record count " +
+                        "or hash does not match its durable metadata. Preserve it for reconciliation.");
+
+                return;
+            }
+
+            ValidateRecoveryRecordLine(line, filename);
+            AppendNormalizedLine(hash, line);
+            count++;
+        }
+    }
+
+    private static RecoveryJournalTail ValidateRecoveryV2Frames(
+        BoundedRecoveryLineReader lines, string filename, string firstLine,
+        string expectedPrevious, bool requireBatch)
+    {
+        var expectedSequence = 1L;
+        var sawBatch = false;
+        var line = firstLine;
+
+        while(line != null)
+        {
+            if(!line.StartsWith(RecoveryBatchV2StartPrefix,
+                   StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains unexpected content outside a " +
+                    "chained frame. Preserve it for reconciliation.");
+
             sawBatch = true;
-            var startMetadata = ParseRecoveryBatchMetadata(line,
-                RecoveryBatchStartPrefix, filename);
+            var startMetadata = ParseRecoveryV2Metadata(line,
+                RecoveryBatchV2StartPrefix, filename);
+
+            if(startMetadata.Sequence != expectedSequence ||
+               !string.Equals(startMetadata.Previous, expectedPrevious,
+                   StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} contains a missing, duplicate, or reordered " +
+                    $"chained frame at sequence {startMetadata.Sequence}. Preserve it for reconciliation.");
+
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             var count = 0;
 
             while(true)
             {
-                line = reader.ReadLine();
+                line = lines.ReadLine();
 
                 if(line == null)
                     throw new InvalidDataException(
-                        $"Recovery journal {filename} contains an incomplete framed batch. " +
+                        $"Recovery journal {filename} contains an incomplete chained frame. " +
                         "Preserve it for reconciliation.");
 
-                if(line.StartsWith(RecoveryBatchStartPrefix,
+                if(line.StartsWith(RecoveryBatchV1StartPrefix,
+                       StringComparison.Ordinal) ||
+                   line.StartsWith(RecoveryBatchV2StartPrefix,
                        StringComparison.Ordinal))
                     throw new InvalidDataException(
                         $"Recovery journal {filename} contains a nested framed batch. " +
                         "Preserve it for reconciliation.");
 
-                if(line.StartsWith(RecoveryBatchEndPrefix,
+                if(line.StartsWith(RecoveryBatchV2EndPrefix,
                        StringComparison.Ordinal))
                 {
-                    var endMetadata = ParseRecoveryBatchMetadata(line,
-                        RecoveryBatchEndPrefix, filename);
+                    var endMetadata = ParseRecoveryV2Metadata(line,
+                        RecoveryBatchV2EndPrefix, filename);
                     var actualHash = Convert.ToHexString(hash.GetHashAndReset());
+                    var actualFrame = ComputeRecoveryFrameDigest(
+                        startMetadata.Sequence, startMetadata.Previous,
+                        startMetadata.Count, startMetadata.RecordHash);
 
                     if(startMetadata != endMetadata || count != startMetadata.Count ||
-                       !string.Equals(actualHash, startMetadata.Hash,
+                       !string.Equals(actualHash, startMetadata.RecordHash,
+                           StringComparison.OrdinalIgnoreCase) ||
+                       !string.Equals(actualFrame, startMetadata.FrameDigest,
                            StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException(
                             $"Recovery journal {filename} has a framed batch whose record " +
-                            "count or hash does not match its durable metadata. Preserve it " +
+                            "count, content hash, or chain digest does not match its durable metadata. Preserve it " +
                             "for reconciliation.");
 
-                    line = null;
+                    expectedPrevious = startMetadata.FrameDigest;
+                    expectedSequence++;
+                    line = lines.ReadLine();
                     break;
                 }
 
-                if(string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
-                    throw new InvalidDataException(
-                        $"Recovery journal {filename} contains unexpected content inside a " +
-                        "framed batch. Preserve it for reconciliation.");
-
-                hash.AppendData(Encoding.UTF8.GetBytes(line));
-                hash.AppendData(new byte[] { (byte) '\n' });
+                ValidateRecoveryRecordLine(line, filename);
+                AppendNormalizedLine(hash, line);
                 count++;
             }
         }
@@ -667,14 +858,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 $"Recovery journal {filename} identifies the versioned format but contains " +
                 "no complete framed batch. Preserve it for reconciliation.");
 
-        return sawBatch;
+        return new RecoveryJournalTail(expectedSequence - 1,
+            expectedPrevious, true);
     }
 
     private static bool IsRecoveryFrameMarker(string line) =>
-        line?.StartsWith(RecoveryBatchStartPrefix, StringComparison.Ordinal) == true ||
-        line?.StartsWith(RecoveryBatchEndPrefix, StringComparison.Ordinal) == true;
+        line?.StartsWith(RecoveryBatchV1StartPrefix, StringComparison.Ordinal) == true ||
+        line?.StartsWith(RecoveryBatchV1EndPrefix, StringComparison.Ordinal) == true ||
+        line?.StartsWith(RecoveryBatchV2StartPrefix, StringComparison.Ordinal) == true ||
+        line?.StartsWith(RecoveryBatchV2EndPrefix, StringComparison.Ordinal) == true;
 
-    private static (int Count, string Hash) ParseRecoveryBatchMetadata(string line,
+    private static (int Count, string Hash) ParseRecoveryV1Metadata(string line,
         string prefix, string filename)
     {
         var parts = line[prefix.Length..].Split(' ',
@@ -700,8 +894,73 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         return (count, hash);
     }
 
-    private byte[] BuildRecoveryJournalPayload(IEnumerable<Share> shares,
-        bool includeHeader)
+    private static RecoveryFrameMetadata ParseRecoveryV2Metadata(string line,
+        string prefix, string filename)
+    {
+        var parts = line[prefix.Length..].Split(' ',
+            StringSplitOptions.RemoveEmptyEntries);
+
+        if(parts.Length != 5 ||
+           !parts[0].StartsWith("sequence=", StringComparison.Ordinal) ||
+           !long.TryParse(parts[0][9..], NumberStyles.None,
+               CultureInfo.InvariantCulture, out var sequence) || sequence <= 0 ||
+           !parts[1].StartsWith("previous=", StringComparison.Ordinal) ||
+           !IsSha256(parts[1][9..]) ||
+           !parts[2].StartsWith("count=", StringComparison.Ordinal) ||
+           !int.TryParse(parts[2][6..], NumberStyles.None,
+               CultureInfo.InvariantCulture, out var count) || count < 0 ||
+           !parts[3].StartsWith("sha256=", StringComparison.Ordinal) ||
+           !IsSha256(parts[3][7..]) ||
+           !parts[4].StartsWith("frame=", StringComparison.Ordinal) ||
+           !IsSha256(parts[4][6..]))
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains malformed chained-frame metadata");
+
+        var metadata = new RecoveryFrameMetadata(sequence, parts[1][9..], count,
+            parts[3][7..], parts[4][6..]);
+        var canonical = prefix + FormatRecoveryV2Metadata(metadata);
+
+        if(!string.Equals(line, canonical, StringComparison.Ordinal))
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains non-canonical chained-frame metadata");
+
+        return metadata;
+    }
+
+    private static bool IsSha256(string value) =>
+        value?.Length == 64 && value.All(Uri.IsHexDigit);
+
+    private static void ValidateRecoveryRecordLine(string line, string filename)
+    {
+        if(string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+            throw new InvalidDataException(
+                $"Recovery journal {filename} contains unexpected content inside a " +
+                "framed batch. Preserve it for reconciliation.");
+    }
+
+    private static void AppendNormalizedLine(IncrementalHash hash, string line)
+    {
+        hash.AppendData(Encoding.UTF8.GetBytes(line));
+        hash.AppendData(new byte[] { (byte) '\n' });
+    }
+
+    private static string ComputeRecoveryFrameDigest(long sequence,
+        string previous, int count, string recordHash)
+    {
+        var canonical = $"Miningcore recovery frame v2\nsequence={sequence}\n" +
+            $"previous={previous}\ncount={count}\nsha256={recordHash}\n";
+        return Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private static string FormatRecoveryV2Metadata(RecoveryFrameMetadata metadata) =>
+        $"sequence={metadata.Sequence} previous={metadata.Previous} " +
+        $"count={metadata.Count} sha256={metadata.RecordHash} " +
+        $"frame={metadata.FrameDigest}";
+
+    private RecoveryJournalPayload BuildRecoveryJournalPayload(
+        IEnumerable<Share> shares, bool includeHeader, long sequence,
+        string previous)
     {
         var shareRecords = shares
             .Select(share => JsonConvert.SerializeObject(share,
@@ -711,7 +970,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             ? string.Join("\n", shareRecords) + "\n"
             : string.Empty;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(records)));
-        var metadata = $"count={shareRecords.Length} sha256={hash}";
+        var frameDigest = ComputeRecoveryFrameDigest(sequence, previous,
+            shareRecords.Length, hash);
+        var metadata = FormatRecoveryV2Metadata(new RecoveryFrameMetadata(
+            sequence, previous, shareRecords.Length, hash, frameDigest));
         using var writer = new StringWriter(CultureInfo.InvariantCulture)
         {
             NewLine = "\n",
@@ -725,11 +987,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             WriteRecoveryFileheader(writer);
         }
 
-        writer.WriteLine(RecoveryBatchStartPrefix + metadata);
+        writer.WriteLine(RecoveryBatchV2StartPrefix + metadata);
         writer.Write(records);
-        writer.WriteLine(RecoveryBatchEndPrefix + metadata);
+        writer.WriteLine(RecoveryBatchV2EndPrefix + metadata);
 
-        return new UTF8Encoding(false).GetBytes(writer.ToString());
+        return new RecoveryJournalPayload(
+            new UTF8Encoding(false).GetBytes(writer.ToString()),
+            sequence, frameDigest);
     }
 
     internal static async Task AppendRecoveryJournalAsync(Stream stream,
@@ -785,6 +1049,130 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             fileStream.Flush(true);
         else
             stream.Flush();
+    }
+
+    private readonly record struct RecoveryFrameMetadata(long Sequence,
+        string Previous, int Count, string RecordHash, string FrameDigest);
+
+    private readonly record struct RecoveryJournalPayload(byte[] Bytes,
+        long Sequence, string FrameDigest);
+
+    private readonly record struct RecoveryJournalTail(long Sequence,
+        string FrameDigest, bool IsChainedFormat);
+
+    private sealed class RecoveryJournalWriteState
+    {
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public bool IsTrusted { get; private set; }
+        public RecoveryJournalTail Tail { get; private set; }
+
+        private RecoveryJournalFileIdentity identity;
+        private long length;
+
+        public void Trust(RecoveryJournalFileIdentity fileIdentity,
+            long fileLength, RecoveryJournalTail tail)
+        {
+            identity = fileIdentity;
+            length = fileLength;
+            Tail = tail;
+            IsTrusted = true;
+        }
+
+        public void Verify(RecoveryJournalFileIdentity fileIdentity,
+            long fileLength, string filename)
+        {
+            if(identity != fileIdentity || length != fileLength)
+                throw new InvalidDataException(
+                    $"Recovery journal {filename} changed outside Miningcore after its " +
+                    "append tail was validated. Preserve it for reconciliation; refusing to append.");
+        }
+
+        public void Advance(RecoveryJournalFileIdentity fileIdentity,
+            long fileLength, RecoveryJournalTail tail)
+        {
+            Trust(fileIdentity, fileLength, tail);
+        }
+    }
+
+    private sealed class BoundedRecoveryLineReader : IDisposable
+    {
+        public BoundedRecoveryLineReader(TextReader reader, int maximumLength,
+            string filename)
+        {
+            this.reader = reader;
+            this.maximumLength = maximumLength;
+            this.filename = filename;
+        }
+
+        private readonly TextReader reader;
+        private readonly int maximumLength;
+        private readonly string filename;
+        private readonly char[] buffer = new char[4096];
+        private int position;
+        private int available;
+        private long lineNumber;
+
+        public string ReadLine()
+        {
+            StringBuilder builder = null;
+            var length = 0;
+
+            while(true)
+            {
+                if(position >= available)
+                {
+                    available = reader.Read(buffer, 0, buffer.Length);
+                    position = 0;
+
+                    if(available == 0)
+                    {
+                        if(builder == null && length == 0)
+                            return null;
+
+                        lineNumber++;
+                        return Finish(builder, length);
+                    }
+                }
+
+                var newline = Array.IndexOf(buffer, '\n', position,
+                    available - position);
+                var end = newline >= 0 ? newline : available;
+                var segmentLength = end - position;
+                length = checked(length + segmentLength);
+
+                if(length > maximumLength)
+                    throw new InvalidDataException(
+                        $"Recovery journal {filename} contains a record line longer than " +
+                        $"{maximumLength} characters near line {lineNumber + 1}. Preserve it for reconciliation.");
+
+                builder ??= new StringBuilder(Math.Min(maximumLength,
+                    Math.Max(128, length)));
+                builder.Append(buffer, position, segmentLength);
+                position = newline >= 0 ? newline + 1 : available;
+
+                if(newline < 0)
+                    continue;
+
+                lineNumber++;
+                return Finish(builder, length);
+            }
+        }
+
+        private static string Finish(StringBuilder builder, int length)
+        {
+            if(builder == null)
+                return string.Empty;
+
+            if(length > 0 && builder[length - 1] == '\r')
+                builder.Length--;
+
+            return builder.ToString();
+        }
+
+        public void Dispose()
+        {
+            // The caller owns the underlying StreamReader and stream.
+        }
     }
 
     private static void WriteRecoveryFileheader(TextWriter writer)
@@ -1001,10 +1389,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         var shares = new List<Share>(bufferSize);
         var recordCount = 0;
         var lineNumber = 0;
+        using var lines = new BoundedRecoveryLineReader(reader,
+            MaxRecoveryRecordLineLength, "recovery import source");
 
         while(true)
         {
-            var line = await reader.ReadLineAsync();
+            var line = lines.ReadLine();
 
             if(line == null)
                 break;
@@ -1119,6 +1509,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     public override async Task StopAsync(CancellationToken ct)
     {
         BeginShutdown();
+        Interlocked.Exchange(ref shareSubscription, null)?.Dispose();
+        Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
         await base.StopAsync(ct);
     }
 
@@ -1127,26 +1519,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             logger.Info(() => $"Online; recovery journal {recoveryFilename}");
-
-            var processing = messageBus.Listen<Share>()
-                .ObserveOn(TaskPoolScheduler.Default)
-                .Where(x => x != null)
-                .Publish(shares => shares
-                    // Minimize the in-memory durability window for accepted or uncertain block
-                    // candidates. Ordinary shares retain the existing batching behavior.
-                    .Where(x => x.BlockOnly)
-                    .Select(x => (IList<Share>) new[] { x })
-                    .Merge(shares
-                        .Where(x => !x.BlockOnly)
-                        .Buffer(TimeSpan.FromSeconds(5), 250)
-                        .Where(batch => batch.Any())
-                        .Select(batch => (IList<Share>) batch)))
-                .Select(shares => Observable.FromAsync(() =>
-                    Guard(() =>
-                            PersistSharesAsync(shares),
-                        ex => logger.Error(ex))))
-                .Concat()
-                .ToTask(ct)
+            var queue = Channel.CreateBounded<Share>(new BoundedChannelOptions(
+                PersistenceQueueCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false,
+            });
+            var processing = RunPersistenceQueueAsync(queue, ct)
                 .ContinueWith(task =>
                 {
                     if(task.IsFaulted)
@@ -1164,5 +1545,157 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             SignalStartupFailure(ex);
             return Task.FromException(ex);
         }
+    }
+
+    private async Task RunPersistenceQueueAsync(Channel<Share> queue,
+        CancellationToken ct)
+    {
+        var subscription = messageBus.Listen<Share>()
+            .Where(x => x != null)
+            .Subscribe(share => EnqueueShareOrJournal(queue, share),
+                ex => queue.Writer.TryComplete(ex),
+                () => queue.Writer.TryComplete());
+        Volatile.Write(ref persistenceQueueWriter, queue.Writer);
+        Interlocked.Exchange(ref shareSubscription, subscription)?.Dispose();
+
+        try
+        {
+            await ProcessPersistenceQueueAsync(queue.Reader, ct);
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref shareSubscription, null,
+                subscription)?.Dispose();
+            Volatile.Write(ref persistenceQueueWriter, null);
+        }
+    }
+
+    private void EnqueueShareOrJournal(Channel<Share> queue, Share share)
+    {
+        if(queue.Writer.TryWrite(share))
+        {
+            UpdatePersistenceQueueHighWatermark(queue.Reader.Count);
+            return;
+        }
+
+        var saturation = new IOException(
+            $"The bounded share-persistence queue reached its {PersistenceQueueCapacity}-share limit");
+
+        try
+        {
+            // Publication is synchronous with Stratum response admission. If the bounded queue is
+            // saturated, force-flush this share directly rather than accepting an unbounded
+            // in-memory durability window or acknowledging an unaccounted share.
+            WriteRecoveryJournalAsync(new[] { share }).GetAwaiter().GetResult();
+            NotifyAdminOnPolicyFallbackSafely();
+            logger.Warn(saturation,
+                "Persisted a share directly to the recovery journal because the bounded persistence queue was full");
+        }
+        catch(Exception journalError)
+        {
+            throw new SharePersistenceBacklogFailureException(
+                recoveryFailureHandler, share, recoveryFilename,
+                saturation, journalError);
+        }
+    }
+
+    private void UpdatePersistenceQueueHighWatermark(int count)
+    {
+        while(true)
+        {
+            var previous = Volatile.Read(ref persistenceQueueHighWatermark);
+
+            if(previous >= count)
+                return;
+
+            if(Interlocked.CompareExchange(ref persistenceQueueHighWatermark,
+                   count, previous) == previous)
+                return;
+        }
+    }
+
+    private async Task ProcessPersistenceQueueAsync(ChannelReader<Share> reader,
+        CancellationToken ct)
+    {
+        const int batchSize = 250;
+        var batch = new List<Share>(batchSize);
+        var batchStarted = DateTime.UtcNow;
+
+        while(await reader.WaitToReadAsync(ct))
+        {
+            while(reader.TryRead(out var share))
+            {
+                if(share.BlockOnly)
+                {
+                    // Preserve the prior immediate candidate lane: a candidate must not wait for
+                    // an earlier partial ordinary-share batch to fill or flush.
+                    await PersistSharesAsync(new[] { share });
+                    continue;
+                }
+
+                if(batch.Count == 0)
+                    batchStarted = DateTime.UtcNow;
+
+                batch.Add(share);
+
+                if(batch.Count >= batchSize)
+                {
+                    await PersistSharesAsync(batch.ToArray());
+                    batch.Clear();
+                    batchStarted = DateTime.UtcNow;
+                }
+            }
+
+            if(batch.Count == 0)
+                continue;
+
+            var remaining = TimeSpan.FromSeconds(5) -
+                (DateTime.UtcNow - batchStarted);
+
+            if(remaining > TimeSpan.Zero)
+            {
+                var available = reader.WaitToReadAsync(ct).AsTask();
+                var timer = Task.Delay(remaining, ct);
+
+                if(await Task.WhenAny(available, timer) == available &&
+                   await available)
+                    continue;
+            }
+
+            await PersistSharesAsync(batch.ToArray());
+            batch.Clear();
+            batchStarted = DateTime.UtcNow;
+        }
+
+        if(batch.Count > 0)
+            await PersistSharesAsync(batch);
+    }
+
+    private sealed class SharePersistenceBacklogFailureException : IOException,
+        IMiningAdmissionFailure
+    {
+        public SharePersistenceBacklogFailureException(
+            IShareRecoveryFailureHandler failureHandler, Share share,
+            string recoveryFilename, Exception backlogError,
+            Exception journalError) :
+            base("The bounded share-persistence queue and recovery journal were both unavailable",
+                journalError)
+        {
+            this.failureHandler = failureHandler;
+            this.share = share;
+            this.recoveryFilename = recoveryFilename;
+            this.backlogError = backlogError;
+            this.journalError = journalError;
+        }
+
+        private readonly IShareRecoveryFailureHandler failureHandler;
+        private readonly Share share;
+        private readonly string recoveryFilename;
+        private readonly Exception backlogError;
+        private readonly Exception journalError;
+
+        public Task HandleAfterAdmissionReleasedAsync() =>
+            failureHandler.StopClusterAsync(new[] { share }, recoveryFilename,
+                backlogError, journalError);
     }
 }

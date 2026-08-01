@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Hosting;
 using NLog;
 
@@ -14,7 +15,12 @@ public interface IMiningFailStopCoordinator
 public interface IMiningSubmissionAcceptance : IDisposable
 {
     void PublishShare(Action publish);
-    Task QueueResponseAsync(Func<Task> queueResponse);
+    void QueueResponse(Action queueResponse);
+}
+
+internal interface IMiningAdmissionFailure
+{
+    Task HandleAfterAdmissionReleasedAsync();
 }
 
 public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDisposable
@@ -33,7 +39,8 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
     private readonly IProcessStatus processStatus;
     private readonly IHostApplicationLifetime applicationLifetime;
     private readonly CancellationTokenSource failStop = new();
-    private readonly object acceptanceGate = new();
+    private readonly ReaderWriterLockSlim acceptanceGate =
+        new(LockRecursionPolicy.SupportsRecursion);
     private int failStopRequested;
 
     public bool IsFailStopRequested =>
@@ -43,10 +50,16 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
 
     public IMiningSubmissionAcceptance AcquireSubmissionAcceptance()
     {
-        lock(acceptanceGate)
+        acceptanceGate.EnterReadLock();
+
+        try
         {
             ThrowIfFailStopRequested();
             return new MiningSubmissionAcceptance(this);
+        }
+        finally
+        {
+            acceptanceGate.ExitReadLock();
         }
     }
 
@@ -57,7 +70,9 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
         // failures discovered after shutdown has already started.
         processStatus.MarkFailed(exitCode);
 
-        lock(acceptanceGate)
+        acceptanceGate.EnterWriteLock();
+
+        try
         {
             if(Interlocked.Exchange(ref failStopRequested, 1) != 0)
                 return false;
@@ -66,6 +81,10 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
             // response admission. Once this returns, no check-then-queue race can acknowledge
             // a share that did not first enter the accounting pipeline.
             failStop.Cancel();
+        }
+        finally
+        {
+            acceptanceGate.ExitWriteLock();
         }
 
         try
@@ -87,21 +106,46 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
     {
         ArgumentNullException.ThrowIfNull(publish);
 
-        lock(acceptanceGate)
+        ExceptionDispatchInfo failure = null;
+        IMiningAdmissionFailure deferred = null;
+        acceptanceGate.EnterReadLock();
+
+        try
         {
             ThrowIfFailStopRequested();
             publish();
         }
+        catch(Exception ex)
+        {
+            failure = ExceptionDispatchInfo.Capture(ex);
+            deferred = ex as IMiningAdmissionFailure;
+        }
+        finally
+        {
+            acceptanceGate.ExitReadLock();
+        }
+
+        // A bounded persistence queue can discover journal failure from inside a synchronous
+        // publication callback. Run its fail-stop transition only after releasing this admission's
+        // read lock so the exclusive transition cannot deadlock behind the reporting submission.
+        deferred?.HandleAfterAdmissionReleasedAsync().GetAwaiter().GetResult();
+        failure?.Throw();
     }
 
-    private Task QueueResponseAsync(Func<Task> queueResponse)
+    private void QueueResponse(Action queueResponse)
     {
         ArgumentNullException.ThrowIfNull(queueResponse);
 
-        lock(acceptanceGate)
+        acceptanceGate.EnterReadLock();
+
+        try
         {
             ThrowIfFailStopRequested();
-            return queueResponse();
+            queueResponse();
+        }
+        finally
+        {
+            acceptanceGate.ExitReadLock();
         }
     }
 
@@ -115,6 +159,7 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
     public void Dispose()
     {
         failStop.Dispose();
+        acceptanceGate.Dispose();
     }
 
     private sealed class MiningSubmissionAcceptance : IMiningSubmissionAcceptance
@@ -133,10 +178,10 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
             owner.PublishShare(publish);
         }
 
-        public Task QueueResponseAsync(Func<Task> queueResponse)
+        public void QueueResponse(Action queueResponse)
         {
             ThrowIfDisposed();
-            return owner.QueueResponseAsync(queueResponse);
+            owner.QueueResponse(queueResponse);
         }
 
         public void Dispose()

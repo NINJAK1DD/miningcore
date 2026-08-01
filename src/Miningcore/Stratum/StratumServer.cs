@@ -238,8 +238,9 @@ public abstract class StratumServer
 
     /// <summary>
     /// Admits an accepted share to the accounting pipeline before its positive Stratum response.
-    /// Both steps are serialized against the mining fail-stop transition. A gate closure between
-    /// them leaves the share published but deliberately unacknowledged.
+    /// Both steps take concurrent healthy admissions against the exclusive mining fail-stop
+    /// transition. A gate closure between them leaves the share published but deliberately
+    /// unacknowledged; response queue admission itself is synchronous.
     /// </summary>
     protected async Task PublishShareAndAcknowledgeAsync(Share share,
         Func<Task> acknowledge, bool publishShare = true)
@@ -263,7 +264,9 @@ public abstract class StratumServer
         if(publishShare)
             acceptance.PublishShare(() => messageBus.SendMessage(share));
 
-        await acceptance.QueueResponseAsync(acknowledge);
+        Task response = null;
+        acceptance.QueueResponse(() => response = acknowledge());
+        await response;
     }
 
     protected void OnConnectionError(StratumConnection connection, Exception ex)
