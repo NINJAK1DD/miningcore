@@ -154,6 +154,10 @@ public class AutofacModule : Module
             .As<ICandidatePersistenceFailureHandler>()
             .SingleInstance();
 
+        builder.RegisterType<ShareRecoveryFailureHandler>()
+            .As<IShareRecoveryFailureHandler>()
+            .SingleInstance();
+
         builder.RegisterType<ShareReceiver>()
             .SingleInstance();
 

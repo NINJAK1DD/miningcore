@@ -20,6 +20,7 @@ using Miningcore.Persistence.Repositories;
 using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using NSubstitute;
+using Polly.CircuitBreaker;
 using ProtoBuf;
 using Xunit;
 using Block = Miningcore.Persistence.Model.Block;
@@ -741,6 +742,190 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoveryJournal_PartialAppendFailureRollsBackBeforeNextWrite()
+    {
+        var original = Encoding.UTF8.GetBytes(
+            "# existing journal\n{\"poolId\":\"ltc-solo\",\"miner\":\"first\"}\n");
+        var payload = Encoding.UTF8.GetBytes(
+            "{\"poolId\":\"ltc-solo\",\"miner\":\"second\"}\n");
+        await using var stream = new PartialWriteFailureStream(original, 19);
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            ShareRecorder.AppendRecoveryJournalAsync(stream, payload));
+
+        Assert.Contains("simulated recovery-journal write failure", error.Message);
+        Assert.Equal(original, stream.ToArray());
+
+        await ShareRecorder.AppendRecoveryJournalAsync(stream, payload);
+
+        Assert.Equal(original.Concat(payload), stream.ToArray());
+    }
+
+    [Fact]
+    public async Task RecoveryJournal_IncompleteExistingTailIsNotExtended()
+    {
+        var recoveryFilename = Path.GetTempFileName();
+        var incomplete = Encoding.UTF8.GetBytes(
+            "# existing journal\n{\"poolId\":\"ltc-solo\",\"miner\"");
+        await File.WriteAllBytesAsync(recoveryFilename, incomplete);
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, Substitute.For<IMessageBus>());
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share
+                    {
+                        PoolId = "ltc-solo",
+                        Miner = "LNextMiner",
+                        Created = DateTime.UtcNow,
+                    },
+                }));
+
+            Assert.Contains("does not end at a complete record boundary",
+                error.Message);
+            Assert.Equal(incomplete, await File.ReadAllBytesAsync(recoveryFilename));
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryJournal_RollbackFailurePreservesBothErrors()
+    {
+        var original = Encoding.UTF8.GetBytes("# existing journal\n");
+        var payload = Encoding.UTF8.GetBytes(
+            "{\"poolId\":\"ltc-solo\",\"miner\":\"next\"}\n");
+        await using var stream = new RollbackFailureStream(original, 7);
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            ShareRecorder.AppendRecoveryJournalAsync(stream, payload));
+
+        Assert.Contains("partial write could not be rolled back", error.Message);
+        Assert.Contains("simulated recovery-journal write failure",
+            error.InnerException?.Message);
+        Assert.Contains("simulated recovery-journal rollback failure",
+            Assert.IsType<IOException>(error.Data["RollbackException"]).Message);
+    }
+
+    [Fact]
+    public async Task RecoveryFallback_DatabaseAndJournalFailureSignalsFailStop()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(),
+            Path.GetRandomFileName());
+        var recoveryFilename = Path.Combine(missingDirectory,
+            "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var recoveryFailureHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var databaseError = new BrokenCircuitException(
+            "PostgreSQL persistence circuit is open");
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw databaseError);
+        var share = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "LRetainedMiner",
+            Difficulty = 1,
+            Created = DateTime.UtcNow,
+        };
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, messageBus, null, recoveryFailureHandler);
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            recorder.PersistSharesAsync(new[] { share }));
+
+        Assert.Contains("PostgreSQL or the recovery journal", error.Message);
+        Assert.Same(databaseError, error.Data["DatabaseException"]);
+        recoveryFailureHandler.Received(1).StopCluster(
+            Arg.Is<IReadOnlyCollection<Share>>(shares =>
+                shares.Count == 1 && shares.Single().Miner == share.Miner),
+            recoveryFilename, databaseError,
+            Arg.Is<DirectoryNotFoundException>(ex =>
+                ex.Message.Contains(missingDirectory)));
+        messageBus.DidNotReceive().SendMessage(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Subject == "Share Recorder Policy Fallback"),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task RecoveryFallback_DurableWriteEmitsNormalFallbackNotification()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(),
+            Path.GetRandomFileName());
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        connectionFactory.OpenConnectionAsync().Returns<Task<IDbConnection>>(_ =>
+            throw new BrokenCircuitException(
+                "PostgreSQL persistence circuit is open"));
+        var recoveryFailureHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var share = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "LDurableFallbackMiner",
+            Difficulty = 1,
+            Created = DateTime.UtcNow,
+        };
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                Notifications = new NotificationsConfig
+                {
+                    Admin = new AdminNotifications
+                    {
+                        Enabled = true,
+                        NotifyPaymentSuccess = true,
+                    },
+                },
+            }, messageBus, null, recoveryFailureHandler);
+
+        try
+        {
+            await recorder.PersistSharesAsync(new[] { share });
+
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(line => !string.IsNullOrWhiteSpace(line) &&
+                    !line.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(share.Miner, persisted.Miner);
+            recoveryFailureHandler.DidNotReceive().StopCluster(
+                Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(),
+                Arg.Any<Exception>(), Arg.Any<Exception>());
+            messageBus.Received(1).SendMessage(
+                Arg.Is<AdminNotification>(notification =>
+                    notification.Subject == "Share Recorder Policy Fallback" &&
+                    notification.Message.Contains(recoveryFilename)),
+                Arg.Any<string>());
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
     public async Task PersistSharesCoreAsync_DuplicateBlockDoesNotNotifyAgain()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -1058,6 +1243,60 @@ public class ShareRecorderTests
             Arg.Any<string>());
     }
 
+    [Fact]
+    public void ShareRecoveryFailureHandler_StopsAndNotifiesOnlyOnce()
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var handler = new ShareRecoveryFailureHandler(processStatus,
+            applicationLifetime, messageBus);
+        var shares = new[]
+        {
+            new Share { PoolId = "ltc-solo", Miner = "LFirst" },
+            new Share { PoolId = "btc-solo", Miner = "BSecond" },
+        };
+
+        handler.StopCluster(shares, "/recovery/recovered-shares.txt",
+            new IOException("database full"), new IOException("journal full"));
+        handler.StopCluster(shares, "/recovery/recovered-shares.txt",
+            new IOException("database still full"),
+            new IOException("journal still full"));
+
+        Assert.Equal(1, processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+        messageBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Subject == "Fatal share-recovery fallback failure" &&
+                notification.Message.Contains("2 share(s)") &&
+                notification.Message.Contains("btc-solo, ltc-solo") &&
+                notification.Message.Contains("exit status 1")),
+            Arg.Any<string>());
+    }
+
+    [Fact]
+    public void ShareRecoveryFailureHandler_NotificationFailureStillStops()
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.When(bus => bus.SendMessage(Arg.Any<AdminNotification>(),
+                Arg.Any<string>()))
+            .Do(_ => throw new InvalidOperationException(
+                "notification transport unavailable"));
+        var handler = new ShareRecoveryFailureHandler(processStatus,
+            applicationLifetime, messageBus);
+
+        handler.StopCluster(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "LFirst" },
+            }, "/recovery/recovered-shares.txt",
+            new IOException("database full"), new IOException("journal full"));
+
+        Assert.Equal(1, processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+    }
+
     private static Share CreateDurableCandidate(string hash,
         string type = "merged-parent") => new()
     {
@@ -1134,6 +1373,48 @@ public class ShareRecorderTests
         IConnectionFactory ConnectionFactory, IDbConnection Connection,
         IDbTransaction Transaction, IShareRepository ShareRepository,
         IBlockRepository BlockRepository, IMessageBus MessageBus);
+
+    private class PartialWriteFailureStream : MemoryStream
+    {
+        public PartialWriteFailureStream(byte[] initialContent,
+            int bytesBeforeFailure)
+        {
+            this.bytesBeforeFailure = bytesBeforeFailure;
+            Write(initialContent, 0, initialContent.Length);
+            Position = 0;
+        }
+
+        private readonly int bytesBeforeFailure;
+        private bool shouldFail = true;
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if(!shouldFail)
+                return base.WriteAsync(buffer, cancellationToken);
+
+            shouldFail = false;
+            var partialLength = Math.Min(bytesBeforeFailure, buffer.Length);
+            base.Write(buffer.Span[..partialLength]);
+
+            return ValueTask.FromException(new IOException(
+                "simulated recovery-journal write failure"));
+        }
+    }
+
+    private sealed class RollbackFailureStream : PartialWriteFailureStream
+    {
+        public RollbackFailureStream(byte[] initialContent,
+            int bytesBeforeFailure) : base(initialContent, bytesBeforeFailure)
+        {
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new IOException(
+                "simulated recovery-journal rollback failure");
+        }
+    }
 
     [ProtoContract]
     private sealed class LegacyRelayShare

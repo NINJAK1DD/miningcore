@@ -28,6 +28,13 @@ The database guide now includes a guarded [disk-exhaustion recovery runbook](dat
 It restores storage, PostgreSQL and coin daemons in dependency order before Miningcore and links to
 the existing payout-ownership reconciliation procedure for an unclean database-session loss.
 
+Recovery-journal appends now roll back a partial write to the previous file length and refuse to
+extend a pre-existing incomplete line. If PostgreSQL and the recovery journal both fail, Miningcore
+emits a distinct administrative event and exits with status 1 instead of continuing without durable
+share accounting. Configure `shareRecoveryFile` as an absolute path on separately monitored or
+reserved storage where possible; the recovery runbook explains evidence preservation and atomic,
+manifested import verification.
+
 ## Payout and WebSocket compatibility
 
 This release changes Bitcoin-family payout accounting from rounding to truncation at the configured

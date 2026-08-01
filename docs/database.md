@@ -181,6 +181,44 @@ its normal blockchain-information call to succeed before starting Miningcore. Us
 CLI clients, RPC ports and authentication from the deployment rather than copying a coin-specific
 example blindly.
 
+If the incident produced `Share Recorder Policy Fallback`, `Fatal share-recovery fallback failure`
+or recovery-journal errors, reconcile the journal before restarting Miningcore. Use the
+absolute journal path reported when the Share Recorder came online. A normal fallback email proves
+only that the batch which emitted it was force-flushed; it does not prove an earlier batch succeeded
+or reveal shares that failed before reaching either durable target. Review the entire outage window
+for both successful fallback and fatal fallback messages.
+
+Stop Miningcore before inspecting or importing an active journal. Record its metadata and checksum,
+then preserve the original as incident evidence:
+
+```console
+sudo systemctl stop miningcore
+sudo stat -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE
+sudo sha256sum -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE
+sudo cp --preserve=all -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE \
+  REPLACE_WITH_EVIDENCE_COPY
+```
+
+Do not edit, truncate or import a corrupt original in place. A missing final newline or invalid JSON
+can represent a partial write. Retain the original and create a separate repaired input containing
+only complete, operator-reviewed records; do not guess missing fields or add braces merely to make a
+fragment parse. Ordinary share loss can affect reward accounting in proportional and PPLNS schemes,
+so do not dismiss incomplete records merely because no block candidate is present.
+
+Run the one-shot importer against the reviewed source only after PostgreSQL is healthy:
+
+```console
+cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
+./Miningcore -c /etc/miningcore/config.json \
+  -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
+```
+
+The importer validates the complete file before opening its transaction, commits all records and its
+SHA-256 manifest atomically, and archives a successful source with an `.imported-*` suffix. Retain
+that archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
+import unexplained journals from old working directories or previous deployments; reconcile their
+origin and existing manifest first.
+
 Finally start Miningcore and inspect its complete startup, API health and pool state:
 
 ```console
@@ -196,7 +234,8 @@ service start. Reconcile any possibly submitted wallet transaction, prove the ol
 then follow [Recover payout-manager ownership safely](#recover-payout-manager-ownership-safely).
 
 After recovery, verify a fresh PostgreSQL backup, retain the incident logs, and add monitoring for
-filesystem bytes, inodes, PostgreSQL readiness, daemon RPC readiness and the Miningcore service.
+filesystem bytes, inodes, the configured recovery-journal filesystem, PostgreSQL readiness, daemon
+RPC readiness and the Miningcore service.
 Miningcore's [native file rotation](configuration.md#log-files-and-rotation) bounds its own configured
 file targets, but database, daemon, journal and reverse-proxy storage still require separate policy.
 

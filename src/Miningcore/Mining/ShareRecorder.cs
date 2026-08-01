@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -39,7 +40,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         IBlockRepository blockRepo,
         ClusterConfig clusterConfig,
         IMessageBus messageBus,
-        ICandidatePersistenceFailureHandler candidateFailureHandler = null)
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null,
+        IShareRecoveryFailureHandler recoveryFailureHandler = null)
     {
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(mapper);
@@ -54,6 +56,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this.messageBus = messageBus;
         this.candidateFailureHandler = candidateFailureHandler ??
             NullCandidatePersistenceFailureHandler.Instance;
+        this.recoveryFailureHandler = recoveryFailureHandler ??
+            NullShareRecoveryFailureHandler.Instance;
         this.clusterConfig = clusterConfig;
 
         this.shareRepo = shareRepo;
@@ -63,8 +67,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         BuildFaultHandlingPolicy();
         ConfigureRecovery();
-        var recoveryPath = Path.GetFullPath(recoveryFilename);
-        recoveryWriteGate = RecoveryWriteGates.GetOrAdd(recoveryPath,
+        recoveryFilename = Path.GetFullPath(recoveryFilename);
+        recoveryWriteGate = RecoveryWriteGates.GetOrAdd(recoveryFilename,
             _ => new SemaphoreSlim(1, 1));
     }
 
@@ -75,6 +79,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly JsonSerializerSettings jsonSerializerSettings;
     private readonly IMessageBus messageBus;
     private readonly ICandidatePersistenceFailureHandler candidateFailureHandler;
+    private readonly IShareRecoveryFailureHandler recoveryFailureHandler;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
@@ -84,6 +89,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private string recoveryFilename;
     private const int RetryCount = 3;
     private const string PolicyContextKeyShares = "share";
+    private const string PolicyContextKeyDatabaseError = "database-error";
     private bool notifiedAdminOnPolicyFallback = false;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RecoveryWriteGates =
         new(OperatingSystem.IsWindows()
@@ -102,7 +108,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "merged-parent-uncertain",
     };
 
-    private async Task PersistSharesAsync(IList<Share> shares)
+    internal async Task PersistSharesAsync(IList<Share> shares)
     {
         var context = new Dictionary<string, object> { { PolicyContextKeyShares, shares } };
 
@@ -351,13 +357,33 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     private Task OnPolicyFallbackAsync(Exception ex, Context context)
     {
+        context[PolicyContextKeyDatabaseError] = ex;
         logger.Warn(() => $"Fallback due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        return Task.CompletedTask;
+    }
+
+    private static Task OnBrokenCircuitFallbackAsync(Exception ex,
+        Context context)
+    {
+        context[PolicyContextKeyDatabaseError] = ex;
         return Task.CompletedTask;
     }
 
     private async Task OnExecutePolicyFallbackAsync(Context context, CancellationToken ct)
     {
         var shares = (IList<Share>) context[PolicyContextKeyShares];
+        var databaseError = context.TryGetValue(
+            PolicyContextKeyDatabaseError, out var value)
+            ? value as Exception
+            : null;
+
+        await ExecuteRecoveryFallbackAsync(shares, databaseError);
+    }
+
+    private async Task ExecuteRecoveryFallbackAsync(IList<Share> shares,
+        Exception databaseError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
 
         try
         {
@@ -367,16 +393,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         catch(Exception ex)
         {
-            if(!hasLoggedPolicyFallbackFailure)
-            {
-                logger.Fatal(ex, "Fatal error during policy fallback execution. Share(s) will be lost!");
-                hasLoggedPolicyFallbackFailure = true;
-            }
+            recoveryFailureHandler.StopCluster(shares.ToArray(), recoveryFilename,
+                databaseError, ex);
 
-            if(shares.Any(x => x.BlockOnly))
-                throw new IOException(
-                    "Unable to durably persist a block candidate to PostgreSQL or the recovery journal",
-                    ex);
+            var failure = new IOException(
+                "Unable to durably persist shares to PostgreSQL or the recovery journal",
+                ex);
+
+            if(databaseError != null)
+                failure.Data["DatabaseException"] = databaseError;
+
+            throw failure;
         }
     }
 
@@ -386,32 +413,109 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         try
         {
-            await using var stream = new FileStream(recoveryFilename, new FileStreamOptions
+            await using var stream = new FileStream(recoveryFilename,
+                new FileStreamOptions
             {
-                Mode = FileMode.Append,
-                Access = FileAccess.Write,
+                Mode = FileMode.OpenOrCreate,
+                Access = FileAccess.ReadWrite,
                 Share = FileShare.Read,
                 Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
             });
-            await using var writer = new StreamWriter(stream, new UTF8Encoding(false),
-                1024, true);
 
-            if(stream.Length == 0)
-                WriteRecoveryFileheader(writer);
-
-            foreach(var share in shares)
-            {
-                var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
-                await writer.WriteLineAsync(json);
-            }
-
-            await writer.FlushAsync();
-            stream.Flush(true);
+            EnsureRecoveryJournalAppendBoundary(stream, recoveryFilename);
+            var payload = BuildRecoveryJournalPayload(shares, stream.Length == 0);
+            await AppendRecoveryJournalAsync(stream, payload);
         }
         finally
         {
             recoveryWriteGate.Release();
         }
+    }
+
+    internal static void EnsureRecoveryJournalAppendBoundary(Stream stream,
+        string filename)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+
+        if(!stream.CanRead || !stream.CanSeek)
+            throw new ArgumentException(
+                "Recovery journal stream must be readable and seekable", nameof(stream));
+
+        if(stream.Length == 0)
+            return;
+
+        stream.Position = stream.Length - 1;
+
+        if(stream.ReadByte() != '\n')
+            throw new InvalidDataException(
+                $"Recovery journal {filename} does not end at a complete record boundary. " +
+                "Preserve it for reconciliation; refusing to append to possibly truncated data.");
+    }
+
+    private byte[] BuildRecoveryJournalPayload(IEnumerable<Share> shares,
+        bool includeHeader)
+    {
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+
+        if(includeHeader)
+            WriteRecoveryFileheader(writer);
+
+        foreach(var share in shares)
+        {
+            var json = JsonConvert.SerializeObject(share, jsonSerializerSettings);
+            writer.WriteLine(json);
+        }
+
+        return new UTF8Encoding(false).GetBytes(writer.ToString());
+    }
+
+    internal static async Task AppendRecoveryJournalAsync(Stream stream,
+        ReadOnlyMemory<byte> payload)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+
+        if(!stream.CanWrite || !stream.CanSeek)
+            throw new ArgumentException(
+                "Recovery journal stream must be writable and seekable", nameof(stream));
+
+        var originalLength = stream.Length;
+        stream.Position = originalLength;
+
+        try
+        {
+            await stream.WriteAsync(payload, CancellationToken.None);
+            await FlushRecoveryJournalAsync(stream);
+        }
+        catch(Exception writeError)
+        {
+            try
+            {
+                stream.SetLength(originalLength);
+                stream.Position = originalLength;
+                await FlushRecoveryJournalAsync(stream);
+            }
+            catch(Exception rollbackError)
+            {
+                var failure = new IOException(
+                    "Recovery journal append failed and its partial write could not be rolled back",
+                    writeError);
+                failure.Data["RollbackException"] = rollbackError;
+                throw failure;
+            }
+
+            ExceptionDispatchInfo.Capture(writeError).Throw();
+            throw new InvalidOperationException("Unreachable recovery-journal append path");
+        }
+    }
+
+    private static async Task FlushRecoveryJournalAsync(Stream stream)
+    {
+        await stream.FlushAsync(CancellationToken.None);
+
+        if(stream is FileStream fileStream)
+            fileStream.Flush(true);
+        else
+            stream.Flush();
     }
 
     private static void WriteRecoveryFileheader(TextWriter writer)
@@ -725,7 +829,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         var fallbackOnBrokenCircuit = Policy
             .Handle<BrokenCircuitException>()
-            .FallbackAsync(OnExecutePolicyFallbackAsync, (ex, context) => Task.CompletedTask);
+            .FallbackAsync(OnExecutePolicyFallbackAsync,
+                OnBrokenCircuitFallbackAsync);
 
         faultPolicy = Policy.WrapAsync(
             fallbackOnBrokenCircuit,
@@ -742,7 +847,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     {
         try
         {
-            logger.Info(() => "Online");
+            logger.Info(() => $"Online; recovery journal {recoveryFilename}");
 
             var processing = messageBus.Listen<Share>()
                 .ObserveOn(TaskPoolScheduler.Default)

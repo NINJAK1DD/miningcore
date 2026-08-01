@@ -1422,6 +1422,7 @@ public partial class ClusterConfig
     /// </summary>
     public int? CryptonightMaxThreads { get; set; }
 
+    [Description("Write-through emergency share journal. In production use an absolute path on separately monitored or reserved storage when possible.")]
     public string ShareRecoveryFile { get; set; }
 
     [Required]

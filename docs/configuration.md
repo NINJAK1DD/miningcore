@@ -19,6 +19,7 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 | `banning` | Cluster-wide junk, login and invalid-share policy |
 | `notifications` | Email, Pushover and administrative events |
 | `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
+| `shareRecoveryFile` | Write-through emergency journal used when PostgreSQL is unavailable |
 | `shareRelay` / `shareRelays` | Advanced distributed sender/receiver topology |
 
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
@@ -47,6 +48,32 @@ the operating system's normal rotation for unrelated service logs.
 Capacity planning must include the active file plus up to four archives for every enabled target.
 Enabling the main, API and per-pool files creates separate retention sets. Monitor both free bytes
 and free inodes on the filesystem selected by `logging.logBaseDirectory`.
+
+## Share recovery storage
+
+`shareRecoveryFile` is the write-through emergency journal used after PostgreSQL share persistence
+exhausts its retries. Configure an absolute path so service working-directory changes cannot make
+the journal difficult to locate. Miningcore logs the resolved path when the Share Recorder starts.
+Restrict the file and its parent directory to the service account because share records are
+financial accounting data.
+
+For production, place the journal on a separately monitored filesystem or storage volume from
+PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure
+domain when database or log storage fills. If separate storage is unavailable, reserve capacity for
+the journal and alert on both free bytes and free inodes well before exhaustion. Rotation of
+Miningcore logs does not bound the journal or reserve space for it.
+
+Each caught append or force-flush failure is rolled back to the file's previous complete boundary.
+Miningcore also refuses to append when an existing non-empty journal does not end at a newline,
+because that can indicate an interrupted write from a crash or an older version. If PostgreSQL and
+the journal are both unavailable, Miningcore emits a `Fatal share-recovery fallback failure`
+administrative event and stops with exit status 1 instead of continuing to accept shares without a
+durable destination.
+
+The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
+it is not proof that every share throughout an outage reached the journal. Review the complete
+incident log and follow the [disk-exhaustion recovery runbook](database.md#recover-after-disk-exhaustion)
+before importing or restarting.
 
 ## Pool basics
 

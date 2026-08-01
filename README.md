@@ -431,9 +431,12 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   recovery journal. Ordinary-share and candidate persistence use the same recorder singleton and a
   canonical-filename journal lock. If an unexpected candidate database failure requires emergency
   journalling, Miningcore stops the cluster because the accounting pipeline is no longer trusted. If
-  both PostgreSQL and the journal fail, the cluster also stops with exit status 1 instead of leaving
-  other miners online without durable block accounting. Configure the service manager's stop timeout
-  above 45 seconds; the supplied systemd example uses 60 seconds.
+  both PostgreSQL and the journal fail for either ordinary shares or block candidates, the cluster
+  stops with exit status 1 instead of leaving miners online without durable share accounting. A
+  partial journal append is rolled back to its previous complete boundary, and an incomplete
+  pre-existing tail is preserved rather than extended. Configure `shareRecoveryFile` as an absolute
+  path on separately monitored or reserved storage where possible. Configure the service manager's
+  stop timeout above 45 seconds; the supplied systemd example uses 60 seconds.
 
 ## Production operation
 
