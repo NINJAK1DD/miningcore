@@ -24,6 +24,24 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
 secrets. Restrict the file to the service account.
 
+## Log files and rotation
+
+Every file configured by `logging.logFile`, `logging.apiLogFile` or `logging.perPoolLogFile` is
+rotated by Miningcore through NLog. An active file is archived after it grows beyond 512 MiB and no
+more than four archives are retained for each file target. Existing active logs are continued across
+an ordinary application restart instead of being archived merely because Miningcore started.
+
+Do not apply an external `logrotate` rule using `copytruncate` to these same files. Truncating an open
+file underneath NLog can leave the process writing at its previous offset and create a large sparse
+file. A `postrotate` service restart avoids that offset problem but disconnects miners and resets
+in-memory vardiff state, so it is not an appropriate routine rotation mechanism. Remove or disable
+any old Miningcore-specific external rotation rule after deploying native rotation; continue to use
+the operating system's normal rotation for unrelated service logs.
+
+Capacity planning must include the active file plus up to four archives for every enabled target.
+Enabling the main, API and per-pool files creates separate retention sets. Monitor both free bytes
+and free inodes on the filesystem selected by `logging.logBaseDirectory`.
+
 ## Pool basics
 
 Every enabled pool needs a unique `id`, a matching entry from `coins.json`, a pool wallet `address`,
