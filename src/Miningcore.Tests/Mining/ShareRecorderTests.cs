@@ -278,6 +278,7 @@ public class ShareRecorderTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseJournal = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        using var competingOwnership = new ShareRecoveryPathOwnership(config);
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
         shareRepository.BatchInsertAsync(connection, transaction,
@@ -295,6 +296,7 @@ public class ShareRecorderTests
             ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(100),
             RecoveryJournalFlush = async stream =>
             {
+                Assert.Throws<IOException>(competingOwnership.Acquire);
                 journalEntered.TrySetResult();
                 await releaseJournal.Task;
                 await stream.FlushAsync();
@@ -334,6 +336,8 @@ public class ShareRecorderTests
             Assert.Contains("host-budget-share",
                 await File.ReadAllTextAsync(recoveryFilename));
             Assert.True(File.Exists(recorder.RecoveryTerminalStateFilename));
+            competingOwnership.Acquire();
+            competingOwnership.Release();
         }
         finally
         {
@@ -1576,6 +1580,61 @@ public class ShareRecorderTests
         {
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverConfiguredJournal_MarkerChangedBeforeMoveFailsClosed()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-marker-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var fixture = CreateConfiguredRecoveryFixture(config);
+
+        try
+        {
+            await fixture.Recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "marker-race" },
+            });
+            fixture.Recorder.RecoveryArchiveMoveCheckpoint = () =>
+            {
+                var content = File.ReadAllText(
+                    fixture.Recorder.RecoveryImportStateFilename);
+                var archiveLine = content.Split('\n').Single(x =>
+                    x.StartsWith("archivePathBase64=", StringComparison.Ordinal));
+                var encoded = archiveLine["archivePathBase64=".Length..]
+                    .TrimEnd('\r');
+                var originalArchive = Encoding.UTF8.GetString(
+                    Convert.FromBase64String(encoded));
+                var changedArchive = recoveryFilename + ".imported-tampered";
+                File.WriteAllText(fixture.Recorder.RecoveryImportStateFilename,
+                    content.Replace(encoded,
+                        Convert.ToBase64String(Encoding.UTF8.GetBytes(changedArchive)),
+                        StringComparison.Ordinal));
+                Assert.NotEqual(originalArchive, changedArchive);
+            };
+
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(recoveryFilename));
+
+            Assert.Contains("changed during source retirement", error.Message);
+            Assert.True(File.Exists(recoveryFilename));
+            Assert.True(File.Exists(fixture.Recorder.RecoveryTerminalStateFilename));
+            Assert.True(File.Exists(fixture.Recorder.RecoveryImportStateFilename));
+            Assert.Empty(Directory.GetFiles(directory,
+                "recovered-shares.txt.imported-*"));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
         }
     }
 
@@ -3497,6 +3556,133 @@ public class ShareRecorderTests
         {
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void RecoveryImportState_RejectsNestedArchivePath()
+    {
+        AssertInvalidRecoveryArchivePath((directory, recoveryFilename) =>
+            Path.Combine(recoveryFilename + ".imported-nested", "archive"));
+    }
+
+    [Fact]
+    public void RecoveryImportState_RejectsSiblingDirectoryPrefixCollision()
+    {
+        AssertInvalidRecoveryArchivePath((directory, recoveryFilename) =>
+            Path.Combine(directory + "-other",
+                Path.GetFileName(recoveryFilename) + ".imported-collision"));
+    }
+
+    [Fact]
+    public void RecoveryImportState_RejectsIntermediateArchiveSymlinkOnLinux()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-symlink-{Guid.NewGuid():N}");
+        var outside = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(outside);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var symlink = recoveryFilename + ".imported-link";
+        Directory.CreateSymbolicLink(symlink, outside);
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            import.Begin(new string('A', 64), 1,
+                Path.Combine(symlink, "archive"));
+            Assert.Throws<InvalidDataException>(import.TryRead);
+        }
+        finally
+        {
+            Directory.Delete(symlink);
+            Directory.Delete(directory, true);
+            Directory.Delete(outside, true);
+        }
+    }
+
+    [Fact]
+    public void RecoveryImportState_DetectsMarkerChangedBeforeRetirement()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-marker-change-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            var original = import.Begin(new string('A', 64), 1,
+                recoveryFilename + ".imported-original");
+            var content = File.ReadAllText(import.Filename);
+            var originalArchive = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                original.ArchiveFilename));
+            var changedArchive = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                recoveryFilename + ".imported-changed"));
+            File.WriteAllText(import.Filename,
+                content.Replace(originalArchive, changedArchive,
+                    StringComparison.Ordinal));
+
+            var error = Assert.Throws<InvalidDataException>(() =>
+                import.EnsureCurrent(original));
+            Assert.Contains("changed during source retirement", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void RecoveryImportState_AcceptsWindowsCaseInsensitiveSibling()
+    {
+        if(!OperatingSystem.IsWindows())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-case-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            import.Begin(new string('A', 64), 1,
+                recoveryFilename.ToUpperInvariant() + ".IMPORTED-CASE");
+            Assert.NotNull(import.TryRead());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private static void AssertInvalidRecoveryArchivePath(
+        Func<string, string, string> archiveFactory)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-containment-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            import.Begin(new string('A', 64), 1,
+                archiveFactory(directory, recoveryFilename));
+            Assert.Throws<InvalidDataException>(import.TryRead);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
         }
     }
 

@@ -1120,6 +1120,17 @@ public class ProgramPoolTemplateTests
         }
     }
 
+    [Fact]
+    public void LocalRecoveryOwnership_AppliesToRecorderAndImportButNotRelaySender()
+    {
+        Assert.True(Program.UsesLocalShareRecoveryPath(false,
+            new ClusterConfig()));
+        Assert.True(Program.UsesLocalShareRecoveryPath(true,
+            new ClusterConfig { ShareRelay = new ShareRelayConfig() }));
+        Assert.False(Program.UsesLocalShareRecoveryPath(false,
+            new ClusterConfig { ShareRelay = new ShareRelayConfig() }));
+    }
+
     private static async Task AssertRecoveryPreflightFailurePreservesJournal(
         Func<Task> preflight)
     {

@@ -40,6 +40,21 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
         return Read(stream);
     }
 
+    internal static RecoveryJournalFileIdentity ReadStable(
+        SafeFileHandle handle, string fallbackPath)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+
+        if(OperatingSystem.IsWindows())
+            return ReadWindows(handle);
+        if(OperatingSystem.IsLinux())
+            return ReadLinux(handle, false);
+
+        var info = new DirectoryInfo(fallbackPath);
+        return new RecoveryJournalFileIdentity(
+            $"metadata:{info.FullName}:{info.CreationTimeUtc.Ticks}");
+    }
+
     private static RecoveryJournalFileIdentity ReadWindows(SafeFileHandle handle)
     {
         if(!GetFileInformationByHandle(handle, out var info))

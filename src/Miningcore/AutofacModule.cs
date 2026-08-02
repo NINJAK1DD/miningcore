@@ -162,6 +162,10 @@ public class AutofacModule : Module
             .As<IShareRecoveryFatalState>()
             .SingleInstance();
 
+        builder.RegisterType<ShareRecoveryPathOwnership>()
+            .As<IShareRecoveryPathOwnership>()
+            .SingleInstance();
+
         builder.RegisterType<ShareReceiver>()
             .SingleInstance();
 

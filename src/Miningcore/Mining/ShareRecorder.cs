@@ -44,7 +44,51 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo,
             PrepareTestRecoveryState(clusterConfig),
             messageBus, MissingShareRecoveryFailureHandler.Instance,
-            MissingMiningFailStopCoordinator.Instance, candidateFailureHandler)
+            MissingMiningFailStopCoordinator.Instance,
+            new TestShareRecoveryPathOwnership(
+                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
+                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig)),
+            candidateFailureHandler)
+    {
+    }
+
+    internal ShareRecorder(IConnectionFactory cf,
+        IMapper mapper,
+        JsonSerializerSettings jsonSerializerSettings,
+        IShareRepository shareRepo,
+        IBlockRepository blockRepo,
+        ClusterConfig clusterConfig,
+        IMessageBus messageBus,
+        IShareRecoveryFailureHandler recoveryFailureHandler,
+        IMiningFailStopCoordinator failStopCoordinator,
+        ICandidatePersistenceFailureHandler candidateFailureHandler) :
+        this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo,
+            PrepareTestRecoveryState(clusterConfig), messageBus,
+            recoveryFailureHandler, failStopCoordinator,
+            new TestShareRecoveryPathOwnership(
+                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
+                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig)),
+            candidateFailureHandler)
+    {
+    }
+
+    // Test-only compatibility constructor for fixtures that exercise the real failure handler.
+    // Production DI selects the public constructor and supplies its singleton ownership guard.
+    internal ShareRecorder(IConnectionFactory cf,
+        IMapper mapper,
+        JsonSerializerSettings jsonSerializerSettings,
+        IShareRepository shareRepo,
+        IBlockRepository blockRepo,
+        ClusterConfig clusterConfig,
+        IMessageBus messageBus,
+        IShareRecoveryFailureHandler recoveryFailureHandler,
+        IMiningFailStopCoordinator failStopCoordinator) :
+        this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo,
+            PrepareTestRecoveryState(clusterConfig), messageBus,
+            recoveryFailureHandler, failStopCoordinator,
+            new TestShareRecoveryPathOwnership(
+                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
+                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig)))
     {
     }
 
@@ -72,6 +116,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         IMessageBus messageBus,
         IShareRecoveryFailureHandler recoveryFailureHandler,
         IMiningFailStopCoordinator failStopCoordinator,
+        IShareRecoveryPathOwnership recoveryPathOwnership,
         ICandidatePersistenceFailureHandler candidateFailureHandler = null)
     {
         Contract.RequiresNonNull(cf);
@@ -82,6 +127,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         Contract.RequiresNonNull(messageBus);
         ArgumentNullException.ThrowIfNull(recoveryFailureHandler);
         ArgumentNullException.ThrowIfNull(failStopCoordinator);
+        ArgumentNullException.ThrowIfNull(recoveryPathOwnership);
 
         this.cf = cf;
         this.mapper = mapper;
@@ -91,6 +137,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             NullCandidatePersistenceFailureHandler.Instance;
         this.recoveryFailureHandler = recoveryFailureHandler;
         this.failStopCoordinator = failStopCoordinator;
+        this.recoveryPathOwnership = recoveryPathOwnership;
         this.clusterConfig = clusterConfig;
 
         this.shareRepo = shareRepo;
@@ -119,6 +166,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly ICandidatePersistenceFailureHandler candidateFailureHandler;
     private readonly IShareRecoveryFailureHandler recoveryFailureHandler;
     private readonly IMiningFailStopCoordinator failStopCoordinator;
+    private readonly IShareRecoveryPathOwnership recoveryPathOwnership;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
@@ -200,6 +248,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         ShareRecoveryFatalState.SyncDirectoryWhereSupported;
     internal Action<string, string> RecoveryArchiveMove { get; set; } =
         (source, destination) => File.Move(source, destination);
+    internal Action RecoveryArchiveMoveCheckpoint { get; set; } = () => { };
     internal Func<Stream, Task> RecoveryJournalFlush { get; set; } =
         FlushRecoveryJournalAsync;
 
@@ -554,7 +603,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 {
                     Mode = FileMode.Open,
                     Access = FileAccess.ReadWrite,
-                    Share = FileShare.Read,
+                    Share = FileShare.None,
                     Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
                 });
             }
@@ -649,7 +698,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 {
                     Mode = FileMode.CreateNew,
                     Access = FileAccess.ReadWrite,
-                    Share = FileShare.Read,
+                    Share = FileShare.None,
                     Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
                 }))
             {
@@ -1267,6 +1316,25 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         public bool BeginFailStop(int exitCode) => false;
     }
 
+    private sealed class TestShareRecoveryPathOwnership :
+        IShareRecoveryPathOwnership
+    {
+        public TestShareRecoveryPathOwnership(string recoveryFilename,
+            string stateDirectory)
+        {
+            inner = new ShareRecoveryPathOwnership(recoveryFilename,
+                stateDirectory);
+        }
+
+        private readonly ShareRecoveryPathOwnership inner;
+        public string RecoveryFilename => inner.RecoveryFilename;
+        public string OwnershipFilename => inner.OwnershipFilename;
+        public bool IsHeld => inner.IsHeld;
+        public void Acquire() => inner.Acquire();
+        public void Release() => inner.Release();
+        public void Dispose() => inner.Dispose();
+    }
+
     public async Task<string> RecoverSharesAsync(string filename)
     {
         filename = Path.GetFullPath(filename);
@@ -1276,20 +1344,25 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             : StringComparison.Ordinal;
         var configuredSource = string.Equals(filename, recoveryFilename,
             comparison);
-
-        if(!configuredSource && RecoveryPathsReferToSameFile(filename,
-               recoveryFilename))
-            throw new InvalidDataException(
-                $"Recovery source {filename} is a filesystem alias of the configured active " +
-                $"journal {recoveryFilename}. Recover the exact configured path so its terminal " +
-                "anchor, import marker and retirement operation cannot be bypassed.");
-        var importState = configuredSource
-            ? recoveryImportState
-            : new ShareRecoveryImportState(filename,
+        var operationOwnership = configuredSource
+            ? recoveryPathOwnership
+            : new ShareRecoveryPathOwnership(filename,
                 ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
+        operationOwnership.Acquire();
 
         try
         {
+            if(!configuredSource && RecoveryPathsReferToSameFile(filename,
+                   recoveryFilename))
+                throw new InvalidDataException(
+                    $"Recovery source {filename} is a filesystem alias of the configured active " +
+                    $"journal {recoveryFilename}. Recover the exact configured path so its terminal " +
+                    "anchor, import marker and retirement operation cannot be bypassed.");
+            var importState = configuredSource
+                ? recoveryImportState
+                : new ShareRecoveryImportState(filename,
+                    ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
+
             var existingMarker = importState.TryRead();
             if(existingMarker != null && existingMarker.Phase !=
                ShareRecoveryImportState.ImportPhase.Pending)
@@ -1414,6 +1487,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             logger.Error(() => $"Recovery file {filename} was not found");
             throw;
+        }
+        finally
+        {
+            operationOwnership.Release();
+            if(!ReferenceEquals(operationOwnership, recoveryPathOwnership))
+                operationOwnership.Dispose();
         }
     }
 
@@ -1580,6 +1659,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidDataException(
                 $"Recovery source {filename} cannot be retired before its database import is committed");
 
+        using var recoveryDirectory = RecoveryDirectoryIdentity.Open(
+            Path.GetDirectoryName(filename)!);
+        recoveryDirectory.EnsurePathStillIdentifiesDirectory();
+
         using(var manifestConnection = await cf.OpenConnectionAsync())
         {
             var manifestExists = await shareRepo.HasMatchingRecoveryImportAsync(
@@ -1623,6 +1706,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         if(sourceExists)
         {
+            RecoveryArchiveMoveCheckpoint();
+            importState.EnsureCurrent(marker);
+            recoveryDirectory.EnsurePathStillIdentifiesDirectory();
             RecoveryArchiveMove(filename, marker.ArchiveFilename);
             using var archived = RecoveryStateFile.TryOpenExactEntry(
                 marker.ArchiveFilename, Directory.EnumerateFileSystemEntries);
@@ -1636,6 +1722,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     $"Recovery source {filename} was replaced while it was being retired. " +
                     $"The committed marker remains at {importState.Filename}; preserve the " +
                     "archive and surrounding storage for reconciliation.");
+
+            recoveryDirectory.EnsurePathStillIdentifiesDirectory();
         }
 
         // Re-read the still-open, non-writable file object after the rename. This catches a
@@ -1663,6 +1751,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // step on resume. Revalidate the archived content and recorded tail before removal.
             await ValidateCommittedRecoveryFileAsync(retained,
                 marker.ArchiveFilename, marker, configuredSource, false);
+            recoveryDirectory.EnsurePathStillIdentifiesDirectory();
+            importState.EnsureCurrent(marker);
 
             if(configuredSource && marker.TerminalAnchorRequired)
                 RecoveryTerminalStateRemove();
@@ -1674,7 +1764,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         // The anchor-retired marker is the last object removed. Its own directory sync makes
         // the completed retirement durable and prevents a stale marker from being resurrected.
         if(marker.Phase == ShareRecoveryImportState.ImportPhase.AnchorRetired)
+        {
+            importState.EnsureCurrent(marker);
             importState.RemoveAfterRetirement();
+        }
         return marker.ArchiveFilename;
     }
 
@@ -1806,6 +1899,23 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     public override async Task StopAsync(CancellationToken ct)
     {
+        try
+        {
+            await StopCoreAsync(ct);
+        }
+        catch
+        {
+            // Unit fixtures run several intentional process-fatal paths inside one test host.
+            // Production ownership is deliberately retained until process exit on these paths;
+            // the compatibility constructors release only their test-scoped lock for cleanup.
+            if(recoveryPathOwnership is TestShareRecoveryPathOwnership)
+                recoveryPathOwnership.Release();
+            throw;
+        }
+    }
+
+    private async Task StopCoreAsync(CancellationToken ct)
+    {
         BeginShutdown();
         Interlocked.Exchange(ref shareSubscription, null)?.Dispose();
         Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
@@ -1848,12 +1958,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
 
         await base.StopAsync(CancellationToken.None);
+        recoveryPathOwnership.Release();
     }
 
     protected override Task ExecuteAsync(CancellationToken ct)
     {
         try
         {
+            recoveryPathOwnership.Acquire();
             logger.Info(() => $"Online; recovery journal {recoveryFilename}");
             var queue = Channel.CreateBounded<QueuedShare>(new BoundedChannelOptions(
                 PersistenceQueueCapacity)
@@ -2100,12 +2212,20 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             if(remaining > TimeSpan.Zero)
             {
-                var available = reader.WaitToReadAsync(ct).AsTask();
-                var timer = Task.Delay(remaining, ct);
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                wait.CancelAfter(remaining);
 
-                if(await Task.WhenAny(available, timer) == available &&
-                   await available)
-                    continue;
+                try
+                {
+                    if(await reader.WaitToReadAsync(wait.Token))
+                        continue;
+                }
+                catch(OperationCanceledException) when(
+                    !ct.IsCancellationRequested && wait.IsCancellationRequested)
+                {
+                    // The batch dwell deadline expired. The only channel waiter was cancelled
+                    // and observed before this partial batch is persisted.
+                }
             }
 
             await PersistQueuedSharesAsync(batch.ToArray(), ct);

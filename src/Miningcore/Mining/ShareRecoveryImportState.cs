@@ -56,6 +56,16 @@ internal sealed class ShareRecoveryImportState
             "committed source is durably retired.");
     }
 
+    public void EnsureCurrent(ImportMarker expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        var current = TryRead();
+        if(current == null || current != expected)
+            throw new InvalidDataException(
+                $"Recovery-import marker {Filename} changed during source retirement. " +
+                "Preserve the source, archive and marker for reconciliation.");
+    }
+
     public ImportMarker Begin(string fileHash, int recordCount,
         string archiveFilename, long? terminalSequence = null,
         string terminalDigest = null, bool terminalAnchorRequired = false)
@@ -130,6 +140,7 @@ internal sealed class ShareRecoveryImportState
             TerminalDigest = digest.ToUpperInvariant(),
             TerminalAnchorRequired = anchorRequired,
         };
+        EnsureCurrent(marker);
         Write(updated, true);
         return updated;
     }
@@ -154,6 +165,7 @@ internal sealed class ShareRecoveryImportState
             return marker;
 
         var updated = marker with { Phase = phase };
+        EnsureCurrent(marker);
         Write(updated, true);
         return updated;
     }
@@ -263,14 +275,23 @@ internal sealed class ShareRecoveryImportState
                 $"Recovery-import marker {Filename} contains an invalid archive path", ex);
         }
 
-        var expectedArchivePrefix = RecoveryFilename + ".imported-";
-        if(!archiveFilename.StartsWith(expectedArchivePrefix,
-               OperatingSystem.IsWindows()
-                   ? StringComparison.OrdinalIgnoreCase
-                   : StringComparison.Ordinal))
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var recoveryDirectory = Path.GetFullPath(
+            Path.GetDirectoryName(RecoveryFilename)!);
+        var archiveDirectory = Path.GetFullPath(
+            Path.GetDirectoryName(archiveFilename)!);
+        var expectedArchivePrefix = Path.GetFileName(RecoveryFilename) +
+            ".imported-";
+        var archiveName = Path.GetFileName(archiveFilename);
+
+        if(!string.Equals(archiveDirectory, recoveryDirectory, comparison) ||
+           string.IsNullOrEmpty(archiveName) ||
+           !archiveName.StartsWith(expectedArchivePrefix, comparison))
             throw new InvalidDataException(
-                $"Recovery-import marker {Filename} names an archive outside the expected " +
-                "recovery-source namespace");
+                $"Recovery-import marker {Filename} must name an archive in the exact recovery-source " +
+                $"directory with basename prefix {expectedArchivePrefix}");
 
         long? terminalSequence = null;
         string terminalDigest = null;

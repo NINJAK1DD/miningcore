@@ -58,6 +58,13 @@ the journal difficult to locate. Miningcore logs the resolved path when the Shar
 Restrict the file and its parent directory to the service account because share records are
 financial accounting data.
 
+Miningcore acquires exclusive process-lifetime ownership keyed to the resolved journal path before
+startup recovery checks or import inspection. A second local recorder or recovery import using the
+same journal fails before pools start, even if it uses different Stratum ports. The owner is released
+only after a successful final recorder drain; process-fatal shutdown retains it until the operating
+system closes the process handle. Do not delete files below
+`shareRecoveryStateDirectory/share-recovery-ownership` while Miningcore is running.
+
 For production, place the journal on a separately monitored filesystem or storage volume from
 PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure
 domain when database or log storage fills. If separate storage is unavailable, reserve capacity for
@@ -77,7 +84,8 @@ Record and legacy-prefix hashes deliberately normalise physical line endings to 
 logical record content rather than the original newline bytes. Recovery lines above 1,048,576 characters are
 rejected without first allocating the complete hostile line.
 
-After the fallback tail is trusted, append work is linear: under the canonical-filename writer gate,
+After the fallback tail is trusted, append work is linear: under the process-lifetime ownership lock,
+exclusive active-file handle and canonical-filename in-process writer gate,
 Miningcore verifies the active file identity and expected length, hashes only the new frame, and
 advances its cached sequence/digest after the force-flush succeeds. Replacing, truncating or growing
 the active file outside Miningcore stops fallback rather than silently resetting that state. Each

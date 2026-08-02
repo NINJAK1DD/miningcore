@@ -49,6 +49,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Miningcore\Miningcore.csproj" />
+    <ProjectReference Include="..\Miningcore.Tests.ProcessHost\Miningcore.Tests.ProcessHost.csproj" />
   </ItemGroup>
 
   <ItemGroup>

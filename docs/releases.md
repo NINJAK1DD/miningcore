@@ -70,6 +70,11 @@ state fail closed during startup and the first fallback append. Configure
 `shareRecoveryFile` as an
 absolute path on separately monitored or reserved storage where possible; the recovery runbook
 explains evidence preservation and atomic, manifested import verification.
+Normal local recording and recovery import now acquire the same path-hashed process-lifetime
+ownership lock before state inspection and retain it through final shutdown journalling. Linux uses
+an explicit native exclusive lock, so disabling .NET managed file locking does not bypass this
+boundary; Windows retains an exclusive handle. A second process using the same recovery path fails
+before pools start, regardless of its Stratum configuration.
 Recovery import now uses a durable multi-phase source-retirement marker. Startup and fallback
 appends remain blocked until the retained source's complete chain, anchor, semantic hash, record
 count and file identity are revalidated, the committed source rename and parent-directory sync
@@ -77,7 +82,9 @@ finish, and the marker records archive durability, anchor-retirement authorisati
 retirement while retaining the validated terminal sequence and digest. Interruption after anchor
 removal therefore resumes without manual safety-state edits. The same non-writable file object is checked again after
 rename. Rerunning recovery resumes that sequence without changing the manifest identity or replaying
-records; filesystem aliases of the configured source are rejected. Operators must not import
+records; filesystem aliases of the configured source are rejected. Archive retirement requires an
+exact sibling basename, retains a no-follow identity for the parent directory and rechecks both the
+directory and durable marker at destructive boundaries. Operators must not import
 overlapping reviewed files because manifests identify whole sources rather than individual shares.
 
 Unexpected mapper, connection, transaction or repository failures now quiesce mining, force-flush

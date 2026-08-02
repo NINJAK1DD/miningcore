@@ -1099,6 +1099,9 @@ public class Program : ProcessStatusBackgroundService
 
     private static async Task PreFlightChecks(IServiceProvider services)
     {
+        if(UsesLocalShareRecoveryPath(isShareRecoveryMode, clusterConfig))
+            services.GetRequiredService<IShareRecoveryPathOwnership>().Acquire();
+
         if(ShouldValidateShareRecoveryState(isShareRecoveryMode, clusterConfig))
             services.GetRequiredService<IShareRecoveryFatalState>()
                 .EnsureStartupAllowed();
@@ -1205,6 +1208,13 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(config);
         return !recoveryMode;
+    }
+
+    internal static bool UsesLocalShareRecoveryPath(bool recoveryMode,
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return recoveryMode || config.ShareRelay == null;
     }
 
     internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,
