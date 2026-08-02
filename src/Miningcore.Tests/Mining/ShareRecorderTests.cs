@@ -4624,8 +4624,11 @@ public class ShareRecorderTests
             if(replacementPublished)
             {
                 Assert.False(result.IsSuccessful);
-                Assert.Contains("sidecar path was replaced",
-                    output.ToString());
+                Assert.True(
+                    output.ToString().Contains("sidecar path was replaced") ||
+                    output.ToString().Contains("sidecar changed"),
+                    "Path replacement must fail either the open-handle identity check " +
+                    "or the final path identity check.");
             }
             else
             {
