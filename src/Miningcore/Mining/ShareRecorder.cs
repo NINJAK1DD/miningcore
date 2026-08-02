@@ -1554,23 +1554,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         if(!File.Exists(first) || !File.Exists(second))
             return false;
 
-        try
-        {
-            using var firstStream = new FileStream(first, FileMode.Open,
-                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var secondStream = new FileStream(second, FileMode.Open,
-                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return RecoveryJournalFileIdentity.Read(firstStream) ==
-                RecoveryJournalFileIdentity.Read(secondStream);
-        }
-        catch(IOException)
-        {
-            return false;
-        }
-        catch(UnauthorizedAccessException)
-        {
-            return false;
-        }
+        // Identity uncertainty must not downgrade a possible alias into an independent reviewed
+        // source with different path-scoped state. Propagate open/identity failures and fail closed.
+        using var firstStream = new FileStream(first, FileMode.Open,
+            FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var secondStream = new FileStream(second, FileMode.Open,
+            FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return RecoveryJournalFileIdentity.Read(firstStream) ==
+            RecoveryJournalFileIdentity.Read(secondStream);
     }
 
     private async Task ValidateCommittedRecoveryFileAsync(FileStream stream,
