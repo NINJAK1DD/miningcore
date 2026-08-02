@@ -444,6 +444,9 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   After reconciliation, use the documented `--verify-share-recovery-state` and
   `--acknowledge-share-recovery-state` commands; manually deleting the latch does not safely unblock
   startup and all incident evidence remains retained under an immutable acknowledgement anchor.
+  Every startup fully revalidates acknowledged sidecars, while a path-scoped cross-process lock
+  serializes startup inspection, fatal publication and acknowledgement. Prerelease v2-only incident
+  sets can be preserved under a legacy-set acknowledgement anchor.
   A partial journal append is rolled back to its previous length and force-flushed. First creation
   atomically publishes a force-flushed temporary file and syncs its directory on Linux. A first-byte
   format magic plus contiguous sequence/previous-digest/count/hash validation runs at first fallback

@@ -23,6 +23,15 @@ public interface IShareRecoveryFatalState
 
 public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 {
+    internal const string VerifyOption = "--verify-share-recovery-state";
+    internal const string AcknowledgeOption =
+        "--acknowledge-share-recovery-state";
+    internal const string OperatorAcknowledgementInstruction =
+        "Reconcile every incident against PostgreSQL and the recovery journal, then run " +
+        "Miningcore -c <configuration> --verify-share-recovery-state followed by " +
+        "Miningcore -c <configuration> --acknowledge-share-recovery-state. Do not manually " +
+        "delete the active latch, incident metadata or exact-share sidecars.";
+
     public ShareRecoveryFatalState(ClusterConfig clusterConfig,
         IProcessStatus processStatus) :
         this(clusterConfig, processStatus, ResolveStateDirectory(clusterConfig))
@@ -43,6 +52,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         var pathHash = ComputeRecoveryPathHash(RecoveryFilename);
         FatalStateFilename = Path.Combine(StateDirectory,
             "share-recovery-fatal", pathHash + ".fatal");
+        MutationLockFilename = Path.Combine(StateDirectory,
+            "share-recovery-fatal", pathHash + ".mutation.lock");
         terminalState = new ShareRecoveryTerminalState(RecoveryFilename,
             StateDirectory);
         importState = new ShareRecoveryImportState(RecoveryFilename,
@@ -63,11 +74,13 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
     public string FatalStateFilename { get; }
+    internal string MutationLockFilename { get; }
 
     public void EnsureStartupAllowed()
     {
         try
         {
+            using var mutationLock = AcquireMutationLock();
             var markerEntryWasPresent = EnsureFatalStateDirectoryAccessible();
             terminalState.DirectorySync = DirectorySync;
             importState.DirectorySync = DirectorySync;
@@ -95,10 +108,22 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
             // A removed latch must not hide retained incident evidence. A clean state has neither
             // object; any orphaned, shortened or substituted chain blocks startup with status 74.
-            ShareRecoveryIncidentChain.ReadTip(
+            var incidentTip = ShareRecoveryIncidentChain.ReadTip(
                 Path.GetDirectoryName(FatalStateFilename)!,
                 Path.GetFileNameWithoutExtension(FatalStateFilename),
                 FatalStateFilename);
+
+            if(incidentTip.ExistingCount > 0)
+            {
+                var verification = ShareRecoveryIncidentVerifier.Verify(
+                    clusterConfig, TextWriter.Null);
+                if(!verification.IsSuccessful)
+                    throw new PoolStartupException(
+                        "Acknowledged share-recovery evidence is incomplete or corrupt. " +
+                        $"Run {VerifyOption} with the service configuration, preserve all " +
+                        "incident metadata and exact-share sidecars, and reconcile the damage " +
+                        "before restarting Miningcore.");
+            }
 
             try
             {
@@ -148,7 +173,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             throw;
         }
         catch(Exception ex) when(ex is IOException or InvalidDataException or
-            UnauthorizedAccessException or System.Security.SecurityException)
+            InvalidOperationException or UnauthorizedAccessException or
+            System.Security.SecurityException)
         {
             processStatus.MarkFailed(ProcessExitCodes.UnreconciledShareDurabilityLoss);
             throw new PoolStartupException(
@@ -162,8 +188,11 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         Exception databaseError, Exception journalError)
     {
         lock(fatalStateGate)
+        {
+            using var mutationLock = AcquireMutationLock();
             MarkFatalCore(shareCount, pools, null, databaseError, journalError,
                 "database-and-journal-unavailable");
+        }
     }
 
     public void MarkFatalShares(IReadOnlyCollection<Share> shares,
@@ -173,8 +202,11 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         ArgumentNullException.ThrowIfNull(shares);
 
         lock(fatalStateGate)
+        {
+            using var mutationLock = AcquireMutationLock();
             MarkFatalCore(shares.Count, null, shares, databaseError,
                 journalError, failureCategory);
+        }
     }
 
     public bool Acknowledge(TextWriter output)
@@ -183,6 +215,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
         lock(fatalStateGate)
         {
+            using var mutationLock = AcquireMutationLock();
             var verification = ShareRecoveryIncidentVerifier.Verify(
                 clusterConfig, output);
             if(!verification.IsSuccessful)
@@ -195,7 +228,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             var stem = Path.GetFileNameWithoutExtension(FatalStateFilename);
             var tip = ShareRecoveryIncidentChain.ReadTip(directory, stem,
                 FatalStateFilename);
-            if(tip.Sequence == 0)
+            if(tip.ExistingCount == 0)
                 throw new InvalidOperationException(
                     "No fatal share-recovery incident exists to acknowledge");
 
@@ -213,22 +246,28 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                 latchLines = RecoveryStateFile.ReadAllLinesStable(latch,
                     FatalStateFilename, Directory.EnumerateFileSystemEntries);
             }
-            var acknowledgementFilename =
-                ShareRecoveryIncidentChain.BuildAcknowledgementFilename(
+            var legacyOnly = tip.Sequence == 0 && tip.LegacyCount > 0;
+            var acknowledgementFilename = legacyOnly
+                ? ShareRecoveryIncidentChain.BuildLegacyAcknowledgementFilename(
+                    directory, stem, tip)
+                : ShareRecoveryIncidentChain.BuildAcknowledgementFilename(
                     directory, stem, tip);
+            var acknowledgementLines = legacyOnly
+                ? BuildLegacyAcknowledgement(latchLines, tip)
+                : latchLines;
             using(var existingAcknowledgement =
                   RecoveryStateFile.TryOpenExactEntry(acknowledgementFilename,
                       Directory.EnumerateFileSystemEntries))
             {
                 if(existingAcknowledgement == null)
                     WriteSmallStateFile(acknowledgementFilename,
-                        string.Join('\n', latchLines) + '\n', false);
+                        string.Join('\n', acknowledgementLines) + '\n', false);
                 else
                 {
                     var existingLines = RecoveryStateFile.ReadAllLinesStable(
                         existingAcknowledgement, acknowledgementFilename,
                         Directory.EnumerateFileSystemEntries);
-                    if(!latchLines.SequenceEqual(existingLines,
+                    if(!acknowledgementLines.SequenceEqual(existingLines,
                            StringComparer.Ordinal))
                         throw new InvalidDataException(
                             $"Existing acknowledgement {acknowledgementFilename} does not match the active fatal latch");
@@ -249,6 +288,60 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                 "The immutable incident metadata and exact-share sidecars remain preserved for audit.");
             return true;
         }
+    }
+
+    private FileStream AcquireMutationLock()
+    {
+        _ = EnsureFatalStateDirectoryAccessible();
+        FileStream stream = null;
+
+        try
+        {
+            stream = new FileStream(MutationLockFilename, FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.None, 1,
+                FileOptions.WriteThrough);
+            if(stream.Length == 0)
+            {
+                stream.WriteByte(0);
+                stream.Flush(true);
+                DirectorySync(Path.GetDirectoryName(MutationLockFilename)!);
+            }
+
+            return stream;
+        }
+        catch(IOException ex)
+        {
+            stream?.Dispose();
+            throw new InvalidOperationException(
+                $"Another Miningcore service or share-recovery operation still owns the " +
+                $"state mutation lock {MutationLockFilename}. Wait for it to exit before " +
+                "acknowledging or publishing fatal evidence.", ex);
+        }
+    }
+
+    private static string[] BuildLegacyAcknowledgement(
+        IEnumerable<string> latchLines,
+        ShareRecoveryIncidentChain.ChainTip tip)
+    {
+        var result = new List<string>();
+
+        foreach(var line in latchLines)
+        {
+            if(line.StartsWith("formatVersion=", StringComparison.Ordinal))
+                result.Add("formatVersion=4");
+            else if(!string.IsNullOrEmpty(line) &&
+                    !line.StartsWith("Reconcile every ",
+                        StringComparison.Ordinal))
+                result.Add(line);
+        }
+
+        result.Add("acknowledgementKind=legacy-v2-set");
+        result.Add($"legacyIncidentCount={tip.LegacyCount.ToString(CultureInfo.InvariantCulture)}");
+        result.Add($"legacyIncidentSetSha256={tip.LegacyDigest}");
+        result.Add($"incidentChainDigest={tip.LegacyDigest}");
+        result.Add($"expectedIncidentCount={tip.ExistingCount.ToString(CultureInfo.InvariantCulture)}");
+        result.Add(OperatorAcknowledgementInstruction);
+        return result.ToArray();
     }
 
     private void MarkFatalCore(int shareCount, IReadOnlyCollection<string> pools,
@@ -358,8 +451,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             lines.Add($"expectedIncidentCount={expectedIncidentCount.ToString(CultureInfo.InvariantCulture)}");
         }
 
-        lines.Add(
-            "Reconcile every immutable incident record and referenced sidecar before deleting this latch and restarting Miningcore.");
+        lines.Add(OperatorAcknowledgementInstruction);
         lines.Add(string.Empty);
         return string.Join('\n', lines);
     }

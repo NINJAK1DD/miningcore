@@ -108,8 +108,12 @@ does not unblock startup, acknowledgement is resumable after interruption, later
 the acknowledged tip, and removing or changing covered evidence fails closed. Fatal, incident and
 acknowledgement metadata verification uses strict UTF-8, an exact 64-KiB raw-byte total limit,
 bounded lines and stable handle/path identity checks, matching the sidecar verifier's fail-closed
-replacement detection. Imported-source retirement now also re-confirms the exact PostgreSQL
-manifest through a fresh connection before any destructive rename or anchor removal.
+replacement detection. Acknowledged evidence is fully reverified, including sidecar hashes and
+record counts, on every startup. Prerelease v2-only incident sets can be preserved and acknowledged
+with a v4 legacy-set anchor. A persistent path-scoped mutation lock serializes startup inspection,
+fatal publication and acknowledgement across processes. Imported-source retirement now also
+re-confirms the exact PostgreSQL manifest through a fresh connection before any destructive rename
+or anchor removal.
 
 These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay
 sender's positive response proves only local in-memory relay-queue admission, not remote receipt or

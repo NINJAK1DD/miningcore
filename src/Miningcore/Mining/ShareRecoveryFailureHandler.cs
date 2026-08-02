@@ -95,9 +95,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             $"nor the recovery journal durably stored {shares.Count} share(s) for pool(s) " +
             $"{poolSummary}. Recovery file: {absoluteRecoveryFilename}. Fatal state: " +
             $"{fatalState.FatalStateFilename}. Preserve both files, investigate database and " +
-            "storage health, reconcile every incident, then run " +
-            "--acknowledge-share-recovery-state with the service configuration. Do not manually " +
-            "delete the active latch or retained evidence.");
+            $"storage health. {ShareRecoveryFatalState.OperatorAcknowledgementInstruction}");
 
         try
         {
@@ -179,9 +177,8 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             $"{ProcessExitCodes.UnreconciledShareDurabilityLoss} because PostgreSQL may or may " +
             $"not have committed {shares.Count} share(s). The importable journal was deliberately " +
             $"not extended. Exact share records are in the detail sidecar referenced by " +
-            $"{fatalState.FatalStateFilename}. Reconcile them against PostgreSQL before removing " +
-            $"that marker. Recovery file: " +
-            $"{absoluteRecoveryFilename}.");
+            $"{fatalState.FatalStateFilename}. Recovery file: {absoluteRecoveryFilename}. " +
+            ShareRecoveryFatalState.OperatorAcknowledgementInstruction);
         await SendCriticalNotificationSafelyAsync(notification);
     }
 

@@ -4725,7 +4725,13 @@ public class ShareRecorderTests
                 notification.Subject == "Fatal share-recovery fallback failure" &&
                 notification.Message.Contains("2 share(s)") &&
                 notification.Message.Contains("btc-solo, ltc-solo") &&
-                notification.Message.Contains("exit status 74")),
+                notification.Message.Contains("exit status 74") &&
+                notification.Message.Contains("--verify-share-recovery-state") &&
+                notification.Message.Contains("--acknowledge-share-recovery-state") &&
+                !notification.Message.Contains("remove only",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !notification.Message.Contains("before removing",
+                    StringComparison.OrdinalIgnoreCase)),
             Arg.Any<CancellationToken>());
     }
 
@@ -4762,6 +4768,12 @@ public class ShareRecorderTests
                 notification.Subject == "Uncertain PostgreSQL share commit" &&
                 notification.Message.Contains("not extended") &&
                 notification.Message.Contains("reconcile",
+                    StringComparison.OrdinalIgnoreCase) &&
+                notification.Message.Contains("--verify-share-recovery-state") &&
+                notification.Message.Contains("--acknowledge-share-recovery-state") &&
+                !notification.Message.Contains("removing that marker",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !notification.Message.Contains("before removing",
                     StringComparison.OrdinalIgnoreCase)),
             Arg.Any<CancellationToken>());
     }
@@ -5134,6 +5146,17 @@ public class ShareRecorderTests
             var sidecarsBefore = Directory.GetFiles(fatalDirectory, "*.shares");
             Assert.Equal(2, incidentsBefore.Length);
             Assert.Equal(2, sidecarsBefore.Length);
+            foreach(var operatorEvidence in incidentsBefore.Append(
+                        state.FatalStateFilename))
+            {
+                var text = File.ReadAllText(operatorEvidence);
+                Assert.Contains("--verify-share-recovery-state", text);
+                Assert.Contains("--acknowledge-share-recovery-state", text);
+                Assert.DoesNotContain("before deleting this latch", text,
+                    StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("before removing", text,
+                    StringComparison.OrdinalIgnoreCase);
+            }
             using var acknowledgementOutput = new StringWriter();
 
             Assert.True(state.Acknowledge(acknowledgementOutput));
@@ -5219,6 +5242,182 @@ public class ShareRecorderTests
                 restartedStatus.ExitCode);
             Assert.Contains("acknowledged", error.Message,
                 StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryAcknowledgement_MissingAcknowledgedSidecarBlocksStartup()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-ack-sidecar-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "LAuditSidecar" },
+                }, new IOException("database"), new IOException("journal"));
+            var sidecar = Directory.GetFiles(
+                Path.GetDirectoryName(state.FatalStateFilename)!, "*.shares")
+                .Single();
+            Assert.True(state.Acknowledge(TextWriter.Null));
+            File.Delete(sidecar);
+            var restartedStatus = new ProcessStatus();
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                new ShareRecoveryFatalState(config, restartedStatus,
+                        config.ShareRecoveryStateDirectory)
+                    .EnsureStartupAllowed());
+
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                restartedStatus.ExitCode);
+            Assert.Contains("incomplete or corrupt", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryAcknowledgement_LegacyV2EvidenceCanBeAcknowledgedAndExtended()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-ack-v2-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+        var fatalDirectory = Path.GetDirectoryName(state.FatalStateFilename)!;
+        Directory.CreateDirectory(fatalDirectory);
+        const string incidentId = "legacy-v2-incident";
+        var incidentFilename = Path.Combine(fatalDirectory,
+            $"{Path.GetFileNameWithoutExtension(state.FatalStateFilename)}.{incidentId}.incident");
+        var legacyContent = string.Join('\n',
+            "Miningcore share-accounting durability failure",
+            "formatVersion=2",
+            $"incidentId={incidentId}",
+            $"createdUtc={DateTimeOffset.UtcNow:O}",
+            "failureCategory=database-and-journal-unavailable",
+            $"recoveryFile={Path.GetFullPath(config.ShareRecoveryFile)}",
+            $"recoveryPathSha256={ShareRecoveryFatalState.ComputeRecoveryPathHash(Path.GetFullPath(config.ShareRecoveryFile))}",
+            "shareCount=1",
+            "pools=ltc-solo",
+            "detailFile=(none)",
+            "detailSha256=(none)",
+            "detailState=not-required",
+            "databaseError=System.IO.IOException: database",
+            "journalError=System.IO.IOException: journal",
+            "Reconcile every immutable incident record and referenced sidecar before deleting this latch and restarting Miningcore.",
+            string.Empty);
+        File.WriteAllText(incidentFilename, legacyContent,
+            new UTF8Encoding(false));
+        File.WriteAllText(state.FatalStateFilename, legacyContent,
+            new UTF8Encoding(false));
+
+        try
+        {
+            Assert.True(ShareRecoveryIncidentVerifier.Verify(config,
+                TextWriter.Null).IsSuccessful);
+            Assert.True(state.Acknowledge(TextWriter.Null));
+
+            Assert.False(File.Exists(state.FatalStateFilename));
+            Assert.True(File.Exists(incidentFilename));
+            var legacyAcknowledgement = Directory.GetFiles(fatalDirectory,
+                "*.acknowledged").Single();
+            var acknowledgementText = File.ReadAllText(legacyAcknowledgement);
+            Assert.Contains("formatVersion=4", acknowledgementText);
+            Assert.Contains("acknowledgementKind=legacy-v2-set",
+                acknowledgementText);
+            Assert.Contains("--acknowledge-share-recovery-state",
+                acknowledgementText);
+            Assert.DoesNotContain("before deleting this latch",
+                acknowledgementText, StringComparison.OrdinalIgnoreCase);
+            state.EnsureStartupAllowed();
+
+            var continued = new ShareRecoveryFatalState(config,
+                new ProcessStatus(), config.ShareRecoveryStateDirectory);
+            continued.MarkFatal(1, new[] { "doge-solo" },
+                new IOException("later database"),
+                new IOException("later journal"));
+            Assert.True(continued.Acknowledge(TextWriter.Null));
+            Assert.True(File.Exists(incidentFilename));
+            Assert.Equal(2, Directory.GetFiles(fatalDirectory,
+                "*.acknowledged").Length);
+            continued.EnsureStartupAllowed();
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryAcknowledgement_RefusesWhenMutationLockIsOwned()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-mutation-lock-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatal(1, new[] { "ltc-solo" },
+                new IOException("database"), new IOException("journal"));
+            using(var owned = new FileStream(state.MutationLockFilename,
+                      FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                var acknowledgementError = Assert.Throws<InvalidOperationException>(() =>
+                    new ShareRecoveryFatalState(config, new ProcessStatus(),
+                            config.ShareRecoveryStateDirectory)
+                        .Acknowledge(TextWriter.Null));
+                Assert.Contains("still owns", acknowledgementError.Message,
+                    StringComparison.OrdinalIgnoreCase);
+
+                var publicationError = Assert.Throws<InvalidOperationException>(() =>
+                    new ShareRecoveryFatalState(config, new ProcessStatus(),
+                            config.ShareRecoveryStateDirectory)
+                        .MarkFatal(1, new[] { "doge-solo" },
+                            new IOException("later database"),
+                            new IOException("later journal")));
+                Assert.Contains("still owns", publicationError.Message,
+                    StringComparison.OrdinalIgnoreCase);
+
+                var startupStatus = new ProcessStatus();
+                var startupError = Assert.Throws<PoolStartupException>(() =>
+                    new ShareRecoveryFatalState(config, startupStatus,
+                            config.ShareRecoveryStateDirectory)
+                        .EnsureStartupAllowed());
+                Assert.Contains("still owns", startupError.Message,
+                    StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                    startupStatus.ExitCode);
+            }
+
+            Assert.True(state.Acknowledge(TextWriter.Null));
         }
         finally
         {

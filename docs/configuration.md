@@ -192,7 +192,16 @@ acknowledgement or any incident it covers makes startup fail closed. The verifie
 `.fatal`, `.incident`, and `.acknowledged` metadata through the same restrictive,
 identity-checked handle, with strict UTF-8, an exact 64-KiB raw-byte total limit, and a 16-KiB
 per-line limit enforced while reading, and rejects mutation or path replacement while evidence is
-being checked.
+being checked. Every later startup performs the complete sidecar count, framing and SHA-256
+verification again, including after acknowledgement. A missing, truncated or replaced sidecar
+therefore keeps startup blocked with status 74 rather than trusting metadata alone.
+
+Acknowledging a prerelease v2-only incident set creates a durable v4 legacy-set anchor without
+rewriting or deleting the original evidence. A later v3 incident extends from that preserved set.
+Startup inspection, fatal-state publication and acknowledgement are serialized across Miningcore
+processes with the path-scoped `.mutation.lock` file in the state directory. The lock file is
+persistent state infrastructure, not incident evidence; leave it in place. If another service or
+recovery command owns it, the operation fails closed and reports that ownership instead of racing.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

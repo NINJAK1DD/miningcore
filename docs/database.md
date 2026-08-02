@@ -331,7 +331,16 @@ synchronises its directory. It is idempotent if the process stops between those 
 acknowledgement does not delete evidence and does not prove the database reconciliation on the
 operator's behalf. Startup accepts an acknowledged chain only when its latest anchor covers every
 retained incident; deleting or modifying covered evidence blocks startup. Later fatal incidents
-extend from that acknowledged tip and require a new acknowledgement after reconciliation.
+extend from that acknowledged tip and require a new acknowledgement after reconciliation. Startup
+also re-hashes and parses every retained sidecar on every launch, so a missing, truncated or
+replaced sidecar remains a status-74 failure even after acknowledgement.
+
+Prerelease v2-only incident sets are acknowledged through a v4 legacy-set anchor that preserves the
+original v2 evidence and lets the next v3 incident extend from it. Do not rename or rewrite those
+legacy files. Startup inspection, incident publication and acknowledgement share a path-scoped,
+cross-process `.mutation.lock` in the recovery-state directory. Leave that file in place. If the
+service or another recovery command owns it, stop the competing process or wait for it to finish;
+do not bypass the lock or edit the state by hand.
 
 Finally start Miningcore and inspect its complete startup, API health and pool state:
 

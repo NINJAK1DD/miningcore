@@ -68,7 +68,7 @@ internal static class ShareRecoveryIncidentChain
         }
 
         foreach(var acknowledgement in acknowledgements)
-            ValidateAcknowledgement(acknowledgement, current, legacy.Length,
+            ValidateAcknowledgement(acknowledgement, current, legacy,
                 legacyDigest);
 
         using var latchStream = RecoveryStateFile.TryOpenExactEntry(latchFilename,
@@ -87,8 +87,22 @@ internal static class ShareRecoveryIncidentChain
                 .OrderBy(x => x.Sequence)
                 .Last();
             var latestIncident = current.LastOrDefault();
-            if(latestIncident == null ||
-               latestAcknowledgement.Sequence != latestIncident.Sequence ||
+            if(latestIncident == null)
+            {
+                if(acknowledgements.Length != 1 ||
+                   latestAcknowledgement.FormatVersion != 4 ||
+                   latestAcknowledgement.ExpectedCount != incidents.Length ||
+                   latestAcknowledgement.LegacyCount != legacy.Length ||
+                   !string.Equals(latestAcknowledgement.ChainDigest,
+                       legacyDigest, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException(
+                        "The acknowledged legacy fatal anchor does not cover the complete retained incident collection");
+
+                return new ChainTip(0, EmptyPreviousDigest, legacy.Length,
+                    legacyDigest, incidents.Length);
+            }
+
+            if(latestAcknowledgement.Sequence != latestIncident.Sequence ||
                latestAcknowledgement.ExpectedCount != incidents.Length ||
                !string.Equals(latestAcknowledgement.ChainDigest,
                    latestIncident.FileDigest, StringComparison.OrdinalIgnoreCase))
@@ -141,6 +155,10 @@ internal static class ShareRecoveryIncidentChain
         $"{stem}.{tip.Sequence.ToString(CultureInfo.InvariantCulture)}-" +
         $"{tip.Digest.ToLowerInvariant()}.acknowledged");
 
+    public static string BuildLegacyAcknowledgementFilename(string directory,
+        string stem, ChainTip tip) => Path.Combine(directory,
+        $"{stem}.legacy-{tip.LegacyDigest.ToLowerInvariant()}.acknowledged");
+
     public static string ComputeDigest(string content) => Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 
@@ -177,6 +195,31 @@ internal static class ShareRecoveryIncidentChain
             return new IncidentEntry(filename, formatVersion, incidentId,
                 0, null, 0, null, fileDigest, null, 0);
 
+        if(formatVersion == 4)
+        {
+            if(!int.TryParse(Get(metadata, "legacyIncidentCount"),
+                   NumberStyles.None, CultureInfo.InvariantCulture,
+                   out var acknowledgedLegacyCount) || acknowledgedLegacyCount < 1 ||
+               !int.TryParse(Get(metadata, "expectedIncidentCount"),
+                   NumberStyles.None, CultureInfo.InvariantCulture,
+                   out var acknowledgedExpectedCount) || acknowledgedExpectedCount < 1 ||
+               !string.Equals(Get(metadata, "acknowledgementKind"),
+                   "legacy-v2-set", StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    $"Legacy fatal acknowledgement is malformed: {filename}");
+
+            var acknowledgedLegacyDigest = Get(metadata,
+                "legacyIncidentSetSha256");
+            var acknowledgedChainDigest = Get(metadata,
+                "incidentChainDigest");
+            EnsureDigest(acknowledgedLegacyDigest, filename);
+            EnsureDigest(acknowledgedChainDigest, filename);
+            return new IncidentEntry(filename, formatVersion, incidentId,
+                0, null, acknowledgedLegacyCount, acknowledgedLegacyDigest,
+                fileDigest, acknowledgedChainDigest,
+                acknowledgedExpectedCount);
+        }
+
         if(formatVersion != 3 ||
            !long.TryParse(Get(metadata, "incidentSequence"), NumberStyles.None,
                CultureInfo.InvariantCulture, out var sequence) || sequence <= 0 ||
@@ -207,9 +250,27 @@ internal static class ShareRecoveryIncidentChain
     }
 
     private static void ValidateAcknowledgement(IncidentEntry acknowledgement,
-        IReadOnlyCollection<IncidentEntry> current, int legacyCount,
+        IReadOnlyCollection<IncidentEntry> current,
+        IReadOnlyCollection<IncidentEntry> legacy,
         string legacyDigest)
     {
+        if(acknowledgement.FormatVersion == 4)
+        {
+            if(!legacy.Any(x => string.Equals(x.IncidentId,
+                   acknowledgement.IncidentId, StringComparison.Ordinal)) ||
+               acknowledgement.LegacyCount != legacy.Count ||
+               acknowledgement.ExpectedCount != legacy.Count ||
+               !string.Equals(acknowledgement.LegacyDigest, legacyDigest,
+                   StringComparison.OrdinalIgnoreCase) ||
+               !string.Equals(acknowledgement.ChainDigest, legacyDigest,
+                   StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"Legacy fatal acknowledgement does not anchor its exact incident set: " +
+                    acknowledgement.Filename);
+
+            return;
+        }
+
         if(acknowledgement.FormatVersion != 3 ||
            acknowledgement.ChainDigest == null ||
            acknowledgement.ExpectedCount < 1)
@@ -223,8 +284,8 @@ internal static class ShareRecoveryIncidentChain
                StringComparison.Ordinal) ||
            !string.Equals(incident.FileDigest, acknowledgement.ChainDigest,
                StringComparison.OrdinalIgnoreCase) ||
-           acknowledgement.ExpectedCount != legacyCount + acknowledgement.Sequence ||
-           acknowledgement.LegacyCount != legacyCount ||
+           acknowledgement.ExpectedCount != legacy.Count + acknowledgement.Sequence ||
+           acknowledgement.LegacyCount != legacy.Count ||
            !string.Equals(acknowledgement.LegacyDigest, legacyDigest,
                StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException(
