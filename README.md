@@ -416,6 +416,9 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   block candidates use additional synchronous persistence. The physical Windows/WSL sender-to-
   receiver route has passed interruption and reconnect testing, but a production relay deployment
   must still accept that ordinary shares sent while the receiver is unreachable are not replayed.
+  In relay-sender mode, “publish before positive response” means admission to the sender's local
+  in-memory relay queue only; it is not confirmation that the remote recorder or PostgreSQL received
+  the share.
 - **Block-submission timing is durability-first.** After local proof validation, the manager owns
   candidate delivery independently of miner EOF or TCP reset. Its ten-second merged-mining deadline
   covers daemon submission and attribution, not PostgreSQL retries or write-through recovery-journal
@@ -444,14 +447,17 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   entry, recovery import and every normal startup, including relay nodes. Trusted appends then verify
   file identity/length and hash only the new frame, keeping prolonged fallback linear. Every forced
   append also atomically updates an independent terminal sequence/digest anchor, so startup and import
-  detect deletion of a complete final frame. The in-memory persistence queue and its single emergency
+  detect deletion of a complete final frame. Active Stratum connection tasks and in-flight request
+  handlers are drained before recorder intake closes. The in-memory persistence queue and its single emergency
   journal writer are both bounded; storage I/O never runs while holding mining admission. Configure
   `shareRecoveryFile` as an absolute path on separately monitored or reserved storage where
   possible. Configure the service manager's stop timeout above 45 seconds; the supplied systemd
   example uses 90 seconds. Share Recorder limits graceful PostgreSQL drain to 25 seconds so the
   remaining host/service-manager window is available for unresolved journal and state commits. Recovery import
   uses a durable source-retirement marker and blocks normal startup/appends until an imported source
-  has been renamed, directory-synced and had its terminal anchor retired.
+  has been revalidated, renamed, directory-synced and had its terminal anchor retired. A sudden
+  process or machine loss can still lose acknowledged shares in the normal 65,536-share in-memory
+  queue; that capacity bounds the accepted volatile exposure and is not a power-loss guarantee.
 
 ## Production operation
 

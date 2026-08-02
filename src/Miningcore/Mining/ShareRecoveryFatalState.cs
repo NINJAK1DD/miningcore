@@ -2,6 +2,8 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Configuration;
+using Newtonsoft.Json;
+using Share = Miningcore.Blockchain.Share;
 
 namespace Miningcore.Mining;
 
@@ -11,6 +13,8 @@ public interface IShareRecoveryFatalState
     string FatalStateFilename { get; }
     void EnsureStartupAllowed();
     void MarkFatal(int shareCount, IReadOnlyCollection<string> pools,
+        Exception databaseError, Exception journalError);
+    void MarkFatalShares(IReadOnlyCollection<Share> shares,
         Exception databaseError, Exception journalError);
 }
 
@@ -45,6 +49,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     private readonly object fatalStateGate = new();
     private readonly ShareRecoveryTerminalState terminalState;
     private readonly ShareRecoveryImportState importState;
+    internal Action<string> DirectorySync { get; set; } =
+        SyncDirectoryWhereSupported;
 
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
@@ -55,6 +61,10 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         try
         {
             var markerEntryWasPresent = EnsureFatalStateDirectoryAccessible();
+            terminalState.DirectorySync = DirectorySync;
+            importState.DirectorySync = DirectorySync;
+            terminalState.EnsureDirectoryDurable();
+            importState.EnsureDirectoryDurable();
 
             try
             {
@@ -137,11 +147,27 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         Exception databaseError, Exception journalError)
     {
         lock(fatalStateGate)
-            MarkFatalCore(shareCount, pools, databaseError, journalError);
+            MarkFatalCore(shareCount, pools, null, databaseError, journalError);
+    }
+
+    public void MarkFatalShares(IReadOnlyCollection<Share> shares,
+        Exception databaseError, Exception journalError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+        var pools = shares.Select(x => x.PoolId)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToArray();
+
+        lock(fatalStateGate)
+            MarkFatalCore(shares.Count, pools, shares, databaseError,
+                journalError);
     }
 
     private void MarkFatalCore(int shareCount, IReadOnlyCollection<string> pools,
-        Exception databaseError, Exception journalError)
+        IReadOnlyCollection<Share> shares, Exception databaseError,
+        Exception journalError)
     {
         _ = EnsureFatalStateDirectoryAccessible();
         var recoveryPathHash = ComputeRecoveryPathHash(RecoveryFilename);
@@ -175,6 +201,19 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             .AppendLine($"databaseError={databaseError?.GetType().FullName}: {databaseError?.Message}")
             .AppendLine($"journalError={journalError?.GetType().FullName}: {journalError?.Message}")
             .AppendLine("Reconcile every incident before deleting this marker and restarting Miningcore.");
+
+        if(shares != null)
+        {
+            content.AppendLine($"exactShareRecordCount={shares.Count}");
+
+            foreach(var share in shares)
+            {
+                var json = JsonConvert.SerializeObject(share, Formatting.None);
+                content.Append("shareJsonBase64=")
+                    .AppendLine(Convert.ToBase64String(
+                        new UTF8Encoding(false).GetBytes(json)));
+            }
+        }
         var directory = Path.GetDirectoryName(FatalStateFilename)!;
         var temporary = Path.Combine(directory,
             $".{Path.GetFileName(FatalStateFilename)}.{Guid.NewGuid():N}.tmp");
@@ -192,7 +231,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             }
 
             File.Move(temporary, FatalStateFilename, true);
-            SyncDirectoryWhereSupported(directory);
+            DirectorySync(directory);
         }
         finally
         {
@@ -211,7 +250,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     private bool EnsureFatalStateDirectoryAccessible()
     {
         var directory = Path.GetDirectoryName(FatalStateFilename)!;
-        Directory.CreateDirectory(directory);
+        DurableDirectory.EnsureCreated(directory, DirectorySync);
 
         // Opening the directory for enumeration catches access and metadata failures that
         // File.Exists would incorrectly collapse into "marker missing".

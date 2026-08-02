@@ -44,7 +44,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this(cf, mapper, jsonSerializerSettings, shareRepo, blockRepo,
             PrepareTestRecoveryState(clusterConfig),
             messageBus, MissingShareRecoveryFailureHandler.Instance,
-            candidateFailureHandler)
+            MissingMiningFailStopCoordinator.Instance, candidateFailureHandler)
     {
     }
 
@@ -71,6 +71,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         ClusterConfig clusterConfig,
         IMessageBus messageBus,
         IShareRecoveryFailureHandler recoveryFailureHandler,
+        IMiningFailStopCoordinator failStopCoordinator,
         ICandidatePersistenceFailureHandler candidateFailureHandler = null)
     {
         Contract.RequiresNonNull(cf);
@@ -80,6 +81,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         Contract.RequiresNonNull(jsonSerializerSettings);
         Contract.RequiresNonNull(messageBus);
         ArgumentNullException.ThrowIfNull(recoveryFailureHandler);
+        ArgumentNullException.ThrowIfNull(failStopCoordinator);
 
         this.cf = cf;
         this.mapper = mapper;
@@ -88,6 +90,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this.candidateFailureHandler = candidateFailureHandler ??
             NullCandidatePersistenceFailureHandler.Instance;
         this.recoveryFailureHandler = recoveryFailureHandler;
+        this.failStopCoordinator = failStopCoordinator;
         this.clusterConfig = clusterConfig;
 
         this.shareRepo = shareRepo;
@@ -115,6 +118,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly IMessageBus messageBus;
     private readonly ICandidatePersistenceFailureHandler candidateFailureHandler;
     private readonly IShareRecoveryFailureHandler recoveryFailureHandler;
+    private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
@@ -158,6 +162,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         TimeSpan.FromSeconds(5);
     internal TimeSpan ShutdownPersistenceDrainTimeout { get; set; } =
         TimeSpan.FromSeconds(25);
+    internal TimeSpan ShutdownRecoveryCompletionTimeout { get; set; } =
+        TimeSpan.FromSeconds(20);
     internal int PersistenceQueueCapacity { get; set; } = 65_536;
     internal int EmergencyJournalQueueCapacity { get; set; } = 1_024;
     internal int PersistenceQueueHighWatermark =>
@@ -362,7 +368,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         CancellationToken ct)
     {
         var insertedBlocks = await cf.RunTx((con, tx) =>
-            PersistSharesBatchAsync(con, tx, shares, ct));
+            PersistSharesBatchAsync(con, tx, shares, ct), ct: ct,
+            classifyCommitOutcome: true);
 
         NotifyPersistedBlocks(insertedBlocks);
     }
@@ -391,7 +398,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             var blockEntity = mapper.Map<Block>(share);
             blockEntity.Status = BlockStatus.Pending;
-            var inserted = await blockRepo.InsertAsync(con, tx, blockEntity);
+            var inserted = await blockRepo.InsertAsync(con, tx, blockEntity, ct);
 
             if(!inserted)
                 continue;
@@ -1274,16 +1281,48 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             string recoveryFilename, Exception databaseError, Exception journalError) =>
             throw new InvalidOperationException(
                 "A required share-recovery failure handler was not supplied");
+
+        public Task StopClusterAfterJournalAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception pipelineError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
+        public Task StopClusterForUncertainCommitAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception commitError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+    }
+
+    private sealed class MissingMiningFailStopCoordinator :
+        IMiningFailStopCoordinator
+    {
+        public static readonly MissingMiningFailStopCoordinator Instance = new();
+        public bool IsFailStopRequested => false;
+        public CancellationToken Token => CancellationToken.None;
+        public IMiningSubmissionAcceptance AcquireSubmissionAcceptance() =>
+            throw new InvalidOperationException(
+                "The test-only ShareRecorder constructor has no mining admission coordinator");
+        public bool BeginFailStop(int exitCode) => false;
     }
 
     public async Task<string> RecoverSharesAsync(string filename)
     {
         filename = Path.GetFullPath(filename);
         logger.Info(() => $"Recovering shares using {filename} ...");
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
         var configuredSource = string.Equals(filename, recoveryFilename,
-            OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal);
+            comparison);
+
+        if(!configuredSource && RecoveryPathsReferToSameFile(filename,
+               recoveryFilename))
+            throw new InvalidDataException(
+                $"Recovery source {filename} is a filesystem alias of the configured active " +
+                $"journal {recoveryFilename}. Recover the exact configured path so its terminal " +
+                "anchor, import marker and retirement operation cannot be bypassed.");
         var importState = configuredSource
             ? recoveryImportState
             : new ShareRecoveryImportState(filename,
@@ -1295,7 +1334,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             if(existingMarker?.Phase ==
                ShareRecoveryImportState.ImportPhase.Committed)
             {
-                var resumedArchive = RetireImportedRecoveryFile(filename,
+                var resumedArchive = await RetireImportedRecoveryFileAsync(filename,
                     existingMarker, configuredSource, importState);
                 logger.Info(() => $"Completed durable retirement of previously imported " +
                     $"recovery source {filename} as {resumedArchive}");
@@ -1396,7 +1435,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 }
             }
 
-            var archiveFilename = RetireImportedRecoveryFile(filename, marker,
+            var archiveFilename = await RetireImportedRecoveryFileAsync(filename, marker,
                 configuredSource, importState);
             NotifyPersistedBlocks(insertedBlocks);
             logger.Info(() => insertedNewContent
@@ -1500,7 +1539,74 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             Guid.NewGuid().ToString("N");
     }
 
-    private string RetireImportedRecoveryFile(string filename,
+    private static bool RecoveryPathsReferToSameFile(string first,
+        string second)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        first = Path.GetFullPath(first);
+        second = Path.GetFullPath(second);
+
+        if(string.Equals(first, second, comparison))
+            return true;
+
+        if(!File.Exists(first) || !File.Exists(second))
+            return false;
+
+        try
+        {
+            using var firstStream = new FileStream(first, FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var secondStream = new FileStream(second, FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return RecoveryJournalFileIdentity.Read(firstStream) ==
+                RecoveryJournalFileIdentity.Read(secondStream);
+        }
+        catch(IOException)
+        {
+            return false;
+        }
+        catch(UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private async Task ValidateCommittedRecoveryFileAsync(FileStream stream,
+        string filename, ShareRecoveryImportState.ImportMarker marker,
+        bool configuredSource)
+    {
+        EnsureRecoveryJournalAppendBoundary(stream, filename);
+        stream.Seek(0, SeekOrigin.Begin);
+        var tail = ValidateRecoveryJournalDetailed(stream, filename);
+
+        if(configuredSource)
+            recoveryTerminalState.EnsureConsistent(tail.Sequence,
+                tail.FrameDigest, tail.IsChainedFormat);
+
+        stream.Seek(0, SeekOrigin.Begin);
+        using var reader = new StreamReader(stream, new UTF8Encoding(false),
+            true, 1024, leaveOpen: true);
+        var contentHash = new RecoveryContentHasher(jsonSerializerSettings);
+        var recordCount = await ProcessRecoveryRecordsAsync(reader, shares =>
+        {
+            contentHash.Append(shares);
+            return Task.CompletedTask;
+        });
+        var fileHash = contentHash.GetHash();
+
+        if(recordCount != marker.RecordCount ||
+           !string.Equals(fileHash, marker.FileHash,
+               StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"Committed recovery source {filename} no longer matches its import marker. " +
+                $"Expected {marker.RecordCount} records " +
+                $"[{marker.FileHash}], found {recordCount} [{fileHash}]. Preserve all evidence " +
+                "and reconcile the source before retirement.");
+    }
+
+    private async Task<string> RetireImportedRecoveryFileAsync(string filename,
         ShareRecoveryImportState.ImportMarker marker, bool configuredSource,
         ShareRecoveryImportState importState)
     {
@@ -1509,18 +1615,50 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidDataException(
                 $"Recovery source {filename} cannot be retired before its database import is committed");
 
-        if(File.Exists(filename))
-        {
-            if(File.Exists(marker.ArchiveFilename))
-                throw new IOException(
-                    $"Recovery archive target {marker.ArchiveFilename} already exists");
+        var sourceExists = File.Exists(filename);
+        var archiveExists = File.Exists(marker.ArchiveFilename);
 
+        if(sourceExists == archiveExists)
+            throw new IOException(sourceExists
+                ? $"Both recovery source {filename} and archive target " +
+                  $"{marker.ArchiveFilename} exist"
+                : $"Neither committed recovery source {filename} nor its recorded archive " +
+                  $"{marker.ArchiveFilename} exists");
+
+        var retainedFilename = sourceExists ? filename : marker.ArchiveFilename;
+        await using var retained = new FileStream(retainedFilename,
+            new FileStreamOptions
+            {
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                // Keep managed writers/replacers out for the complete retirement protocol while
+                // still allowing the validated source entry to be atomically renamed.
+                Share = FileShare.Read | FileShare.Delete,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+            });
+        var validatedIdentity = RecoveryJournalFileIdentity.Read(retained);
+        await ValidateCommittedRecoveryFileAsync(retained, retainedFilename,
+            marker, configuredSource);
+
+        if(sourceExists)
+        {
             RecoveryArchiveMove(filename, marker.ArchiveFilename);
+            using var archived = new FileStream(marker.ArchiveFilename,
+                FileMode.Open, FileAccess.Read, FileShare.Read);
+            var archivedIdentity = RecoveryJournalFileIdentity.Read(archived);
+
+            if(archivedIdentity != validatedIdentity)
+                throw new InvalidDataException(
+                    $"Recovery source {filename} was replaced while it was being retired. " +
+                    $"The committed marker remains at {importState.Filename}; preserve the " +
+                    "archive and surrounding storage for reconciliation.");
         }
-        else if(!File.Exists(marker.ArchiveFilename))
-            throw new FileNotFoundException(
-                "Neither the committed recovery source nor its recorded archive exists",
-                filename);
+
+        // Re-read the still-open, non-writable file object after the rename. This catches a
+        // same-inode modification between the initial check and retirement as well as a pathname
+        // replacement (which is independently caught by the identity comparison above).
+        await ValidateCommittedRecoveryFileAsync(retained,
+            marker.ArchiveFilename, marker, configuredSource);
 
         // Persist the source rename before retiring its independent anchor. If this sync fails,
         // the committed marker remains and startup/appends stay blocked until recovery resumes.
@@ -1682,7 +1820,22 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             persistenceDrainCancellation.Cancel();
 
             if(ExecuteTask != null)
-                await ExecuteTask;
+            {
+                try
+                {
+                    await ExecuteTask.WaitAsync(ShutdownRecoveryCompletionTimeout);
+                }
+                catch(TimeoutException ex)
+                {
+                    var unresolved = SnapshotUnresolvedShares();
+                    await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                        unresolved, recoveryFilename, new TimeoutException(
+                            "The share-persistence transaction did not stop within the bounded " +
+                            "post-cancellation recovery window; its database outcome is uncertain",
+                            ex));
+                    throw;
+                }
+            }
         }
 
         await base.StopAsync(CancellationToken.None);
@@ -1778,6 +1931,24 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 await JournalUnresolvedSharesOnShutdownAsync();
                 return;
             }
+            catch(TransactionCommitOutcomeUncertainException commitError)
+            {
+                QuiesceQueueIntake(subscription, queue, emergencyQueue,
+                    commitError);
+                await emergencyProcessing;
+                await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                    SnapshotUnresolvedShares(), recoveryFilename, commitError);
+                throw;
+            }
+            catch(Exception pipelineError)
+            {
+                QuiesceQueueIntake(subscription, queue, emergencyQueue,
+                    pipelineError);
+                await emergencyProcessing;
+                await JournalUnresolvedSharesAfterPipelineFailureAsync(
+                    pipelineError);
+                throw;
+            }
 
             await emergencyProcessing;
         }
@@ -1788,6 +1959,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             Volatile.Write(ref persistenceQueueWriter, null);
             Volatile.Write(ref emergencyJournalQueueWriter, null);
         }
+    }
+
+    private void QuiesceQueueIntake(IDisposable subscription,
+        Channel<QueuedShare> queue, Channel<QueuedShare> emergencyQueue,
+        Exception error)
+    {
+        failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        Interlocked.CompareExchange(ref shareSubscription, null,
+            subscription)?.Dispose();
+        queue.Writer.TryComplete(error);
+        emergencyQueue.Writer.TryComplete();
     }
 
     private void EnqueueShare(Channel<QueuedShare> queue,
@@ -1958,6 +2140,41 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             await FailStopUnresolvedSharesAsync(databaseError, journalError);
             throw;
+        }
+    }
+
+    private async Task JournalUnresolvedSharesAfterPipelineFailureAsync(
+        Exception pipelineError)
+    {
+        var unresolved = SnapshotUnresolvedShares();
+        if(unresolved.Length == 0)
+        {
+            await recoveryFailureHandler.StopClusterAfterJournalAsync(
+                unresolved, recoveryFilename, pipelineError);
+            return;
+        }
+
+        try
+        {
+            await WriteRecoveryJournalAsync(unresolved);
+            NotifyAdminOnPolicyFallbackSafely();
+
+            foreach(var item in unresolvedShares.ToArray())
+            {
+                if(unresolvedShares.TryRemove(item.Key, out var removed))
+                    removed.JournalCompletion?.TrySetResult();
+            }
+
+            await recoveryFailureHandler.StopClusterAfterJournalAsync(
+                unresolved, recoveryFilename, pipelineError);
+        }
+        catch(Exception journalError)
+        {
+            pipelineError.Data["RecoveryJournalException"] = journalError;
+            await FailStopUnresolvedSharesAsync(pipelineError, journalError);
+            throw new IOException(
+                "An unexpected share-persistence failure was followed by recovery-journal failure",
+                new AggregateException(pipelineError, journalError));
         }
     }
 

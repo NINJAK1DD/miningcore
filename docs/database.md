@@ -229,12 +229,25 @@ SHA-256 manifest atomically. Before the transaction it writes an independent pat
 marker; after commit it advances that marker, atomically renames the source with an `.imported-*`
 suffix, synchronises the source directory, retires the terminal anchor, and removes the marker last.
 Normal startup and fallback appends are blocked while an import marker remains. If recovery reports
-an archive, directory-sync or anchor-retirement failure, do not edit or grow the source: rerun the
-same recovery command with the same configuration. Miningcore resumes retirement and uses the
-database manifest to avoid reinserting already committed records. Retain
+an archive, directory-sync or anchor-retirement failure, do not edit, replace or grow the source:
+rerun the same recovery command with the same configuration and exact source path. Miningcore
+revalidates the complete chain, terminal anchor, semantic hash and record count before resuming
+retirement, and retains the committed marker if any property changed. A symlink or hard-link alias of
+the configured journal is rejected because it could otherwise acquire different path-scoped safety
+state. Miningcore resumes retirement and uses the database manifest to avoid reinserting already
+committed records. Retain
 the archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
 import unexplained journals from old working directories or previous deployments; reconcile their
-origin and existing manifest first.
+origin and existing manifest first. Manifests identify whole semantic files, not individual shares:
+importing `A` and then an overlapping `A+B` source can duplicate `A`, so never combine or import
+overlapping recovery sets.
+
+An `Uncertain PostgreSQL share commit` incident is deliberately different from an ordinary recovery
+journal. Miningcore cannot prove whether PostgreSQL committed, so it does **not** append those shares
+to the importable journal. The status-74 fatal marker contains every exact share as a
+`shareJsonBase64=` record for read-only reconciliation. Decode and compare those records with
+PostgreSQL; do not copy them into a journal or replay them unless reconciliation proves they are
+absent. Preserve the marker until every record has a conclusive disposition.
 
 Frame chains detect duplicated, missing and reordered middle frames. New writes also commit the
 expected final sequence and digest under the independently stored

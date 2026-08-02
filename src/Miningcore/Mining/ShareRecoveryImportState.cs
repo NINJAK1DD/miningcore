@@ -20,6 +20,14 @@ internal sealed class ShareRecoveryImportState
 
     public string RecoveryFilename { get; }
     public string Filename { get; }
+    internal Action<string> DirectorySync { get; set; } =
+        ShareRecoveryFatalState.SyncDirectoryWhereSupported;
+
+    internal void EnsureDirectoryDurable()
+    {
+        DurableDirectory.EnsureCreated(Path.GetDirectoryName(Filename)!,
+            DirectorySync);
+    }
 
     public ImportMarker TryRead()
     {
@@ -106,26 +114,13 @@ internal sealed class ShareRecoveryImportState
         var directory = Path.GetDirectoryName(Filename)!;
         File.Delete(Filename);
         if(Directory.Exists(directory))
-            ShareRecoveryFatalState.SyncDirectoryWhereSupported(directory);
+            DirectorySync(directory);
     }
 
     private void Write(ImportMarker marker, bool replace)
     {
         var directory = Path.GetDirectoryName(Filename)!;
-        var stateDirectory = Path.GetDirectoryName(directory)!;
-        var stateDirectoryExisted = Directory.Exists(stateDirectory);
-        Directory.CreateDirectory(stateDirectory);
-        if(!stateDirectoryExisted)
-        {
-            var stateParent = Path.GetDirectoryName(stateDirectory);
-            if(!string.IsNullOrEmpty(stateParent))
-                ShareRecoveryFatalState.SyncDirectoryWhereSupported(stateParent);
-        }
-        var directoryExisted = Directory.Exists(directory);
-        Directory.CreateDirectory(directory);
-        if(!directoryExisted)
-            ShareRecoveryFatalState.SyncDirectoryWhereSupported(
-                stateDirectory);
+        EnsureDirectoryDurable();
         var temporary = Path.Combine(directory,
             $".{Path.GetFileName(Filename)}.{Guid.NewGuid():N}.tmp");
         var archiveBytes = Encoding.UTF8.GetBytes(marker.ArchiveFilename);
@@ -148,7 +143,7 @@ internal sealed class ShareRecoveryImportState
             }
 
             File.Move(temporary, Filename, replace);
-            ShareRecoveryFatalState.SyncDirectoryWhereSupported(directory);
+            DirectorySync(directory);
         }
         finally
         {

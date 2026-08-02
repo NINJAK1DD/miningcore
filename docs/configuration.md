@@ -95,6 +95,12 @@ Stratum response waits for that forced append. If both bounded capacities are ex
 emergency append fails, Miningcore admits no positive response and enters the status-74 fatal path
 with the complete unresolved count and pool set.
 
+The normal 65,536-share queue is intentionally memory-resident for throughput. A positive Stratum
+response proves local accounting-pipeline admission, but an abrupt process, kernel or machine loss
+can still lose acknowledged entries that had not yet reached PostgreSQL. Treat 65,536 as the maximum
+configured volatile exposure, not a crash-durability promise. Graceful shutdown drains active
+Stratum request handlers before closing recorder intake, then accounts for every admitted queue item.
+
 Graceful shutdown first closes share intake, disposes the subscription and completes both writers.
 The queue drain does not use the normal `BackgroundService` stopping token. Share Recorder limits
 its own PostgreSQL drain to 25 seconds (or the remaining portion of the 45-second host budget,
@@ -127,11 +133,20 @@ platform application-data default is unsuitable. Keep this state on service-owne
 independent of the journal's expected failure domain. Container deployments should mount that state
 directory on persistent storage so replacing the container cannot discard an unreconciled latch.
 The sibling `share-recovery-terminal` and `share-recovery-import` directories are equally
-authoritative. Do not delete or edit their path-hashed files independently. Recovery writes a
+authoritative. All three safety-state subdirectories are pre-created during startup, with every new
+directory entry parent-synchronised on Linux before mining is accepted. Do not delete or edit their
+path-hashed files independently. Recovery writes a
 pending import marker before opening its PostgreSQL transaction, advances it after commit, then
-removes it only after atomically archiving and directory-syncing the source and retiring the matching
-anchor. Normal startup and journal appends remain blocked while that marker exists; rerun the same
-recovery command to resume an interrupted retirement without replaying committed shares.
+removes it only after reopening and fully revalidating the retained source, atomically archiving and
+directory-syncing it, revalidating the same file object, and retiring the matching anchor. Normal
+startup and journal appends remain blocked while that marker exists; rerun the same recovery command
+with the exact configured path to resume an interrupted retirement without replaying committed
+shares. Filesystem aliases of the active journal are rejected rather than given independent state.
+
+Whole-file import manifests reject exact semantic replay of a complete source, but they are not a
+per-share uniqueness key. Never import overlapping reviewed files such as `A` and later `A+B`, and
+never combine previously imported records into a new source. Reconcile each source's provenance,
+manifest hash and record count before import.
 
 The supplied unit has `RestartPreventExitStatus=74`, while the independently stored latch blocks
 every normal startup, including relay configurations. An inaccessible or uncertain state directory

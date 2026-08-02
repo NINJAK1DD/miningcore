@@ -5,7 +5,8 @@ namespace Miningcore.Persistence.Repositories;
 
 public interface IBlockRepository
 {
-    Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block);
+    Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block,
+        CancellationToken ct = default);
     Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
     Task<bool> UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
     Task<Block> GetBlockByIdForUpdateAsync(IDbConnection con, IDbTransaction tx, long id);

@@ -20,6 +20,14 @@ internal sealed class ShareRecoveryTerminalState
 
     public string RecoveryFilename { get; }
     public string Filename { get; }
+    internal Action<string> DirectorySync { get; set; } =
+        ShareRecoveryFatalState.SyncDirectoryWhereSupported;
+
+    internal void EnsureDirectoryDurable()
+    {
+        DurableDirectory.EnsureCreated(Path.GetDirectoryName(Filename)!,
+            DirectorySync);
+    }
 
     public void Write(long sequence, string digest)
     {
@@ -28,7 +36,7 @@ internal sealed class ShareRecoveryTerminalState
         ArgumentException.ThrowIfNullOrWhiteSpace(digest);
 
         var directory = Path.GetDirectoryName(Filename)!;
-        Directory.CreateDirectory(directory);
+        EnsureDirectoryDurable();
         var temporary = Path.Combine(directory,
             $".{Path.GetFileName(Filename)}.{Guid.NewGuid():N}.tmp");
         var content = string.Join('\n',
@@ -48,7 +56,7 @@ internal sealed class ShareRecoveryTerminalState
             }
 
             File.Move(temporary, Filename, true);
-            ShareRecoveryFatalState.SyncDirectoryWhereSupported(directory);
+            DirectorySync(directory);
         }
         finally
         {
@@ -110,7 +118,7 @@ internal sealed class ShareRecoveryTerminalState
             File.Delete(Filename);
             var directory = Path.GetDirectoryName(Filename)!;
             if(Directory.Exists(directory))
-                ShareRecoveryFatalState.SyncDirectoryWhereSupported(directory);
+                DirectorySync(directory);
         }
         catch(FileNotFoundException)
         {

@@ -112,6 +112,44 @@ public class StratumServerTests
     }
 
     [Fact]
+    public async Task RunAsync_ShutdownDrainsInFlightRequestHandler()
+    {
+        var server = new TestStratumServer();
+        var requestEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRequest = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        server.RequestHandler = async (_, _, ct) =>
+        {
+            requestEntered.TrySetResult();
+            await releaseRequest.Task;
+            Assert.True(ct.IsCancellationRequested);
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var runTask = server.RunListenerAsync(cts.Token, new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint()));
+
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port, CancellationToken.None)
+            .AsTask().WaitAsync(TestTimeout);
+        await using var stream = client.GetStream();
+        var request = StratumConnection.Encoding.GetBytes(
+            "{\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+        await stream.WriteAsync(request);
+        await stream.FlushAsync();
+        await requestEntered.Task.WaitAsync(TestTimeout);
+
+        cts.Cancel();
+        await Task.Delay(50);
+        Assert.False(runTask.IsCompleted);
+
+        releaseRequest.TrySetResult();
+        await runTask.WaitAsync(TestTimeout);
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+    }
+
+    [Fact]
     public async Task RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake()
     {
         const string pfxPassword = "miningcore-test-password";
@@ -246,6 +284,9 @@ public class StratumServerTests
             bool publishShare) =>
             PublishShareAndAcknowledgeAsync(share, acknowledge, publishShare);
 
+        public Func<StratumConnection, Timestamped<JsonRpcRequest>,
+            CancellationToken, Task> RequestHandler { get; set; }
+
         public Task RunListenerAsync(CancellationToken ct)
         {
             return RunListenerAsync(ct, new StratumEndpoint(
@@ -280,7 +321,8 @@ public class StratumServerTests
         protected override Task OnRequestAsync(StratumConnection connection,
             Timestamped<JsonRpcRequest> request, CancellationToken ct)
         {
-            return Task.CompletedTask;
+            return RequestHandler?.Invoke(connection, request, ct) ??
+                Task.CompletedTask;
         }
 
         protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)

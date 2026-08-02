@@ -17,7 +17,8 @@ public class BlockRepository : IBlockRepository
     private const string PublicBlockTypesFilter =
         "(type IS NULL OR type NOT IN ('auxpow-claim', 'parent-uncertain', 'merged-parent-uncertain'))";
 
-    public async Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx, Block block)
+    public async Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx,
+        Block block, CancellationToken ct = default)
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
@@ -43,7 +44,8 @@ public class BlockRepository : IBlockRepository
             _ => query,
         };
 
-        return await con.ExecuteAsync(command, mapped, tx) > 0;
+        return await con.ExecuteAsync(new CommandDefinition(command, mapped, tx,
+            cancellationToken: ct)) > 0;
     }
 
     public async Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block)

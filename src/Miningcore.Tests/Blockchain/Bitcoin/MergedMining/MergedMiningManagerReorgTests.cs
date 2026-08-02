@@ -372,7 +372,7 @@ public class MergedMiningManagerReorgTests
         var connection = new StratumConnection(
             new NullLogger(LogManager.LogFactory),
             new RecyclableMemoryStreamManager(), clock, "candidate-eof", false);
-        connection.DispatchAsync(serverSocket, CancellationToken.None,
+        var dispatch = connection.DispatchAsync(serverSocket, CancellationToken.None,
             new StratumEndpoint(listenerEndpoint, new PoolEndpoint()),
             (IPEndPoint) client.Client.LocalEndPoint, null, HandleRequestAsync,
             _ => connectionClosed.TrySetResult(null),
@@ -386,9 +386,10 @@ public class MergedMiningManagerReorgTests
         await operationRegistered.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         client.Close();
-        var dispatchError = await connectionClosed.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Assert.Null(dispatchError);
+        Assert.True(SpinWait.SpinUntil(() => requestToken.IsCancellationRequested,
+            TimeSpan.FromSeconds(2)));
+        Assert.False(dispatch.IsCompleted);
+        Assert.False(connectionClosed.Task.IsCompleted);
         Assert.True(requestToken.IsCancellationRequested);
         Assert.False(operationToken.IsCancellationRequested);
         Assert.False(candidateOperation.IsCompleted);
@@ -399,6 +400,10 @@ public class MergedMiningManagerReorgTests
         Assert.Equal(new[] { true },
             await candidateOperation.WaitAsync(TimeSpan.FromSeconds(2)));
         await shutdownDrain.WaitAsync(TimeSpan.FromSeconds(2));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        var dispatchError = await connectionClosed.Task.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Null(dispatchError);
         await recorder.Received(1).PersistBlockCandidateAsync(candidate);
     }
 

@@ -77,12 +77,7 @@ public sealed class CandidatePersistenceFailureHandler :
         {
             try
             {
-                var pools = candidates.Select(x => x.PoolId)
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(x => x, StringComparer.Ordinal)
-                    .ToArray();
-                fatalState.MarkFatal(candidates.Count, pools, databaseError,
+                fatalState.MarkFatalShares(candidates, databaseError,
                     journalError);
             }
             catch(Exception ex)

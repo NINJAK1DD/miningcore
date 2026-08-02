@@ -73,6 +73,7 @@ public abstract class StratumServer
     }
 
     protected readonly ConcurrentDictionary<string, StratumConnection> connections = new();
+    private readonly ConcurrentDictionary<string, Task> connectionTasks = new();
     protected static readonly ConcurrentDictionary<string, X509Certificate2> certs = new();
     protected static readonly HashSet<int> ignoredSocketErrors;
 
@@ -119,6 +120,8 @@ public abstract class StratumServer
         {
             foreach(var item in servers)
                 item.Server.Dispose();
+
+            await DrainConnectionsAsync();
         }
     }
 
@@ -156,7 +159,7 @@ public abstract class StratumServer
 
     private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert, CancellationToken ct)
     {
-        Task.Run(() => Guard(() =>
+        Guard(() =>
         {
             var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
 
@@ -188,8 +191,55 @@ public abstract class StratumServer
             RegisterConnection(connection);
             OnConnect(connection, port.IPEndPoint);
 
-            connection.DispatchAsync(socket, ct, port, remoteEndpoint, cert, OnRequestAsync, OnConnectionComplete, OnConnectionError);
-        }, ex=> logger.Error(ex)), ct);
+            var dispatch = connection.DispatchAsync(socket, ct, port,
+                remoteEndpoint, cert, OnRequestAsync, OnConnectionComplete,
+                OnConnectionError);
+            if(!connectionTasks.TryAdd(connection.ConnectionId, dispatch))
+                throw new InvalidOperationException(
+                    $"Connection task {connection.ConnectionId} is already tracked");
+
+            _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch);
+        }, ex=> logger.Error(ex));
+    }
+
+    private async Task ObserveConnectionTaskAsync(string connectionId,
+        Task dispatch)
+    {
+        try
+        {
+            await dispatch;
+        }
+        catch(Exception ex)
+        {
+            // Dispatch reports connection errors through OnConnectionError. This observer exists
+            // to keep the task rooted and guarantee removal even if a callback itself fails.
+            logger.Error(ex,
+                "Unexpected failure while finalising Stratum connection {0}",
+                connectionId);
+        }
+        finally
+        {
+            connectionTasks.TryRemove(connectionId, out _);
+        }
+    }
+
+    private async Task DrainConnectionsAsync()
+    {
+        foreach(var connection in connections.Values)
+        {
+            try
+            {
+                connection.Disconnect();
+            }
+            catch(Exception ex) when(ex is IOException or ObjectDisposedException)
+            {
+                // A connection may still be between accept and stream construction. Its linked
+                // shutdown token is already cancelled and its tracked dispatch task is drained.
+            }
+        }
+
+        while(connectionTasks.Count > 0)
+            await Task.WhenAll(connectionTasks.Values);
     }
 
     protected void RegisterConnection(StratumConnection connection)

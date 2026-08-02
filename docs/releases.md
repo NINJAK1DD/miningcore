@@ -60,9 +60,27 @@ closed with status 74. Configure
 absolute path on separately monitored or reserved storage where possible; the recovery runbook
 explains evidence preservation and atomic, manifested import verification.
 Recovery import now uses a durable pending/committed source-retirement marker. Startup and fallback
-appends remain blocked until the committed source rename, parent-directory sync and terminal-anchor
-retirement finish; rerunning recovery resumes that sequence without changing the manifest identity
-or replaying records.
+appends remain blocked until the retained source's complete chain, anchor, semantic hash, record
+count and file identity are revalidated, the committed source rename and parent-directory sync
+finish, and the terminal anchor retires. The same non-writable file object is checked again after
+rename. Rerunning recovery resumes that sequence without changing the manifest identity or replaying
+records; filesystem aliases of the configured source are rejected. Operators must not import
+overlapping reviewed files because manifests identify whole sources rather than individual shares.
+
+Unexpected mapper, connection, transaction or repository failures now quiesce mining, force-flush
+the complete unresolved registry to the recovery journal and stop with a general failure. If the
+journal also fails, status 74 and the fatal latch remain authoritative. The PostgreSQL transaction
+lifecycle is cancellation-aware and bounded through open, begin, repository commands, commit and
+rollback. A commit whose outcome cannot be proven is never copied to the importable journal; exact
+share JSON is retained in the status-74 marker for reconciliation. Active Stratum dispatch tasks and
+in-flight request handlers are drained before Share Recorder intake closes. Fatal, terminal and
+import state subdirectories are durably parent-synchronised on first creation.
+
+These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay
+sender's positive response proves only local in-memory relay-queue admission, not remote receipt or
+PostgreSQL persistence. Also, up to the normal 65,536-share local recorder queue remains volatile
+during abrupt process or machine loss; the bound limits exposure but does not provide power-loss
+durability.
 
 ## Payout and WebSocket compatibility
 

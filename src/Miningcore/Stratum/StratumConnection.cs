@@ -76,7 +76,7 @@ public class StratumConnection
 
     #region API-Surface
 
-    public async void DispatchAsync(Socket socket, CancellationToken ct,
+    public async Task DispatchAsync(Socket socket, CancellationToken ct,
         StratumEndpoint endpoint, IPEndPoint remoteEndpoint, X509Certificate2 cert,
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync,
         Action<StratumConnection> onCompleted,
@@ -137,17 +137,31 @@ public class StratumConnection
 
                 await Task.WhenAny(tasks);
 
-                // We are done with this client, make sure all tasks complete
-                await receivePipe.Reader.CompleteAsync();
-                await receivePipe.Writer.CompleteAsync();
+                // Stop network I/O, but do not declare the connection complete until an in-flight
+                // request handler has reached an admitted-or-rejected outcome. Handlers receive
+                // cancellation and are then explicitly drained below.
+                cts.Cancel();
                 sendQueue.Complete();
 
-                // additional safety net to ensure remaining tasks don't linger
-                cts.Cancel();
+                Exception error = null;
+                try
+                {
+                    await Task.WhenAll(tasks);
+                }
+                catch(Exception ex)
+                {
+                    error = tasks
+                        .Where(task => task.IsFaulted)
+                        .SelectMany(task => task.Exception!.Flatten().InnerExceptions)
+                        .FirstOrDefault(candidate =>
+                            candidate is not OperationCanceledException) ??
+                        (ex is OperationCanceledException ? null : ex);
+                }
+
+                await receivePipe.Reader.CompleteAsync();
+                await receivePipe.Writer.CompleteAsync();
 
                 // Signal completion or error
-                var error = tasks.FirstOrDefault(t => t.IsFaulted)?.Exception;
-
                 if(error == null)
                     onCompleted(this);
                 else
@@ -221,7 +235,7 @@ public class StratumConnection
 
     public void Disconnect()
     {
-        networkStream.Close();
+        networkStream?.Close();
     }
 
     #endregion // API-Surface
