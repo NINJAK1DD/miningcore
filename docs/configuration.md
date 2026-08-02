@@ -64,8 +64,10 @@ from creating an independent owner for the same journal. A second local recorder
 relay submitter or recovery import using the same journal fails before pools start, even if it uses
 different Stratum ports or reaches the parent through a directory symlink. Journal-file symlinks and
 hard links are rejected; use one regular-file pathname. Miningcore retains the physical parent-
-directory identity and rechecks it before journal mutation, so replacing a directory or retargeting
-a configured parent symlink fails closed. The hidden owner must itself remain a single-name regular
+directory identity and performs journal opens, temporary creation, publication, retirement, deletion
+and Linux directory sync relative to that retained directory. Replacing a directory or retargeting
+a configured parent symlink therefore cannot redirect an operation to a different directory and
+fails closed before Miningcore continues. The hidden owner must itself remain a single-name regular
 file: owner-file symlinks and hard links are rejected. The owner is released only after a successful
 final recorder drain; process-fatal shutdown retains it until the operating system closes the process
 handle. Do not delete the `.miningcore-share-recovery-*.owner.lock` file beside `shareRecoveryFile`

@@ -243,10 +243,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal long RecoveryValidationBytesRead =>
         Interlocked.Read(ref recoveryValidationBytesRead);
     private long recoveryValidationBytesRead;
-    internal Action<string> RecoveryDirectorySync { get; set; } =
-        ShareRecoveryFatalState.SyncDirectoryWhereSupported;
-    internal Action<string, string> RecoveryArchiveMove { get; set; } =
-        (source, destination) => File.Move(source, destination);
+    internal Action<string> RecoveryDirectorySync { get; set; }
+    internal Action<string, string> RecoveryArchiveMove { get; set; }
     internal Action RecoveryArchiveMoveCheckpoint { get; set; } = () => { };
     internal Func<Stream, Task> RecoveryJournalFlush { get; set; } =
         FlushRecoveryJournalAsync;
@@ -607,8 +605,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // The no-follow writer handle is itself validated as a single-name regular file.
                 // This closes the inspection/open substitution window as well as retaining the
                 // exclusive active-file boundary.
-                stream = RecoveryJournalPathSafety.OpenJournalForWriteExisting(
-                    recoveryFilename);
+                stream = recoveryPathOwnership.OpenRecoveryEntry(recoveryFilename,
+                    FileMode.Open, FileAccess.ReadWrite, FileShare.None,
+                    FileOptions.Asynchronous | FileOptions.WriteThrough,
+                    "Recovery journal");
             }
             catch(FileNotFoundException)
             {
@@ -697,14 +697,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             recoveryPathOwnership.EnsureJournalPathIsExclusive();
-            await using(var stream = new FileStream(temporary,
-                new FileStreamOptions
-                {
-                    Mode = FileMode.CreateNew,
-                    Access = FileAccess.ReadWrite,
-                    Share = FileShare.None,
-                    Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
-                }))
+            await using(var stream = recoveryPathOwnership.OpenRecoveryEntry(
+                temporary, FileMode.CreateNew, FileAccess.ReadWrite,
+                FileShare.None,
+                FileOptions.Asynchronous | FileOptions.WriteThrough,
+                "Recovery journal temporary"))
             {
                 var payload = BuildRecoveryJournalPayload(shares, true,
                     1, EmptyFrameDigest);
@@ -715,13 +712,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // A force-flushed file is not a durable first creation until its directory entry is
             // atomically published and the containing directory is synchronised on Linux.
             recoveryPathOwnership.EnsureJournalPathIsExclusive();
-            File.Move(temporary, recoveryFilename, false);
-            RecoveryDirectorySync(directory);
+            MoveRecoveryEntry(recoveryPathOwnership, temporary, recoveryFilename);
+            SyncRecoveryDirectory(recoveryPathOwnership, directory);
             recoveryPathOwnership.EnsureJournalPathIsExclusive();
 
-            await using var active =
-                RecoveryJournalPathSafety.OpenJournalForWriteExisting(
-                    recoveryFilename);
+            await using var active = recoveryPathOwnership.OpenRecoveryEntry(
+                recoveryFilename, FileMode.Open, FileAccess.ReadWrite,
+                FileShare.None, FileOptions.WriteThrough, "Recovery journal");
             var identity = RecoveryJournalFileIdentity.Read(active);
             var tail = ValidateRecoveryJournalDetailed(active, recoveryFilename);
             RecoveryTerminalStateWrite(tail.Sequence, tail.FrameDigest);
@@ -732,7 +729,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             try
             {
-                File.Delete(temporary);
+                recoveryPathOwnership.DeleteRecoveryEntry(temporary);
             }
             catch
             {
@@ -1346,8 +1343,82 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
                     RecoveryFilename);
         }
+        public FileStream OpenRecoveryEntry(string filename, FileMode mode,
+            FileAccess access, FileShare share, FileOptions options,
+            string description)
+        {
+            if(inner.IsHeld)
+                return inner.OpenRecoveryEntry(filename, mode, access, share,
+                    options, description);
+            return RecoveryJournalPathSafety.OpenRegularFileNoFollow(filename,
+                mode, access, share, options, description);
+        }
+        public FileStream TryOpenRecoveryEntry(string filename,
+            FileAccess access, FileShare share, FileOptions options,
+            string description)
+        {
+            if(inner.IsHeld)
+                return inner.TryOpenRecoveryEntry(filename, access, share,
+                    options, description);
+            try
+            {
+                return RecoveryJournalPathSafety.OpenRegularFileNoFollow(filename,
+                    FileMode.Open, access, share, options, description);
+            }
+            catch(FileNotFoundException)
+            {
+                return null;
+            }
+        }
+        public void MoveRecoveryEntry(string sourceFilename,
+            string destinationFilename)
+        {
+            if(inner.IsHeld)
+            {
+                inner.MoveRecoveryEntry(sourceFilename, destinationFilename);
+                return;
+            }
+            File.Move(sourceFilename, destinationFilename, false);
+        }
+        public void DeleteRecoveryEntry(string filename)
+        {
+            if(inner.IsHeld)
+            {
+                inner.DeleteRecoveryEntry(filename);
+                return;
+            }
+            File.Delete(filename);
+        }
+        public void SyncRecoveryDirectory()
+        {
+            if(inner.IsHeld)
+            {
+                inner.SyncRecoveryDirectory();
+                return;
+            }
+            ShareRecoveryFatalState.SyncDirectoryWhereSupported(
+                Path.GetDirectoryName(RecoveryFilename)!);
+        }
         public void Release() => inner.Release();
         public void Dispose() => inner.Dispose();
+    }
+
+    private void MoveRecoveryEntry(IShareRecoveryPathOwnership ownership,
+        string source, string destination)
+    {
+        if(RecoveryArchiveMove != null)
+            RecoveryArchiveMove(source, destination);
+        else
+            ownership.MoveRecoveryEntry(source, destination);
+    }
+
+    private void SyncRecoveryDirectory(IShareRecoveryPathOwnership ownership,
+        string directory)
+    {
+        if(RecoveryDirectorySync != null)
+            RecoveryDirectorySync(directory);
+        else
+            ownership.SyncRecoveryDirectory();
     }
 
     public async Task<string> RecoverSharesAsync(string filename)
@@ -1382,7 +1453,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                ShareRecoveryImportState.ImportPhase.Pending)
             {
                 var resumedArchive = await RetireImportedRecoveryFileAsync(filename,
-                    existingMarker, configuredSource, importState);
+                    existingMarker, configuredSource, importState,
+                    operationOwnership);
                 logger.Info(() => $"Completed durable retirement of previously imported " +
                     $"recovery source {filename} as {resumedArchive}");
                 return resumedArchive;
@@ -1398,14 +1470,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // Hold one read-only handle across both passes. FileShare.Read permits diagnostics
             // and backups, but prevents the recovery source from being changed between validation
             // and import.
-            await using(var stream = new FileStream(filename, new FileStreamOptions
+            await using(var stream = operationOwnership.OpenRecoveryEntry(filename,
+                FileMode.Open, FileAccess.Read, FileShare.Read,
+                FileOptions.Asynchronous | FileOptions.SequentialScan,
+                "Recovery import source"))
             {
-                Mode = FileMode.Open,
-                Access = FileAccess.Read,
-                Share = FileShare.Read,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-            }))
-            {
+                operationOwnership.EnsureJournalPathIsExclusive();
                 // Enforce every count/hash frame before opening the database transaction. The
                 // same read-only handle remains locked for both semantic passes, preventing the
                 // source from changing after its byte-level integrity was established.
@@ -1429,6 +1499,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     return Task.CompletedTask;
                 });
                 fileHash = validationHash.GetHash();
+                operationOwnership.EnsureJournalPathIsExclusive();
 
                 // Publish an independent pending marker before the database transaction begins.
                 // A crash after commit but before source retirement can therefore be resumed
@@ -1448,6 +1519,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     // Pass two imports every batch through one transaction. A retained pending
                     // marker plus an existing manifest means a previous attempt committed before
                     // it could advance the marker; retire the source without inserting it again.
+                    operationOwnership.EnsureJournalPathIsExclusive();
                     var importResult = await cf.RunTx(async (con, tx) =>
                     {
                         var registered = await shareRepo.TryRegisterRecoveryImportAsync(con,
@@ -1487,7 +1559,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             }
 
             var archiveFilename = await RetireImportedRecoveryFileAsync(filename, marker,
-                configuredSource, importState);
+                configuredSource, importState, operationOwnership);
             NotifyPersistedBlocks(insertedBlocks);
             logger.Info(() => insertedNewContent
                 ? $"Successfully imported {validatedCount} shares and durably archived the " +
@@ -1666,16 +1738,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     private async Task<string> RetireImportedRecoveryFileAsync(string filename,
         ShareRecoveryImportState.ImportMarker marker, bool configuredSource,
-        ShareRecoveryImportState importState)
+        ShareRecoveryImportState importState,
+        IShareRecoveryPathOwnership operationOwnership)
     {
         ArgumentNullException.ThrowIfNull(marker);
         if(marker.Phase == ShareRecoveryImportState.ImportPhase.Pending)
             throw new InvalidDataException(
                 $"Recovery source {filename} cannot be retired before its database import is committed");
 
-        using var recoveryDirectory = RecoveryDirectoryIdentity.Open(
-            Path.GetDirectoryName(filename)!);
-        recoveryDirectory.EnsurePathStillIdentifiesDirectory();
+        operationOwnership.EnsureJournalPathIsExclusive();
 
         using(var manifestConnection = await cf.OpenConnectionAsync())
         {
@@ -1689,12 +1760,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     $"and marker {importState.Filename}; refusing destructive retirement.");
         }
 
-        using var source = RecoveryStateFile.TryOpenExactEntry(filename,
-            Directory.EnumerateFileSystemEntries,
-            FileShare.Read | FileShare.Delete);
-        using var archive = RecoveryStateFile.TryOpenExactEntry(
-            marker.ArchiveFilename, Directory.EnumerateFileSystemEntries,
-            FileShare.Read | FileShare.Delete);
+        using var source = operationOwnership.TryOpenRecoveryEntry(filename,
+            FileAccess.Read, FileShare.Read | FileShare.Delete,
+            FileOptions.SequentialScan, "Committed recovery source");
+        using var archive = operationOwnership.TryOpenRecoveryEntry(
+            marker.ArchiveFilename, FileAccess.Read,
+            FileShare.Read | FileShare.Delete, FileOptions.SequentialScan,
+            "Committed recovery archive");
         var sourceExists = source != null;
         var archiveExists = archive != null;
 
@@ -1722,10 +1794,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             RecoveryArchiveMoveCheckpoint();
             importState.EnsureCurrent(marker);
-            recoveryDirectory.EnsurePathStillIdentifiesDirectory();
-            RecoveryArchiveMove(filename, marker.ArchiveFilename);
-            using var archived = RecoveryStateFile.TryOpenExactEntry(
-                marker.ArchiveFilename, Directory.EnumerateFileSystemEntries);
+            operationOwnership.EnsureJournalPathIsExclusive();
+            MoveRecoveryEntry(operationOwnership, filename,
+                marker.ArchiveFilename);
+            using var archived = operationOwnership.TryOpenRecoveryEntry(
+                marker.ArchiveFilename, FileAccess.Read,
+                FileShare.Read | FileShare.Delete, FileOptions.SequentialScan,
+                "Committed recovery archive");
             if(archived == null)
                 throw new IOException(
                     $"Recovery archive {marker.ArchiveFilename} disappeared after rename");
@@ -1737,7 +1812,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     $"The committed marker remains at {importState.Filename}; preserve the " +
                     "archive and surrounding storage for reconciliation.");
 
-            recoveryDirectory.EnsurePathStillIdentifiesDirectory();
+            operationOwnership.EnsureJournalPathIsExclusive();
         }
 
         // Re-read the still-open, non-writable file object after the rename. This catches a
@@ -1751,7 +1826,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             // Persist the source rename before authorising retirement of its independent anchor.
             // If this sync fails, the committed marker remains and recovery repeats validation.
-            RecoveryDirectorySync(Path.GetDirectoryName(filename)!);
+            SyncRecoveryDirectory(operationOwnership,
+                Path.GetDirectoryName(filename)!);
             marker = importState.MarkArchiveDurable(marker);
         }
 
@@ -1765,7 +1841,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // step on resume. Revalidate the archived content and recorded tail before removal.
             await ValidateCommittedRecoveryFileAsync(retained,
                 marker.ArchiveFilename, marker, configuredSource, false);
-            recoveryDirectory.EnsurePathStillIdentifiesDirectory();
+            operationOwnership.EnsureJournalPathIsExclusive();
             importState.EnsureCurrent(marker);
 
             if(configuredSource && marker.TerminalAnchorRequired)

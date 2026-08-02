@@ -75,8 +75,9 @@ adjacent process-lifetime ownership lock before state inspection and retain it t
 journalling. The lock identity no longer depends on `shareRecoveryStateDirectory`. Linux uses an
 explicit native exclusive lock, so disabling .NET managed file locking does not bypass this boundary;
 Windows retains an exclusive handle. Parent-directory symlink aliases converge on the same owner,
-and their retained physical directory identity is revalidated before journal mutation so later
-retargeting or replacement fails closed. Journal and owner-file symlinks, hard links and non-regular
+and journal creation, append, startup validation, import and retirement use that retained physical
+directory rather than re-resolving the configured path. A stable parent symlink is supported while
+later retargeting or replacement cannot redirect an operation and fails closed. Journal and owner-file symlinks, hard links and non-regular
 filesystem objects are rejected without blocking on FIFOs. The acknowledgement command acquires
 this same native owner before changing fatal evidence. A second process using the same recovery path
 fails before pools start, regardless of its Stratum configuration.

@@ -146,7 +146,7 @@ public class Program : ProcessStatusBackgroundService
                         new ShareRecoveryPathOwnership(clusterConfig);
                     recoveryPathOwnership.Acquire();
                     var state = new ShareRecoveryFatalState(clusterConfig,
-                        processStatus);
+                        processStatus, recoveryPathOwnership);
                     if(!state.Acknowledge(Console.Out))
                         processStatus.MarkFailed(
                             ProcessExitCodes.UnreconciledShareDurabilityLoss);

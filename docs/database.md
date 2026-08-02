@@ -240,7 +240,10 @@ rerun the same recovery command with the same configuration and exact source pat
 revalidates the complete chain, terminal anchor, semantic hash and record count before resuming
 retirement, and retains the committed marker if any property changed. A symlink or hard-link alias of
 the configured journal is rejected because it could otherwise acquire different path-scoped safety
-state. Miningcore resumes retirement and uses the database manifest to avoid reinserting already
+state. A stable symlink for the configured parent directory is supported: import reads and archive
+retirement remain bound to the physical directory retained when ownership was acquired. Retargeting
+that parent fails closed before database import or destructive retirement. Final-component symlinks,
+FIFOs and other non-regular sources are rejected before database access. Miningcore resumes retirement and uses the database manifest to avoid reinserting already
 committed records. Retain
 the archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
 import unexplained journals from old working directories or previous deployments; reconcile their

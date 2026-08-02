@@ -12,6 +12,14 @@ public interface IShareRecoveryPathOwnership : IDisposable
     bool IsHeld { get; }
     void Acquire();
     void EnsureJournalPathIsExclusive();
+    FileStream OpenRecoveryEntry(string filename, FileMode mode,
+        FileAccess access, FileShare share, FileOptions options,
+        string description);
+    FileStream TryOpenRecoveryEntry(string filename, FileAccess access,
+        FileShare share, FileOptions options, string description);
+    void MoveRecoveryEntry(string sourceFilename, string destinationFilename);
+    void DeleteRecoveryEntry(string filename);
+    void SyncRecoveryDirectory();
     void Release();
 }
 
@@ -46,6 +54,7 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
     private FileStream ownershipStream;
     private RecoveryDirectoryIdentity recoveryDirectoryIdentity;
     private RecoveryJournalFileIdentity ownershipIdentity;
+    internal Action<string> DirectoryOperationCheckpoint { get; set; } = _ => { };
 
     public string RecoveryFilename { get; }
     public string OwnershipFilename { get; }
@@ -75,16 +84,20 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
             {
                 directoryIdentity = RecoveryDirectoryIdentity.OpenFollowingPath(
                     directory);
-                stream = RecoveryJournalPathSafety.OpenOwnershipFile(
-                    OwnershipFilename);
+                stream = directoryIdentity.OpenEntry(
+                    Path.GetFileName(OwnershipFilename), FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite, FileShare.None, FileOptions.None,
+                    "Recovery ownership file");
 
                 if(!OperatingSystem.IsWindows())
                     AcquireUnixLock(stream.SafeFileHandle);
 
+                var identity = RecoveryJournalFileIdentity.ReadStable(stream);
                 recoveryDirectoryIdentity = directoryIdentity;
-                directoryIdentity = null;
-                ownershipIdentity = RecoveryJournalFileIdentity.ReadStable(stream);
+                ownershipIdentity = identity;
                 ownershipStream = stream;
+                directoryIdentity = null;
+                stream = null;
             }
             catch(Exception ex)
             {
@@ -121,11 +134,100 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
 
             recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
             if(!OperatingSystem.IsWindows())
-                RecoveryJournalPathSafety.EnsurePathStillIdentifiesFile(
-                    OwnershipFilename, ownershipIdentity,
+                recoveryDirectoryIdentity.EnsureEntryStillIdentifies(
+                    Path.GetFileName(OwnershipFilename), ownershipIdentity,
                     "Recovery ownership file");
-            RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
-                RecoveryFilename);
+            recoveryDirectoryIdentity.EnsureEntrySinglePhysicalNameIfExists(
+                Path.GetFileName(RecoveryFilename), "Recovery journal");
+        }
+    }
+
+    public FileStream OpenRecoveryEntry(string filename, FileMode mode,
+        FileAccess access, FileShare share, FileOptions options,
+        string description)
+    {
+        lock(gate)
+        {
+            EnsureHeld();
+            var name = GetEntryName(filename);
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+            DirectoryOperationCheckpoint($"open:{name}");
+            var stream = recoveryDirectoryIdentity.OpenEntry(name, mode, access,
+                share, options, description);
+            try
+            {
+                recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+                return stream;
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
+    }
+
+    public FileStream TryOpenRecoveryEntry(string filename, FileAccess access,
+        FileShare share, FileOptions options, string description)
+    {
+        lock(gate)
+        {
+            EnsureHeld();
+            var name = GetEntryName(filename);
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+            DirectoryOperationCheckpoint($"try-open:{name}");
+            var stream = recoveryDirectoryIdentity.TryOpenEntry(name, access,
+                share, options, description);
+            try
+            {
+                recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+                return stream;
+            }
+            catch
+            {
+                stream?.Dispose();
+                throw;
+            }
+        }
+    }
+
+    public void MoveRecoveryEntry(string sourceFilename,
+        string destinationFilename)
+    {
+        lock(gate)
+        {
+            EnsureHeld();
+            var source = GetEntryName(sourceFilename);
+            var destination = GetEntryName(destinationFilename);
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+            DirectoryOperationCheckpoint($"move:{source}:{destination}");
+            recoveryDirectoryIdentity.MoveEntry(source, destination);
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+        }
+    }
+
+    public void DeleteRecoveryEntry(string filename)
+    {
+        lock(gate)
+        {
+            EnsureHeld();
+            var name = GetEntryName(filename);
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+            DirectoryOperationCheckpoint($"delete:{name}");
+            recoveryDirectoryIdentity.DeleteEntry(name);
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+        }
+    }
+
+    public void SyncRecoveryDirectory()
+    {
+        lock(gate)
+        {
+            EnsureHeld();
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+            DirectoryOperationCheckpoint("sync");
+            recoveryDirectoryIdentity.Sync();
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
         }
     }
 
@@ -149,6 +251,27 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
     }
 
     public void Dispose() => Release();
+
+    private void EnsureHeld()
+    {
+        if(ownershipStream == null)
+            throw new InvalidOperationException(
+                $"Recovery journal ownership is not held for {RecoveryFilename}");
+    }
+
+    private string GetEntryName(string filename)
+    {
+        filename = Path.GetFullPath(filename);
+        var expectedDirectory = Path.GetDirectoryName(RecoveryFilename)!;
+        var actualDirectory = Path.GetDirectoryName(filename)!;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if(!string.Equals(expectedDirectory, actualDirectory, comparison))
+            throw new InvalidOperationException(
+                $"Recovery entry {filename} is outside the owned directory {expectedDirectory}");
+        return Path.GetFileName(filename);
+    }
 
     private static void AcquireUnixLock(SafeFileHandle handle)
     {

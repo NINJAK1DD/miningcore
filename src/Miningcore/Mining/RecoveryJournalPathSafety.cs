@@ -23,36 +23,16 @@ internal static class RecoveryJournalPathSafety
 
     public static FileStream OpenJournalForWriteExisting(string filename)
     {
-        filename = Path.GetFullPath(filename);
-        var handle = OpenRegularFileNoFollow(filename, false, true,
+        return OpenRegularFileNoFollow(filename, FileMode.Open,
+            FileAccess.ReadWrite, FileShare.None, FileOptions.WriteThrough,
             "Recovery journal");
-
-        try
-        {
-            return new FileStream(handle, FileAccess.ReadWrite, 4096, false);
-        }
-        catch
-        {
-            handle.Dispose();
-            throw;
-        }
     }
 
     public static FileStream OpenOwnershipFile(string filename)
     {
-        filename = Path.GetFullPath(filename);
-        var handle = OpenRegularFileNoFollow(filename, true, false,
+        return OpenRegularFileNoFollow(filename, FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None, FileOptions.None,
             "Recovery ownership file");
-
-        try
-        {
-            return new FileStream(handle, FileAccess.ReadWrite, 4096, false);
-        }
-        catch
-        {
-            handle.Dispose();
-            throw;
-        }
     }
 
     public static void EnsurePathStillIdentifiesFile(string filename,
@@ -70,23 +50,32 @@ internal static class RecoveryJournalPathSafety
                 $"{description} {filename} was replaced while its ownership was held");
     }
 
-    private static SafeFileHandle OpenRegularFileNoFollow(string filename,
-        bool create, bool writeThrough, string description)
+    internal static FileStream OpenRegularFileNoFollow(string filename,
+        FileMode mode, FileAccess access, FileShare share, FileOptions options,
+        string description)
     {
+        filename = Path.GetFullPath(filename);
         SafeFileHandle handle;
+        var create = mode is FileMode.OpenOrCreate or FileMode.CreateNew;
 
         if(OperatingSystem.IsLinux())
         {
+            const int oWriteOnly = 1;
             const int oReadWrite = 2;
             const int oCreate = 0x40;
+            const int oExclusive = 0x80;
             const int oNonBlock = 0x800;
             const int oDataSync = 0x1000;
             const int oNoFollow = 0x20000;
             const int oCloseOnExec = 0x80000;
-            var flags = oReadWrite | oNonBlock | oNoFollow | oCloseOnExec;
+            var flags = (access == FileAccess.Read ? 0 :
+                    access == FileAccess.Write ? oWriteOnly : oReadWrite) |
+                oNonBlock | oNoFollow | oCloseOnExec;
             if(create)
                 flags |= oCreate;
-            if(writeThrough)
+            if(mode == FileMode.CreateNew)
+                flags |= oExclusive;
+            if((options & FileOptions.WriteThrough) != 0)
                 flags |= oDataSync;
             var descriptor = open(filename, flags, Convert.ToUInt32("600", 8));
             if(descriptor < 0)
@@ -99,14 +88,28 @@ internal static class RecoveryJournalPathSafety
         {
             const uint genericRead = 0x80000000;
             const uint genericWrite = 0x40000000;
+            const uint shareRead = 0x00000001;
+            const uint shareWrite = 0x00000002;
+            const uint shareDelete = 0x00000004;
+            const uint createNew = 1;
             const uint openExisting = 3;
             const uint openAlways = 4;
             const uint openReparsePoint = 0x00200000;
             const uint fileFlagWriteThrough = 0x80000000;
+            const uint fileFlagOverlapped = 0x40000000;
             var flags = openReparsePoint |
-                (writeThrough ? fileFlagWriteThrough : 0);
-            handle = CreateFile(filename, genericRead | genericWrite, 0,
-                IntPtr.Zero, create ? openAlways : openExisting, flags,
+                ((options & FileOptions.WriteThrough) != 0 ? fileFlagWriteThrough : 0) |
+                ((options & FileOptions.Asynchronous) != 0 ? fileFlagOverlapped : 0);
+            var desiredAccess = (access & FileAccess.Read) != 0 ? genericRead : 0;
+            if((access & FileAccess.Write) != 0)
+                desiredAccess |= genericWrite;
+            var shareMode = ((share & FileShare.Read) != 0 ? shareRead : 0) |
+                ((share & FileShare.Write) != 0 ? shareWrite : 0) |
+                ((share & FileShare.Delete) != 0 ? shareDelete : 0);
+            var disposition = mode == FileMode.CreateNew ? createNew :
+                mode == FileMode.OpenOrCreate ? openAlways : openExisting;
+            handle = CreateFile(filename, desiredAccess, shareMode,
+                IntPtr.Zero, disposition, flags,
                 IntPtr.Zero);
             if(handle.IsInvalid)
             {
@@ -121,15 +124,15 @@ internal static class RecoveryJournalPathSafety
                 throw new InvalidDataException(
                     $"{description} {filename} must not be a symbolic link");
             handle = File.OpenHandle(filename,
-                create ? FileMode.OpenOrCreate : FileMode.Open,
-                FileAccess.ReadWrite, FileShare.None,
-                writeThrough ? FileOptions.WriteThrough : FileOptions.None);
+                mode, access, share, options);
         }
 
         try
         {
             EnsureRegularSingleName(handle, filename, description);
-            return handle;
+            return new FileStream(handle, access, 4096,
+                OperatingSystem.IsWindows() &&
+                (options & FileOptions.Asynchronous) != 0);
         }
         catch
         {
@@ -193,7 +196,7 @@ internal static class RecoveryJournalPathSafety
             FileShare.ReadWrite | FileShare.Delete, FileOptions.None);
     }
 
-    private static void EnsureRegularSingleName(SafeFileHandle handle,
+    internal static void EnsureRegularSingleName(SafeFileHandle handle,
         string filename, string description)
     {
         var metadata = RecoveryJournalFileIdentity.ReadPhysicalMetadata(handle,
@@ -210,6 +213,10 @@ internal static class RecoveryJournalPathSafety
     private static Exception CreateOpenException(string filename,
         string description, int error, bool create)
     {
+        if((OperatingSystem.IsWindows() ? error == 3 : error == 2) &&
+           !Directory.Exists(Path.GetDirectoryName(filename)))
+            return new DirectoryNotFoundException(
+                $"The recovery directory for {filename} does not exist");
         if(!create && (OperatingSystem.IsWindows() ? error is 2 or 3 : error == 2))
             return new FileNotFoundException(
                 $"{description} {filename} does not exist", filename);

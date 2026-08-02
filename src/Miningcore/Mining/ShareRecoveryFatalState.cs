@@ -34,12 +34,28 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
     public ShareRecoveryFatalState(ClusterConfig clusterConfig,
         IProcessStatus processStatus) :
-        this(clusterConfig, processStatus, ResolveStateDirectory(clusterConfig))
+        this(clusterConfig, processStatus, ResolveStateDirectory(clusterConfig),
+            null)
+    {
+    }
+
+    public ShareRecoveryFatalState(ClusterConfig clusterConfig,
+        IProcessStatus processStatus,
+        IShareRecoveryPathOwnership recoveryPathOwnership) :
+        this(clusterConfig, processStatus, ResolveStateDirectory(clusterConfig),
+            recoveryPathOwnership)
     {
     }
 
     internal ShareRecoveryFatalState(ClusterConfig clusterConfig,
         IProcessStatus processStatus, string stateDirectory)
+        : this(clusterConfig, processStatus, stateDirectory, null)
+    {
+    }
+
+    internal ShareRecoveryFatalState(ClusterConfig clusterConfig,
+        IProcessStatus processStatus, string stateDirectory,
+        IShareRecoveryPathOwnership recoveryPathOwnership)
     {
         ArgumentNullException.ThrowIfNull(clusterConfig);
         ArgumentNullException.ThrowIfNull(processStatus);
@@ -47,6 +63,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
         this.processStatus = processStatus;
         this.clusterConfig = clusterConfig;
+        this.recoveryPathOwnership = recoveryPathOwnership;
         RecoveryFilename = ResolveRecoveryFilename(clusterConfig);
         StateDirectory = Path.GetFullPath(stateDirectory);
         var pathHash = ComputeRecoveryPathHash(RecoveryFilename);
@@ -62,6 +79,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
     private readonly IProcessStatus processStatus;
     private readonly ClusterConfig clusterConfig;
+    private readonly IShareRecoveryPathOwnership recoveryPathOwnership;
     private readonly object fatalStateGate = new();
     private readonly ShareRecoveryTerminalState terminalState;
     private readonly ShareRecoveryImportState importState;
@@ -150,8 +168,16 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
             try
             {
-                using var stream = new FileStream(RecoveryFilename, FileMode.Open,
-                    FileAccess.Read, FileShare.ReadWrite);
+                recoveryPathOwnership?.EnsureJournalPathIsExclusive();
+                using var stream = recoveryPathOwnership != null
+                    ? recoveryPathOwnership.OpenRecoveryEntry(RecoveryFilename,
+                        FileMode.Open, FileAccess.Read, FileShare.ReadWrite,
+                        FileOptions.SequentialScan, "Recovery journal")
+                    : RecoveryJournalPathSafety.OpenRegularFileNoFollow(
+                        RecoveryFilename, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite, FileOptions.SequentialScan,
+                        "Recovery journal");
+                recoveryPathOwnership?.EnsureJournalPathIsExclusive();
                 ShareRecorder.EnsureRecoveryJournalAppendBoundary(stream,
                     RecoveryFilename);
                 stream.Seek(0, SeekOrigin.Begin);
@@ -159,6 +185,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                     RecoveryFilename);
                 terminalState.EnsureConsistent(tail.Sequence, tail.FrameDigest,
                     tail.IsChainedFormat);
+                recoveryPathOwnership?.EnsureJournalPathIsExclusive();
             }
             catch(FileNotFoundException)
             {

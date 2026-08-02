@@ -2096,18 +2096,163 @@ public class ShareRecorderTests
         }
     }
 
+    [Fact]
+    public async Task RecoverConfiguredJournal_StableSymlinkParentCompletesDurableRetirement()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-linked-parent-{Guid.NewGuid():N}");
+        var physicalDirectory = Path.Combine(directory, "physical");
+        var linkedDirectory = Path.Combine(directory, "configured");
+        Directory.CreateDirectory(physicalDirectory);
+        try
+        {
+            Directory.CreateSymbolicLink(linkedDirectory, physicalDirectory);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+
+        var recoveryFilename = Path.Combine(linkedDirectory,
+            "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var fixture = CreateConfiguredRecoveryFixture(config);
+
+        try
+        {
+            await fixture.Recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "linked-parent" },
+            });
+
+            var archive = await fixture.Recorder.RecoverSharesAsync(
+                recoveryFilename);
+
+            Assert.True(File.Exists(archive));
+            Assert.False(File.Exists(recoveryFilename));
+            Assert.False(File.Exists(fixture.Recorder.RecoveryImportStateFilename));
+            Assert.False(File.Exists(fixture.Recorder.RecoveryTerminalStateFilename));
+            await fixture.ShareRepository.Received(1)
+                .TryRegisterRecoveryImportAsync(fixture.Connection,
+                    fixture.Transaction, Arg.Any<string>(),
+                    "recovered-shares.txt", 1, Arg.Any<CancellationToken>());
+
+            var status = new ProcessStatus();
+            new ShareRecoveryFatalState(config, status,
+                    config.ShareRecoveryStateDirectory)
+                .EnsureStartupAllowed();
+            Assert.Equal(0, status.ExitCode);
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_RejectsFinalSymbolicLinkBeforeDatabaseAccess()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-final-link-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "target.txt");
+        var source = Path.Combine(directory, "reviewed.txt");
+        await File.WriteAllTextAsync(target, RecoveryShareJson(0));
+        try
+        {
+            File.CreateSymbolicLink(source, target);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+        var fixture = CreateRecoveryFixture();
+
+        try
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(source));
+            await fixture.ShareRepository.DidNotReceiveWithAnyArgs()
+                .TryRegisterRecoveryImportAsync(default, default, default,
+                    default, default, default);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task LinuxRecoverSharesAsync_RejectsFifoWithoutBlockingOrDatabaseAccess()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-fifo-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var source = Path.Combine(directory, "reviewed.txt");
+        if(mkfifo(source, Convert.ToUInt32("600", 8)) != 0)
+            throw new IOException(
+                $"Unable to create FIFO fixture (error {Marshal.GetLastPInvokeError()})");
+        var fixture = CreateRecoveryFixture();
+
+        try
+        {
+            var import = fixture.Recorder.RecoverSharesAsync(source);
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                import.WaitAsync(TimeSpan.FromSeconds(2)));
+            await fixture.ShareRepository.DidNotReceiveWithAnyArgs()
+                .TryRegisterRecoveryImportAsync(default, default, default,
+                    default, default, default);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
     [Theory]
-    [InlineData("after-archive-phase")]
-    [InlineData("after-anchor-removal")]
-    [InlineData("during-marker-deletion")]
-    [InlineData("during-marker-directory-sync")]
+    [InlineData("after-archive-phase", false)]
+    [InlineData("after-anchor-removal", false)]
+    [InlineData("during-marker-deletion", false)]
+    [InlineData("during-marker-directory-sync", false)]
+    [InlineData("after-archive-phase", true)]
+    [InlineData("after-anchor-removal", true)]
+    [InlineData("during-marker-deletion", true)]
+    [InlineData("during-marker-directory-sync", true)]
     public async Task RecoverConfiguredJournal_EachDurableRetirementPhaseIsSafeToResume(
-        string failurePoint)
+        string failurePoint, bool useLinkedParent)
     {
         var directory = Path.Combine(Path.GetTempPath(),
             $"miningcore-import-phase-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var recoveryDirectory = directory;
+        if(useLinkedParent)
+        {
+            var physical = Path.Combine(directory, "physical");
+            recoveryDirectory = Path.Combine(directory, "configured");
+            Directory.CreateDirectory(physical);
+            try
+            {
+                Directory.CreateSymbolicLink(recoveryDirectory, physical);
+            }
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+            {
+                Directory.Delete(directory, true);
+                return;
+            }
+        }
+        var recoveryFilename = Path.Combine(recoveryDirectory,
+            "recovered-shares.txt");
         var config = new ClusterConfig
         {
             Pools = Array.Empty<PoolConfig>(),
@@ -6709,6 +6854,9 @@ public class ShareRecorderTests
     [DllImport("libc", EntryPoint = "link", SetLastError = true)]
     private static extern int CreateHardLinkLinux(string existingFilename,
         string linkFilename);
+
+    [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int mkfifo(string pathname, uint mode);
 
     private static Share CreateDurableCandidate(string hash,
         string type = "merged-parent") => new()

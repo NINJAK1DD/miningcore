@@ -444,9 +444,209 @@ public class ShareRecoveryPathOwnershipTests
             var error = Assert.Throws<InvalidDataException>(
                 ownership.EnsureJournalPathIsExclusive);
             Assert.Contains("replaced or retargeted", error.Message);
+
+            using var secondOwner = new ShareRecoveryPathOwnership(
+                new ClusterConfig
+                {
+                    ShareRecoveryFile = Path.Combine(linked,
+                        "recovered-shares.txt"),
+                });
+            secondOwner.Acquire();
+            Assert.True(secondOwner.IsHeld);
         }
         finally
         {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("append")]
+    [InlineData("before-temporary-create")]
+    [InlineData("before-publish")]
+    public async Task JournalMutation_ParentRetargetCannotRedirectWrite(
+        string phase)
+    {
+        var directory = CreateDirectory();
+        var first = Path.Combine(directory, "first");
+        var second = Path.Combine(directory, "second");
+        var linked = Path.Combine(directory, "current");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        try
+        {
+            Directory.CreateSymbolicLink(linked, first);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+        var recoveryFilename = Path.Combine(linked, "recovered-shares.txt");
+        var (recorder, ownership, _, _) = CreateOwnedRecorder(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            ownership.Acquire();
+            if(phase == "append")
+                await recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "original" },
+                });
+
+            void Retarget()
+            {
+                Directory.Delete(linked);
+                Directory.CreateSymbolicLink(linked, second);
+            }
+
+            var retargeted = false;
+            ownership.DirectoryOperationCheckpoint = operation =>
+            {
+                if(retargeted)
+                    return;
+                var shouldRetarget = phase == "append"
+                    ? operation == "open:recovered-shares.txt"
+                    : phase == "before-temporary-create"
+                        ? operation.StartsWith("open:.recovered-shares.txt.",
+                              StringComparison.Ordinal) &&
+                          operation.EndsWith(".tmp", StringComparison.Ordinal)
+                        : operation.StartsWith("move:.recovered-shares.txt.",
+                            StringComparison.Ordinal);
+                if(!shouldRetarget)
+                    return;
+                retargeted = true;
+                Retarget();
+            };
+
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "redirected" },
+                }));
+
+            Assert.Contains("replaced or retargeted", error.Message);
+            Assert.False(File.Exists(Path.Combine(second,
+                "recovered-shares.txt")));
+            if(phase == "before-temporary-create")
+                Assert.False(File.Exists(Path.Combine(first,
+                    "recovered-shares.txt")));
+            if(phase == "before-publish")
+                Assert.True(File.Exists(Path.Combine(first,
+                    "recovered-shares.txt")));
+        }
+        finally
+        {
+            ownership.Dispose();
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task StartupValidation_ParentRetargetCannotRedirectRead()
+    {
+        var directory = CreateDirectory();
+        var first = Path.Combine(directory, "first");
+        var second = Path.Combine(directory, "second");
+        var linked = Path.Combine(directory, "current");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        try
+        {
+            Directory.CreateSymbolicLink(linked, first);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+        var recoveryFilename = Path.Combine(linked, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var (recorder, ownership, config, _) = CreateOwnedRecorder(
+            recoveryFilename, stateDirectory);
+
+        try
+        {
+            ownership.Acquire();
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "startup" },
+            });
+            ownership.DirectoryOperationCheckpoint = operation =>
+            {
+                if(operation != "open:recovered-shares.txt")
+                    return;
+                ownership.DirectoryOperationCheckpoint = _ => { };
+                Directory.Delete(linked);
+                Directory.CreateSymbolicLink(linked, second);
+            };
+            var status = new ProcessStatus();
+            var state = new ShareRecoveryFatalState(config, status,
+                stateDirectory, ownership);
+
+            Assert.Throws<PoolStartupException>(state.EnsureStartupAllowed);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                status.ExitCode);
+            Assert.False(File.Exists(Path.Combine(second,
+                "recovered-shares.txt")));
+        }
+        finally
+        {
+            ownership.Dispose();
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryImport_ParentRetargetCannotRedirectReadOrWriteDatabase()
+    {
+        var directory = CreateDirectory();
+        var first = Path.Combine(directory, "first");
+        var second = Path.Combine(directory, "second");
+        var linked = Path.Combine(directory, "current");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        try
+        {
+            Directory.CreateSymbolicLink(linked, first);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+        var recoveryFilename = Path.Combine(linked, "recovered-shares.txt");
+        var (recorder, ownership, _, repository) = CreateOwnedRecorder(
+            recoveryFilename, Path.Combine(directory, "state"));
+
+        try
+        {
+            ownership.Acquire();
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "import" },
+            });
+            ownership.DirectoryOperationCheckpoint = operation =>
+            {
+                if(operation != "open:recovered-shares.txt")
+                    return;
+                ownership.DirectoryOperationCheckpoint = _ => { };
+                Directory.Delete(linked);
+                Directory.CreateSymbolicLink(linked, second);
+            };
+
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.RecoverSharesAsync(recoveryFilename));
+            await repository.DidNotReceiveWithAnyArgs()
+                .TryRegisterRecoveryImportAsync(default, default, default,
+                    default, default, default);
+            Assert.False(File.Exists(Path.Combine(second,
+                "recovered-shares.txt")));
+        }
+        finally
+        {
+            ownership.Dispose();
             Directory.Delete(directory, true);
         }
     }
@@ -587,6 +787,27 @@ public class ShareRecoveryPathOwnershipTests
                 ShareRecoveryFile = recoveryFilename,
                 ShareRecoveryStateDirectory = stateDirectory,
             }, new MessageBus());
+    }
+
+    private static (ShareRecorder Recorder,
+        ShareRecoveryPathOwnership Ownership, ClusterConfig Config,
+        IShareRepository ShareRepository) CreateOwnedRecorder(
+        string recoveryFilename, string stateDirectory)
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = stateDirectory,
+        };
+        var ownership = new ShareRecoveryPathOwnership(config);
+        var repository = Substitute.For<IShareRepository>();
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            repository, Substitute.For<IBlockRepository>(), config,
+            new MessageBus(), Substitute.For<IShareRecoveryFailureHandler>(),
+            Substitute.For<IMiningFailStopCoordinator>(), ownership);
+        return (recorder, ownership, config, repository);
     }
 
     private static Process StartHolder(string recoveryFilename,
