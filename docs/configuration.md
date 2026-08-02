@@ -100,12 +100,15 @@ response proves local accounting-pipeline admission, but an abrupt process, kern
 can still lose acknowledged entries that had not yet reached PostgreSQL. Treat 65,536 as the maximum
 configured volatile exposure, not a crash-durability promise. Graceful shutdown drains active
 Stratum request handlers before closing recorder intake, then accounts for every admitted queue item.
+An unresponsive handler receives at most five seconds; expiry closes the global admission gate,
+marks the process failed and lets Share Recorder retain its reserved persistence/recovery window.
 
 Graceful shutdown first closes share intake, disposes the subscription and completes both writers.
 The queue drain does not use the normal `BackgroundService` stopping token. Share Recorder limits
-its own PostgreSQL drain to 25 seconds (or the remaining portion of the 45-second host budget,
-whichever is shorter), then cancels that transaction and force-flushes the complete unresolved
-registry to the journal. The supplied 90-second systemd timeout provides a further margin for this
+its own PostgreSQL drain to 20 seconds (or the remaining portion of the 45-second host budget,
+whichever is shorter), then gives bounded transaction recovery and fatal-state handling at most 15
+seconds before force-flushing the complete unresolved registry to the journal. The supplied
+90-second systemd timeout provides a further margin for this
 recovery work and other hosted services. Shutdown succeeds only after every
 admitted share reaches PostgreSQL or the journal; failure of both destinations writes the same
 status-74 latch for the full backlog.
@@ -154,9 +157,13 @@ also blocks startup. Notification delivery can still fail or time out; the fatal
 and latch are the authoritative signals. A later dual-target candidate failure upgrades an earlier
 general shutdown to status 74, creates the latch and sends a distinct escalation alert containing
 the affected candidates and exact latch path even when the first stop signal was already sent.
-Repeated fatal-state writes retain append-only incident identifiers and prior incident details in
-the atomically replaced latch. Preserve and reconcile every recorded incident before deleting only
-the exact fatal-state path reported by Miningcore as an explicit operator acknowledgement.
+The fixed-name fatal latch remains deliberately small. It identifies the current incident, count,
+pool set, failure category and any exact-share sidecar's path and expected SHA-256. Exact records are
+streamed to that sidecar only after the incomplete latch is force-flushed; a mid-write failure
+therefore still leaves startup blocked. Every completed incident also receives an immutable
+`.incident` metadata file rather than growing and rewriting all earlier incidents. Preserve and
+reconcile every incident file and referenced sidecar before deleting only the exact fixed-name
+fatal-state path reported by Miningcore as an explicit operator acknowledgement.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

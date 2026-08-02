@@ -448,12 +448,14 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   file identity/length and hash only the new frame, keeping prolonged fallback linear. Every forced
   append also atomically updates an independent terminal sequence/digest anchor, so startup and import
   detect deletion of a complete final frame. Active Stratum connection tasks and in-flight request
-  handlers are drained before recorder intake closes. The in-memory persistence queue and its single emergency
+  handlers receive a five-second drain budget before Miningcore closes global admission, records a
+  non-zero stop and continues shutdown to preserve the recorder's recovery window. The in-memory persistence queue and its single emergency
   journal writer are both bounded; storage I/O never runs while holding mining admission. Configure
   `shareRecoveryFile` as an absolute path on separately monitored or reserved storage where
   possible. Configure the service manager's stop timeout above 45 seconds; the supplied systemd
-  example uses 90 seconds. Share Recorder limits graceful PostgreSQL drain to 25 seconds so the
-  remaining host/service-manager window is available for unresolved journal and state commits. Recovery import
+  example uses 90 seconds. Share Recorder limits graceful PostgreSQL drain to 20 seconds and its
+  post-cancellation recovery boundary to 15 seconds, leaving host-level margin for unresolved journal
+  and state commits. Recovery import
   uses a durable source-retirement marker and blocks normal startup/appends until an imported source
   has been revalidated, renamed, directory-synced and had its terminal anchor retired. A sudden
   process or machine loss can still lose acknowledged shares in the normal 65,536-share in-memory

@@ -15,7 +15,8 @@ public interface IShareRecoveryFatalState
     void MarkFatal(int shareCount, IReadOnlyCollection<string> pools,
         Exception databaseError, Exception journalError);
     void MarkFatalShares(IReadOnlyCollection<Share> shares,
-        Exception databaseError, Exception journalError);
+        Exception databaseError, Exception journalError,
+        string failureCategory = "database-and-journal-unavailable");
 }
 
 public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
@@ -51,6 +52,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     private readonly ShareRecoveryImportState importState;
     internal Action<string> DirectorySync { get; set; } =
         SyncDirectoryWhereSupported;
+    internal Action<int> ExactShareWriteCheckpoint { get; set; } = _ => { };
 
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
@@ -147,11 +149,13 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         Exception databaseError, Exception journalError)
     {
         lock(fatalStateGate)
-            MarkFatalCore(shareCount, pools, null, databaseError, journalError);
+            MarkFatalCore(shareCount, pools, null, databaseError, journalError,
+                "database-and-journal-unavailable");
     }
 
     public void MarkFatalShares(IReadOnlyCollection<Share> shares,
-        Exception databaseError, Exception journalError)
+        Exception databaseError, Exception journalError,
+        string failureCategory = "database-and-journal-unavailable")
     {
         ArgumentNullException.ThrowIfNull(shares);
         var pools = shares.Select(x => x.PoolId)
@@ -162,75 +166,135 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
         lock(fatalStateGate)
             MarkFatalCore(shares.Count, pools, shares, databaseError,
-                journalError);
+                journalError, failureCategory);
     }
 
     private void MarkFatalCore(int shareCount, IReadOnlyCollection<string> pools,
         IReadOnlyCollection<Share> shares, Exception databaseError,
-        Exception journalError)
+        Exception journalError, string failureCategory)
     {
         _ = EnsureFatalStateDirectoryAccessible();
         var recoveryPathHash = ComputeRecoveryPathHash(RecoveryFilename);
         var incidentId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}";
-        var previous = string.Empty;
-
-        try
-        {
-            previous = File.ReadAllText(FatalStateFilename, new UTF8Encoding(false, true));
-        }
-        catch(FileNotFoundException)
-        {
-            // First incident for this recovery-journal identity.
-        }
-
-        var content = new StringBuilder(previous);
-
-        if(content.Length == 0)
-            content.AppendLine("Miningcore share-accounting durability failure");
-        else if(content[content.Length - 1] != '\n')
-            content.AppendLine();
-
-        content
-            .AppendLine("[incident]")
-            .AppendLine($"incidentId={incidentId}")
-            .AppendLine($"createdUtc={DateTimeOffset.UtcNow:O}")
-            .AppendLine($"recoveryFile={RecoveryFilename}")
-            .AppendLine($"recoveryPathSha256={recoveryPathHash}")
-            .AppendLine($"shareCount={shareCount}")
-            .AppendLine($"pools={string.Join(",", pools)}")
-            .AppendLine($"databaseError={databaseError?.GetType().FullName}: {databaseError?.Message}")
-            .AppendLine($"journalError={journalError?.GetType().FullName}: {journalError?.Message}")
-            .AppendLine("Reconcile every incident before deleting this marker and restarting Miningcore.");
+        var directory = Path.GetDirectoryName(FatalStateFilename)!;
+        var stem = Path.GetFileNameWithoutExtension(FatalStateFilename);
+        var detailFilename = shares != null
+            ? Path.Combine(directory, $"{stem}.{incidentId}.shares")
+            : null;
+        string detailHash = null;
 
         if(shares != null)
-        {
-            content.AppendLine($"exactShareRecordCount={shares.Count}");
+            detailHash = ComputeExactShareDetailHash(shares);
 
-            foreach(var share in shares)
-            {
-                var json = JsonConvert.SerializeObject(share, Formatting.None);
-                content.Append("shareJsonBase64=")
-                    .AppendLine(Convert.ToBase64String(
-                        new UTF8Encoding(false).GetBytes(json)));
-            }
-        }
-        var directory = Path.GetDirectoryName(FatalStateFilename)!;
+        var created = DateTimeOffset.UtcNow;
+        var initialState = BuildIncidentLatch(incidentId, created,
+            recoveryPathHash, failureCategory, shareCount, pools, databaseError,
+            journalError, detailFilename, detailHash,
+            shares == null ? "not-required" : "incomplete");
+        var incidentFilename = Path.Combine(directory,
+            $"{stem}.{incidentId}.incident");
+
+        // Publish the small authoritative startup barrier before attempting the potentially
+        // large exact-share sidecar. A sidecar write failure must never leave restart unblocked.
+        WriteSmallStateFile(FatalStateFilename, initialState, true);
+        WriteSmallStateFile(incidentFilename, initialState, false);
+
+        if(shares != null)
+            WriteExactShareSidecar(detailFilename, shares, detailHash);
+
+        var completedState = BuildIncidentLatch(incidentId, created,
+            recoveryPathHash, failureCategory, shareCount, pools, databaseError,
+            journalError, detailFilename, detailHash,
+            shares == null ? "not-required" : "complete");
+        // Each incident record is advanced once from incomplete to complete, then remains
+        // immutable evidence. The fixed-name latch remains a small current startup barrier.
+        WriteSmallStateFile(incidentFilename, completedState, true);
+        WriteSmallStateFile(FatalStateFilename, completedState, true);
+    }
+
+    private string BuildIncidentLatch(string incidentId, DateTimeOffset created,
+        string recoveryPathHash, string failureCategory, int shareCount,
+        IReadOnlyCollection<string> pools, Exception databaseError,
+        Exception journalError, string detailFilename, string detailHash,
+        string detailState)
+    {
+        return string.Join('\n',
+            "Miningcore share-accounting durability failure",
+            "formatVersion=2",
+            $"incidentId={incidentId}",
+            $"createdUtc={created:O}",
+            $"failureCategory={SanitizeStateValue(failureCategory, 256)}",
+            $"recoveryFile={RecoveryFilename}",
+            $"recoveryPathSha256={recoveryPathHash}",
+            $"shareCount={shareCount}",
+            $"pools={SanitizeStateValue(string.Join(',', pools), 4096)}",
+            $"detailFile={detailFilename ?? "(none)"}",
+            $"detailSha256={detailHash ?? "(none)"}",
+            $"detailState={detailState}",
+            $"databaseError={FormatStateException(databaseError)}",
+            $"journalError={FormatStateException(journalError)}",
+            "Reconcile every immutable incident record and referenced sidecar before deleting this latch and restarting Miningcore.",
+            string.Empty);
+    }
+
+    private static string FormatStateException(Exception error) => error == null
+        ? "(none)"
+        : SanitizeStateValue($"{error.GetType().FullName}: {error.Message}", 2048);
+
+    private static string SanitizeStateValue(string value, int maxLength)
+    {
+        value = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ');
+        return value.Length <= maxLength ? value : value[..maxLength] + "...";
+    }
+
+    private static string ComputeExactShareDetailHash(
+        IReadOnlyCollection<Share> shares)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        foreach(var share in shares)
+            hash.AppendData(Encoding.UTF8.GetBytes(SerializeExactShareRecord(share)));
+
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private void WriteExactShareSidecar(string filename,
+        IReadOnlyCollection<Share> shares, string expectedHash)
+    {
+        var directory = Path.GetDirectoryName(filename)!;
         var temporary = Path.Combine(directory,
-            $".{Path.GetFileName(FatalStateFilename)}.{Guid.NewGuid():N}.tmp");
+            $".{Path.GetFileName(filename)}.{Guid.NewGuid():N}.tmp");
 
         try
         {
             using(var stream = new FileStream(temporary, FileMode.CreateNew,
                 FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            using(var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024,
+            using(var writer = new StreamWriter(stream, new UTF8Encoding(false), 4096,
                 leaveOpen: true))
             {
-                writer.Write(content.ToString());
+                var index = 0;
+
+                foreach(var share in shares)
+                {
+                    ExactShareWriteCheckpoint(index++);
+                    writer.Write(SerializeExactShareRecord(share));
+                }
+
                 writer.Flush();
                 stream.Flush(true);
             }
 
-            File.Move(temporary, FatalStateFilename, true);
+            using(var verify = File.OpenRead(temporary))
+            {
+                var actualHash = Convert.ToHexString(SHA256.HashData(verify));
+
+                if(!string.Equals(actualHash, expectedHash,
+                       StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException(
+                        $"Exact-share incident sidecar hash mismatch: expected {expectedHash}, found {actualHash}");
+            }
+
+            File.Move(temporary, filename);
             DirectorySync(directory);
         }
         finally
@@ -241,8 +305,51 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             }
             catch
             {
-                // The final marker has already been atomically published or the caller receives
-                // the original persistence failure. A stray temp file is not an acknowledgement.
+                // The startup latch is already durable and records an incomplete sidecar. A
+                // stray temporary remains incident evidence rather than an acknowledgement.
+            }
+        }
+    }
+
+    private static string SerializeExactShareRecord(Share share)
+    {
+        var json = JsonConvert.SerializeObject(share, Formatting.None);
+        return "shareJsonBase64=" + Convert.ToBase64String(
+            Encoding.UTF8.GetBytes(json)) + "\n";
+    }
+
+    private void WriteSmallStateFile(string filename, string content,
+        bool replace)
+    {
+        var directory = Path.GetDirectoryName(filename)!;
+        var temporary = Path.Combine(directory,
+            $".{Path.GetFileName(filename)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            using(var stream = new FileStream(temporary, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using(var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024,
+                leaveOpen: true))
+            {
+                writer.Write(content);
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            File.Move(temporary, filename, replace);
+            DirectorySync(directory);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporary);
+            }
+            catch
+            {
+                // The destination is authoritative once renamed; otherwise the original write
+                // error must escape while any temporary remains incident evidence.
             }
         }
     }

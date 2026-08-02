@@ -244,10 +244,13 @@ overlapping recovery sets.
 
 An `Uncertain PostgreSQL share commit` incident is deliberately different from an ordinary recovery
 journal. Miningcore cannot prove whether PostgreSQL committed, so it does **not** append those shares
-to the importable journal. The status-74 fatal marker contains every exact share as a
-`shareJsonBase64=` record for read-only reconciliation. Decode and compare those records with
-PostgreSQL; do not copy them into a journal or replay them unless reconciliation proves they are
-absent. Preserve the marker until every record has a conclusive disposition.
+to the importable journal. The small status-74 fatal latch names an exact-share sidecar and its
+expected SHA-256. That sidecar contains one `shareJsonBase64=` record per line for read-only
+reconciliation. Verify the sidecar hash, decode and compare those records with PostgreSQL; do not
+copy them into a journal or replay them unless reconciliation proves they are absent. A
+`detailState=incomplete` latch is authoritative even if its sidecar is absent or partial. Preserve
+the fixed latch, every immutable `.incident` metadata record, sidecar and temporary incident evidence
+until every record has a conclusive disposition.
 
 Frame chains detect duplicated, missing and reordered middle frames. New writes also commit the
 expected final sequence and digest under the independently stored

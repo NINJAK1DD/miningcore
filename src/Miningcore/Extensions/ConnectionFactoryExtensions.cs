@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.ExceptionServices;
 using Miningcore.Persistence;
 
 namespace Miningcore.Extensions;
@@ -42,26 +43,11 @@ public static class ConnectionFactoryExtensions
         CancellationToken ct = default,
         bool classifyCommitOutcome = false)
     {
-        using(var con = await OpenConnectionAsync(factory, ct))
+        await RunTxCore(factory, async (con, tx) =>
         {
-            using(var tx = await BeginTransactionAsync(con, isolation, ct))
-            {
-                try
-                {
-                    await action(con, tx);
-
-                    if(autoCommit)
-                        await CommitAsync(tx, ct, classifyCommitOutcome);
-                }
-
-                catch(Exception ex)
-                {
-                    if(ex is not TransactionCommitOutcomeUncertainException)
-                        await TryRollbackAsync(tx, ex, ct);
-                    throw;
-                }
-            }
-        }
+            await action(con, tx);
+            return true;
+        }, autoCommit, isolation, ct, classifyCommitOutcome);
     }
 
     /// <summary>
@@ -75,31 +61,124 @@ public static class ConnectionFactoryExtensions
         CancellationToken ct = default,
         bool classifyCommitOutcome = false)
     {
-        using(var con = await OpenConnectionAsync(factory, ct))
+        return await RunTxCore(factory, func, autoCommit, isolation, ct,
+            classifyCommitOutcome);
+    }
+
+    private static async Task<T> RunTxCore<T>(IConnectionFactory factory,
+        Func<IDbConnection, IDbTransaction, Task<T>> func,
+        bool autoCommit, IsolationLevel isolation, CancellationToken ct,
+        bool classifyCommitOutcome)
+    {
+        IDbConnection con = null;
+        IDbTransaction tx = null;
+        var outcome = TransactionOutcome.NotCommitted;
+        Exception failure = null;
+        T result = default;
+
+        try
         {
-            using(var tx = await BeginTransactionAsync(con, isolation, ct))
+            con = await OpenConnectionAsync(factory, ct);
+            tx = await BeginTransactionAsync(con, isolation, ct);
+
+            try
             {
-                try
-                {
-                    var result = await func(con, tx);
+                result = await func(con, tx);
 
-                    if(autoCommit)
+                if(autoCommit)
+                {
+                    try
+                    {
                         await CommitAsync(tx, ct, classifyCommitOutcome);
-
-                    return result;
-                }
-
-                catch(Exception ex)
-                {
-                    if(ex is not TransactionCommitOutcomeUncertainException)
-                        await TryRollbackAsync(tx, ex, ct);
-                    throw;
+                        outcome = TransactionOutcome.Committed;
+                    }
+                    catch(TransactionCommitOutcomeUncertainException ex)
+                    {
+                        outcome = TransactionOutcome.CommitUncertain;
+                        failure = ex;
+                    }
                 }
             }
+            catch(Exception ex)
+            {
+                failure = ex;
+            }
+
+            if(failure != null && outcome == TransactionOutcome.NotCommitted)
+                await TryRollbackAsync(tx, failure, ct);
         }
+        catch(Exception ex)
+        {
+            failure ??= ex;
+        }
+        finally
+        {
+            var cleanupFailure = await DisposeTransactionResourcesAsync(tx, con);
+
+            if(cleanupFailure != null)
+            {
+                if(failure != null)
+                    failure.Data[CleanupExceptionDataKey] = cleanupFailure;
+                else if(outcome == TransactionOutcome.Committed)
+                    failure = new TransactionCommittedCleanupException(
+                        "The database transaction committed, but transaction cleanup failed",
+                        cleanupFailure);
+                else
+                    failure = cleanupFailure;
+            }
+        }
+
+        if(failure != null)
+            ExceptionDispatchInfo.Capture(failure).Throw();
+
+        return result;
     }
 
     internal const string RollbackExceptionDataKey = "Miningcore.RollbackException";
+    internal const string CleanupExceptionDataKey = "Miningcore.TransactionCleanupException";
+
+    private enum TransactionOutcome
+    {
+        NotCommitted,
+        CommitUncertain,
+        Committed,
+    }
+
+    private static async Task<Exception> DisposeTransactionResourcesAsync(
+        IDbTransaction tx, IDbConnection con)
+    {
+        List<Exception> failures = null;
+
+        await DisposeResourceSafelyAsync(tx, failures ??= new List<Exception>());
+        await DisposeResourceSafelyAsync(con, failures);
+
+        return failures.Count switch
+        {
+            0 => null,
+            1 => failures[0],
+            _ => new AggregateException(
+                "Multiple database transaction cleanup operations failed", failures),
+        };
+    }
+
+    private static async Task DisposeResourceSafelyAsync(object resource,
+        ICollection<Exception> failures)
+    {
+        if(resource == null)
+            return;
+
+        try
+        {
+            if(resource is IAsyncDisposable asyncDisposable)
+                await asyncDisposable.DisposeAsync();
+            else if(resource is IDisposable disposable)
+                disposable.Dispose();
+        }
+        catch(Exception ex)
+        {
+            failures.Add(ex);
+        }
+    }
 
     private static Task<IDbConnection> OpenConnectionAsync(
         IConnectionFactory factory, CancellationToken ct)
@@ -172,6 +251,15 @@ public sealed class TransactionCommitOutcomeUncertainException :
     InvalidOperationException
 {
     public TransactionCommitOutcomeUncertainException(string message,
+        Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+public sealed class TransactionCommittedCleanupException :
+    InvalidOperationException
+{
+    public TransactionCommittedCleanupException(string message,
         Exception innerException) : base(message, innerException)
     {
     }

@@ -39,7 +39,8 @@ commits an independent terminal sequence/digest anchor, detecting removal of a c
 A bounded persistence queue transfers overflow to one bounded emergency journal writer outside the
 mining admission lock instead of accepting unlimited memory or blocked-caller backlogs. Graceful stop
 drains acknowledged shares independently of hosted-service cancellation, limits its PostgreSQL
-drain to 25 seconds, and uses the remaining host/service-manager window to journal the complete
+drain to 20 seconds, reserves 15 seconds for bounded transaction recovery/fatal handling, and uses
+the remaining host/service-manager window to journal the complete
 unresolved registry. The supplied systemd stop timeout is 90 seconds. If PostgreSQL
 and the recovery journal both fail, Miningcore synchronously closes a coordinated share-acceptance
 boundary: validated shares enter accounting before positive responses, concurrent healthy
@@ -51,8 +52,10 @@ instead of continuing without durable share accounting. Candidate persistence us
 alert and mandatory latch path. The supplied systemd unit does not restart status 74, and every
 normal startup—including relay nodes—remains blocked until reconciliation and explicit latch
 removal. A later dual-target candidate loss upgrades an already-started general shutdown to status
-74, appends a distinct incident identity to the latch and sends an escalation alert with the exact
-latch path. Journal readers cap individual recovery lines at 1,048,576 characters. Frame-content hashes normalise
+74, writes a distinct immutable incident record and sends an escalation alert with the exact latch
+path. The fixed latch remains small and is force-flushed before exact shares are streamed to a
+hash-addressed sidecar, so incomplete sidecar creation still blocks restart. Journal readers cap
+individual recovery lines at 1,048,576 characters. Frame-content hashes normalise
 line endings to `\n`; the independent anchor closes the terminal-frame deletion gap for newly
 committed frames, while incident checksums remain necessary for legacy history. State-directory I/O uncertainty also fails
 closed with status 74. Configure
@@ -70,10 +73,14 @@ overlapping reviewed files because manifests identify whole sources rather than 
 Unexpected mapper, connection, transaction or repository failures now quiesce mining, force-flush
 the complete unresolved registry to the recovery journal and stop with a general failure. If the
 journal also fails, status 74 and the fatal latch remain authoritative. The PostgreSQL transaction
-lifecycle is cancellation-aware and bounded through open, begin, repository commands, commit and
-rollback. A commit whose outcome cannot be proven is never copied to the importable journal; exact
-share JSON is retained in the status-74 marker for reconciliation. Active Stratum dispatch tasks and
-in-flight request handlers are drained before Share Recorder intake closes. Fatal, terminal and
+lifecycle is cancellation-aware and bounded through open, begin, repository commands, commit,
+rollback and cleanup. Cleanup failure after a known commit removes that exact batch from replayable
+state; cleanup failure while commit is uncertain remains secondary evidence and cannot replace the
+uncertain outcome. A commit whose outcome cannot be proven is never copied to the importable journal;
+exact share JSON is streamed to the sidecar referenced by the status-74 latch for reconciliation.
+Active Stratum dispatch tasks and in-flight request handlers receive a five-second bounded drain
+before Share Recorder intake closes; expiry closes admission and returns a non-zero stop without
+consuming the recorder's reserved window. Fatal, terminal and
 import state subdirectories are durably parent-synchronised on first creation.
 
 These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay

@@ -88,6 +88,8 @@ public abstract class StratumServer
     protected PoolConfig poolConfig;
     protected IBanManager banManager;
     protected ILogger logger;
+    internal TimeSpan ConnectionDrainTimeout { get; set; } =
+        TimeSpan.FromSeconds(5);
 
     protected async Task RunAsync(CancellationToken ct, params StratumEndpoint[] endpoints)
     {
@@ -238,8 +240,40 @@ public abstract class StratumServer
             }
         }
 
-        while(connectionTasks.Count > 0)
-            await Task.WhenAll(connectionTasks.Values);
+        using var timeout = new CancellationTokenSource(ConnectionDrainTimeout);
+
+        try
+        {
+            while(connectionTasks.Count > 0)
+            {
+                var pending = connectionTasks.Values.ToArray();
+
+                if(pending.Length == 0)
+                    continue;
+
+                try
+                {
+                    await Task.WhenAll(pending).WaitAsync(timeout.Token);
+                }
+                catch(Exception ex) when(ex is not OperationCanceledException ||
+                    !timeout.IsCancellationRequested)
+                {
+                    // Connection dispatch already reports its own failure. Continue draining
+                    // the remaining tasks rather than allowing one fault to consume shutdown.
+                    logger.Debug(ex, "A Stratum connection faulted while shutdown was draining it");
+                }
+            }
+        }
+        catch(OperationCanceledException) when(timeout.IsCancellationRequested)
+        {
+            var pending = connectionTasks.Count;
+            var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+            failStop?.BeginFailStop(ProcessExitCodes.GeneralFailure);
+            logger.Fatal(
+                "Timed out after {0} while draining {1} Stratum connection task(s). " +
+                "Mining admission is closed and shutdown will continue so Share Recorder retains its recovery window.",
+                ConnectionDrainTimeout, pending);
+        }
     }
 
     protected void RegisterConnection(StratumConnection connection)

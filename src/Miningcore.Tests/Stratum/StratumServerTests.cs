@@ -150,6 +150,50 @@ public class StratumServerTests
     }
 
     [Fact]
+    public async Task RunAsync_UnresponsiveRequestHandlerFailsStopWithinReservedBudget()
+    {
+        var processStatus = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus, lifetime);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        server.SetConnectionDrainTimeout(TimeSpan.FromMilliseconds(100));
+        var requestEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var neverCompletes = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        server.RequestHandler = (_, _, _) =>
+        {
+            requestEntered.TrySetResult();
+            return neverCompletes.Task;
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var runTask = server.RunListenerAsync(cts.Token, new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint()));
+
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port, CancellationToken.None)
+            .AsTask().WaitAsync(TestTimeout);
+        await using var stream = client.GetStream();
+        var request = StratumConnection.Encoding.GetBytes(
+            "{\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+        await stream.WriteAsync(request);
+        await stream.FlushAsync();
+        await requestEntered.Task.WaitAsync(TestTimeout);
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        Assert.True(coordinator.IsFailStopRequested);
+        Assert.Equal(ProcessExitCodes.GeneralFailure, processStatus.ExitCode);
+        lifetime.Received(1).StopApplication();
+        Assert.False(neverCompletes.Task.IsCompleted);
+    }
+
+    [Fact]
     public async Task RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake()
     {
         const string pfxPassword = "miningcore-test-password";
@@ -296,6 +340,11 @@ public class StratumServerTests
         public Task RunListenerAsync(CancellationToken ct, StratumEndpoint endpoint)
         {
             return RunAsync(ct, endpoint);
+        }
+
+        public void SetConnectionDrainTimeout(TimeSpan timeout)
+        {
+            ConnectionDrainTimeout = timeout;
         }
 
         public X509Certificate2 GetCachedCertificate(string path)

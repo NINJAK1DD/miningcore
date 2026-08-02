@@ -161,9 +161,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
     internal TimeSpan ShutdownPersistenceDrainTimeout { get; set; } =
-        TimeSpan.FromSeconds(25);
-    internal TimeSpan ShutdownRecoveryCompletionTimeout { get; set; } =
         TimeSpan.FromSeconds(20);
+    internal TimeSpan ShutdownRecoveryCompletionTimeout { get; set; } =
+        TimeSpan.FromSeconds(15);
     internal int PersistenceQueueCapacity { get; set; } = 65_536;
     internal int EmergencyJournalQueueCapacity { get; set; } = 1_024;
     internal int PersistenceQueueHighWatermark =>
@@ -240,6 +240,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             {
                 await AwaitCandidateDatabaseAttemptAsync(databaseAttempt);
                 return;
+            }
+            catch(TransactionCommittedCleanupException cleanupError)
+            {
+                await recoveryFailureHandler.StopClusterAfterCommittedCleanupAsync(
+                    shares.ToArray(), recoveryFilename, cleanupError);
+                throw;
+            }
+            catch(TransactionCommitOutcomeUncertainException commitError)
+            {
+                await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                    shares.ToArray(), recoveryFilename, commitError);
+                throw;
             }
             catch(Exception ex) when(IsRetryablePersistenceException(ex))
             {
@@ -1288,6 +1300,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidOperationException(
                 "A required share-recovery failure handler was not supplied");
 
+        public Task StopClusterAfterCommittedCleanupAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception cleanupError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
         public Task StopClusterForUncertainCommitAsync(
             IReadOnlyCollection<Share> shares, string recoveryFilename,
             Exception commitError) =>
@@ -2103,7 +2121,20 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private async Task PersistQueuedSharesAsync(IReadOnlyCollection<QueuedShare> queued,
         CancellationToken ct)
     {
-        await PersistSharesAsync(queued.Select(x => x.Share).ToArray(), ct);
+        try
+        {
+            await PersistSharesAsync(queued.Select(x => x.Share).ToArray(), ct);
+        }
+        catch(TransactionCommittedCleanupException)
+        {
+            // Commit completed before provider cleanup failed. Remove this exact batch before
+            // the outer durability boundary snapshots or journals anything; replaying it would
+            // duplicate share and potentially block accounting.
+            foreach(var item in queued)
+                unresolvedShares.TryRemove(item.Id, out _);
+
+            throw;
+        }
 
         foreach(var item in queued)
             unresolvedShares.TryRemove(item.Id, out _);

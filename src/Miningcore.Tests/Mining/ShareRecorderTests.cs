@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Reactive.Subjects;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -438,8 +439,11 @@ public class ShareRecorderTests
         await AssertUnexpectedQueueFailureJournalsAsync(failureStage);
     }
 
-    [Fact]
-    public async Task PersistenceQueue_CommitFailureSuppressesReplayAndReportsExactShares()
+    [Theory]
+    [InlineData("transaction")]
+    [InlineData("connection")]
+    public async Task PersistenceQueue_CommitFailureWithCleanupFailureSuppressesReplayAndReportsExactShares(
+        string cleanupStage)
     {
         var directory = Path.Combine(Path.GetTempPath(),
             $"miningcore-commit-uncertain-{Guid.NewGuid():N}");
@@ -461,6 +465,12 @@ public class ShareRecorderTests
             .Returns(true);
         transaction.When(x => x.Commit()).Do(_ =>
             throw new IOException("commit transport failed"));
+        var cleanupFailure = new IOException($"{cleanupStage} dispose failed");
+
+        if(cleanupStage == "transaction")
+            transaction.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
+        else
+            connection.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
         handler.StopClusterForUncertainCommitAsync(
                 Arg.Any<IReadOnlyCollection<Share>>(), recoveryFilename,
                 Arg.Any<Exception>())
@@ -504,7 +514,95 @@ public class ShareRecorderTests
             var exact = await handled.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Same(submitted, Assert.Single(exact));
             Assert.False(File.Exists(recoveryFilename));
+            var call = handler.ReceivedCalls().Single(x =>
+                x.GetMethodInfo().Name == nameof(
+                    IShareRecoveryFailureHandler.StopClusterForUncertainCommitAsync));
+            var commitError = Assert.IsType<TransactionCommitOutcomeUncertainException>(
+                call.GetArguments()[2]);
+            Assert.Same(cleanupFailure,
+                commitError.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
             await handler.DidNotReceive().StopClusterAfterJournalAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(),
+                Arg.Any<Exception>());
+        }
+        finally
+        {
+            try
+            {
+                await recorder.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+            }
+
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("transaction")]
+    [InlineData("connection")]
+    public async Task PersistenceQueue_PostCommitCleanupFailureDoesNotJournalCommittedShares(
+        string cleanupStage)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-committed-cleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var handler = Substitute.For<IShareRecoveryFailureHandler>();
+        var handled = new TaskCompletionSource<(IReadOnlyCollection<Share> Shares,
+            Exception Error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupFailure = new IOException($"{cleanupStage} dispose failed");
+        var bus = new MessageBus();
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+
+        if(cleanupStage == "transaction")
+            transaction.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
+        else
+            connection.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
+
+        handler.StopClusterAfterJournalAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), recoveryFilename,
+                Arg.Any<Exception>())
+            .Returns(call =>
+            {
+                handled.TrySetResult((call.Arg<IReadOnlyCollection<Share>>(),
+                    call.Arg<Exception>()));
+                return Task.CompletedTask;
+            });
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, bus, handler, Substitute.For<IMiningFailStopCoordinator>());
+        var submitted = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "known-committed-cleanup",
+            BlockOnly = true,
+            Created = DateTime.UtcNow,
+        };
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            bus.SendMessage(submitted);
+
+            var result = await handled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(result.Shares);
+            var error = Assert.IsType<TransactionCommittedCleanupException>(result.Error);
+            Assert.Same(cleanupFailure, error.InnerException);
+            Assert.False(File.Exists(recoveryFilename));
+            await handler.DidNotReceive().StopClusterForUncertainCommitAsync(
                 Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(),
                 Arg.Any<Exception>());
         }
@@ -2096,6 +2194,118 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task PersistBlockCandidateAsync_PostCommitCleanupFailureNeverJournalsCandidate()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-candidate-committed-cleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var recoveryHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var candidateHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var cleanupFailure = new IOException("transaction dispose failed");
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>(),
+            Arg.Any<CancellationToken>()).Returns(true);
+        transaction.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>(), recoveryHandler,
+            Substitute.For<IMiningFailStopCoordinator>(), candidateHandler);
+        var candidate = CreateDurableCandidate("known-committed-cleanup");
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<TransactionCommittedCleanupException>(
+                () => recorder.PersistBlockCandidateAsync(candidate));
+
+            Assert.Same(cleanupFailure, error.InnerException);
+            await recoveryHandler.Received(1).StopClusterAfterCommittedCleanupAsync(
+                Arg.Is<IReadOnlyCollection<Share>>(x => x.Single() == candidate),
+                recoveryFilename, error);
+            await recoveryHandler.DidNotReceive().StopClusterForUncertainCommitAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(),
+                Arg.Any<Exception>());
+            await candidateHandler.DidNotReceive().StopClusterAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<Exception>(),
+                Arg.Any<Exception>(), Arg.Any<bool>());
+            Assert.False(File.Exists(recoveryFilename));
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistBlockCandidateAsync_UncertainCommitCleanupFailureNeverJournalsCandidate()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-candidate-uncertain-cleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var recoveryHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var candidateHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
+        var commitFailure = new IOException("commit transport failed");
+        var cleanupFailure = new IOException("connection dispose failed");
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>(),
+            Arg.Any<CancellationToken>()).Returns(true);
+        transaction.When(x => x.Commit()).Do(_ => throw commitFailure);
+        connection.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>(), recoveryHandler,
+            Substitute.For<IMiningFailStopCoordinator>(), candidateHandler);
+        var candidate = CreateDurableCandidate("uncertain-cleanup");
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<
+                TransactionCommitOutcomeUncertainException>(() =>
+                recorder.PersistBlockCandidateAsync(candidate));
+
+            Assert.Same(commitFailure, error.InnerException);
+            Assert.Same(cleanupFailure,
+                error.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
+            await recoveryHandler.Received(1).StopClusterForUncertainCommitAsync(
+                Arg.Is<IReadOnlyCollection<Share>>(x => x.Single() == candidate),
+                recoveryFilename, error);
+            await candidateHandler.DidNotReceive().StopClusterAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<Exception>(),
+                Arg.Any<Exception>(), Arg.Any<bool>());
+            Assert.False(File.Exists(recoveryFilename));
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task PersistBlockCandidateAsync_ShutdownBoundsDatabaseAndFlushesRecoveryJournal()
     {
         var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
@@ -3657,7 +3867,8 @@ public class ShareRecorderTests
         applicationLifetime.Received(1).StopApplication();
         fatalState.Received(1).MarkFatalShares(shares, commitError,
             Arg.Is<InvalidOperationException>(ex =>
-                ex.Message.Contains("intentionally suppressed")));
+                ex.Message.Contains("intentionally suppressed")),
+            "postgresql-commit-outcome-uncertain");
         await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject == "Uncertain PostgreSQL share commit" &&
@@ -3925,16 +4136,25 @@ public class ShareRecorderTests
             state.MarkFatal(2, new[] { "btc-solo" },
                 new IOException("database two"), new IOException("journal two"));
 
-            var marker = await File.ReadAllTextAsync(state.FatalStateFilename);
-            var incidentIds = marker.Split('\n')
+            var fatalDirectory = Path.GetDirectoryName(state.FatalStateFilename)!;
+            var stem = Path.GetFileNameWithoutExtension(state.FatalStateFilename);
+            var incidents = Directory.GetFiles(fatalDirectory,
+                $"{stem}.*.incident");
+            var incidentContents = await Task.WhenAll(incidents.Select(
+                filename => File.ReadAllTextAsync(filename)));
+            var incidentIds = incidentContents
+                .SelectMany(marker => marker.Split('\n'))
                 .Where(line => line.StartsWith("incidentId=",
                     StringComparison.Ordinal))
                 .Select(line => line["incidentId=".Length..])
                 .ToArray();
             Assert.Equal(2, incidentIds.Length);
             Assert.Equal(2, incidentIds.Distinct(StringComparer.Ordinal).Count());
-            Assert.Contains("database one", marker);
-            Assert.Contains("database two", marker);
+            Assert.Contains(incidentContents, marker => marker.Contains(
+                "database one", StringComparison.Ordinal));
+            Assert.Contains(incidentContents, marker => marker.Contains(
+                "database two", StringComparison.Ordinal));
+            Assert.True(new FileInfo(state.FatalStateFilename).Length < 16 * 1024);
         }
         finally
         {
@@ -4005,10 +4225,18 @@ public class ShareRecorderTests
         try
         {
             state.MarkFatalShares(shares, new IOException("commit uncertain"),
-                new InvalidOperationException("journal suppressed"));
+                new InvalidOperationException("journal suppressed"),
+                "postgresql-commit-outcome-uncertain");
 
             var lines = await File.ReadAllLinesAsync(state.FatalStateFilename);
-            var encoded = Assert.Single(lines.Where(line =>
+            var detailFilename = Assert.Single(lines.Where(line =>
+                line.StartsWith("detailFile=", StringComparison.Ordinal)))[
+                "detailFile=".Length..];
+            var expectedHash = Assert.Single(lines.Where(line =>
+                line.StartsWith("detailSha256=", StringComparison.Ordinal)))[
+                "detailSha256=".Length..];
+            var detailLines = await File.ReadAllLinesAsync(detailFilename);
+            var encoded = Assert.Single(detailLines.Where(line =>
                 line.StartsWith("shareJsonBase64=", StringComparison.Ordinal)));
             var json = Encoding.UTF8.GetString(Convert.FromBase64String(
                 encoded["shareJsonBase64=".Length..]));
@@ -4017,7 +4245,87 @@ public class ShareRecorderTests
             Assert.Equal("ltc-solo", restored.PoolId);
             Assert.Equal("LExactReconciliation", restored.Miner);
             Assert.Equal(42.5, restored.Difficulty);
-            Assert.Contains("exactShareRecordCount=1", lines);
+            Assert.Contains("shareCount=1", lines);
+            Assert.Contains("detailState=complete", lines);
+            Assert.Contains("failureCategory=postgresql-commit-outcome-uncertain",
+                lines);
+            await using var detail = File.OpenRead(detailFilename);
+            Assert.Equal(expectedHash,
+                Convert.ToHexString(await SHA256.HashDataAsync(detail)));
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task ShareRecoveryFatalState_MidSidecarFailureLeavesSmallDurableStartupLatch()
+    {
+        const int nearPrimaryQueueCapacity = 65_536;
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-large-incident-{Guid.NewGuid():N}");
+        var processStatus = new ProcessStatus();
+        var state = new ShareRecoveryFatalState(new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+        }, processStatus, Path.Combine(directory, "state"));
+        var shares = Enumerable.Range(0, nearPrimaryQueueCapacity)
+            .Select(index => new Share
+            {
+                PoolId = "ltc-solo",
+                Miner = $"LNearCapacity{index:D8}",
+                Worker = "recovery-pressure-test",
+                Difficulty = 16.25,
+                NetworkDifficulty = 12_345_678,
+                Created = DateTime.UtcNow.AddTicks(index),
+                IpAddress = "192.0.2.10",
+                UserAgent = "Miningcore recovery sidecar fault injection",
+            })
+            .ToArray();
+        state.ExactShareWriteCheckpoint = index =>
+        {
+            if(index == nearPrimaryQueueCapacity / 2)
+                throw new IOException("injected sidecar write failure");
+        };
+
+        try
+        {
+            var error = Assert.Throws<IOException>(() =>
+                state.MarkFatalShares(shares, new IOException("commit uncertain"),
+                    new InvalidOperationException("journal suppressed"),
+                    "postgresql-commit-outcome-uncertain"));
+            Assert.Contains("sidecar write failure", error.Message);
+
+            Assert.True(File.Exists(state.FatalStateFilename));
+            var latchInfo = new FileInfo(state.FatalStateFilename);
+            Assert.True(latchInfo.Length < 16 * 1024,
+                $"Fatal latch unexpectedly grew to {latchInfo.Length} bytes");
+            var latch = await File.ReadAllLinesAsync(state.FatalStateFilename);
+            Assert.Contains($"shareCount={nearPrimaryQueueCapacity}", latch);
+            Assert.Contains("pools=ltc-solo", latch);
+            Assert.Contains("detailState=incomplete", latch);
+            var detailFilename = Assert.Single(latch.Where(line =>
+                line.StartsWith("detailFile=", StringComparison.Ordinal)))[
+                "detailFile=".Length..];
+            var expectedHash = Assert.Single(latch.Where(line =>
+                line.StartsWith("detailSha256=", StringComparison.Ordinal)))[
+                "detailSha256=".Length..];
+            Assert.Equal(64, expectedHash.Length);
+            Assert.False(File.Exists(detailFilename));
+            var fatalDirectory = Path.GetDirectoryName(state.FatalStateFilename)!;
+            var stem = Path.GetFileNameWithoutExtension(state.FatalStateFilename);
+            var incidentFile = Assert.Single(Directory.GetFiles(fatalDirectory,
+                $"{stem}.*.incident"));
+            Assert.Contains("detailState=incomplete",
+                await File.ReadAllTextAsync(incidentFile));
+
+            var startupError = Assert.Throws<PoolStartupException>(() =>
+                state.EnsureStartupAllowed());
+            Assert.Contains(state.FatalStateFilename, startupError.Message);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
         }
         finally
         {

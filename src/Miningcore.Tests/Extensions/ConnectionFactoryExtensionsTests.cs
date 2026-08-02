@@ -1,6 +1,7 @@
 using System;
 using System.Data;
 using System.Data.Common;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Extensions;
@@ -70,6 +71,102 @@ public class ConnectionFactoryExtensionsTests
     }
 
     [Fact]
+    public async Task RunTx_TransactionDisposeAfterCommitPreservesCommittedOutcome()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var transaction = new ControlledDbTransaction
+        {
+            DisposeFailure = new IOException("transaction dispose failed"),
+        };
+        var connection = new ControlledDbConnection(transaction);
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommittedCleanupException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true));
+
+        Assert.Same(transaction.DisposeFailure, error.InnerException);
+        Assert.Equal(1, transaction.CommitCalls);
+        Assert.Equal(0, transaction.RollbackCalls);
+        Assert.Equal(1, transaction.DisposeCalls);
+        Assert.Equal(1, connection.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task RunTx_ConnectionDisposeAfterCommitPreservesCommittedOutcome()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var transaction = new ControlledDbTransaction();
+        var connection = new ControlledDbConnection(transaction)
+        {
+            DisposeFailure = new IOException("connection dispose failed"),
+        };
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommittedCleanupException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true));
+
+        Assert.Same(connection.DisposeFailure, error.InnerException);
+        Assert.Equal(1, transaction.CommitCalls);
+        Assert.Equal(0, transaction.RollbackCalls);
+        Assert.Equal(1, transaction.DisposeCalls);
+        Assert.Equal(1, connection.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task RunTx_UncertainCommitRetainsTransactionDisposeAsSecondaryFailure()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var commitFailure = new IOException("commit transport failed");
+        var transaction = new ControlledDbTransaction
+        {
+            CommitAsyncAction = _ => Task.FromException(commitFailure),
+            DisposeFailure = new IOException("transaction dispose failed"),
+        };
+        var connection = new ControlledDbConnection(transaction);
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommitOutcomeUncertainException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true));
+
+        Assert.Same(commitFailure, error.InnerException);
+        Assert.Same(transaction.DisposeFailure,
+            error.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
+        Assert.Equal(0, transaction.RollbackCalls);
+    }
+
+    [Fact]
+    public async Task RunTx_UncertainCommitRetainsConnectionDisposeAsSecondaryFailure()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var commitFailure = new IOException("commit transport failed");
+        var transaction = new ControlledDbTransaction
+        {
+            CommitAsyncAction = _ => Task.FromException(commitFailure),
+        };
+        var connection = new ControlledDbConnection(transaction)
+        {
+            DisposeFailure = new IOException("connection dispose failed"),
+        };
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommitOutcomeUncertainException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true));
+
+        Assert.Same(commitFailure, error.InnerException);
+        Assert.Same(connection.DisposeFailure,
+            error.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
+        Assert.Equal(0, transaction.RollbackCalls);
+    }
+
+    [Fact]
     public async Task RunTx_PreservesOriginalExceptionWhenRollbackFails()
     {
         var factory = Substitute.For<IConnectionFactory>();
@@ -122,6 +219,8 @@ public class ConnectionFactoryExtensionsTests
 
         private readonly DbTransaction transaction;
         public Func<CancellationToken, ValueTask<DbTransaction>> BeginAsync { get; set; }
+        public Exception DisposeFailure { get; set; }
+        public int DisposeCalls { get; private set; }
 
         public override string ConnectionString { get; set; }
         public override string Database => "test";
@@ -139,23 +238,47 @@ public class ConnectionFactoryExtensionsTests
             IsolationLevel isolationLevel, CancellationToken cancellationToken) =>
             BeginAsync?.Invoke(cancellationToken) ??
             new ValueTask<DbTransaction>(transaction);
+
+        public override ValueTask DisposeAsync()
+        {
+            DisposeCalls++;
+
+            return DisposeFailure != null
+                ? ValueTask.FromException(DisposeFailure)
+                : ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ControlledDbTransaction : DbTransaction
     {
         public Func<CancellationToken, Task> CommitAsyncAction { get; set; }
+        public Exception DisposeFailure { get; set; }
+        public int CommitCalls { get; private set; }
+        public int DisposeCalls { get; private set; }
         public int RollbackCalls { get; private set; }
         public override IsolationLevel IsolationLevel => IsolationLevel.ReadCommitted;
         protected override DbConnection DbConnection => null;
-        public override void Commit() { }
-        public override Task CommitAsync(CancellationToken cancellationToken = default) =>
-            CommitAsyncAction?.Invoke(cancellationToken) ?? Task.CompletedTask;
+        public override void Commit() => CommitCalls++;
+        public override Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            CommitCalls++;
+            return CommitAsyncAction?.Invoke(cancellationToken) ?? Task.CompletedTask;
+        }
         public override void Rollback() => RollbackCalls++;
         public override Task RollbackAsync(
             CancellationToken cancellationToken = default)
         {
             RollbackCalls++;
             return Task.CompletedTask;
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            DisposeCalls++;
+
+            return DisposeFailure != null
+                ? ValueTask.FromException(DisposeFailure)
+                : ValueTask.CompletedTask;
         }
     }
 }

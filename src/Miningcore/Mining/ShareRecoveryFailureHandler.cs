@@ -11,6 +11,8 @@ public interface IShareRecoveryFailureHandler
         Exception databaseError, Exception journalError);
     Task StopClusterAfterJournalAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception pipelineError);
+    Task StopClusterAfterCommittedCleanupAsync(IReadOnlyCollection<Share> shares,
+        string recoveryFilename, Exception cleanupError);
     Task StopClusterForUncertainCommitAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception commitError);
 }
@@ -156,7 +158,8 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
 
         try
         {
-            fatalState.MarkFatalShares(shares, commitError, suppression);
+            fatalState.MarkFatalShares(shares, commitError, suppression,
+                "postgresql-commit-outcome-uncertain");
         }
         catch(Exception ex)
         {
@@ -174,9 +177,36 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             $"Miningcore is stopping with exit status " +
             $"{ProcessExitCodes.UnreconciledShareDurabilityLoss} because PostgreSQL may or may " +
             $"not have committed {shares.Count} share(s). The importable journal was deliberately " +
-            $"not extended. Exact share records are in {fatalState.FatalStateFilename}. Reconcile " +
-            $"them against PostgreSQL before removing that marker. Recovery file: " +
+            $"not extended. Exact share records are in the detail sidecar referenced by " +
+            $"{fatalState.FatalStateFilename}. Reconcile them against PostgreSQL before removing " +
+            $"that marker. Recovery file: " +
             $"{absoluteRecoveryFilename}.");
+        await SendCriticalNotificationSafelyAsync(notification);
+    }
+
+    public async Task StopClusterAfterCommittedCleanupAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception cleanupError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+
+        logger.Fatal(cleanupError,
+            "Stopping cluster because PostgreSQL committed {0} share(s), but transaction cleanup failed. " +
+            "Those committed shares were not copied to the recovery journal.", shares.Count);
+
+        if(!TryClaimNotificationSeverity(1))
+            return;
+
+        var notification = new AdminNotification(
+            "Share transaction cleanup failed after commit",
+            $"Miningcore is stopping with exit status {ProcessExitCodes.GeneralFailure} after " +
+            $"PostgreSQL committed {shares.Count} share(s), but transaction or connection " +
+            "cleanup failed. Those committed records were deliberately excluded from the " +
+            $"replayable recovery journal at {absoluteRecoveryFilename}. Investigate the " +
+            "database provider and connection health before restarting.");
         await SendCriticalNotificationSafelyAsync(notification);
     }
 
