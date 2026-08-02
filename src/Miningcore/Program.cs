@@ -114,6 +114,22 @@ public class Program : ProcessStatusBackgroundService
                 return;
             }
 
+            if(verifyShareRecoveryStateOption.HasValue())
+            {
+                clusterConfig = configFileOption.HasValue()
+                    ? ReadConfig(configFileOption.Value())
+                    : new ClusterConfig();
+                processStatus = new ProcessStatus();
+                var verification = ShareRecoveryIncidentVerifier.Verify(
+                    clusterConfig, Console.Out);
+
+                if(!verification.IsSuccessful)
+                    processStatus.MarkFailed(
+                        ProcessExitCodes.UnreconciledShareDurabilityLoss);
+
+                return;
+            }
+
             if(!configFileOption.HasValue())
             {
                 app.ShowHelp();
@@ -353,6 +369,7 @@ public class Program : ProcessStatusBackgroundService
     private static CommandOption configFileOption;
     private static CommandOption dumpConfigOption;
     private static CommandOption shareRecoveryOption;
+    private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption generateSchemaOption;
     private static bool isShareRecoveryMode;
     private static ClusterConfig clusterConfig;
@@ -810,6 +827,9 @@ public class Program : ProcessStatusBackgroundService
         configFileOption = app.Option("-c|--config <configfile>", "Configuration File", CommandOptionType.SingleValue);
         dumpConfigOption = app.Option("-dc|--dumpconfig", "Dump the configuration (useful for trouble-shooting typos in the config file)",CommandOptionType.NoValue);
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
+        verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
+            "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
+            CommandOptionType.NoValue);
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 

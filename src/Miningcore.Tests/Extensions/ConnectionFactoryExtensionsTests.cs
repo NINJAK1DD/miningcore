@@ -167,6 +167,63 @@ public class ConnectionFactoryExtensionsTests
     }
 
     [Fact]
+    public async Task RunTx_TransactionCleanupTimeoutPreservesCommittedOutcome()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var neverDisposed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var transaction = new ControlledDbTransaction
+        {
+            DisposeAsyncAction = () => new ValueTask(neverDisposed.Task),
+        };
+        var connection = new ControlledDbConnection(transaction);
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommittedCleanupException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true,
+                resourceCleanupTimeout: TimeSpan.FromMilliseconds(50)));
+
+        var timeout = Assert.IsType<TimeoutException>(error.InnerException);
+        Assert.Contains("database transaction", timeout.Message);
+        Assert.Equal(1, transaction.CommitCalls);
+        Assert.Equal(0, transaction.RollbackCalls);
+        Assert.Equal(1, transaction.DisposeCalls);
+        Assert.Equal(1, connection.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task RunTx_ConnectionCleanupTimeoutRemainsSecondaryToUncertainCommit()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var commitFailure = new IOException("commit transport failed");
+        var neverDisposed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var transaction = new ControlledDbTransaction
+        {
+            CommitAsyncAction = _ => Task.FromException(commitFailure),
+        };
+        var connection = new ControlledDbConnection(transaction)
+        {
+            DisposeAsyncAction = () => new ValueTask(neverDisposed.Task),
+        };
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommitOutcomeUncertainException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true,
+                resourceCleanupTimeout: TimeSpan.FromMilliseconds(50)));
+
+        Assert.Same(commitFailure, error.InnerException);
+        var timeout = Assert.IsType<TimeoutException>(
+            error.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
+        Assert.Contains("database connection", timeout.Message);
+        Assert.Equal(0, transaction.RollbackCalls);
+    }
+
+    [Fact]
     public async Task RunTx_PreservesOriginalExceptionWhenRollbackFails()
     {
         var factory = Substitute.For<IConnectionFactory>();
@@ -219,6 +276,7 @@ public class ConnectionFactoryExtensionsTests
 
         private readonly DbTransaction transaction;
         public Func<CancellationToken, ValueTask<DbTransaction>> BeginAsync { get; set; }
+        public Func<ValueTask> DisposeAsyncAction { get; set; }
         public Exception DisposeFailure { get; set; }
         public int DisposeCalls { get; private set; }
 
@@ -243,6 +301,9 @@ public class ConnectionFactoryExtensionsTests
         {
             DisposeCalls++;
 
+            if(DisposeAsyncAction != null)
+                return DisposeAsyncAction();
+
             return DisposeFailure != null
                 ? ValueTask.FromException(DisposeFailure)
                 : ValueTask.CompletedTask;
@@ -252,6 +313,7 @@ public class ConnectionFactoryExtensionsTests
     private sealed class ControlledDbTransaction : DbTransaction
     {
         public Func<CancellationToken, Task> CommitAsyncAction { get; set; }
+        public Func<ValueTask> DisposeAsyncAction { get; set; }
         public Exception DisposeFailure { get; set; }
         public int CommitCalls { get; private set; }
         public int DisposeCalls { get; private set; }
@@ -275,6 +337,9 @@ public class ConnectionFactoryExtensionsTests
         public override ValueTask DisposeAsync()
         {
             DisposeCalls++;
+
+            if(DisposeAsyncAction != null)
+                return DisposeAsyncAction();
 
             return DisposeFailure != null
                 ? ValueTask.FromException(DisposeFailure)

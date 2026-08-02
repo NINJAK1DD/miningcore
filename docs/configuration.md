@@ -159,8 +159,11 @@ general shutdown to status 74, creates the latch and sends a distinct escalation
 the affected candidates and exact latch path even when the first stop signal was already sent.
 The fixed-name fatal latch remains deliberately small. It identifies the current incident, count,
 pool set, failure category and any exact-share sidecar's path and expected SHA-256. Exact records are
-streamed to that sidecar only after the incomplete latch is force-flushed; a mid-write failure
-therefore still leaves startup blocked. Every completed incident also receives an immutable
+streamed to that sidecar only after a `detailState=hash-pending` latch is force-flushed. The same
+single streaming pass serializes each share, writes it and calculates the final SHA-256; only then
+does Miningcore advance the incident and latch to `detailState=complete`. A serialization or
+mid-write failure therefore still leaves startup blocked without first constructing or hashing the
+whole payload. Every completed incident also receives an immutable
 `.incident` metadata file rather than growing and rewriting all earlier incidents. Preserve and
 reconcile every incident file and referenced sidecar before deleting only the exact fixed-name
 fatal-state path reported by Miningcore as an explicit operator acknowledgement.

@@ -248,9 +248,26 @@ to the importable journal. The small status-74 fatal latch names an exact-share 
 expected SHA-256. That sidecar contains one `shareJsonBase64=` record per line for read-only
 reconciliation. Verify the sidecar hash, decode and compare those records with PostgreSQL; do not
 copy them into a journal or replay them unless reconciliation proves they are absent. A
-`detailState=incomplete` latch is authoritative even if its sidecar is absent or partial. Preserve
-the fixed latch, every immutable `.incident` metadata record, sidecar and temporary incident evidence
-until every record has a conclusive disposition.
+`detailState=hash-pending` latch is authoritative even if its sidecar is absent or partial. Earlier
+v2 incidents may call the equivalent state `incomplete`. Preserve the fixed latch, every immutable
+`.incident` metadata record, sidecar and temporary incident evidence until every record has a
+conclusive disposition.
+
+Use the read-only verifier before manual reconciliation. Supply the same configuration used by the
+service so Miningcore resolves the exact recovery journal and independent state directory:
+
+```console
+cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
+./Miningcore -c /etc/miningcore/config.json --verify-share-recovery-state
+echo "exit=$?"
+```
+
+The command enumerates every path-scoped `.incident` record, validates its metadata, verifies the
+referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. It returns
+status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. A successful
+verification proves only that the recorded evidence is structurally complete; it cannot prove that
+the uncertain records were reconciled against PostgreSQL. Complete that database comparison before
+removing an active fatal latch. The verifier never edits, imports or deletes recovery files.
 
 Frame chains detect duplicated, missing and reordered middle frames. New writes also commit the
 expected final sequence and digest under the independently stored

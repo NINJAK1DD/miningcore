@@ -158,14 +158,9 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         string failureCategory = "database-and-journal-unavailable")
     {
         ArgumentNullException.ThrowIfNull(shares);
-        var pools = shares.Select(x => x.PoolId)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .ToArray();
 
         lock(fatalStateGate)
-            MarkFatalCore(shares.Count, pools, shares, databaseError,
+            MarkFatalCore(shares.Count, null, shares, databaseError,
                 journalError, failureCategory);
     }
 
@@ -183,30 +178,33 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             : null;
         string detailHash = null;
 
-        if(shares != null)
-            detailHash = ComputeExactShareDetailHash(shares);
-
         var created = DateTimeOffset.UtcNow;
         var initialState = BuildIncidentLatch(incidentId, created,
             recoveryPathHash, failureCategory, shareCount, pools, databaseError,
             journalError, detailFilename, detailHash,
-            shares == null ? "not-required" : "incomplete");
+            shares == null ? "not-required" : "hash-pending",
+            shares != null);
         var incidentFilename = Path.Combine(directory,
             $"{stem}.{incidentId}.incident");
 
-        // Publish the small authoritative startup barrier before attempting the potentially
-        // large exact-share sidecar. A sidecar write failure must never leave restart unblocked.
+        // Publish the small authoritative startup barrier before enumerating or serializing any
+        // exact shares. A serialization, memory-pressure or sidecar write failure must never
+        // leave a later restart unblocked.
         WriteSmallStateFile(FatalStateFilename, initialState, true);
         WriteSmallStateFile(incidentFilename, initialState, false);
 
         if(shares != null)
-            WriteExactShareSidecar(detailFilename, shares, detailHash);
+        {
+            var detail = WriteExactShareSidecar(detailFilename, shares);
+            detailHash = detail.Hash;
+            pools = detail.Pools;
+        }
 
         var completedState = BuildIncidentLatch(incidentId, created,
             recoveryPathHash, failureCategory, shareCount, pools, databaseError,
             journalError, detailFilename, detailHash,
             shares == null ? "not-required" : "complete");
-        // Each incident record is advanced once from incomplete to complete, then remains
+        // Each incident record is advanced once from hash-pending to complete, then remains
         // immutable evidence. The fixed-name latch remains a small current startup barrier.
         WriteSmallStateFile(incidentFilename, completedState, true);
         WriteSmallStateFile(FatalStateFilename, completedState, true);
@@ -216,7 +214,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         string recoveryPathHash, string failureCategory, int shareCount,
         IReadOnlyCollection<string> pools, Exception databaseError,
         Exception journalError, string detailFilename, string detailHash,
-        string detailState)
+        string detailState, bool poolsPending = false)
     {
         return string.Join('\n',
             "Miningcore share-accounting durability failure",
@@ -227,7 +225,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             $"recoveryFile={RecoveryFilename}",
             $"recoveryPathSha256={recoveryPathHash}",
             $"shareCount={shareCount}",
-            $"pools={SanitizeStateValue(string.Join(',', pools), 4096)}",
+            $"pools={(poolsPending ? "(pending)" : SanitizeStateValue(
+                string.Join(',', pools ?? Array.Empty<string>()), 4096))}",
             $"detailFile={detailFilename ?? "(none)"}",
             $"detailSha256={detailHash ?? "(none)"}",
             $"detailState={detailState}",
@@ -247,19 +246,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         return value.Length <= maxLength ? value : value[..maxLength] + "...";
     }
 
-    private static string ComputeExactShareDetailHash(
+    private ExactShareDetail WriteExactShareSidecar(string filename,
         IReadOnlyCollection<Share> shares)
-    {
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-
-        foreach(var share in shares)
-            hash.AppendData(Encoding.UTF8.GetBytes(SerializeExactShareRecord(share)));
-
-        return Convert.ToHexString(hash.GetHashAndReset());
-    }
-
-    private void WriteExactShareSidecar(string filename,
-        IReadOnlyCollection<Share> shares, string expectedHash)
     {
         var directory = Path.GetDirectoryName(filename)!;
         var temporary = Path.Combine(directory,
@@ -267,35 +255,33 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
         try
         {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var pools = new HashSet<string>(StringComparer.Ordinal);
+
             using(var stream = new FileStream(temporary, FileMode.CreateNew,
                 FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            using(var writer = new StreamWriter(stream, new UTF8Encoding(false), 4096,
-                leaveOpen: true))
             {
                 var index = 0;
 
                 foreach(var share in shares)
                 {
                     ExactShareWriteCheckpoint(index++);
-                    writer.Write(SerializeExactShareRecord(share));
+                    var record = Encoding.UTF8.GetBytes(SerializeExactShareRecord(share));
+                    stream.Write(record);
+                    hash.AppendData(record);
+
+                    if(!string.IsNullOrWhiteSpace(share.PoolId))
+                        pools.Add(share.PoolId);
                 }
 
-                writer.Flush();
                 stream.Flush(true);
-            }
-
-            using(var verify = File.OpenRead(temporary))
-            {
-                var actualHash = Convert.ToHexString(SHA256.HashData(verify));
-
-                if(!string.Equals(actualHash, expectedHash,
-                       StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException(
-                        $"Exact-share incident sidecar hash mismatch: expected {expectedHash}, found {actualHash}");
             }
 
             File.Move(temporary, filename);
             DirectorySync(directory);
+
+            return new ExactShareDetail(Convert.ToHexString(hash.GetHashAndReset()),
+                pools.OrderBy(x => x, StringComparer.Ordinal).ToArray());
         }
         finally
         {
@@ -310,6 +296,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             }
         }
     }
+
+    private readonly record struct ExactShareDetail(string Hash, string[] Pools);
 
     private static string SerializeExactShareRecord(Share share)
     {

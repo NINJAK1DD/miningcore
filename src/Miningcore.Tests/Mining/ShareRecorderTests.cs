@@ -4304,21 +4304,21 @@ public class ShareRecorderTests
                 $"Fatal latch unexpectedly grew to {latchInfo.Length} bytes");
             var latch = await File.ReadAllLinesAsync(state.FatalStateFilename);
             Assert.Contains($"shareCount={nearPrimaryQueueCapacity}", latch);
-            Assert.Contains("pools=ltc-solo", latch);
-            Assert.Contains("detailState=incomplete", latch);
+            Assert.Contains("pools=(pending)", latch);
+            Assert.Contains("detailState=hash-pending", latch);
             var detailFilename = Assert.Single(latch.Where(line =>
                 line.StartsWith("detailFile=", StringComparison.Ordinal)))[
                 "detailFile=".Length..];
             var expectedHash = Assert.Single(latch.Where(line =>
                 line.StartsWith("detailSha256=", StringComparison.Ordinal)))[
                 "detailSha256=".Length..];
-            Assert.Equal(64, expectedHash.Length);
+            Assert.Equal("(none)", expectedHash);
             Assert.False(File.Exists(detailFilename));
             var fatalDirectory = Path.GetDirectoryName(state.FatalStateFilename)!;
             var stem = Path.GetFileNameWithoutExtension(state.FatalStateFilename);
             var incidentFile = Assert.Single(Directory.GetFiles(fatalDirectory,
                 $"{stem}.*.incident"));
-            Assert.Contains("detailState=incomplete",
+            Assert.Contains("detailState=hash-pending",
                 await File.ReadAllTextAsync(incidentFile));
 
             var startupError = Assert.Throws<PoolStartupException>(() =>
@@ -4326,6 +4326,177 @@ public class ShareRecorderTests
             Assert.Contains(state.FatalStateFilename, startupError.Message);
             Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
                 processStatus.ExitCode);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryFatalState_PublishesLatchBeforeFirstShareSerialization()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-pre-serialization-{Guid.NewGuid():N}");
+        var state = new ShareRecoveryFatalState(new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+        }, new ProcessStatus(), Path.Combine(directory, "state"));
+        state.ExactShareWriteCheckpoint = _ =>
+            throw new JsonSerializationException("injected serialization failure");
+
+        try
+        {
+            Assert.Throws<JsonSerializationException>(() =>
+                state.MarkFatalShares(new[]
+                    {
+                        new Share
+                        {
+                            PoolId = "ltc-solo",
+                            Miner = "LNeverSerialized",
+                        },
+                    }, new IOException("commit uncertain"),
+                    new InvalidOperationException("journal suppressed"),
+                    "postgresql-commit-outcome-uncertain"));
+
+            var latch = File.ReadAllLines(state.FatalStateFilename);
+            Assert.Contains("shareCount=1", latch);
+            Assert.Contains("pools=(pending)", latch);
+            Assert.Contains("detailSha256=(none)", latch);
+            Assert.Contains("detailState=hash-pending", latch);
+            Assert.Throws<PoolStartupException>(() => state.EnsureStartupAllowed());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_VerifiesCompleteSidecarReadOnly()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share
+                    {
+                        PoolId = "ltc-solo",
+                        Miner = "LVerified",
+                        Difficulty = 12.5,
+                        Created = DateTime.UtcNow,
+                    },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed"),
+                "postgresql-commit-outcome-uncertain");
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output);
+
+            Assert.True(result.IsSuccessful);
+            Assert.Equal(1, result.IncidentCount);
+            Assert.Equal(1, result.CompleteCount);
+            Assert.Equal(0, result.IncompleteCount);
+            Assert.Equal(0, result.InvalidCount);
+            Assert.Contains("status=COMPLETE", output.ToString());
+            Assert.Contains("decodedRecords=1", output.ToString());
+            Assert.Contains("does not prove PostgreSQL reconciliation",
+                output.ToString());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_RejectsTamperedSidecar()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-tamper-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "btc-solo", Miner = "bc1verified" },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed"),
+                "postgresql-commit-outcome-uncertain");
+            var latch = File.ReadAllLines(state.FatalStateFilename);
+            var detailFilename = Assert.Single(latch.Where(line =>
+                line.StartsWith("detailFile=", StringComparison.Ordinal)))[
+                "detailFile=".Length..];
+            File.AppendAllText(detailFilename, "tampered\n");
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output);
+
+            Assert.False(result.IsSuccessful);
+            Assert.Equal(1, result.InvalidCount);
+            Assert.Contains("status=INVALID", output.ToString());
+            Assert.Contains("SHA-256 does not match", output.ToString());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_ReportsHashPendingEvidence()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-pending-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory)
+        {
+            ExactShareWriteCheckpoint = _ =>
+                throw new IOException("injected sidecar failure"),
+        };
+
+        try
+        {
+            Assert.Throws<IOException>(() => state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "LPending" },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed")));
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output);
+
+            Assert.False(result.IsSuccessful);
+            Assert.Equal(1, result.IncompleteCount);
+            Assert.Equal(0, result.InvalidCount);
+            Assert.Contains("status=INCOMPLETE", output.ToString());
+            Assert.Contains("do not clear the fatal latch", output.ToString());
         }
         finally
         {

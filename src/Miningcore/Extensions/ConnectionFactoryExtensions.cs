@@ -41,13 +41,15 @@ public static class ConnectionFactoryExtensions
         Func<IDbConnection, IDbTransaction, Task> action,
         bool autoCommit = true, IsolationLevel isolation = IsolationLevel.ReadCommitted,
         CancellationToken ct = default,
-        bool classifyCommitOutcome = false)
+        bool classifyCommitOutcome = false,
+        TimeSpan? resourceCleanupTimeout = null)
     {
         await RunTxCore(factory, async (con, tx) =>
         {
             await action(con, tx);
             return true;
-        }, autoCommit, isolation, ct, classifyCommitOutcome);
+        }, autoCommit, isolation, ct, classifyCommitOutcome,
+            resourceCleanupTimeout ?? DefaultResourceCleanupTimeout);
     }
 
     /// <summary>
@@ -59,17 +61,23 @@ public static class ConnectionFactoryExtensions
         Func<IDbConnection, IDbTransaction, Task<T>> func,
         bool autoCommit = true, IsolationLevel isolation = IsolationLevel.ReadCommitted,
         CancellationToken ct = default,
-        bool classifyCommitOutcome = false)
+        bool classifyCommitOutcome = false,
+        TimeSpan? resourceCleanupTimeout = null)
     {
         return await RunTxCore(factory, func, autoCommit, isolation, ct,
-            classifyCommitOutcome);
+            classifyCommitOutcome,
+            resourceCleanupTimeout ?? DefaultResourceCleanupTimeout);
     }
 
     private static async Task<T> RunTxCore<T>(IConnectionFactory factory,
         Func<IDbConnection, IDbTransaction, Task<T>> func,
         bool autoCommit, IsolationLevel isolation, CancellationToken ct,
-        bool classifyCommitOutcome)
+        bool classifyCommitOutcome, TimeSpan resourceCleanupTimeout)
     {
+        if(resourceCleanupTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(resourceCleanupTimeout),
+                "Database transaction resource cleanup timeout must be positive");
+
         IDbConnection con = null;
         IDbTransaction tx = null;
         var outcome = TransactionOutcome.NotCommitted;
@@ -113,7 +121,8 @@ public static class ConnectionFactoryExtensions
         }
         finally
         {
-            var cleanupFailure = await DisposeTransactionResourcesAsync(tx, con);
+            var cleanupFailure = await DisposeTransactionResourcesAsync(tx, con,
+                resourceCleanupTimeout);
 
             if(cleanupFailure != null)
             {
@@ -136,6 +145,8 @@ public static class ConnectionFactoryExtensions
 
     internal const string RollbackExceptionDataKey = "Miningcore.RollbackException";
     internal const string CleanupExceptionDataKey = "Miningcore.TransactionCleanupException";
+    internal static readonly TimeSpan DefaultResourceCleanupTimeout =
+        TimeSpan.FromSeconds(2);
 
     private enum TransactionOutcome
     {
@@ -145,12 +156,13 @@ public static class ConnectionFactoryExtensions
     }
 
     private static async Task<Exception> DisposeTransactionResourcesAsync(
-        IDbTransaction tx, IDbConnection con)
+        IDbTransaction tx, IDbConnection con, TimeSpan timeout)
     {
         List<Exception> failures = null;
 
-        await DisposeResourceSafelyAsync(tx, failures ??= new List<Exception>());
-        await DisposeResourceSafelyAsync(con, failures);
+        await DisposeResourceSafelyAsync(tx, "transaction", timeout,
+            failures ??= new List<Exception>());
+        await DisposeResourceSafelyAsync(con, "connection", timeout, failures);
 
         return failures.Count switch
         {
@@ -162,17 +174,41 @@ public static class ConnectionFactoryExtensions
     }
 
     private static async Task DisposeResourceSafelyAsync(object resource,
-        ICollection<Exception> failures)
+        string resourceName, TimeSpan timeout, ICollection<Exception> failures)
     {
         if(resource == null)
             return;
 
         try
         {
+            Task disposeTask;
+
             if(resource is IAsyncDisposable asyncDisposable)
-                await asyncDisposable.DisposeAsync();
+                disposeTask = Task.Run(async () =>
+                    await asyncDisposable.DisposeAsync());
             else if(resource is IDisposable disposable)
-                disposable.Dispose();
+                disposeTask = Task.Run(disposable.Dispose);
+            else
+                return;
+
+            try
+            {
+                await disposeTask.WaitAsync(timeout);
+            }
+            catch(TimeoutException ex) when(!disposeTask.IsCompleted)
+            {
+                // Dispose APIs do not accept cancellation. Stop waiting so the financial
+                // outcome can be classified within a deterministic bound, and observe any
+                // eventual background fault without allowing it to replace that classification.
+                _ = disposeTask.ContinueWith(task => _ = task.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                throw new TimeoutException(
+                    $"Timed out after {timeout} while disposing the database {resourceName}",
+                    ex);
+            }
         }
         catch(Exception ex)
         {
