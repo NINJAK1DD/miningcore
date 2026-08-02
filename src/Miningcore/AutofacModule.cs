@@ -148,7 +148,6 @@ public class AutofacModule : Module
         builder.RegisterType<ShareRecorder>()
             .AsSelf()
             .As<IBlockCandidateRecorder>()
-            .As<ISharePersistenceQueueMetricsProvider>()
             .SingleInstance();
 
         builder.RegisterType<CandidatePersistenceFailureHandler>()

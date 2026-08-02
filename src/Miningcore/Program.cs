@@ -367,15 +367,7 @@ public class Program : ProcessStatusBackgroundService
         services.AddHostedService<NotificationService>();
         services.AddHostedService<BtStreamReceiver>();
 
-        // Share processing
-        if(clusterConfig.ShareRelay == null)
-        {
-            ConfigureShareRecorderHostedService(services);
-            services.AddHostedService<ShareReceiver>();
-        }
-
-        else
-            services.AddHostedService<ShareRelay>();
+        ConfigureShareProcessingHostedServices(services, clusterConfig);
 
         // API
         if(clusterConfig.Api == null || clusterConfig.Api.Enabled)
@@ -587,6 +579,23 @@ public class Program : ProcessStatusBackgroundService
         // instead of letting AddHostedService<T>() create another singleton with independent
         // recovery state and journal locking.
         services.AddHostedService(sp => sp.GetRequiredService<ShareRecorder>());
+        services.TryAddSingleton<ISharePersistenceQueueMetricsProvider>(sp =>
+            sp.GetRequiredService<ShareRecorder>());
+    }
+
+    internal static void ConfigureShareProcessingHostedServices(
+        IServiceCollection services, ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(config);
+
+        if(config.ShareRelay == null)
+        {
+            ConfigureShareRecorderHostedService(services);
+            services.AddHostedService<ShareReceiver>();
+        }
+        else
+            services.AddHostedService<ShareRelay>();
     }
 
     internal static void ConfigureMiningShutdownCoordinator(IServiceCollection services)

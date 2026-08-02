@@ -150,11 +150,15 @@ Share-accounting backlog monitoring uses three gauges with a fixed `queue` label
 | `miningcore_share_persistence_queue_depth` | Shares currently waiting in the queue |
 | `miningcore_share_persistence_queue_high_watermark` | Largest queue depth observed since process start |
 | `miningcore_share_persistence_queue_capacity` | Configured bounded capacity |
+| `miningcore_share_persistence_queue_overflow_total` | Writes rejected because the queue was full or concurrently completed |
 
 The `queue` label is `primary` for the normal PostgreSQL persistence queue and
 `emergency_journal` for the overflow writer that force-flushes shares to `shareRecoveryFile`.
-Alert before either depth approaches capacity; any sustained non-zero emergency-journal depth
-requires investigation of PostgreSQL latency or primary-queue saturation.
+These series are exported only on a node that runs the local `ShareRecorder`; relay-only nodes omit
+them because they do not own either queue. Admission and removal share an exact accounting boundary,
+so concurrent producers cannot make the high-water mark miss a reached capacity. Alert before either
+depth approaches capacity and on any increase in the overflow counter. A sustained non-zero
+emergency-journal depth requires investigation of PostgreSQL latency or primary-queue saturation.
 
 ## Front ends and reverse proxies
 

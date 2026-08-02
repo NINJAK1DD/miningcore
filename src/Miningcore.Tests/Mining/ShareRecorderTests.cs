@@ -137,9 +137,11 @@ public class ShareRecorderTests
 
             Assert.Equal(2, recorder.PersistenceQueueHighWatermark);
             Assert.Equal(2, recorder.PersistenceQueueDepth);
+            Assert.True(recorder.PersistenceQueueOverflowCount > 0);
             Assert.InRange(recorder.EmergencyJournalQueueHighWatermark, 1,
                 recorder.EmergencyJournalQueueCapacity);
             Assert.Equal(0, recorder.EmergencyJournalQueueDepth);
+            Assert.Equal(0, recorder.EmergencyJournalQueueOverflowCount);
             var journal = await File.ReadAllTextAsync(recoveryFilename,
                 timeout.Token);
             Assert.Contains("journal-overflow", journal);
@@ -1116,6 +1118,12 @@ public class ShareRecorderTests
             Assert.Contains(captured, x => x.Miner == "emergency-active");
             Assert.Contains(captured, x => x.Miner == "emergency-buffered");
             Assert.Contains(captured, x => x.Miner == "primary-buffered-249");
+            Assert.Equal(recorder.PersistenceQueueCapacity,
+                recorder.PersistenceQueueHighWatermark);
+            Assert.True(recorder.PersistenceQueueOverflowCount >= 3);
+            Assert.Equal(recorder.EmergencyJournalQueueCapacity,
+                recorder.EmergencyJournalQueueHighWatermark);
+            Assert.Equal(1, recorder.EmergencyJournalQueueOverflowCount);
         }
         finally
         {

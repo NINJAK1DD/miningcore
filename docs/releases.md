@@ -103,7 +103,10 @@ overlapping reviewed files because manifests identify whole sources rather than 
 Prometheus now exports current depth, process-lifetime high-water mark and configured capacity for
 both the primary share-persistence queue and emergency recovery-journal queue. The fixed `queue`
 labels are `primary` and `emergency_journal`; operators can alert on saturation trends before the
-emergency path or fail-stop boundary is reached.
+emergency path or fail-stop boundary is reached. Admission and removal use exact serialized
+occupancy accounting under concurrent producers, and an overflow counter records every rejected
+write. Relay-only nodes omit these local-recorder series instead of reporting nonexistent queues as
+healthy and empty.
 
 Fatal incident completion is resumable across the durable boundary between publishing a completed
 incident/sidecar and replacing its earlier hash-pending latch. Verification reports that exact state

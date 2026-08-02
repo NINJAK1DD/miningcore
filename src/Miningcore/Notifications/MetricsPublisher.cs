@@ -55,6 +55,10 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Gauge sharePersistenceQueueDepthGauge;
     private Gauge sharePersistenceQueueHighWatermarkGauge;
     private Gauge sharePersistenceQueueCapacityGauge;
+    private Counter sharePersistenceQueueOverflowCounter;
+    private readonly object sharePersistenceOverflowPublishGate = new();
+    private long publishedPrimaryOverflowCount;
+    private long publishedEmergencyOverflowCount;
 
     private void CreateMetrics(IMetricFactory metricFactory)
     {
@@ -120,27 +124,51 @@ public class MetricsPublisher : StartupGatedBackgroundService
             "miningcore_share_persistence_queue_capacity",
             "Configured capacity of a bounded share persistence queue",
             new GaugeConfiguration { LabelNames = new[] { "queue" } });
+        sharePersistenceQueueOverflowCounter = metricFactory.CreateCounter(
+            "miningcore_share_persistence_queue_overflow_total",
+            "Number of writes rejected by a bounded share persistence queue",
+            new CounterConfiguration { LabelNames = new[] { "queue" } });
     }
 
     private void PublishSharePersistenceMetrics()
     {
-        SetSharePersistenceQueueMetrics("primary",
-            sharePersistenceMetrics.PersistenceQueueDepth,
-            sharePersistenceMetrics.PersistenceQueueHighWatermark,
-            sharePersistenceMetrics.PersistenceQueueCapacity);
-        SetSharePersistenceQueueMetrics("emergency_journal",
-            sharePersistenceMetrics.EmergencyJournalQueueDepth,
-            sharePersistenceMetrics.EmergencyJournalQueueHighWatermark,
-            sharePersistenceMetrics.EmergencyJournalQueueCapacity);
+        var primary = sharePersistenceMetrics.GetPersistenceQueueMetrics();
+        var emergency = sharePersistenceMetrics
+            .GetEmergencyJournalQueueMetrics();
+        SetSharePersistenceQueueMetrics("primary", primary);
+        SetSharePersistenceQueueMetrics("emergency_journal", emergency);
+
+        lock(sharePersistenceOverflowPublishGate)
+        {
+            PublishSharePersistenceOverflow("primary",
+                primary.OverflowCount,
+                ref publishedPrimaryOverflowCount);
+            PublishSharePersistenceOverflow("emergency_journal",
+                emergency.OverflowCount,
+                ref publishedEmergencyOverflowCount);
+        }
     }
 
-    private void SetSharePersistenceQueueMetrics(string queue, int depth,
-        int highWatermark, int capacity)
+    private void SetSharePersistenceQueueMetrics(string queue,
+        SharePersistenceQueueMetricsSnapshot snapshot)
     {
-        sharePersistenceQueueDepthGauge.WithLabels(queue).Set(depth);
+        sharePersistenceQueueDepthGauge.WithLabels(queue).Set(snapshot.Depth);
         sharePersistenceQueueHighWatermarkGauge.WithLabels(queue)
-            .Set(highWatermark);
-        sharePersistenceQueueCapacityGauge.WithLabels(queue).Set(capacity);
+            .Set(snapshot.HighWatermark);
+        sharePersistenceQueueCapacityGauge.WithLabels(queue)
+            .Set(snapshot.Capacity);
+    }
+
+    private void PublishSharePersistenceOverflow(string queue, long current,
+        ref long published)
+    {
+        var counter = sharePersistenceQueueOverflowCounter.WithLabels(queue);
+
+        if(current <= published)
+            return;
+
+        counter.Inc(current - published);
+        published = current;
     }
 
     private void OnTelemetryEvent(TelemetryEvent msg)

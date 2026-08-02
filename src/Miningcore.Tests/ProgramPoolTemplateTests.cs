@@ -980,12 +980,31 @@ public class ProgramPoolTemplateTests
 
         var self = host.Services.GetRequiredService<ShareRecorder>();
         var candidateRecorder = host.Services.GetRequiredService<IBlockCandidateRecorder>();
+        var metricsProvider = host.Services
+            .GetRequiredService<ISharePersistenceQueueMetricsProvider>();
         var hostedRecorder = host.Services.GetServices<IHostedService>()
             .OfType<ShareRecorder>()
             .Single();
 
         Assert.Same(self, candidateRecorder);
+        Assert.Same(self, metricsProvider);
         Assert.Same(self, hostedRecorder);
+    }
+
+    [Fact]
+    public void RelayShareProcessing_DoesNotRegisterLocalQueueMetricsProvider()
+    {
+        var services = new ServiceCollection();
+
+        Program.ConfigureShareProcessingHostedServices(services,
+            new ClusterConfig { ShareRelay = new ShareRelayConfig() });
+
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType ==
+            typeof(ISharePersistenceQueueMetricsProvider));
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(IHostedService) &&
+            descriptor.ImplementationType == typeof(ShareRecorder));
     }
 
     [Fact]

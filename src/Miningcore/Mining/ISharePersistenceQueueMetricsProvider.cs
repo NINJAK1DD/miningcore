@@ -1,11 +1,10 @@
 namespace Miningcore.Mining;
 
+public readonly record struct SharePersistenceQueueMetricsSnapshot(
+    int Depth, int HighWatermark, int Capacity, long OverflowCount);
+
 public interface ISharePersistenceQueueMetricsProvider
 {
-    int PersistenceQueueDepth { get; }
-    int PersistenceQueueHighWatermark { get; }
-    int PersistenceQueueCapacity { get; }
-    int EmergencyJournalQueueDepth { get; }
-    int EmergencyJournalQueueHighWatermark { get; }
-    int EmergencyJournalQueueCapacity { get; }
+    SharePersistenceQueueMetricsSnapshot GetPersistenceQueueMetrics();
+    SharePersistenceQueueMetricsSnapshot GetEmergencyJournalQueueMetrics();
 }
