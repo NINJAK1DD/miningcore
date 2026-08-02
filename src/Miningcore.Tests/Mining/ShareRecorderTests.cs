@@ -136,6 +136,10 @@ public class ShareRecorderTests
             await overflow.PersistenceAdmission.WaitAsync(timeout.Token);
 
             Assert.Equal(2, recorder.PersistenceQueueHighWatermark);
+            Assert.Equal(2, recorder.PersistenceQueueDepth);
+            Assert.InRange(recorder.EmergencyJournalQueueHighWatermark, 1,
+                recorder.EmergencyJournalQueueCapacity);
+            Assert.Equal(0, recorder.EmergencyJournalQueueDepth);
             var journal = await File.ReadAllTextAsync(recoveryFilename,
                 timeout.Token);
             Assert.Contains("journal-overflow", journal);
@@ -143,13 +147,11 @@ public class ShareRecorderTests
             await using var stream = File.OpenRead(recoveryFilename);
             Assert.True(ShareRecorder.ValidateRecoveryJournal(stream,
                 recoveryFilename));
-
-            releaseDatabase.TrySetResult();
-            await recorder.StopAsync(timeout.Token);
         }
         finally
         {
             releaseDatabase.TrySetResult();
+            await recorder.StopAsync(CancellationToken.None);
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
         }

@@ -1,5 +1,7 @@
 using System;
+using System.IO;
 using System.Reactive.Subjects;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -14,6 +16,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Tests.Util;
 using NSubstitute;
+using Prometheus;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -78,6 +81,44 @@ public class HostedServiceStartupTests
 
         Assert.False(telemetry.HasObservers);
         Assert.False(hashrates.HasObservers);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_ExportsSharePersistenceQueueMetrics()
+    {
+        var provider = Substitute.For<ISharePersistenceQueueMetricsProvider>();
+        provider.PersistenceQueueDepth.Returns(17);
+        provider.PersistenceQueueHighWatermark.Returns(41);
+        provider.PersistenceQueueCapacity.Returns(65_536);
+        provider.EmergencyJournalQueueDepth.Returns(2);
+        provider.EmergencyJournalQueueHighWatermark.Returns(7);
+        provider.EmergencyJournalQueueCapacity.Returns(1_024);
+        var registry = Metrics.NewCustomRegistry();
+        _ = new MetricsPublisher(Substitute.For<IMessageBus>(), provider,
+            Metrics.WithCustomRegistry(registry), registry);
+        await using var stream = new MemoryStream();
+
+        await registry.CollectAndExportAsTextAsync(stream);
+        var text = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.Contains(
+            "miningcore_share_persistence_queue_depth{queue=\"primary\"} 17",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_high_watermark{queue=\"primary\"} 41",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_capacity{queue=\"primary\"} 65536",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_depth{queue=\"emergency_journal\"} 2",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_high_watermark{queue=\"emergency_journal\"} 7",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_capacity{queue=\"emergency_journal\"} 1024",
+            text);
     }
 
     [Fact]

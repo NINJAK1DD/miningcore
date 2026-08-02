@@ -100,6 +100,11 @@ exact sibling basename, retains a no-follow identity for the parent directory an
 directory and durable marker at destructive boundaries. Operators must not import
 overlapping reviewed files because manifests identify whole sources rather than individual shares.
 
+Prometheus now exports current depth, process-lifetime high-water mark and configured capacity for
+both the primary share-persistence queue and emergency recovery-journal queue. The fixed `queue`
+labels are `primary` and `emergency_journal`; operators can alert on saturation trends before the
+emergency path or fail-stop boundary is reached.
+
 Fatal incident completion is resumable across the durable boundary between publishing a completed
 incident/sidecar and replacing its earlier hash-pending latch. Verification reports that exact state
 as recoverable but still startup-blocking; startup or acknowledgement revalidates the immutable

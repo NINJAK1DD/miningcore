@@ -3,6 +3,7 @@ using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using NLog;
 using Prometheus;
@@ -12,16 +13,34 @@ namespace Miningcore.Notifications;
 
 public class MetricsPublisher : StartupGatedBackgroundService
 {
-    public MetricsPublisher(IMessageBus messageBus)
+    public MetricsPublisher(IMessageBus messageBus,
+        ISharePersistenceQueueMetricsProvider sharePersistenceMetrics = null) :
+        this(messageBus, sharePersistenceMetrics, Metrics.DefaultFactory,
+            Metrics.DefaultRegistry)
     {
-        CreateMetrics();
+    }
+
+    internal MetricsPublisher(IMessageBus messageBus,
+        ISharePersistenceQueueMetricsProvider sharePersistenceMetrics,
+        IMetricFactory metricFactory, CollectorRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(messageBus);
+        ArgumentNullException.ThrowIfNull(metricFactory);
+        ArgumentNullException.ThrowIfNull(registry);
+
+        CreateMetrics(metricFactory);
 
         this.messageBus = messageBus;
+        this.sharePersistenceMetrics = sharePersistenceMetrics;
+
+        if(sharePersistenceMetrics != null)
+            registry.AddBeforeCollectCallback(PublishSharePersistenceMetrics);
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
 
     private readonly IMessageBus messageBus;
+    private readonly ISharePersistenceQueueMetricsProvider sharePersistenceMetrics;
 
     private Summary btStreamLatencySummary;
     private Counter shareCounter;
@@ -33,58 +52,95 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Summary hashComputationSummary;
     private Gauge poolConnectionsGauge;
     private Gauge poolHashrateGauge;
+    private Gauge sharePersistenceQueueDepthGauge;
+    private Gauge sharePersistenceQueueHighWatermarkGauge;
+    private Gauge sharePersistenceQueueCapacityGauge;
 
-    private void CreateMetrics()
+    private void CreateMetrics(IMetricFactory metricFactory)
     {
-        poolConnectionsGauge = Metrics.CreateGauge("miningcore_pool_connections", "Number of connections per pool", new GaugeConfiguration
+        poolConnectionsGauge = metricFactory.CreateGauge("miningcore_pool_connections", "Number of connections per pool", new GaugeConfiguration
         {
             LabelNames = new[] { "pool" }
         });
 
-        poolHashrateGauge = Metrics.CreateGauge("miningcore_pool_hashrate", "Hashrate per pool", new GaugeConfiguration
+        poolHashrateGauge = metricFactory.CreateGauge("miningcore_pool_hashrate", "Hashrate per pool", new GaugeConfiguration
         {
             LabelNames = new[] { "pool" }
         });
 
-        btStreamLatencySummary = Metrics.CreateSummary("miningcore_btstream_latency", "Latency of streaming block-templates in ms", new SummaryConfiguration
+        btStreamLatencySummary = metricFactory.CreateSummary("miningcore_btstream_latency", "Latency of streaming block-templates in ms", new SummaryConfiguration
         {
             LabelNames = new[] { "pool" }
         });
 
-        shareCounter = Metrics.CreateCounter("miningcore_shares_total", "Received shares per pool", new CounterConfiguration
+        shareCounter = metricFactory.CreateCounter("miningcore_shares_total", "Received shares per pool", new CounterConfiguration
         {
             LabelNames = new[] { "pool" }
         });
 
-        validShareCounter = Metrics.CreateCounter("miningcore_valid_shares_total", "Valid received shares per pool", new CounterConfiguration
+        validShareCounter = metricFactory.CreateCounter("miningcore_valid_shares_total", "Valid received shares per pool", new CounterConfiguration
         {
             LabelNames = new[] { "pool" }
         });
 
-        invalidShareCounter = Metrics.CreateCounter("miningcore_invalid_shares_total", "Invalid received shares per pool", new CounterConfiguration
+        invalidShareCounter = metricFactory.CreateCounter("miningcore_invalid_shares_total", "Invalid received shares per pool", new CounterConfiguration
         {
             LabelNames = new[] { "pool" }
         });
 
-        rpcRequestDurationSummary = Metrics.CreateSummary("miningcore_rpcrequest_execution_time", "RPC request execution time ms", new SummaryConfiguration
+        rpcRequestDurationSummary = metricFactory.CreateSummary("miningcore_rpcrequest_execution_time", "RPC request execution time ms", new SummaryConfiguration
         {
             LabelNames = new[] { "pool", "method" }
         });
 
-        stratumRequestDurationSummary = Metrics.CreateSummary("miningcore_stratum_request_execution_time", "Stratum request execution time ms", new SummaryConfiguration
+        stratumRequestDurationSummary = metricFactory.CreateSummary("miningcore_stratum_request_execution_time", "Stratum request execution time ms", new SummaryConfiguration
         {
             LabelNames = new[] { "pool", "method" }
         });
 
-        apiRequestDurationSummary = Metrics.CreateSummary("miningcore_api_request_execution_time", "API request execution time ms", new SummaryConfiguration
+        apiRequestDurationSummary = metricFactory.CreateSummary("miningcore_api_request_execution_time", "API request execution time ms", new SummaryConfiguration
         {
             LabelNames = new[] { "request" }
         });
 
-        hashComputationSummary = Metrics.CreateSummary("miningcore_hash_computation_time", "Hash computation time ms", new SummaryConfiguration
+        hashComputationSummary = metricFactory.CreateSummary("miningcore_hash_computation_time", "Hash computation time ms", new SummaryConfiguration
         {
             LabelNames = new[] { "algo" }
         });
+
+        sharePersistenceQueueDepthGauge = metricFactory.CreateGauge(
+            "miningcore_share_persistence_queue_depth",
+            "Current number of shares waiting in a bounded persistence queue",
+            new GaugeConfiguration { LabelNames = new[] { "queue" } });
+        sharePersistenceQueueHighWatermarkGauge = metricFactory.CreateGauge(
+            "miningcore_share_persistence_queue_high_watermark",
+            "Largest observed number of shares waiting in a bounded persistence queue",
+            new GaugeConfiguration { LabelNames = new[] { "queue" } });
+        sharePersistenceQueueCapacityGauge = metricFactory.CreateGauge(
+            "miningcore_share_persistence_queue_capacity",
+            "Configured capacity of a bounded share persistence queue",
+            new GaugeConfiguration { LabelNames = new[] { "queue" } });
+    }
+
+    private void PublishSharePersistenceMetrics()
+    {
+        SetSharePersistenceQueueMetrics("primary",
+            sharePersistenceMetrics.PersistenceQueueDepth,
+            sharePersistenceMetrics.PersistenceQueueHighWatermark,
+            sharePersistenceMetrics.PersistenceQueueCapacity);
+        SetSharePersistenceQueueMetrics("emergency_journal",
+            sharePersistenceMetrics.EmergencyJournalQueueDepth,
+            sharePersistenceMetrics.EmergencyJournalQueueHighWatermark,
+            sharePersistenceMetrics.EmergencyJournalQueueCapacity);
+    }
+
+    private void SetSharePersistenceQueueMetrics(string queue, int depth,
+        int highWatermark, int capacity)
+    {
+        sharePersistenceQueueDepthGauge.WithLabels(queue).Set(depth);
+        sharePersistenceQueueHighWatermarkGauge.WithLabels(queue)
+            .Set(highWatermark);
+        sharePersistenceQueueCapacityGauge.WithLabels(queue).Set(capacity);
     }
 
     private void OnTelemetryEvent(TelemetryEvent msg)

@@ -143,6 +143,19 @@ When `metricsPort` is configured, Prometheus-compatible metrics are served from 
 listener. Administrative routes are under `/api/admin` on `adminPort`; they can change logging and
 payment-processing state. Never publish the admin port through the public reverse proxy.
 
+Share-accounting backlog monitoring uses three gauges with a fixed `queue` label:
+
+| Metric | Meaning |
+| --- | --- |
+| `miningcore_share_persistence_queue_depth` | Shares currently waiting in the queue |
+| `miningcore_share_persistence_queue_high_watermark` | Largest queue depth observed since process start |
+| `miningcore_share_persistence_queue_capacity` | Configured bounded capacity |
+
+The `queue` label is `primary` for the normal PostgreSQL persistence queue and
+`emergency_journal` for the overflow writer that force-flushes shares to `shareRecoveryFile`.
+Alert before either depth approaches capacity; any sustained non-zero emergency-journal depth
+requires investigation of PostgreSQL latency or primary-queue saturation.
+
 ## Front ends and reverse proxies
 
 A static front end should call only the public API. Put both behind HTTPS, restrict cross-origin access

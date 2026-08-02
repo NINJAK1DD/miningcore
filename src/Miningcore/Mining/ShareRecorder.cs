@@ -29,7 +29,8 @@ namespace Miningcore.Mining;
 /// <summary>
 /// Asynchronously persist shares produced by all pools for processing by coin-specific payment processor(s)
 /// </summary>
-public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder
+public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder,
+    ISharePersistenceQueueMetricsProvider
 {
     // Test-only compatibility constructor. Production DI must provide the fail-stop handler;
     // this sentinel throws if a test unexpectedly reaches the dual-durability-loss path.
@@ -230,12 +231,33 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         TimeSpan.FromSeconds(15);
     internal int PersistenceQueueCapacity { get; set; } = 65_536;
     internal int EmergencyJournalQueueCapacity { get; set; } = 1_024;
+    internal int PersistenceQueueDepth => ReadQueueDepth(
+        Volatile.Read(ref persistenceQueueReader));
     internal int PersistenceQueueHighWatermark =>
         Volatile.Read(ref persistenceQueueHighWatermark);
+    internal int EmergencyJournalQueueDepth => ReadQueueDepth(
+        Volatile.Read(ref emergencyJournalQueueReader));
+    internal int EmergencyJournalQueueHighWatermark =>
+        Volatile.Read(ref emergencyJournalQueueHighWatermark);
+    int ISharePersistenceQueueMetricsProvider.PersistenceQueueDepth =>
+        PersistenceQueueDepth;
+    int ISharePersistenceQueueMetricsProvider.PersistenceQueueHighWatermark =>
+        PersistenceQueueHighWatermark;
+    int ISharePersistenceQueueMetricsProvider.PersistenceQueueCapacity =>
+        PersistenceQueueCapacity;
+    int ISharePersistenceQueueMetricsProvider.EmergencyJournalQueueDepth =>
+        EmergencyJournalQueueDepth;
+    int ISharePersistenceQueueMetricsProvider.EmergencyJournalQueueHighWatermark =>
+        EmergencyJournalQueueHighWatermark;
+    int ISharePersistenceQueueMetricsProvider.EmergencyJournalQueueCapacity =>
+        EmergencyJournalQueueCapacity;
     private int persistenceQueueHighWatermark;
+    private int emergencyJournalQueueHighWatermark;
     private IDisposable shareSubscription;
     private ChannelWriter<QueuedShare> persistenceQueueWriter;
     private ChannelWriter<QueuedShare> emergencyJournalQueueWriter;
+    private ChannelReader<QueuedShare> persistenceQueueReader;
+    private ChannelReader<QueuedShare> emergencyJournalQueueReader;
     private readonly CancellationTokenSource persistenceDrainCancellation = new();
     private readonly ConcurrentDictionary<long, QueuedShare> unresolvedShares = new();
     private long nextQueuedShareId;
@@ -2104,6 +2126,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private async Task RunPersistenceQueuesAsync(Channel<QueuedShare> queue,
         Channel<QueuedShare> emergencyQueue)
     {
+        Volatile.Write(ref persistenceQueueReader, queue.Reader);
+        Volatile.Write(ref emergencyJournalQueueReader, emergencyQueue.Reader);
+        Volatile.Write(ref persistenceQueueHighWatermark, 0);
+        Volatile.Write(ref emergencyJournalQueueHighWatermark, 0);
         var subscription = messageBus.Listen<Share>()
             .Where(x => x != null)
             .Subscribe(share => EnqueueShare(queue, emergencyQueue, share),
@@ -2169,6 +2195,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 subscription)?.Dispose();
             Volatile.Write(ref persistenceQueueWriter, null);
             Volatile.Write(ref emergencyJournalQueueWriter, null);
+            Volatile.Write(ref persistenceQueueReader, null);
+            Volatile.Write(ref emergencyJournalQueueReader, null);
         }
     }
 
@@ -2193,7 +2221,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         if(queue.Writer.TryWrite(queued))
         {
-            UpdatePersistenceQueueHighWatermark(queue.Reader.Count);
+            UpdatePersistenceQueueHighWatermark(
+                Math.Max(1, queue.Reader.Count));
             return;
         }
 
@@ -2210,7 +2239,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         share.SetPersistenceAdmission(journalCompletion.Task);
 
         if(emergencyQueue.Writer.TryWrite(queued))
+        {
+            UpdateEmergencyJournalQueueHighWatermark(
+                Math.Max(1, emergencyQueue.Reader.Count));
             return;
+        }
 
         var journalError = new IOException(
             $"The bounded emergency recovery-journal queue reached its " +
@@ -2249,17 +2282,32 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     private void UpdatePersistenceQueueHighWatermark(int count)
     {
+        UpdateQueueHighWatermark(ref persistenceQueueHighWatermark, count);
+    }
+
+    private void UpdateEmergencyJournalQueueHighWatermark(int count)
+    {
+        UpdateQueueHighWatermark(ref emergencyJournalQueueHighWatermark, count);
+    }
+
+    private static void UpdateQueueHighWatermark(ref int highWatermark, int count)
+    {
         while(true)
         {
-            var previous = Volatile.Read(ref persistenceQueueHighWatermark);
+            var previous = Volatile.Read(ref highWatermark);
 
             if(previous >= count)
                 return;
 
-            if(Interlocked.CompareExchange(ref persistenceQueueHighWatermark,
+            if(Interlocked.CompareExchange(ref highWatermark,
                    count, previous) == previous)
                 return;
         }
+    }
+
+    private static int ReadQueueDepth(ChannelReader<QueuedShare> reader)
+    {
+        return reader is { CanCount: true } ? reader.Count : 0;
     }
 
     private async Task ProcessPersistenceQueueAsync(ChannelReader<QueuedShare> reader,
