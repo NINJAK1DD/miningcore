@@ -2734,6 +2734,34 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoveryJournal_StableIdentitySurvivesIntentionalRename()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-stable-identity-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var source = Path.Combine(directory, "recovered-shares.txt");
+        var archive = source + ".imported";
+        await File.WriteAllTextAsync(source, "identity-test");
+
+        try
+        {
+            RecoveryJournalFileIdentity before;
+            await using(var stream = File.OpenRead(source))
+                before = RecoveryJournalFileIdentity.ReadStable(stream);
+
+            File.Move(source, archive);
+
+            await using var archived = File.OpenRead(archive);
+            var after = RecoveryJournalFileIdentity.ReadStable(archived);
+            Assert.Equal(before, after);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void MiningFailStopGate_RejectsPostSignalShareBeforeQueueOrAcknowledgement()
     {
         var processStatus = new ProcessStatus();

@@ -1627,7 +1627,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 Share = FileShare.Read | FileShare.Delete,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
             });
-        var validatedIdentity = RecoveryJournalFileIdentity.Read(retained);
+        var validatedIdentity = RecoveryJournalFileIdentity.ReadStable(retained);
         await ValidateCommittedRecoveryFileAsync(retained, retainedFilename,
             marker, configuredSource);
 
@@ -1636,7 +1636,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             RecoveryArchiveMove(filename, marker.ArchiveFilename);
             using var archived = new FileStream(marker.ArchiveFilename,
                 FileMode.Open, FileAccess.Read, FileShare.Read);
-            var archivedIdentity = RecoveryJournalFileIdentity.Read(archived);
+            var archivedIdentity = RecoveryJournalFileIdentity.ReadStable(archived);
 
             if(archivedIdentity != validatedIdentity)
                 throw new InvalidDataException(

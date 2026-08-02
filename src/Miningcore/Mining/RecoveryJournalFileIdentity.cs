@@ -24,6 +24,22 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
             $"metadata:{info.FullName}:{info.CreationTimeUtc.Ticks}");
     }
 
+    public static RecoveryJournalFileIdentity ReadStable(FileStream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+
+        if(OperatingSystem.IsWindows())
+            return ReadWindows(stream.SafeFileHandle);
+
+        if(OperatingSystem.IsLinux())
+            return ReadLinux(stream.SafeFileHandle, false);
+
+        // Cross-rename stable identity is required only on the supported Windows/Linux release
+        // hosts. Other platforms retain their conservative metadata identity and fail closed if
+        // that identity cannot survive the rename.
+        return Read(stream);
+    }
+
     private static RecoveryJournalFileIdentity ReadWindows(SafeFileHandle handle)
     {
         if(!GetFileInformationByHandle(handle, out var info))
@@ -35,7 +51,8 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
             $"windows:{info.VolumeSerialNumber:X8}:{index:X16}");
     }
 
-    private static RecoveryJournalFileIdentity ReadLinux(SafeFileHandle handle)
+    private static RecoveryJournalFileIdentity ReadLinux(SafeFileHandle handle,
+        bool includeChangeTime = true)
     {
         // statx has a fixed cross-architecture layout and exposes the file birth timestamp.
         // The birth timestamp distinguishes a delete/recreate replacement even when Linux
@@ -57,10 +74,12 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
         var birth = (info.Mask & statxBirthTime) != 0
             ? $"{info.BirthTime.Seconds:X16}:{info.BirthTime.Nanoseconds:X8}"
             : "unavailable";
-        return new RecoveryJournalFileIdentity(
+        var stable =
             $"linux:{info.DeviceMajor:X8}:{info.DeviceMinor:X8}:" +
-            $"{info.Inode:X16}:{birth}:" +
-            $"{info.ChangeTime.Seconds:X16}:{info.ChangeTime.Nanoseconds:X8}");
+            $"{info.Inode:X16}:{birth}";
+        return new RecoveryJournalFileIdentity(includeChangeTime
+            ? stable + $":{info.ChangeTime.Seconds:X16}:{info.ChangeTime.Nanoseconds:X8}"
+            : stable);
     }
 
     [StructLayout(LayoutKind.Sequential)]
