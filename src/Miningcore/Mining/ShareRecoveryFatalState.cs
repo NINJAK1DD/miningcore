@@ -68,6 +68,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     internal Action<string> DirectorySync { get; set; } =
         SyncDirectoryWhereSupported;
     internal Action<int> ExactShareWriteCheckpoint { get; set; } = _ => { };
+    internal Action CompletedIncidentPublishedCheckpoint { get; set; } =
+        () => { };
     internal Action AcknowledgementPublishedCheckpoint { get; set; } = () => { };
     internal Action ActiveLatchRemovedCheckpoint { get; set; } = () => { };
 
@@ -75,6 +77,14 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     public string StateDirectory { get; }
     public string FatalStateFilename { get; }
     internal string MutationLockFilename { get; }
+    internal static readonly string[] CompletionInvariantKeys =
+    {
+        "formatVersion", "incidentId", "incidentSequence",
+        "previousIncidentDigest", "legacyIncidentCount",
+        "legacyIncidentSetSha256", "createdUtc", "failureCategory",
+        "recoveryFile", "recoveryPathSha256", "shareCount", "detailFile",
+        "databaseError", "journalError",
+    };
 
     public void EnsureStartupAllowed()
     {
@@ -86,6 +96,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             importState.DirectorySync = DirectorySync;
             terminalState.EnsureDirectoryDurable();
             importState.EnsureDirectoryDurable();
+            ResumeCompletedIncidentPublication();
 
             try
             {
@@ -216,6 +227,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         lock(fatalStateGate)
         {
             using var mutationLock = AcquireMutationLock();
+            ResumeCompletedIncidentPublication();
             var verification = ShareRecoveryIncidentVerifier.Verify(
                 clusterConfig, output);
             if(!verification.IsSuccessful)
@@ -353,6 +365,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         var incidentId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}";
         var directory = Path.GetDirectoryName(FatalStateFilename)!;
         var stem = Path.GetFileNameWithoutExtension(FatalStateFilename);
+        ResumeCompletedIncidentPublication();
         var chain = ShareRecoveryIncidentChain.ReadTip(directory, stem,
             FatalStateFilename);
         var incidentSequence = chain.Sequence + 1;
@@ -410,8 +423,151 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         // Each incident record is advanced once from hash-pending to complete, then remains
         // immutable evidence. The fixed-name latch remains a small current startup barrier.
         WriteSmallStateFile(incidentFilename, completedIncident, true);
+        CompletedIncidentPublishedCheckpoint();
         WriteSmallStateFile(FatalStateFilename, completedLatch, true);
     }
+
+    private bool ResumeCompletedIncidentPublication()
+    {
+        var directory = Path.GetDirectoryName(FatalStateFilename)!;
+        var stem = Path.GetFileNameWithoutExtension(FatalStateFilename);
+        StateEntry latchEntry;
+        using(var latch = RecoveryStateFile.TryOpenExactEntry(FatalStateFilename,
+                  Directory.EnumerateFileSystemEntries))
+        {
+            if(latch == null)
+                return false;
+
+            latchEntry = ReadStateEntry(latch, FatalStateFilename);
+        }
+        if(!string.Equals(GetStateValue(latchEntry.Metadata, "detailState"),
+               "hash-pending", StringComparison.Ordinal))
+            return false;
+
+        var incidentId = GetStateValue(latchEntry.Metadata, "incidentId");
+        if(string.IsNullOrWhiteSpace(incidentId))
+            throw new InvalidDataException(
+                "The hash-pending fatal latch has no incident identity");
+
+        var incidentFilename = Path.Combine(directory,
+            $"{stem}.{incidentId}.incident");
+        StateEntry incidentEntry;
+        using(var incident = RecoveryStateFile.TryOpenExactEntry(incidentFilename,
+                  Directory.EnumerateFileSystemEntries))
+        {
+            if(incident == null)
+                return false;
+
+            incidentEntry = ReadStateEntry(incident, incidentFilename);
+        }
+        if(!string.Equals(GetStateValue(incidentEntry.Metadata, "detailState"),
+               "complete", StringComparison.Ordinal))
+            return false;
+
+        foreach(var key in CompletionInvariantKeys)
+        {
+            if(!string.Equals(GetStateValue(latchEntry.Metadata, key),
+                   GetStateValue(incidentEntry.Metadata, key),
+                   StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    $"The completed fatal incident cannot resume latch publication because key '{key}' changed");
+        }
+
+        if(!string.Equals(GetStateValue(latchEntry.Metadata, "pools"),
+               "(pending)", StringComparison.Ordinal) ||
+           !string.Equals(GetStateValue(latchEntry.Metadata, "detailSha256"),
+               "(none)", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "The hash-pending fatal latch is not a valid predecessor of the completed incident");
+
+        var initialIncidentLines = latchEntry.Lines.Where(line =>
+            !line.StartsWith("incidentChainDigest=", StringComparison.Ordinal) &&
+            !line.StartsWith("expectedIncidentCount=", StringComparison.Ordinal));
+        var initialDigest = ShareRecoveryIncidentChain.ComputeDigest(
+            ComposeStateContent(initialIncidentLines));
+        if(!string.Equals(initialDigest,
+               GetStateValue(latchEntry.Metadata, "incidentChainDigest"),
+               StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                "The hash-pending fatal latch does not authenticate its original incident metadata");
+
+        var verification = ShareRecoveryIncidentVerifier.Verify(clusterConfig,
+            TextWriter.Null);
+        if(verification.InvalidCount != 0 ||
+           verification.CompleteCount != verification.IncidentCount)
+            throw new InvalidDataException(
+                "The completed fatal incident or its exact-share sidecar cannot be verified for resumable publication");
+
+        var tip = ShareRecoveryIncidentChain.ReadTip(directory, stem,
+            FatalStateFilename);
+        if(!string.Equals(tip.Digest, incidentEntry.Digest,
+               StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                "The completed fatal incident is not the validated incident-chain tip");
+        if(GetStateValue(incidentEntry.Metadata, "incidentChainDigest") != null ||
+           GetStateValue(incidentEntry.Metadata, "expectedIncidentCount") != null)
+            throw new InvalidDataException(
+                "Completed incident metadata unexpectedly contains active-latch chain fields");
+
+        var completedLatchLines = new List<string>(incidentEntry.Lines.Length + 2);
+        var anchorInserted = false;
+        foreach(var line in incidentEntry.Lines)
+        {
+            if(string.Equals(line, OperatorAcknowledgementInstruction,
+                   StringComparison.Ordinal))
+            {
+                if(anchorInserted)
+                    throw new InvalidDataException(
+                        "Completed incident metadata repeats the operator instruction boundary");
+                completedLatchLines.Add($"incidentChainDigest={incidentEntry.Digest}");
+                completedLatchLines.Add(
+                    $"expectedIncidentCount={tip.ExistingCount.ToString(CultureInfo.InvariantCulture)}");
+                anchorInserted = true;
+            }
+
+            completedLatchLines.Add(line);
+        }
+
+        if(!anchorInserted)
+            throw new InvalidDataException(
+                "Completed incident metadata has no operator instruction boundary");
+
+        WriteSmallStateFile(FatalStateFilename,
+            ComposeStateContent(completedLatchLines), true);
+        return true;
+    }
+
+    private static StateEntry ReadStateEntry(FileStream stream,
+        string filename)
+    {
+        stream.Position = 0;
+        var digest = Convert.ToHexString(SHA256.HashData(stream));
+        stream.Position = 0;
+        var lines = RecoveryStateFile.ReadAllLinesStable(stream, filename,
+            Directory.EnumerateFileSystemEntries);
+        var metadata = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach(var line in lines)
+        {
+            var separator = line.IndexOf('=');
+            if(separator <= 0)
+                continue;
+            if(!metadata.TryAdd(line[..separator], line[(separator + 1)..]))
+                throw new InvalidDataException(
+                    $"Fatal state metadata contains duplicate key '{line[..separator]}': {filename}");
+        }
+
+        return new StateEntry(lines, metadata, digest);
+    }
+
+    private static string ComposeStateContent(IEnumerable<string> lines) =>
+        string.Join('\n', lines) + '\n';
+
+    private static string GetStateValue(
+        IReadOnlyDictionary<string, string> metadata, string key) =>
+        metadata.TryGetValue(key, out var value) ? value : null;
+
+    private sealed record StateEntry(string[] Lines,
+        IReadOnlyDictionary<string, string> Metadata, string Digest);
 
     private string BuildIncidentState(string incidentId, DateTimeOffset created,
         string recoveryPathHash, string failureCategory, int shareCount,

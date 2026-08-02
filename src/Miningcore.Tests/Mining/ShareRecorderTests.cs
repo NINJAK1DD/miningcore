@@ -5749,6 +5749,131 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public void ShareRecoveryFatalState_ResumesCompletedIncidentLatchPublication()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-completion-resume-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+        state.CompletedIncidentPublishedCheckpoint = () =>
+            throw new IOException("injected after completed incident publication");
+
+        try
+        {
+            Assert.Throws<IOException>(() => state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "LResumeCompletion" },
+                }, new IOException("database"), new IOException("journal")));
+
+            var fatalDirectory = Path.GetDirectoryName(state.FatalStateFilename)!;
+            var stem = Path.GetFileNameWithoutExtension(state.FatalStateFilename);
+            var incidentFilename = Assert.Single(Directory.GetFiles(
+                fatalDirectory, $"{stem}.*.incident"));
+            var incident = File.ReadAllLines(incidentFilename);
+            Assert.Contains("detailState=complete", incident);
+            var detailFilename = Assert.Single(incident.Where(line =>
+                line.StartsWith("detailFile=", StringComparison.Ordinal)))[
+                "detailFile=".Length..];
+            var incidentHash = SHA256.HashData(File.ReadAllBytes(incidentFilename));
+            var sidecarHash = SHA256.HashData(File.ReadAllBytes(detailFilename));
+
+            using(var output = new StringWriter())
+            {
+                var interrupted = ShareRecoveryIncidentVerifier.Verify(config,
+                    output);
+                Assert.False(interrupted.IsSuccessful);
+                Assert.Equal(0, interrupted.InvalidCount);
+                Assert.Equal(1, interrupted.IncompleteCount);
+                Assert.Contains("RECOVERABLE: completed incident evidence",
+                    output.ToString());
+            }
+
+            var restarted = new ShareRecoveryFatalState(config,
+                new ProcessStatus(), config.ShareRecoveryStateDirectory);
+            var startupError = Assert.Throws<PoolStartupException>(
+                restarted.EnsureStartupAllowed);
+            Assert.Contains("Share-accounting durability remains unreconciled",
+                startupError.Message);
+
+            using var resumedOutput = new StringWriter();
+            var resumed = ShareRecoveryIncidentVerifier.Verify(config,
+                resumedOutput);
+            Assert.True(resumed.IsSuccessful, resumedOutput.ToString());
+            Assert.Equal(incidentHash,
+                SHA256.HashData(File.ReadAllBytes(incidentFilename)));
+            Assert.Equal(sidecarHash,
+                SHA256.HashData(File.ReadAllBytes(detailFilename)));
+            Assert.True(restarted.Acknowledge(TextWriter.Null));
+            Assert.False(File.Exists(restarted.FatalStateFilename));
+            Assert.True(File.Exists(incidentFilename));
+            Assert.True(File.Exists(detailFilename));
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryFatalState_RejectsMismatchedCompletedIncidentTransition()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-completion-mismatch-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory)
+        {
+            CompletedIncidentPublishedCheckpoint = () =>
+                throw new IOException("injected completion boundary"),
+        };
+
+        try
+        {
+            Assert.Throws<IOException>(() => state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "LMismatch" },
+                }, new IOException("database"), new IOException("journal")));
+            var fatalDirectory = Path.GetDirectoryName(state.FatalStateFilename)!;
+            var stem = Path.GetFileNameWithoutExtension(state.FatalStateFilename);
+            var incidentFilename = Assert.Single(Directory.GetFiles(
+                fatalDirectory, $"{stem}.*.incident"));
+            var content = File.ReadAllText(incidentFilename);
+            File.WriteAllText(incidentFilename, content.Replace(
+                "failureCategory=database-and-journal-unavailable",
+                "failureCategory=tampered", StringComparison.Ordinal));
+
+            using var output = new StringWriter();
+            var verification = ShareRecoveryIncidentVerifier.Verify(config,
+                output);
+            Assert.False(verification.IsSuccessful);
+            Assert.True(verification.InvalidCount > 0);
+            Assert.Contains("failureCategory", output.ToString());
+
+            var restarted = new ShareRecoveryFatalState(config,
+                new ProcessStatus(), config.ShareRecoveryStateDirectory);
+            Assert.Throws<InvalidDataException>(() =>
+                restarted.Acknowledge(TextWriter.Null));
+            Assert.True(File.Exists(restarted.FatalStateFilename));
+            Assert.True(File.Exists(incidentFilename));
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task ShareRecoveryFatalState_MidSidecarFailureLeavesSmallDurableStartupLatch()
     {
         const int nearPrimaryQueueCapacity = 65_536;

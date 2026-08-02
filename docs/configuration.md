@@ -58,12 +58,15 @@ the journal difficult to locate. Miningcore logs the resolved path when the Shar
 Restrict the file and its parent directory to the service account because share records are
 financial accounting data.
 
-Miningcore acquires exclusive process-lifetime ownership keyed to the resolved journal path before
-startup recovery checks or import inspection. A second local recorder or recovery import using the
-same journal fails before pools start, even if it uses different Stratum ports. The owner is released
-only after a successful final recorder drain; process-fatal shutdown retains it until the operating
-system closes the process handle. Do not delete files below
-`shareRecoveryStateDirectory/share-recovery-ownership` while Miningcore is running.
+Miningcore acquires an adjacent exclusive process-lifetime owner file before startup recovery checks
+or import inspection. This intrinsic location prevents a different `shareRecoveryStateDirectory`
+from creating an independent owner for the same journal. A second local recorder, merged-mining
+relay submitter or recovery import using the same journal fails before pools start, even if it uses
+different Stratum ports or reaches the parent through a directory symlink. Journal-file symlinks and
+hard links are rejected; use one regular-file pathname. The owner is released only after a successful
+final recorder drain; process-fatal shutdown retains it until the operating system closes the process
+handle. Do not delete the hidden `.miningcore-share-recovery-*.owner.lock` file beside
+`shareRecoveryFile` while Miningcore is running.
 
 For production, place the journal on a separately monitored filesystem or storage volume from
 PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure

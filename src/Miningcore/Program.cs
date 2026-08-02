@@ -1214,7 +1214,8 @@ public class Program : ProcessStatusBackgroundService
         ClusterConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
-        return recoveryMode || config.ShareRelay == null;
+        return recoveryMode || config.ShareRelay == null ||
+            RequiresMergedMiningPersistence(config);
     }
 
     internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,

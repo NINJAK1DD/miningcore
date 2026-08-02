@@ -46,8 +46,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             messageBus, MissingShareRecoveryFailureHandler.Instance,
             MissingMiningFailStopCoordinator.Instance,
             new TestShareRecoveryPathOwnership(
-                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
-                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig)),
+                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig)),
             candidateFailureHandler)
     {
     }
@@ -66,8 +65,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             PrepareTestRecoveryState(clusterConfig), messageBus,
             recoveryFailureHandler, failStopCoordinator,
             new TestShareRecoveryPathOwnership(
-                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
-                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig)),
+                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig)),
             candidateFailureHandler)
     {
     }
@@ -87,8 +85,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             PrepareTestRecoveryState(clusterConfig), messageBus,
             recoveryFailureHandler, failStopCoordinator,
             new TestShareRecoveryPathOwnership(
-                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
-                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig)))
+                ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig)))
     {
     }
 
@@ -590,6 +587,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     internal async Task WriteRecoveryJournalAsync(IList<Share> shares)
     {
+        if(!recoveryPathOwnership.IsHeld)
+            throw new InvalidOperationException(
+                $"Recovery journal ownership is not held for {recoveryFilename}");
+
+        recoveryPathOwnership.EnsureJournalPathIsExclusive();
         await recoveryWriteState.Gate.WaitAsync(CancellationToken.None);
 
         try
@@ -712,6 +714,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // atomically published and the containing directory is synchronised on Linux.
             File.Move(temporary, recoveryFilename, false);
             RecoveryDirectorySync(directory);
+            recoveryPathOwnership.EnsureJournalPathIsExclusive();
 
             await using var active = new FileStream(recoveryFilename,
                 FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -1319,18 +1322,26 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private sealed class TestShareRecoveryPathOwnership :
         IShareRecoveryPathOwnership
     {
-        public TestShareRecoveryPathOwnership(string recoveryFilename,
-            string stateDirectory)
+        public TestShareRecoveryPathOwnership(string recoveryFilename)
         {
-            inner = new ShareRecoveryPathOwnership(recoveryFilename,
-                stateDirectory);
+            inner = new ShareRecoveryPathOwnership(recoveryFilename);
         }
 
         private readonly ShareRecoveryPathOwnership inner;
         public string RecoveryFilename => inner.RecoveryFilename;
         public string OwnershipFilename => inner.OwnershipFilename;
-        public bool IsHeld => inner.IsHeld;
+        // Direct journal unit tests use compatibility constructors without a hosted-service
+        // lifecycle. Production paths and explicit ownership tests inject the real owner.
+        public bool IsHeld => true;
         public void Acquire() => inner.Acquire();
+        public void EnsureJournalPathIsExclusive()
+        {
+            if(inner.IsHeld)
+                inner.EnsureJournalPathIsExclusive();
+            else
+                RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
+                    RecoveryFilename);
+        }
         public void Release() => inner.Release();
         public void Dispose() => inner.Dispose();
     }
@@ -1346,8 +1357,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             comparison);
         var operationOwnership = configuredSource
             ? recoveryPathOwnership
-            : new ShareRecoveryPathOwnership(filename,
-                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
+            : new ShareRecoveryPathOwnership(filename);
         operationOwnership.Acquire();
 
         try

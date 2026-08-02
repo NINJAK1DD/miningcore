@@ -11,6 +11,7 @@ public interface IShareRecoveryPathOwnership : IDisposable
     string OwnershipFilename { get; }
     bool IsHeld { get; }
     void Acquire();
+    void EnsureJournalPathIsExclusive();
     void Release();
 }
 
@@ -22,22 +23,20 @@ public interface IShareRecoveryPathOwnership : IDisposable
 public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
 {
     public ShareRecoveryPathOwnership(ClusterConfig clusterConfig) :
-        this(ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig),
-            ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig))
+        this(ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig))
     {
     }
 
-    internal ShareRecoveryPathOwnership(string recoveryFilename,
-        string stateDirectory)
+    internal ShareRecoveryPathOwnership(string recoveryFilename)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
-        ArgumentException.ThrowIfNullOrWhiteSpace(stateDirectory);
 
         RecoveryFilename = Path.GetFullPath(recoveryFilename);
-        var pathHash = ShareRecoveryFatalState.ComputeRecoveryPathHash(
-            RecoveryFilename);
-        OwnershipFilename = Path.Combine(Path.GetFullPath(stateDirectory),
-            "share-recovery-ownership", pathHash + ".lock");
+        var directory = Path.GetDirectoryName(RecoveryFilename)!;
+        var nameHash = ShareRecoveryFatalState.ComputeRecoveryPathHash(
+            Path.GetFileName(RecoveryFilename));
+        OwnershipFilename = Path.Combine(directory,
+            $".miningcore-share-recovery-{nameHash}.owner.lock");
     }
 
     private const int LockExclusive = 2;
@@ -88,8 +87,32 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
                 throw new IOException(
                     $"Another Miningcore process owns recovery journal {RecoveryFilename}, " +
                     $"or exclusive ownership could not be established using {OwnershipFilename}. " +
-                    "Run exactly one local share recorder or recovery import per recovery path.", ex);
+                    "Run exactly one local share recorder, merged-mining relay submitter or " +
+                    "recovery import per recovery path.", ex);
             }
+
+            try
+            {
+                EnsureJournalPathIsExclusive();
+            }
+            catch
+            {
+                Release();
+                throw;
+            }
+        }
+    }
+
+    public void EnsureJournalPathIsExclusive()
+    {
+        lock(gate)
+        {
+            if(ownershipStream == null)
+                throw new InvalidOperationException(
+                    $"Recovery journal ownership is not held for {RecoveryFilename}");
+
+            RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
+                RecoveryFilename);
         }
     }
 

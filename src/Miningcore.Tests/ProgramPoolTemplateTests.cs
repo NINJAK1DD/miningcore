@@ -1121,14 +1121,19 @@ public class ProgramPoolTemplateTests
     }
 
     [Fact]
-    public void LocalRecoveryOwnership_AppliesToRecorderAndImportButNotRelaySender()
+    public void LocalRecoveryOwnership_AppliesToRecorderImportAndMergedRelaySender()
     {
         Assert.True(Program.UsesLocalShareRecoveryPath(false,
             new ClusterConfig()));
         Assert.True(Program.UsesLocalShareRecoveryPath(true,
             new ClusterConfig { ShareRelay = new ShareRelayConfig() }));
+        Assert.True(Program.UsesLocalShareRecoveryPath(false,
+            MergedMiningCluster(shareRelaySender: true)));
+
+        var ordinaryRelay = MergedMiningCluster(shareRelaySender: true);
+        ordinaryRelay.Pools[0].Extra = null;
         Assert.False(Program.UsesLocalShareRecoveryPath(false,
-            new ClusterConfig { ShareRelay = new ShareRelayConfig() }));
+            ordinaryRelay));
     }
 
     private static async Task AssertRecoveryPreflightFailurePreservesJournal(

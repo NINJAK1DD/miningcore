@@ -279,7 +279,10 @@ read as strict UTF-8 from one restrictive no-follow handle, with an exact cumula
 64-KiB raw-byte total (including physical CRLF bytes), a 16-KiB per-line limit, and the same stable
 identity/path checks. Memory exhaustion is reported as a failed verification rather
 than allowing the command to continue. It returns
-status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. A successful
+status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. The one exact
+recoverable exception is a completed, verified incident and sidecar whose durable latch still records
+the immediately preceding hash-pending state; startup or acknowledgement safely completes that latch
+transition under the mutation lock and still requires operator reconciliation. A successful
 verification proves only that the recorded evidence is structurally complete; it cannot prove that
 the uncertain records were reconciled against PostgreSQL. Complete that database comparison before
 acknowledging an active fatal latch. A first v3 incident anchors every legacy-v2 incident then present,

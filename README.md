@@ -445,9 +445,10 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   `--acknowledge-share-recovery-state` commands; manually deleting the latch does not safely unblock
   startup and all incident evidence remains retained under an immutable acknowledgement anchor.
   Every startup fully revalidates acknowledged sidecars. A short-lived path-scoped lock serializes
-  fatal-state transitions, while a separate process-lifetime exclusive lock prevents another local
-  recorder or recovery import from using the same journal before pools start and remains held through
-  successful final shutdown journalling. Prerelease v2-only incident
+  fatal-state transitions, while an adjacent process-lifetime exclusive lock prevents another local
+  recorder, merged-mining relay submitter or recovery import from using the same journal before pools
+  start and remains held through successful final shutdown journalling. Symlinked journal files and
+  multiply linked journal identities are rejected. Prerelease v2-only incident
   sets can be preserved under a legacy-set acknowledgement anchor.
   A partial journal append is rolled back to its previous length and force-flushed. First creation
   atomically publishes a force-flushed temporary file and syncs its directory on Linux. A first-byte

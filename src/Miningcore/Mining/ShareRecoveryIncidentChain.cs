@@ -134,15 +134,25 @@ internal static class ShareRecoveryIncidentChain
                 "The fatal latch has no valid chained incident tip");
 
         var latest = current[^1];
-        if(latch.Sequence != latest.Sequence ||
-           !string.Equals(latch.IncidentId, latest.IncidentId,
-               StringComparison.Ordinal) ||
-           !string.Equals(latch.ChainDigest, latest.FileDigest,
-               StringComparison.OrdinalIgnoreCase) ||
-           latch.ExpectedCount != incidents.Length ||
-           latch.LegacyCount != legacy.Length ||
-           !string.Equals(latch.LegacyDigest, legacyDigest,
-               StringComparison.OrdinalIgnoreCase))
+        var commonTipMatches = latch.Sequence == latest.Sequence &&
+            string.Equals(latch.IncidentId, latest.IncidentId,
+                StringComparison.Ordinal) &&
+            latch.ExpectedCount == incidents.Length &&
+            latch.LegacyCount == legacy.Length &&
+            string.Equals(latch.LegacyDigest, legacyDigest,
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(latch.PreviousDigest, latest.PreviousDigest,
+                StringComparison.OrdinalIgnoreCase);
+        var completed = commonTipMatches &&
+            string.Equals(latch.ChainDigest, latest.FileDigest,
+                StringComparison.OrdinalIgnoreCase);
+        var completionCanBeResumed = commonTipMatches &&
+            string.Equals(latch.DetailState, "hash-pending",
+                StringComparison.Ordinal) &&
+            string.Equals(latest.DetailState, "complete",
+                StringComparison.Ordinal);
+
+        if(!completed && !completionCanBeResumed)
             throw new InvalidDataException(
                 "The fatal latch does not anchor the complete current incident collection");
 
@@ -193,7 +203,7 @@ internal static class ShareRecoveryIncidentChain
 
         if(formatVersion == 2)
             return new IncidentEntry(filename, formatVersion, incidentId,
-                0, null, 0, null, fileDigest, null, 0);
+                0, null, 0, null, fileDigest, null, 0, null);
 
         if(formatVersion == 4)
         {
@@ -217,7 +227,7 @@ internal static class ShareRecoveryIncidentChain
             return new IncidentEntry(filename, formatVersion, incidentId,
                 0, null, acknowledgedLegacyCount, acknowledgedLegacyDigest,
                 fileDigest, acknowledgedChainDigest,
-                acknowledgedExpectedCount);
+                acknowledgedExpectedCount, null);
         }
 
         if(formatVersion != 3 ||
@@ -246,7 +256,7 @@ internal static class ShareRecoveryIncidentChain
 
         return new IncidentEntry(filename, formatVersion, incidentId,
             sequence, previousDigest, legacyCount, legacyDigest, fileDigest,
-            chainDigest, expectedCount);
+            chainDigest, expectedCount, Get(metadata, "detailState"));
     }
 
     private static void ValidateAcknowledgement(IncidentEntry acknowledgement,
@@ -339,5 +349,5 @@ internal static class ShareRecoveryIncidentChain
     private sealed record IncidentEntry(string Filename, int FormatVersion,
         string IncidentId, long Sequence, string PreviousDigest,
         int LegacyCount, string LegacyDigest, string FileDigest,
-        string ChainDigest, int ExpectedCount);
+        string ChainDigest, int ExpectedCount, string DetailState);
 }

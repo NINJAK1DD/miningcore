@@ -55,6 +55,46 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
             $"metadata:{info.FullName}:{info.CreationTimeUtc.Ticks}");
     }
 
+    internal static RecoveryJournalPhysicalMetadata ReadPhysicalMetadata(
+        SafeFileHandle handle, string fallbackPath)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+
+        if(OperatingSystem.IsWindows())
+        {
+            if(!GetFileInformationByHandle(handle, out var info))
+                throw new IOException("Unable to inspect recovery journal link identity",
+                    new Win32Exception(Marshal.GetLastPInvokeError()));
+
+            const uint directoryAttribute = 0x10;
+            const uint reparsePointAttribute = 0x400;
+            return new RecoveryJournalPhysicalMetadata(info.NumberOfLinks,
+                (info.FileAttributes & directoryAttribute) == 0 &&
+                (info.FileAttributes & reparsePointAttribute) == 0);
+        }
+
+        if(OperatingSystem.IsLinux())
+        {
+            const int atEmptyPath = 0x1000;
+            const uint statxBasicStats = 0x07ff;
+            const ushort fileTypeMask = 0xf000;
+            const ushort regularFile = 0x8000;
+
+            if(statx(handle.DangerousGetHandle().ToInt32(), string.Empty,
+                   atEmptyPath, statxBasicStats, out var info) != 0)
+                throw new IOException("Unable to inspect recovery journal link identity",
+                    new Win32Exception(Marshal.GetLastPInvokeError()));
+
+            return new RecoveryJournalPhysicalMetadata(info.LinkCount,
+                (info.Mode & fileTypeMask) == regularFile);
+        }
+
+        var fallback = new FileInfo(fallbackPath);
+        return new RecoveryJournalPhysicalMetadata(1,
+            fallback.LinkTarget == null &&
+            (fallback.Attributes & FileAttributes.Directory) == 0);
+    }
+
     private static RecoveryJournalFileIdentity ReadWindows(SafeFileHandle handle)
     {
         if(!GetFileInformationByHandle(handle, out var info))
@@ -157,3 +197,6 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
     private static extern int statx(int directoryFileDescriptor,
         string path, int flags, uint mask, out StatxInformation information);
 }
+
+internal readonly record struct RecoveryJournalPhysicalMetadata(
+    uint LinkCount, bool IsRegularFile);

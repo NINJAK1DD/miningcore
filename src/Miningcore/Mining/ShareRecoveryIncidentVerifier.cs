@@ -212,8 +212,7 @@ internal static class ShareRecoveryIncidentVerifier
             globalErrors.Add(
                 $"The fatal latch references incident {latchIncidentId}, but its .incident metadata file is missing.");
 
-        if(latchPresent && !latchIncomplete &&
-           !string.IsNullOrWhiteSpace(latchIncidentId))
+        if(latchPresent && !string.IsNullOrWhiteSpace(latchIncidentId))
         {
             var matchingIncident = incidentFiles.SingleOrDefault(path =>
                 string.Equals(Path.GetFileName(path),
@@ -228,7 +227,10 @@ internal static class ShareRecoveryIncidentVerifier
 
                 if(readErrors.Count == 0)
                 {
-                    foreach(var key in new[]
+                    if(!latchIncomplete)
+                    {
+                        CompareMetadataKeys(latch, incidentMetadata,
+                            new[]
                             {
                                 "formatVersion", "incidentId", "incidentSequence",
                                 "previousIncidentDigest", "legacyIncidentCount",
@@ -236,13 +238,28 @@ internal static class ShareRecoveryIncidentVerifier
                                 "failureCategory", "recoveryFile",
                                 "recoveryPathSha256", "shareCount", "pools",
                                 "detailFile", "detailSha256", "detailState",
-                            })
+                            }, globalErrors);
+                    }
+                    else if(string.Equals(GetValue(incidentMetadata,
+                                "detailState"), "complete",
+                                StringComparison.Ordinal))
                     {
-                        if(!string.Equals(GetValue(latch, key),
-                               GetValue(incidentMetadata, key),
-                               StringComparison.Ordinal))
+                        var errorsBefore = globalErrors.Count;
+                        CompareMetadataKeys(latch, incidentMetadata,
+                            ShareRecoveryFatalState.CompletionInvariantKeys,
+                            globalErrors);
+                        if(!string.Equals(GetValue(latch, "pools"), "(pending)",
+                               StringComparison.Ordinal) ||
+                           !string.Equals(GetValue(latch, "detailSha256"),
+                               "(none)", StringComparison.Ordinal))
                             globalErrors.Add(
-                                $"The fatal latch does not match its incident metadata for key '{key}'.");
+                                "The hash-pending fatal latch is not a valid predecessor of its completed incident metadata.");
+                        ValidatePendingLatchDigest(latchFilename, latch,
+                            globalErrors);
+
+                        if(globalErrors.Count == errorsBefore)
+                            output.WriteLine(
+                                "RECOVERABLE: completed incident evidence is durable while its active latch remains hash-pending; startup or acknowledgement will safely resume latch publication.");
                     }
                 }
             }
@@ -562,6 +579,51 @@ internal static class ShareRecoveryIncidentVerifier
         var format = GetValue(values, "formatVersion");
         if(format is not ("2" or "3"))
             errors.Add("Metadata formatVersion is unsupported.");
+    }
+
+    private static void CompareMetadataKeys(
+        IReadOnlyDictionary<string, string> left,
+        IReadOnlyDictionary<string, string> right,
+        IEnumerable<string> keys, ICollection<string> errors)
+    {
+        foreach(var key in keys)
+        {
+            if(!string.Equals(GetValue(left, key), GetValue(right, key),
+                   StringComparison.Ordinal))
+                errors.Add(
+                    $"The fatal latch does not match its incident metadata for key '{key}'.");
+        }
+    }
+
+    private static void ValidatePendingLatchDigest(string filename,
+        IReadOnlyDictionary<string, string> metadata,
+        ICollection<string> errors)
+    {
+        try
+        {
+            using var stream = RecoveryStateFile.TryOpenExactEntry(filename,
+                Directory.EnumerateFileSystemEntries);
+            if(stream == null)
+                throw new IOException(
+                    "The hash-pending fatal latch disappeared during verification");
+
+            var lines = RecoveryStateFile.ReadAllLinesStable(stream, filename,
+                Directory.EnumerateFileSystemEntries);
+            var initialIncident = string.Join('\n', lines.Where(line =>
+                !line.StartsWith("incidentChainDigest=", StringComparison.Ordinal) &&
+                !line.StartsWith("expectedIncidentCount=", StringComparison.Ordinal))) + '\n';
+            var digest = ShareRecoveryIncidentChain.ComputeDigest(initialIncident);
+            if(!string.Equals(digest, GetValue(metadata,
+                       "incidentChainDigest"), StringComparison.OrdinalIgnoreCase))
+                errors.Add(
+                    "The hash-pending fatal latch does not authenticate its original incident metadata.");
+        }
+        catch(Exception ex) when(ex is IOException or InvalidDataException or
+                                  UnauthorizedAccessException)
+        {
+            errors.Add(
+                $"Unable to validate the hash-pending fatal latch digest: {ex.Message}");
+        }
     }
 
     private static string GetValue(IReadOnlyDictionary<string, string> values,

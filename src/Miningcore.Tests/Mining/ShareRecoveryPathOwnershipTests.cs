@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
@@ -13,6 +14,7 @@ using Miningcore.Persistence.Repositories;
 using Newtonsoft.Json;
 using NSubstitute;
 using Xunit;
+using Share = Miningcore.Blockchain.Share;
 
 namespace Miningcore.Tests.Mining;
 
@@ -24,7 +26,7 @@ public class ShareRecoveryPathOwnershipTests
     {
         var directory = CreateDirectory();
         var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
-        var stateDirectory = Path.Combine(directory, "state");
+        var stateDirectory = Path.Combine(directory, "state-a");
         var readyFilename = Path.Combine(directory, "ready");
         using var child = StartHolder(recoveryFilename, stateDirectory,
             readyFilename, disableManagedFileLocking: true);
@@ -35,7 +37,7 @@ public class ShareRecoveryPathOwnershipTests
             using var contender = new ShareRecoveryPathOwnership(new ClusterConfig
             {
                 ShareRecoveryFile = recoveryFilename,
-                ShareRecoveryStateDirectory = stateDirectory,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state-b"),
                 Pools = new[]
                 {
                     new PoolConfig
@@ -72,18 +74,20 @@ public class ShareRecoveryPathOwnershipTests
     {
         var directory = CreateDirectory();
         var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
-        var stateDirectory = Path.Combine(directory, "state");
+        var stateDirectory = Path.Combine(directory, "state-a");
         var readyFilename = Path.Combine(directory, "ready");
         await File.WriteAllTextAsync(recoveryFilename, "not inspected");
         using var child = StartHolder(recoveryFilename, stateDirectory,
-            readyFilename, disableManagedFileLocking: false);
+            readyFilename, disableManagedFileLocking: true);
 
         try
         {
             await WaitForFileAsync(readyFilename, child);
-            var recorder = CreateRecorder(recoveryFilename, stateDirectory);
+            var importStateDirectory = Path.Combine(directory, "state-b");
+            var recorder = CreateRecorder(recoveryFilename,
+                importStateDirectory);
             var importState = new ShareRecoveryImportState(recoveryFilename,
-                stateDirectory);
+                importStateDirectory);
 
             await Assert.ThrowsAsync<IOException>(() =>
                 recorder.RecoverSharesAsync(recoveryFilename));
@@ -150,7 +154,7 @@ public class ShareRecoveryPathOwnershipTests
             using var first = new ShareRecoveryPathOwnership(new ClusterConfig
             {
                 ShareRecoveryFile = recoveryFilename,
-                ShareRecoveryStateDirectory = stateDirectory,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "other-state"),
                 Pools = new[] { new PoolConfig { Id = "first" } },
             });
             using var second = new ShareRecoveryPathOwnership(new ClusterConfig
@@ -161,6 +165,151 @@ public class ShareRecoveryPathOwnershipTests
             });
 
             Assert.Equal(first.OwnershipFilename, second.OwnershipFilename);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Ownership_ConflictsThroughSymlinkedParentAcrossProcesses()
+    {
+        var directory = CreateDirectory();
+        var realDirectory = Path.Combine(directory, "real");
+        var linkedDirectory = Path.Combine(directory, "linked");
+        Directory.CreateDirectory(realDirectory);
+
+        try
+        {
+            Directory.CreateSymbolicLink(linkedDirectory, realDirectory);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+
+        var recoveryFilename = Path.Combine(realDirectory,
+            "recovered-shares.txt");
+        var aliasFilename = Path.Combine(linkedDirectory,
+            "recovered-shares.txt");
+        var readyFilename = Path.Combine(directory, "ready");
+        using var child = StartHolder(recoveryFilename,
+            Path.Combine(directory, "state-a"), readyFilename,
+            disableManagedFileLocking: true);
+
+        try
+        {
+            await WaitForFileAsync(readyFilename, child);
+            using var contender = new ShareRecoveryPathOwnership(new ClusterConfig
+            {
+                ShareRecoveryFile = aliasFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state-b"),
+            });
+
+            Assert.Throws<IOException>(contender.Acquire);
+        }
+        finally
+        {
+            if(!child.HasExited)
+                child.Kill(true);
+            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Ownership_RejectsHardLinkedJournalAliasesAcrossProcesses()
+    {
+        var directory = CreateDirectory();
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var aliasFilename = Path.Combine(directory, "recovered-shares-alias.txt");
+        var readyFilename = Path.Combine(directory, "ready");
+        File.WriteAllText(recoveryFilename, "legacy journal");
+        CreateHardLink(recoveryFilename, aliasFilename);
+        using var child = StartHolder(recoveryFilename,
+            Path.Combine(directory, "state"), readyFilename,
+            disableManagedFileLocking: true);
+
+        try
+        {
+            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.NotEqual(0, child.ExitCode);
+            Assert.False(File.Exists(readyFilename));
+            var error = await child.StandardError.ReadToEndAsync();
+            Assert.Contains("Hard-linked recovery journals are not supported",
+                error);
+        }
+        finally
+        {
+            if(!child.HasExited)
+                child.Kill(true);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Ownership_RejectsSymbolicLinkJournal()
+    {
+        var directory = CreateDirectory();
+        var target = Path.Combine(directory, "target.txt");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        File.WriteAllText(target, "legacy journal");
+
+        try
+        {
+            File.CreateSymbolicLink(recoveryFilename, target);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            Directory.Delete(directory, true);
+            return;
+        }
+
+        try
+        {
+            using var ownership = new ShareRecoveryPathOwnership(new ClusterConfig
+            {
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            });
+
+            Assert.Throws<InvalidDataException>(ownership.Acquire);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task JournalMutation_RequiresExplicitOwnership()
+    {
+        var directory = CreateDirectory();
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        using var ownership = new ShareRecoveryPathOwnership(config);
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            config, new MessageBus(), Substitute.For<IShareRecoveryFailureHandler>(),
+            Substitute.For<IMiningFailStopCoordinator>(), ownership);
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "must-own" },
+                }));
+            Assert.Contains("ownership is not held", error.Message);
+            Assert.False(File.Exists(recoveryFilename));
         }
         finally
         {
@@ -234,4 +383,24 @@ public class ShareRecoveryPathOwnershipTests
         Directory.CreateDirectory(result);
         return result;
     }
+
+    private static void CreateHardLink(string existingFilename,
+        string newFilename)
+    {
+        var success = OperatingSystem.IsWindows()
+            ? CreateHardLinkWindows(newFilename, existingFilename, IntPtr.Zero)
+            : link(existingFilename, newFilename) == 0;
+        if(!success)
+            throw new IOException(
+                $"Unable to create hard-link test fixture (error {Marshal.GetLastPInvokeError()})");
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW",
+        SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLinkWindows(string newFilename,
+        string existingFilename, IntPtr securityAttributes);
+
+    [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int link(string existingFilename, string newFilename);
 }
