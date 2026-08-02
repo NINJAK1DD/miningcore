@@ -77,7 +77,14 @@ explicit native exclusive lock, so disabling .NET managed file locking does not 
 Windows retains an exclusive handle. Parent-directory symlink aliases converge on the same owner,
 and journal creation, append, startup validation, import and retirement use that retained physical
 directory rather than re-resolving the configured path. A stable parent symlink is supported while
-later retargeting or replacement cannot redirect an operation and fails closed. Journal and owner-file symlinks, hard links and non-regular
+later retargeting or replacement cannot redirect an operation and fails closed. On the supported
+Ubuntu 22.04 target, atomic no-replacement publication depends on Linux
+`renameat2(..., RENAME_NOREPLACE)` and retained-directory `fsync`; older or unusual kernel/filesystem
+combinations lacking those semantics are not a supported weaker-durability fallback. Windows instead
+pins the physical directory and uses write-through child handles, without claiming an equivalent
+explicit directory-metadata `fsync`. A hostile parent retarget can leave a temporary file, archive,
+or unanchored journal in the originally retained directory after the operation fails closed; preserve
+and reconcile that forensic state rather than deleting it as routine cleanup. Journal and owner-file symlinks, hard links and non-regular
 filesystem objects are rejected without blocking on FIFOs. The acknowledgement command acquires
 this same native owner before changing fatal evidence. A second process using the same recovery path
 fails before pools start, regardless of its Stratum configuration.

@@ -67,11 +67,23 @@ hard links are rejected; use one regular-file pathname. Miningcore retains the p
 directory identity and performs journal opens, temporary creation, publication, retirement, deletion
 and Linux directory sync relative to that retained directory. Replacing a directory or retargeting
 a configured parent symlink therefore cannot redirect an operation to a different directory and
-fails closed before Miningcore continues. The hidden owner must itself remain a single-name regular
+fails closed before Miningcore continues. Such hostile namespace mutation can leave a temporary
+file, archive, or unanchored journal in the originally retained physical directory. Preserve those
+objects as forensic evidence and reconcile the journal, terminal anchor, import marker, and
+PostgreSQL manifest before removing anything; do not assume that a failed operation made no durable
+change. The hidden owner must itself remain a single-name regular
 file: owner-file symlinks and hard links are rejected. The owner is released only after a successful
 final recorder drain; process-fatal shutdown retains it until the operating system closes the process
 handle. Do not delete the `.miningcore-share-recovery-*.owner.lock` file beside `shareRecoveryFile`
 while Miningcore is running.
+
+On the supported Ubuntu 22.04 Linux target, atomic no-replacement publication and retirement require
+the kernel and filesystem to support `renameat2(..., RENAME_NOREPLACE)`; retained-directory metadata
+is made durable with `fsync`. Older kernels, libc environments, and unusual filesystems without those
+semantics are outside the tested recovery-journal support boundary and fail closed rather than falling
+back to a weaker rename. Windows pins the resolved physical directory and uses write-through child-file
+handles, which protects file contents and prevents namespace redirection, but it does not claim the
+Linux-equivalent explicit parent-directory `fsync` durability guarantee.
 
 For production, place the journal on a separately monitored filesystem or storage volume from
 PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure
