@@ -79,7 +79,7 @@ public static class ConnectionFactoryExtensions
         bool autoCommit, IsolationLevel isolation, CancellationToken ct,
         bool classifyCommitOutcome, TimeSpan resourceCleanupTimeout)
     {
-        if(classifyCommitOutcome && resourceCleanupTimeout <= TimeSpan.Zero)
+        if(resourceCleanupTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(resourceCleanupTimeout),
                 "Database transaction resource cleanup timeout must be positive");
 
@@ -108,6 +108,14 @@ public static class ConnectionFactoryExtensions
                     catch(TransactionCommitOutcomeUncertainException ex)
                     {
                         outcome = TransactionOutcome.CommitUncertain;
+                        failure = ex;
+                    }
+                    catch(PostgresException ex) when(classifyCommitOutcome &&
+                        IsKnownRejectedCommit(ex))
+                    {
+                        // PostgreSQL has already completed this transaction by rejecting COMMIT.
+                        // Do not issue a misleading rollback against the completed provider object.
+                        outcome = TransactionOutcome.CommitRejected;
                         failure = ex;
                     }
                 }
@@ -166,6 +174,7 @@ public static class ConnectionFactoryExtensions
     private enum TransactionOutcome
     {
         NotCommitted,
+        CommitRejected,
         CommitUncertain,
         Committed,
     }
@@ -396,7 +405,7 @@ public static class ConnectionFactoryExtensions
                 tx.Commit();
         }
         catch(PostgresException ex) when(classifyCommitOutcome &&
-            !string.IsNullOrWhiteSpace(ex.SqlState))
+            IsKnownRejectedCommit(ex))
         {
             // A PostgreSQL ErrorResponse with a server-assigned SQLSTATE proves COMMIT was
             // rejected. Deadlocks, serialization failures and deferred-constraint failures are
@@ -412,6 +421,9 @@ public static class ConnectionFactoryExtensions
                 "The database transaction commit outcome is uncertain", ex);
         }
     }
+
+    private static bool IsKnownRejectedCommit(PostgresException ex) =>
+        !string.IsNullOrWhiteSpace(ex.SqlState);
 
     private static async Task TryRollbackAsync(IDbTransaction tx,
         Exception originalException, CancellationToken ct)

@@ -453,6 +453,198 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task StopAsync_SharesOneDeadlineAcrossRecoveryAndDeferredEvidence()
+    {
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var messageBus = new MessageBus();
+        var recoveryFailureHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), recoveryFilename,
+                Arg.Any<Exception>())
+            .Returns(Task.CompletedTask);
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                databaseEntered.TrySetResult();
+                return Task.Delay(Timeout.InfiniteTimeSpan,
+                    call.Arg<CancellationToken>());
+            });
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, messageBus, recoveryFailureHandler,
+            Substitute.For<IMiningFailStopCoordinator>())
+        {
+            ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(200),
+            ShutdownRecoveryCompletionTimeout = TimeSpan.FromMilliseconds(1000),
+            RecoveryJournalFlush = async stream =>
+            {
+                // Consume most of the recovery phase. The deferred evidence wait must receive only
+                // the shared remainder, not a fresh one-second allowance.
+                await Task.Delay(TimeSpan.FromMilliseconds(600));
+                await stream.FlushAsync();
+                if(stream is FileStream fileStream)
+                    fileStream.Flush(true);
+            },
+        };
+        var neverCompletes = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 250; index++)
+                messageBus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"shared-deadline-{index}" });
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            GetDeferredFailStopTasks(recorder).Add(neverCompletes.Task);
+
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            await Assert.ThrowsAsync<TimeoutException>(() =>
+                recorder.StopAsync(CancellationToken.None));
+            elapsed.Stop();
+
+            Assert.InRange(elapsed.Elapsed,
+                TimeSpan.FromMilliseconds(950), TimeSpan.FromMilliseconds(1600));
+        }
+        finally
+        {
+            neverCompletes.TrySetCanceled();
+            try
+            {
+                await recorder.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+            }
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_DeferredEvidenceFaultReleasesRecorderScopedOwnership()
+    {
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        using var ownership = new ShareRecoveryPathOwnership(config);
+        var recorder = CreateRecorderWithOwnership(config, ownership);
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            GetDeferredFailStopTasks(recorder).Add(Task.FromException(
+                new IOException("simulated deferred evidence failure")));
+
+            var error = await Assert.ThrowsAsync<IOException>(() =>
+                recorder.StopAsync(CancellationToken.None));
+            Assert.Contains("simulated deferred evidence failure", error.Message);
+
+            using var contender = new ShareRecoveryPathOwnership(config);
+            contender.Acquire();
+            contender.Release();
+        }
+        finally
+        {
+            ownership.Release();
+            ShareRecorder.ForgetRecoveryWriteStateForTests(config.ShareRecoveryFile);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_DeferredEvidenceTimeoutExplicitlyRetainsOwnership()
+    {
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        using var ownership = new ShareRecoveryPathOwnership(config);
+        var recorder = CreateRecorderWithOwnership(config, ownership);
+        recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(50);
+        recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromMilliseconds(100);
+        var neverCompletes = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            GetDeferredFailStopTasks(recorder).Add(neverCompletes.Task);
+
+            await Assert.ThrowsAsync<TimeoutException>(() =>
+                recorder.StopAsync(CancellationToken.None));
+
+            using var contender = new ShareRecoveryPathOwnership(config);
+            Assert.Throws<IOException>(contender.Acquire);
+        }
+        finally
+        {
+            neverCompletes.TrySetCanceled();
+            ownership.Release();
+            ShareRecorder.ForgetRecoveryWriteStateForTests(config.ShareRecoveryFile);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Recorder_DoesNotNestOrReleaseProcessPreflightOwnership()
+    {
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        using var ownership = new ShareRecoveryPathOwnership(config);
+        ownership.Acquire();
+        var recorder = CreateRecorderWithOwnership(config, ownership);
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await recorder.StopAsync(CancellationToken.None);
+
+            Assert.True(ownership.IsHeld);
+            using var contender = new ShareRecoveryPathOwnership(config);
+            Assert.Throws<IOException>(contender.Acquire);
+
+            ownership.Release();
+            contender.Acquire();
+            contender.Release();
+        }
+        finally
+        {
+            ownership.Release();
+            ShareRecorder.ForgetRecoveryWriteStateForTests(config.ShareRecoveryFile);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task ShutdownJournal_CompletesEmergencyPersistenceAdmission()
     {
         var directory = Path.Combine(Path.GetTempPath(),
@@ -7118,6 +7310,21 @@ public class ShareRecorderTests
             ? $"auxpow-block:{hash}"
             : "coinbase-transaction",
     };
+
+    private static List<Task> GetDeferredFailStopTasks(ShareRecorder recorder) =>
+        (List<Task>) typeof(ShareRecorder)
+            .GetField("deferredFailStopHandling",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(recorder)!;
+
+    private static ShareRecorder CreateRecorderWithOwnership(ClusterConfig config,
+        IShareRecoveryPathOwnership ownership) =>
+        new(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            config, new MessageBus(), Substitute.For<IShareRecoveryFailureHandler>(),
+            Substitute.For<IMiningFailStopCoordinator>(), ownership);
 
     private static RecoveryFixture CreateRecoveryFixture(IMessageBus messageBusOverride = null)
     {

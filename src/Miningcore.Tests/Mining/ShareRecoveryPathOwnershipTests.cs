@@ -112,6 +112,10 @@ public class ShareRecoveryPathOwnershipTests
         Assert.True(RecoveryDirectoryIdentity.IsRenameNoReplaceUnsupported(error));
 
     [Fact]
+    public void PermissionDeniedDoesNotSelectLinkFallback() =>
+        Assert.False(RecoveryDirectoryIdentity.IsRenameNoReplaceUnsupported(1));
+
+    [Fact]
     public async Task Ownership_IgnoresDifferentPoolPortAcrossProcessesAndReleasesAfterKill()
     {
         var directory = CreateDirectory();
@@ -385,13 +389,16 @@ public class ShareRecoveryPathOwnershipTests
         using var child = StartHolder(recoveryFilename,
             Path.Combine(directory, "state"), readyFilename,
             disableManagedFileLocking: true);
+        var standardOutput = child.StandardOutput.ReadToEndAsync();
+        var standardError = child.StandardError.ReadToEndAsync();
 
         try
         {
-            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45));
             Assert.NotEqual(0, child.ExitCode);
             Assert.False(File.Exists(readyFilename));
-            var error = await child.StandardError.ReadToEndAsync();
+            _ = await standardOutput;
+            var error = await standardError;
             Assert.Contains("Hard-linked recovery boundary files are not supported",
                 error);
         }

@@ -248,6 +248,9 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
     }
 
     internal static bool IsRenameNoReplaceUnsupported(int error) =>
+        // EPERM is deliberately excluded: it can mean either an unsupported filesystem flag or a
+        // genuine permission/policy denial. Falling back on that ambiguous result could bypass a
+        // security boundary, so Miningcore fails closed instead.
         error is 22 or 38 or 95; // EINVAL, ENOSYS, EOPNOTSUPP
 
     internal void MoveEntryUsingLinkFallback(string sourceName,

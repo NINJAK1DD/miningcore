@@ -261,7 +261,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly CancellationTokenSource persistenceDrainCancellation = new();
     private readonly ConcurrentDictionary<long, QueuedShare> unresolvedShares = new();
     private readonly object deferredFailStopGate = new();
-    private Task deferredFailStopHandling;
+    private readonly List<Task> deferredFailStopHandling = new();
+    private int recorderRecoveryOwnershipHeld;
     private long nextQueuedShareId;
     internal SemaphoreSlim RecoveryWriteGate => recoveryWriteState.Gate;
     internal long RecoveryValidationBytesRead =>
@@ -2022,7 +2023,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // Production ownership is deliberately retained until process exit on these paths;
             // the compatibility constructors release only their test-scoped lock for cleanup.
             if(recoveryPathOwnership is TestShareRecoveryPathOwnership)
-                recoveryPathOwnership.Release();
+                ReleaseRecorderRecoveryOwnership();
             throw;
         }
     }
@@ -2034,6 +2035,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
         Volatile.Read(ref emergencyJournalQueueWriter)?.TryComplete();
 
+        // The caller token can end the database-drain phase early, but it must not cancel the
+        // reserved recovery/evidence phase. Transaction recovery and deferred fatal handling share
+        // one later deadline instead of each receiving a fresh 15-second allowance.
+        using var recoveryCompletion = new CancellationTokenSource();
+        var recoveryDeadlineStarted = false;
         using var databaseDrain = CancellationTokenSource.CreateLinkedTokenSource(ct);
         databaseDrain.CancelAfter(ShutdownPersistenceDrainTimeout);
 
@@ -2048,14 +2054,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // The queue worker catches this cancellation and force-flushes its complete unresolved
             // registry to the journal before StopAsync is allowed to finish.
             persistenceDrainCancellation.Cancel();
+            recoveryCompletion.CancelAfter(ShutdownRecoveryCompletionTimeout);
+            recoveryDeadlineStarted = true;
 
             if(ExecuteTask != null)
             {
                 try
                 {
-                    await ExecuteTask.WaitAsync(ShutdownRecoveryCompletionTimeout);
+                    await ExecuteTask.WaitAsync(recoveryCompletion.Token);
                 }
-                catch(TimeoutException ex)
+                catch(OperationCanceledException ex) when(
+                    recoveryCompletion.IsCancellationRequested)
                 {
                     var unresolved = failStopCoordinator.BeginFailStopAndCapture(
                         ProcessExitCodes.UnreconciledShareDurabilityLoss,
@@ -2065,27 +2074,62 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                             "The share-persistence transaction did not stop within the bounded " +
                             "post-cancellation recovery window; its database outcome is uncertain",
                             ex));
-                    throw;
+                    throw new TimeoutException(
+                        "The share-persistence transaction exceeded the shared shutdown deadline",
+                        ex);
                 }
             }
         }
 
+        if(!recoveryDeadlineStarted)
+            recoveryCompletion.CancelAfter(ShutdownRecoveryCompletionTimeout);
+
         await base.StopAsync(CancellationToken.None);
 
-        Task deferredHandling;
+        Task deferredHandling = null;
         lock(deferredFailStopGate)
-            deferredHandling = deferredFailStopHandling;
-        if(deferredHandling != null)
-            await deferredHandling.WaitAsync(ShutdownRecoveryCompletionTimeout);
+        {
+            if(deferredFailStopHandling.Count > 0)
+                deferredHandling = Task.WhenAll(deferredFailStopHandling.ToArray());
+        }
 
-        recoveryPathOwnership.Release();
+        var retainOwnershipUntilProcessExit = false;
+        try
+        {
+            if(deferredHandling != null)
+                await deferredHandling.WaitAsync(recoveryCompletion.Token);
+        }
+        catch(OperationCanceledException ex) when(
+            recoveryCompletion.IsCancellationRequested)
+        {
+            // The evidence task may still be mutating the retained recovery directory. Releasing
+            // ownership here would permit a replacement process to race it, so retain the native
+            // lock explicitly until this failed process exits.
+            retainOwnershipUntilProcessExit = true;
+            logger.Fatal(ex,
+                "Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit");
+            throw new TimeoutException(
+                "Deferred share-recovery evidence exceeded the shared shutdown deadline", ex);
+        }
+        catch(Exception ex)
+        {
+            // A faulted task is complete and no longer mutating the directory. Log the evidence
+            // failure, release the recorder-owned lease in finally, and preserve the stop failure.
+            logger.Fatal(ex, "Deferred share-recovery evidence failed during shutdown");
+            throw;
+        }
+        finally
+        {
+            if(!retainOwnershipUntilProcessExit)
+                ReleaseRecorderRecoveryOwnership();
+        }
     }
 
     protected override Task ExecuteAsync(CancellationToken ct)
     {
         try
         {
-            recoveryPathOwnership.Acquire();
+            AcquireRecorderRecoveryOwnership();
             logger.Info(() => $"Online; recovery journal {recoveryFilename}");
             var queue = Channel.CreateBounded<QueuedShare>(new BoundedChannelOptions(
                 PersistenceQueueCapacity)
@@ -2490,19 +2534,41 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         // The exclusive admission boundary is already closed and captured above. Move durable
         // fatal evidence and the bounded operator notification off the synchronous Stratum/Rx
         // publication thread while retaining an awaitable task for hosted queue processing.
-        var handling = Task.Run(async () =>
-        {
-            await recoveryFailureHandler.StopClusterAsync(unresolved,
-                recoveryFilename, databaseError, journalError);
+        var handling = Task.Factory.StartNew(() =>
+            {
+                // A dedicated thread guarantees that fatal evidence can make progress even when
+                // the shared pool is starved. Blocking the dedicated worker across asynchronous
+                // notification I/O cannot consume a Stratum, Rx or general thread-pool worker.
+                recoveryFailureHandler.StopClusterAsync(unresolved,
+                        recoveryFilename, databaseError, journalError)
+                    .GetAwaiter().GetResult();
 
-            foreach(var queued in unresolvedShares.Values)
-                queued.JournalCompletion?.TrySetException(journalError);
-        });
+                foreach(var queued in unresolvedShares.Values)
+                    queued.JournalCompletion?.TrySetException(journalError);
+            }, CancellationToken.None, TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
         lock(deferredFailStopGate)
-            deferredFailStopHandling = deferredFailStopHandling == null
-                ? handling
-                : Task.WhenAll(deferredFailStopHandling, handling);
+            deferredFailStopHandling.Add(handling);
         return handling;
+    }
+
+    private void AcquireRecorderRecoveryOwnership()
+    {
+        // Production preflight already owns the path for the process lifetime. Direct service
+        // fixtures do not run preflight, so acquire exactly one recorder-scoped hold only when the
+        // shared process hold is absent and balance only that hold during StopAsync.
+        if(recoveryPathOwnership is not TestShareRecoveryPathOwnership &&
+           recoveryPathOwnership.IsHeld)
+            return;
+
+        recoveryPathOwnership.Acquire();
+        Volatile.Write(ref recorderRecoveryOwnershipHeld, 1);
+    }
+
+    private void ReleaseRecorderRecoveryOwnership()
+    {
+        if(Interlocked.Exchange(ref recorderRecoveryOwnershipHeld, 0) != 0)
+            recoveryPathOwnership.Release();
     }
 
     private sealed class QueuedShare

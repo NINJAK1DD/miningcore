@@ -96,7 +96,21 @@ public class ConnectionFactoryExtensionsTests
         Assert.Same(commitFailure, error);
         Assert.Equal(sqlState, error.SqlState);
         Assert.Equal(1, transaction.CommitCalls);
-        Assert.Equal(1, transaction.RollbackCalls);
+        Assert.Equal(0, transaction.RollbackCalls);
+        Assert.False(error.Data.Contains(
+            ConnectionFactoryExtensions.RollbackExceptionDataKey));
+    }
+
+    [Fact]
+    public async Task RunTx_RejectsInvalidCleanupTimeoutForOrdinaryCall()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                resourceCleanupTimeout: TimeSpan.Zero));
+
+        await factory.DidNotReceive().OpenConnectionAsync();
     }
 
     [Fact]
