@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Text;
 
 namespace Miningcore.Mining;
@@ -22,6 +23,8 @@ internal sealed class ShareRecoveryImportState
     public string Filename { get; }
     internal Action<string> DirectorySync { get; set; } =
         ShareRecoveryFatalState.SyncDirectoryWhereSupported;
+    internal Func<string, IEnumerable<string>> EnumerateEntries { get; set; } =
+        Directory.EnumerateFileSystemEntries;
 
     internal void EnsureDirectoryDurable()
     {
@@ -31,18 +34,10 @@ internal sealed class ShareRecoveryImportState
 
     public ImportMarker TryRead()
     {
-        try
-        {
-            return Read();
-        }
-        catch(FileNotFoundException)
-        {
-            return null;
-        }
-        catch(DirectoryNotFoundException)
-        {
-            return null;
-        }
+        EnsureDirectoryDurable();
+        using var stream = RecoveryStateFile.TryOpenExactEntry(Filename,
+            EnumerateEntries);
+        return stream == null ? null : Read(stream);
     }
 
     public void EnsureNoOutstandingImport()
@@ -87,9 +82,12 @@ internal sealed class ShareRecoveryImportState
             Write(marker, false);
             return marker;
         }
-        catch(IOException) when(File.Exists(Filename))
+        catch(IOException writeError)
         {
-            existing = Read();
+            existing = TryRead();
+            if(existing == null)
+                ExceptionDispatchInfo.Capture(writeError).Throw();
+
             if(!string.Equals(existing.FileHash, fileHash,
                    StringComparison.OrdinalIgnoreCase) ||
                existing.RecordCount != recordCount)
@@ -113,8 +111,7 @@ internal sealed class ShareRecoveryImportState
     {
         var directory = Path.GetDirectoryName(Filename)!;
         File.Delete(Filename);
-        if(Directory.Exists(directory))
-            DirectorySync(directory);
+        DirectorySync(directory);
     }
 
     private void Write(ImportMarker marker, bool replace)
@@ -158,9 +155,10 @@ internal sealed class ShareRecoveryImportState
         }
     }
 
-    private ImportMarker Read()
+    private ImportMarker Read(FileStream stream)
     {
-        var lines = File.ReadAllLines(Filename, new UTF8Encoding(false, true));
+        var lines = RecoveryStateFile.ReadAllLinesStable(stream, Filename,
+            EnumerateEntries);
         if(lines.Length != 6 ||
            lines[0] != "miningcore-share-recovery-import-v1" ||
            !lines[1].StartsWith("recoveryPathSha256=", StringComparison.Ordinal) ||

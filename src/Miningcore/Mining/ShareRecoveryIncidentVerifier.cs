@@ -22,14 +22,20 @@ internal static class ShareRecoveryIncidentVerifier
         TextWriter output) => Verify(config, output, null);
 
     internal static ShareRecoveryVerificationSummary Verify(ClusterConfig config,
-        TextWriter output, Action<string> sidecarHashedCheckpoint)
+        TextWriter output, Action<string> sidecarHashedCheckpoint) =>
+        Verify(config, output, sidecarHashedCheckpoint, null);
+
+    internal static ShareRecoveryVerificationSummary Verify(ClusterConfig config,
+        TextWriter output, Action<string> sidecarHashedCheckpoint,
+        Action<string> metadataReadCheckpoint)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(output);
 
         try
         {
-            return VerifyCore(config, output, sidecarHashedCheckpoint);
+            return VerifyCore(config, output, sidecarHashedCheckpoint,
+                metadataReadCheckpoint);
         }
         catch(OutOfMemoryException)
         {
@@ -53,7 +59,8 @@ internal static class ShareRecoveryIncidentVerifier
 
     private static ShareRecoveryVerificationSummary VerifyCore(
         ClusterConfig config, TextWriter output,
-        Action<string> sidecarHashedCheckpoint)
+        Action<string> sidecarHashedCheckpoint,
+        Action<string> metadataReadCheckpoint)
     {
 
         var recoveryFilename = ShareRecoveryFatalState.ResolveRecoveryFilename(config);
@@ -96,7 +103,8 @@ internal static class ShareRecoveryIncidentVerifier
 
         if(latchPresent)
         {
-            latch = ReadMetadata(latchFilename, globalErrors);
+            latch = ReadMetadata(latchFilename, globalErrors,
+                metadataReadCheckpoint);
             RequireEqual(latch, "formatVersion", "2", globalErrors);
             RequireEqual(latch, "recoveryFile", recoveryFilename, globalErrors);
             RequireEqual(latch, "recoveryPathSha256", recoveryPathHash,
@@ -142,7 +150,8 @@ internal static class ShareRecoveryIncidentVerifier
         foreach(var incidentFile in incidentFiles)
         {
             var result = VerifyIncident(incidentFile, fatalDirectory, stem,
-                recoveryFilename, recoveryPathHash, sidecarHashedCheckpoint);
+                recoveryFilename, recoveryPathHash, sidecarHashedCheckpoint,
+                metadataReadCheckpoint);
             var status = result.Errors.Count > 0
                 ? "INVALID"
                 : result.Incomplete
@@ -202,7 +211,8 @@ internal static class ShareRecoveryIncidentVerifier
             if(matchingIncident != null)
             {
                 var readErrors = new List<string>();
-                var incidentMetadata = ReadMetadata(matchingIncident, readErrors);
+                var incidentMetadata = ReadMetadata(matchingIncident, readErrors,
+                    metadataReadCheckpoint);
 
                 if(readErrors.Count == 0)
                 {
@@ -254,10 +264,12 @@ internal static class ShareRecoveryIncidentVerifier
 
     private static IncidentVerification VerifyIncident(string metadataFilename,
         string fatalDirectory, string stem, string recoveryFilename,
-        string recoveryPathHash, Action<string> sidecarHashedCheckpoint)
+        string recoveryPathHash, Action<string> sidecarHashedCheckpoint,
+        Action<string> metadataReadCheckpoint)
     {
         var errors = new List<string>();
-        var metadata = ReadMetadata(metadataFilename, errors);
+        var metadata = ReadMetadata(metadataFilename, errors,
+            metadataReadCheckpoint);
         var incidentId = GetValue(metadata, "incidentId");
         var detailState = GetValue(metadata, "detailState");
         var detailFilename = NormalizeOptionalValue(GetValue(metadata, "detailFile"));
@@ -481,21 +493,24 @@ internal static class ShareRecoveryIncidentVerifier
     }
 
     private static Dictionary<string, string> ReadMetadata(string filename,
-        ICollection<string> errors)
+        ICollection<string> errors, Action<string> metadataReadCheckpoint)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
 
         try
         {
-            var info = new FileInfo(filename);
+            using var stream = RecoveryStateFile.TryOpenExactEntry(filename,
+                Directory.EnumerateFileSystemEntries);
+            if(stream == null)
+                throw new IOException(
+                    $"Metadata entry disappeared before it could be opened: {filename}");
+            if(stream.Length > MaximumMetadataBytes)
+                throw new InvalidDataException(
+                    $"Metadata exceeds {MaximumMetadataBytes} bytes: {filename}");
 
-            if(info.Length > MaximumMetadataBytes)
-            {
-                errors.Add($"Metadata exceeds {MaximumMetadataBytes} bytes: {filename}");
-                return result;
-            }
-
-            foreach(var line in File.ReadLines(filename))
+            foreach(var line in RecoveryStateFile.ReadAllLinesStable(stream,
+                        filename, Directory.EnumerateFileSystemEntries,
+                        metadataReadCheckpoint))
             {
                 var separator = line.IndexOf('=');
 
@@ -509,7 +524,8 @@ internal static class ShareRecoveryIncidentVerifier
                     errors.Add($"Metadata contains duplicate key '{key}': {filename}");
             }
         }
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        catch(Exception ex) when(ex is IOException or InvalidDataException or
+                                  UnauthorizedAccessException)
         {
             errors.Add($"Unable to read metadata {filename}: {ex.Message}");
         }

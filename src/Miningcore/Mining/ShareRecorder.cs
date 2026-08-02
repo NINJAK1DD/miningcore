@@ -1763,7 +1763,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 }
                 catch(TimeoutException ex)
                 {
-                    var unresolved = SnapshotUnresolvedShares();
+                    var unresolved = failStopCoordinator.BeginFailStopAndCapture(
+                        ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                        () => SnapshotUnresolvedShares());
                     await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
                         unresolved, recoveryFilename, new TimeoutException(
                             "The share-persistence transaction did not stop within the bounded " +
@@ -1937,15 +1939,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         if(emergencyQueue.Writer.TryWrite(queued))
             return;
 
-        unresolvedShares.TryRemove(queued.Id, out _);
         var journalError = new IOException(
             $"The bounded emergency recovery-journal queue reached its " +
             $"{EmergencyJournalQueueCapacity}-share limit");
         journalCompletion.TrySetException(journalError);
 
         throw new SharePersistenceBacklogFailureException(
-            recoveryFailureHandler, SnapshotUnresolvedShares(share),
-            recoveryFilename, saturation, journalError);
+            () => FailStopUnresolvedSharesAsync(saturation, journalError),
+            journalError);
     }
 
     private async Task ProcessEmergencyJournalQueueAsync(
@@ -2144,7 +2145,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         Exception journalError)
     {
         persistenceDrainCancellation.Cancel();
-        var unresolved = SnapshotUnresolvedShares();
+        var unresolved = failStopCoordinator.BeginFailStopAndCapture(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            () => SnapshotUnresolvedShares());
 
         await recoveryFailureHandler.StopClusterAsync(unresolved,
             recoveryFilename, databaseError, journalError);
@@ -2170,27 +2173,16 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         IMiningAdmissionFailure
     {
         public SharePersistenceBacklogFailureException(
-            IShareRecoveryFailureHandler failureHandler, Share[] shares,
-            string recoveryFilename, Exception backlogError,
-            Exception journalError) :
+            Func<Task> failStop, Exception journalError) :
             base("The bounded share-persistence queue and recovery journal were both unavailable",
                 journalError)
         {
-            this.failureHandler = failureHandler;
-            this.shares = shares;
-            this.recoveryFilename = recoveryFilename;
-            this.backlogError = backlogError;
-            this.journalError = journalError;
+            this.failStop = failStop ??
+                throw new ArgumentNullException(nameof(failStop));
         }
 
-        private readonly IShareRecoveryFailureHandler failureHandler;
-        private readonly Share[] shares;
-        private readonly string recoveryFilename;
-        private readonly Exception backlogError;
-        private readonly Exception journalError;
+        private readonly Func<Task> failStop;
 
-        public Task HandleAfterAdmissionReleasedAsync() =>
-            failureHandler.StopClusterAsync(shares, recoveryFilename,
-                backlogError, journalError);
+        public Task HandleAfterAdmissionReleasedAsync() => failStop();
     }
 }

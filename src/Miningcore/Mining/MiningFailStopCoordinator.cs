@@ -25,7 +25,32 @@ internal interface IMiningAdmissionFailure
     Task HandleAfterAdmissionReleasedAsync();
 }
 
-public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDisposable
+internal interface IMiningFailStopCaptureCoordinator
+{
+    T BeginFailStopAndCapture<T>(int exitCode, Func<T> capture);
+}
+
+internal static class MiningFailStopCaptureExtensions
+{
+    public static T BeginFailStopAndCapture<T>(
+        this IMiningFailStopCoordinator coordinator, int exitCode,
+        Func<T> capture)
+    {
+        ArgumentNullException.ThrowIfNull(coordinator);
+        ArgumentNullException.ThrowIfNull(capture);
+
+        if(coordinator is IMiningFailStopCaptureCoordinator exclusive)
+            return exclusive.BeginFailStopAndCapture(exitCode, capture);
+
+        // Compatibility for test/third-party coordinators. Production uses the exclusive
+        // implementation below, which executes capture while holding the admission write gate.
+        coordinator.BeginFailStop(exitCode);
+        return capture();
+    }
+}
+
+public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator,
+    IMiningFailStopCaptureCoordinator, IDisposable
 {
     public MiningFailStopCoordinator(IProcessStatus processStatus,
         IHostApplicationLifetime applicationLifetime)
@@ -67,41 +92,73 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
 
     public bool BeginFailStop(int exitCode)
     {
+        var result = BeginFailStopAndCaptureCore(exitCode, () => true);
+        return result.Started;
+    }
+
+    T IMiningFailStopCaptureCoordinator.BeginFailStopAndCapture<T>(int exitCode,
+        Func<T> capture) => BeginFailStopAndCaptureCore(exitCode, capture).Value;
+
+    private (bool Started, T Value) BeginFailStopAndCaptureCore<T>(int exitCode,
+        Func<T> capture)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+
         // ProcessStatus deliberately permits the non-restart durability-loss status to
         // upgrade an earlier general failure. Every invocation must reach it, including
         // failures discovered after shutdown has already started.
         processStatus.MarkFailed(exitCode);
+        var started = false;
+        T value = default;
+        ExceptionDispatchInfo captureFailure = null;
 
         acceptanceGate.EnterWriteLock();
 
         try
         {
-            if(Interlocked.Exchange(ref failStopRequested, 1) != 0)
-                return false;
+            started = Interlocked.Exchange(ref failStopRequested, 1) == 0;
 
-            // Cancellation happens while holding the same gate used by share publication and
-            // response admission. Once this returns, no check-then-queue race can acknowledge
-            // a share that did not first enter the accounting pipeline.
-            failStop.Cancel();
+            if(started)
+            {
+                // Cancellation happens while holding the same gate used by share publication and
+                // response admission. Once this returns, no check-then-queue race can acknowledge
+                // a share that did not first enter the accounting pipeline.
+                failStop.Cancel();
+            }
+
+            // All earlier publication/response readers have now drained and no later reader can
+            // enter. Fatal recovery evidence must be captured at this exact boundary.
+            try
+            {
+                value = capture();
+            }
+            catch(Exception ex)
+            {
+                captureFailure = ExceptionDispatchInfo.Capture(ex);
+            }
         }
         finally
         {
             acceptanceGate.ExitWriteLock();
         }
 
-        try
+        if(started)
         {
-            applicationLifetime.StopApplication();
-        }
-        catch(Exception ex)
-        {
-            // The synchronous share and response gates are already closed. Preserve the original
-            // incident path so it can still write the latch and attempt its critical alert.
-            logger.Fatal(ex,
-                "Host shutdown signalling failed after the mining fail-stop gates closed");
+            try
+            {
+                applicationLifetime.StopApplication();
+            }
+            catch(Exception ex)
+            {
+                // The synchronous share and response gates are already closed. Preserve the original
+                // incident path so it can still write the latch and attempt its critical alert.
+                logger.Fatal(ex,
+                    "Host shutdown signalling failed after the mining fail-stop gates closed");
+            }
         }
 
-        return true;
+        captureFailure?.Throw();
+        return (started, value);
     }
 
     private void PublishShare(Action publish)

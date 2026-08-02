@@ -93,7 +93,11 @@ fills, publication transfers the share to one bounded 1,024-share emergency chan
 writer; filesystem work and waiting happen after the mining admission lock is released. A local
 Stratum response waits for that forced append. If both bounded capacities are exhausted, or the
 emergency append fails, Miningcore admits no positive response and enters the status-74 fatal path
-with the complete unresolved count and pool set.
+with the complete unresolved count and pool set. The fatal transition first acquires the exclusive
+publication/response gate and waits for earlier admissions to leave it; only then does it snapshot
+the unresolved registry and write exact incident evidence. This quiescent ordering excludes shares
+whose PostgreSQL commit became known before the gate closed and includes every still-unresolved
+share that was published before closure.
 
 The normal 65,536-share queue is intentionally memory-resident for throughput. A positive Stratum
 response proves local accounting-pipeline admission, but an abrupt process, kernel or machine loss
@@ -138,7 +142,10 @@ directory on persistent storage so replacing the container cannot discard an unr
 The sibling `share-recovery-terminal` and `share-recovery-import` directories are equally
 authoritative. All three safety-state subdirectories are pre-created during startup, with every new
 directory entry parent-synchronised on Linux before mining is accepted. Do not delete or edit their
-path-hashed files independently. Recovery writes a
+path-hashed files independently. Miningcore proves that a terminal or import marker is absent only
+after successfully enumerating its exact state directory. A directory, symbolic link, unsupported
+file type, malformed marker, disappearing entry, or inaccessible/uncertain directory blocks startup
+and the first fallback append instead of being treated as absence. Recovery writes a
 pending import marker before opening its PostgreSQL transaction, advances it after commit, then
 removes it only after reopening and fully revalidating the retained source, atomically archiving and
 directory-syncing it, revalidating the same file object, and retiring the matching anchor. Normal
@@ -166,7 +173,10 @@ mid-write failure therefore still leaves startup blocked without first construct
 whole payload. Every completed incident also receives an immutable
 `.incident` metadata file rather than growing and rewriting all earlier incidents. Preserve and
 reconcile every incident file and referenced sidecar before deleting only the exact fixed-name
-fatal-state path reported by Miningcore as an explicit operator acknowledgement.
+fatal-state path reported by Miningcore as an explicit operator acknowledgement. The verifier reads
+the small `.fatal` and `.incident` metadata through the same restrictive, identity-checked handle,
+with strict UTF-8 and bounded total and per-line sizes, that it uses to reject mutation or path
+replacement while evidence is being checked.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

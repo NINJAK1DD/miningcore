@@ -45,7 +45,9 @@ unresolved registry. The supplied systemd stop timeout is 90 seconds. If Postgre
 and the recovery journal both fail, Miningcore synchronously closes a coordinated share-acceptance
 boundary: validated shares enter accounting before positive responses, concurrent healthy
 admissions use shared access, fail-stop is exclusive, response queueing is synchronous, and queued
-responses are cancelled. It then writes a persistent hashed fatal
+responses are cancelled. Exact fatal evidence is captured only after that exclusive gate drains all
+earlier publication/response admissions, so its sidecar is the quiescent unresolved registry rather
+than a pre-transition approximation. It then writes a persistent hashed fatal
 latch in an independent service-owned state directory,
 awaits a bounded critical administrative notification attempt, and exits with dedicated status 74
 instead of continuing without durable share accounting. Candidate persistence uses the same direct
@@ -62,7 +64,9 @@ evidence. Memory exhaustion fails the command without attempting to continue. Jo
 individual recovery lines at 1,048,576 characters. Frame-content hashes normalise
 line endings to `\n`; the independent anchor closes the terminal-frame deletion gap for newly
 committed frames, while incident checksums remain necessary for legacy history. State-directory I/O uncertainty also fails
-closed with status 74. Configure
+closed with status 74. Terminal and import-marker absence is accepted only after exact directory
+enumeration; directories, symbolic links, unsupported entries, malformed content and inaccessible
+state fail closed during startup and the first fallback append. Configure
 `shareRecoveryFile` as an
 absolute path on separately monitored or reserved storage where possible; the recovery runbook
 explains evidence preservation and atomic, manifested import verification.
@@ -81,14 +85,18 @@ lifecycle is cancellation-aware and bounded through open, begin, repository comm
 rollback and cleanup. Transaction then connection disposal run as one ordered background sequence
 under a four-second aggregate wait bound, because ADO.NET disposal APIs do not accept cancellation.
 If transaction disposal consumes that bound, connection disposal cannot overlap it and begins only
-if the transaction call later returns. Cleanup failure after a known commit removes that exact batch from replayable
+if the transaction call later returns. Cleanup that finishes after the aggregate deadline logs its
+eventual success, cancellation, task fault or returned provider exception with the transaction
+outcome, resource stage and elapsed time. Cleanup failure after a known commit removes that exact batch from replayable
 state; cleanup failure while commit is uncertain remains secondary evidence and cannot replace the
 uncertain outcome. A commit whose outcome cannot be proven is never copied to the importable journal;
 exact share JSON is streamed to the sidecar referenced by the status-74 latch for reconciliation.
 Active Stratum dispatch tasks and in-flight request handlers receive a five-second bounded drain
 before Share Recorder intake closes; expiry closes admission and returns a non-zero stop without
 consuming the recorder's reserved window. Fatal, terminal and
-import state subdirectories are durably parent-synchronised on first creation.
+import state subdirectories are durably parent-synchronised on first creation. Fatal and incident
+metadata verification uses strict UTF-8, bounded total/per-line reads and stable handle/path identity
+checks, matching the sidecar verifier's fail-closed replacement detection.
 
 These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay
 sender's positive response proves only local in-memory relay-queue admission, not remote receipt or

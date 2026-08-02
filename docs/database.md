@@ -266,7 +266,9 @@ The command enumerates every path-scoped `.incident` record, validates its metad
 referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. Sidecar
 records are allocation-bounded to 1,048,576 characters and are parsed while the same restrictive
 file handle incrementally calculates the hash. Stable identity and length checks reject concurrent
-modification or path replacement. Memory exhaustion is reported as a failed verification rather
+modification or path replacement. The smaller `.fatal` and `.incident` metadata files are likewise
+read as strict UTF-8 from one restrictive handle, with 64-KiB total and 16-KiB per-line limits and
+the same stable identity/path checks. Memory exhaustion is reported as a failed verification rather
 than allowing the command to continue. It returns
 status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. A successful
 verification proves only that the recorded evidence is structurally complete; it cannot prove that
@@ -279,7 +281,10 @@ expected final sequence and digest under the independently stored
 shorter valid prefix, so preserve this anchor with the journal during inspection and restore. A
 legacy/v1 journal cannot gain retroactive protection for history written before its first anchored
 v2 append. Retain the incident checksum captured before repair/import and compare it with backups or
-monitoring evidence when earlier truncation is plausible.
+monitoring evidence when earlier truncation is plausible. Miningcore does not use a best-effort
+existence check for terminal or import markers: it must successfully enumerate the exact state
+directory before absence is accepted. A directory, symlink, malformed or inaccessible marker is
+unreconciled state and blocks startup with status 74.
 
 If the configured active journal is corrupt and a separate reviewed copy was imported, preserve the
 original evidence but remove it from the live journal path before clearing the latch. Prefer an

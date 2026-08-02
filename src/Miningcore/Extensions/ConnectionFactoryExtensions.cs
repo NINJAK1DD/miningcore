@@ -1,12 +1,16 @@
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using Miningcore.Persistence;
+using NLog;
 
 namespace Miningcore.Extensions;
 
 public static class ConnectionFactoryExtensions
 {
+    private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
+
     /// <summary>
     /// Run the specified action providing it with a fresh connection returing its result.
     /// </summary>
@@ -122,7 +126,7 @@ public static class ConnectionFactoryExtensions
         finally
         {
             var cleanupFailure = await DisposeTransactionResourcesAsync(tx, con,
-                resourceCleanupTimeout);
+                resourceCleanupTimeout, outcome);
 
             if(cleanupFailure != null)
             {
@@ -156,9 +160,11 @@ public static class ConnectionFactoryExtensions
     }
 
     private static async Task<Exception> DisposeTransactionResourcesAsync(
-        IDbTransaction tx, IDbConnection con, TimeSpan timeout)
+        IDbTransaction tx, IDbConnection con, TimeSpan timeout,
+        TransactionOutcome outcome)
     {
         var progress = new TransactionCleanupProgress();
+        var elapsed = Stopwatch.StartNew();
         var cleanupTask = Task.Run(() => DisposeTransactionResourcesOrderedAsync(
             tx, con, progress));
 
@@ -172,9 +178,11 @@ public static class ConnectionFactoryExtensions
             // background, but connection disposal cannot start until transaction disposal has
             // actually returned. Observe its eventual failure without replacing the already
             // classified financial outcome.
-            _ = cleanupTask.ContinueWith(task => _ = task.Exception,
+            var timedOutResource = progress.ActiveResource;
+            _ = cleanupTask.ContinueWith(task =>
+                LogLateCleanupCompletion(task, outcome, timedOutResource,
+                    progress.ActiveResource, elapsed.Elapsed),
                 CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted |
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
 
@@ -183,6 +191,43 @@ public static class ConnectionFactoryExtensions
                 $"in order (active resource: {progress.ActiveResource})",
                 progress.ActiveResource, progress.ConnectionCleanupStarted, ex);
         }
+    }
+
+    private static void LogLateCleanupCompletion(Task<Exception> task,
+        TransactionOutcome outcome, string timedOutResource,
+        string finalResource, TimeSpan elapsed)
+    {
+        if(task.IsFaulted)
+        {
+            logger.Error(task.Exception,
+                "Late database cleanup task faulted after its aggregate deadline. " +
+                "Transaction outcome: {0}; timed-out resource: {1}; final resource: {2}; elapsed: {3}",
+                outcome, timedOutResource, finalResource, elapsed);
+            return;
+        }
+
+        if(task.IsCanceled)
+        {
+            logger.Error(
+                "Late database cleanup task was cancelled after its aggregate deadline. " +
+                "Transaction outcome: {0}; timed-out resource: {1}; final resource: {2}; elapsed: {3}",
+                outcome, timedOutResource, finalResource, elapsed);
+            return;
+        }
+
+        if(task.Result != null)
+        {
+            logger.Error(task.Result,
+                "Late database cleanup completed with provider errors after its aggregate deadline. " +
+                "Transaction outcome: {0}; timed-out resource: {1}; final resource: {2}; elapsed: {3}",
+                outcome, timedOutResource, finalResource, elapsed);
+            return;
+        }
+
+        logger.Debug(
+            "Late database cleanup completed after its aggregate deadline. " +
+            "Transaction outcome: {0}; timed-out resource: {1}; final resource: {2}; elapsed: {3}",
+            outcome, timedOutResource, finalResource, elapsed);
     }
 
     private static async Task<Exception> DisposeTransactionResourcesOrderedAsync(

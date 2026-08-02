@@ -134,8 +134,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             processStatus.MarkFailed(ProcessExitCodes.UnreconciledShareDurabilityLoss);
             throw;
         }
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or
-            System.Security.SecurityException)
+        catch(Exception ex) when(ex is IOException or InvalidDataException or
+            UnauthorizedAccessException or System.Security.SecurityException)
         {
             processStatus.MarkFailed(ProcessExitCodes.UnreconciledShareDurabilityLoss);
             throw new PoolStartupException(

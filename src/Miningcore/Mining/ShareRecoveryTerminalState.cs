@@ -22,6 +22,8 @@ internal sealed class ShareRecoveryTerminalState
     public string Filename { get; }
     internal Action<string> DirectorySync { get; set; } =
         ShareRecoveryFatalState.SyncDirectoryWhereSupported;
+    internal Func<string, IEnumerable<string>> EnumerateEntries { get; set; } =
+        Directory.EnumerateFileSystemEntries;
 
     internal void EnsureDirectoryDurable()
     {
@@ -104,7 +106,10 @@ internal sealed class ShareRecoveryTerminalState
 
     public void EnsureJournalMayBeMissing()
     {
-        if(File.Exists(Filename))
+        EnsureDirectoryDurable();
+        using var anchor = RecoveryStateFile.TryOpenExactEntry(Filename,
+            EnumerateEntries);
+        if(anchor != null)
             throw new InvalidDataException(
                 $"Recovery journal {RecoveryFilename} is missing while its independent " +
                 $"terminal anchor {Filename} remains. Preserve the anchor and surrounding " +
@@ -117,8 +122,7 @@ internal sealed class ShareRecoveryTerminalState
         {
             File.Delete(Filename);
             var directory = Path.GetDirectoryName(Filename)!;
-            if(Directory.Exists(directory))
-                DirectorySync(directory);
+            DirectorySync(directory);
         }
         catch(FileNotFoundException)
         {
@@ -127,7 +131,15 @@ internal sealed class ShareRecoveryTerminalState
 
     private Terminal Read()
     {
-        var lines = File.ReadAllLines(Filename, new UTF8Encoding(false, true));
+        EnsureDirectoryDurable();
+        using var stream = RecoveryStateFile.TryOpenExactEntry(Filename,
+            EnumerateEntries);
+        if(stream == null)
+            throw new FileNotFoundException(
+                "The recovery-journal terminal anchor is absent", Filename);
+
+        var lines = RecoveryStateFile.ReadAllLinesStable(stream, Filename,
+            EnumerateEntries);
 
         if(lines.Length != 4 ||
            lines[0] != "miningcore-share-recovery-terminal-v1" ||

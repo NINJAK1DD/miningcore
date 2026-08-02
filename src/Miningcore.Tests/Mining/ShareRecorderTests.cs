@@ -880,6 +880,128 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task BothPersistenceChannelsFull_CapturesPostGateUnresolvedSet()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-admission-full-capture-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var processStatus = new ProcessStatus();
+        using var coordinator = new MiningFailStopCoordinator(processStatus,
+            Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus(coordinator);
+        var fatalState = new ShareRecoveryFatalState(config, processStatus,
+            config.ShareRecoveryStateDirectory);
+        var handler = new ShareRecoveryFailureHandler(coordinator,
+            new Lazy<ICriticalNotificationSender>(() =>
+                Substitute.For<ICriticalNotificationSender>()), fatalState);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDatabase = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var journalEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseJournal = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                databaseEntered.TrySetResult();
+                await releaseDatabase.Task;
+                throw new IOException("injected database failure after capture");
+            });
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(), config, bus,
+            handler, coordinator)
+        {
+            PersistenceQueueCapacity = 250,
+            EmergencyJournalQueueCapacity = 1,
+            RecoveryJournalFlush = async _ =>
+            {
+                journalEntered.TrySetResult();
+                await releaseJournal.Task;
+                throw new IOException("injected emergency journal failure");
+            },
+        };
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 250; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"database-{index}" });
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            for(var index = 0; index < 250; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"primary-buffered-{index}" });
+            bus.SendMessage(new Share
+                { PoolId = "ltc-solo", Miner = "emergency-active" });
+            await journalEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            bus.SendMessage(new Share
+                { PoolId = "ltc-solo", Miner = "emergency-buffered" });
+
+            using var acceptance = coordinator.AcquireSubmissionAcceptance();
+            var finalShare = new Share
+                { PoolId = "ltc-solo", Miner = "both-full-reporting-share" };
+            var publishError = Assert.ThrowsAny<IOException>(() =>
+                acceptance.PublishShare(bus, finalShare));
+            Assert.Contains("both unavailable", publishError.Message);
+            Assert.Throws<OperationCanceledException>(() =>
+                acceptance.QueueResponse(() => { }));
+
+            var latch = File.ReadAllLines(fatalState.FatalStateFilename);
+            var sidecar = Assert.Single(latch.Where(line =>
+                line.StartsWith("detailFile=", StringComparison.Ordinal)))[
+                "detailFile=".Length..];
+            var captured = File.ReadLines(sidecar)
+                .Select(line => line["shareJsonBase64=".Length..])
+                .Select(Convert.FromBase64String)
+                .Select(Encoding.UTF8.GetString)
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .ToArray();
+
+            Assert.Equal(503, captured.Length);
+            Assert.Equal(503, captured.Select(x => x.Miner)
+                .Distinct(StringComparer.Ordinal).Count());
+            Assert.Contains(captured, x => x.Miner == "both-full-reporting-share");
+            Assert.Contains(captured, x => x.Miner == "emergency-active");
+            Assert.Contains(captured, x => x.Miner == "emergency-buffered");
+            Assert.Contains(captured, x => x.Miner == "primary-buffered-249");
+        }
+        finally
+        {
+            releaseJournal.TrySetResult();
+            releaseDatabase.TrySetResult();
+            try
+            {
+                await recorder.StopAsync(CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch
+            {
+                // Both injected durability targets deliberately fail.
+            }
+
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task MergedMiningProductionAdmission_WaitsForJournalAndTerminalAnchor()
     {
         var directory = Path.Combine(Path.GetTempPath(),
@@ -3001,6 +3123,227 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public void RecoveryState_GenuinelyAbsentEntriesRequireSuccessfulEnumeration()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-absent-{Guid.NewGuid():N}");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var terminal = new ShareRecoveryTerminalState(recoveryFilename,
+            stateDirectory);
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            stateDirectory);
+
+        try
+        {
+            terminal.EnsureJournalMayBeMissing();
+            Assert.Null(import.TryRead());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void RecoveryState_EnumerationFailureCannotProveMarkerAbsence()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-enumeration-{Guid.NewGuid():N}");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var terminal = new ShareRecoveryTerminalState(recoveryFilename,
+            stateDirectory)
+        {
+            EnumerateEntries = _ => throw new IOException(
+                "injected terminal enumeration failure"),
+        };
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            stateDirectory)
+        {
+            EnumerateEntries = _ => throw new UnauthorizedAccessException(
+                "injected import enumeration denial"),
+        };
+
+        try
+        {
+            Assert.Throws<IOException>(terminal.EnsureJournalMayBeMissing);
+            Assert.Throws<UnauthorizedAccessException>(() => import.TryRead());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RecoveryState_DirectoryAtMarkerPathIsRejected(bool terminalMarker)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-directory-{Guid.NewGuid():N}");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var terminal = new ShareRecoveryTerminalState(recoveryFilename,
+            stateDirectory);
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            stateDirectory);
+        var marker = terminalMarker ? terminal.Filename : import.Filename;
+
+        try
+        {
+            Directory.CreateDirectory(marker);
+
+            var error = terminalMarker
+                ? Assert.Throws<InvalidDataException>(
+                    terminal.EnsureJournalMayBeMissing)
+                : Assert.Throws<InvalidDataException>(() => import.TryRead());
+
+            Assert.Contains("directory, not a regular file", error.Message);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RecoveryState_DirectoryAtMarkerPathBlocksStartupWithStatus74(
+        bool terminalMarker)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-startup-directory-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "missing-recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var terminal = new ShareRecoveryTerminalState(config.ShareRecoveryFile,
+            config.ShareRecoveryStateDirectory);
+        var import = new ShareRecoveryImportState(config.ShareRecoveryFile,
+            config.ShareRecoveryStateDirectory);
+        var marker = terminalMarker ? terminal.Filename : import.Filename;
+        var processStatus = new ProcessStatus();
+
+        try
+        {
+            Directory.CreateDirectory(marker);
+            var state = new ShareRecoveryFatalState(config, processStatus,
+                config.ShareRecoveryStateDirectory);
+
+            var error = Assert.Throws<PoolStartupException>(
+                state.EnsureStartupAllowed);
+
+            Assert.Contains("directory, not a regular file", error.Message);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void RecoveryState_DanglingTerminalSymlinkIsRejectedOnLinux()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-symlink-{Guid.NewGuid():N}");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var terminal = new ShareRecoveryTerminalState(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(terminal.Filename)!);
+            File.CreateSymbolicLink(terminal.Filename,
+                Path.Combine(directory, "missing-anchor-target"));
+
+            var error = Assert.Throws<InvalidDataException>(
+                terminal.EnsureJournalMayBeMissing);
+            Assert.Contains("symbolic link", error.Message);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void RecoveryState_InaccessibleTerminalEntryIsRejectedOnWindows()
+    {
+        if(!OperatingSystem.IsWindows())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-inaccessible-{Guid.NewGuid():N}");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var terminal = new ShareRecoveryTerminalState(recoveryFilename,
+            Path.Combine(directory, "state"));
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(terminal.Filename)!);
+            File.WriteAllText(terminal.Filename, "unreadable while exclusively held");
+
+            using var exclusive = new FileStream(terminal.Filename, FileMode.Open,
+                FileAccess.ReadWrite, FileShare.None);
+            Assert.Throws<IOException>(terminal.EnsureJournalMayBeMissing);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RecoveryState_MalformedRegularMarkerIsRejected(bool terminalMarker)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-state-malformed-{Guid.NewGuid():N}");
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var terminal = new ShareRecoveryTerminalState(recoveryFilename,
+            stateDirectory);
+        var import = new ShareRecoveryImportState(recoveryFilename,
+            stateDirectory);
+        var marker = terminalMarker ? terminal.Filename : import.Filename;
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+            File.WriteAllText(marker, "malformed");
+
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                if(terminalMarker)
+                    terminal.EnsureConsistent(1, new string('A', 64), true);
+                else
+                    import.TryRead();
+            });
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void MiningFailStopGate_RejectsPostSignalShareBeforeQueueOrAcknowledgement()
     {
         var processStatus = new ProcessStatus();
@@ -3110,6 +3453,74 @@ public class ShareRecorderTests
         Assert.True(await failStopTask);
         Assert.True(published);
         Assert.True(responseQueued);
+    }
+
+    [Fact]
+    public async Task MiningFailStopCapture_WaitsForActivePublicationRegistration()
+    {
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus();
+        var unresolved = new List<string>();
+        using var publicationEntered = new ManualResetEventSlim();
+        using var releasePublication = new ManualResetEventSlim();
+        using var subscription = bus.Listen<Share>().Subscribe(share =>
+        {
+            publicationEntered.Set();
+            releasePublication.Wait();
+            lock(unresolved)
+                unresolved.Add(share.Miner);
+        });
+        using var acceptance = coordinator.AcquireSubmissionAcceptance();
+        var publication = Task.Run(() => acceptance.PublishShare(bus,
+            new Share { Miner = "registered-before-capture" }));
+        Assert.True(publicationEntered.Wait(TimeSpan.FromSeconds(2)));
+
+        var failStop = Task.Run(() => coordinator.BeginFailStopAndCapture(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss, () =>
+            {
+                lock(unresolved)
+                    return unresolved.ToArray();
+            }));
+        await Task.Delay(25);
+        Assert.False(failStop.IsCompleted);
+
+        releasePublication.Set();
+        await publication;
+        Assert.Equal(new[] { "registered-before-capture" }, await failStop);
+    }
+
+    [Fact]
+    public async Task MiningFailStopCapture_ExcludesResolutionCompletedBeforeGateCloses()
+    {
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus();
+        var unresolved = new List<string> { "known-committed" };
+        using var publicationEntered = new ManualResetEventSlim();
+        using var releasePublication = new ManualResetEventSlim();
+        using var subscription = bus.Listen<Share>().Subscribe(_ =>
+        {
+            publicationEntered.Set();
+            releasePublication.Wait();
+        });
+        using var acceptance = coordinator.AcquireSubmissionAcceptance();
+        var publication = Task.Run(() => acceptance.PublishShare(bus, new Share()));
+        Assert.True(publicationEntered.Wait(TimeSpan.FromSeconds(2)));
+
+        var failStop = Task.Run(() => coordinator.BeginFailStopAndCapture(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss, () =>
+            {
+                lock(unresolved)
+                    return unresolved.ToArray();
+            }));
+        await Task.Delay(25);
+        lock(unresolved)
+            unresolved.Remove("known-committed");
+        releasePublication.Set();
+
+        await publication;
+        Assert.Empty(await failStop);
     }
 
     [Fact]
@@ -3267,10 +3678,11 @@ public class ShareRecorderTests
     [Fact]
     public async Task RecoveryFallback_DatabaseAndJournalFailureSignalsFailStop()
     {
-        var missingDirectory = Path.Combine(Path.GetTempPath(),
-            Path.GetRandomFileName());
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var missingDirectory = Path.Combine(directory, "missing-journal-directory");
         var recoveryFilename = Path.Combine(missingDirectory,
             "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var recoveryFailureHandler = Substitute.For<IShareRecoveryFailureHandler>();
         var messageBus = Substitute.For<IMessageBus>();
@@ -3292,26 +3704,34 @@ public class ShareRecorderTests
             {
                 Pools = Array.Empty<PoolConfig>(),
                 ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = stateDirectory,
             }, messageBus, recoveryFailureHandler,
             Substitute.For<IMiningFailStopCoordinator>());
 
-        var error = await Assert.ThrowsAsync<IOException>(() =>
-            recorder.PersistSharesAsync(new[] { share }));
+        try
+        {
+            var error = await Assert.ThrowsAsync<IOException>(() =>
+                recorder.PersistSharesAsync(new[] { share }));
 
-        Assert.Contains("PostgreSQL or the recovery journal", error.Message);
-        var causes = Assert.IsType<AggregateException>(error.InnerException)
-            .InnerExceptions;
-        Assert.Contains(databaseError, causes);
-        await recoveryFailureHandler.Received(1).StopClusterAsync(
-            Arg.Is<IReadOnlyCollection<Share>>(shares =>
-                shares.Count == 1 && shares.Single().Miner == share.Miner),
-            recoveryFilename, databaseError,
-            Arg.Is<DirectoryNotFoundException>(ex =>
-                ex.Message.Contains(missingDirectory)));
-        messageBus.DidNotReceive().SendMessage(
-            Arg.Is<AdminNotification>(notification =>
-                notification.Subject == "Share Recorder Policy Fallback"),
-            Arg.Any<string>());
+            Assert.Contains("PostgreSQL or the recovery journal", error.Message);
+            var causes = Assert.IsType<AggregateException>(error.InnerException)
+                .InnerExceptions;
+            Assert.Contains(databaseError, causes);
+            await recoveryFailureHandler.Received(1).StopClusterAsync(
+                Arg.Is<IReadOnlyCollection<Share>>(shares =>
+                    shares.Count == 1 && shares.Single().Miner == share.Miner),
+                recoveryFilename, databaseError,
+                Arg.Is<DirectoryNotFoundException>(ex =>
+                    ex.Message.Contains(missingDirectory)));
+            messageBus.DidNotReceive().SendMessage(
+                Arg.Is<AdminNotification>(notification =>
+                    notification.Subject == "Share Recorder Policy Fallback"),
+                Arg.Any<string>());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
     }
 
     [Fact]
@@ -3709,7 +4129,9 @@ public class ShareRecorderTests
     [Fact]
     public async Task PersistBlockCandidateAsync_DatabaseAndJournalFailureStopsCluster()
     {
-        var missingDirectory = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var missingDirectory = Path.Combine(directory, "missing-journal-directory");
+        var stateDirectory = Path.Combine(directory, "state");
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var failureHandler = Substitute.For<ICandidatePersistenceFailureHandler>();
         var mapper = AutoMapperFactory.CreateMapper();
@@ -3721,25 +4143,33 @@ public class ShareRecorderTests
             {
                 Pools = Array.Empty<PoolConfig>(),
                 ShareRecoveryFile = Path.Combine(missingDirectory, "recovery.txt"),
+                ShareRecoveryStateDirectory = stateDirectory,
             }, Substitute.For<IMessageBus>(), failureHandler);
         var candidate = CreateDurableCandidate("lost-candidate-block");
 
-        var persistenceError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            recorder.PersistBlockCandidateAsync(candidate));
+        try
+        {
+            var persistenceError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                recorder.PersistBlockCandidateAsync(candidate));
 
-        Assert.IsType<DirectoryNotFoundException>(
-            persistenceError.Data["RecoveryJournalException"]);
+            Assert.IsType<DirectoryNotFoundException>(
+                persistenceError.Data["RecoveryJournalException"]);
 
-        var failureCall = Assert.Single(failureHandler.ReceivedCalls());
-        var failureArguments = failureCall.GetArguments();
-        Assert.Equal(candidate.BlockHash,
-            Assert.Single(Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
-                failureArguments[0])).BlockHash);
-        Assert.Contains("database failure",
-            Assert.IsType<InvalidOperationException>(failureArguments[1]).Message);
-        Assert.Contains(missingDirectory,
-            Assert.IsType<DirectoryNotFoundException>(failureArguments[2]).Message);
-        Assert.False(Assert.IsType<bool>(failureArguments[3]));
+            var failureCall = Assert.Single(failureHandler.ReceivedCalls());
+            var failureArguments = failureCall.GetArguments();
+            Assert.Equal(candidate.BlockHash,
+                Assert.Single(Assert.IsAssignableFrom<IReadOnlyCollection<Share>>(
+                    failureArguments[0])).BlockHash);
+            Assert.Contains("database failure",
+                Assert.IsType<InvalidOperationException>(failureArguments[1]).Message);
+            Assert.Contains(missingDirectory,
+                Assert.IsType<DirectoryNotFoundException>(failureArguments[2]).Message);
+            Assert.False(Assert.IsType<bool>(failureArguments[3]));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
     }
 
     [Fact]
@@ -4568,6 +4998,110 @@ public class ShareRecorderTests
             Assert.False(result.IsSuccessful);
             Assert.Contains("record line longer than 1048576 characters",
                 output.ToString());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_RejectsOversizedMetadataLine()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-metadata-line-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "LMetadataBound" },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed"));
+            var incident = Assert.Single(Directory.GetFiles(
+                Path.GetDirectoryName(state.FatalStateFilename)!, "*.incident"));
+            File.WriteAllText(incident, "oversized=" + new string('A', 20_000));
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output);
+
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("record line longer than 16384 characters",
+                output.ToString());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_UsesStableMetadataHandle()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-metadata-identity-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+        var replacementBlocked = false;
+        var replacementPublished = false;
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "btc-solo", Miner = "bc1metadata" },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed"));
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output,
+                null, filename =>
+                {
+                    if(!filename.EndsWith(".incident", StringComparison.Ordinal) ||
+                       replacementBlocked || replacementPublished)
+                        return;
+
+                    var replacement = filename + ".replacement";
+                    File.Copy(filename, replacement);
+
+                    try
+                    {
+                        File.Move(replacement, filename, true);
+                        replacementPublished = true;
+                    }
+                    catch(Exception ex) when(ex is IOException or
+                                              UnauthorizedAccessException)
+                    {
+                        replacementBlocked = true;
+                        File.Delete(replacement);
+                    }
+                });
+
+            if(replacementPublished)
+            {
+                Assert.False(result.IsSuccessful);
+                Assert.True(output.ToString().Contains("changed while it was being read") ||
+                            output.ToString().Contains("was replaced while it was being read"));
+            }
+            else
+            {
+                Assert.True(replacementBlocked);
+                Assert.True(result.IsSuccessful);
+            }
         }
         finally
         {
