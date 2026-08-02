@@ -239,6 +239,98 @@ public class ConnectionFactoryExtensionsTests
         Assert.Equal(0, transaction.RollbackCalls);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RunTx_CleanupCompletingAtTimeoutCannotReplaceTransactionOutcome(
+        bool connectionCleanup, bool uncertainCommit)
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var disposeEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDispose = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupFailure = new IOException(connectionCleanup
+            ? "connection completed with cleanup failure"
+            : "transaction completed with cleanup failure");
+        var commitFailure = new IOException("commit outcome is uncertain");
+        var transaction = new ControlledDbTransaction
+        {
+            CommitAsyncAction = uncertainCommit
+                ? _ => Task.FromException(commitFailure)
+                : null,
+            DisposeAsyncAction = connectionCleanup
+                ? null
+                : async () =>
+                {
+                    disposeEntered.TrySetResult();
+                    await releaseDispose.Task;
+                    throw cleanupFailure;
+                },
+        };
+        var connection = new ControlledDbConnection(transaction)
+        {
+            DisposeAsyncAction = !connectionCleanup
+                ? null
+                : async () =>
+                {
+                    disposeEntered.TrySetResult();
+                    await releaseDispose.Task;
+                    throw cleanupFailure;
+                },
+        };
+        factory.OpenConnectionAsync().Returns(connection);
+        ConnectionFactoryExtensions.ResourceCleanupWaitOverride.Value =
+            async (cleanupTask, ignoredTimeout) =>
+            {
+                await disposeEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                releaseDispose.TrySetResult();
+                _ = await cleanupTask;
+                throw new TimeoutException(
+                    "injected WaitAsync deadline immediately before completion");
+            };
+
+        try
+        {
+            var error = await Record.ExceptionAsync(() =>
+                factory.RunTx((_, _) => Task.CompletedTask,
+                    classifyCommitOutcome: true,
+                    resourceCleanupTimeout: TimeSpan.FromMilliseconds(50)));
+            Assert.NotNull(error);
+
+            TransactionResourceCleanupTimeoutException timeout;
+            if(uncertainCommit)
+            {
+                var uncertain = Assert.IsType<
+                    TransactionCommitOutcomeUncertainException>(error);
+                Assert.Same(commitFailure, uncertain.InnerException);
+                timeout = Assert.IsType<TransactionResourceCleanupTimeoutException>(
+                    uncertain.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
+            }
+            else
+            {
+                var committed = Assert.IsType<
+                    TransactionCommittedCleanupException>(error);
+                timeout = Assert.IsType<TransactionResourceCleanupTimeoutException>(
+                    committed.InnerException);
+            }
+
+            // The resource can finish between the injected deadline and catch-body
+            // classification, so the progress marker has legitimately advanced to complete.
+            Assert.Equal("complete", timeout.ActiveResource);
+            Assert.Same(cleanupFailure,
+                timeout.Data[ConnectionFactoryExtensions.LateCleanupExceptionDataKey]);
+            Assert.Equal(1, transaction.CommitCalls);
+        }
+        finally
+        {
+            ConnectionFactoryExtensions.ResourceCleanupWaitOverride.Value = null;
+            releaseDispose.TrySetResult();
+        }
+    }
+
     [Fact]
     public async Task RunTx_PreservesOriginalExceptionWhenRollbackFails()
     {

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -87,6 +88,13 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                 // does not exist. Other metadata and I/O failures are deliberately fail-closed.
             }
 
+            // A removed latch must not hide retained incident evidence. A clean state has neither
+            // object; any orphaned, shortened or substituted chain blocks startup with status 74.
+            ShareRecoveryIncidentChain.ReadTip(
+                Path.GetDirectoryName(FatalStateFilename)!,
+                Path.GetFileNameWithoutExtension(FatalStateFilename),
+                FatalStateFilename);
+
             try
             {
                 importState.EnsureNoOutstandingImport();
@@ -173,16 +181,29 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         var incidentId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}";
         var directory = Path.GetDirectoryName(FatalStateFilename)!;
         var stem = Path.GetFileNameWithoutExtension(FatalStateFilename);
+        var chain = ShareRecoveryIncidentChain.ReadTip(directory, stem,
+            FatalStateFilename);
+        var incidentSequence = chain.Sequence + 1;
         var detailFilename = shares != null
             ? Path.Combine(directory, $"{stem}.{incidentId}.shares")
             : null;
         string detailHash = null;
 
         var created = DateTimeOffset.UtcNow;
-        var initialState = BuildIncidentLatch(incidentId, created,
+        var initialIncident = BuildIncidentState(incidentId, created,
             recoveryPathHash, failureCategory, shareCount, pools, databaseError,
             journalError, detailFilename, detailHash,
             shares == null ? "not-required" : "hash-pending",
+            incidentSequence, chain.Digest, chain.LegacyCount,
+            chain.LegacyDigest, null, chain.ExistingCount + 1,
+            shares != null);
+        var initialDigest = ShareRecoveryIncidentChain.ComputeDigest(initialIncident);
+        var initialLatch = BuildIncidentState(incidentId, created,
+            recoveryPathHash, failureCategory, shareCount, pools, databaseError,
+            journalError, detailFilename, detailHash,
+            shares == null ? "not-required" : "hash-pending",
+            incidentSequence, chain.Digest, chain.LegacyCount,
+            chain.LegacyDigest, initialDigest, chain.ExistingCount + 1,
             shares != null);
         var incidentFilename = Path.Combine(directory,
             $"{stem}.{incidentId}.incident");
@@ -190,8 +211,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         // Publish the small authoritative startup barrier before enumerating or serializing any
         // exact shares. A serialization, memory-pressure or sidecar write failure must never
         // leave a later restart unblocked.
-        WriteSmallStateFile(FatalStateFilename, initialState, true);
-        WriteSmallStateFile(incidentFilename, initialState, false);
+        WriteSmallStateFile(FatalStateFilename, initialLatch, true);
+        WriteSmallStateFile(incidentFilename, initialIncident, false);
 
         if(shares != null)
         {
@@ -200,26 +221,44 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             pools = detail.Pools;
         }
 
-        var completedState = BuildIncidentLatch(incidentId, created,
+        var completedIncident = BuildIncidentState(incidentId, created,
             recoveryPathHash, failureCategory, shareCount, pools, databaseError,
             journalError, detailFilename, detailHash,
-            shares == null ? "not-required" : "complete");
+            shares == null ? "not-required" : "complete",
+            incidentSequence, chain.Digest, chain.LegacyCount,
+            chain.LegacyDigest, null, chain.ExistingCount + 1);
+        var completedDigest = ShareRecoveryIncidentChain.ComputeDigest(
+            completedIncident);
+        var completedLatch = BuildIncidentState(incidentId, created,
+            recoveryPathHash, failureCategory, shareCount, pools, databaseError,
+            journalError, detailFilename, detailHash,
+            shares == null ? "not-required" : "complete",
+            incidentSequence, chain.Digest, chain.LegacyCount,
+            chain.LegacyDigest, completedDigest, chain.ExistingCount + 1);
         // Each incident record is advanced once from hash-pending to complete, then remains
         // immutable evidence. The fixed-name latch remains a small current startup barrier.
-        WriteSmallStateFile(incidentFilename, completedState, true);
-        WriteSmallStateFile(FatalStateFilename, completedState, true);
+        WriteSmallStateFile(incidentFilename, completedIncident, true);
+        WriteSmallStateFile(FatalStateFilename, completedLatch, true);
     }
 
-    private string BuildIncidentLatch(string incidentId, DateTimeOffset created,
+    private string BuildIncidentState(string incidentId, DateTimeOffset created,
         string recoveryPathHash, string failureCategory, int shareCount,
         IReadOnlyCollection<string> pools, Exception databaseError,
         Exception journalError, string detailFilename, string detailHash,
-        string detailState, bool poolsPending = false)
+        string detailState, long incidentSequence, string previousIncidentDigest,
+        int legacyIncidentCount, string legacyIncidentSetDigest,
+        string incidentChainDigest, int expectedIncidentCount,
+        bool poolsPending = false)
     {
-        return string.Join('\n',
+        var lines = new List<string>
+        {
             "Miningcore share-accounting durability failure",
-            "formatVersion=2",
+            "formatVersion=3",
             $"incidentId={incidentId}",
+            $"incidentSequence={incidentSequence.ToString(CultureInfo.InvariantCulture)}",
+            $"previousIncidentDigest={previousIncidentDigest}",
+            $"legacyIncidentCount={legacyIncidentCount.ToString(CultureInfo.InvariantCulture)}",
+            $"legacyIncidentSetSha256={legacyIncidentSetDigest}",
             $"createdUtc={created:O}",
             $"failureCategory={SanitizeStateValue(failureCategory, 256)}",
             $"recoveryFile={RecoveryFilename}",
@@ -232,8 +271,18 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             $"detailState={detailState}",
             $"databaseError={FormatStateException(databaseError)}",
             $"journalError={FormatStateException(journalError)}",
-            "Reconcile every immutable incident record and referenced sidecar before deleting this latch and restarting Miningcore.",
-            string.Empty);
+        };
+
+        if(incidentChainDigest != null)
+        {
+            lines.Add($"incidentChainDigest={incidentChainDigest}");
+            lines.Add($"expectedIncidentCount={expectedIncidentCount.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        lines.Add(
+            "Reconcile every immutable incident record and referenced sidecar before deleting this latch and restarting Miningcore.");
+        lines.Add(string.Empty);
+        return string.Join('\n', lines);
     }
 
     private static string FormatStateException(Exception error) => error == null

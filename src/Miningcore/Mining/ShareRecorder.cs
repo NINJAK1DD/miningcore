@@ -156,6 +156,23 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal string RecoveryImportStateFilename => recoveryImportState.Filename;
     internal Action<long, string> RecoveryTerminalStateWrite { get; set; }
     internal Action RecoveryTerminalStateRemove { get; set; }
+    internal Action RecoveryAnchorRemovedCheckpoint { get; set; } = () => { };
+    internal Action<ShareRecoveryImportState.ImportPhase>
+        RecoveryImportStateWriteCheckpoint
+    {
+        set => recoveryImportState.WriteCheckpoint = value ?? (_ => { });
+    }
+    internal Action RecoveryImportStateRemoveCheckpoint
+    {
+        set => recoveryImportState.RemoveCheckpoint = value ?? (() => { });
+    }
+    internal Action RecoveryImportStateRemoveDirectorySyncCheckpoint
+    {
+        set => recoveryImportState.RemoveDirectorySyncCheckpoint =
+            value ?? (() => { });
+    }
+    internal Func<string, IEnumerable<string>> RecoveryAliasEnumerateEntries
+        { get; set; } = Directory.EnumerateFileSystemEntries;
     private readonly CancellationTokenSource blockCandidateShutdown = new();
     private int blockCandidateShutdownStarted;
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
@@ -1274,8 +1291,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             var existingMarker = importState.TryRead();
-            if(existingMarker?.Phase ==
-               ShareRecoveryImportState.ImportPhase.Committed)
+            if(existingMarker != null && existingMarker.Phase !=
+               ShareRecoveryImportState.ImportPhase.Pending)
             {
                 var resumedArchive = await RetireImportedRecoveryFileAsync(filename,
                     existingMarker, configuredSource, importState);
@@ -1288,6 +1305,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             int validatedCount;
             string fileHash;
             ShareRecoveryImportState.ImportMarker marker;
+            RecoveryJournalTail? configuredTail = null;
             var insertedNewContent = false;
 
             // Hold one read-only handle across both passes. FileShare.Read permits diagnostics
@@ -1311,6 +1329,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     var tail = ValidateRecoveryJournalDetailed(stream, filename);
                     recoveryTerminalState.EnsureConsistent(tail.Sequence,
                         tail.FrameDigest, tail.IsChainedFormat);
+                    configuredTail = tail;
                 }
                 stream.Seek(0, SeekOrigin.Begin);
                 using var reader = new StreamReader(stream, new UTF8Encoding(false));
@@ -1330,7 +1349,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 var reservedArchiveFilename = existingMarker?.ArchiveFilename ??
                     BuildRecoveryArchiveFilename(filename);
                 marker = importState.Begin(fileHash, validatedCount,
-                    reservedArchiveFilename);
+                    reservedArchiveFilename, configuredTail?.Sequence,
+                    configuredTail?.FrameDigest,
+                    configuredSource && configuredTail?.IsChainedFormat == true);
 
                 reader.DiscardBufferedData();
                 stream.Seek(0, SeekOrigin.Begin);
@@ -1482,7 +1503,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             Guid.NewGuid().ToString("N");
     }
 
-    private static bool RecoveryPathsReferToSameFile(string first,
+    private bool RecoveryPathsReferToSameFile(string first,
         string second)
     {
         var comparison = OperatingSystem.IsWindows()
@@ -1494,30 +1515,38 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         if(string.Equals(first, second, comparison))
             return true;
 
-        if(!File.Exists(first) || !File.Exists(second))
+        // Identity uncertainty must not downgrade a possible alias into an independent reviewed
+        // source with different path-scoped state. Exact enumeration distinguishes proven absence
+        // from access/I/O uncertainty, and no-follow handles prevent symlink substitution.
+        using var firstStream = RecoveryStateFile.TryOpenExactEntry(first,
+            RecoveryAliasEnumerateEntries);
+        using var secondStream = RecoveryStateFile.TryOpenExactEntry(second,
+            RecoveryAliasEnumerateEntries);
+
+        if(firstStream == null || secondStream == null)
             return false;
 
-        // Identity uncertainty must not downgrade a possible alias into an independent reviewed
-        // source with different path-scoped state. Propagate open/identity failures and fail closed.
-        using var firstStream = new FileStream(first, FileMode.Open,
-            FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        using var secondStream = new FileStream(second, FileMode.Open,
-            FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         return RecoveryJournalFileIdentity.Read(firstStream) ==
             RecoveryJournalFileIdentity.Read(secondStream);
     }
 
-    private async Task ValidateCommittedRecoveryFileAsync(FileStream stream,
+    private async Task<RecoveryJournalTail> ValidateCommittedRecoveryFileAsync(FileStream stream,
         string filename, ShareRecoveryImportState.ImportMarker marker,
-        bool configuredSource)
+        bool configuredSource, bool requireAnchor)
     {
         EnsureRecoveryJournalAppendBoundary(stream, filename);
         stream.Seek(0, SeekOrigin.Begin);
         var tail = ValidateRecoveryJournalDetailed(stream, filename);
 
         if(configuredSource)
+        {
+            if(marker.TerminalSequence.HasValue)
+                ShareRecoveryImportState.EnsureTerminalStateMatches(marker,
+                    tail.Sequence, tail.FrameDigest, tail.IsChainedFormat);
+
             recoveryTerminalState.EnsureConsistent(tail.Sequence,
-                tail.FrameDigest, tail.IsChainedFormat);
+                tail.FrameDigest, requireAnchor && tail.IsChainedFormat);
+        }
 
         stream.Seek(0, SeekOrigin.Begin);
         using var reader = new StreamReader(stream, new UTF8Encoding(false),
@@ -1538,6 +1567,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 $"Expected {marker.RecordCount} records " +
                 $"[{marker.FileHash}], found {recordCount} [{fileHash}]. Preserve all evidence " +
                 "and reconcile the source before retirement.");
+
+        return tail;
     }
 
     private async Task<string> RetireImportedRecoveryFileAsync(string filename,
@@ -1545,12 +1576,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         ShareRecoveryImportState importState)
     {
         ArgumentNullException.ThrowIfNull(marker);
-        if(marker.Phase != ShareRecoveryImportState.ImportPhase.Committed)
+        if(marker.Phase == ShareRecoveryImportState.ImportPhase.Pending)
             throw new InvalidDataException(
                 $"Recovery source {filename} cannot be retired before its database import is committed");
 
-        var sourceExists = File.Exists(filename);
-        var archiveExists = File.Exists(marker.ArchiveFilename);
+        using var source = RecoveryStateFile.TryOpenExactEntry(filename,
+            Directory.EnumerateFileSystemEntries,
+            FileShare.Read | FileShare.Delete);
+        using var archive = RecoveryStateFile.TryOpenExactEntry(
+            marker.ArchiveFilename, Directory.EnumerateFileSystemEntries,
+            FileShare.Read | FileShare.Delete);
+        var sourceExists = source != null;
+        var archiveExists = archive != null;
 
         if(sourceExists == archiveExists)
             throw new IOException(sourceExists
@@ -1560,25 +1597,26 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                   $"{marker.ArchiveFilename} exists");
 
         var retainedFilename = sourceExists ? filename : marker.ArchiveFilename;
-        await using var retained = new FileStream(retainedFilename,
-            new FileStreamOptions
-            {
-                Mode = FileMode.Open,
-                Access = FileAccess.Read,
-                // Keep managed writers/replacers out for the complete retirement protocol while
-                // still allowing the validated source entry to be atomically renamed.
-                Share = FileShare.Read | FileShare.Delete,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-            });
+        var retained = source ?? archive;
         var validatedIdentity = RecoveryJournalFileIdentity.ReadStable(retained);
-        await ValidateCommittedRecoveryFileAsync(retained, retainedFilename,
-            marker, configuredSource);
+        var anchorMustRemain = marker.Phase <
+            ShareRecoveryImportState.ImportPhase.AnchorRetirementAuthorised;
+        var validatedTail = await ValidateCommittedRecoveryFileAsync(retained,
+            retainedFilename, marker, configuredSource, anchorMustRemain);
+
+        if(!marker.TerminalSequence.HasValue)
+            marker = importState.RecordTerminalState(marker,
+                validatedTail.Sequence, validatedTail.FrameDigest,
+                configuredSource && validatedTail.IsChainedFormat);
 
         if(sourceExists)
         {
             RecoveryArchiveMove(filename, marker.ArchiveFilename);
-            using var archived = new FileStream(marker.ArchiveFilename,
-                FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var archived = RecoveryStateFile.TryOpenExactEntry(
+                marker.ArchiveFilename, Directory.EnumerateFileSystemEntries);
+            if(archived == null)
+                throw new IOException(
+                    $"Recovery archive {marker.ArchiveFilename} disappeared after rename");
             var archivedIdentity = RecoveryJournalFileIdentity.ReadStable(archived);
 
             if(archivedIdentity != validatedIdentity)
@@ -1592,18 +1630,39 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         // same-inode modification between the initial check and retirement as well as a pathname
         // replacement (which is independently caught by the identity comparison above).
         await ValidateCommittedRecoveryFileAsync(retained,
-            marker.ArchiveFilename, marker, configuredSource);
+            marker.ArchiveFilename, marker, configuredSource,
+            anchorMustRemain);
 
-        // Persist the source rename before retiring its independent anchor. If this sync fails,
-        // the committed marker remains and startup/appends stay blocked until recovery resumes.
-        RecoveryDirectorySync(Path.GetDirectoryName(filename)!);
+        if(marker.Phase == ShareRecoveryImportState.ImportPhase.Committed)
+        {
+            // Persist the source rename before authorising retirement of its independent anchor.
+            // If this sync fails, the committed marker remains and recovery repeats validation.
+            RecoveryDirectorySync(Path.GetDirectoryName(filename)!);
+            marker = importState.MarkArchiveDurable(marker);
+        }
 
-        if(configuredSource)
-            RecoveryTerminalStateRemove();
+        if(marker.Phase == ShareRecoveryImportState.ImportPhase.ArchiveDurable)
+            marker = importState.AuthoriseAnchorRetirement(marker);
 
-        // The committed-source marker is the last object removed. Its own directory sync makes
+        if(marker.Phase ==
+           ShareRecoveryImportState.ImportPhase.AnchorRetirementAuthorised)
+        {
+            // The durable authorisation makes an already-absent anchor an idempotent completed
+            // step on resume. Revalidate the archived content and recorded tail before removal.
+            await ValidateCommittedRecoveryFileAsync(retained,
+                marker.ArchiveFilename, marker, configuredSource, false);
+
+            if(configuredSource && marker.TerminalAnchorRequired)
+                RecoveryTerminalStateRemove();
+
+            RecoveryAnchorRemovedCheckpoint();
+            marker = importState.MarkAnchorRetired(marker);
+        }
+
+        // The anchor-retired marker is the last object removed. Its own directory sync makes
         // the completed retirement durable and prevents a stale marker from being resurrected.
-        importState.RemoveAfterRetirement();
+        if(marker.Phase == ShareRecoveryImportState.ImportPhase.AnchorRetired)
+            importState.RemoveAfterRetirement();
         return marker.ArchiveFilename;
     }
 

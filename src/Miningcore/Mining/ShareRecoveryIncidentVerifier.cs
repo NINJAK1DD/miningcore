@@ -101,11 +101,23 @@ internal static class ShareRecoveryIncidentVerifier
         var globalErrors = new List<string>();
         var latchIncomplete = false;
 
+        try
+        {
+            ShareRecoveryIncidentChain.ReadTip(fatalDirectory, stem,
+                latchFilename);
+        }
+        catch(Exception ex) when(ex is IOException or InvalidDataException or
+                                  UnauthorizedAccessException)
+        {
+            globalErrors.Add(
+                $"Fatal incident collection chain validation failed: {ex.Message}");
+        }
+
         if(latchPresent)
         {
             latch = ReadMetadata(latchFilename, globalErrors,
                 metadataReadCheckpoint);
-            RequireEqual(latch, "formatVersion", "2", globalErrors);
+            RequireSupportedFormat(latch, globalErrors);
             RequireEqual(latch, "recoveryFile", recoveryFilename, globalErrors);
             RequireEqual(latch, "recoveryPathSha256", recoveryPathHash,
                 globalErrors);
@@ -218,7 +230,9 @@ internal static class ShareRecoveryIncidentVerifier
                 {
                     foreach(var key in new[]
                             {
-                                "formatVersion", "incidentId", "createdUtc",
+                                "formatVersion", "incidentId", "incidentSequence",
+                                "previousIncidentDigest", "legacyIncidentCount",
+                                "legacyIncidentSetSha256", "createdUtc",
                                 "failureCategory", "recoveryFile",
                                 "recoveryPathSha256", "shareCount", "pools",
                                 "detailFile", "detailSha256", "detailState",
@@ -278,7 +292,7 @@ internal static class ShareRecoveryIncidentVerifier
         int? decodedRecords = null;
         var incomplete = false;
 
-        RequireEqual(metadata, "formatVersion", "2", errors);
+        RequireSupportedFormat(metadata, errors);
         RequireEqual(metadata, "recoveryFile", recoveryFilename, errors);
         RequireEqual(metadata, "recoveryPathSha256", recoveryPathHash, errors);
 
@@ -539,6 +553,15 @@ internal static class ShareRecoveryIncidentVerifier
         if(!values.TryGetValue(key, out var actual) ||
            !string.Equals(actual, expected, StringComparison.Ordinal))
             errors.Add($"Metadata {key} does not match the configured recovery state.");
+    }
+
+    private static void RequireSupportedFormat(
+        IReadOnlyDictionary<string, string> values,
+        ICollection<string> errors)
+    {
+        var format = GetValue(values, "formatVersion");
+        if(format is not ("2" or "3"))
+            errors.Add("Metadata formatVersion is unsupported.");
     }
 
     private static string GetValue(IReadOnlyDictionary<string, string> values,

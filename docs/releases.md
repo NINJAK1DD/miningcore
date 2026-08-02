@@ -70,10 +70,12 @@ state fail closed during startup and the first fallback append. Configure
 `shareRecoveryFile` as an
 absolute path on separately monitored or reserved storage where possible; the recovery runbook
 explains evidence preservation and atomic, manifested import verification.
-Recovery import now uses a durable pending/committed source-retirement marker. Startup and fallback
+Recovery import now uses a durable multi-phase source-retirement marker. Startup and fallback
 appends remain blocked until the retained source's complete chain, anchor, semantic hash, record
 count and file identity are revalidated, the committed source rename and parent-directory sync
-finish, and the terminal anchor retires. The same non-writable file object is checked again after
+finish, and the marker records archive durability, anchor-retirement authorisation and anchor
+retirement while retaining the validated terminal sequence and digest. Interruption after anchor
+removal therefore resumes without manual safety-state edits. The same non-writable file object is checked again after
 rename. Rerunning recovery resumes that sequence without changing the manifest identity or replaying
 records; filesystem aliases of the configured source are rejected. Operators must not import
 overlapping reviewed files because manifests identify whole sources rather than individual shares.
@@ -87,16 +89,21 @@ under a four-second aggregate wait bound, because ADO.NET disposal APIs do not a
 If transaction disposal consumes that bound, connection disposal cannot overlap it and begins only
 if the transaction call later returns. Cleanup that finishes after the aggregate deadline logs its
 eventual success, cancellation, task fault or returned provider exception with the transaction
-outcome, resource stage and elapsed time. Cleanup failure after a known commit removes that exact batch from replayable
+outcome, resource stage and elapsed time. Deadline classification is unconditional even when cleanup
+finishes between timeout and exception handling: once commit outcome is known, cleanup can add
+evidence but cannot replace it. Cleanup failure after a known commit removes that exact batch from replayable
 state; cleanup failure while commit is uncertain remains secondary evidence and cannot replace the
 uncertain outcome. A commit whose outcome cannot be proven is never copied to the importable journal;
 exact share JSON is streamed to the sidecar referenced by the status-74 latch for reconciliation.
 Active Stratum dispatch tasks and in-flight request handlers receive a five-second bounded drain
 before Share Recorder intake closes; expiry closes admission and returns a non-zero stop without
 consuming the recorder's reserved window. Fatal, terminal and
-import state subdirectories are durably parent-synchronised on first creation. Fatal and incident
-metadata verification uses strict UTF-8, bounded total/per-line reads and stable handle/path identity
-checks, matching the sidecar verifier's fail-closed replacement detection.
+import state subdirectories are durably parent-synchronised on first creation. State and alias
+inspection uses atomic no-follow regular-file handles on Linux and Windows. Fatal incidents now form
+a sequence/previous-digest chain anchored by the fixed latch's tip and expected count; the first v3
+incident also anchors all retained legacy-v2 incidents. Fatal and incident metadata verification
+uses strict UTF-8, cumulatively bounded total/per-line reads and stable handle/path identity checks,
+matching the sidecar verifier's fail-closed replacement detection.
 
 These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay
 sender's positive response proves only local in-memory relay-queue admission, not remote receipt or

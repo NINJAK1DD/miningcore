@@ -143,12 +143,17 @@ The sibling `share-recovery-terminal` and `share-recovery-import` directories ar
 authoritative. All three safety-state subdirectories are pre-created during startup, with every new
 directory entry parent-synchronised on Linux before mining is accepted. Do not delete or edit their
 path-hashed files independently. Miningcore proves that a terminal or import marker is absent only
-after successfully enumerating its exact state directory. A directory, symbolic link, unsupported
-file type, malformed marker, disappearing entry, or inaccessible/uncertain directory blocks startup
+after successfully enumerating its exact state directory. Exact state and alias inspection uses
+atomic no-follow handles on supported Linux and Windows hosts. A directory, symbolic link,
+unsupported file type, malformed marker, disappearing entry, or inaccessible/uncertain directory blocks startup
 and the first fallback append instead of being treated as absence. Recovery writes a
-pending import marker before opening its PostgreSQL transaction, advances it after commit, then
-removes it only after reopening and fully revalidating the retained source, atomically archiving and
-directory-syncing it, revalidating the same file object, and retiring the matching anchor. Normal
+pending import marker before opening its PostgreSQL transaction, advances it after commit through
+`Committed`, `ArchiveDurable`, `AnchorRetirementAuthorised`, and `AnchorRetired`, then removes it
+only after reopening and fully revalidating the retained source, atomically archiving and
+directory-syncing it, revalidating the same file object, and retiring the matching anchor. Each
+phase retains the validated terminal sequence and digest. Anchor absence is valid on resume only
+after durable retirement authorisation, so interruption between anchor and marker removal cannot
+strand or replay the committed import. Normal
 startup and journal appends remain blocked while that marker exists; rerun the same recovery command
 with the exact configured path to resume an interrupted retirement without replaying committed
 shares. Filesystem aliases of the active journal are rejected rather than given independent state.
@@ -171,11 +176,15 @@ single streaming pass serializes each share, writes it and calculates the final 
 does Miningcore advance the incident and latch to `detailState=complete`. A serialization or
 mid-write failure therefore still leaves startup blocked without first constructing or hashing the
 whole payload. Every completed incident also receives an immutable
-`.incident` metadata file rather than growing and rewriting all earlier incidents. Preserve and
+`.incident` metadata file rather than growing and rewriting all earlier incidents. New v3 incidents
+carry a monotonic sequence and the exact previous-incident digest; the fixed latch anchors the chain
+tip, complete expected count, and any legacy-v2 incident set present during the upgrade. Deleting,
+reordering, or substituting an anchored incident therefore makes verification and startup fail.
+Legacy incidents lost before the first v3 anchor cannot be reconstructed retroactively. Preserve and
 reconcile every incident file and referenced sidecar before deleting only the exact fixed-name
 fatal-state path reported by Miningcore as an explicit operator acknowledgement. The verifier reads
 the small `.fatal` and `.incident` metadata through the same restrictive, identity-checked handle,
-with strict UTF-8 and bounded total and per-line sizes, that it uses to reject mutation or path
+with strict UTF-8 and cumulative total and per-line bounds enforced while reading, that it uses to reject mutation or path
 replacement while evidence is being checked.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;

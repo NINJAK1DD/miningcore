@@ -25,6 +25,9 @@ internal sealed class ShareRecoveryImportState
         ShareRecoveryFatalState.SyncDirectoryWhereSupported;
     internal Func<string, IEnumerable<string>> EnumerateEntries { get; set; } =
         Directory.EnumerateFileSystemEntries;
+    internal Action<ImportPhase> WriteCheckpoint { get; set; } = _ => { };
+    internal Action RemoveCheckpoint { get; set; } = () => { };
+    internal Action RemoveDirectorySyncCheckpoint { get; set; } = () => { };
 
     internal void EnsureDirectoryDurable()
     {
@@ -54,7 +57,8 @@ internal sealed class ShareRecoveryImportState
     }
 
     public ImportMarker Begin(string fileHash, int recordCount,
-        string archiveFilename)
+        string archiveFilename, long? terminalSequence = null,
+        string terminalDigest = null, bool terminalAnchorRequired = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileHash);
         ArgumentException.ThrowIfNullOrWhiteSpace(archiveFilename);
@@ -74,9 +78,12 @@ internal sealed class ShareRecoveryImportState
             return existing;
         }
 
+        ValidateTerminalState(terminalSequence, terminalDigest,
+            terminalAnchorRequired);
         var marker = new ImportMarker(ImportPhase.Pending,
             fileHash.ToUpperInvariant(), recordCount,
-            Path.GetFullPath(archiveFilename));
+            Path.GetFullPath(archiveFilename), terminalSequence,
+            terminalDigest?.ToUpperInvariant(), terminalAnchorRequired);
         try
         {
             Write(marker, false);
@@ -101,16 +108,62 @@ internal sealed class ShareRecoveryImportState
 
     public ImportMarker MarkCommitted(ImportMarker marker)
     {
+        return Advance(marker, ImportPhase.Committed);
+    }
+
+    public ImportMarker RecordTerminalState(ImportMarker marker,
+        long sequence, string digest, bool anchorRequired)
+    {
         ArgumentNullException.ThrowIfNull(marker);
-        var committed = marker with { Phase = ImportPhase.Committed };
-        Write(committed, true);
-        return committed;
+        ValidateTerminalState(sequence, digest, anchorRequired);
+
+        if(marker.TerminalSequence.HasValue)
+        {
+            EnsureTerminalStateMatches(marker, sequence, digest,
+                anchorRequired);
+            return marker;
+        }
+
+        var updated = marker with
+        {
+            TerminalSequence = sequence,
+            TerminalDigest = digest.ToUpperInvariant(),
+            TerminalAnchorRequired = anchorRequired,
+        };
+        Write(updated, true);
+        return updated;
+    }
+
+    public ImportMarker MarkArchiveDurable(ImportMarker marker) =>
+        Advance(marker, ImportPhase.ArchiveDurable);
+
+    public ImportMarker AuthoriseAnchorRetirement(ImportMarker marker) =>
+        Advance(marker, ImportPhase.AnchorRetirementAuthorised);
+
+    public ImportMarker MarkAnchorRetired(ImportMarker marker) =>
+        Advance(marker, ImportPhase.AnchorRetired);
+
+    private ImportMarker Advance(ImportMarker marker, ImportPhase phase)
+    {
+        ArgumentNullException.ThrowIfNull(marker);
+        if(phase < marker.Phase)
+            throw new InvalidOperationException(
+                $"Recovery import marker cannot move backwards from {marker.Phase} to {phase}");
+
+        if(phase == marker.Phase)
+            return marker;
+
+        var updated = marker with { Phase = phase };
+        Write(updated, true);
+        return updated;
     }
 
     public void RemoveAfterRetirement()
     {
         var directory = Path.GetDirectoryName(Filename)!;
+        RemoveCheckpoint();
         File.Delete(Filename);
+        RemoveDirectorySyncCheckpoint();
         DirectorySync(directory);
     }
 
@@ -122,12 +175,15 @@ internal sealed class ShareRecoveryImportState
             $".{Path.GetFileName(Filename)}.{Guid.NewGuid():N}.tmp");
         var archiveBytes = Encoding.UTF8.GetBytes(marker.ArchiveFilename);
         var content = string.Join('\n',
-            "miningcore-share-recovery-import-v1",
+            "miningcore-share-recovery-import-v2",
             $"recoveryPathSha256={ShareRecoveryFatalState.ComputeRecoveryPathHash(RecoveryFilename)}",
             $"phase={marker.Phase.ToString().ToLowerInvariant()}",
             $"fileHash={marker.FileHash.ToUpperInvariant()}",
             $"recordCount={marker.RecordCount.ToString(CultureInfo.InvariantCulture)}",
-            $"archivePathBase64={Convert.ToBase64String(archiveBytes)}", string.Empty);
+            $"archivePathBase64={Convert.ToBase64String(archiveBytes)}",
+            $"terminalAnchorRequired={marker.TerminalAnchorRequired.ToString().ToLowerInvariant()}",
+            $"terminalSequence={marker.TerminalSequence?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}",
+            $"terminalDigest={marker.TerminalDigest ?? "(none)"}", string.Empty);
 
         try
         {
@@ -139,6 +195,7 @@ internal sealed class ShareRecoveryImportState
                 stream.Flush(true);
             }
 
+            WriteCheckpoint(marker.Phase);
             File.Move(temporary, Filename, replace);
             DirectorySync(directory);
         }
@@ -159,13 +216,20 @@ internal sealed class ShareRecoveryImportState
     {
         var lines = RecoveryStateFile.ReadAllLinesStable(stream, Filename,
             EnumerateEntries);
-        if(lines.Length != 6 ||
-           lines[0] != "miningcore-share-recovery-import-v1" ||
+        var legacy = lines.Length == 6 &&
+            lines[0] == "miningcore-share-recovery-import-v1";
+        var current = lines.Length == 9 &&
+            lines[0] == "miningcore-share-recovery-import-v2";
+        if(!legacy && !current ||
            !lines[1].StartsWith("recoveryPathSha256=", StringComparison.Ordinal) ||
            !lines[2].StartsWith("phase=", StringComparison.Ordinal) ||
            !lines[3].StartsWith("fileHash=", StringComparison.Ordinal) ||
            !lines[4].StartsWith("recordCount=", StringComparison.Ordinal) ||
-           !lines[5].StartsWith("archivePathBase64=", StringComparison.Ordinal))
+           !lines[5].StartsWith("archivePathBase64=", StringComparison.Ordinal) ||
+           current &&
+           (!lines[6].StartsWith("terminalAnchorRequired=", StringComparison.Ordinal) ||
+            !lines[7].StartsWith("terminalSequence=", StringComparison.Ordinal) ||
+            !lines[8].StartsWith("terminalDigest=", StringComparison.Ordinal)))
             throw new InvalidDataException(
                 $"Recovery-import marker {Filename} is malformed");
 
@@ -207,15 +271,74 @@ internal sealed class ShareRecoveryImportState
                 $"Recovery-import marker {Filename} names an archive outside the expected " +
                 "recovery-source namespace");
 
-        return new ImportMarker(phase, fileHash, recordCount, archiveFilename);
+        long? terminalSequence = null;
+        string terminalDigest = null;
+        var terminalAnchorRequired = false;
+
+        if(current)
+        {
+            var requiredText = lines[6]["terminalAnchorRequired=".Length..];
+            var sequenceText = lines[7]["terminalSequence=".Length..];
+            terminalDigest = lines[8]["terminalDigest=".Length..];
+            if(!bool.TryParse(requiredText, out terminalAnchorRequired))
+                throw new InvalidDataException(
+                    $"Recovery-import marker {Filename} contains an invalid terminal-anchor requirement");
+
+            if(sequenceText != "(none)")
+            {
+                if(!long.TryParse(sequenceText, NumberStyles.None,
+                       CultureInfo.InvariantCulture, out var parsedSequence) ||
+                   parsedSequence < 0)
+                    throw new InvalidDataException(
+                        $"Recovery-import marker {Filename} contains an invalid terminal sequence");
+
+                terminalSequence = parsedSequence;
+            }
+
+            if(terminalDigest == "(none)")
+                terminalDigest = null;
+
+            ValidateTerminalState(terminalSequence, terminalDigest,
+                terminalAnchorRequired);
+        }
+
+        return new ImportMarker(phase, fileHash, recordCount, archiveFilename,
+            terminalSequence, terminalDigest, terminalAnchorRequired);
+    }
+
+    public static void EnsureTerminalStateMatches(ImportMarker marker,
+        long sequence, string digest, bool anchorRequired)
+    {
+        ArgumentNullException.ThrowIfNull(marker);
+        if(marker.TerminalSequence != sequence ||
+           !string.Equals(marker.TerminalDigest, digest,
+               StringComparison.OrdinalIgnoreCase) ||
+           marker.TerminalAnchorRequired != anchorRequired)
+            throw new InvalidDataException(
+                "Committed recovery source terminal state no longer matches its durable import marker");
+    }
+
+    private static void ValidateTerminalState(long? sequence, string digest,
+        bool anchorRequired)
+    {
+        if(sequence.HasValue != (digest != null) ||
+           sequence < 0 ||
+           digest != null && (digest.Length != 64 || !digest.All(Uri.IsHexDigit)) ||
+           anchorRequired && !sequence.HasValue)
+            throw new InvalidDataException(
+                "Recovery import terminal state is incomplete or malformed");
     }
 
     internal enum ImportPhase
     {
         Pending,
         Committed,
+        ArchiveDurable,
+        AnchorRetirementAuthorised,
+        AnchorRetired,
     }
 
     internal sealed record ImportMarker(ImportPhase Phase, string FileHash,
-        int RecordCount, string ArchiveFilename);
+        int RecordCount, string ArchiveFilename, long? TerminalSequence = null,
+        string TerminalDigest = null, bool TerminalAnchorRequired = false);
 }

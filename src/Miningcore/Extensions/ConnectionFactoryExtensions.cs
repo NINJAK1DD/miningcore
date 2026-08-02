@@ -149,8 +149,12 @@ public static class ConnectionFactoryExtensions
 
     internal const string RollbackExceptionDataKey = "Miningcore.RollbackException";
     internal const string CleanupExceptionDataKey = "Miningcore.TransactionCleanupException";
+    internal const string LateCleanupExceptionDataKey =
+        "Miningcore.LateTransactionCleanupException";
     internal static readonly TimeSpan DefaultResourceCleanupTimeout =
         TimeSpan.FromSeconds(4);
+    internal static readonly AsyncLocal<Func<Task<Exception>, TimeSpan,
+        Task<Exception>>> ResourceCleanupWaitOverride = new();
 
     private enum TransactionOutcome
     {
@@ -170,15 +174,34 @@ public static class ConnectionFactoryExtensions
 
         try
         {
-            return await cleanupTask.WaitAsync(timeout);
+            var wait = ResourceCleanupWaitOverride.Value;
+            return wait != null
+                ? await wait(cleanupTask, timeout)
+                : await cleanupTask.WaitAsync(timeout);
         }
-        catch(TimeoutException ex) when(!cleanupTask.IsCompleted)
+        catch(TimeoutException ex)
         {
+            var timedOutResource = progress.ActiveResource;
+            var timeoutFailure = new TransactionResourceCleanupTimeoutException(
+                $"Timed out after {timeout} while disposing database transaction resources " +
+                $"in order (active resource: {timedOutResource})",
+                timedOutResource, progress.ConnectionCleanupStarted, ex);
+
+            if(cleanupTask.IsCompleted)
+            {
+                var completedFailure = GetCompletedCleanupFailure(cleanupTask);
+                if(completedFailure != null)
+                    timeoutFailure.Data[LateCleanupExceptionDataKey] = completedFailure;
+
+                LogLateCleanupCompletion(cleanupTask, outcome, timedOutResource,
+                    progress.ActiveResource, elapsed.Elapsed);
+                return timeoutFailure;
+            }
+
             // ADO.NET disposal has no cancellation contract. The ordered cleanup remains in the
             // background, but connection disposal cannot start until transaction disposal has
             // actually returned. Observe its eventual failure without replacing the already
             // classified financial outcome.
-            var timedOutResource = progress.ActiveResource;
             _ = cleanupTask.ContinueWith(task =>
                 LogLateCleanupCompletion(task, outcome, timedOutResource,
                     progress.ActiveResource, elapsed.Elapsed),
@@ -186,11 +209,19 @@ public static class ConnectionFactoryExtensions
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
 
-            return new TransactionResourceCleanupTimeoutException(
-                $"Timed out after {timeout} while disposing database transaction resources " +
-                $"in order (active resource: {progress.ActiveResource})",
-                progress.ActiveResource, progress.ConnectionCleanupStarted, ex);
+            return timeoutFailure;
         }
+    }
+
+    private static Exception GetCompletedCleanupFailure(Task<Exception> task)
+    {
+        if(task.IsFaulted)
+            return task.Exception;
+
+        if(task.IsCanceled)
+            return new TaskCanceledException(task);
+
+        return task.Result;
     }
 
     private static void LogLateCleanupCompletion(Task<Exception> task,

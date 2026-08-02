@@ -226,8 +226,11 @@ endings to `\n`, so it protects logical records rather than preserving the origi
 encoding. It
 commits all records and its
 SHA-256 manifest atomically. Before the transaction it writes an independent path-scoped import
-marker; after commit it advances that marker, atomically renames the source with an `.imported-*`
-suffix, synchronises the source directory, retires the terminal anchor, and removes the marker last.
+marker; after commit it advances a durable retirement state machine through `Committed`,
+`ArchiveDurable`, `AnchorRetirementAuthorised`, and `AnchorRetired`, retaining the expected terminal
+sequence and digest throughout. It atomically renames the source with an `.imported-*` suffix,
+synchronises the source directory, retires the terminal anchor only after durable authorisation,
+and removes and synchronises the marker last.
 Normal startup and fallback appends are blocked while an import marker remains. If recovery reports
 an archive, directory-sync or anchor-retirement failure, do not edit, replace or grow the source:
 rerun the same recovery command with the same configuration and exact source path. Miningcore
@@ -262,18 +265,21 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
 echo "exit=$?"
 ```
 
-The command enumerates every path-scoped `.incident` record, validates its metadata, verifies the
+The command enumerates every path-scoped `.incident` record, validates its metadata and v3
+sequence/previous-digest chain against the fixed latch's expected count and tip, verifies the
 referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. Sidecar
 records are allocation-bounded to 1,048,576 characters and are parsed while the same restrictive
 file handle incrementally calculates the hash. Stable identity and length checks reject concurrent
 modification or path replacement. The smaller `.fatal` and `.incident` metadata files are likewise
-read as strict UTF-8 from one restrictive handle, with 64-KiB total and 16-KiB per-line limits and
-the same stable identity/path checks. Memory exhaustion is reported as a failed verification rather
+read as strict UTF-8 from one restrictive no-follow handle, with a cumulatively enforced 64-KiB
+total and 16-KiB per-line limits and the same stable identity/path checks. Memory exhaustion is reported as a failed verification rather
 than allowing the command to continue. It returns
 status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. A successful
 verification proves only that the recorded evidence is structurally complete; it cannot prove that
 the uncertain records were reconciled against PostgreSQL. Complete that database comparison before
-removing an active fatal latch. The verifier never edits, imports or deletes recovery files.
+removing an active fatal latch. A first v3 incident anchors every legacy-v2 incident then present,
+but evidence lost before that upgrade cannot be detected retroactively. The verifier never edits,
+imports or deletes recovery files.
 
 Frame chains detect duplicated, missing and reordered middle frames. New writes also commit the
 expected final sequence and digest under the independently stored
