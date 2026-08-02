@@ -90,9 +90,14 @@ public interface IMessageBus
     /// only used for one purpose, leave this as null.</param>
     void SendMessage<T>(T message, string contract = null);
 
-    /// <summary>
-    /// Publishes a message while the caller already owns the mining-submission admission.
-    /// This avoids recursively entering the fail-stop gate on the local Stratum path.
-    /// </summary>
+}
+
+/// <summary>
+/// Internal publication surface available only to code that already owns a mining admission.
+/// Keeping it off <see cref="IMessageBus"/> prevents ordinary callers from bypassing the
+/// fail-stop gate.
+/// </summary>
+internal interface IMiningAdmissionMessageBus
+{
     void SendMessageWithinMiningAdmission<T>(T message, string contract = null);
 }

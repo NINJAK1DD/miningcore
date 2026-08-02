@@ -119,6 +119,7 @@ public class ProgramLoggingTests
         Assert.Contains(
             $"RestartPreventExitStatus={ProcessExitCodes.UnreconciledShareDurabilityLoss}",
             unit);
+        Assert.Contains("TimeoutStopSec=90", unit);
     }
 
     [Fact]

@@ -37,11 +37,14 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
             "share-recovery-fatal", pathHash + ".fatal");
         terminalState = new ShareRecoveryTerminalState(RecoveryFilename,
             StateDirectory);
+        importState = new ShareRecoveryImportState(RecoveryFilename,
+            StateDirectory);
     }
 
     private readonly IProcessStatus processStatus;
     private readonly object fatalStateGate = new();
     private readonly ShareRecoveryTerminalState terminalState;
+    private readonly ShareRecoveryImportState importState;
 
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
@@ -74,6 +77,18 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
 
             try
             {
+                importState.EnsureNoOutstandingImport();
+            }
+            catch(Exception ex) when(ex is IOException or InvalidDataException or
+                                      UnauthorizedAccessException)
+            {
+                throw new PoolStartupException(
+                    $"Recovery-import retirement validation failed for {RecoveryFilename}: " +
+                    $"{ex.Message}");
+            }
+
+            try
+            {
                 using var stream = new FileStream(RecoveryFilename, FileMode.Open,
                     FileAccess.Read, FileShare.ReadWrite);
                 ShareRecorder.EnsureRecoveryJournalAppendBoundary(stream,
@@ -81,7 +96,8 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                 stream.Seek(0, SeekOrigin.Begin);
                 var tail = ShareRecorder.ValidateRecoveryJournalDetailed(stream,
                     RecoveryFilename);
-                terminalState.EnsureConsistent(tail.Sequence, tail.FrameDigest);
+                terminalState.EnsureConsistent(tail.Sequence, tail.FrameDigest,
+                    tail.IsChainedFormat);
             }
             catch(FileNotFoundException)
             {

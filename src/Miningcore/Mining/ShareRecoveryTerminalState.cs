@@ -63,7 +63,8 @@ internal sealed class ShareRecoveryTerminalState
         }
     }
 
-    public void EnsureConsistent(long sequence, string digest)
+    public void EnsureConsistent(long sequence, string digest,
+        bool requireAnchor = false)
     {
         Terminal expected;
 
@@ -73,8 +74,14 @@ internal sealed class ShareRecoveryTerminalState
         }
         catch(FileNotFoundException)
         {
-            // Backward-compatible adoption: an existing pre-anchor journal is validated in full
-            // and gains an anchor on its next Miningcore append.
+            if(requireAnchor)
+                throw new InvalidDataException(
+                    $"Recovery journal {RecoveryFilename} uses the chained v2 format but its " +
+                    $"independent terminal anchor {Filename} is missing. Preserve the journal " +
+                    "and state storage for reconciliation; refusing to adopt an unanchored v2 tail.");
+
+            // Backward-compatible adoption applies only to legacy/unframed and v1 journals.
+            // Chained v2 journals have always been created with a terminal anchor.
             return;
         }
 

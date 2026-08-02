@@ -12,9 +12,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using Microsoft.IO;
+using Microsoft.Extensions.Hosting;
+using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.JsonRpc;
+using Miningcore.Mining;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using NLog;
@@ -26,6 +29,71 @@ namespace Miningcore.Tests.Stratum;
 public class StratumServerTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public async Task PrepublishedMergedShare_WaitsForPropagatedJournalAdmissionBeforeResponse()
+    {
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            lifetime);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        var journalCommit = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var share = new Share { StatisticalRecordEmitted = true };
+        share.SetPersistenceAdmission(journalCommit.Task);
+        var acknowledged = false;
+
+        var admission = server.AdmitAsync(share, () =>
+        {
+            acknowledged = true;
+            return Task.CompletedTask;
+        }, false);
+
+        await Task.Delay(25);
+        Assert.False(admission.IsCompleted);
+        Assert.False(acknowledged);
+
+        journalCommit.TrySetResult();
+        await admission.WaitAsync(TestTimeout);
+        Assert.True(acknowledged);
+    }
+
+    [Fact]
+    public async Task PrepublishedMergedShare_JournalFailureDoesNotQueuePositiveResponse()
+    {
+        var processStatus = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus, lifetime);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        var journalCommit = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var share = new Share { StatisticalRecordEmitted = true };
+        share.SetPersistenceAdmission(journalCommit.Task);
+        var acknowledged = false;
+        var admission = server.AdmitAsync(share, () =>
+        {
+            acknowledged = true;
+            return Task.CompletedTask;
+        }, false);
+
+        Assert.True(coordinator.BeginFailStop(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss));
+        journalCommit.TrySetException(new IOException(
+            "injected merged-mining emergency-journal failure"));
+
+        var error = await Assert.ThrowsAsync<IOException>(() => admission);
+        Assert.Contains("emergency-journal failure", error.Message);
+        Assert.False(acknowledged);
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            processStatus.ExitCode);
+        lifetime.Received(1).StopApplication();
+    }
 
     [Fact]
     public async Task RunAsync_WhenCancelled_StopsIdleListenerPromptly()
@@ -164,6 +232,19 @@ public class StratumServerTests
             clusterConfig = new ClusterConfig { Logging = new ClusterLoggingConfig() };
             poolConfig = new PoolConfig { Id = "tls-test" };
         }
+
+        public TestStratumServer(IComponentContext context, IMessageBus messageBus) :
+            base(context, messageBus, new RecyclableMemoryStreamManager(),
+                Substitute.For<IMasterClock>())
+        {
+            logger = LogManager.GetCurrentClassLogger();
+            clusterConfig = new ClusterConfig { Logging = new ClusterLoggingConfig() };
+            poolConfig = new PoolConfig { Id = "admission-test" };
+        }
+
+        public Task AdmitAsync(Share share, Func<Task> acknowledge,
+            bool publishShare) =>
+            PublishShareAndAcknowledgeAsync(share, acknowledge, publishShare);
 
         public Task RunListenerAsync(CancellationToken ct)
         {

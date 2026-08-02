@@ -38,8 +38,9 @@ identity/length and only hash the new frame, avoiding quadratic outage I/O. Each
 commits an independent terminal sequence/digest anchor, detecting removal of a complete final frame.
 A bounded persistence queue transfers overflow to one bounded emergency journal writer outside the
 mining admission lock instead of accepting unlimited memory or blocked-caller backlogs. Graceful stop
-drains acknowledged shares independently of hosted-service cancellation and journals the complete
-unresolved registry if the PostgreSQL drain exceeds the shutdown deadline. If PostgreSQL
+drains acknowledged shares independently of hosted-service cancellation, limits its PostgreSQL
+drain to 25 seconds, and uses the remaining host/service-manager window to journal the complete
+unresolved registry. The supplied systemd stop timeout is 90 seconds. If PostgreSQL
 and the recovery journal both fail, Miningcore synchronously closes a coordinated share-acceptance
 boundary: validated shares enter accounting before positive responses, concurrent healthy
 admissions use shared access, fail-stop is exclusive, response queueing is synchronous, and queued
@@ -58,6 +59,10 @@ closed with status 74. Configure
 `shareRecoveryFile` as an
 absolute path on separately monitored or reserved storage where possible; the recovery runbook
 explains evidence preservation and atomic, manifested import verification.
+Recovery import now uses a durable pending/committed source-retirement marker. Startup and fallback
+appends remain blocked until the committed source rename, parent-directory sync and terminal-anchor
+retirement finish; rerunning recovery resumes that sequence without changing the manifest identity
+or replaying records.
 
 ## Payout and WebSocket compatibility
 
@@ -208,7 +213,7 @@ and apply the migrations required by the release before starting the new binary.
 ## Install the systemd service
 
 The supplied unit directly supervises Miningcore, runs it as the unprivileged `miningcore` user, and
-allows 60 seconds for the application's bounded clean shutdown:
+allows 90 seconds for the application's bounded clean shutdown and durable recovery-state margin:
 
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service

@@ -20,7 +20,7 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 | `notifications` | Email, Pushover and administrative events |
 | `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
 | `shareRecoveryFile` | Write-through emergency journal used when PostgreSQL is unavailable |
-| `shareRecoveryStateDirectory` | Independent service state for fatal latches and journal-tail anchors |
+| `shareRecoveryStateDirectory` | Independent service state for fatal latches, journal-tail anchors, and import-retirement markers |
 | `shareRelay` / `shareRelays` | Advanced distributed sender/receiver topology |
 
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
@@ -83,8 +83,10 @@ advances its cached sequence/digest after the force-flush succeeds. Replacing, t
 the active file outside Miningcore stops fallback rather than silently resetting that state. Each
 force-flushed frame is committed with an atomically replaced sequence/digest anchor below
 `shareRecoveryStateDirectory/share-recovery-terminal`. A share diverted to fallback is not
-acknowledged until both files are durable. Startup and import reject a journal shorter than its
-anchor, including deletion of an otherwise valid final frame.
+acknowledged until both files are durable. Startup, import and the first runtime append reject a
+journal shorter than its anchor, including deletion of an otherwise valid final frame. A missing
+anchor is accepted only for legacy/unframed and v1 journals; chained v2 journals fail closed because
+that format has always required an anchor.
 
 A bounded 65,536-share persistence queue prevents an unlimited in-memory outage backlog. If it
 fills, publication transfers the share to one bounded 1,024-share emergency channel and one journal
@@ -94,18 +96,20 @@ emergency append fails, Miningcore admits no positive response and enters the st
 with the complete unresolved count and pool set.
 
 Graceful shutdown first closes share intake, disposes the subscription and completes both writers.
-The queue drain does not use the normal `BackgroundService` stopping token. If the service-manager
-deadline expires while PostgreSQL is still processing, Miningcore cancels that transaction and
-force-flushes the complete unresolved registry to the journal. Shutdown succeeds only after every
+The queue drain does not use the normal `BackgroundService` stopping token. Share Recorder limits
+its own PostgreSQL drain to 25 seconds (or the remaining portion of the 45-second host budget,
+whichever is shorter), then cancels that transaction and force-flushes the complete unresolved
+registry to the journal. The supplied 90-second systemd timeout provides a further margin for this
+recovery work and other hosted services. Shutdown succeeds only after every
 admitted share reaches PostgreSQL or the journal; failure of both destinations writes the same
 status-74 latch for the full backlog.
 
 Older journals retain the legacy newline-only guarantee for their original unframed prefix and v1
 frames. The first v2 frame appended to an older journal anchors the complete normalised legacy
 prefix, and all later frames are chained. A pure legacy/v1 source cannot retroactively prove that a
-complete frame was never duplicated before the upgrade. Frame chaining also cannot by itself detect
-offline deletion of the final complete frame; preserve incident checksums and monitor journal
-storage independently. A newline alone is not proof that an older multi-record append completed.
+complete frame was never duplicated before the upgrade. The independent terminal anchor detects
+offline deletion of complete v2 tail frames, while incident checksums and monitoring remain
+necessary for legacy history. A newline alone is not proof that an older multi-record append completed.
 
 If PostgreSQL and the journal are both unavailable, Miningcore immediately closes a coordinated
 Stratum acceptance boundary. Every pool family publishes a validated share to the accounting
@@ -122,9 +126,12 @@ its content records both that path and hash. Under the supplied systemd unit the
 platform application-data default is unsuitable. Keep this state on service-owned storage that is
 independent of the journal's expected failure domain. Container deployments should mount that state
 directory on persistent storage so replacing the container cannot discard an unreconciled latch.
-The sibling `share-recovery-terminal` directory is equally authoritative. Do not delete or edit its
-hashed tail file independently; a successful import of the configured active journal archives the
-journal and removes its matching anchor as one operation.
+The sibling `share-recovery-terminal` and `share-recovery-import` directories are equally
+authoritative. Do not delete or edit their path-hashed files independently. Recovery writes a
+pending import marker before opening its PostgreSQL transaction, advances it after commit, then
+removes it only after atomically archiving and directory-syncing the source and retiring the matching
+anchor. Normal startup and journal appends remain blocked while that marker exists; rerun the same
+recovery command to resume an interrupted retirement without replaying committed shares.
 
 The supplied unit has `RestartPreventExitStatus=74`, while the independently stored latch blocks
 every normal startup, including relay configurations. An inaccessible or uncertain state directory

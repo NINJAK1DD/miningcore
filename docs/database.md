@@ -225,8 +225,14 @@ those already-verified comment lines while deserializing records. Hash validatio
 endings to `\n`, so it protects logical records rather than preserving the original physical newline
 encoding. It
 commits all records and its
-SHA-256 manifest atomically, and archives a successful source with an `.imported-*` suffix. Retain
-that archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
+SHA-256 manifest atomically. Before the transaction it writes an independent path-scoped import
+marker; after commit it advances that marker, atomically renames the source with an `.imported-*`
+suffix, synchronises the source directory, retires the terminal anchor, and removes the marker last.
+Normal startup and fallback appends are blocked while an import marker remains. If recovery reports
+an archive, directory-sync or anchor-retirement failure, do not edit or grow the source: rerun the
+same recovery command with the same configuration. Miningcore resumes retirement and uses the
+database manifest to avoid reinserting already committed records. Retain
+the archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
 import unexplained journals from old working directories or previous deployments; reconcile their
 origin and existing manifest first.
 

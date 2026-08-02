@@ -255,6 +255,7 @@ public abstract class StratumServer
             if(publishShare)
                 messageBus.SendMessage(share);
 
+            await share.PersistenceAdmission;
             await acknowledge();
             return;
         }
@@ -266,15 +267,15 @@ public abstract class StratumServer
             // This is the sole production admission for a local Stratum share. MessageBus's
             // public share path owns an admission for relayed and internally generated shares;
             // entering it here as well would recurse when a persistence failure closes the gate.
-            acceptance.PublishShare(() =>
-                messageBus.SendMessageWithinMiningAdmission(share));
-
-            // A normal bounded-queue admission completes immediately. Queue saturation transfers
-            // ownership to the bounded emergency writer and completes only after its force-flush.
-            // Deliberately wait outside the admission lock so storage latency cannot delay an
-            // exclusive fail-stop transition.
-            await share.PersistenceAdmission;
+            acceptance.PublishShare(messageBus, share);
         }
+
+        // A normal bounded-queue admission completes immediately. Queue saturation transfers
+        // ownership to the bounded emergency writer and completes only after its force-flush.
+        // Merged mining publishes a statistical clone before returning this object and propagates
+        // that clone's completion here. Deliberately wait outside the admission lock so storage
+        // latency cannot delay an exclusive fail-stop transition.
+        await share.PersistenceAdmission;
 
         Task response = null;
         acceptance.QueueResponse(() => response = acknowledge());

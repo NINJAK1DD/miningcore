@@ -538,7 +538,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         // observes the runtime-only guard and does not publish the returned object a second time.
         try
         {
-            messageBus.SendMessage(CreateStatisticalShare(share));
+            var statisticalShare = CreateStatisticalShare(share);
+            messageBus.SendMessage(statisticalShare);
+            share.SetPersistenceAdmission(statisticalShare.PersistenceAdmission);
             share.StatisticalRecordEmitted = true;
         }
         finally

@@ -75,6 +75,68 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task NonCandidateStatisticalShare_PropagatesPublishedCloneAdmission()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var admission = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Share published = null;
+        using var subscription = messageBus.Listen<Share>()
+            .Where(x => x != null)
+            .Subscribe(x =>
+            {
+                published = x;
+                x.SetPersistenceAdmission(admission.Task);
+            });
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        var validated = new Share
+        {
+            PoolId = parent.Id,
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            Difficulty = 1,
+            NetworkDifficulty = 100,
+        };
+        manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
+        {
+            Share = validated,
+        };
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "merged-admission", false);
+        var context = new MergedMiningBitcoinWorkerContext
+        {
+            Miner = validated.Miner,
+            Worker = validated.Worker,
+            UserAgent = "test-miner",
+        };
+        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+            "admission-job");
+        context.AddJob(job, 4);
+        worker.SetContext(context);
+
+        var returned = await manager.SubmitShareAsync(worker,
+            new object[] { "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000" },
+            CancellationToken.None);
+
+        Assert.Same(validated, returned);
+        Assert.NotSame(returned, published);
+        Assert.True(returned.StatisticalRecordEmitted);
+        Assert.Same(admission.Task, returned.PersistenceAdmission);
+        Assert.False(returned.PersistenceAdmission.IsCompleted);
+        admission.TrySetResult();
+        await returned.PersistenceAdmission;
+    }
+
+    [Fact]
     public void FirstValidStatisticalShare_CreatesAndCopiesWorkerSession()
     {
         var suffix = Guid.NewGuid().ToString("N");

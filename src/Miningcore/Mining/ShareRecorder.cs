@@ -99,7 +99,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         recoveryFilename = ShareRecoveryFatalState.ResolveRecoveryFilename(clusterConfig);
         recoveryTerminalState = new ShareRecoveryTerminalState(recoveryFilename,
             ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
+        recoveryImportState = new ShareRecoveryImportState(recoveryFilename,
+            ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
         RecoveryTerminalStateWrite = recoveryTerminalState.Write;
+        RecoveryTerminalStateRemove = recoveryTerminalState.RemoveAfterArchive;
         recoveryWriteState = RecoveryWriteStates.GetOrAdd(recoveryFilename,
             _ => new RecoveryJournalWriteState());
     }
@@ -144,12 +147,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             : StringComparer.Ordinal);
     private readonly RecoveryJournalWriteState recoveryWriteState;
     private readonly ShareRecoveryTerminalState recoveryTerminalState;
+    private readonly ShareRecoveryImportState recoveryImportState;
     internal string RecoveryTerminalStateFilename => recoveryTerminalState.Filename;
+    internal string RecoveryImportStateFilename => recoveryImportState.Filename;
     internal Action<long, string> RecoveryTerminalStateWrite { get; set; }
+    internal Action RecoveryTerminalStateRemove { get; set; }
     private readonly CancellationTokenSource blockCandidateShutdown = new();
     private int blockCandidateShutdownStarted;
     internal TimeSpan ShutdownDatabaseAttemptTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
+    internal TimeSpan ShutdownPersistenceDrainTimeout { get; set; } =
+        TimeSpan.FromSeconds(25);
     internal int PersistenceQueueCapacity { get; set; } = 65_536;
     internal int EmergencyJournalQueueCapacity { get; set; } = 1_024;
     internal int PersistenceQueueHighWatermark =>
@@ -167,8 +175,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private long recoveryValidationBytesRead;
     internal Action<string> RecoveryDirectorySync { get; set; } =
         ShareRecoveryFatalState.SyncDirectoryWhereSupported;
+    internal Action<string, string> RecoveryArchiveMove { get; set; } =
+        (source, destination) => File.Move(source, destination);
     internal Func<Stream, Task> RecoveryJournalFlush { get; set; } =
         FlushRecoveryJournalAsync;
+
+    internal static void ForgetRecoveryWriteStateForTests(string filename)
+    {
+        RecoveryWriteStates.TryRemove(Path.GetFullPath(filename), out _);
+    }
     private static readonly HashSet<string> UncertainBlockTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "auxpow-claim",
@@ -489,6 +504,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         try
         {
+            recoveryImportState.EnsureNoOutstandingImport();
             FileStream stream;
 
             try
@@ -508,6 +524,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                         $"Recovery journal {recoveryFilename} disappeared after its append tail was validated. " +
                         "Preserve the surrounding storage for reconciliation; refusing to create a replacement.");
 
+                recoveryTerminalState.EnsureJournalMayBeMissing();
                 await CreateRecoveryJournalAsync(shares);
                 return;
             }
@@ -521,6 +538,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 {
                     EnsureRecoveryJournalNewlineBoundary(stream, recoveryFilename);
                     tail = ValidateRecoveryJournalDetailed(stream, recoveryFilename);
+                    recoveryTerminalState.EnsureConsistent(tail.Sequence,
+                        tail.FrameDigest, tail.IsChainedFormat);
                     Interlocked.Add(ref recoveryValidationBytesRead, stream.Length);
                     recoveryWriteState.Trust(identity, stream.Length, tail);
                 }
@@ -1259,13 +1278,35 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     public async Task<string> RecoverSharesAsync(string filename)
     {
+        filename = Path.GetFullPath(filename);
         logger.Info(() => $"Recovering shares using {filename} ...");
+        var configuredSource = string.Equals(filename, recoveryFilename,
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+        var importState = configuredSource
+            ? recoveryImportState
+            : new ShareRecoveryImportState(filename,
+                ShareRecoveryFatalState.ResolveStateDirectory(clusterConfig));
 
         try
         {
-            List<(string PoolId, Block Block)> insertedBlocks;
+            var existingMarker = importState.TryRead();
+            if(existingMarker?.Phase ==
+               ShareRecoveryImportState.ImportPhase.Committed)
+            {
+                var resumedArchive = RetireImportedRecoveryFile(filename,
+                    existingMarker, configuredSource, importState);
+                logger.Info(() => $"Completed durable retirement of previously imported " +
+                    $"recovery source {filename} as {resumedArchive}");
+                return resumedArchive;
+            }
+
+            List<(string PoolId, Block Block)> insertedBlocks = new();
             int validatedCount;
             string fileHash;
+            ShareRecoveryImportState.ImportMarker marker;
+            var insertedNewContent = false;
 
             // Hold one read-only handle across both passes. FileShare.Read permits diagnostics
             // and backups, but prevents the recovery source from being changed between validation
@@ -1282,15 +1323,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // same read-only handle remains locked for both semantic passes, preventing the
                 // source from changing after its byte-level integrity was established.
                 EnsureRecoveryJournalAppendBoundary(stream, filename);
-                if(string.Equals(Path.GetFullPath(filename), recoveryFilename,
-                       OperatingSystem.IsWindows()
-                           ? StringComparison.OrdinalIgnoreCase
-                           : StringComparison.Ordinal))
+                if(configuredSource)
                 {
                     stream.Seek(0, SeekOrigin.Begin);
                     var tail = ValidateRecoveryJournalDetailed(stream, filename);
                     recoveryTerminalState.EnsureConsistent(tail.Sequence,
-                        tail.FrameDigest);
+                        tail.FrameDigest, tail.IsChainedFormat);
                 }
                 stream.Seek(0, SeekOrigin.Begin);
                 using var reader = new StreamReader(stream, new UTF8Encoding(false));
@@ -1304,57 +1342,68 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 });
                 fileHash = validationHash.GetHash();
 
+                // Publish an independent pending marker before the database transaction begins.
+                // A crash after commit but before source retirement can therefore be resumed
+                // without allowing normal mining to append to the already-imported source.
+                var reservedArchiveFilename = existingMarker?.ArchiveFilename ??
+                    BuildRecoveryArchiveFilename(filename);
+                marker = importState.Begin(fileHash, validatedCount,
+                    reservedArchiveFilename);
+
                 reader.DiscardBufferedData();
                 stream.Seek(0, SeekOrigin.Begin);
 
-                // Pass two imports every batch through one transaction. Any parse or database
-                // failure rolls back the complete file, making a non-zero exit safe to retry.
-                insertedBlocks = await cf.RunTx(async (con, tx) =>
+                if(marker.Phase == ShareRecoveryImportState.ImportPhase.Pending)
                 {
-                    var registered = await shareRepo.TryRegisterRecoveryImportAsync(con,
-                        tx, fileHash, Path.GetFileName(filename), validatedCount,
-                        CancellationToken.None);
-
-                    if(!registered)
-                        throw new InvalidOperationException(
-                            $"Recovery content from {filename} was already imported [{fileHash}]");
-
-                    var result = new List<(string PoolId, Block Block)>();
-                    int importedCount;
-                    string importedHash;
-
-                    var importHash = new RecoveryContentHasher(jsonSerializerSettings);
-                    importedCount = await ProcessRecoveryRecordsAsync(reader,
-                        async shares =>
-                        {
-                            importHash.Append(shares);
-                            result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
-                        });
-                    importedHash = importHash.GetHash();
-
-                    if(importedCount != validatedCount ||
-                       !string.Equals(importedHash, fileHash,
-                           StringComparison.OrdinalIgnoreCase))
+                    // Pass two imports every batch through one transaction. A retained pending
+                    // marker plus an existing manifest means a previous attempt committed before
+                    // it could advance the marker; retire the source without inserting it again.
+                    var importResult = await cf.RunTx(async (con, tx) =>
                     {
-                        throw new InvalidDataException(
-                            "Recovery source changed between validation and import");
-                    }
+                        var registered = await shareRepo.TryRegisterRecoveryImportAsync(con,
+                            tx, fileHash, Path.GetFileName(filename), validatedCount,
+                            CancellationToken.None);
 
-                    return result;
-                });
+                        if(!registered)
+                            return (Blocks: new List<(string PoolId, Block Block)>(),
+                                Inserted: false);
+
+                        var result = new List<(string PoolId, Block Block)>();
+                        var importHash = new RecoveryContentHasher(jsonSerializerSettings);
+                        var importedCount = await ProcessRecoveryRecordsAsync(reader,
+                            async shares =>
+                            {
+                                importHash.Append(shares);
+                                result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
+                            });
+                        var importedHash = importHash.GetHash();
+
+                        if(importedCount != validatedCount ||
+                           !string.Equals(importedHash, fileHash,
+                               StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidDataException(
+                                "Recovery source changed between validation and import");
+
+                        return (Blocks: result, Inserted: true);
+                    });
+                    insertedBlocks = importResult.Blocks;
+                    insertedNewContent = importResult.Inserted;
+
+                    // This write occurs only after RunTx commits. If the process dies between the
+                    // commit and this update, the pending marker remains and the manifest makes
+                    // the next recovery attempt classify the source as already committed.
+                    marker = importState.MarkCommitted(marker);
+                }
             }
 
-            var archiveFilename = ArchiveImportedRecoveryFile(filename);
-            if(archiveFilename != null &&
-               string.Equals(Path.GetFullPath(filename), recoveryFilename,
-                   OperatingSystem.IsWindows()
-                       ? StringComparison.OrdinalIgnoreCase
-                       : StringComparison.Ordinal))
-                recoveryTerminalState.RemoveAfterArchive();
+            var archiveFilename = RetireImportedRecoveryFile(filename, marker,
+                configuredSource, importState);
             NotifyPersistedBlocks(insertedBlocks);
-            logger.Info(() => $"Successfully imported {validatedCount} shares" +
-                (archiveFilename != null ? $" and archived the source as {archiveFilename}" :
-                    "; the database import manifest will prevent replay"));
+            logger.Info(() => insertedNewContent
+                ? $"Successfully imported {validatedCount} shares and durably archived the " +
+                  $"source as {archiveFilename}"
+                : $"Recovery content [{fileHash}] was already committed; durably archived " +
+                  $"the retained source as {archiveFilename} without replay");
             return archiveFilename;
         }
 
@@ -1445,21 +1494,45 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
-    private static string ArchiveImportedRecoveryFile(string filename)
+    private static string BuildRecoveryArchiveFilename(string filename)
     {
-        var archiveFilename = $"{filename}.imported-{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}";
+        return $"{filename}.imported-{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}-" +
+            Guid.NewGuid().ToString("N");
+    }
 
-        try
-        {
-            File.Move(filename, archiveFilename);
-            return archiveFilename;
-        }
+    private string RetireImportedRecoveryFile(string filename,
+        ShareRecoveryImportState.ImportMarker marker, bool configuredSource,
+        ShareRecoveryImportState importState)
+    {
+        ArgumentNullException.ThrowIfNull(marker);
+        if(marker.Phase != ShareRecoveryImportState.ImportPhase.Committed)
+            throw new InvalidDataException(
+                $"Recovery source {filename} cannot be retired before its database import is committed");
 
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        if(File.Exists(filename))
         {
-            logger.Warn(ex, () => $"Unable to archive successfully imported recovery file {filename}. Do not retry it; the database import manifest will reject the same content");
-            return null;
+            if(File.Exists(marker.ArchiveFilename))
+                throw new IOException(
+                    $"Recovery archive target {marker.ArchiveFilename} already exists");
+
+            RecoveryArchiveMove(filename, marker.ArchiveFilename);
         }
+        else if(!File.Exists(marker.ArchiveFilename))
+            throw new FileNotFoundException(
+                "Neither the committed recovery source nor its recorded archive exists",
+                filename);
+
+        // Persist the source rename before retiring its independent anchor. If this sync fails,
+        // the committed marker remains and startup/appends stay blocked until recovery resumes.
+        RecoveryDirectorySync(Path.GetDirectoryName(filename)!);
+
+        if(configuredSource)
+            RecoveryTerminalStateRemove();
+
+        // The committed-source marker is the last object removed. Its own directory sync makes
+        // the completed retirement durable and prevents a stale marker from being resurrected.
+        importState.RemoveAfterRetirement();
+        return marker.ArchiveFilename;
     }
 
     private async Task<int> ProcessRecoveryRecordsAsync(StreamReader reader,
@@ -1593,16 +1666,19 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
         Volatile.Read(ref emergencyJournalQueueWriter)?.TryComplete();
 
+        using var databaseDrain = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        databaseDrain.CancelAfter(ShutdownPersistenceDrainTimeout);
+
         try
         {
             if(ExecuteTask != null)
-                await ExecuteTask.WaitAsync(ct);
+                await ExecuteTask.WaitAsync(databaseDrain.Token);
         }
-        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        catch(OperationCanceledException) when(databaseDrain.IsCancellationRequested)
         {
-            // The hosted-service deadline closes database work, not accounting. The queue worker
-            // catches this cancellation and force-flushes its complete unresolved registry to the
-            // recovery journal before StopAsync is allowed to finish.
+            // Reserve the remainder of the host/systemd shutdown window for accounting recovery.
+            // The queue worker catches this cancellation and force-flushes its complete unresolved
+            // registry to the journal before StopAsync is allowed to finish.
             persistenceDrainCancellation.Cancel();
 
             if(ExecuteTask != null)

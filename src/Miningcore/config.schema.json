@@ -955,7 +955,7 @@
       ]
     },
     "shareRecoveryStateDirectory": {
-      "description": "Independent service-owned directory for persistent share-recovery fatal latches and journal terminal anchors. Defaults to systemd StateDirectory or the platform application-data directory.",
+      "description": "Independent service-owned directory for persistent share-recovery fatal latches, journal terminal anchors, and recovery-import retirement markers. Defaults to systemd StateDirectory or the platform application-data directory.",
       "type": [
         "string",
         "null"

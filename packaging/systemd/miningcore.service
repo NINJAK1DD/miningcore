@@ -20,7 +20,9 @@ RestartSec=5
 RestartPreventExitStatus=74
 KillSignal=SIGTERM
 TimeoutStartSec=30
-TimeoutStopSec=60
+# Miningcore reserves part of its 45-second host budget for durable recovery state. Keep a
+# service-manager margin for late hosted services, filesystem flushes and fatal-latch persistence.
+TimeoutStopSec=90
 
 Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
 Environment=LD_LIBRARY_PATH=/opt/miningcore

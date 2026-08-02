@@ -21,7 +21,7 @@ namespace Miningcore.Messaging;
 ///     unique string used to distinguish between messages of the same Type, and
 ///     is arbitrarily set by the client.
 /// </summary>
-public class MessageBus : IMessageBus
+public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
 {
     public MessageBus(IMiningFailStopCoordinator failStopCoordinator = null)
     {
@@ -164,16 +164,15 @@ public class MessageBus : IMessageBus
         if(message is Share && failStopCoordinator != null)
         {
             using var acceptance = failStopCoordinator.AcquireSubmissionAcceptance();
-            acceptance.PublishShare(() =>
-                setupSubjectIfNecessary<T>(contract).OnNext(message));
+            acceptance.PublishShare(this, (Share) (object) message, contract);
             return;
         }
 
         setupSubjectIfNecessary<T>(contract).OnNext(message);
     }
 
-    public void SendMessageWithinMiningAdmission<T>(T message,
-        string contract = null)
+    void IMiningAdmissionMessageBus.SendMessageWithinMiningAdmission<T>(T message,
+        string contract)
     {
         setupSubjectIfNecessary<T>(contract).OnNext(message);
     }

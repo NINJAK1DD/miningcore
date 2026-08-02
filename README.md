@@ -448,7 +448,10 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   journal writer are both bounded; storage I/O never runs while holding mining admission. Configure
   `shareRecoveryFile` as an absolute path on separately monitored or reserved storage where
   possible. Configure the service manager's stop timeout above 45 seconds; the supplied systemd
-  example uses 60 seconds.
+  example uses 90 seconds. Share Recorder limits graceful PostgreSQL drain to 25 seconds so the
+  remaining host/service-manager window is available for unresolved journal and state commits. Recovery import
+  uses a durable source-retirement marker and blocks normal startup/appends until an imported source
+  has been renamed, directory-synced and had its terminal anchor retired.
 
 ## Production operation
 

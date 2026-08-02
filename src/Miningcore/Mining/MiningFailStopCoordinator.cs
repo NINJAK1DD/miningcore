@@ -1,5 +1,6 @@
 using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Hosting;
+using Miningcore.Messaging;
 using NLog;
 
 namespace Miningcore.Mining;
@@ -14,7 +15,8 @@ public interface IMiningFailStopCoordinator
 
 public interface IMiningSubmissionAcceptance : IDisposable
 {
-    void PublishShare(Action publish);
+    void PublishShare(IMessageBus messageBus, Blockchain.Share share,
+        string contract = null);
     void QueueResponse(Action queueResponse);
 }
 
@@ -132,6 +134,20 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
         failure?.Throw();
     }
 
+    private void PublishShare(IMessageBus messageBus, Blockchain.Share share,
+        string contract)
+    {
+        ArgumentNullException.ThrowIfNull(messageBus);
+        ArgumentNullException.ThrowIfNull(share);
+
+        if(messageBus is not IMiningAdmissionMessageBus admittedMessageBus)
+            throw new InvalidOperationException(
+                "The configured message bus does not support admission-owned share publication");
+
+        PublishShare(() => admittedMessageBus.SendMessageWithinMiningAdmission(share,
+            contract));
+    }
+
     private void QueueResponse(Action queueResponse)
     {
         ArgumentNullException.ThrowIfNull(queueResponse);
@@ -172,10 +188,11 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator, IDis
         private readonly MiningFailStopCoordinator owner;
         private int disposed;
 
-        public void PublishShare(Action publish)
+        public void PublishShare(IMessageBus messageBus, Blockchain.Share share,
+            string contract = null)
         {
             ThrowIfDisposed();
-            owner.PublishShare(publish);
+            owner.PublishShare(messageBus, share, contract);
         }
 
         public void QueueResponse(Action queueResponse)
