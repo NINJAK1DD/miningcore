@@ -22,7 +22,18 @@ internal static class ShareRecoveryIncidentChain
                 path.EndsWith(".incident", StringComparison.Ordinal))
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToArray();
+        var acknowledgementPaths = entries
+            .Where(path => Path.GetFileName(path).StartsWith(stem + ".",
+                StringComparison.Ordinal) &&
+                path.EndsWith(".acknowledged", StringComparison.Ordinal))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
         var incidents = incidentPaths.Select(ReadEntry).ToArray();
+        var acknowledgements = acknowledgementPaths.Select(ReadEntry).ToArray();
+        if(acknowledgements.GroupBy(x => x.Sequence).Any(group =>
+               group.Count() != 1))
+            throw new InvalidDataException(
+                "Fatal acknowledgement collection contains a duplicate incident sequence");
         var legacy = incidents.Where(x => x.FormatVersion == 2)
             .OrderBy(x => Path.GetFileName(x.Filename), StringComparer.Ordinal)
             .ToArray();
@@ -56,16 +67,37 @@ internal static class ShareRecoveryIncidentChain
             previous = incident.FileDigest;
         }
 
+        foreach(var acknowledgement in acknowledgements)
+            ValidateAcknowledgement(acknowledgement, current, legacy.Length,
+                legacyDigest);
+
         using var latchStream = RecoveryStateFile.TryOpenExactEntry(latchFilename,
             Directory.EnumerateFileSystemEntries);
         if(latchStream == null)
         {
-            if(incidents.Length != 0)
-                throw new InvalidDataException(
-                    "Fatal incident metadata exists without its authoritative fixed-name latch");
+            if(incidents.Length == 0 && acknowledgements.Length == 0)
+                return new ChainTip(0, EmptyPreviousDigest, 0,
+                    EmptyLegacySetDigest, 0);
 
-            return new ChainTip(0, EmptyPreviousDigest, 0,
-                EmptyLegacySetDigest, 0);
+            if(incidents.Length == 0 || acknowledgements.Length == 0)
+                throw new InvalidDataException(
+                    "Fatal incident evidence has neither an active latch nor a complete acknowledged anchor");
+
+            var latestAcknowledgement = acknowledgements
+                .OrderBy(x => x.Sequence)
+                .Last();
+            var latestIncident = current.LastOrDefault();
+            if(latestIncident == null ||
+               latestAcknowledgement.Sequence != latestIncident.Sequence ||
+               latestAcknowledgement.ExpectedCount != incidents.Length ||
+               !string.Equals(latestAcknowledgement.ChainDigest,
+                   latestIncident.FileDigest, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "The latest acknowledged fatal anchor does not cover the complete retained incident collection");
+
+            return new ChainTip(latestIncident.Sequence,
+                latestIncident.FileDigest, legacy.Length, legacyDigest,
+                incidents.Length);
         }
 
         var latch = ReadEntry(latchFilename, latchStream);
@@ -103,6 +135,11 @@ internal static class ShareRecoveryIncidentChain
         return new ChainTip(latest.Sequence, latest.FileDigest,
             legacy.Length, legacyDigest, incidents.Length);
     }
+
+    public static string BuildAcknowledgementFilename(string directory,
+        string stem, ChainTip tip) => Path.Combine(directory,
+        $"{stem}.{tip.Sequence.ToString(CultureInfo.InvariantCulture)}-" +
+        $"{tip.Digest.ToLowerInvariant()}.acknowledged");
 
     public static string ComputeDigest(string content) => Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes(content)));
@@ -167,6 +204,32 @@ internal static class ShareRecoveryIncidentChain
         return new IncidentEntry(filename, formatVersion, incidentId,
             sequence, previousDigest, legacyCount, legacyDigest, fileDigest,
             chainDigest, expectedCount);
+    }
+
+    private static void ValidateAcknowledgement(IncidentEntry acknowledgement,
+        IReadOnlyCollection<IncidentEntry> current, int legacyCount,
+        string legacyDigest)
+    {
+        if(acknowledgement.FormatVersion != 3 ||
+           acknowledgement.ChainDigest == null ||
+           acknowledgement.ExpectedCount < 1)
+            throw new InvalidDataException(
+                $"Fatal acknowledgement is malformed: {acknowledgement.Filename}");
+
+        var incident = current.SingleOrDefault(x =>
+            x.Sequence == acknowledgement.Sequence);
+        if(incident == null ||
+           !string.Equals(incident.IncidentId, acknowledgement.IncidentId,
+               StringComparison.Ordinal) ||
+           !string.Equals(incident.FileDigest, acknowledgement.ChainDigest,
+               StringComparison.OrdinalIgnoreCase) ||
+           acknowledgement.ExpectedCount != legacyCount + acknowledgement.Sequence ||
+           acknowledgement.LegacyCount != legacyCount ||
+           !string.Equals(acknowledgement.LegacyDigest, legacyDigest,
+               StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"Fatal acknowledgement does not anchor its exact incident-chain prefix: " +
+                acknowledgement.Filename);
     }
 
     private static Dictionary<string, string> ParseMetadata(IEnumerable<string> lines,

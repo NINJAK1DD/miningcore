@@ -441,6 +441,9 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   acknowledgements. The cluster then writes a persistent fatal latch to its independent service
   state directory and stops with dedicated exit status 74 instead of leaving miners online without
   durable share accounting. The supplied systemd unit does not automatically restart that status.
+  After reconciliation, use the documented `--verify-share-recovery-state` and
+  `--acknowledge-share-recovery-state` commands; manually deleting the latch does not safely unblock
+  startup and all incident evidence remains retained under an immutable acknowledgement anchor.
   A partial journal append is rolled back to its previous length and force-flushed. First creation
   atomically publishes a force-flushed temporary file and syncs its directory on Linux. A first-byte
   format magic plus contiguous sequence/previous-digest/count/hash validation runs at first fallback

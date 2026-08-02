@@ -95,8 +95,9 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             $"nor the recovery journal durably stored {shares.Count} share(s) for pool(s) " +
             $"{poolSummary}. Recovery file: {absoluteRecoveryFilename}. Fatal state: " +
             $"{fatalState.FatalStateFilename}. Preserve both files, investigate database and " +
-            "storage health, reconcile the incident, and remove only that exact fatal-state file before " +
-            "restarting.");
+            "storage health, reconcile every incident, then run " +
+            "--acknowledge-share-recovery-state with the service configuration. Do not manually " +
+            "delete the active latch or retained evidence.");
 
         try
         {

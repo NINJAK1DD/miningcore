@@ -231,8 +231,11 @@ marker; after commit it advances a durable retirement state machine through `Com
 sequence and digest throughout. It atomically renames the source with an `.imported-*` suffix,
 synchronises the source directory, retires the terminal anchor only after durable authorisation,
 and removes and synchronises the marker last.
-Normal startup and fallback appends are blocked while an import marker remains. If recovery reports
-an archive, directory-sync or anchor-retirement failure, do not edit, replace or grow the source:
+Normal startup and fallback appends are blocked while an import marker remains. Before any
+non-pending marker can retire the source or its terminal anchor, Miningcore opens a fresh PostgreSQL
+connection and re-confirms the exact `share_recovery_imports` file hash, filename and record count.
+If that proof is absent or unavailable, the source, marker and anchor remain untouched. If recovery
+reports an archive, directory-sync or anchor-retirement failure, do not edit, replace or grow the source:
 rerun the same recovery command with the same configuration and exact source path. Miningcore
 revalidates the complete chain, terminal anchor, semantic hash and record count before resuming
 retirement, and retains the committed marker if any property changed. A symlink or hard-link alias of
@@ -270,14 +273,16 @@ sequence/previous-digest chain against the fixed latch's expected count and tip,
 referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. Sidecar
 records are allocation-bounded to 1,048,576 characters and are parsed while the same restrictive
 file handle incrementally calculates the hash. Stable identity and length checks reject concurrent
-modification or path replacement. The smaller `.fatal` and `.incident` metadata files are likewise
-read as strict UTF-8 from one restrictive no-follow handle, with a cumulatively enforced 64-KiB
-total and 16-KiB per-line limits and the same stable identity/path checks. Memory exhaustion is reported as a failed verification rather
+modification or path replacement. The smaller `.fatal`, `.incident`, and `.acknowledged` metadata
+files are likewise
+read as strict UTF-8 from one restrictive no-follow handle, with an exact cumulatively enforced
+64-KiB raw-byte total (including physical CRLF bytes), a 16-KiB per-line limit, and the same stable
+identity/path checks. Memory exhaustion is reported as a failed verification rather
 than allowing the command to continue. It returns
 status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. A successful
 verification proves only that the recorded evidence is structurally complete; it cannot prove that
 the uncertain records were reconciled against PostgreSQL. Complete that database comparison before
-removing an active fatal latch. A first v3 incident anchors every legacy-v2 incident then present,
+acknowledging an active fatal latch. A first v3 incident anchors every legacy-v2 incident then present,
 but evidence lost before that upgrade cannot be detected retroactively. The verifier never edits,
 imports or deletes recovery files.
 
@@ -306,14 +311,27 @@ sudo sha256sum -- \
   REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.corrupt-evidence-YYYYMMDDTHHMMSSZ
 ```
 
-Only after the reviewed import, its manifest/count, and the active-path disposition are verified,
-remove the fatal latch whose exact path was reported by Miningcore. Do not use a wildcard and do
-not delete the journal archive or imported/corrupt evidence as part of this acknowledgement:
+Only after the reviewed import, its manifest/count, the active-path disposition, and every uncertain
+sidecar record have been reconciled, verify and durably acknowledge the incident chain. Use the same
+configuration as the service; do not delete the fatal latch, incident metadata, sidecars, or journal
+evidence manually:
 
 ```console
-sudo test -f -- REPLACE_WITH_REPORTED_FATAL_STATE_FILE
-sudo rm -- REPLACE_WITH_REPORTED_FATAL_STATE_FILE
+cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
+./Miningcore -c /etc/miningcore/config.json --verify-share-recovery-state
+echo "verify_exit=$?"
+./Miningcore -c /etc/miningcore/config.json --acknowledge-share-recovery-state
+echo "acknowledge_exit=$?"
 ```
+
+Both commands return status 74 when evidence is incomplete or unsafe. The acknowledgement command
+performs the structural verification again, atomically and force-durably publishes an immutable
+`.acknowledged` anchor covering the retained chain, then removes the active `.fatal` latch and
+synchronises its directory. It is idempotent if the process stops between those steps. Successful
+acknowledgement does not delete evidence and does not prove the database reconciliation on the
+operator's behalf. Startup accepts an acknowledged chain only when its latest anchor covers every
+retained incident; deleting or modifying covered evidence blocks startup. Later fatal incidents
+extend from that acknowledged tip and require a new acknowledgement after reconciliation.
 
 Finally start Miningcore and inspect its complete startup, API health and pool state:
 

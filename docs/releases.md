@@ -101,9 +101,15 @@ consuming the recorder's reserved window. Fatal, terminal and
 import state subdirectories are durably parent-synchronised on first creation. State and alias
 inspection uses atomic no-follow regular-file handles on Linux and Windows. Fatal incidents now form
 a sequence/previous-digest chain anchored by the fixed latch's tip and expected count; the first v3
-incident also anchors all retained legacy-v2 incidents. Fatal and incident metadata verification
-uses strict UTF-8, cumulatively bounded total/per-line reads and stable handle/path identity checks,
-matching the sidecar verifier's fail-closed replacement detection.
+incident also anchors all retained legacy-v2 incidents. After database reconciliation, the new
+`--acknowledge-share-recovery-state` command re-verifies the complete evidence set, publishes an
+immutable durable `.acknowledged` anchor, and removes only the active latch. Manual latch deletion
+does not unblock startup, acknowledgement is resumable after interruption, later incidents extend
+the acknowledged tip, and removing or changing covered evidence fails closed. Fatal, incident and
+acknowledgement metadata verification uses strict UTF-8, an exact 64-KiB raw-byte total limit,
+bounded lines and stable handle/path identity checks, matching the sidecar verifier's fail-closed
+replacement detection. Imported-source retirement now also re-confirms the exact PostgreSQL
+manifest through a fresh connection before any destructive rename or anchor removal.
 
 These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay
 sender's positive response proves only local in-memory relay-queue admission, not remote receipt or

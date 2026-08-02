@@ -45,7 +45,7 @@ internal static class ShareRecoveryIncidentVerifier
             try
             {
                 output.WriteLine("ERROR: Share-recovery verification exhausted available memory.");
-                output.WriteLine("RESULT: verification stopped; preserve all files and do not clear the fatal latch.");
+                output.WriteLine("RESULT: verification stopped; preserve all files and do not acknowledge or delete the fatal latch.");
             }
             catch
             {
@@ -91,7 +91,7 @@ internal static class ShareRecoveryIncidentVerifier
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         {
             output.WriteLine($"ERROR: Unable to enumerate fatal-state evidence: {ex.Message}");
-            output.WriteLine("RESULT: incident evidence cannot be verified; preserve all files and do not clear the fatal latch.");
+            output.WriteLine("RESULT: incident evidence cannot be verified; preserve all files and do not acknowledge or delete the fatal latch.");
             return new ShareRecoveryVerificationSummary(0, 0, 0, 1, false);
         }
 
@@ -268,10 +268,10 @@ internal static class ShareRecoveryIncidentVerifier
         if(summary.IsSuccessful)
         {
             output.WriteLine("RESULT: recorded evidence is structurally complete and its hashes match.");
-            output.WriteLine("This does not prove PostgreSQL reconciliation. Compare every incident with PostgreSQL before removing an active fatal latch.");
+            output.WriteLine("This does not prove PostgreSQL reconciliation. Compare every incident with PostgreSQL before running --acknowledge-share-recovery-state.");
         }
         else
-            output.WriteLine("RESULT: incident evidence is incomplete or invalid; preserve all files and do not clear the fatal latch.");
+            output.WriteLine("RESULT: incident evidence is incomplete or invalid; preserve all files and do not acknowledge or delete the fatal latch.");
 
         return summary;
     }

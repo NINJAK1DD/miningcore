@@ -1580,6 +1580,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidDataException(
                 $"Recovery source {filename} cannot be retired before its database import is committed");
 
+        using(var manifestConnection = await cf.OpenConnectionAsync())
+        {
+            var manifestExists = await shareRepo.HasMatchingRecoveryImportAsync(
+                manifestConnection, marker.FileHash, Path.GetFileName(filename),
+                marker.RecordCount, CancellationToken.None);
+            if(!manifestExists)
+                throw new InvalidDataException(
+                    $"PostgreSQL cannot prove the committed recovery import for {filename} " +
+                    $"[{marker.FileHash}] with {marker.RecordCount} records. Preserve the source " +
+                    $"and marker {importState.Filename}; refusing destructive retirement.");
+        }
+
         using var source = RecoveryStateFile.TryOpenExactEntry(filename,
             Directory.EnumerateFileSystemEntries,
             FileShare.Read | FileShare.Delete);

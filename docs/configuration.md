@@ -181,11 +181,18 @@ carry a monotonic sequence and the exact previous-incident digest; the fixed lat
 tip, complete expected count, and any legacy-v2 incident set present during the upgrade. Deleting,
 reordering, or substituting an anchored incident therefore makes verification and startup fail.
 Legacy incidents lost before the first v3 anchor cannot be reconstructed retroactively. Preserve and
-reconcile every incident file and referenced sidecar before deleting only the exact fixed-name
-fatal-state path reported by Miningcore as an explicit operator acknowledgement. The verifier reads
-the small `.fatal` and `.incident` metadata through the same restrictive, identity-checked handle,
-with strict UTF-8 and cumulative total and per-line bounds enforced while reading, that it uses to reject mutation or path
-replacement while evidence is being checked.
+reconcile every incident file and referenced sidecar. Never delete the fixed-name `.fatal` latch
+manually: retained incidents without a complete acknowledgement anchor still block startup. After
+database reconciliation, run `--verify-share-recovery-state` and then
+`--acknowledge-share-recovery-state` with the service configuration. The acknowledgement command
+re-verifies all evidence, durably publishes a new immutable `.acknowledged` chain anchor, and only
+then removes the active latch. It preserves all incident metadata and sidecars, is safe to rerun
+after interruption, and lets later incidents extend the acknowledged chain. Deleting or changing an
+acknowledgement or any incident it covers makes startup fail closed. The verifier reads the small
+`.fatal`, `.incident`, and `.acknowledged` metadata through the same restrictive,
+identity-checked handle, with strict UTF-8, an exact 64-KiB raw-byte total limit, and a 16-KiB
+per-line limit enforced while reading, and rejects mutation or path replacement while evidence is
+being checked.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

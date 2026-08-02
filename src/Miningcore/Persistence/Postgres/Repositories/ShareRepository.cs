@@ -128,6 +128,25 @@ public class ShareRepository : IShareRepository
         }, tx, cancellationToken: ct)) > 0;
     }
 
+    public Task<bool> HasMatchingRecoveryImportAsync(IDbConnection con,
+        string fileHash, string filename, int recordCount,
+        CancellationToken ct)
+    {
+        const string query = @"SELECT EXISTS (
+            SELECT 1
+            FROM share_recovery_imports
+            WHERE filehash = @fileHash
+              AND filename = @filename
+              AND recordcount = @recordCount)";
+
+        return con.QuerySingleAsync<bool>(new CommandDefinition(query, new
+        {
+            fileHash,
+            filename,
+            recordCount,
+        }, cancellationToken: ct));
+    }
+
     public async Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Share> shares, CancellationToken ct)
     {
         // NOTE: Even though the tx parameter is completely ignored here,

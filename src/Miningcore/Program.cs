@@ -130,6 +130,34 @@ public class Program : ProcessStatusBackgroundService
                 return;
             }
 
+            if(acknowledgeShareRecoveryStateOption.HasValue())
+            {
+                clusterConfig = configFileOption.HasValue()
+                    ? ReadConfig(configFileOption.Value())
+                    : new ClusterConfig();
+                processStatus = new ProcessStatus();
+
+                try
+                {
+                    var state = new ShareRecoveryFatalState(clusterConfig,
+                        processStatus);
+                    if(!state.Acknowledge(Console.Out))
+                        processStatus.MarkFailed(
+                            ProcessExitCodes.UnreconciledShareDurabilityLoss);
+                }
+                catch(Exception ex) when(ex is IOException or
+                    InvalidDataException or InvalidOperationException or
+                    UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine(
+                        $"ACKNOWLEDGEMENT REFUSED: {ex.Message}");
+                    processStatus.MarkFailed(
+                        ProcessExitCodes.UnreconciledShareDurabilityLoss);
+                }
+
+                return;
+            }
+
             if(!configFileOption.HasValue())
             {
                 app.ShowHelp();
@@ -370,6 +398,7 @@ public class Program : ProcessStatusBackgroundService
     private static CommandOption dumpConfigOption;
     private static CommandOption shareRecoveryOption;
     private static CommandOption verifyShareRecoveryStateOption;
+    private static CommandOption acknowledgeShareRecoveryStateOption;
     private static CommandOption generateSchemaOption;
     private static bool isShareRecoveryMode;
     private static ClusterConfig clusterConfig;
@@ -829,6 +858,10 @@ public class Program : ProcessStatusBackgroundService
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
         verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
             "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
+            CommandOptionType.NoValue);
+        acknowledgeShareRecoveryStateOption = app.Option(
+            "--acknowledge-share-recovery-state",
+            "After database reconciliation, verify and durably acknowledge fatal share-recovery evidence",
             CommandOptionType.NoValue);
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");

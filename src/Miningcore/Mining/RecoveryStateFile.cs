@@ -201,25 +201,38 @@ internal static class RecoveryStateFile
             throw new InvalidDataException(
                 $"Recovery state file {filename} exceeds {MaximumBytes} bytes");
 
-        var result = new List<string>();
-        var accumulatedBytes = 0L;
+        stream.Position = 0;
+        using var content = new MemoryStream(
+            (int) Math.Min(lengthBefore, MaximumBytes));
+        var buffer = new byte[4096];
+        var totalBytes = 0;
+        var chunkIndex = 0;
+        while(true)
+        {
+            var read = stream.Read(buffer, 0, buffer.Length);
+            if(read == 0)
+                break;
+
+            totalBytes = checked(totalBytes + read);
+            if(totalBytes > MaximumBytes)
+                throw new InvalidDataException(
+                    $"Recovery state file {filename} exceeds {MaximumBytes} bytes while being read");
+
+            content.Write(buffer, 0, read);
+            lineReadCheckpoint?.Invoke(chunkIndex++);
+        }
+
         var strictUtf8 = new UTF8Encoding(false, true);
-        using(var reader = new StreamReader(stream,
-                  strictUtf8, false, 4096, leaveOpen: true))
+        var decoded = strictUtf8.GetString(content.GetBuffer(), 0,
+            checked((int) content.Length));
+        var result = new List<string>();
+        using(var reader = new StringReader(decoded))
         using(var lines = new BoundedLineReader(reader,
                   MaximumLineCharacters, $"Recovery state file {filename}"))
         {
             string line;
             while((line = lines.ReadLine()) != null)
-            {
-                lineReadCheckpoint?.Invoke(result.Count);
-                accumulatedBytes += strictUtf8.GetByteCount(line) + 1L;
-                if(accumulatedBytes > MaximumBytes)
-                    throw new InvalidDataException(
-                        $"Recovery state file {filename} exceeds {MaximumBytes} bytes while being read");
-
                 result.Add(line);
-            }
         }
 
         readCheckpoint?.Invoke(filename);

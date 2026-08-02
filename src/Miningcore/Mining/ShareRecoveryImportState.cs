@@ -243,6 +243,7 @@ internal sealed class ShareRecoveryImportState
 
         if(!string.Equals(actualPath, expectedPath, StringComparison.Ordinal) ||
            !Enum.TryParse<ImportPhase>(phaseText, true, out var phase) ||
+           legacy && phase is not (ImportPhase.Pending or ImportPhase.Committed) ||
            fileHash.Length != 64 || !fileHash.All(Uri.IsHexDigit) ||
            !int.TryParse(recordCountText, NumberStyles.None,
                CultureInfo.InvariantCulture, out var recordCount) || recordCount < 0)

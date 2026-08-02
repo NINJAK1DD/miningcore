@@ -18,6 +18,7 @@ public interface IShareRecoveryFatalState
     void MarkFatalShares(IReadOnlyCollection<Share> shares,
         Exception databaseError, Exception journalError,
         string failureCategory = "database-and-journal-unavailable");
+    bool Acknowledge(TextWriter output);
 }
 
 public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
@@ -36,6 +37,7 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         ArgumentException.ThrowIfNullOrWhiteSpace(stateDirectory);
 
         this.processStatus = processStatus;
+        this.clusterConfig = clusterConfig;
         RecoveryFilename = ResolveRecoveryFilename(clusterConfig);
         StateDirectory = Path.GetFullPath(stateDirectory);
         var pathHash = ComputeRecoveryPathHash(RecoveryFilename);
@@ -48,12 +50,15 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
     }
 
     private readonly IProcessStatus processStatus;
+    private readonly ClusterConfig clusterConfig;
     private readonly object fatalStateGate = new();
     private readonly ShareRecoveryTerminalState terminalState;
     private readonly ShareRecoveryImportState importState;
     internal Action<string> DirectorySync { get; set; } =
         SyncDirectoryWhereSupported;
     internal Action<int> ExactShareWriteCheckpoint { get; set; } = _ => { };
+    internal Action AcknowledgementPublishedCheckpoint { get; set; } = () => { };
+    internal Action ActiveLatchRemovedCheckpoint { get; set; } = () => { };
 
     public string RecoveryFilename { get; }
     public string StateDirectory { get; }
@@ -78,9 +83,9 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
                 throw new PoolStartupException(
                     $"Share-accounting durability remains unreconciled. Fatal state: " +
                     $"{FatalStateFilename}. Recovery journal: {RecoveryFilename}. Preserve both " +
-                    "files, reconcile every recorded incident against PostgreSQL and the journal, then remove only the exact " +
-                    "fatal-state file as the explicit operator acknowledgement before restarting " +
-                    "Miningcore.");
+                    "files and reconcile every recorded incident against PostgreSQL and the journal. " +
+                    "Then run --acknowledge-share-recovery-state with the same configuration; " +
+                    "do not manually delete the active latch or retained evidence.");
             }
             catch(FileNotFoundException) when(!markerEntryWasPresent)
             {
@@ -170,6 +175,80 @@ public sealed class ShareRecoveryFatalState : IShareRecoveryFatalState
         lock(fatalStateGate)
             MarkFatalCore(shares.Count, null, shares, databaseError,
                 journalError, failureCategory);
+    }
+
+    public bool Acknowledge(TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+
+        lock(fatalStateGate)
+        {
+            var verification = ShareRecoveryIncidentVerifier.Verify(
+                clusterConfig, output);
+            if(!verification.IsSuccessful)
+            {
+                output.WriteLine("ACKNOWLEDGEMENT REFUSED: fatal share-recovery evidence is not structurally complete.");
+                return false;
+            }
+
+            var directory = Path.GetDirectoryName(FatalStateFilename)!;
+            var stem = Path.GetFileNameWithoutExtension(FatalStateFilename);
+            var tip = ShareRecoveryIncidentChain.ReadTip(directory, stem,
+                FatalStateFilename);
+            if(tip.Sequence == 0)
+                throw new InvalidOperationException(
+                    "No fatal share-recovery incident exists to acknowledge");
+
+            string[] latchLines;
+            using(var latch = RecoveryStateFile.TryOpenExactEntry(
+                      FatalStateFilename, Directory.EnumerateFileSystemEntries))
+            {
+                if(latch == null)
+                {
+                    output.WriteLine(
+                        "Share-recovery state is already durably acknowledged; the active blocking latch is absent.");
+                    return true;
+                }
+
+                latchLines = RecoveryStateFile.ReadAllLinesStable(latch,
+                    FatalStateFilename, Directory.EnumerateFileSystemEntries);
+            }
+            var acknowledgementFilename =
+                ShareRecoveryIncidentChain.BuildAcknowledgementFilename(
+                    directory, stem, tip);
+            using(var existingAcknowledgement =
+                  RecoveryStateFile.TryOpenExactEntry(acknowledgementFilename,
+                      Directory.EnumerateFileSystemEntries))
+            {
+                if(existingAcknowledgement == null)
+                    WriteSmallStateFile(acknowledgementFilename,
+                        string.Join('\n', latchLines) + '\n', false);
+                else
+                {
+                    var existingLines = RecoveryStateFile.ReadAllLinesStable(
+                        existingAcknowledgement, acknowledgementFilename,
+                        Directory.EnumerateFileSystemEntries);
+                    if(!latchLines.SequenceEqual(existingLines,
+                           StringComparer.Ordinal))
+                        throw new InvalidDataException(
+                            $"Existing acknowledgement {acknowledgementFilename} does not match the active fatal latch");
+                }
+            }
+
+            AcknowledgementPublishedCheckpoint();
+            File.Delete(FatalStateFilename);
+            DirectorySync(directory);
+            ActiveLatchRemovedCheckpoint();
+
+            // Re-open and validate the acknowledged anchor after removing the blocking latch.
+            // Returning success is itself contingent on the preserved evidence remaining anchored.
+            ShareRecoveryIncidentChain.ReadTip(directory, stem,
+                FatalStateFilename);
+            output.WriteLine($"ACKNOWLEDGED: {acknowledgementFilename}");
+            output.WriteLine(
+                "The immutable incident metadata and exact-share sidecars remain preserved for audit.");
+            return true;
+        }
     }
 
     private void MarkFatalCore(int shareCount, IReadOnlyCollection<string> pools,
