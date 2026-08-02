@@ -573,6 +573,64 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task StopAsync_FaultedExecuteTaskReleasesRecorderScopedOwnership()
+    {
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        using var ownership = new ShareRecoveryPathOwnership(config);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var pipelineFailure = new InvalidOperationException(
+            "simulated persistence-pipeline failure");
+        connectionFactory.OpenConnectionAsync()
+            .Returns(Task.FromException<IDbConnection>(pipelineFailure));
+        var recoveryHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var handled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        recoveryHandler.StopClusterAfterJournalAsync(
+                Arg.Any<IReadOnlyCollection<Share>>(), recoveryFilename,
+                pipelineFailure)
+            .Returns(_ =>
+            {
+                handled.TrySetResult();
+                return Task.CompletedTask;
+            });
+        var messageBus = new MessageBus();
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            config, messageBus, recoveryHandler,
+            Substitute.For<IMiningFailStopCoordinator>(), ownership);
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            messageBus.SendMessage(new Share
+                { PoolId = "ltc-solo", Miner = "faulted-execute-task" });
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                recorder.StopAsync(CancellationToken.None));
+            Assert.Same(pipelineFailure, error);
+            await handled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            using var contender = new ShareRecoveryPathOwnership(config);
+            contender.Acquire();
+            contender.Release();
+        }
+        finally
+        {
+            ownership.Release();
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task StopAsync_DeferredEvidenceTimeoutExplicitlyRetainsOwnership()
     {
         var directory = Directory.CreateTempSubdirectory().FullName;

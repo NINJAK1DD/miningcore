@@ -2030,93 +2030,96 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
-        BeginShutdown();
-        Interlocked.Exchange(ref shareSubscription, null)?.Dispose();
-        Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
-        Volatile.Read(ref emergencyJournalQueueWriter)?.TryComplete();
-
-        // The caller token can end the database-drain phase early, but it must not cancel the
-        // reserved recovery/evidence phase. Transaction recovery and deferred fatal handling share
-        // one later deadline instead of each receiving a fresh 15-second allowance.
-        using var recoveryCompletion = new CancellationTokenSource();
-        var recoveryDeadlineStarted = false;
-        using var databaseDrain = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        databaseDrain.CancelAfter(ShutdownPersistenceDrainTimeout);
-
-        try
-        {
-            if(ExecuteTask != null)
-                await ExecuteTask.WaitAsync(databaseDrain.Token);
-        }
-        catch(OperationCanceledException) when(databaseDrain.IsCancellationRequested)
-        {
-            // Reserve the remainder of the host/systemd shutdown window for accounting recovery.
-            // The queue worker catches this cancellation and force-flushes its complete unresolved
-            // registry to the journal before StopAsync is allowed to finish.
-            persistenceDrainCancellation.Cancel();
-            recoveryCompletion.CancelAfter(ShutdownRecoveryCompletionTimeout);
-            recoveryDeadlineStarted = true;
-
-            if(ExecuteTask != null)
-            {
-                try
-                {
-                    await ExecuteTask.WaitAsync(recoveryCompletion.Token);
-                }
-                catch(OperationCanceledException ex) when(
-                    recoveryCompletion.IsCancellationRequested)
-                {
-                    var unresolved = failStopCoordinator.BeginFailStopAndCapture(
-                        ProcessExitCodes.UnreconciledShareDurabilityLoss,
-                        () => SnapshotUnresolvedShares());
-                    await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
-                        unresolved, recoveryFilename, new TimeoutException(
-                            "The share-persistence transaction did not stop within the bounded " +
-                            "post-cancellation recovery window; its database outcome is uncertain",
-                            ex));
-                    throw new TimeoutException(
-                        "The share-persistence transaction exceeded the shared shutdown deadline",
-                        ex);
-                }
-            }
-        }
-
-        if(!recoveryDeadlineStarted)
-            recoveryCompletion.CancelAfter(ShutdownRecoveryCompletionTimeout);
-
-        await base.StopAsync(CancellationToken.None);
-
-        Task deferredHandling = null;
-        lock(deferredFailStopGate)
-        {
-            if(deferredFailStopHandling.Count > 0)
-                deferredHandling = Task.WhenAll(deferredFailStopHandling.ToArray());
-        }
-
         var retainOwnershipUntilProcessExit = false;
         try
         {
-            if(deferredHandling != null)
-                await deferredHandling.WaitAsync(recoveryCompletion.Token);
-        }
-        catch(OperationCanceledException ex) when(
-            recoveryCompletion.IsCancellationRequested)
-        {
-            // The evidence task may still be mutating the retained recovery directory. Releasing
-            // ownership here would permit a replacement process to race it, so retain the native
-            // lock explicitly until this failed process exits.
-            retainOwnershipUntilProcessExit = true;
-            logger.Fatal(ex,
-                "Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit");
-            throw new TimeoutException(
-                "Deferred share-recovery evidence exceeded the shared shutdown deadline", ex);
-        }
-        catch(Exception ex)
-        {
-            // A faulted task is complete and no longer mutating the directory. Log the evidence
-            // failure, release the recorder-owned lease in finally, and preserve the stop failure.
-            logger.Fatal(ex, "Deferred share-recovery evidence failed during shutdown");
-            throw;
+            BeginShutdown();
+            Interlocked.Exchange(ref shareSubscription, null)?.Dispose();
+            Volatile.Read(ref persistenceQueueWriter)?.TryComplete();
+            Volatile.Read(ref emergencyJournalQueueWriter)?.TryComplete();
+
+            // The caller token can end the database-drain phase early, but it must not cancel the
+            // reserved recovery/evidence phase. Transaction recovery and deferred fatal handling
+            // share one later deadline instead of each receiving a fresh 15-second allowance.
+            using var recoveryCompletion = new CancellationTokenSource();
+            var recoveryDeadlineStarted = false;
+            using var databaseDrain = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            databaseDrain.CancelAfter(ShutdownPersistenceDrainTimeout);
+
+            try
+            {
+                if(ExecuteTask != null)
+                    await ExecuteTask.WaitAsync(databaseDrain.Token);
+            }
+            catch(OperationCanceledException) when(databaseDrain.IsCancellationRequested)
+            {
+                // Reserve the remainder of the host/systemd shutdown window for accounting
+                // recovery. The queue worker catches this cancellation and force-flushes its
+                // complete unresolved registry to the journal before StopAsync may finish.
+                persistenceDrainCancellation.Cancel();
+                recoveryCompletion.CancelAfter(ShutdownRecoveryCompletionTimeout);
+                recoveryDeadlineStarted = true;
+
+                if(ExecuteTask != null)
+                {
+                    try
+                    {
+                        await ExecuteTask.WaitAsync(recoveryCompletion.Token);
+                    }
+                    catch(OperationCanceledException ex) when(
+                        recoveryCompletion.IsCancellationRequested)
+                    {
+                        var unresolved = failStopCoordinator.BeginFailStopAndCapture(
+                            ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                            () => SnapshotUnresolvedShares());
+                        await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                            unresolved, recoveryFilename, new TimeoutException(
+                                "The share-persistence transaction did not stop within the bounded " +
+                                "post-cancellation recovery window; its database outcome is uncertain",
+                                ex));
+                        throw new TimeoutException(
+                            "The share-persistence transaction exceeded the shared shutdown deadline",
+                            ex);
+                    }
+                }
+            }
+
+            if(!recoveryDeadlineStarted)
+                recoveryCompletion.CancelAfter(ShutdownRecoveryCompletionTimeout);
+
+            await base.StopAsync(recoveryCompletion.Token);
+
+            Task deferredHandling = null;
+            lock(deferredFailStopGate)
+            {
+                if(deferredFailStopHandling.Count > 0)
+                    deferredHandling = Task.WhenAll(deferredFailStopHandling.ToArray());
+            }
+
+            try
+            {
+                if(deferredHandling != null)
+                    await deferredHandling.WaitAsync(recoveryCompletion.Token);
+            }
+            catch(OperationCanceledException ex) when(
+                recoveryCompletion.IsCancellationRequested)
+            {
+                // The evidence task may still be mutating the retained recovery directory.
+                // Releasing ownership here would permit a replacement process to race it, so
+                // retain the native lock explicitly until this failed process exits.
+                retainOwnershipUntilProcessExit = true;
+                logger.Fatal(ex,
+                    "Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit");
+                throw new TimeoutException(
+                    "Deferred share-recovery evidence exceeded the shared shutdown deadline", ex);
+            }
+            catch(Exception ex)
+            {
+                // A faulted task is complete and no longer mutating the directory. Log the evidence
+                // failure, release the recorder-owned lease in finally, and preserve the stop failure.
+                logger.Fatal(ex, "Deferred share-recovery evidence failed during shutdown");
+                throw;
+            }
         }
         finally
         {
