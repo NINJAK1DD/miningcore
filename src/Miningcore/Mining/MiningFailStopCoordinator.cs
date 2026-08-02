@@ -77,6 +77,11 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator,
 
     public IMiningSubmissionAcceptance AcquireSubmissionAcceptance()
     {
+        if(acceptanceGate.IsReadLockHeld)
+            throw new InvalidOperationException(
+                "Recursive share publication is not supported while mining admission is held. " +
+                "A Share subscriber must not republish the same Share synchronously.");
+
         acceptanceGate.EnterReadLock();
 
         try
@@ -187,7 +192,31 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator,
         // A bounded persistence queue can discover journal failure from inside a synchronous
         // publication callback. Run its fail-stop transition only after releasing this admission's
         // read lock so the exclusive transition cannot deadlock behind the reporting submission.
-        deferred?.HandleAfterAdmissionReleasedAsync().GetAwaiter().GetResult();
+        if(deferred != null)
+        {
+            try
+            {
+                // The handler closes admission and captures the exact unresolved boundary before
+                // returning its Task. Observe the slower fatal-state and notification work without
+                // blocking a Stratum thread for filesystem sync or the alert timeout.
+                var handling = deferred.HandleAfterAdmissionReleasedAsync();
+                _ = handling.ContinueWith(task =>
+                    logger.Fatal(task.Exception,
+                        "Deferred mining fail-stop handling faulted after admission was closed"),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            catch(Exception ex)
+            {
+                // Admission is expected to be closed synchronously by the handler. Preserve the
+                // publication failure while making any unexpected handoff failure visible.
+                logger.Fatal(ex,
+                    "Unable to hand off deferred mining fail-stop handling");
+            }
+        }
+
         failure?.Throw();
     }
 

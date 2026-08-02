@@ -260,6 +260,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private ChannelWriter<QueuedShare> emergencyJournalQueueWriter;
     private readonly CancellationTokenSource persistenceDrainCancellation = new();
     private readonly ConcurrentDictionary<long, QueuedShare> unresolvedShares = new();
+    private readonly object deferredFailStopGate = new();
+    private Task deferredFailStopHandling;
     private long nextQueuedShareId;
     internal SemaphoreSlim RecoveryWriteGate => recoveryWriteState.Gate;
     internal long RecoveryValidationBytesRead =>
@@ -1237,7 +1239,6 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             }
 
             ExceptionDispatchInfo.Capture(writeError).Throw();
-            throw new InvalidOperationException("Unreachable recovery-journal append path");
         }
     }
 
@@ -2070,6 +2071,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
 
         await base.StopAsync(CancellationToken.None);
+
+        Task deferredHandling;
+        lock(deferredFailStopGate)
+            deferredHandling = deferredFailStopHandling;
+        if(deferredHandling != null)
+            await deferredHandling.WaitAsync(ShutdownRecoveryCompletionTimeout);
+
         recoveryPathOwnership.Release();
     }
 
@@ -2258,27 +2266,48 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         ChannelReader<QueuedShare> reader,
         BoundedQueueAccounting<QueuedShare> accounting)
     {
+        const int batchSize = 250;
+        var batch = new List<QueuedShare>(batchSize);
+
         while(await reader.WaitToReadAsync(CancellationToken.None))
         {
-            while(accounting.TryRead(reader, out var queued))
+            batch.Clear();
+            while(batch.Count < batchSize &&
+                  accounting.TryRead(reader, out var queued))
+                batch.Add(queued);
+
+            if(batch.Count == 0)
+                continue;
+
+            try
             {
-                try
+                // One force-flushed chained frame and terminal-anchor update accounts for the
+                // whole drained set. This preserves the same atomic recovery boundary while
+                // avoiding two fsync operations for every individual overflow share.
+                await WriteRecoveryJournalAsync(batch.Select(x => x.Share)
+                    .ToArray());
+
+                foreach(var item in batch)
                 {
-                    await WriteRecoveryJournalAsync(new[] { queued.Share });
-                    unresolvedShares.TryRemove(queued.Id, out _);
-                    NotifyAdminOnPolicyFallbackSafely();
-                    queued.JournalCompletion?.TrySetResult();
-                    logger.Warn(
-                        "Persisted a share through the bounded emergency recovery-journal writer because the primary persistence queue was full");
+                    unresolvedShares.TryRemove(item.Id, out _);
+                    item.JournalCompletion?.TrySetResult();
                 }
-                catch(Exception journalError)
-                {
-                    var saturation = new IOException(
-                        "The primary share-persistence queue was saturated");
-                    await FailStopUnresolvedSharesAsync(saturation, journalError);
-                    queued.JournalCompletion?.TrySetException(journalError);
-                    throw;
-                }
+
+                NotifyAdminOnPolicyFallbackSafely();
+                logger.Warn(
+                    "Persisted {0} share(s) through the bounded emergency recovery-journal writer because the primary persistence queue was full",
+                    batch.Count);
+            }
+            catch(Exception journalError)
+            {
+                var saturation = new IOException(
+                    "The primary share-persistence queue was saturated");
+                await FailStopUnresolvedSharesAsync(saturation, journalError);
+
+                foreach(var item in batch)
+                    item.JournalCompletion?.TrySetException(journalError);
+
+                throw;
             }
         }
     }
@@ -2386,7 +2415,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             NotifyAdminOnPolicyFallbackSafely();
 
             foreach(var item in unresolvedShares.ToArray())
-                unresolvedShares.TryRemove(item.Key, out _);
+            {
+                if(unresolvedShares.TryRemove(item.Key, out var removed))
+                    removed.JournalCompletion?.TrySetResult();
+            }
         }
         catch(Exception journalError)
         {
@@ -2443,19 +2475,34 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         return shares.ToArray();
     }
 
-    private async Task FailStopUnresolvedSharesAsync(Exception databaseError,
+    private Task FailStopUnresolvedSharesAsync(Exception databaseError,
         Exception journalError)
     {
         persistenceDrainCancellation.Cancel();
-        var unresolved = failStopCoordinator.BeginFailStopAndCapture(
+        var captured = failStopCoordinator.BeginFailStopAndCapture(
             ProcessExitCodes.UnreconciledShareDurabilityLoss,
-            () => SnapshotUnresolvedShares());
+            () => unresolvedShares.Values.ToArray());
+        var unresolved = captured
+            .OrderBy(x => x.Id)
+            .Select(x => x.Share)
+            .ToArray();
 
-        await recoveryFailureHandler.StopClusterAsync(unresolved,
-            recoveryFilename, databaseError, journalError);
+        // The exclusive admission boundary is already closed and captured above. Move durable
+        // fatal evidence and the bounded operator notification off the synchronous Stratum/Rx
+        // publication thread while retaining an awaitable task for hosted queue processing.
+        var handling = Task.Run(async () =>
+        {
+            await recoveryFailureHandler.StopClusterAsync(unresolved,
+                recoveryFilename, databaseError, journalError);
 
-        foreach(var queued in unresolvedShares.Values)
-            queued.JournalCompletion?.TrySetException(journalError);
+            foreach(var queued in unresolvedShares.Values)
+                queued.JournalCompletion?.TrySetException(journalError);
+        });
+        lock(deferredFailStopGate)
+            deferredFailStopHandling = deferredFailStopHandling == null
+                ? handling
+                : Task.WhenAll(deferredFailStopHandling, handling);
+        return handling;
     }
 
     private sealed class QueuedShare

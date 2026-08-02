@@ -224,6 +224,11 @@ internal static class RecoveryJournalPathSafety
             return new IOException(
                 $"{description} {filename} is already owned by another process",
                 new Win32Exception(error));
+        if((OperatingSystem.IsWindows() && error == 5) ||
+           (!OperatingSystem.IsWindows() && error == 13))
+            return new UnauthorizedAccessException(
+                $"Permission was denied while opening {description} {filename}",
+                new Win32Exception(error));
 
         return new InvalidDataException(
             $"{description} {filename} could not be opened without following links or sharing its writer handle",

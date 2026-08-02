@@ -159,6 +159,11 @@ public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
     ///     identical types (i.e. "MyCoolViewModel") - if the message type is
     ///     only used for one purpose, leave this as null.
     /// </param>
+    /// <remarks>
+    /// Share delivery is synchronous while Miningcore holds its admission read boundary. A Share
+    /// subscriber must not synchronously republish that Share; recursive publication is rejected
+    /// so the fail-stop writer boundary cannot deadlock or throw an opaque lock-recursion error.
+    /// </remarks>
     public void SendMessage<T>(T message, string contract = null)
     {
         if(message is Share && failStopCoordinator != null)

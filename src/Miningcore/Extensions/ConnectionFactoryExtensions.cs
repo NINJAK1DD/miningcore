@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using Miningcore.Persistence;
 using NLog;
+using Npgsql;
 
 namespace Miningcore.Extensions;
 
@@ -78,7 +79,7 @@ public static class ConnectionFactoryExtensions
         bool autoCommit, IsolationLevel isolation, CancellationToken ct,
         bool classifyCommitOutcome, TimeSpan resourceCleanupTimeout)
     {
-        if(resourceCleanupTimeout <= TimeSpan.Zero)
+        if(classifyCommitOutcome && resourceCleanupTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(resourceCleanupTimeout),
                 "Database transaction resource cleanup timeout must be positive");
 
@@ -125,8 +126,14 @@ public static class ConnectionFactoryExtensions
         }
         finally
         {
-            var cleanupFailure = await DisposeTransactionResourcesAsync(tx, con,
-                resourceCleanupTimeout, outcome);
+            // The bounded, ordered cleanup machinery exists to preserve a classified financial
+            // outcome when provider cleanup hangs or fails. Keep ordinary callers on the prior
+            // synchronous disposal path so API, statistics and payout transactions do not pay a
+            // Task.Run and timer cost on every successful transaction.
+            var cleanupFailure = classifyCommitOutcome
+                ? await DisposeTransactionResourcesAsync(tx, con,
+                    resourceCleanupTimeout, outcome)
+                : DisposeTransactionResourcesSynchronously(tx, con);
 
             if(cleanupFailure != null)
             {
@@ -210,6 +217,38 @@ public static class ConnectionFactoryExtensions
                 TaskScheduler.Default);
 
             return timeoutFailure;
+        }
+    }
+
+    private static Exception DisposeTransactionResourcesSynchronously(
+        IDbTransaction tx, IDbConnection con)
+    {
+        var failures = new List<Exception>();
+        DisposeResourceSynchronously(tx, failures);
+        DisposeResourceSynchronously(con, failures);
+
+        return failures.Count switch
+        {
+            0 => null,
+            1 => failures[0],
+            _ => new AggregateException(
+                "Multiple database transaction cleanup operations failed", failures),
+        };
+    }
+
+    private static void DisposeResourceSynchronously(object resource,
+        ICollection<Exception> failures)
+    {
+        if(resource is not IDisposable disposable)
+            return;
+
+        try
+        {
+            disposable.Dispose();
+        }
+        catch(Exception ex)
+        {
+            failures.Add(ex);
         }
     }
 
@@ -356,8 +395,19 @@ public static class ConnectionFactoryExtensions
             else
                 tx.Commit();
         }
+        catch(PostgresException ex) when(classifyCommitOutcome &&
+            !string.IsNullOrWhiteSpace(ex.SqlState))
+        {
+            // A PostgreSQL ErrorResponse with a server-assigned SQLSTATE proves COMMIT was
+            // rejected. Deadlocks, serialization failures and deferred-constraint failures are
+            // therefore safely replayable and must retain their original provider exception.
+            throw;
+        }
         catch(Exception ex) when(classifyCommitOutcome)
         {
+            // Cancellation after entering the provider commit API, transport failures and unknown
+            // provider failures cannot prove whether PostgreSQL committed before communication
+            // was lost. Preserve the fail-closed classification for every non-server response.
             throw new TransactionCommitOutcomeUncertainException(
                 "The database transaction commit outcome is uncertain", ex);
         }

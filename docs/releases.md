@@ -37,7 +37,9 @@ at startup, on first fallback entry and before recovery import. Later appends ve
 identity/length and only hash the new frame, avoiding quadratic outage I/O. Each forced append also
 commits an independent terminal sequence/digest anchor, detecting removal of a complete final frame.
 A bounded persistence queue transfers overflow to one bounded emergency journal writer outside the
-mining admission lock instead of accepting unlimited memory or blocked-caller backlogs. Graceful stop
+mining admission lock instead of accepting unlimited memory or blocked-caller backlogs. That writer
+drains up to 250 overflow shares into one force-flushed chained frame and terminal-anchor update;
+each affected Stratum response waits for its containing batch. Graceful stop
 drains acknowledged shares independently of hosted-service cancellation, limits its PostgreSQL
 drain to 20 seconds, reserves 15 seconds for bounded transaction recovery/fatal handling, and uses
 the remaining host/service-manager window to journal the complete
@@ -78,9 +80,12 @@ Windows retains an exclusive handle. Parent-directory symlink aliases converge o
 and journal creation, append, startup validation, import and retirement use that retained physical
 directory rather than re-resolving the configured path. A stable parent symlink is supported while
 later retargeting or replacement cannot redirect an operation and fails closed. On the supported
-Ubuntu 22.04 target, atomic no-replacement publication depends on Linux
-`renameat2(..., RENAME_NOREPLACE)` and retained-directory `fsync`; older or unusual kernel/filesystem
-combinations lacking those semantics are not a supported weaker-durability fallback. Windows instead
+Ubuntu 22.04 target, atomic no-replacement publication first uses Linux
+`renameat2(..., RENAME_NOREPLACE)` and retained-directory `fsync`. Missing libc symbols and
+kernel/filesystem `EINVAL`, `ENOSYS` or `EOPNOTSUPP` responses use a no-replace `linkat`/`unlinkat`
+fallback. A crash between those calls can leave two names for one inode; existing single-link checks
+reject that evidence fail-closed. Filesystems supporting neither primitive remain unsupported rather
+than permitting replacement. Windows instead
 pins the physical directory and uses write-through child handles, without claiming an equivalent
 explicit directory-metadata `fsync`. A hostile parent retarget can leave a temporary file, archive,
 or unanchored journal in the originally retained directory after the operation fails closed; preserve
@@ -116,10 +121,12 @@ the completed latch. Any mismatch remains startup-blocking evidence.
 
 Unexpected mapper, connection, transaction or repository failures now quiesce mining, force-flush
 the complete unresolved registry to the recovery journal and stop with a general failure. If the
-journal also fails, status 74 and the fatal latch remain authoritative. The PostgreSQL transaction
-lifecycle is cancellation-aware and bounded through open, begin, repository commands, commit,
-rollback and cleanup. Transaction then connection disposal run as one ordered background sequence
-under a four-second aggregate wait bound, because ADO.NET disposal APIs do not accept cancellation.
+journal also fails, status 74 and the fatal latch remain authoritative. The share-persistence
+PostgreSQL transaction lifecycle is cancellation-aware and bounded through open, begin, repository
+commands, commit, rollback and cleanup. On that outcome-classified path, transaction then connection
+disposal run as one ordered background sequence under a four-second aggregate wait bound, because
+ADO.NET disposal APIs do not accept cancellation. Other API, statistics and payout `RunTx` callers
+retain synchronous ordered disposal and do not allocate this background cleanup machinery.
 If transaction disposal consumes that bound, connection disposal cannot overlap it and begins only
 if the transaction call later returns. Cleanup that finishes after the aggregate deadline logs its
 eventual success, cancellation, task fault or returned provider exception with the transaction
@@ -127,7 +134,9 @@ outcome, resource stage and elapsed time. Deadline classification is uncondition
 finishes between timeout and exception handling: once commit outcome is known, cleanup can add
 evidence but cannot replace it. Cleanup failure after a known commit removes that exact batch from replayable
 state; cleanup failure while commit is uncertain remains secondary evidence and cannot replace the
-uncertain outcome. A commit whose outcome cannot be proven is never copied to the importable journal;
+uncertain outcome. A PostgreSQL server error carrying a SQLSTATE proves that `COMMIT` was rejected
+and remains replayable; transport, timeout, cancellation-after-entry and unknown provider failures
+remain outcome-uncertain. A commit whose outcome cannot be proven is never copied to the importable journal;
 exact share JSON is streamed to the sidecar referenced by the status-74 latch for reconciliation.
 Active Stratum dispatch tasks and in-flight request handlers receive a five-second bounded drain
 before Share Recorder intake closes; expiry closes admission and returns a non-zero stop without

@@ -72,6 +72,9 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
 
         if(OperatingSystem.IsLinux())
         {
+            // Unix open(2)/openat(2) has no FileShare equivalent. Cross-process exclusivity is
+            // provided by the adjacent process-lifetime flock; FileShare remains meaningful on
+            // Windows and is intentionally not treated as a Linux safety boundary.
             const int oWriteOnly = 1;
             const int oReadWrite = 2;
             const int oCreate = 0x40;
@@ -90,7 +93,7 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
             if((options & FileOptions.WriteThrough) != 0)
                 flags |= oDataSync;
 
-            var descriptor = openat(handle.DangerousGetHandle().ToInt32(), name,
+            var descriptor = openat(handle, name,
                 flags, Convert.ToUInt32("600", 8));
             if(descriptor < 0)
                 throw CreateEntryOpenException(name, description,
@@ -151,13 +154,17 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
             const int oPath = 0x200000;
             const int oNoFollow = 0x20000;
             const int oCloseOnExec = 0x80000;
-            var descriptor = openat(handle.DangerousGetHandle().ToInt32(), name,
+            var descriptor = openat(handle, name,
                 oPath | oNoFollow | oCloseOnExec, 0);
             if(descriptor < 0)
             {
                 var error = Marshal.GetLastPInvokeError();
                 if(error == 2)
                     return;
+                if(error == 13)
+                    throw new UnauthorizedAccessException(
+                        $"Permission was denied while inspecting recovery path {DisplayName(name)}",
+                        new Win32Exception(error));
                 throw new InvalidDataException(
                     $"Recovery path {DisplayName(name)} could not be inspected relative to its retained directory",
                     new Win32Exception(error));
@@ -181,13 +188,36 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
         if(OperatingSystem.IsLinux())
         {
             const uint renameNoReplace = 1;
-            var descriptor = handle.DangerousGetHandle().ToInt32();
-            if(renameat2(descriptor, sourceName, descriptor, destinationName,
-                   renameNoReplace) != 0)
-                throw new IOException(
-                    $"Unable to atomically rename recovery entry {DisplayName(sourceName)} to {DisplayName(destinationName)} without replacement",
-                    new Win32Exception(Marshal.GetLastPInvokeError()));
-            return;
+            int result;
+
+            try
+            {
+                // SafeHandle marshalling pins the retained directory descriptor for the complete
+                // native call, preventing concurrent Dispose from closing and recycling the fd.
+                result = renameat2(handle, sourceName, handle, destinationName,
+                    renameNoReplace);
+            }
+            catch(EntryPointNotFoundException)
+            {
+                MoveEntryUsingLinkFallback(sourceName, destinationName,
+                    "the C library does not export renameat2");
+                return;
+            }
+
+            if(result == 0)
+                return;
+
+            var error = Marshal.GetLastPInvokeError();
+            if(IsRenameNoReplaceUnsupported(error))
+            {
+                MoveEntryUsingLinkFallback(sourceName, destinationName,
+                    $"renameat2(RENAME_NOREPLACE) returned errno {error}");
+                return;
+            }
+
+            throw new IOException(
+                $"Unable to atomically rename recovery entry {DisplayName(sourceName)} to {DisplayName(destinationName)} without replacement",
+                new Win32Exception(error));
         }
 
         File.Move(System.IO.Path.Combine(physicalPath, sourceName),
@@ -199,7 +229,7 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
         name = ValidateEntryName(name);
         if(OperatingSystem.IsLinux())
         {
-            var result = unlinkat(handle.DangerousGetHandle().ToInt32(), name, 0);
+            var result = unlinkat(handle, name, 0);
             if(result != 0 && Marshal.GetLastPInvokeError() != 2)
                 throw new IOException($"Unable to delete recovery entry {DisplayName(name)}",
                     new Win32Exception(Marshal.GetLastPInvokeError()));
@@ -212,9 +242,44 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
     public void Sync()
     {
         if(OperatingSystem.IsLinux() &&
-           fsync(handle.DangerousGetHandle().ToInt32()) != 0)
+           fsync(handle) != 0)
             throw new IOException($"Unable to durably sync recovery directory {Path}",
                 new Win32Exception(Marshal.GetLastPInvokeError()));
+    }
+
+    internal static bool IsRenameNoReplaceUnsupported(int error) =>
+        error is 22 or 38 or 95; // EINVAL, ENOSYS, EOPNOTSUPP
+
+    internal void MoveEntryUsingLinkFallback(string sourceName,
+        string destinationName, string reason)
+    {
+        // linkat is an atomic no-replace publication: an existing destination makes it fail with
+        // EEXIST. Removing the old name then completes the move. A crash between the calls can
+        // leave two names for the same inode; Miningcore's single-link validation detects that
+        // state and fails closed instead of trusting an ambiguous recovery boundary.
+        if(linkat(handle, sourceName, handle, destinationName, 0) != 0)
+        {
+            var linkError = Marshal.GetLastPInvokeError();
+            throw new IOException(
+                $"Unable to publish recovery entry {DisplayName(sourceName)} as {DisplayName(destinationName)} without replacement after {reason}",
+                new Win32Exception(linkError));
+        }
+
+        if(unlinkat(handle, sourceName, 0) == 0)
+            return;
+
+        var sourceDeleteError = new Win32Exception(Marshal.GetLastPInvokeError());
+        Exception destinationRollbackError = null;
+        if(unlinkat(handle, destinationName, 0) != 0)
+            destinationRollbackError = new Win32Exception(
+                Marshal.GetLastPInvokeError());
+
+        throw new IOException(
+            $"Recovery entry {DisplayName(destinationName)} was linked without replacement after {reason}, but removing the source name failed",
+            destinationRollbackError == null
+                ? sourceDeleteError
+                : new AggregateException(sourceDeleteError,
+                    destinationRollbackError));
     }
 
     public void Dispose() => handle.Dispose();
@@ -240,6 +305,10 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
         if(error == 17 && mode == FileMode.CreateNew)
             return new IOException($"{description} {name} already exists",
                 new Win32Exception(error));
+        if(error == 13) // EACCES
+            return new UnauthorizedAccessException(
+                $"Permission was denied while opening {description} {name}",
+                new Win32Exception(error));
         return new InvalidDataException(
             $"{description} {name} could not be opened relative to its retained recovery directory without following links",
             new Win32Exception(error));
@@ -258,9 +327,16 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
                 flags |= oNoFollow;
             var descriptor = open(path, flags, 0);
             if(descriptor < 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if(error == 13)
+                    throw new UnauthorizedAccessException(
+                        $"Permission was denied while opening recovery archive directory {path}",
+                        new Win32Exception(error));
                 throw new InvalidDataException(
                     $"Recovery archive directory {path} could not be opened without following links",
-                    new Win32Exception(Marshal.GetLastPInvokeError()));
+                    new Win32Exception(error));
+            }
             return new SafeFileHandle(new IntPtr(descriptor), true);
         }
 
@@ -281,6 +357,10 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
                 return result;
             var error = Marshal.GetLastPInvokeError();
             result.Dispose();
+            if(error == 5)
+                throw new UnauthorizedAccessException(
+                    $"Permission was denied while opening recovery archive directory {path}",
+                    new Win32Exception(error));
             throw new InvalidDataException(
                 $"Recovery archive directory {path} could not be opened without following reparse points",
                 new Win32Exception(error));
@@ -314,20 +394,25 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
     private static extern int open(string path, int flags, uint mode);
 
     [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
-    private static extern int openat(int directoryFileDescriptor, string path,
+    private static extern int openat(SafeFileHandle directory, string path,
         int flags, uint mode);
 
     [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
-    private static extern int renameat2(int oldDirectoryFileDescriptor,
-        string oldPath, int newDirectoryFileDescriptor, string newPath,
+    private static extern int renameat2(SafeFileHandle oldDirectory,
+        string oldPath, SafeFileHandle newDirectory, string newPath,
         uint flags);
 
     [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
-    private static extern int unlinkat(int directoryFileDescriptor,
+    private static extern int linkat(SafeFileHandle oldDirectory,
+        string oldPath, SafeFileHandle newDirectory, string newPath,
+        int flags);
+
+    [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int unlinkat(SafeFileHandle directory,
         string path, int flags);
 
     [DllImport("libc", SetLastError = true)]
-    private static extern int fsync(int descriptor);
+    private static extern int fsync(SafeFileHandle descriptor);
 
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true,
         CharSet = CharSet.Unicode)]

@@ -54,6 +54,7 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
     private FileStream ownershipStream;
     private RecoveryDirectoryIdentity recoveryDirectoryIdentity;
     private RecoveryJournalFileIdentity ownershipIdentity;
+    private int holdCount;
     internal Action<string> DirectoryOperationCheckpoint { get; set; } = _ => { };
 
     public string RecoveryFilename { get; }
@@ -72,7 +73,13 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
         lock(gate)
         {
             if(ownershipStream != null)
+            {
+                checked
+                {
+                    holdCount++;
+                }
                 return;
+            }
 
             var directory = Path.GetDirectoryName(OwnershipFilename)!;
             DurableDirectory.EnsureCreated(directory,
@@ -96,6 +103,7 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
                 recoveryDirectoryIdentity = directoryIdentity;
                 ownershipIdentity = identity;
                 ownershipStream = stream;
+                holdCount = 1;
                 directoryIdentity = null;
                 stream = null;
             }
@@ -239,10 +247,14 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
             if(stream == null)
                 return;
 
+            if(--holdCount > 0)
+                return;
+
             ownershipStream = null;
             var directoryIdentity = recoveryDirectoryIdentity;
             recoveryDirectoryIdentity = null;
             ownershipIdentity = default;
+            holdCount = 0;
             if(!OperatingSystem.IsWindows())
                 _ = flock(stream.SafeFileHandle, LockUnlock);
             stream.Dispose();

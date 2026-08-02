@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Miningcore.Extensions;
 using Miningcore.Persistence;
 using NSubstitute;
+using Npgsql;
 using Xunit;
 
 namespace Miningcore.Tests.Extensions;
@@ -68,6 +69,82 @@ public class ConnectionFactoryExtensionsTests
 
         Assert.IsAssignableFrom<OperationCanceledException>(error.InnerException);
         Assert.Equal(0, transaction.RollbackCalls);
+    }
+
+    [Theory]
+    [InlineData("40P01")]
+    [InlineData("40001")]
+    [InlineData("23505")]
+    [InlineData("25P02")]
+    public async Task RunTx_PostgresCommitRejectionIsKnownNotCommitted(
+        string sqlState)
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var commitFailure = new PostgresException(
+            "server rejected COMMIT", "ERROR", "ERROR", sqlState);
+        var transaction = new ControlledDbTransaction
+        {
+            CommitAsyncAction = _ => Task.FromException(commitFailure),
+        };
+        var connection = new ControlledDbConnection(transaction);
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<PostgresException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true));
+
+        Assert.Same(commitFailure, error);
+        Assert.Equal(sqlState, error.SqlState);
+        Assert.Equal(1, transaction.CommitCalls);
+        Assert.Equal(1, transaction.RollbackCalls);
+    }
+
+    [Fact]
+    public async Task RunTx_CommitTransportFailureRemainsOutcomeUncertain()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var commitFailure = new NpgsqlException("connection lost during COMMIT",
+            new IOException("broken pipe"));
+        var transaction = new ControlledDbTransaction
+        {
+            CommitAsyncAction = _ => Task.FromException(commitFailure),
+        };
+        var connection = new ControlledDbConnection(transaction);
+        factory.OpenConnectionAsync().Returns(connection);
+
+        var error = await Assert.ThrowsAsync<
+            TransactionCommitOutcomeUncertainException>(() =>
+            factory.RunTx((_, _) => Task.CompletedTask,
+                classifyCommitOutcome: true));
+
+        Assert.Same(commitFailure, error.InnerException);
+        Assert.Equal(1, transaction.CommitCalls);
+        Assert.Equal(0, transaction.RollbackCalls);
+    }
+
+    [Fact]
+    public async Task RunTx_OrdinaryCallRetainsSynchronousResourceCleanup()
+    {
+        var factory = Substitute.For<IConnectionFactory>();
+        var transaction = new ControlledDbTransaction
+        {
+            DisposeAsyncAction = () => ValueTask.FromException(
+                new InvalidOperationException("async cleanup must not run")),
+        };
+        var connection = new ControlledDbConnection(transaction)
+        {
+            DisposeAsyncAction = () => ValueTask.FromException(
+                new InvalidOperationException("async cleanup must not run")),
+        };
+        factory.OpenConnectionAsync().Returns(connection);
+
+        await factory.RunTx((_, _) => Task.CompletedTask);
+
+        Assert.Equal(1, transaction.CommitCalls);
+        Assert.Equal(1, transaction.SyncDisposeCalls);
+        Assert.Equal(0, transaction.DisposeCalls);
+        Assert.Equal(1, connection.SyncDisposeCalls);
+        Assert.Equal(0, connection.DisposeCalls);
     }
 
     [Fact]
@@ -387,6 +464,7 @@ public class ConnectionFactoryExtensionsTests
         public Func<ValueTask> DisposeAsyncAction { get; set; }
         public Exception DisposeFailure { get; set; }
         public int DisposeCalls { get; private set; }
+        public int SyncDisposeCalls { get; private set; }
 
         public override string ConnectionString { get; set; }
         public override string Database => "test";
@@ -404,6 +482,13 @@ public class ConnectionFactoryExtensionsTests
             IsolationLevel isolationLevel, CancellationToken cancellationToken) =>
             BeginAsync?.Invoke(cancellationToken) ??
             new ValueTask<DbTransaction>(transaction);
+
+        protected override void Dispose(bool disposing)
+        {
+            if(disposing)
+                SyncDisposeCalls++;
+            base.Dispose(disposing);
+        }
 
         public override ValueTask DisposeAsync()
         {
@@ -425,6 +510,7 @@ public class ConnectionFactoryExtensionsTests
         public Exception DisposeFailure { get; set; }
         public int CommitCalls { get; private set; }
         public int DisposeCalls { get; private set; }
+        public int SyncDisposeCalls { get; private set; }
         public int RollbackCalls { get; private set; }
         public override IsolationLevel IsolationLevel => IsolationLevel.ReadCommitted;
         protected override DbConnection DbConnection => null;
@@ -440,6 +526,13 @@ public class ConnectionFactoryExtensionsTests
         {
             RollbackCalls++;
             return Task.CompletedTask;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if(disposing)
+                SyncDisposeCalls++;
+            base.Dispose(disposing);
         }
 
         public override ValueTask DisposeAsync()

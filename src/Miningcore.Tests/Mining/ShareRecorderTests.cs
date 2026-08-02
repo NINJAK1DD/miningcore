@@ -160,6 +160,107 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task EmergencyJournal_SustainedOverflowDrainsInForceFlushedBatches()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-emergency-batch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDatabase = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var journalEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseJournal = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var flushCalls = 0;
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                databaseEntered.TrySetResult();
+                await releaseDatabase.Task;
+            });
+        var bus = new MessageBus();
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, bus)
+        {
+            PersistenceQueueCapacity = 250,
+            EmergencyJournalQueueCapacity = 128,
+            RecoveryJournalFlush = async stream =>
+            {
+                var call = Interlocked.Increment(ref flushCalls);
+                if(call == 1)
+                {
+                    journalEntered.TrySetResult();
+                    await releaseJournal.Task;
+                }
+
+                await stream.FlushAsync();
+                if(stream is FileStream fileStream)
+                    fileStream.Flush(true);
+                else
+                    stream.Flush();
+            },
+        };
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 250; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"database-{index}" });
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            for(var index = 0; index < 250; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"primary-{index}" });
+
+            var overflow = Enumerable.Range(0, 101)
+                .Select(index => new Share
+                    { PoolId = "ltc-solo", Miner = $"overflow-{index}" })
+                .ToArray();
+            bus.SendMessage(overflow[0]);
+            await journalEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            foreach(var share in overflow.Skip(1))
+                bus.SendMessage(share);
+
+            releaseJournal.TrySetResult();
+            await Task.WhenAll(overflow.Select(x => x.PersistenceAdmission))
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(2, Volatile.Read(ref flushCalls));
+            Assert.Equal(0, recorder.EmergencyJournalQueueDepth);
+            Assert.Equal(0, recorder.EmergencyJournalQueueOverflowCount);
+            var journal = await File.ReadAllTextAsync(recoveryFilename);
+            Assert.Contains("overflow-0", journal);
+            Assert.Contains("overflow-100", journal);
+        }
+        finally
+        {
+            releaseJournal.TrySetResult();
+            releaseDatabase.TrySetResult();
+            await recorder.StopAsync(CancellationToken.None);
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task StopAsync_DrainsPartialAcknowledgedBatchToPostgreSql()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -348,6 +449,98 @@ public class ShareRecorderTests
             releaseJournal.TrySetResult();
             ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
             Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task ShutdownJournal_CompletesEmergencyPersistenceAdmission()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-shutdown-admission-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var databaseEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        shareRepository.BatchInsertAsync(connection, transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                databaseEntered.TrySetResult();
+                return Task.Delay(Timeout.InfiniteTimeSpan,
+                    call.Arg<CancellationToken>());
+            });
+        var bus = new MessageBus();
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            shareRepository, Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, bus)
+        {
+            ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(50),
+        };
+
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            for(var index = 0; index < 250; index++)
+                bus.SendMessage(new Share
+                    { PoolId = "ltc-solo", Miner = $"database-blocked-{index}" });
+            await databaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Inject the otherwise timing-sensitive state reached when an overflow share has
+            // received an emergency-lane completion but remains in the unresolved registry as
+            // the shutdown snapshot takes ownership of it.
+            var share = new Share
+                { PoolId = "ltc-solo", Miner = "shutdown-emergency" };
+            var completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            share.SetPersistenceAdmission(completion.Task);
+            var queuedType = typeof(ShareRecorder).GetNestedType("QueuedShare",
+                System.Reflection.BindingFlags.NonPublic)!;
+            var queued = Activator.CreateInstance(queuedType,
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic,
+                null, new object[] { long.MaxValue, share }, null)!;
+            queuedType.GetProperty("JournalCompletion")!
+                .SetValue(queued, completion);
+            var unresolved = typeof(ShareRecorder).GetField("unresolvedShares",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)!.GetValue(recorder)!;
+            var added = (bool) unresolved.GetType().GetMethod("TryAdd")!
+                .Invoke(unresolved, new[] { (object) long.MaxValue, queued })!;
+            Assert.True(added);
+
+            await recorder.StopAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            await share.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.True(share.PersistenceAdmission.IsCompletedSuccessfully);
+            Assert.Contains("shutdown-emergency",
+                await File.ReadAllTextAsync(recoveryFilename));
+        }
+        finally
+        {
+            try
+            {
+                await recorder.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+            }
+
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
         }
     }
 
@@ -1100,6 +1293,9 @@ public class ShareRecorderTests
             Assert.Throws<OperationCanceledException>(() =>
                 acceptance.QueueResponse(() => { }));
 
+            await WaitUntilAsync(
+                () => FatalStateIsComplete(fatalState.FatalStateFilename),
+                TimeSpan.FromSeconds(5));
             var latch = File.ReadAllLines(fatalState.FatalStateFilename);
             var sidecar = Assert.Single(latch.Where(line =>
                 line.StartsWith("detailFile=", StringComparison.Ordinal)))[
@@ -4280,6 +4476,46 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public void MiningFailStopGate_RejectsRecursiveSharePublicationClearly()
+    {
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus(coordinator);
+        using var subscription = bus.Listen<Share>()
+            .Subscribe(share => bus.SendMessage(share));
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            bus.SendMessage(new Share { PoolId = "ltc-solo" }));
+
+        Assert.Contains("Recursive share publication is not supported",
+            error.Message);
+        Assert.IsNotType<LockRecursionException>(error);
+    }
+
+    [Fact]
+    public void MiningFailStopGate_DoesNotWaitForDeferredFatalHandling()
+    {
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus();
+        var releaseHandling = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = new DeferredAdmissionFailure(releaseHandling.Task);
+        using var subscription = bus.Listen<Share>().Subscribe(_ => throw failure);
+        using var acceptance = coordinator.AcquireSubmissionAcceptance();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+        var actual = Assert.Throws<DeferredAdmissionFailure>(() =>
+            acceptance.PublishShare(bus, new Share()));
+
+        elapsed.Stop();
+        Assert.Same(failure, actual);
+        Assert.True(failure.HandlerInvoked);
+        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(1));
+        releaseHandling.TrySetResult();
+    }
+
+    [Fact]
     public void MiningAcceptance_FailStopImmediatelyBeforePublicationDoesNotAcknowledge()
     {
         using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
@@ -6970,10 +7206,54 @@ public class ShareRecorderTests
         return filename;
     }
 
+    private static async Task WaitUntilAsync(Func<bool> condition,
+        TimeSpan timeout)
+    {
+        using var deadline = new CancellationTokenSource(timeout);
+
+        while(!condition())
+            await Task.Delay(10, deadline.Token);
+    }
+
+    private static bool FatalStateIsComplete(string filename)
+    {
+        try
+        {
+            return File.ReadLines(filename).Any(line =>
+                string.Equals(line, "detailState=complete",
+                    StringComparison.Ordinal));
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            // The fail-closed latch is atomically advanced from hash-pending to complete.
+            // Retry while either publication is in flight.
+            return false;
+        }
+    }
+
     private sealed record RecoveryFixture(ShareRecorder Recorder,
         IConnectionFactory ConnectionFactory, IDbConnection Connection,
         IDbTransaction Transaction, IShareRepository ShareRepository,
         IBlockRepository BlockRepository, IMessageBus MessageBus);
+
+    private sealed class DeferredAdmissionFailure : IOException,
+        IMiningAdmissionFailure
+    {
+        public DeferredAdmissionFailure(Task handling) :
+            base("deferred admission failure")
+        {
+            this.handling = handling;
+        }
+
+        private readonly Task handling;
+        public bool HandlerInvoked { get; private set; }
+
+        public Task HandleAfterAdmissionReleasedAsync()
+        {
+            HandlerInvoked = true;
+            return handling;
+        }
+    }
 
     private class PartialWriteFailureStream : MemoryStream
     {

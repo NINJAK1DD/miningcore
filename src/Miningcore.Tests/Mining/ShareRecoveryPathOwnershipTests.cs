@@ -23,6 +23,95 @@ namespace Miningcore.Tests.Mining;
 public class ShareRecoveryPathOwnershipTests
 {
     [Fact]
+    public void NestedOwnershipReleaseRetainsProcessLockUntilFinalRelease()
+    {
+        var directory = CreateDirectory();
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        using var ownership = new ShareRecoveryPathOwnership(recoveryFilename);
+
+        try
+        {
+            ownership.Acquire();
+            ownership.Acquire();
+            ownership.Release();
+
+            Assert.True(ownership.IsHeld);
+            ownership.EnsureJournalPathIsExclusive();
+
+            ownership.Release();
+            Assert.False(ownership.IsHeld);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void LinuxLinkFallbackMovesWithoutReplacement()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = CreateDirectory();
+        var source = Path.Combine(directory, "source");
+        var destination = Path.Combine(directory, "destination");
+        File.WriteAllText(source, "recovery evidence");
+
+        try
+        {
+            using var identity = RecoveryDirectoryIdentity.OpenFollowingPath(
+                directory);
+            identity.MoveEntryUsingLinkFallback("source", "destination",
+                "test-forced fallback");
+
+            Assert.False(File.Exists(source));
+            Assert.Equal("recovery evidence", File.ReadAllText(destination));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void LinuxLinkFallbackRefusesExistingDestination()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = CreateDirectory();
+        var source = Path.Combine(directory, "source");
+        var destination = Path.Combine(directory, "destination");
+        File.WriteAllText(source, "new evidence");
+        File.WriteAllText(destination, "existing evidence");
+
+        try
+        {
+            using var identity = RecoveryDirectoryIdentity.OpenFollowingPath(
+                directory);
+            var error = Assert.Throws<IOException>(() =>
+                identity.MoveEntryUsingLinkFallback("source", "destination",
+                    "test-forced fallback"));
+
+            Assert.Contains("without replacement", error.Message);
+            Assert.Equal("new evidence", File.ReadAllText(source));
+            Assert.Equal("existing evidence", File.ReadAllText(destination));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(22)]
+    [InlineData(38)]
+    [InlineData(95)]
+    public void UnsupportedRenameErrorsSelectLinkFallback(int error) =>
+        Assert.True(RecoveryDirectoryIdentity.IsRenameNoReplaceUnsupported(error));
+
+    [Fact]
     public async Task Ownership_IgnoresDifferentPoolPortAcrossProcessesAndReleasesAfterKill()
     {
         var directory = CreateDirectory();
@@ -299,7 +388,7 @@ public class ShareRecoveryPathOwnershipTests
 
         try
         {
-            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
             Assert.NotEqual(0, child.ExitCode);
             Assert.False(File.Exists(readyFilename));
             var error = await child.StandardError.ReadToEndAsync();

@@ -77,13 +77,17 @@ final recorder drain; process-fatal shutdown retains it until the operating syst
 handle. Do not delete the `.miningcore-share-recovery-*.owner.lock` file beside `shareRecoveryFile`
 while Miningcore is running.
 
-On the supported Ubuntu 22.04 Linux target, atomic no-replacement publication and retirement require
-the kernel and filesystem to support `renameat2(..., RENAME_NOREPLACE)`; retained-directory metadata
-is made durable with `fsync`. Older kernels, libc environments, and unusual filesystems without those
-semantics are outside the tested recovery-journal support boundary and fail closed rather than falling
-back to a weaker rename. Windows pins the resolved physical directory and uses write-through child-file
-handles, which protects file contents and prevents namespace redirection, but it does not claim the
-Linux-equivalent explicit parent-directory `fsync` durability guarantee.
+On the supported Ubuntu 22.04 Linux target, Miningcore first uses
+`renameat2(..., RENAME_NOREPLACE)` for atomic no-replacement publication and retirement. If libc does
+not export that call, or the kernel/filesystem reports it unsupported, Miningcore falls back to
+`linkat` followed by `unlinkat`. The link step still refuses an existing destination. A process or
+machine loss between those fallback calls can leave both names linked to one inode; Miningcore's
+single-link validation detects that state and fails closed for operator reconciliation. A filesystem
+that supports neither primitive remains unsupported and fails the operation without overwriting an
+existing entry. Retained-directory metadata is made durable with `fsync`. Windows pins the resolved
+physical directory and uses write-through child-file handles, which protects file contents and
+prevents namespace redirection, but it does not claim the Linux-equivalent explicit parent-directory
+`fsync` durability guarantee.
 
 For production, place the journal on a separately monitored filesystem or storage volume from
 PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure
@@ -118,9 +122,12 @@ that format has always required an anchor.
 
 A bounded 65,536-share persistence queue prevents an unlimited in-memory outage backlog. If it
 fills, publication transfers the share to one bounded 1,024-share emergency channel and one journal
-writer; filesystem work and waiting happen after the mining admission lock is released. A local
-Stratum response waits for that forced append. If both bounded capacities are exhausted, or the
-emergency append fails, Miningcore admits no positive response and enters the status-74 fatal path
+writer; filesystem work and waiting happen after the mining admission lock is released. The writer
+drains up to 250 queued shares into one chained frame and one terminal-anchor update, bounding the
+queue while avoiding a force-flush pair per share during sustained saturation. A local Stratum
+response waits until the frame containing its share is durable. If both bounded capacities are
+exhausted, or the emergency append fails, Miningcore admits no positive response and enters the
+status-74 fatal path
 with the complete unresolved count and pool set. The fatal transition first acquires the exclusive
 publication/response gate and waits for earlier admissions to leave it; only then does it snapshot
 the unresolved registry and write exact incident evidence. This quiescent ordering excludes shares

@@ -84,7 +84,7 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
             const ushort regularFile = 0x8000;
             const ushort directory = 0x4000;
 
-            if(statx(handle.DangerousGetHandle().ToInt32(), string.Empty,
+            if(statx(handle, string.Empty,
                    atEmptyPath, statxBasicStats, out var info) != 0)
                 throw new IOException("Unable to inspect recovery journal link identity",
                     new Win32Exception(Marshal.GetLastPInvokeError()));
@@ -124,7 +124,7 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
         const uint statxBirthTime = 0x0800;
         const uint statxBasicStats = 0x07ff;
 
-        if(statx(handle.DangerousGetHandle().ToInt32(), string.Empty,
+        if(statx(handle, string.Empty,
                atEmptyPath, statxBasicStats | statxBirthTime, out var info) != 0)
             throw new IOException("Unable to read recovery journal file identity",
                 new Win32Exception(Marshal.GetLastPInvokeError()));
@@ -201,7 +201,7 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
         out ByHandleFileInformation information);
 
     [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
-    private static extern int statx(int directoryFileDescriptor,
+    private static extern int statx(SafeFileHandle descriptor,
         string path, int flags, uint mask, out StatxInformation information);
 }
 
