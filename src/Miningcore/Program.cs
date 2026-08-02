@@ -139,6 +139,12 @@ public class Program : ProcessStatusBackgroundService
 
                 try
                 {
+                    // Acknowledgement mutates durable recovery evidence. Participate in the same
+                    // native process-lifetime boundary as recording and import so disabling .NET
+                    // managed file locking cannot permit it to race a live owner.
+                    using var recoveryPathOwnership =
+                        new ShareRecoveryPathOwnership(clusterConfig);
+                    recoveryPathOwnership.Acquire();
                     var state = new ShareRecoveryFatalState(clusterConfig,
                         processStatus);
                     if(!state.Acknowledge(Console.Out))

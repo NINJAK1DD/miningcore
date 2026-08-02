@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -101,6 +102,70 @@ public class ShareRecoveryPathOwnershipTests
             if(!child.HasExited)
                 child.Kill(true);
             await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task AcknowledgementCommand_CannotRaceNativeOwnerWhenManagedLockingIsDisabled()
+    {
+        var directory = CreateDirectory();
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var readyFilename = Path.Combine(directory, "ready");
+        var configFilename = Path.Combine(directory, "config.json");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = stateDirectory,
+        };
+        var fatalState = new ShareRecoveryFatalState(config,
+            new ProcessStatus(), stateDirectory);
+        fatalState.MarkFatal(1, new[] { "ltc-solo" },
+            new IOException("database unavailable"),
+            new IOException("journal unavailable"));
+        await File.WriteAllTextAsync(configFilename,
+            JsonConvert.SerializeObject(new
+            {
+                shareRecoveryFile = recoveryFilename,
+                shareRecoveryStateDirectory = stateDirectory,
+                pools = Array.Empty<object>(),
+            }));
+        using var holder = StartHolder(recoveryFilename, stateDirectory,
+            readyFilename, disableManagedFileLocking: true);
+
+        try
+        {
+            await WaitForFileAsync(readyFilename, holder);
+            using(var blocked = StartAcknowledgement(configFilename,
+                      disableManagedFileLocking: true))
+            {
+                await blocked.WaitForExitAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(15));
+                var standardError = await blocked.StandardError.ReadToEndAsync();
+                var standardOutput = await blocked.StandardOutput.ReadToEndAsync();
+                Assert.True(blocked.ExitCode ==
+                    ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                    $"Expected acknowledgement exit 74 but received {blocked.ExitCode}. " +
+                    $"stdout: {standardOutput} stderr: {standardError}");
+                Assert.Contains("ACKNOWLEDGEMENT REFUSED:", standardError);
+                Assert.True(File.Exists(fatalState.FatalStateFilename));
+            }
+
+            holder.Kill(true);
+            await holder.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+            using var accepted = StartAcknowledgement(configFilename,
+                disableManagedFileLocking: true);
+            await accepted.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.Equal(0, accepted.ExitCode);
+            Assert.False(File.Exists(fatalState.FatalStateFilename));
+        }
+        finally
+        {
+            if(!holder.HasExited)
+                holder.Kill(true);
+            await holder.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             Directory.Delete(directory, true);
         }
     }
@@ -238,7 +303,7 @@ public class ShareRecoveryPathOwnershipTests
             Assert.NotEqual(0, child.ExitCode);
             Assert.False(File.Exists(readyFilename));
             var error = await child.StandardError.ReadToEndAsync();
-            Assert.Contains("Hard-linked recovery journals are not supported",
+            Assert.Contains("Hard-linked recovery boundary files are not supported",
                 error);
         }
         finally
@@ -276,6 +341,198 @@ public class ShareRecoveryPathOwnershipTests
             });
 
             Assert.Throws<InvalidDataException>(ownership.Acquire);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Ownership_RejectsSymbolicLinkOwnerFile()
+    {
+        var directory = CreateDirectory();
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        using var ownership = new ShareRecoveryPathOwnership(new ClusterConfig
+        {
+            ShareRecoveryFile = recoveryFilename,
+        });
+        var target = Path.Combine(directory, "owner-target");
+        File.WriteAllText(target, "must-not-own");
+
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(ownership.OwnershipFilename, target);
+            }
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+            {
+                return;
+            }
+
+            var error = Assert.Throws<InvalidDataException>(ownership.Acquire);
+            Assert.True(error.Message.Contains("regular file",
+                    StringComparison.OrdinalIgnoreCase) ||
+                error.Message.Contains("without following links",
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.False(ownership.IsHeld);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Ownership_RejectsHardLinkedOwnerFile()
+    {
+        var directory = CreateDirectory();
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        using var ownership = new ShareRecoveryPathOwnership(new ClusterConfig
+        {
+            ShareRecoveryFile = recoveryFilename,
+        });
+        var target = Path.Combine(directory, "owner-target");
+        File.WriteAllText(target, "must-not-own");
+        CreateHardLink(target, ownership.OwnershipFilename);
+
+        try
+        {
+            var error = Assert.Throws<InvalidDataException>(ownership.Acquire);
+            Assert.Contains("Hard-linked recovery boundary files are not supported",
+                error.Message);
+            Assert.False(ownership.IsHeld);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Ownership_RejectsRetargetedParentSymlink()
+    {
+        var directory = CreateDirectory();
+        var first = Path.Combine(directory, "first");
+        var second = Path.Combine(directory, "second");
+        var linked = Path.Combine(directory, "current");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(linked, first);
+            }
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+            {
+                return;
+            }
+
+            using var ownership = new ShareRecoveryPathOwnership(new ClusterConfig
+            {
+                ShareRecoveryFile = Path.Combine(linked,
+                    "recovered-shares.txt"),
+            });
+            ownership.Acquire();
+
+            Directory.Delete(linked);
+            Directory.CreateSymbolicLink(linked, second);
+
+            var error = Assert.Throws<InvalidDataException>(
+                ownership.EnsureJournalPathIsExclusive);
+            Assert.Contains("replaced or retargeted", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void LinuxOwnership_RejectsReplacedParentDirectory()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = CreateDirectory();
+        var parent = Path.Combine(directory, "recovery");
+        var displaced = Path.Combine(directory, "recovery-displaced");
+        Directory.CreateDirectory(parent);
+
+        try
+        {
+            using var ownership = new ShareRecoveryPathOwnership(new ClusterConfig
+            {
+                ShareRecoveryFile = Path.Combine(parent,
+                    "recovered-shares.txt"),
+            });
+            ownership.Acquire();
+
+            Directory.Move(parent, displaced);
+            Directory.CreateDirectory(parent);
+
+            var error = Assert.Throws<InvalidDataException>(
+                ownership.EnsureJournalPathIsExclusive);
+            Assert.Contains("replaced or retargeted", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task LinuxJournalValidation_RejectsFifoWithoutBlocking()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = CreateDirectory();
+        var fifo = Path.Combine(directory, "recovered-shares.txt");
+        if(mkfifo(fifo, Convert.ToUInt32("600", 8)) != 0)
+            throw new IOException(
+                $"Unable to create FIFO fixture (error {Marshal.GetLastPInvokeError()})");
+
+        try
+        {
+            var validation = Task.Run(() => Assert.Throws<InvalidDataException>(
+                () => RecoveryJournalPathSafety
+                    .EnsureSinglePhysicalNameIfExists(fifo)));
+            var error = await validation.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Contains("regular file", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void LinuxJournalValidation_RejectsDirectoryAndUnixSocket()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = CreateDirectory();
+        var journalDirectory = Path.Combine(directory, "journal-directory");
+        var socketFilename = Path.Combine(directory, "journal.socket");
+        Directory.CreateDirectory(journalDirectory);
+
+        try
+        {
+            Assert.Throws<InvalidDataException>(() =>
+                RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
+                    journalDirectory));
+
+            using var socket = new Socket(AddressFamily.Unix,
+                SocketType.Stream, ProtocolType.Unspecified);
+            socket.Bind(new UnixDomainSocketEndPoint(socketFilename));
+            Assert.Throws<InvalidDataException>(() =>
+                RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
+                    socketFilename));
         }
         finally
         {
@@ -363,6 +620,35 @@ public class ShareRecoveryPathOwnershipTests
             throw new InvalidOperationException("Unable to start ownership test process");
     }
 
+    private static Process StartAcknowledgement(string configFilename,
+        bool disableManagedFileLocking)
+    {
+        var start = new ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+        };
+        start.ArgumentList.Add("exec");
+        start.ArgumentList.Add("--runtimeconfig");
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory,
+            "Miningcore.Tests.runtimeconfig.json"));
+        start.ArgumentList.Add("--depsfile");
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory,
+            "Miningcore.Tests.deps.json"));
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory,
+            "Miningcore.dll"));
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add(configFilename);
+        start.ArgumentList.Add(ShareRecoveryFatalState.AcknowledgeOption);
+        if(disableManagedFileLocking)
+            start.Environment["DOTNET_SYSTEM_IO_DISABLEFILELOCKING"] = "1";
+
+        return Process.Start(start) ??
+            throw new InvalidOperationException(
+                "Unable to start acknowledgement test process");
+    }
+
     private static async Task WaitForFileAsync(string filename, Process child)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -403,4 +689,7 @@ public class ShareRecoveryPathOwnershipTests
 
     [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
     private static extern int link(string existingFilename, string newFilename);
+
+    [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int mkfifo(string pathname, uint mode);
 }

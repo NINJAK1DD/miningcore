@@ -202,6 +202,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal Action<long, string> RecoveryTerminalStateWrite { get; set; }
     internal Action RecoveryTerminalStateRemove { get; set; }
     internal Action RecoveryAnchorRemovedCheckpoint { get; set; } = () => { };
+    internal Action RecoveryJournalPathValidatedCheckpoint { get; set; } =
+        () => { };
     internal Action<ShareRecoveryImportState.ImportPhase>
         RecoveryImportStateWriteCheckpoint
     {
@@ -587,27 +589,26 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     internal async Task WriteRecoveryJournalAsync(IList<Share> shares)
     {
-        if(!recoveryPathOwnership.IsHeld)
-            throw new InvalidOperationException(
-                $"Recovery journal ownership is not held for {recoveryFilename}");
-
-        recoveryPathOwnership.EnsureJournalPathIsExclusive();
         await recoveryWriteState.Gate.WaitAsync(CancellationToken.None);
 
         try
         {
+            if(!recoveryPathOwnership.IsHeld)
+                throw new InvalidOperationException(
+                    $"Recovery journal ownership is not held for {recoveryFilename}");
+
+            recoveryPathOwnership.EnsureJournalPathIsExclusive();
+            RecoveryJournalPathValidatedCheckpoint();
             recoveryImportState.EnsureNoOutstandingImport();
             FileStream stream;
 
             try
             {
-                stream = new FileStream(recoveryFilename, new FileStreamOptions
-                {
-                    Mode = FileMode.Open,
-                    Access = FileAccess.ReadWrite,
-                    Share = FileShare.None,
-                    Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
-                });
+                // The no-follow writer handle is itself validated as a single-name regular file.
+                // This closes the inspection/open substitution window as well as retaining the
+                // exclusive active-file boundary.
+                stream = RecoveryJournalPathSafety.OpenJournalForWriteExisting(
+                    recoveryFilename);
             }
             catch(FileNotFoundException)
             {
@@ -695,6 +696,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         try
         {
+            recoveryPathOwnership.EnsureJournalPathIsExclusive();
             await using(var stream = new FileStream(temporary,
                 new FileStreamOptions
                 {
@@ -712,12 +714,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             // A force-flushed file is not a durable first creation until its directory entry is
             // atomically published and the containing directory is synchronised on Linux.
+            recoveryPathOwnership.EnsureJournalPathIsExclusive();
             File.Move(temporary, recoveryFilename, false);
             RecoveryDirectorySync(directory);
             recoveryPathOwnership.EnsureJournalPathIsExclusive();
 
-            await using var active = new FileStream(recoveryFilename,
-                FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using var active =
+                RecoveryJournalPathSafety.OpenJournalForWriteExisting(
+                    recoveryFilename);
             var identity = RecoveryJournalFileIdentity.Read(active);
             var tail = ValidateRecoveryJournalDetailed(active, recoveryFilename);
             RecoveryTerminalStateWrite(tail.Sequence, tail.FrameDigest);

@@ -44,6 +44,8 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
     private const int LockUnlock = 8;
     private readonly object gate = new();
     private FileStream ownershipStream;
+    private RecoveryDirectoryIdentity recoveryDirectoryIdentity;
+    private RecoveryJournalFileIdentity ownershipIdentity;
 
     public string RecoveryFilename { get; }
     public string OwnershipFilename { get; }
@@ -67,28 +69,34 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
             DurableDirectory.EnsureCreated(directory,
                 ShareRecoveryFatalState.SyncDirectoryWhereSupported);
             FileStream stream = null;
+            RecoveryDirectoryIdentity directoryIdentity = null;
 
             try
             {
-                stream = new FileStream(OwnershipFilename, FileMode.OpenOrCreate,
-                    FileAccess.ReadWrite, OperatingSystem.IsWindows()
-                        ? FileShare.None
-                        : FileShare.ReadWrite, 4096, FileOptions.WriteThrough);
+                directoryIdentity = RecoveryDirectoryIdentity.OpenFollowingPath(
+                    directory);
+                stream = RecoveryJournalPathSafety.OpenOwnershipFile(
+                    OwnershipFilename);
 
                 if(!OperatingSystem.IsWindows())
                     AcquireUnixLock(stream.SafeFileHandle);
 
+                recoveryDirectoryIdentity = directoryIdentity;
+                directoryIdentity = null;
+                ownershipIdentity = RecoveryJournalFileIdentity.ReadStable(stream);
                 ownershipStream = stream;
             }
-            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or
-                                      Win32Exception)
+            catch(Exception ex)
             {
                 stream?.Dispose();
-                throw new IOException(
-                    $"Another Miningcore process owns recovery journal {RecoveryFilename}, " +
-                    $"or exclusive ownership could not be established using {OwnershipFilename}. " +
-                    "Run exactly one local share recorder, merged-mining relay submitter or " +
-                    "recovery import per recovery path.", ex);
+                directoryIdentity?.Dispose();
+                if(ex is IOException or UnauthorizedAccessException or Win32Exception)
+                    throw new IOException(
+                        $"Another Miningcore process owns recovery journal {RecoveryFilename}, " +
+                        $"or exclusive ownership could not be established using {OwnershipFilename}. " +
+                        "Run exactly one local share recorder, merged-mining relay submitter or " +
+                        "recovery import per recovery path.", ex);
+                throw;
             }
 
             try
@@ -111,6 +119,11 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
                 throw new InvalidOperationException(
                     $"Recovery journal ownership is not held for {RecoveryFilename}");
 
+            recoveryDirectoryIdentity.EnsurePathStillIdentifiesDirectory();
+            if(!OperatingSystem.IsWindows())
+                RecoveryJournalPathSafety.EnsurePathStillIdentifiesFile(
+                    OwnershipFilename, ownershipIdentity,
+                    "Recovery ownership file");
             RecoveryJournalPathSafety.EnsureSinglePhysicalNameIfExists(
                 RecoveryFilename);
         }
@@ -125,9 +138,13 @@ public sealed class ShareRecoveryPathOwnership : IShareRecoveryPathOwnership
                 return;
 
             ownershipStream = null;
+            var directoryIdentity = recoveryDirectoryIdentity;
+            recoveryDirectoryIdentity = null;
+            ownershipIdentity = default;
             if(!OperatingSystem.IsWindows())
                 _ = flock(stream.SafeFileHandle, LockUnlock);
             stream.Dispose();
+            directoryIdentity?.Dispose();
         }
     }
 

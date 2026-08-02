@@ -63,10 +63,13 @@ or import inspection. This intrinsic location prevents a different `shareRecover
 from creating an independent owner for the same journal. A second local recorder, merged-mining
 relay submitter or recovery import using the same journal fails before pools start, even if it uses
 different Stratum ports or reaches the parent through a directory symlink. Journal-file symlinks and
-hard links are rejected; use one regular-file pathname. The owner is released only after a successful
+hard links are rejected; use one regular-file pathname. Miningcore retains the physical parent-
+directory identity and rechecks it before journal mutation, so replacing a directory or retargeting
+a configured parent symlink fails closed. The hidden owner must itself remain a single-name regular
+file: owner-file symlinks and hard links are rejected. The owner is released only after a successful
 final recorder drain; process-fatal shutdown retains it until the operating system closes the process
-handle. Do not delete the hidden `.miningcore-share-recovery-*.owner.lock` file beside
-`shareRecoveryFile` while Miningcore is running.
+handle. Do not delete the `.miningcore-share-recovery-*.owner.lock` file beside `shareRecoveryFile`
+while Miningcore is running.
 
 For production, place the journal on a separately monitored filesystem or storage volume from
 PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure
@@ -209,10 +212,13 @@ therefore keeps startup blocked with status 74 rather than trusting metadata alo
 
 Acknowledging a prerelease v2-only incident set creates a durable v4 legacy-set anchor without
 rewriting or deleting the original evidence. A later v3 incident extends from that preserved set.
-Startup inspection, fatal-state publication and acknowledgement are serialized across Miningcore
-processes with the path-scoped `.mutation.lock` file in the state directory. The lock file is
-persistent state infrastructure, not incident evidence; leave it in place. If another service or
-recovery command owns it, the operation fails closed and reports that ownership instead of racing.
+Startup inspection and fatal-state publication are serialized across Miningcore processes with the
+path-scoped `.mutation.lock` file in the state directory. The lock file is persistent state
+infrastructure, not incident evidence; leave it in place. The acknowledgement command additionally
+acquires the journal's native process-lifetime owner before taking the mutation lock. It therefore
+cannot mutate evidence while a recorder, merged-mining submitter or importer owns the journal, even
+when .NET managed file locking is disabled on Unix. If another service or recovery command owns
+either boundary, the operation fails closed and reports that ownership instead of racing.
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete

@@ -3029,6 +3029,139 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoveryJournal_WindowsConcurrentWritersWaitBehindExclusiveHandle()
+    {
+        if(!OperatingSystem.IsWindows())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-windows-writers-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+
+        ShareRecorder CreateRecorder() => new(
+            Substitute.For<IConnectionFactory>(), AutoMapperFactory.CreateMapper(),
+            new JsonSerializerSettings(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), config,
+            Substitute.For<IMessageBus>());
+
+        var first = CreateRecorder();
+        var second = CreateRecorder();
+        var flushEntered = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFlush = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            await first.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "LInitial" },
+            });
+            first.RecoveryJournalFlush = async stream =>
+            {
+                flushEntered.TrySetResult(true);
+                await releaseFlush.Task;
+                await stream.FlushAsync();
+                Assert.IsType<FileStream>(stream).Flush(true);
+            };
+
+            var firstWrite = first.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "btc-solo", Miner = "BFirstWriter" },
+            });
+            await flushEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var secondWrite = second.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "doge-solo", Miner = "DSecondWriter" },
+            });
+            await Task.Delay(50);
+            Assert.False(secondWrite.IsCompleted);
+
+            releaseFlush.TrySetResult(true);
+            await Task.WhenAll(firstWrite, secondWrite)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await using var stream = File.OpenRead(recoveryFilename);
+            Assert.True(ShareRecorder.ValidateRecoveryJournal(stream,
+                recoveryFilename));
+            var records = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Count(line => !string.IsNullOrWhiteSpace(line) &&
+                    !line.StartsWith('#'));
+            Assert.Equal(3, records);
+            new ShareRecoveryFatalState(config, new ProcessStatus(),
+                    config.ShareRecoveryStateDirectory)
+                .EnsureStartupAllowed();
+        }
+        finally
+        {
+            releaseFlush.TrySetResult(true);
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryJournal_NoFollowWriterRejectsSubstitutionAfterInspection()
+    {
+        if(!OperatingSystem.IsLinux())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-open-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var originalFilename = Path.Combine(directory, "original-journal.txt");
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>());
+
+        try
+        {
+            await recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share { PoolId = "ltc-solo", Miner = "LOriginal" },
+            });
+            recorder.RecoveryJournalPathValidatedCheckpoint = () =>
+            {
+                File.Move(recoveryFilename, originalFilename);
+                File.CreateSymbolicLink(recoveryFilename, originalFilename);
+            };
+
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share { PoolId = "btc-solo", Miner = "BMustNotAppend" },
+                }));
+
+            Assert.Contains("without following links", error.Message);
+            await using var original = File.OpenRead(originalFilename);
+            Assert.True(ShareRecorder.ValidateRecoveryJournal(original,
+                originalFilename));
+            Assert.DoesNotContain("BMustNotAppend",
+                await File.ReadAllTextAsync(originalFilename));
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task RecoveryJournal_PartialAppendFailureRollsBackBeforeNextWrite()
     {
         var original = Encoding.UTF8.GetBytes(

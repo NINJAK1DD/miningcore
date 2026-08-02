@@ -10,34 +10,63 @@ namespace Miningcore.Mining;
 /// </summary>
 internal sealed class RecoveryDirectoryIdentity : IDisposable
 {
-    private RecoveryDirectoryIdentity(string path, SafeFileHandle handle)
+    private RecoveryDirectoryIdentity(string path, SafeFileHandle handle,
+        bool followFinalLink)
     {
-        Path = path;
-        this.handle = handle;
-        identity = RecoveryJournalFileIdentity.ReadStable(handle, path);
+        try
+        {
+            Path = path;
+            this.handle = handle;
+            this.followFinalLink = followFinalLink;
+            var metadata = RecoveryJournalFileIdentity.ReadPhysicalMetadata(handle,
+                path);
+            if(!metadata.IsDirectory)
+                throw new InvalidDataException(
+                    $"Recovery directory {path} is not a directory or resolves to an unsupported reparse point");
+            identity = RecoveryJournalFileIdentity.ReadStable(handle, path);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
     }
 
     private readonly SafeFileHandle handle;
     private readonly RecoveryJournalFileIdentity identity;
+    private readonly bool followFinalLink;
     public string Path { get; }
 
     public static RecoveryDirectoryIdentity Open(string path)
     {
         path = System.IO.Path.GetFullPath(path);
-        return new RecoveryDirectoryIdentity(path, OpenNoFollow(path));
+        return new RecoveryDirectoryIdentity(path,
+            OpenDirectory(path, false), false);
+    }
+
+    /// <summary>
+    /// Retains the physical identity reached through a configured directory pathname. This allows
+    /// a stable directory symlink while detecting replacement or retargeting before later writes.
+    /// </summary>
+    public static RecoveryDirectoryIdentity OpenFollowingPath(string path)
+    {
+        path = System.IO.Path.GetFullPath(path);
+        return new RecoveryDirectoryIdentity(path,
+            OpenDirectory(path, true), true);
     }
 
     public void EnsurePathStillIdentifiesDirectory()
     {
-        using var current = OpenNoFollow(Path);
+        using var current = OpenDirectory(Path, followFinalLink);
         if(RecoveryJournalFileIdentity.ReadStable(current, Path) != identity)
             throw new InvalidDataException(
-                $"Recovery archive directory {Path} was replaced during source retirement");
+                $"Recovery directory {Path} was replaced or retargeted during the operation");
     }
 
     public void Dispose() => handle.Dispose();
 
-    private static SafeFileHandle OpenNoFollow(string path)
+    private static SafeFileHandle OpenDirectory(string path,
+        bool followFinalLink)
     {
         if(OperatingSystem.IsLinux())
         {
@@ -45,8 +74,10 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
             const int oDirectory = 0x10000;
             const int oNoFollow = 0x20000;
             const int oCloseOnExec = 0x80000;
-            var descriptor = open(path,
-                oReadOnly | oDirectory | oNoFollow | oCloseOnExec, 0);
+            var flags = oReadOnly | oDirectory | oCloseOnExec;
+            if(!followFinalLink)
+                flags |= oNoFollow;
+            var descriptor = open(path, flags, 0);
             if(descriptor < 0)
                 throw new InvalidDataException(
                     $"Recovery archive directory {path} could not be opened without following links",
@@ -64,9 +95,12 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
             const uint openExisting = 3;
             const uint backupSemantics = 0x02000000;
             const uint openReparsePoint = 0x00200000;
+            var flags = backupSemantics;
+            if(!followFinalLink)
+                flags |= openReparsePoint;
             var result = CreateFile(path, genericRead,
                 shareRead | shareWrite | shareDelete, IntPtr.Zero, openExisting,
-                backupSemantics | openReparsePoint, IntPtr.Zero);
+                flags, IntPtr.Zero);
             if(result.IsInvalid)
             {
                 var error = Marshal.GetLastPInvokeError();
@@ -76,20 +110,11 @@ internal sealed class RecoveryDirectoryIdentity : IDisposable
                     new Win32Exception(error));
             }
 
-            var attributes = File.GetAttributes(path);
-            if((attributes & FileAttributes.Directory) == 0 ||
-               (attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                result.Dispose();
-                throw new InvalidDataException(
-                    $"Recovery archive directory {path} is not a regular directory or is a reparse point");
-            }
-
             return result;
         }
 
         var info = new DirectoryInfo(path);
-        if(info.LinkTarget != null)
+        if(!followFinalLink && info.LinkTarget != null)
             throw new InvalidDataException(
                 $"Recovery archive directory {path} is a symbolic link");
         return File.OpenHandle(path, FileMode.Open, FileAccess.Read,

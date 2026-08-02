@@ -68,9 +68,12 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
 
             const uint directoryAttribute = 0x10;
             const uint reparsePointAttribute = 0x400;
+            var isDirectory = (info.FileAttributes & directoryAttribute) != 0;
+            var isReparsePoint =
+                (info.FileAttributes & reparsePointAttribute) != 0;
             return new RecoveryJournalPhysicalMetadata(info.NumberOfLinks,
-                (info.FileAttributes & directoryAttribute) == 0 &&
-                (info.FileAttributes & reparsePointAttribute) == 0);
+                !isDirectory && !isReparsePoint,
+                isDirectory && !isReparsePoint);
         }
 
         if(OperatingSystem.IsLinux())
@@ -79,20 +82,24 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
             const uint statxBasicStats = 0x07ff;
             const ushort fileTypeMask = 0xf000;
             const ushort regularFile = 0x8000;
+            const ushort directory = 0x4000;
 
             if(statx(handle.DangerousGetHandle().ToInt32(), string.Empty,
                    atEmptyPath, statxBasicStats, out var info) != 0)
                 throw new IOException("Unable to inspect recovery journal link identity",
                     new Win32Exception(Marshal.GetLastPInvokeError()));
 
+            var fileType = (ushort) (info.Mode & fileTypeMask);
             return new RecoveryJournalPhysicalMetadata(info.LinkCount,
-                (info.Mode & fileTypeMask) == regularFile);
+                fileType == regularFile, fileType == directory);
         }
 
         var fallback = new FileInfo(fallbackPath);
+        var isFallbackDirectory =
+            (fallback.Attributes & FileAttributes.Directory) != 0;
         return new RecoveryJournalPhysicalMetadata(1,
-            fallback.LinkTarget == null &&
-            (fallback.Attributes & FileAttributes.Directory) == 0);
+            fallback.LinkTarget == null && !isFallbackDirectory,
+            fallback.LinkTarget == null && isFallbackDirectory);
     }
 
     private static RecoveryJournalFileIdentity ReadWindows(SafeFileHandle handle)
@@ -199,4 +206,4 @@ internal readonly record struct RecoveryJournalFileIdentity(string Value)
 }
 
 internal readonly record struct RecoveryJournalPhysicalMetadata(
-    uint LinkCount, bool IsRegularFile);
+    uint LinkCount, bool IsRegularFile, bool IsDirectory);
