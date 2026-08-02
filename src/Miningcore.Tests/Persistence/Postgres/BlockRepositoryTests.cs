@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
+using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Xunit;
@@ -16,6 +17,43 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class BlockRepositoryTests
 {
+    [Fact]
+    public async Task DeclaredBlockOnlyCandidateTypesAllHaveConflictRules()
+    {
+        var expectedTypes = new[]
+        {
+            "auxpow",
+            "auxpow-claim",
+            "merged-parent",
+            "merged-parent-uncertain",
+        };
+        Assert.Equal(expectedTypes.OrderBy(x => x, StringComparer.Ordinal),
+            BlockOnlyCandidatePersistenceRules.DeclaredTypes
+                .OrderBy(x => x, StringComparer.Ordinal));
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+
+        foreach(var type in expectedTypes)
+        {
+            Assert.True(BlockOnlyCandidatePersistenceRules.TryGet(type,
+                out var rule));
+            var connection = new RecordingDbConnection();
+
+            await repository.InsertAsync(connection, null, new Block
+            {
+                PoolId = "idempotency-test",
+                BlockHeight = 100,
+                Type = type,
+                Hash = type + "-hash",
+                Status = BlockStatus.Pending,
+                TransactionConfirmationData = type + ":identity:0",
+                Created = DateTime.UtcNow,
+            });
+
+            Assert.Contains(rule.ConflictClause, connection.CommandText,
+                StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     [Fact]
     public async Task InsertAsync_DeduplicatesAuxPowBlocksByPoolAndHash()
     {

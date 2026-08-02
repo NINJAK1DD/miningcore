@@ -28,21 +28,10 @@ public class BlockRepository : IBlockRepository
             VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
                 @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created)";
 
-        const string auxPowConflictClause =
-            " ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING";
-        const string auxPowClaimConflictClause =
-            " ON CONFLICT (poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim' DO NOTHING";
-        const string mergedParentConflictClause =
-            " ON CONFLICT (poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain') DO NOTHING";
-
-        var command = mapped.Type switch
-        {
-            "auxpow" => query + auxPowConflictClause,
-            "auxpow-claim" => query + auxPowClaimConflictClause,
-            "merged-parent" => query + mergedParentConflictClause,
-            "merged-parent-uncertain" => query + mergedParentConflictClause,
-            _ => query,
-        };
+        var command = BlockOnlyCandidatePersistenceRules.TryGet(mapped.Type,
+            out var persistenceRule)
+            ? query + persistenceRule.ConflictClause
+            : query;
 
         return await con.ExecuteAsync(new CommandDefinition(command, mapped, tx,
             cancellationToken: ct)) > 0;

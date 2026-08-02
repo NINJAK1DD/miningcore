@@ -2194,6 +2194,35 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task PersistBlockCandidateAsync_RejectsTypeWithoutIdempotencyRule()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig { Pools = Array.Empty<PoolConfig>() },
+            Substitute.For<IMessageBus>());
+        var candidate = new Share
+        {
+            PoolId = "future-pool",
+            BlockHash = "future-block-hash",
+            BlockType = "future-block-only-type",
+            IsBlockCandidate = true,
+            BlockOnly = true,
+        };
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            recorder.PersistBlockCandidateAsync(candidate));
+
+        Assert.Contains("no declared stable persistence identity", error.Message);
+        await connectionFactory.DidNotReceive().OpenConnectionAsync();
+        await blockRepository.DidNotReceive().InsertAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+            Arg.Any<Block>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task PersistBlockCandidateAsync_PostCommitCleanupFailureNeverJournalsCandidate()
     {
         var directory = Path.Combine(Path.GetTempPath(),
@@ -4455,7 +4484,9 @@ public class ShareRecorderTests
             Assert.False(result.IsSuccessful);
             Assert.Equal(1, result.InvalidCount);
             Assert.Contains("status=INVALID", output.ToString());
-            Assert.Contains("SHA-256 does not match", output.ToString());
+            Assert.True(output.ToString().Contains("SHA-256 does not match") ||
+                        output.ToString().Contains("invalid prefix"),
+                "Tampered evidence must fail either structural validation or its digest check.");
         }
         finally
         {
@@ -4503,6 +4534,120 @@ public class ShareRecorderTests
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_RejectsOversizedLineWithBoundedReader()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-oversized-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "ltc-solo", Miner = "LOversized" },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed"));
+            var latch = File.ReadAllLines(state.FatalStateFilename);
+            var detailFilename = Assert.Single(latch.Where(line =>
+                line.StartsWith("detailFile=", StringComparison.Ordinal)))[
+                "detailFile=".Length..];
+            File.WriteAllText(detailFilename, new string('A', 1_048_577));
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output);
+
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("record line longer than 1048576 characters",
+                output.ToString());
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_UsesStableHandleAcrossHashAndParse()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-verifier-identity-{Guid.NewGuid():N}");
+        var config = new ClusterConfig
+        {
+            ShareRecoveryFile = Path.Combine(directory, "recovered-shares.txt"),
+            ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+        };
+        var state = new ShareRecoveryFatalState(config, new ProcessStatus(),
+            config.ShareRecoveryStateDirectory);
+        var replacementBlocked = false;
+        var replacementPublished = false;
+
+        try
+        {
+            state.MarkFatalShares(new[]
+                {
+                    new Share { PoolId = "btc-solo", Miner = "bc1identity" },
+                }, new IOException("commit uncertain"),
+                new InvalidOperationException("journal suppressed"));
+            using var output = new StringWriter();
+
+            var result = ShareRecoveryIncidentVerifier.Verify(config, output,
+                filename =>
+                {
+                    var replacement = filename + ".replacement";
+                    var bytes = File.ReadAllBytes(filename);
+                    bytes[Math.Min(32, bytes.Length - 2)] ^= 1;
+                    File.WriteAllBytes(replacement, bytes);
+
+                    try
+                    {
+                        File.Move(replacement, filename, true);
+                        replacementPublished = true;
+                    }
+                    catch(Exception ex) when(ex is IOException or
+                                              UnauthorizedAccessException)
+                    {
+                        replacementBlocked = true;
+                        File.Delete(replacement);
+                    }
+                });
+
+            if(replacementPublished)
+            {
+                Assert.False(result.IsSuccessful);
+                Assert.Contains("sidecar path was replaced",
+                    output.ToString());
+            }
+            else
+            {
+                Assert.True(replacementBlocked);
+                Assert.True(result.IsSuccessful);
+            }
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ShareRecoveryIncidentVerifier_ConvertsOutOfMemoryToFailure()
+    {
+        var result = ShareRecoveryIncidentVerifier.Verify(new ClusterConfig(),
+            new OutOfMemoryTextWriter());
+
+        Assert.False(result.IsSuccessful);
+        Assert.Equal(1, result.InvalidCount);
     }
 
     [Fact]
@@ -4913,6 +5058,14 @@ public class ShareRecorderTests
 
             base.Flush(flushToDisk);
         }
+    }
+
+    private sealed class OutOfMemoryTextWriter : TextWriter
+    {
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void WriteLine(string value) =>
+            throw new OutOfMemoryException("simulated verifier memory pressure");
     }
 
     [ProtoContract]

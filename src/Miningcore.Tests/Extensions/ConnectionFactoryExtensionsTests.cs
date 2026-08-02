@@ -172,11 +172,20 @@ public class ConnectionFactoryExtensionsTests
         var factory = Substitute.For<IConnectionFactory>();
         var neverDisposed = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionDisposed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var transaction = new ControlledDbTransaction
         {
             DisposeAsyncAction = () => new ValueTask(neverDisposed.Task),
         };
-        var connection = new ControlledDbConnection(transaction);
+        var connection = new ControlledDbConnection(transaction)
+        {
+            DisposeAsyncAction = () =>
+            {
+                connectionDisposed.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+        };
         factory.OpenConnectionAsync().Returns(connection);
 
         var error = await Assert.ThrowsAsync<
@@ -185,11 +194,17 @@ public class ConnectionFactoryExtensionsTests
                 classifyCommitOutcome: true,
                 resourceCleanupTimeout: TimeSpan.FromMilliseconds(50)));
 
-        var timeout = Assert.IsType<TimeoutException>(error.InnerException);
-        Assert.Contains("database transaction", timeout.Message);
+        var timeout = Assert.IsType<
+            TransactionResourceCleanupTimeoutException>(error.InnerException);
+        Assert.Equal("transaction", timeout.ActiveResource);
+        Assert.False(timeout.ConnectionCleanupStarted);
         Assert.Equal(1, transaction.CommitCalls);
         Assert.Equal(0, transaction.RollbackCalls);
         Assert.Equal(1, transaction.DisposeCalls);
+        Assert.Equal(0, connection.DisposeCalls);
+
+        neverDisposed.TrySetResult();
+        await connectionDisposed.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal(1, connection.DisposeCalls);
     }
 
@@ -217,9 +232,10 @@ public class ConnectionFactoryExtensionsTests
                 resourceCleanupTimeout: TimeSpan.FromMilliseconds(50)));
 
         Assert.Same(commitFailure, error.InnerException);
-        var timeout = Assert.IsType<TimeoutException>(
+        var timeout = Assert.IsType<TransactionResourceCleanupTimeoutException>(
             error.Data[ConnectionFactoryExtensions.CleanupExceptionDataKey]);
-        Assert.Contains("database connection", timeout.Message);
+        Assert.Equal("connection", timeout.ActiveResource);
+        Assert.True(timeout.ConnectionCleanupStarted);
         Assert.Equal(0, transaction.RollbackCalls);
     }
 

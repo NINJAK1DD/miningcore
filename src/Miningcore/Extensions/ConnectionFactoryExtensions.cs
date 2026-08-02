@@ -146,7 +146,7 @@ public static class ConnectionFactoryExtensions
     internal const string RollbackExceptionDataKey = "Miningcore.RollbackException";
     internal const string CleanupExceptionDataKey = "Miningcore.TransactionCleanupException";
     internal static readonly TimeSpan DefaultResourceCleanupTimeout =
-        TimeSpan.FromSeconds(2);
+        TimeSpan.FromSeconds(4);
 
     private enum TransactionOutcome
     {
@@ -158,11 +158,44 @@ public static class ConnectionFactoryExtensions
     private static async Task<Exception> DisposeTransactionResourcesAsync(
         IDbTransaction tx, IDbConnection con, TimeSpan timeout)
     {
-        List<Exception> failures = null;
+        var progress = new TransactionCleanupProgress();
+        var cleanupTask = Task.Run(() => DisposeTransactionResourcesOrderedAsync(
+            tx, con, progress));
 
-        await DisposeResourceSafelyAsync(tx, "transaction", timeout,
-            failures ??= new List<Exception>());
-        await DisposeResourceSafelyAsync(con, "connection", timeout, failures);
+        try
+        {
+            return await cleanupTask.WaitAsync(timeout);
+        }
+        catch(TimeoutException ex) when(!cleanupTask.IsCompleted)
+        {
+            // ADO.NET disposal has no cancellation contract. The ordered cleanup remains in the
+            // background, but connection disposal cannot start until transaction disposal has
+            // actually returned. Observe its eventual failure without replacing the already
+            // classified financial outcome.
+            _ = cleanupTask.ContinueWith(task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+            return new TransactionResourceCleanupTimeoutException(
+                $"Timed out after {timeout} while disposing database transaction resources " +
+                $"in order (active resource: {progress.ActiveResource})",
+                progress.ActiveResource, progress.ConnectionCleanupStarted, ex);
+        }
+    }
+
+    private static async Task<Exception> DisposeTransactionResourcesOrderedAsync(
+        IDbTransaction tx, IDbConnection con, TransactionCleanupProgress progress)
+    {
+        var failures = new List<Exception>();
+
+        progress.ActiveResource = "transaction";
+        await DisposeResourceSafelyAsync(tx, failures);
+        progress.ConnectionCleanupStarted = true;
+        progress.ActiveResource = "connection";
+        await DisposeResourceSafelyAsync(con, failures);
+        progress.ActiveResource = "complete";
 
         return failures.Count switch
         {
@@ -174,45 +207,39 @@ public static class ConnectionFactoryExtensions
     }
 
     private static async Task DisposeResourceSafelyAsync(object resource,
-        string resourceName, TimeSpan timeout, ICollection<Exception> failures)
+        ICollection<Exception> failures)
     {
         if(resource == null)
             return;
 
         try
         {
-            Task disposeTask;
-
             if(resource is IAsyncDisposable asyncDisposable)
-                disposeTask = Task.Run(async () =>
-                    await asyncDisposable.DisposeAsync());
+                await asyncDisposable.DisposeAsync();
             else if(resource is IDisposable disposable)
-                disposeTask = Task.Run(disposable.Dispose);
-            else
-                return;
-
-            try
-            {
-                await disposeTask.WaitAsync(timeout);
-            }
-            catch(TimeoutException ex) when(!disposeTask.IsCompleted)
-            {
-                // Dispose APIs do not accept cancellation. Stop waiting so the financial
-                // outcome can be classified within a deterministic bound, and observe any
-                // eventual background fault without allowing it to replace that classification.
-                _ = disposeTask.ContinueWith(task => _ = task.Exception,
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted |
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-                throw new TimeoutException(
-                    $"Timed out after {timeout} while disposing the database {resourceName}",
-                    ex);
-            }
+                disposable.Dispose();
         }
         catch(Exception ex)
         {
             failures.Add(ex);
+        }
+    }
+
+    private sealed class TransactionCleanupProgress
+    {
+        private string activeResource = "not-started";
+        private int connectionCleanupStarted;
+
+        public string ActiveResource
+        {
+            get => Volatile.Read(ref activeResource);
+            set => Volatile.Write(ref activeResource, value);
+        }
+
+        public bool ConnectionCleanupStarted
+        {
+            get => Volatile.Read(ref connectionCleanupStarted) != 0;
+            set => Volatile.Write(ref connectionCleanupStarted, value ? 1 : 0);
         }
     }
 
@@ -299,4 +326,18 @@ public sealed class TransactionCommittedCleanupException :
         Exception innerException) : base(message, innerException)
     {
     }
+}
+
+internal sealed class TransactionResourceCleanupTimeoutException : TimeoutException
+{
+    public TransactionResourceCleanupTimeoutException(string message,
+        string activeResource, bool connectionCleanupStarted,
+        Exception innerException) : base(message, innerException)
+    {
+        ActiveResource = activeResource;
+        ConnectionCleanupStarted = connectionCleanupStarted;
+    }
+
+    public string ActiveResource { get; }
+    public bool ConnectionCleanupStarted { get; }
 }

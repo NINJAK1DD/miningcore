@@ -56,8 +56,9 @@ removal. A later dual-target candidate loss upgrades an already-started general 
 path. The fixed latch remains small and is force-flushed in a hash-pending state before exact shares
 are serialized once into a streamed, incrementally hashed sidecar, so serialization and incomplete
 sidecar failures still block restart. The read-only `--verify-share-recovery-state` command
-enumerates incident metadata, verifies sidecar hashes and decodes/counts exact records without
-modifying evidence. Journal readers cap
+enumerates incident metadata, verifies sidecar hashes and allocation-bounded records through one
+restrictively shared, identity-checked handle, and decodes/counts exact records without modifying
+evidence. Memory exhaustion fails the command without attempting to continue. Journal readers cap
 individual recovery lines at 1,048,576 characters. Frame-content hashes normalise
 line endings to `\n`; the independent anchor closes the terminal-frame deletion gap for newly
 committed frames, while incident checksums remain necessary for legacy history. State-directory I/O uncertainty also fails
@@ -77,9 +78,10 @@ Unexpected mapper, connection, transaction or repository failures now quiesce mi
 the complete unresolved registry to the recovery journal and stop with a general failure. If the
 journal also fails, status 74 and the fatal latch remain authoritative. The PostgreSQL transaction
 lifecycle is cancellation-aware and bounded through open, begin, repository commands, commit,
-rollback and cleanup. Transaction and connection cleanup each receive an independent two-second
-wait bound; provider disposal may finish in the background because ADO.NET disposal APIs do not
-accept cancellation. Cleanup failure after a known commit removes that exact batch from replayable
+rollback and cleanup. Transaction then connection disposal run as one ordered background sequence
+under a four-second aggregate wait bound, because ADO.NET disposal APIs do not accept cancellation.
+If transaction disposal consumes that bound, connection disposal cannot overlap it and begins only
+if the transaction call later returns. Cleanup failure after a known commit removes that exact batch from replayable
 state; cleanup failure while commit is uncertain remains secondary evidence and cannot replace the
 uncertain outcome. A commit whose outcome cannot be proven is never copied to the importable journal;
 exact share JSON is streamed to the sidecar referenced by the status-74 latch for reconciliation.

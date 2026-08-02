@@ -215,6 +215,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new ArgumentException(
                 "Synchronous block persistence requires a block-only candidate", nameof(share));
 
+        // Shutdown may stop awaiting an in-flight insert and journal this candidate while the
+        // original PostgreSQL operation later commits. Only candidate types whose stable identity
+        // is backed by a matching unique index and conflict clause are safe on that path.
+        BlockOnlyCandidatePersistenceRules.EnsureDeclared(share);
+
         return PersistBlockCandidateDurablyAsync(new[] { share });
     }
 
@@ -711,8 +716,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         stream.Position = 0;
         using var reader = new StreamReader(stream,
             new UTF8Encoding(false, true), leaveOpen: true);
-        using var lines = new BoundedRecoveryLineReader(reader,
-            MaxRecoveryRecordLineLength, filename);
+        using var lines = new BoundedLineReader(reader,
+            MaxRecoveryRecordLineLength, $"Recovery journal {filename}",
+            " Preserve it for reconciliation.");
 
         try
         {
@@ -753,7 +759,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
-    private static void ValidateRecoveryHeader(BoundedRecoveryLineReader lines,
+    private static void ValidateRecoveryHeader(BoundedLineReader lines,
         string filename, IncrementalHash legacyHash)
     {
         var expectedHeader = new[]
@@ -780,7 +786,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     }
 
     private static RecoveryJournalTail ValidateLegacyAndChainedFrames(
-        BoundedRecoveryLineReader lines, string filename, string firstLine,
+        BoundedLineReader lines, string filename, string firstLine,
         IncrementalHash legacyHash, bool allowUnframedPrefix,
         bool requireV1Batch)
     {
@@ -826,7 +832,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             Convert.ToHexString(legacyHash.GetHashAndReset()), false);
     }
 
-    private static void ValidateRecoveryV1Frame(BoundedRecoveryLineReader lines,
+    private static void ValidateRecoveryV1Frame(BoundedLineReader lines,
         string filename, string startLine, IncrementalHash legacyHash)
     {
         var startMetadata = ParseRecoveryV1Metadata(startLine,
@@ -877,7 +883,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     }
 
     private static RecoveryJournalTail ValidateRecoveryV2Frames(
-        BoundedRecoveryLineReader lines, string filename, string firstLine,
+        BoundedLineReader lines, string filename, string firstLine,
         string expectedPrevious, bool requireBatch)
     {
         var expectedSequence = 1L;
@@ -1193,87 +1199,6 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             long fileLength, RecoveryJournalTail tail)
         {
             Trust(fileIdentity, fileLength, tail);
-        }
-    }
-
-    private sealed class BoundedRecoveryLineReader : IDisposable
-    {
-        public BoundedRecoveryLineReader(TextReader reader, int maximumLength,
-            string filename)
-        {
-            this.reader = reader;
-            this.maximumLength = maximumLength;
-            this.filename = filename;
-        }
-
-        private readonly TextReader reader;
-        private readonly int maximumLength;
-        private readonly string filename;
-        private readonly char[] buffer = new char[4096];
-        private int position;
-        private int available;
-        private long lineNumber;
-
-        public string ReadLine()
-        {
-            StringBuilder builder = null;
-            var length = 0;
-
-            while(true)
-            {
-                if(position >= available)
-                {
-                    available = reader.Read(buffer, 0, buffer.Length);
-                    position = 0;
-
-                    if(available == 0)
-                    {
-                        if(builder == null && length == 0)
-                            return null;
-
-                        lineNumber++;
-                        return Finish(builder, length);
-                    }
-                }
-
-                var newline = Array.IndexOf(buffer, '\n', position,
-                    available - position);
-                var end = newline >= 0 ? newline : available;
-                var segmentLength = end - position;
-                length = checked(length + segmentLength);
-
-                if(length > maximumLength)
-                    throw new InvalidDataException(
-                        $"Recovery journal {filename} contains a record line longer than " +
-                        $"{maximumLength} characters near line {lineNumber + 1}. Preserve it for reconciliation.");
-
-                builder ??= new StringBuilder(Math.Min(maximumLength,
-                    Math.Max(128, length)));
-                builder.Append(buffer, position, segmentLength);
-                position = newline >= 0 ? newline + 1 : available;
-
-                if(newline < 0)
-                    continue;
-
-                lineNumber++;
-                return Finish(builder, length);
-            }
-        }
-
-        private static string Finish(StringBuilder builder, int length)
-        {
-            if(builder == null)
-                return string.Empty;
-
-            if(length > 0 && builder[length - 1] == '\r')
-                builder.Length--;
-
-            return builder.ToString();
-        }
-
-        public void Dispose()
-        {
-            // The caller owns the underlying StreamReader and stream.
         }
     }
 
@@ -1689,8 +1614,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         var shares = new List<Share>(bufferSize);
         var recordCount = 0;
         var lineNumber = 0;
-        using var lines = new BoundedRecoveryLineReader(reader,
-            MaxRecoveryRecordLineLength, "recovery import source");
+        using var lines = new BoundedLineReader(reader,
+            MaxRecoveryRecordLineLength,
+            "Recovery journal recovery import source",
+            " Preserve it for reconciliation.");
 
         while(true)
         {

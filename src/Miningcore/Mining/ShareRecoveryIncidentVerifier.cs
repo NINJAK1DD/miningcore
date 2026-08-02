@@ -19,10 +19,42 @@ internal static class ShareRecoveryIncidentVerifier
     private const int MaximumSidecarLineCharacters = 1_048_576;
 
     public static ShareRecoveryVerificationSummary Verify(ClusterConfig config,
-        TextWriter output)
+        TextWriter output) => Verify(config, output, null);
+
+    internal static ShareRecoveryVerificationSummary Verify(ClusterConfig config,
+        TextWriter output, Action<string> sidecarHashedCheckpoint)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(output);
+
+        try
+        {
+            return VerifyCore(config, output, sidecarHashedCheckpoint);
+        }
+        catch(OutOfMemoryException)
+        {
+            // Incident evidence is untrusted input. Do not continue after memory exhaustion, but
+            // retain a deterministic non-success result so Program returns status 74 and the
+            // operator knows the fatal latch must remain in place.
+            try
+            {
+                output.WriteLine("ERROR: Share-recovery verification exhausted available memory.");
+                output.WriteLine("RESULT: verification stopped; preserve all files and do not clear the fatal latch.");
+            }
+            catch
+            {
+                // Even stderr/output allocation can fail under memory pressure. The returned
+                // failure remains authoritative.
+            }
+
+            return new ShareRecoveryVerificationSummary(0, 0, 0, 1, false);
+        }
+    }
+
+    private static ShareRecoveryVerificationSummary VerifyCore(
+        ClusterConfig config, TextWriter output,
+        Action<string> sidecarHashedCheckpoint)
+    {
 
         var recoveryFilename = ShareRecoveryFatalState.ResolveRecoveryFilename(config);
         var stateDirectory = ShareRecoveryFatalState.ResolveStateDirectory(config);
@@ -110,7 +142,7 @@ internal static class ShareRecoveryIncidentVerifier
         foreach(var incidentFile in incidentFiles)
         {
             var result = VerifyIncident(incidentFile, fatalDirectory, stem,
-                recoveryFilename, recoveryPathHash);
+                recoveryFilename, recoveryPathHash, sidecarHashedCheckpoint);
             var status = result.Errors.Count > 0
                 ? "INVALID"
                 : result.Incomplete
@@ -222,7 +254,7 @@ internal static class ShareRecoveryIncidentVerifier
 
     private static IncidentVerification VerifyIncident(string metadataFilename,
         string fatalDirectory, string stem, string recoveryFilename,
-        string recoveryPathHash)
+        string recoveryPathHash, Action<string> sidecarHashedCheckpoint)
     {
         var errors = new List<string>();
         var metadata = ReadMetadata(metadataFilename, errors);
@@ -266,7 +298,8 @@ internal static class ShareRecoveryIncidentVerifier
             case "complete":
                 VerifyCompleteSidecar(fatalDirectory, stem, incidentId,
                     detailFilename, expectedHash, expectedCount, errors,
-                    out actualHash, out decodedRecords);
+                    out actualHash, out decodedRecords,
+                    sidecarHashedCheckpoint);
                 break;
 
             case "hash-pending":
@@ -289,7 +322,7 @@ internal static class ShareRecoveryIncidentVerifier
                     else if(File.Exists(detailFilename))
                     {
                         InspectSidecar(detailFilename, errors, out actualHash,
-                            out decodedRecords);
+                            out decodedRecords, sidecarHashedCheckpoint);
 
                         if(expectedHash?.Length == 64 && actualHash != null &&
                            !string.Equals(expectedHash, actualHash,
@@ -311,7 +344,7 @@ internal static class ShareRecoveryIncidentVerifier
     private static void VerifyCompleteSidecar(string fatalDirectory, string stem,
         string incidentId, string detailFilename, string expectedHash,
         int expectedCount, ICollection<string> errors, out string actualHash,
-        out int? decodedRecords)
+        out int? decodedRecords, Action<string> sidecarHashedCheckpoint)
     {
         actualHash = null;
         decodedRecords = null;
@@ -343,7 +376,7 @@ internal static class ShareRecoveryIncidentVerifier
         }
 
         InspectSidecar(detailFilename, errors, out actualHash,
-            out decodedRecords);
+            out decodedRecords, sidecarHashedCheckpoint);
 
         if(expectedHash?.Length == 64 && actualHash != null &&
            !string.Equals(expectedHash, actualHash,
@@ -358,28 +391,35 @@ internal static class ShareRecoveryIncidentVerifier
 
     private static void InspectSidecar(string filename,
         ICollection<string> errors, out string actualHash,
-        out int? decodedRecords)
+        out int? decodedRecords, Action<string> sidecarHashedCheckpoint)
     {
         actualHash = null;
         decodedRecords = null;
 
         try
         {
-            using(var stream = File.OpenRead(filename))
-                actualHash = Convert.ToHexString(SHA256.HashData(stream));
+            using var stream = new FileStream(filename, FileMode.Open,
+                FileAccess.Read, FileShare.Read, 4096, FileOptions.SequentialScan);
+            var identityBefore = RecoveryJournalFileIdentity.Read(stream);
+            var lengthBefore = stream.Length;
 
             var count = 0;
-            using var reader = new StreamReader(filename, Encoding.UTF8, true,
-                4096);
-            string line;
+            using var sha256 = SHA256.Create();
+            using var hashingStream = new CryptoStream(stream, sha256,
+                CryptoStreamMode.Read, leaveOpen: true);
+            using var reader = new StreamReader(hashingStream,
+                new UTF8Encoding(false, true), false, 4096, leaveOpen: true);
+            using var lines = new BoundedLineReader(reader,
+                MaximumSidecarLineCharacters,
+                $"Exact-share sidecar {filename}",
+                " Preserve it for reconciliation.");
 
-            while((line = reader.ReadLine()) != null)
+            while(true)
             {
-                if(line.Length > MaximumSidecarLineCharacters)
-                {
-                    errors.Add("The sidecar contains an oversized record line.");
-                    return;
-                }
+                var line = lines.ReadLine();
+
+                if(line == null)
+                    break;
 
                 const string prefix = "shareJsonBase64=";
 
@@ -407,8 +447,34 @@ internal static class ShareRecoveryIncidentVerifier
             }
 
             decodedRecords = count;
+            actualHash = Convert.ToHexString(sha256.Hash ??
+                throw new InvalidDataException(
+                    "Unable to finalize the exact-share sidecar SHA-256"));
+            sidecarHashedCheckpoint?.Invoke(filename);
+
+            var identityAfter = RecoveryJournalFileIdentity.Read(stream);
+            var lengthAfter = stream.Length;
+
+            if(identityAfter != identityBefore || lengthAfter != lengthBefore)
+            {
+                errors.Add(
+                    "The exact-share sidecar changed while it was being verified.");
+                return;
+            }
+
+            // File sharing prevents managed replacement on Windows. Linux permits unlinking an
+            // open inode, so reopen only for identity/length comparison after hashing and parsing
+            // have both completed through the original non-writable handle.
+            using var pathStream = new FileStream(filename, FileMode.Open,
+                FileAccess.Read, FileShare.Read, 4096, FileOptions.SequentialScan);
+
+            if(RecoveryJournalFileIdentity.Read(pathStream) != identityAfter ||
+               pathStream.Length != lengthAfter)
+                errors.Add(
+                    "The exact-share sidecar path was replaced while it was being verified.");
         }
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        catch(Exception ex) when(ex is IOException or InvalidDataException or
+                                  UnauthorizedAccessException)
         {
             errors.Add($"Unable to read exact-share sidecar: {ex.Message}");
         }

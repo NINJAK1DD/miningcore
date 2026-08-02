@@ -263,7 +263,11 @@ echo "exit=$?"
 ```
 
 The command enumerates every path-scoped `.incident` record, validates its metadata, verifies the
-referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. It returns
+referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. Sidecar
+records are allocation-bounded to 1,048,576 characters and are parsed while the same restrictive
+file handle incrementally calculates the hash. Stable identity and length checks reject concurrent
+modification or path replacement. Memory exhaustion is reported as a failed verification rather
+than allowing the command to continue. It returns
 status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. A successful
 verification proves only that the recorded evidence is structurally complete; it cannot prove that
 the uncertain records were reconciled against PostgreSQL. Complete that database comparison before
