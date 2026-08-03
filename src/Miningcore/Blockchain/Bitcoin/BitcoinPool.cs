@@ -245,8 +245,6 @@ public class BitcoinPool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            await connection.RespondAsync(response);
-
             if(string.IsNullOrEmpty(context.SessionId))
             {
                 context.SessionId = WorkerSessionTracker.GetOrCreateSessionId(
@@ -269,9 +267,11 @@ public class BitcoinPool : PoolBase
 
             // Merged mining publishes its cleared statistical copy before starting the
             // independent parent/auxiliary submission paths. Other Bitcoin-family managers
-            // continue to publish here.
-            if(ShouldPublishStatisticalShare(share))
-                messageBus.SendMessage(share);
+            // publish here. In both cases the positive response is admitted only after the
+            // statistical share entered the accounting pipeline.
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response),
+                ShouldPublishStatisticalShare(share));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);

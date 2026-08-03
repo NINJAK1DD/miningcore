@@ -325,10 +325,8 @@ public class BeamPool : PoolBase
                         Description = "accepted"
                     };
 
-                    await connection.NotifyAsync(shareAcceptedResponse);
-
-                    // publish
-                    messageBus.SendMessage(share);
+                    await PublishShareAndAcknowledgeAsync(share,
+                        () => connection.NotifyAsync(shareAcceptedResponse));
 
                     // telemetry
                     PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);

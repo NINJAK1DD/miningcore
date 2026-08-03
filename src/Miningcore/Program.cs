@@ -114,6 +114,56 @@ public class Program : ProcessStatusBackgroundService
                 return;
             }
 
+            if(verifyShareRecoveryStateOption.HasValue())
+            {
+                clusterConfig = configFileOption.HasValue()
+                    ? ReadConfig(configFileOption.Value())
+                    : new ClusterConfig();
+                processStatus = new ProcessStatus();
+                var verification = ShareRecoveryIncidentVerifier.Verify(
+                    clusterConfig, Console.Out);
+
+                if(!verification.IsSuccessful)
+                    processStatus.MarkFailed(
+                        ProcessExitCodes.UnreconciledShareDurabilityLoss);
+
+                return;
+            }
+
+            if(acknowledgeShareRecoveryStateOption.HasValue())
+            {
+                clusterConfig = configFileOption.HasValue()
+                    ? ReadConfig(configFileOption.Value())
+                    : new ClusterConfig();
+                processStatus = new ProcessStatus();
+
+                try
+                {
+                    // Acknowledgement mutates durable recovery evidence. Participate in the same
+                    // native process-lifetime boundary as recording and import so disabling .NET
+                    // managed file locking cannot permit it to race a live owner.
+                    using var recoveryPathOwnership =
+                        new ShareRecoveryPathOwnership(clusterConfig);
+                    recoveryPathOwnership.Acquire();
+                    var state = new ShareRecoveryFatalState(clusterConfig,
+                        processStatus, recoveryPathOwnership);
+                    if(!state.Acknowledge(Console.Out))
+                        processStatus.MarkFailed(
+                            ProcessExitCodes.UnreconciledShareDurabilityLoss);
+                }
+                catch(Exception ex) when(ex is IOException or
+                    InvalidDataException or InvalidOperationException or
+                    UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine(
+                        $"ACKNOWLEDGEMENT REFUSED: {ex.Message}");
+                    processStatus.MarkFailed(
+                        ProcessExitCodes.UnreconciledShareDurabilityLoss);
+                }
+
+                return;
+            }
+
             if(!configFileOption.HasValue())
             {
                 app.ShowHelp();
@@ -317,15 +367,7 @@ public class Program : ProcessStatusBackgroundService
         services.AddHostedService<NotificationService>();
         services.AddHostedService<BtStreamReceiver>();
 
-        // Share processing
-        if(clusterConfig.ShareRelay == null)
-        {
-            ConfigureShareRecorderHostedService(services);
-            services.AddHostedService<ShareReceiver>();
-        }
-
-        else
-            services.AddHostedService<ShareRelay>();
+        ConfigureShareProcessingHostedServices(services, clusterConfig);
 
         // API
         if(clusterConfig.Api == null || clusterConfig.Api.Enabled)
@@ -353,6 +395,8 @@ public class Program : ProcessStatusBackgroundService
     private static CommandOption configFileOption;
     private static CommandOption dumpConfigOption;
     private static CommandOption shareRecoveryOption;
+    private static CommandOption verifyShareRecoveryStateOption;
+    private static CommandOption acknowledgeShareRecoveryStateOption;
     private static CommandOption generateSchemaOption;
     private static bool isShareRecoveryMode;
     private static ClusterConfig clusterConfig;
@@ -535,6 +579,23 @@ public class Program : ProcessStatusBackgroundService
         // instead of letting AddHostedService<T>() create another singleton with independent
         // recovery state and journal locking.
         services.AddHostedService(sp => sp.GetRequiredService<ShareRecorder>());
+        services.TryAddSingleton<ISharePersistenceQueueMetricsProvider>(sp =>
+            sp.GetRequiredService<ShareRecorder>());
+    }
+
+    internal static void ConfigureShareProcessingHostedServices(
+        IServiceCollection services, ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(config);
+
+        if(config.ShareRelay == null)
+        {
+            ConfigureShareRecorderHostedService(services);
+            services.AddHostedService<ShareReceiver>();
+        }
+        else
+            services.AddHostedService<ShareRelay>();
     }
 
     internal static void ConfigureMiningShutdownCoordinator(IServiceCollection services)
@@ -555,6 +616,8 @@ public class Program : ProcessStatusBackgroundService
                 "Host shutdown timeout must be positive");
 
         services.TryAddSingleton<IProcessStatus, ProcessStatus>();
+        services.TryAddSingleton<IMiningFailStopCoordinator,
+            MiningFailStopCoordinator>();
         services.Configure<HostOptions>(options => options.ShutdownTimeout = timeout);
     }
 
@@ -582,7 +645,8 @@ public class Program : ProcessStatusBackgroundService
                 // A closed stderr stream must not turn a known startup failure into success.
             }
 
-            return 1;
+            var exitCode = (getExitCode ?? (() => Environment.ExitCode))();
+            return exitCode != 0 ? exitCode : ProcessExitCodes.GeneralFailure;
         }
     }
 
@@ -807,6 +871,13 @@ public class Program : ProcessStatusBackgroundService
         configFileOption = app.Option("-c|--config <configfile>", "Configuration File", CommandOptionType.SingleValue);
         dumpConfigOption = app.Option("-dc|--dumpconfig", "Dump the configuration (useful for trouble-shooting typos in the config file)",CommandOptionType.NoValue);
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
+        verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
+            "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
+            CommandOptionType.NoValue);
+        acknowledgeShareRecoveryStateOption = app.Option(
+            "--acknowledge-share-recovery-state",
+            "After database reconciliation, verify and durably acknowledge fatal share-recovery evidence",
+            CommandOptionType.NoValue);
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 
@@ -1043,6 +1114,13 @@ public class Program : ProcessStatusBackgroundService
 
     private static async Task PreFlightChecks(IServiceProvider services)
     {
+        if(UsesLocalShareRecoveryPath(isShareRecoveryMode, clusterConfig))
+            services.GetRequiredService<IShareRecoveryPathOwnership>().Acquire();
+
+        if(ShouldValidateShareRecoveryState(isShareRecoveryMode, clusterConfig))
+            services.GetRequiredService<IShareRecoveryFatalState>()
+                .EnsureStartupAllowed();
+
         await ConfigurePostgresCompatibilityOptions(services);
 
         await EnsureSharePartitionsAsync(isShareRecoveryMode, clusterConfig,
@@ -1138,6 +1216,21 @@ public class Program : ProcessStatusBackgroundService
 
         // Configure SccPow
         Miningcore.Crypto.Hashing.Progpow.Sccpow.Cache.messageBus = messageBus;
+    }
+
+    internal static bool ShouldValidateShareRecoveryState(bool recoveryMode,
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return !recoveryMode;
+    }
+
+    internal static bool UsesLocalShareRecoveryPath(bool recoveryMode,
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return recoveryMode || config.ShareRelay == null ||
+            RequiresMergedMiningPersistence(config);
     }
 
     internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,

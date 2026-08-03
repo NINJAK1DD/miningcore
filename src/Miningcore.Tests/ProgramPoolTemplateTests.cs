@@ -11,6 +11,7 @@ using AutoMapper;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Microsoft.AspNetCore.Hosting;
@@ -502,8 +503,11 @@ public class ProgramPoolTemplateTests
                 TaskCreationOptions.RunContinuationsAsynchronously);
             using var stoppingRegistration = lifetime.ApplicationStopping.Register(() =>
                 applicationStopping.TrySetResult(true));
-            var failureHandler = new CandidatePersistenceFailureHandler(processStatus,
-                lifetime, messageBus);
+            var failureHandler = new CandidatePersistenceFailureHandler(
+                new MiningFailStopCoordinator(processStatus, lifetime),
+                new Lazy<ICriticalNotificationSender>(() =>
+                    Substitute.For<ICriticalNotificationSender>()),
+                Substitute.For<IShareRecoveryFatalState>());
             var recorder = new ShareRecorder(connectionFactory, mapper,
                 new JsonSerializerSettings(), shareRepository, blockRepository,
                 new ClusterConfig
@@ -976,12 +980,31 @@ public class ProgramPoolTemplateTests
 
         var self = host.Services.GetRequiredService<ShareRecorder>();
         var candidateRecorder = host.Services.GetRequiredService<IBlockCandidateRecorder>();
+        var metricsProvider = host.Services
+            .GetRequiredService<ISharePersistenceQueueMetricsProvider>();
         var hostedRecorder = host.Services.GetServices<IHostedService>()
             .OfType<ShareRecorder>()
             .Single();
 
         Assert.Same(self, candidateRecorder);
+        Assert.Same(self, metricsProvider);
         Assert.Same(self, hostedRecorder);
+    }
+
+    [Fact]
+    public void RelayShareProcessing_DoesNotRegisterLocalQueueMetricsProvider()
+    {
+        var services = new ServiceCollection();
+
+        Program.ConfigureShareProcessingHostedServices(services,
+            new ClusterConfig { ShareRelay = new ShareRelayConfig() });
+
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType ==
+            typeof(ISharePersistenceQueueMetricsProvider));
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(IHostedService) &&
+            descriptor.ImplementationType == typeof(ShareRecorder));
     }
 
     [Fact]
@@ -1077,6 +1100,59 @@ public class ProgramPoolTemplateTests
                 ? new PersistenceConfig { Postgres = new PostgresConfig() }
                 : null,
         };
+    }
+
+    [Fact]
+    public async Task RelayMergedMining_FatalLatchStartupReturnsNonRestartStatus()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-relay-latch-{Guid.NewGuid():N}");
+        var processStatus = new ProcessStatus();
+        var config = MergedMiningCluster(shareRelaySender: true);
+        config.ShareRecoveryFile = Path.Combine(directory, "journal",
+            "recovered-shares.txt");
+        config.ShareRecoveryStateDirectory = Path.Combine(directory, "state");
+        var state = new ShareRecoveryFatalState(config, processStatus,
+            config.ShareRecoveryStateDirectory);
+
+        try
+        {
+            state.MarkFatal(1, new[] { "doge-solo" },
+                new IOException("postgres failed"),
+                new IOException("journal failed"));
+            Assert.True(Program.ShouldValidateShareRecoveryState(false, config));
+
+            var exitCode = await Program.RunStartupBoundaryAsync(
+                () => Task.Run(state.EnsureStartupAllowed),
+                _ => Task.CompletedTask,
+                () => processStatus.ExitCode);
+
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                exitCode);
+            Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+                processStatus.ExitCode);
+        }
+        finally
+        {
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void LocalRecoveryOwnership_AppliesToRecorderImportAndMergedRelaySender()
+    {
+        Assert.True(Program.UsesLocalShareRecoveryPath(false,
+            new ClusterConfig()));
+        Assert.True(Program.UsesLocalShareRecoveryPath(true,
+            new ClusterConfig { ShareRelay = new ShareRelayConfig() }));
+        Assert.True(Program.UsesLocalShareRecoveryPath(false,
+            MergedMiningCluster(shareRelaySender: true)));
+
+        var ordinaryRelay = MergedMiningCluster(shareRelaySender: true);
+        ordinaryRelay.Pools[0].Extra = null;
+        Assert.False(Program.UsesLocalShareRecoveryPath(false,
+            ordinaryRelay));
     }
 
     private static async Task AssertRecoveryPreflightFailurePreservesJournal(

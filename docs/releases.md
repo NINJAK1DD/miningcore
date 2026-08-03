@@ -28,6 +28,142 @@ The database guide now includes a guarded [disk-exhaustion recovery runbook](dat
 It restores storage, PostgreSQL and coin daemons in dependency order before Miningcore and links to
 the existing payout-ownership reconciliation procedure for an unclean database-session loss.
 
+Recovery-journal appends now roll back a partial write to the previous file length, force-flush the
+rollback, and refuse to extend a pre-existing incomplete line or framed batch. First creation uses a
+force-flushed temporary file, atomic rename and Linux parent-directory synchronisation. A first-byte
+format magic and chained v2 batch trailers record contiguous sequence, previous-frame identity,
+expected count, record SHA-256 and deterministic frame digest. Every chain is streamed and verified
+at startup, on first fallback entry and before recovery import. Later appends verify cached file
+identity/length and only hash the new frame, avoiding quadratic outage I/O. Each forced append also
+commits an independent terminal sequence/digest anchor, detecting removal of a complete final frame.
+A bounded persistence queue transfers overflow to one bounded emergency journal writer outside the
+mining admission lock instead of accepting unlimited memory or blocked-caller backlogs. That writer
+drains up to 250 overflow shares into one force-flushed chained frame and terminal-anchor update;
+each affected Stratum response waits for its containing batch. Graceful stop
+drains acknowledged shares independently of hosted-service cancellation, limits its PostgreSQL
+drain to 20 seconds, reserves 15 seconds for bounded transaction recovery/fatal handling, and uses
+the remaining host/service-manager window to journal the complete
+unresolved registry. The supplied systemd stop timeout is 90 seconds. If PostgreSQL
+and the recovery journal both fail, Miningcore synchronously closes a coordinated share-acceptance
+boundary: validated shares enter accounting before positive responses, concurrent healthy
+admissions use shared access, fail-stop is exclusive, response queueing is synchronous, and queued
+responses are cancelled. Exact fatal evidence is captured only after that exclusive gate drains all
+earlier publication/response admissions, so its sidecar is the quiescent unresolved registry rather
+than a pre-transition approximation. It then writes a persistent hashed fatal
+latch in an independent service-owned state directory,
+awaits a bounded critical administrative notification attempt, and exits with dedicated status 74
+instead of continuing without durable share accounting. Candidate persistence uses the same direct
+alert and mandatory latch path. The supplied systemd unit does not restart status 74, and every
+normal startup—including relay nodes—remains blocked until reconciliation and explicit latch
+removal. A later dual-target candidate loss upgrades an already-started general shutdown to status
+74, writes a distinct immutable incident record and sends an escalation alert with the exact latch
+path. The fixed latch remains small and is force-flushed in a hash-pending state before exact shares
+are serialized once into a streamed, incrementally hashed sidecar, so serialization and incomplete
+sidecar failures still block restart. The read-only `--verify-share-recovery-state` command
+enumerates incident metadata, verifies sidecar hashes and allocation-bounded records through one
+restrictively shared, identity-checked handle, and decodes/counts exact records without modifying
+evidence. Memory exhaustion fails the command without attempting to continue. Journal readers cap
+individual recovery lines at 1,048,576 characters. Frame-content hashes normalise
+line endings to `\n`; the independent anchor closes the terminal-frame deletion gap for newly
+committed frames, while incident checksums remain necessary for legacy history. State-directory I/O uncertainty also fails
+closed with status 74. Terminal and import-marker absence is accepted only after exact directory
+enumeration; directories, symbolic links, unsupported entries, malformed content and inaccessible
+state fail closed during startup and the first fallback append. Configure
+`shareRecoveryFile` as an
+absolute path on separately monitored or reserved storage where possible; the recovery runbook
+explains evidence preservation and atomic, manifested import verification.
+Normal local recording, merged-mining relay submission and recovery import now acquire the same
+adjacent process-lifetime ownership lock before state inspection and retain it through final shutdown
+journalling. The lock identity no longer depends on `shareRecoveryStateDirectory`. Linux uses an
+explicit native exclusive lock, so disabling .NET managed file locking does not bypass this boundary;
+Windows retains an exclusive handle. Parent-directory symlink aliases converge on the same owner,
+and journal creation, append, startup validation, import and retirement use that retained physical
+directory rather than re-resolving the configured path. A stable parent symlink is supported while
+later retargeting or replacement cannot redirect an operation and fails closed. On the supported
+Ubuntu 22.04 target, atomic no-replacement publication first uses Linux
+`renameat2(..., RENAME_NOREPLACE)` and retained-directory `fsync`. Missing libc symbols and
+kernel/filesystem `EINVAL`, `ENOSYS` or `EOPNOTSUPP` responses use a no-replace `linkat`/`unlinkat`
+fallback. A crash between those calls can leave two names for one inode; existing single-link checks
+reject that evidence fail-closed. Filesystems supporting neither primitive remain unsupported rather
+than permitting replacement. Windows instead
+pins the physical directory and uses write-through child handles, without claiming an equivalent
+explicit directory-metadata `fsync`. A hostile parent retarget can leave a temporary file, archive,
+or unanchored journal in the originally retained directory after the operation fails closed; preserve
+and reconcile that forensic state rather than deleting it as routine cleanup. Journal and owner-file symlinks, hard links and non-regular
+filesystem objects are rejected without blocking on FIFOs. The acknowledgement command acquires
+this same native owner before changing fatal evidence. A second process using the same recovery path
+fails before pools start, regardless of its Stratum configuration.
+Recovery import now uses a durable multi-phase source-retirement marker. Startup and fallback
+appends remain blocked until the retained source's complete chain, anchor, semantic hash, record
+count and file identity are revalidated, the committed source rename and parent-directory sync
+finish, and the marker records archive durability, anchor-retirement authorisation and anchor
+retirement while retaining the validated terminal sequence and digest. Interruption after anchor
+removal therefore resumes without manual safety-state edits. The same non-writable file object is checked again after
+rename. Rerunning recovery resumes that sequence without changing the manifest identity or replaying
+records; filesystem aliases of the configured source are rejected. Archive retirement requires an
+exact sibling basename, retains a no-follow identity for the parent directory and rechecks both the
+directory and durable marker at destructive boundaries. Operators must not import
+overlapping reviewed files because manifests identify whole sources rather than individual shares.
+
+Prometheus now exports current depth, process-lifetime high-water mark and configured capacity for
+both the primary share-persistence queue and emergency recovery-journal queue. The fixed `queue`
+labels are `primary` and `emergency_journal`; operators can alert on saturation trends before the
+emergency path or fail-stop boundary is reached. Admission and removal use exact serialized
+occupancy accounting under concurrent producers, and an overflow counter records every rejected
+write. Relay-only nodes omit these local-recorder series instead of reporting nonexistent queues as
+healthy and empty.
+
+Fatal incident completion is resumable across the durable boundary between publishing a completed
+incident/sidecar and replacing its earlier hash-pending latch. Verification reports that exact state
+as recoverable but still startup-blocking; startup or acknowledgement revalidates the immutable
+fields, initial-latch digest, complete sidecar and chain tip under the mutation lock before publishing
+the completed latch. Any mismatch remains startup-blocking evidence.
+
+Unexpected mapper, connection, transaction or repository failures now quiesce mining, force-flush
+the complete unresolved registry to the recovery journal and stop with a general failure. If the
+journal also fails, status 74 and the fatal latch remain authoritative. The share-persistence
+PostgreSQL transaction lifecycle is cancellation-aware and bounded through open, begin, repository
+commands, commit, rollback and cleanup. On that outcome-classified path, transaction then connection
+disposal run as one ordered background sequence under a four-second aggregate wait bound, because
+ADO.NET disposal APIs do not accept cancellation. Other API, statistics and payout `RunTx` callers
+retain synchronous ordered disposal and do not allocate this background cleanup machinery.
+If transaction disposal consumes that bound, connection disposal cannot overlap it and begins only
+if the transaction call later returns. Cleanup that finishes after the aggregate deadline logs its
+eventual success, cancellation, task fault or returned provider exception with the transaction
+outcome, resource stage and elapsed time. Deadline classification is unconditional even when cleanup
+finishes between timeout and exception handling: once commit outcome is known, cleanup can add
+evidence but cannot replace it. Cleanup failure after a known commit removes that exact batch from replayable
+state; cleanup failure while commit is uncertain remains secondary evidence and cannot replace the
+uncertain outcome. A PostgreSQL server error carrying a SQLSTATE proves that `COMMIT` was rejected
+and remains replayable; transport, timeout, cancellation-after-entry and unknown provider failures
+remain outcome-uncertain. A commit whose outcome cannot be proven is never copied to the importable journal;
+exact share JSON is streamed to the sidecar referenced by the status-74 latch for reconciliation.
+Active Stratum dispatch tasks and in-flight request handlers receive a five-second bounded drain
+before Share Recorder intake closes; expiry closes admission and returns a non-zero stop without
+consuming the recorder's reserved window. Fatal, terminal and
+import state subdirectories are durably parent-synchronised on first creation. State and alias
+inspection uses atomic no-follow regular-file handles on Linux and Windows. Fatal incidents now form
+a sequence/previous-digest chain anchored by the fixed latch's tip and expected count; the first v3
+incident also anchors all retained legacy-v2 incidents. After database reconciliation, the new
+`--acknowledge-share-recovery-state` command re-verifies the complete evidence set, publishes an
+immutable durable `.acknowledged` anchor, and removes only the active latch. Manual latch deletion
+does not unblock startup, acknowledgement is resumable after interruption, later incidents extend
+the acknowledged tip, and removing or changing covered evidence fails closed. Fatal, incident and
+acknowledgement metadata verification uses strict UTF-8, an exact 64-KiB raw-byte total limit,
+bounded lines and stable handle/path identity checks, matching the sidecar verifier's fail-closed
+replacement detection. Acknowledged evidence is fully reverified, including sidecar hashes and
+record counts, on every startup. Prerelease v2-only incident sets can be preserved and acknowledged
+with a v4 legacy-set anchor. A persistent path-scoped mutation lock serializes startup inspection,
+fatal publication and acknowledgement across processes. Imported-source retirement now also
+re-confirms the exact PostgreSQL manifest through a fresh connection before any destructive rename
+or anchor removal.
+
+These local-recorder guarantees do not turn `shareRelay` into an acknowledged transport. A relay
+sender's positive response proves only local in-memory relay-queue admission, not remote receipt or
+PostgreSQL persistence. Also, up to the normal 65,536-share local recorder queue remains volatile
+during abrupt process or machine loss; the bound limits exposure but does not provide power-loss
+durability.
+
 ## Payout and WebSocket compatibility
 
 This release changes Bitcoin-family payout accounting from rounding to truncation at the configured
@@ -177,7 +313,7 @@ and apply the migrations required by the release before starting the new binary.
 ## Install the systemd service
 
 The supplied unit directly supervises Miningcore, runs it as the unprivileged `miningcore` user, and
-allows 60 seconds for the application's bounded clean shutdown:
+allows 90 seconds for the application's bounded clean shutdown and durable recovery-state margin:
 
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service

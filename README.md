@@ -416,6 +416,9 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   block candidates use additional synchronous persistence. The physical Windows/WSL sender-to-
   receiver route has passed interruption and reconnect testing, but a production relay deployment
   must still accept that ordinary shares sent while the receiver is unreachable are not replayed.
+  In relay-sender mode, “publish before positive response” means admission to the sender's local
+  in-memory relay queue only; it is not confirmation that the remote recorder or PostgreSQL received
+  the share.
 - **Block-submission timing is durability-first.** After local proof validation, the manager owns
   candidate delivery independently of miner EOF or TCP reset. Its ten-second merged-mining deadline
   covers daemon submission and attribution, not PostgreSQL retries or write-through recovery-journal
@@ -429,11 +432,44 @@ limitations are in the [merged-mining deployment guide](docs/merged-mining-litec
   host shutdown. Once quiescing starts, candidate persistence skips the ordinary 2/4/8-second retry
   delays, grants the active PostgreSQL attempt at most five seconds, then writes and force-flushes the
   recovery journal. Ordinary-share and candidate persistence use the same recorder singleton and a
-  canonical-filename journal lock. If an unexpected candidate database failure requires emergency
-  journalling, Miningcore stops the cluster because the accounting pipeline is no longer trusted. If
-  both PostgreSQL and the journal fail, the cluster also stops with exit status 1 instead of leaving
-  other miners online without durable block accounting. Configure the service manager's stop timeout
-  above 45 seconds; the supplied systemd example uses 60 seconds.
+  canonical-filename journal lock. Graceful stop closes intake and drains the acknowledged queue
+  independently of the normal hosted-service cancellation token. If the shutdown deadline expires,
+  the complete unresolved registry is force-flushed to the journal. If an unexpected candidate
+  database failure requires emergency journalling, Miningcore stops the cluster because the
+  accounting pipeline is no longer trusted. If both PostgreSQL and the journal fail, a concurrent-read/exclusive-stop boundary ensures every positive
+  share response follows accounting-pipeline admission, rejects new ingress and cancels queued
+  acknowledgements. The cluster then writes a persistent fatal latch to its independent service
+  state directory and stops with dedicated exit status 74 instead of leaving miners online without
+  durable share accounting. The supplied systemd unit does not automatically restart that status.
+  After reconciliation, use the documented `--verify-share-recovery-state` and
+  `--acknowledge-share-recovery-state` commands; manually deleting the latch does not safely unblock
+  startup and all incident evidence remains retained under an immutable acknowledgement anchor.
+  Every startup fully revalidates acknowledged sidecars. A short-lived path-scoped lock serializes
+  fatal-state transitions, while an adjacent process-lifetime exclusive lock prevents another local
+  recorder, merged-mining relay submitter or recovery import from using the same journal before pools
+  start and remains held through successful final shutdown journalling. Symlinked journal files and
+  multiply linked journal identities are rejected. Prerelease v2-only incident
+  sets can be preserved under a legacy-set acknowledgement anchor.
+  A partial journal append is rolled back to its previous length and force-flushed. First creation
+  atomically publishes a force-flushed temporary file and syncs its directory on Linux. A first-byte
+  format magic plus contiguous sequence/previous-digest/count/hash validation runs at first fallback
+  entry, recovery import and every normal startup, including relay nodes. Trusted appends then verify
+  file identity/length and hash only the new frame, keeping prolonged fallback linear. Every forced
+  append also atomically updates an independent terminal sequence/digest anchor, so startup and import
+  detect deletion of a complete final frame. Active Stratum connection tasks and in-flight request
+  handlers receive a five-second drain budget before Miningcore closes global admission, records a
+  non-zero stop and continues shutdown to preserve the recorder's recovery window. The in-memory persistence queue and its single emergency
+  journal writer are both bounded; the emergency writer force-flushes up to 250 overflow shares per
+  chained frame, and storage I/O never runs while holding mining admission. Configure
+  `shareRecoveryFile` as an absolute path on separately monitored or reserved storage where
+  possible. Configure the service manager's stop timeout above 45 seconds; the supplied systemd
+  example uses 90 seconds. Share Recorder limits graceful PostgreSQL drain to 20 seconds and its
+  post-cancellation recovery boundary to 15 seconds, leaving host-level margin for unresolved journal
+  and state commits. Recovery import
+  uses a durable source-retirement marker and blocks normal startup/appends until an imported source
+  has been revalidated, renamed, directory-synced and had its terminal anchor retired. A sudden
+  process or machine loss can still lose acknowledged shares in the normal 65,536-share in-memory
+  queue; that capacity bounds the accepted volatile exposure and is not a power-loss guarantee.
 
 ## Production operation
 

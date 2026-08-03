@@ -10,6 +10,9 @@ public interface IShareRepository
         IEnumerable<string> poolIds, CancellationToken ct);
     Task<bool> HasRecoveryImportSchemaAsync(IDbConnection con,
         CancellationToken ct);
+    Task<bool> HasMatchingRecoveryImportAsync(IDbConnection con,
+        string fileHash, string filename, int recordCount,
+        CancellationToken ct);
     Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Share> shares, CancellationToken ct);
     Task<bool> TryRegisterRecoveryImportAsync(IDbConnection con, IDbTransaction tx,
         string fileHash, string filename, int recordCount, CancellationToken ct);

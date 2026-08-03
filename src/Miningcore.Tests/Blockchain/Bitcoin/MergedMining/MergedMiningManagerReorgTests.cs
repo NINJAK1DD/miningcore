@@ -75,6 +75,68 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task NonCandidateStatisticalShare_PropagatesPublishedCloneAdmission()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var admission = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Share published = null;
+        using var subscription = messageBus.Listen<Share>()
+            .Where(x => x != null)
+            .Subscribe(x =>
+            {
+                published = x;
+                x.SetPersistenceAdmission(admission.Task);
+            });
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        var validated = new Share
+        {
+            PoolId = parent.Id,
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            Difficulty = 1,
+            NetworkDifficulty = 100,
+        };
+        manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
+        {
+            Share = validated,
+        };
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "merged-admission", false);
+        var context = new MergedMiningBitcoinWorkerContext
+        {
+            Miner = validated.Miner,
+            Worker = validated.Worker,
+            UserAgent = "test-miner",
+        };
+        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+            "admission-job");
+        context.AddJob(job, 4);
+        worker.SetContext(context);
+
+        var returned = await manager.SubmitShareAsync(worker,
+            new object[] { "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000" },
+            CancellationToken.None);
+
+        Assert.Same(validated, returned);
+        Assert.NotSame(returned, published);
+        Assert.True(returned.StatisticalRecordEmitted);
+        Assert.Same(admission.Task, returned.PersistenceAdmission);
+        Assert.False(returned.PersistenceAdmission.IsCompleted);
+        admission.TrySetResult();
+        await returned.PersistenceAdmission;
+    }
+
+    [Fact]
     public void FirstValidStatisticalShare_CreatesAndCopiesWorkerSession()
     {
         var suffix = Guid.NewGuid().ToString("N");
@@ -310,7 +372,7 @@ public class MergedMiningManagerReorgTests
         var connection = new StratumConnection(
             new NullLogger(LogManager.LogFactory),
             new RecyclableMemoryStreamManager(), clock, "candidate-eof", false);
-        connection.DispatchAsync(serverSocket, CancellationToken.None,
+        var dispatch = connection.DispatchAsync(serverSocket, CancellationToken.None,
             new StratumEndpoint(listenerEndpoint, new PoolEndpoint()),
             (IPEndPoint) client.Client.LocalEndPoint, null, HandleRequestAsync,
             _ => connectionClosed.TrySetResult(null),
@@ -324,9 +386,10 @@ public class MergedMiningManagerReorgTests
         await operationRegistered.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         client.Close();
-        var dispatchError = await connectionClosed.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Assert.Null(dispatchError);
+        Assert.True(SpinWait.SpinUntil(() => requestToken.IsCancellationRequested,
+            TimeSpan.FromSeconds(2)));
+        Assert.False(dispatch.IsCompleted);
+        Assert.False(connectionClosed.Task.IsCompleted);
         Assert.True(requestToken.IsCancellationRequested);
         Assert.False(operationToken.IsCancellationRequested);
         Assert.False(candidateOperation.IsCompleted);
@@ -337,6 +400,10 @@ public class MergedMiningManagerReorgTests
         Assert.Equal(new[] { true },
             await candidateOperation.WaitAsync(TimeSpan.FromSeconds(2)));
         await shutdownDrain.WaitAsync(TimeSpan.FromSeconds(2));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        var dispatchError = await connectionClosed.Task.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Null(dispatchError);
         await recorder.Received(1).PersistBlockCandidateAsync(candidate);
     }
 

@@ -1,6 +1,10 @@
 using System;
+using System.IO;
+using System.Linq;
 using System.Reactive.Subjects;
+using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
@@ -14,6 +18,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Tests.Util;
 using NSubstitute;
+using Prometheus;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -78,6 +83,170 @@ public class HostedServiceStartupTests
 
         Assert.False(telemetry.HasObservers);
         Assert.False(hashrates.HasObservers);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_ExportsSharePersistenceQueueMetrics()
+    {
+        var provider = Substitute.For<ISharePersistenceQueueMetricsProvider>();
+        provider.GetPersistenceQueueMetrics().Returns(
+            new SharePersistenceQueueMetricsSnapshot(17, 41, 65_536, 3));
+        provider.GetEmergencyJournalQueueMetrics().Returns(
+            new SharePersistenceQueueMetricsSnapshot(2, 7, 1_024, 5));
+        var registry = Metrics.NewCustomRegistry();
+        _ = new MetricsPublisher(Substitute.For<IMessageBus>(), provider,
+            Metrics.WithCustomRegistry(registry), registry);
+        await using var stream = new MemoryStream();
+
+        await registry.CollectAndExportAsTextAsync(stream);
+        var text = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.Contains(
+            "miningcore_share_persistence_queue_depth{queue=\"primary\"} 17",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_high_watermark{queue=\"primary\"} 41",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_capacity{queue=\"primary\"} 65536",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_depth{queue=\"emergency_journal\"} 2",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_high_watermark{queue=\"emergency_journal\"} 7",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_capacity{queue=\"emergency_journal\"} 1024",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_overflow_total{queue=\"primary\"} 3",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_overflow_total{queue=\"emergency_journal\"} 5",
+            text);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_MissingRecorderProviderExportsNoQueueSeries()
+    {
+        var registry = Metrics.NewCustomRegistry();
+        _ = new MetricsPublisher(Substitute.For<IMessageBus>(), null,
+            Metrics.WithCustomRegistry(registry), registry);
+        await using var stream = new MemoryStream();
+
+        await registry.CollectAndExportAsTextAsync(stream);
+        var text = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.DoesNotContain(
+            "miningcore_share_persistence_queue_depth{queue=", text);
+        Assert.DoesNotContain(
+            "miningcore_share_persistence_queue_high_watermark{queue=", text);
+        Assert.DoesNotContain(
+            "miningcore_share_persistence_queue_capacity{queue=", text);
+        Assert.DoesNotContain(
+            "miningcore_share_persistence_queue_overflow_total{queue=", text);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_RepeatedConcurrentScrapesDoNotDoubleCountOverflow()
+    {
+        var provider = Substitute.For<ISharePersistenceQueueMetricsProvider>();
+        provider.GetPersistenceQueueMetrics().Returns(
+            new SharePersistenceQueueMetricsSnapshot(0, 8, 65_536, 9));
+        provider.GetEmergencyJournalQueueMetrics().Returns(
+            new SharePersistenceQueueMetricsSnapshot(0, 2, 1_024, 11));
+        var registry = Metrics.NewCustomRegistry();
+        _ = new MetricsPublisher(Substitute.For<IMessageBus>(), provider,
+            Metrics.WithCustomRegistry(registry), registry);
+
+        await Task.WhenAll(Enumerable.Range(0, 16).Select(async _ =>
+        {
+            await using var concurrentStream = new MemoryStream();
+            await registry.CollectAndExportAsTextAsync(concurrentStream);
+        }));
+        await using var stream = new MemoryStream();
+        await registry.CollectAndExportAsTextAsync(stream);
+        var text = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.Contains(
+            "miningcore_share_persistence_queue_overflow_total{queue=\"primary\"} 9",
+            text);
+        Assert.Contains(
+            "miningcore_share_persistence_queue_overflow_total{queue=\"emergency_journal\"} 11",
+            text);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_ScrapesRemainConsistentWhileQueueIsActive()
+    {
+        const int capacity = 8;
+        const int producerCount = 4;
+        const int itemsPerProducer = 100;
+        var channel = Channel.CreateBounded<int>(new BoundedChannelOptions(capacity)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait,
+            AllowSynchronousContinuations = false,
+        });
+        var primary = new BoundedQueueAccounting<int>(capacity);
+        var emergency = new BoundedQueueAccounting<int>(1);
+        var provider = new LiveQueueMetricsProvider(primary, emergency);
+        var registry = Metrics.NewCustomRegistry();
+        _ = new MetricsPublisher(Substitute.For<IMessageBus>(), provider,
+            Metrics.WithCustomRegistry(registry), registry);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var producers = Enumerable.Range(0, producerCount).Select(producer =>
+            Task.Run(async () =>
+            {
+                for(var i = 0; i < itemsPerProducer; i++)
+                {
+                    while(!primary.TryWrite(channel.Writer,
+                        producer * itemsPerProducer + i))
+                    {
+                        await Task.Yield();
+                    }
+                }
+            }, stop.Token)).ToArray();
+
+        await WaitUntilAsync(() => primary.HighWatermark == capacity,
+            stop.Token);
+        var consumer = Task.Run(async () =>
+        {
+            while(await channel.Reader.WaitToReadAsync(stop.Token))
+            {
+                while(primary.TryRead(channel.Reader, out _))
+                    await Task.Yield();
+            }
+        }, stop.Token);
+        var scrapes = Task.Run(async () =>
+        {
+            while(producers.Any(x => !x.IsCompleted))
+            {
+                await using var stream = new MemoryStream();
+                await registry.CollectAndExportAsTextAsync(stream, stop.Token);
+                var snapshot = primary.GetSnapshot();
+                Assert.InRange(snapshot.Depth, 0, snapshot.Capacity);
+                Assert.InRange(snapshot.HighWatermark, snapshot.Depth,
+                    snapshot.Capacity);
+            }
+        }, stop.Token);
+
+        await Task.WhenAll(producers);
+        channel.Writer.Complete();
+        await Task.WhenAll(consumer, scrapes);
+        await using var finalStream = new MemoryStream();
+        await registry.CollectAndExportAsTextAsync(finalStream, stop.Token);
+        var text = Encoding.UTF8.GetString(finalStream.ToArray());
+        var finalSnapshot = primary.GetSnapshot();
+
+        Assert.Equal(0, finalSnapshot.Depth);
+        Assert.Equal(capacity, finalSnapshot.HighWatermark);
+        Assert.True(finalSnapshot.OverflowCount > 0);
+        Assert.Contains(
+            $"miningcore_share_persistence_queue_overflow_total{{queue=\"primary\"}} {finalSnapshot.OverflowCount}",
+            text);
     }
 
     [Fact]
@@ -158,6 +327,22 @@ public class HostedServiceStartupTests
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class LiveQueueMetricsProvider(
+        BoundedQueueAccounting<int> primary,
+        BoundedQueueAccounting<int> emergency) :
+        ISharePersistenceQueueMetricsProvider
+    {
+        public SharePersistenceQueueMetricsSnapshot GetPersistenceQueueMetrics()
+        {
+            return primary.GetSnapshot();
+        }
+
+        public SharePersistenceQueueMetricsSnapshot GetEmergencyJournalQueueMetrics()
+        {
+            return emergency.GetSnapshot();
         }
     }
 

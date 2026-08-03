@@ -160,9 +160,13 @@
   },
 
   // Write-through emergency journal for shares or block candidates that cannot reach PostgreSQL.
-  // Use a process-local, writable, monitored path and protect it as financial accounting data.
+  // In production use an absolute path on separately monitored/reserved storage when possible,
+  // and protect it as financial accounting data.
   // Recover it with: ./Miningcore -c config.json -rs recovered-shares.txt
   "shareRecoveryFile": "recovered-shares.txt",
+  // Optional outside systemd. Keep this on independent service-owned storage from the journal.
+  // The supplied systemd unit automatically uses /var/lib/miningcore through StateDirectory.
+  // "shareRecoveryStateDirectory": "/var/lib/miningcore",
 
   // Advanced relay sender example (leave commented for a direct node):
   // 192.0.2.20 is a documentation-only address; replace it with the real relay host.

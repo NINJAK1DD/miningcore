@@ -284,10 +284,8 @@ public class ConcealPool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            await connection.RespondAsync(response);
-
-            // publish
-            messageBus.SendMessage(share);
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);

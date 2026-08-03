@@ -10,11 +10,13 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Autofac;
 using Microsoft.IO;
+using Miningcore.Blockchain;
 using Miningcore.Banning;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Time;
 using Miningcore.Util;
@@ -71,6 +73,7 @@ public abstract class StratumServer
     }
 
     protected readonly ConcurrentDictionary<string, StratumConnection> connections = new();
+    private readonly ConcurrentDictionary<string, Task> connectionTasks = new();
     protected static readonly ConcurrentDictionary<string, X509Certificate2> certs = new();
     protected static readonly HashSet<int> ignoredSocketErrors;
 
@@ -85,6 +88,8 @@ public abstract class StratumServer
     protected PoolConfig poolConfig;
     protected IBanManager banManager;
     protected ILogger logger;
+    internal TimeSpan ConnectionDrainTimeout { get; set; } =
+        TimeSpan.FromSeconds(5);
 
     protected async Task RunAsync(CancellationToken ct, params StratumEndpoint[] endpoints)
     {
@@ -117,6 +122,8 @@ public abstract class StratumServer
         {
             foreach(var item in servers)
                 item.Server.Dispose();
+
+            await DrainConnectionsAsync();
         }
     }
 
@@ -154,8 +161,16 @@ public abstract class StratumServer
 
     private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert, CancellationToken ct)
     {
-        Task.Run(() => Guard(() =>
+        Guard(() =>
         {
+            var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+
+            if(failStop?.IsFailStopRequested == true)
+            {
+                socket.Close();
+                return;
+            }
+
             var remoteEndpoint = (IPEndPoint) socket.RemoteEndPoint;
 
             if(remoteEndpoint == null)
@@ -169,15 +184,96 @@ public abstract class StratumServer
                 return;
 
             // init connection
-            var connection = new StratumConnection(logger, rmsm, clock, CorrelationIdGenerator.GetNextId(), clusterConfig.Logging.GPDRCompliant);
+            var connection = new StratumConnection(logger, rmsm, clock,
+                CorrelationIdGenerator.GetNextId(),
+                clusterConfig.Logging.GPDRCompliant, failStop?.Token ?? default);
 
             logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging.GPDRCompliant)}:{remoteEndpoint.Port} ...");
 
             RegisterConnection(connection);
             OnConnect(connection, port.IPEndPoint);
 
-            connection.DispatchAsync(socket, ct, port, remoteEndpoint, cert, OnRequestAsync, OnConnectionComplete, OnConnectionError);
-        }, ex=> logger.Error(ex)), ct);
+            var dispatch = connection.DispatchAsync(socket, ct, port,
+                remoteEndpoint, cert, OnRequestAsync, OnConnectionComplete,
+                OnConnectionError);
+            if(!connectionTasks.TryAdd(connection.ConnectionId, dispatch))
+                throw new InvalidOperationException(
+                    $"Connection task {connection.ConnectionId} is already tracked");
+
+            _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch);
+        }, ex=> logger.Error(ex));
+    }
+
+    private async Task ObserveConnectionTaskAsync(string connectionId,
+        Task dispatch)
+    {
+        try
+        {
+            await dispatch;
+        }
+        catch(Exception ex)
+        {
+            // Dispatch reports connection errors through OnConnectionError. This observer exists
+            // to keep the task rooted and guarantee removal even if a callback itself fails.
+            logger.Error(ex,
+                "Unexpected failure while finalising Stratum connection {0}",
+                connectionId);
+        }
+        finally
+        {
+            connectionTasks.TryRemove(connectionId, out _);
+        }
+    }
+
+    private async Task DrainConnectionsAsync()
+    {
+        foreach(var connection in connections.Values)
+        {
+            try
+            {
+                connection.Disconnect();
+            }
+            catch(Exception ex) when(ex is IOException or ObjectDisposedException)
+            {
+                // A connection may still be between accept and stream construction. Its linked
+                // shutdown token is already cancelled and its tracked dispatch task is drained.
+            }
+        }
+
+        using var timeout = new CancellationTokenSource(ConnectionDrainTimeout);
+
+        try
+        {
+            while(connectionTasks.Count > 0)
+            {
+                var pending = connectionTasks.Values.ToArray();
+
+                if(pending.Length == 0)
+                    continue;
+
+                try
+                {
+                    await Task.WhenAll(pending).WaitAsync(timeout.Token);
+                }
+                catch(Exception ex) when(ex is not OperationCanceledException ||
+                    !timeout.IsCancellationRequested)
+                {
+                    // Connection dispatch already reports its own failure. Continue draining
+                    // the remaining tasks rather than allowing one fault to consume shutdown.
+                    logger.Debug(ex, "A Stratum connection faulted while shutdown was draining it");
+                }
+            }
+        }
+        catch(OperationCanceledException) when(timeout.IsCancellationRequested)
+        {
+            var pending = connectionTasks.Count;
+            var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+            failStop?.BeginFailStop(ProcessExitCodes.GeneralFailure);
+            logger.Fatal(
+                "Timed out after {0} while draining {1} Stratum connection task(s). " +
+                "Mining admission is closed and shutdown will continue so Share Recorder retains its recovery window.",
+                ConnectionDrainTimeout, pending);
+        }
     }
 
     protected void RegisterConnection(StratumConnection connection)
@@ -200,6 +296,13 @@ public abstract class StratumServer
 
     protected async Task OnRequestAsync(StratumConnection connection, JsonRpcRequest request, CancellationToken ct)
     {
+        var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+
+        if(failStop?.IsFailStopRequested == true)
+            throw new OperationCanceledException(
+                "Stratum request rejected by the mining fail-stop gate",
+                failStop.Token);
+
         // boot pre-connected clients
         if(banManager?.IsBanned(connection.RemoteEndpoint.Address) == true)
         {
@@ -215,6 +318,52 @@ public abstract class StratumServer
         await OnRequestAsync(connection, tsRequest, ct);
 
         PublishTelemetry(TelemetryCategory.StratumRequest, request.Method, clock.Now - tsRequest.Timestamp);
+    }
+
+    /// <summary>
+    /// Admits an accepted share to the accounting pipeline before its positive Stratum response.
+    /// Both steps take concurrent healthy admissions against the exclusive mining fail-stop
+    /// transition. A gate closure between them leaves the share published but deliberately
+    /// unacknowledged; response queue admission itself is synchronous.
+    /// </summary>
+    protected async Task PublishShareAndAcknowledgeAsync(Share share,
+        Func<Task> acknowledge, bool publishShare = true)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        ArgumentNullException.ThrowIfNull(acknowledge);
+
+        var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+
+        if(failStop == null)
+        {
+            if(publishShare)
+                messageBus.SendMessage(share);
+
+            await share.PersistenceAdmission;
+            await acknowledge();
+            return;
+        }
+
+        using var acceptance = failStop.AcquireSubmissionAcceptance();
+
+        if(publishShare)
+        {
+            // This is the sole production admission for a local Stratum share. MessageBus's
+            // public share path owns an admission for relayed and internally generated shares;
+            // entering it here as well would recurse when a persistence failure closes the gate.
+            acceptance.PublishShare(messageBus, share);
+        }
+
+        // A normal bounded-queue admission completes immediately. Queue saturation transfers
+        // ownership to the bounded emergency writer and completes only after its force-flush.
+        // Merged mining publishes a statistical clone before returning this object and propagates
+        // that clone's completion here. Deliberately wait outside the admission lock so storage
+        // latency cannot delay an exclusive fail-stop transition.
+        await share.PersistenceAdmission;
+
+        Task response = null;
+        acceptance.QueueResponse(() => response = acknowledge());
+        await response;
     }
 
     protected void OnConnectionError(StratumConnection connection, Exception ex)

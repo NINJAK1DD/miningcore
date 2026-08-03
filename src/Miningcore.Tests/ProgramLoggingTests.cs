@@ -101,6 +101,39 @@ public class ProgramLoggingTests
         }
     }
 
+    [Fact]
+    public void PackagedSystemdUnit_DoesNotRestartDurabilityLossExitStatus()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while(directory != null &&
+            !File.Exists(Path.Combine(directory.FullName, "packaging", "systemd",
+                "miningcore.service")))
+            directory = directory.Parent;
+
+        Assert.NotNull(directory);
+        var unit = File.ReadAllText(Path.Combine(directory.FullName, "packaging",
+            "systemd", "miningcore.service"));
+
+        Assert.Contains("Restart=on-failure", unit);
+        Assert.Contains(
+            $"RestartPreventExitStatus={ProcessExitCodes.UnreconciledShareDurabilityLoss}",
+            unit);
+        Assert.Contains("TimeoutStopSec=90", unit);
+    }
+
+    [Fact]
+    public void ProcessStatus_DurabilityLossExitCodeCannotBeDowngraded()
+    {
+        var status = new ProcessStatus();
+
+        status.MarkFailed(ProcessExitCodes.UnreconciledShareDurabilityLoss);
+        status.MarkFailed();
+
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            status.ExitCode);
+    }
+
     private static void WriteRecordSession(string activeFile, string record)
     {
         using var factory = new LogFactory();

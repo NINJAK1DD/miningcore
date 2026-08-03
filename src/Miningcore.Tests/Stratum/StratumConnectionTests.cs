@@ -32,6 +32,46 @@ public class StratumConnectionTests : TestBase
     private static readonly ILogger logger = new NullLogger(LogManager.LogFactory);
 
     [Fact]
+    public void RespondAsync_FailStopTokenRejectsAcknowledgement()
+    {
+        using var failStop = new CancellationTokenSource();
+        failStop.Cancel();
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false, failStop.Token);
+
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            _ = connection.RespondAsync(true, 1);
+        });
+    }
+
+    [Fact]
+    public async Task ProcessSendQueue_FailStopCancelsQueuedResponseBeforeTransmissionCompletes()
+    {
+        using var failStop = new CancellationTokenSource();
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false, failStop.Token);
+        var sendStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var transmitted = false;
+        connection.SendMessageOverride = async (_, ct) =>
+        {
+            sendStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            transmitted = true;
+        };
+
+        var sendLoop = connection.ProcessSendQueueAsync(CancellationToken.None);
+        await connection.RespondAsync(true, 1);
+        await sendStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        failStop.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sendLoop);
+        Assert.False(transmitted);
+    }
+
+    [Fact]
     public async Task ProcessRequest_Handle_Valid_Request()
     {
         var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);

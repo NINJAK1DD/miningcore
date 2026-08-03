@@ -154,6 +154,18 @@ public class AutofacModule : Module
             .As<ICandidatePersistenceFailureHandler>()
             .SingleInstance();
 
+        builder.RegisterType<ShareRecoveryFailureHandler>()
+            .As<IShareRecoveryFailureHandler>()
+            .SingleInstance();
+
+        builder.RegisterType<ShareRecoveryFatalState>()
+            .As<IShareRecoveryFatalState>()
+            .SingleInstance();
+
+        builder.RegisterType<ShareRecoveryPathOwnership>()
+            .As<IShareRecoveryPathOwnership>()
+            .SingleInstance();
+
         builder.RegisterType<ShareReceiver>()
             .SingleInstance();
 
@@ -167,6 +179,8 @@ public class AutofacModule : Module
             .SingleInstance();
 
         builder.RegisterType<NotificationService>()
+            .AsSelf()
+            .As<ICriticalNotificationSender>()
             .SingleInstance();
 
         builder.RegisterType<MetricsPublisher>()
