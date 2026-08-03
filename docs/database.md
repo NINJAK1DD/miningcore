@@ -280,7 +280,7 @@ Before opening its PostgreSQL transaction, the importer validates:
 
 - every versioned frame's markers, sequence and previous-frame link;
 - the declared record count, record SHA-256 and deterministic frame digest;
-- the complete terminal anchor; and
+- the complete terminal anchor when importing the configured chained-v2 recovery journal; and
 - the source's stable regular-file identity.
 
 Frame hashes normalise line endings to `\n`, so they protect logical records rather than the original
@@ -371,10 +371,11 @@ mutation lock but still requires operator reconciliation.
 > the uncertain shares were reconciled against PostgreSQL. The verifier never edits, imports or
 > deletes recovery files.
 
-#### 2. Preserve the chain and terminal anchor
+#### 2. Preserve the journal frame chain and terminal anchor
 
-Frame chains detect duplicated, missing and reordered incidents. New journal writes also store their
-final sequence and digest under
+Recovery-journal frame chains detect duplicated, missing and reordered middle frames. Fatal
+incidents use the separate sequence and previous-digest chain verified in the preceding step. New
+journal writes also store their final sequence and digest under
 `shareRecoveryStateDirectory/share-recovery-terminal`. Preserve this anchor with the journal during
 inspection, backup and restore; startup and import reject a shorter otherwise-valid prefix.
 
