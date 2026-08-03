@@ -25,35 +25,226 @@ The Dogecoin daemon mines rewards to the configured Dogecoin pool wallet. Mining
 
 ## Share and block accounting
 
+### Share publication and candidate persistence
+
 A new parent job is generated when either chain changes. Each submitted Scrypt proof is checked against both targets. Once proof validation succeeds, Miningcore publishes a cleared ordinary statistical copy before starting either daemon submission; a slow or failed peer-chain path therefore cannot suppress the share or move it beyond the parent effort boundary. Litecoin and Dogecoin block submissions are independent. Accepted or transport-uncertain merged-mining blocks are synchronously persisted as block-only candidates as soon as their own submission finishes; they do not wait for the ordinary five-second share batch or ZeroMQ relay. The pool does not publish the original proof a second time. No synthetic Dogecoin share row is inserted.
 
-Merged Litecoin parent rows use explicit block types: `merged-parent` once accepted and `merged-parent-uncertain` while an ambiguous parent submission is waiting for reconciliation. Dogecoin rows use `auxpow` once accepted and `auxpow-claim` while an ambiguous proof-specific claim is unresolved. Uncertain rows are deliberately excluded from public block totals, last-block timestamps and block-effort boundaries until they resolve, and they do not emit normal block-found notifications. If a claim later promotes to an accepted block, the normal block-found notification is emitted only after its database transaction commits. Losing, expired or superseded claims do not emit the ordinary orphan notification because they were never announced as found blocks. On both direct and relay nodes, payout processing defers a new merged-parent row for one minute so the ordinary five-second share buffer settles before effort or terminal status is frozen. Effort ranges use an inclusive upper boundary, which includes the winning share at the exact block timestamp without overlapping the previous interval.
+### Block states and notifications
 
-If acceptance or the coinbase transaction is not yet available, the block stores a reconciliation marker; the payout classifier retries `getblock` and replaces that marker with the coinbase transaction ID before monitoring maturity. Dogecoin proof attribution is required for both transport-ambiguous and Boolean `submitauxblock: true` responses. A DOGE candidate is finalized only when the active child block's `auxpow.parentblock` matches the submitted parent header. Missing proof data creates a proof-specific claim instead of trusting the Boolean response; a different parent proof means this miner lost. Finding the child hash alone is not sufficient. Dogecoin blocks with `confirmations = -1` are treated as inactive/orphaned, not as payable accepted blocks. Multiple claims may coexist for one DOGE child hash, while only the matching proof can become the finalized AuxPoW row. Uncertain submissions require at least three definitive misses and 30 minutes before expiring as orphaned; active DOGE responses that repeatedly omit `auxpow.parentblock` use the same retry/expiry guard instead of remaining pending forever. An exact active block is never classified as orphaned merely because the daemon or an RPC proxy temporarily omits the transaction list; coinbase lookup remains pending until the txid becomes available or the block becomes inactive/definitively absent.
+Merged Litecoin parent rows use explicit block types: `merged-parent` once accepted and
+`merged-parent-uncertain` while an ambiguous parent submission awaits reconciliation. Dogecoin rows
+use `auxpow` once accepted and `auxpow-claim` while a proof-specific claim is unresolved. Uncertain
+rows are excluded from public block totals, last-block timestamps and effort boundaries, and do not
+emit normal block-found notifications. A promoted claim emits that notification only after its
+database transaction commits. Losing, expired or superseded claims do not emit the ordinary orphan
+notification because they were never announced as found blocks.
+
+On both direct and relay nodes, payout processing defers a new merged-parent row for one minute so
+the ordinary five-second share buffer settles before effort or terminal status is frozen. Effort
+ranges use an inclusive upper boundary, including the winning share at the exact block timestamp
+without overlapping the previous interval.
+
+### Submission reconciliation
+
+If acceptance or the coinbase transaction is not yet available, the block stores a reconciliation
+marker. The payout classifier retries `getblock` and replaces the marker with the coinbase
+transaction ID before monitoring maturity.
+
+Dogecoin proof attribution is required for both transport-ambiguous and Boolean
+`submitauxblock: true` responses. A DOGE candidate is finalized only when the active child block's
+`auxpow.parentblock` matches the submitted parent header. Missing proof data creates a proof-specific
+claim instead of trusting the Boolean response; a different parent proof means this miner lost.
+Finding the child hash alone is not sufficient.
+
+Dogecoin blocks with `confirmations = -1` are inactive or orphaned, not payable accepted blocks.
+Multiple claims can coexist for one child hash, but only the matching proof can become the finalized
+AuxPoW row. Uncertain submissions need at least three definitive misses and 30 minutes before they
+expire as orphaned. Active responses that repeatedly omit `auxpow.parentblock` use the same guard.
+
+An exact active block is never orphaned merely because the daemon or RPC proxy temporarily omits its
+transaction list. Coinbase lookup remains pending until the transaction ID appears or the block is
+inactive or definitively absent.
 
 ## Auxiliary-address policy
+
+### Address validation
 
 When `requireAuxAddress` is true, authorisation fails if the address is missing or rejected by Dogecoin's `validateaddress` RPC. A bounded process-local cache remembers up to 4096 addresses that this process has positively validated. During a temporary validation-RPC outage, a reconnect using one of those exact addresses may continue; a new or previously unseen address still fails closed. The cache is deliberately not persisted and is empty after restart. The address is captured once at authorisation, so changing it requires reconnecting. The Dogecoin pool must remain enabled so its normal classifier, maturity checks and payout processor can handle auxiliary blocks.
 
 When `requireAuxAddress` is false, a worker that omits `doge=` mines Litecoin only. If its proof also reaches the DOGE target, Miningcore deliberately does not submit that auxiliary candidate because no miner-supplied SOLO beneficiary can be attributed. It is not credited to a fallback or pool address. This avoids unattributed funds at the cost of discarding that DOGE candidate; production merged-mining pools should normally keep `requireAuxAddress` enabled.
 
+### Pool configuration safeguards
+
 All enabled pool coin templates are assigned before any pool is configured, so the LTC and DOGE entries may appear in either order. `addressParameter` is trimmed, defaults to `doge` when blank, and cannot be `d` or contain `;` or `=`. Definitively invalid DOGE logins use the normal failed-login ban path; a temporary DOGE validation RPC failure returns a server error without banning the miner unless the exact address has already passed validation in this process. When multiple Dogecoin daemon endpoints are configured, the merged-mining manager logs a warning and uses the first endpoint; configure one authoritative auxiliary endpoint rather than assuming failover.
 
 ## Template refresh, submission and shutdown
 
-The parent pool polls both templates even when a Bitcoin Template Stream is configured, because parent-chain notifications do not include Dogecoin tip changes. Stream events are treated as refresh signals rather than authoritative snapshots. A freshly fetched Litecoin template with a different `previousblockhash` is accepted as a new job even if its height is lower than the previous job, because a height-decreasing active-chain reorganisation is valid. The successful startup Dogecoin template is cached and can seed the first combined job if the first recurring refresh is slower than the normal poll timeout. After the initial combined job, a temporary DOGE template outage uses the last valid auxiliary template so fresh LTC jobs continue. Startup, recurring template polling, address validation, submission and ambiguity lookup use separate timeout caps; `auxiliaryTemplatePollTimeoutMs` controls recurring Dogecoin `createauxblock` and defaults to 500 ms. Merged share processing acquires a manager preparation lease before proof validation. Once local validation identifies an LTC or DOGE candidate, that lease is atomically transferred to the candidate operation, which is owned independently of the miner's Stratum connection. Miner EOF, TCP reset or client cancellation cannot cancel daemon delivery. Submission and its follow-up attribution lookup share one manager-owned ten-second RPC-operation deadline, so a daemon outage cannot consume ten seconds and then start a second independent lookup timeout. That deadline does not cover durable block persistence. Once a parent or auxiliary result reaches persistence, it remains independent of miner/client cancellation and is governed by the PostgreSQL command timeout, database retries, recovery-journal lock/write and write-through flush. A block-candidate Stratum request can therefore remain outstanding for longer than ten seconds during storage failure. Stratum proxies should tolerate that rare candidate-only delay rather than retrying or dropping requests on a short fixed timeout. This durability-first behavior prevents a disconnecting miner from cancelling financially significant delivery or recording; database uniqueness makes a miner retry idempotent. During host shutdown the merged manager atomically enters quiescing mode, rejects new submissions before validation, waits for active validations to finish their candidate handoff, observes abandoned request exceptions and drains all candidate operations. Parent and auxiliary tasks each own their complete submission, reconciliation and durable persistence path, and Miningcore drains both complete paths before propagating an error, so one path's timeout or persistence failure cannot abandon an accepted result from the other chain. Litecoin parent submissions that return JSON null, `inconclusive`, `duplicate` or `duplicate-inconclusive` are reconciled with `getblock`; malformed, missing, duplicate or null-ID parent batch responses are also treated as ambiguous after local proof validation, causing an exact-hash `merged-parent-uncertain` record rather than losing the candidate. If the parent block cannot yet be proven inactive and its coinbase transaction is unavailable, Miningcore persists `merged-parent-uncertain` rather than discarding the candidate. If either submission has a transport-ambiguous result, Miningcore checks `getblock` and persists an uncertain marker when the daemon is still unavailable; explicit Dogecoin JSON-RPC errors are rejected without creating a candidate. A resolved AuxPoW or merged-parent row is not orphaned solely because the wallet temporarily returns `gettransaction -5` while the child or parent block cannot be proven inactive. If the active-chain check itself remains continuously unavailable for the uncertain-block lifetime, Miningcore emits one admin notification for that unavailable episode so operators can inspect wallet indexing, `getblock` and any RPC proxy. A successful wallet response or active/inactive block lookup clears the episode.
+### Template refresh
+
+The parent pool polls both templates even when Bitcoin Template Stream is configured, because parent
+notifications do not include Dogecoin tip changes. Stream events trigger a refresh; they are not
+treated as authoritative snapshots.
+
+Miningcore accepts a freshly fetched Litecoin template with a different `previousblockhash` even if
+its height decreased, because that can be a valid active-chain reorganisation. It caches the
+successful startup Dogecoin template to seed the first combined job. After that, the last valid DOGE
+template allows fresh LTC jobs to continue through a temporary auxiliary-daemon outage.
+
+Startup, recurring polling, address validation, submission and ambiguity lookup have separate
+timeouts. `auxiliaryTemplatePollTimeoutMs` controls recurring Dogecoin `createauxblock` calls and
+defaults to 500 ms.
+
+### Candidate ownership and deadlines
+
+Merged share processing obtains a preparation lease before proof validation. Once local validation
+finds an LTC or DOGE candidate, ownership transfers atomically to a manager operation that is
+independent of the miner connection. Miner EOF, TCP reset or client cancellation cannot cancel
+daemon delivery.
+
+Submission and its attribution lookup share one manager-owned ten-second RPC deadline. Durable block
+persistence is not covered by that deadline; it follows PostgreSQL timeouts, database retries and
+recovery-journal write-through rules. A candidate Stratum request can therefore remain open for more
+than ten seconds during storage failure. Stratum proxies should tolerate this rare candidate-only
+delay. Database uniqueness makes a miner retry idempotent.
+
+### Shutdown
+
+During shutdown, the merged manager enters quiescing mode and:
+
+1. Rejects new submissions before validation.
+2. Waits for active validations to finish candidate handoff.
+3. Observes abandoned request exceptions.
+4. Drains every candidate operation.
+
+Parent and auxiliary tasks own their complete submission, reconciliation and persistence paths.
+Miningcore drains both before propagating an error, so failure on one chain cannot abandon an
+accepted result from the other.
+
+### Ambiguous submissions
+
+Litecoin responses of JSON null, `inconclusive`, `duplicate` or `duplicate-inconclusive` are checked
+with `getblock`. Malformed, missing, duplicate or null-ID parent batch responses are also ambiguous
+after local proof validation. If neither inactivity nor a coinbase transaction can be established,
+Miningcore persists an exact-hash `merged-parent-uncertain` row instead of discarding the candidate.
+
+For either chain, transport ambiguity triggers `getblock` reconciliation and an uncertain marker if
+the daemon remains unavailable. Explicit Dogecoin JSON-RPC errors are rejected without creating a
+candidate. A resolved row is not orphaned solely because the wallet returns `gettransaction -5`
+while its block cannot be proven inactive.
+
+If active-chain checks remain unavailable for the uncertain block's lifetime, Miningcore emits one
+administrative notification for that outage episode. A successful wallet response or definitive
+active/inactive lookup clears the episode.
 
 ## Database migrations
 
-For an existing PostgreSQL database, stop Miningcore block writers and payout managers or schedule a maintenance window, then apply both `src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql` and `src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql` before enabling merged mining. The ownership migration is mandatory for every payment-processing cluster in the current release series, including clusters without merged mining, and for recorder/recovery-only deployments that use the `-rs` share-recovery importer. The migrations are transactional: failed validation or index creation rolls back their changes. The AuxPoW migration uses regular `CREATE INDEX` inside its transaction rather than concurrent index builds. It resolves the schema containing the active `blocks` relation before dropping obsolete indexes, so an unrelated same-named index earlier in `search_path` cannot shadow the intended target. It checks for legacy uncertain or duplicate AuxPoW/merged-parent rows and stops for manual review rather than choosing a claimant automatically, then recreates all three required partial indexes so stale prerelease definitions are repaired. The ownership migration adds the durable single-manager token, idempotent payment-batch ledger and recovery-file import manifest. Schema preflight resolves the exact unqualified `blocks` relation selected by the application role's active PostgreSQL `search_path`; valid custom schemas are accepted and stale same-named indexes on another relation cannot satisfy the check. Every merged-mining submitting node, direct recorder, relay receiver/recorder and database-connected payout node refuses to continue if required schema is absent or malformed.
+### Required scripts
+
+For an existing PostgreSQL database, stop Miningcore block writers and payout managers or schedule a
+maintenance window. Apply both scripts before enabling merged mining:
+
+- `src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql`
+- `src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql`
+
+The ownership migration is required for every payment-processing cluster in this release series,
+including clusters without merged mining. It is also required for recorder/recovery-only deployments
+that use the `-rs` importer.
+
+### Migration guarantees
+
+Both migrations are transactional, so failed validation or index creation rolls back the changes.
+The AuxPoW migration uses regular `CREATE INDEX` within its transaction. It resolves the schema of
+the active `blocks` relation before dropping obsolete indexes, detects legacy uncertain or duplicate
+merged-mining rows, and stops for manual review rather than selecting a claimant. It then recreates
+the three required partial indexes.
+
+The ownership migration adds the durable single-manager token, idempotent payment-batch ledger and
+recovery-file import manifest. Schema preflight resolves the unqualified `blocks` relation selected
+by the application role's active `search_path`; unrelated same-named indexes cannot satisfy it.
+
+Every merged-mining sender, direct recorder, relay receiver/recorder and database-connected payout
+node refuses to continue when the required schema is absent or malformed.
 
 ## Relay and payout ownership
 
-In share-relay deployments, every merged-mining sender now requires access to the shared PostgreSQL database and the merged-mining indexes. It synchronously persists financially significant block-only records itself; the ZeroMQ path carries ordinary shares only. The paired ordinary parent share preserves its sender timestamp through current receivers. Upgrade every relay receiver before upgrading senders or enabling merged-mining traffic: a pre-feature receiver does not understand the timestamp-preservation field and can place the winning share after its parent effort boundary. A sender does not need to run its own payout manager when the central receiver/recorder is the designated reconciliation owner. A relay sender with explicitly enabled payment processing may instead be that sole owner. Database-free relay senders remain supported for non-merged pools. A database-scoped advisory lock rejects a second healthy manager, while a durable ownership row also blocks replacement after the lock session or process is lost. Ownership is cleared automatically only after payout execution has stopped with no active or unknown wallet submission. Every supported payout family uses the shared fail-closed wallet-outcome classifier: cancellation, transport loss, malformed success, wallet success without a transaction ID, persistence failure after submission, or a shutdown timeout retain the marker and stop payout processing, while conclusive pre-submission validation and configuration failures release the active-operation state normally. Alephium wallet sweeps apply the same rule to every returned result: null entries and blank transaction IDs are financially uncertain. Prove the previous process is dead, reconcile daemon wallet history and follow the [guarded payout-manager ownership recovery procedure](database.md#recover-payout-manager-ownership-safely). Automatic/hot-standby failover remains unsupported by design. Pending block rows are locked through guarded terminal transition and balance credit, and known wallet transaction IDs are recorded in an idempotent payment-batch ledger before balance resets commit.
+### Relay database boundary
+
+Every merged-mining relay sender needs access to the shared PostgreSQL database and merged-mining
+indexes. It persists financially significant block-only records synchronously; ZeroMQ carries only
+ordinary shares. The paired parent share keeps its sender timestamp through current receivers.
+
+Upgrade every relay receiver before its sender or before enabling merged mining. Older receivers do
+not understand timestamp preservation and can place a winning share after its effort boundary. A
+database-free relay sender remains supported for non-merged pools.
+
+### Payout ownership
+
+The central receiver/recorder can be the sole reconciliation and payout owner, so senders need not
+run a payout manager. Alternatively, one relay sender with payment processing explicitly enabled can
+own it.
+
+A database advisory lock rejects a second healthy manager. A durable ownership row also prevents
+replacement after the lock session or process is lost. Miningcore clears ownership automatically
+only after payout execution stops with no active or unknown wallet submission.
+
+Cancellation, transport loss, malformed success, wallet success without a transaction ID,
+post-submission persistence failure and shutdown timeout all retain the marker and stop payout
+processing. Conclusive validation and configuration failures before submission release the active
+operation normally. Alephium sweeps apply the same rule to every result; null entries and blank IDs
+are financially uncertain.
+
+Before manual recovery, prove the old process is dead, reconcile daemon wallet history and follow the
+[guarded payout-manager ownership procedure](database.md#recover-payout-manager-ownership-safely).
+Automatic or hot-standby failover is unsupported. Pending blocks remain locked through terminal
+transition and balance credit, and known wallet transaction IDs enter the idempotent batch ledger
+before balance resets commit.
 
 ## Failure and durability boundary
 
-The ZeroMQ PUB/SUB relay is still not an acknowledged durable queue for ordinary shares: disconnects can lose in-flight statistical shares even though reconnect behavior has been tested. Merged-mining block delivery is no longer exposed to that loss window: the submitting manager awaits PostgreSQL block persistence before returning. Recognised retryable database failure uses the write-through recovery journal and may continue once the candidate is safe. An unexpected database/application failure still attempts that journal, but then stops the cluster because the accounting pipeline is no longer trusted. Simultaneous database/journal failure is cluster-fatal: shared process status becomes failed, the host and sibling pools are stopped and the operating-system exit status is non-zero. Miningcore explicitly configures a 45-second Generic Host shutdown budget. Mining execution is linked directly to `ApplicationStopping`, and its coordinator is registered after the optional API web host so merged-candidate quiescence starts immediately and the final drain is awaited before Kestrel shutdown can consume the shared budget. When quiescence begins, candidate persistence stops scheduling the ordinary 2/4/8-second retry delays, gives its active PostgreSQL operation a bounded five-second grace period, then writes and force-flushes the recovery journal without inheriting the miner or host cancellation token. A late completion of that PostgreSQL attempt can overlap journal replay, so every synchronous block-only type must declare a stable identity backed by both a PostgreSQL unique index and the matching repository `ON CONFLICT` rule. Miningcore currently permits only `auxpow`, `auxpow-claim`, `merged-parent` and `merged-parent-uncertain` on this direct path and rejects undeclared future types before database submission. The hosted ordinary-share recorder, concrete `ShareRecorder` and manager-facing `IBlockCandidateRecorder` resolve to the same singleton. Journal writes are additionally serialized by canonical recovery filename, protecting against accidental duplicate instances. Fatal pool startup, candidate durability failure, payout uncertainty and payout-ownership loss mark a shared process failure before stopping; any exception escaping shutdown, including the host timeout, also returns non-zero. A timely deliberate stop remains successful. The supervisor must allow more than 45 seconds before forcing termination; the supplied systemd unit uses 90 seconds and `Restart=on-failure`. All participating nodes must therefore point at the intended shared database, while exactly one node owns reconciliation and payouts. Physical-path relay validation is required only when the intended production topology actually uses share relay; it is not a gate for a direct single-node deployment.
+### Ordinary shares and block candidates
+
+ZeroMQ PUB/SUB is not an acknowledged durable queue for ordinary shares. A disconnect can lose
+in-flight statistical shares even though reconnect behavior is tested. Merged-mining candidates do
+not share that window: the submitting manager waits for PostgreSQL block persistence before
+returning.
+
+A recognised retryable database failure uses the write-through recovery journal and can continue
+once the candidate is safe. An unexpected database or application failure also attempts the journal,
+then stops the cluster because the accounting pipeline is no longer trusted. If both targets fail,
+Miningcore marks the shared process failed, stops sibling pools and exits non-zero.
+
+### Shutdown persistence
+
+Miningcore has a 45-second Generic Host shutdown budget. Candidate quiescence begins directly from
+`ApplicationStopping`, before Kestrel can consume that shared budget. During quiescence, candidate
+persistence skips normal 2/4/8-second retry delays, gives the active PostgreSQL operation five
+seconds, then force-flushes the recovery journal without inheriting miner or host cancellation.
+
+A late PostgreSQL completion can overlap journal replay. Each synchronous block-only type must
+therefore have a stable identity backed by a unique index and matching repository `ON CONFLICT`
+rule. The direct path currently permits only:
+
+- `auxpow`
+- `auxpow-claim`
+- `merged-parent`
+- `merged-parent-uncertain`
+
+Miningcore rejects undeclared future types before database submission. The hosted recorder,
+`ShareRecorder` and `IBlockCandidateRecorder` resolve to one singleton, and journal writes are also
+serialized by canonical recovery filename.
+
+### Process and deployment behavior
+
+Fatal startup, candidate durability failure, payout uncertainty and payout-ownership loss mark the
+process failed before stopping. Any exception escaping shutdown, including host timeout, also returns
+non-zero; a timely deliberate stop remains successful.
+
+The supervisor must allow more than 45 seconds before forced termination. The supplied systemd unit
+uses 90 seconds and `Restart=on-failure`. All participating nodes must use the intended shared
+database, with exactly one reconciliation and payout owner.
+
+Physical relay-path validation is required only when production uses share relay. It is not a gate
+for a direct single-node deployment.
 
 ## Pre-production validation
 

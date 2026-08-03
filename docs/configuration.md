@@ -86,12 +86,16 @@ the journal difficult to locate. Miningcore logs the resolved path when the Shar
 Restrict the file and its parent directory to the service account because share records are
 financial accounting data.
 
+### Ownership and path safety
+
 Miningcore acquires an adjacent exclusive process-lifetime owner file before startup recovery checks
 or import inspection. This intrinsic location prevents a different `shareRecoveryStateDirectory`
 from creating an independent owner for the same journal. A second local recorder, merged-mining
 relay submitter or recovery import using the same journal fails before pools start, even if it uses
 different Stratum ports or reaches the parent through a directory symlink. Journal-file symlinks and
-hard links are rejected; use one regular-file pathname. Miningcore retains the physical parent-
+hard links are rejected; use one regular-file pathname.
+
+Miningcore retains the physical parent-
 directory identity and performs journal opens, temporary creation, publication, retirement, deletion
 and Linux directory sync relative to that retained directory. Replacing a directory or retargeting
 a configured parent symlink therefore cannot redirect an operation to a different directory and
@@ -99,11 +103,15 @@ fails closed before Miningcore continues. Such hostile namespace mutation can le
 file, archive, or unanchored journal in the originally retained physical directory. Preserve those
 objects as forensic evidence and reconcile the journal, terminal anchor, import marker, and
 PostgreSQL manifest before removing anything; do not assume that a failed operation made no durable
-change. The hidden owner must itself remain a single-name regular
-file: owner-file symlinks and hard links are rejected. The owner is released only after a successful
+change.
+
+The hidden owner must itself remain a single-name regular file: owner-file symlinks and hard links
+are rejected. The owner is released only after a successful
 final recorder drain; process-fatal shutdown retains it until the operating system closes the process
 handle. Do not delete the `.miningcore-share-recovery-*.owner.lock` file beside `shareRecoveryFile`
 while Miningcore is running.
+
+### Atomic filesystem operations
 
 On the supported Ubuntu 22.04 Linux target, Miningcore first uses
 `renameat2(..., RENAME_NOREPLACE)` for atomic no-replacement publication and retirement. If libc does
@@ -112,16 +120,22 @@ not export that call, or the kernel/filesystem reports it unsupported, Miningcor
 machine loss between those fallback calls can leave both names linked to one inode; Miningcore's
 single-link validation detects that state and fails closed for operator reconciliation. A filesystem
 that supports neither primitive remains unsupported and fails the operation without overwriting an
-existing entry. Retained-directory metadata is made durable with `fsync`. Windows pins the resolved
+existing entry. Retained-directory metadata is made durable with `fsync`.
+
+Windows pins the resolved
 physical directory and uses write-through child-file handles, which protects file contents and
 prevents namespace redirection, but it does not claim the Linux-equivalent explicit parent-directory
 `fsync` durability guarantee.
+
+### Storage placement
 
 For production, place the journal on a separately monitored filesystem or storage volume from
 PostgreSQL data and Miningcore logs when possible. The objective is to preserve a writable failure
 domain when database or log storage fills. If separate storage is unavailable, reserve capacity for
 the journal and alert on both free bytes and free inodes well before exhaustion. Rotation of
 Miningcore logs does not bound the journal or reserve space for it.
+
+### Framed journal integrity
 
 Each caught append or force-flush failure is rolled back to the file's previous length and durably
 flushed. A journal's first batch is written to a force-flushed temporary file, atomically renamed to
@@ -132,9 +146,12 @@ previous frame digest, record count, record-content SHA-256 and deterministic cu
 in matching start/end markers. Startup, initial fallback entry and recovery import stream the
 complete chain and reject duplicated, missing or reordered middle frames as well as mismatched
 counts/hashes, nested or unclosed frames, records outside frames and unexpected trailing content.
+
 Record and legacy-prefix hashes deliberately normalise physical line endings to `\n`; they protect
 logical record content rather than the original newline bytes. Recovery lines above 1,048,576 characters are
 rejected without first allocating the complete hostile line.
+
+### Trusted appends and terminal anchors
 
 After the fallback tail is trusted, append work is linear: under the process-lifetime ownership lock,
 exclusive active-file handle and canonical-filename in-process writer gate,
@@ -148,6 +165,8 @@ journal shorter than its anchor, including deletion of an otherwise valid final 
 anchor is accepted only for legacy/unframed and v1 journals; chained v2 journals fail closed because
 that format has always required an anchor.
 
+### Bounded queues and overflow
+
 A bounded 65,536-share persistence queue prevents an unlimited in-memory outage backlog. If it
 fills, publication transfers the share to one bounded 1,024-share emergency channel and one journal
 writer; filesystem work and waiting happen after the mining admission lock is released. The writer
@@ -155,12 +174,15 @@ drains up to 250 queued shares into one chained frame and one terminal-anchor up
 queue while avoiding a force-flush pair per share during sustained saturation. A local Stratum
 response waits until the frame containing its share is durable. If both bounded capacities are
 exhausted, or the emergency append fails, Miningcore admits no positive response and enters the
-status-74 fatal path
-with the complete unresolved count and pool set. The fatal transition first acquires the exclusive
-publication/response gate and waits for earlier admissions to leave it; only then does it snapshot
+status-74 fatal path with the complete unresolved count and pool set.
+
+The fatal transition first acquires the exclusive publication/response gate and waits for earlier
+admissions to leave it; only then does it snapshot
 the unresolved registry and write exact incident evidence. This quiescent ordering excludes shares
 whose PostgreSQL commit became known before the gate closed and includes every still-unresolved
 share that was published before closure.
+
+### Volatile exposure
 
 The normal 65,536-share queue is intentionally memory-resident for throughput. A positive Stratum
 response proves local accounting-pipeline admission, but an abrupt process, kernel or machine loss
@@ -169,6 +191,8 @@ configured volatile exposure, not a crash-durability promise. Graceful shutdown 
 Stratum request handlers before closing recorder intake, then accounts for every admitted queue item.
 An unresponsive handler receives at most five seconds; expiry closes the global admission gate,
 marks the process failed and lets Share Recorder retain its reserved persistence/recovery window.
+
+### Graceful shutdown
 
 Graceful shutdown first closes share intake, disposes the subscription and completes both writers.
 The queue drain does not use the normal `BackgroundService` stopping token. Share Recorder limits
@@ -180,6 +204,8 @@ recovery work and other hosted services. Shutdown succeeds only after every
 admitted share reaches PostgreSQL or the journal; failure of both destinations writes the same
 status-74 latch for the full backlog.
 
+### Legacy journals
+
 Older journals retain the legacy newline-only guarantee for their original unframed prefix and v1
 frames. The first v2 frame appended to an older journal anchors the complete normalised legacy
 prefix, and all later frames are chained. A pure legacy/v1 source cannot retroactively prove that a
@@ -187,13 +213,16 @@ complete frame was never duplicated before the upgrade. The independent terminal
 offline deletion of complete v2 tail frames, while incident checksums and monitoring remain
 necessary for legacy history. A newline alone is not proof that an older multi-record append completed.
 
+### Dual-target failure and service state
+
 If PostgreSQL and the journal are both unavailable, Miningcore immediately closes a coordinated
 Stratum acceptance boundary. Every pool family publishes a validated share to the accounting
 pipeline before admitting its positive response. Healthy publications and synchronous response-
 queue admissions take concurrent read admissions, while fail-stop takes the exclusive transition;
 unrelated pools are therefore not serialized by one global monitor. Queued responses are cancelled
-directly when the gate closes. Miningcore then writes an
-independent fatal latch under
+directly when the gate closes.
+
+Miningcore then writes an independent fatal latch under
 `shareRecoveryStateDirectory/share-recovery-fatal`, attempts the distinct
 `Fatal share-recovery fallback failure` administrative notification for up to five seconds, and
 exits with status 74. The latch filename is the SHA-256 of the absolute configured journal path and
@@ -202,6 +231,9 @@ its content records both that path and hash. Under the supplied systemd unit the
 platform application-data default is unsuitable. Keep this state on service-owned storage that is
 independent of the journal's expected failure domain. Container deployments should mount that state
 directory on persistent storage so replacing the container cannot discard an unreconciled latch.
+
+#### State-file validation
+
 The sibling `share-recovery-terminal` and `share-recovery-import` directories are equally
 authoritative. All three safety-state subdirectories are pre-created during startup, with every new
 directory entry parent-synchronised on Linux before mining is accepted. Do not delete or edit their
@@ -209,8 +241,12 @@ path-hashed files independently. Miningcore proves that a terminal or import mar
 after successfully enumerating its exact state directory. Exact state and alias inspection uses
 atomic no-follow handles on supported Linux and Windows hosts. A directory, symbolic link,
 unsupported file type, malformed marker, disappearing entry, or inaccessible/uncertain directory blocks startup
-and the first fallback append instead of being treated as absence. Recovery writes a
-pending import marker before opening its PostgreSQL transaction, advances it after commit through
+and the first fallback append instead of being treated as absence.
+
+#### Interrupted import state
+
+Recovery writes a pending import marker before opening its PostgreSQL transaction. After commit it
+advances the marker through
 `Committed`, `ArchiveDurable`, `AnchorRetirementAuthorised`, and `AnchorRetired`, then removes it
 only after reopening and fully revalidating the retained source, atomically archiving and
 directory-syncing it, revalidating the same file object, and retiring the matching anchor. Each
@@ -221,10 +257,14 @@ startup and journal appends remain blocked while that marker exists; rerun the s
 with the exact configured path to resume an interrupted retirement without replaying committed
 shares. Filesystem aliases of the active journal are rejected rather than given independent state.
 
+### Import overlap safety
+
 Whole-file import manifests reject exact semantic replay of a complete source, but they are not a
 per-share uniqueness key. Never import overlapping reviewed files such as `A` and later `A+B`, and
 never combine previously imported records into a new source. Reconcile each source's provenance,
 manifest hash and record count before import.
+
+### Fatal incident evidence and acknowledgement
 
 The supplied unit has `RestartPreventExitStatus=74`, while the independently stored latch blocks
 every normal startup, including relay configurations. An inaccessible or uncertain state directory
@@ -232,32 +272,49 @@ also blocks startup. Notification delivery can still fail or time out; the fatal
 and latch are the authoritative signals. A later dual-target candidate failure upgrades an earlier
 general shutdown to status 74, creates the latch and sends a distinct escalation alert containing
 the affected candidates and exact latch path even when the first stop signal was already sent.
+
+#### Exact-share evidence
+
 The fixed-name fatal latch remains deliberately small. It identifies the current incident, count,
 pool set, failure category and any exact-share sidecar's path and expected SHA-256. Exact records are
 streamed to that sidecar only after a `detailState=hash-pending` latch is force-flushed. The same
 single streaming pass serializes each share, writes it and calculates the final SHA-256; only then
 does Miningcore advance the incident and latch to `detailState=complete`. A serialization or
 mid-write failure therefore still leaves startup blocked without first constructing or hashing the
-whole payload. Every completed incident also receives an immutable
-`.incident` metadata file rather than growing and rewriting all earlier incidents. New v3 incidents
+whole payload.
+
+#### Incident chain
+
+Every completed incident receives an immutable `.incident` metadata file rather than growing and
+rewriting all earlier incidents. New v3 incidents
 carry a monotonic sequence and the exact previous-incident digest; the fixed latch anchors the chain
 tip, complete expected count, and any legacy-v2 incident set present during the upgrade. Deleting,
 reordering, or substituting an anchored incident therefore makes verification and startup fail.
 Legacy incidents lost before the first v3 anchor cannot be reconstructed retroactively. Preserve and
-reconcile every incident file and referenced sidecar. Never delete the fixed-name `.fatal` latch
-manually: retained incidents without a complete acknowledgement anchor still block startup. After
-database reconciliation, run `--verify-share-recovery-state` and then
-`--acknowledge-share-recovery-state` with the service configuration. The acknowledgement command
-re-verifies all evidence, durably publishes a new immutable `.acknowledged` chain anchor, and only
-then removes the active latch. It preserves all incident metadata and sidecars, is safe to rerun
-after interruption, and lets later incidents extend the acknowledged chain. Deleting or changing an
-acknowledgement or any incident it covers makes startup fail closed. The verifier reads the small
-`.fatal`, `.incident`, and `.acknowledged` metadata through the same restrictive,
-identity-checked handle, with strict UTF-8, an exact 64-KiB raw-byte total limit, and a 16-KiB
-per-line limit enforced while reading, and rejects mutation or path replacement while evidence is
-being checked. Every later startup performs the complete sidecar count, framing and SHA-256
-verification again, including after acknowledgement. A missing, truncated or replaced sidecar
-therefore keeps startup blocked with status 74 rather than trusting metadata alone.
+reconcile every incident file and referenced sidecar.
+
+#### Operator acknowledgement
+
+Never delete the fixed-name `.fatal` latch manually: retained incidents without a complete
+acknowledgement anchor still block startup. After database reconciliation:
+
+1. Run `--verify-share-recovery-state` with the service configuration.
+2. Run `--acknowledge-share-recovery-state` with the same configuration.
+
+The acknowledgement command re-verifies all evidence, durably publishes a new immutable
+`.acknowledged` chain anchor, and only then removes the active latch. It preserves all incident
+metadata and sidecars, is safe to rerun after interruption, and lets later incidents extend the
+acknowledged chain. Deleting or changing an acknowledgement or any incident it covers makes startup
+fail closed.
+
+The verifier reads the small `.fatal`, `.incident`, and `.acknowledged` metadata through the same
+restrictive, identity-checked handle. It enforces strict UTF-8, a 64-KiB total raw-byte limit and a
+16-KiB per-line limit while reading, and rejects mutation or path replacement during verification.
+Every later startup performs the complete sidecar count, framing and SHA-256 verification again,
+including after acknowledgement. A missing, truncated or replaced sidecar therefore keeps startup
+blocked with status 74 rather than trusting metadata alone.
+
+### Legacy incident acknowledgement and locks
 
 Acknowledging a prerelease v2-only incident set creates a durable v4 legacy-set anchor without
 rewriting or deleting the original evidence. A later v3 incident extends from that preserved set.
@@ -268,6 +325,8 @@ acquires the journal's native process-lifetime owner before taking the mutation 
 cannot mutate evidence while a recorder, merged-mining submitter or importer owns the journal, even
 when .NET managed file locking is disabled on Unix. If another service or recovery command owns
 either boundary, the operation fails closed and reports that ownership instead of racing.
+
+### Operator response
 
 The normal `Share Recorder Policy Fallback` event confirms that one fallback batch was force-flushed;
 it is not proof that every share throughout an outage reached the journal. Review the complete
