@@ -30,4 +30,5 @@ contains the shortest installation path; the documents below hold the operationa
 The machine-readable configuration reference is
 [`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained
 starting configuration is [`config.example.json`](../config.example.json). Release-specific changes
-that affect operators are recorded near the beginning of the [release guide](releases.md).
+that affect operators are recorded after the installation and upgrade procedures in the
+[release guide](releases.md).
