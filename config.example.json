@@ -174,14 +174,14 @@
   //   "publishUrl": "tcp://192.0.2.20:5555",
   //   // false binds/listens; true connects to an already-bound relay endpoint.
   //   "connect": false,
-  //   // Replace with the real 40-character ZeroMQ shared key.
-  //   "sharedEncryptionKey": "CHANGE_ME_40_CHARACTER_ZMQ_CURVE_KEY"
+  //   // Replace with a long random ZeroMQ shared secret.
+  //   "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
   // },
   // Advanced central receiver/recorder example:
   // "shareRelays": [
   //   {
   //     "url": "tcp://192.0.2.20:5555",
-  //     "sharedEncryptionKey": "CHANGE_ME_40_CHARACTER_ZMQ_CURVE_KEY"
+  //     "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
   //   }
   // ],
 

@@ -13,6 +13,8 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 | --- | --- |
 | `logging` | Console/file output and log level |
 | `api` | Public REST API, admin/metrics ports, TLS and rate limits |
+| `coinTemplates` | Additional operator-supplied coin-definition files |
+| `cryptonightMaxThreads` / `equihashMaxThreads` | Native proof-validation concurrency limits |
 | `persistence.postgres` | Database connection used for shares, blocks and payments |
 | `paymentProcessing` | Cluster-wide payout scheduler |
 | `statistics` | Hashrate window, update interval and retention |
@@ -25,6 +27,32 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
 secrets. Restrict the file to the service account.
+
+Distributed sender/receiver roles have additional durability, security and database requirements;
+use the dedicated [share-relay guide](share-relays.md) rather than copying an old relay example.
+
+## Coin definitions and native resources
+
+Miningcore always loads the bundled `coins.json` beside the application. `coinTemplates` can add
+operator-owned definition files after it. Keep custom files outside the versioned application
+directory, validate every changed network and hashing field, and retest them after an upgrade.
+Duplicate properties inside one file are rejected; an intentional definition in a later file can
+replace one loaded earlier.
+
+Native proof validation can consume substantial CPU and memory:
+
+- `cryptonightMaxThreads` limits cluster-wide CryptoNight validation concurrency.
+- `equihashMaxThreads` limits parallel Equihash solvers; each additional solver can add roughly 1 GiB
+  to peak memory use.
+- CryptoNote/RandomX pool extensions such as `randomXVmCount`, `randomXFlagsAdd` and full-memory flags
+  are CPU- and coin-specific. Measure them on the production-class host before raising concurrency.
+- Equihash-family pools can require a wallet-controlled `z-address` depending on the coin and payout
+  path.
+- Vertcoin/Verthash requires the correct `verthash.dat`; set `vertHashDataFile` in the pool extension
+  data when the file is not in Miningcore's working directory.
+
+Do not copy a setting from a different coin merely because it uses the same broad family. Read the
+coin definition and daemon/wallet documentation together.
 
 ## Log files and rotation
 
