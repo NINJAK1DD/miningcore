@@ -2069,6 +2069,10 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     catch(OperationCanceledException ex) when(
                         recoveryCompletion.IsCancellationRequested)
                     {
+                        // WaitAsync cancelled only this wait. The persistence worker may still
+                        // unwind into shutdown journalling or fatal-evidence publication, so keep
+                        // its native recovery owner before awaiting any further failure handling.
+                        retainOwnershipUntilProcessExit = true;
                         var unresolved = failStopCoordinator.BeginFailStopAndCapture(
                             ProcessExitCodes.UnreconciledShareDurabilityLoss,
                             () => SnapshotUnresolvedShares());
@@ -2123,7 +2127,16 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         finally
         {
-            if(!retainOwnershipUntilProcessExit)
+            var persistenceWorkerComplete = ExecuteTask == null || ExecuteTask.IsCompleted;
+            bool deferredRecoveryComplete;
+            lock(deferredFailStopGate)
+                deferredRecoveryComplete = deferredFailStopHandling.All(x => x.IsCompleted);
+
+            // A cancelled wait does not cancel its underlying worker. Release a recorder-scoped
+            // native owner only after every task capable of mutating recovery evidence is proven
+            // complete; otherwise the failed process retains ownership until it exits.
+            if(!retainOwnershipUntilProcessExit && persistenceWorkerComplete &&
+               deferredRecoveryComplete)
                 ReleaseRecorderRecoveryOwnership();
         }
     }
