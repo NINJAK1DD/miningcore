@@ -431,8 +431,8 @@ public class PoolApiController : ApiControllerBase
             stats.PerformanceSamples = await GetMinerPerformanceInternal(perfMode, pool, address, ct);
 
             // Only PendingShares still needs shareMultiplier.
-            // BestShare / BestSessionShare now come from sharedifficulty,
-            // which is already in the correct miner-facing scale.
+            // BestShare / BestSessionShare come from actualdifficulty,
+            // which is already in the network-comparable scale exposed by the API.
             if(pool.Template.Family == CoinFamily.Bitcoin)
             {
                 var shareMultiplier = pool.Template.As<BitcoinTemplate>().ShareMultiplier;

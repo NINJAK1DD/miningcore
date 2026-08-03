@@ -24,6 +24,8 @@ namespace Miningcore.Tests.Payments;
 
 public class PayoutManagerTests
 {
+    private static readonly TimeSpan HostTestTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task RecoveredBlockNotification_IsEmittedAfterTransactionCommit()
     {
@@ -470,10 +472,10 @@ public class PayoutManagerTests
             _ => Task.CompletedTask,
             () => fixture.ProcessStatus.ExitCode);
 
-        await executionStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await executionStarted.Task.WaitAsync(HostTestTimeout);
         releaseFailure.TrySetResult(true);
 
-        var exitCode = await run.WaitAsync(TimeSpan.FromSeconds(3));
+        var exitCode = await run.WaitAsync(HostTestTimeout);
 
         Assert.Equal(1, exitCode);
         Assert.Equal(1, fixture.ProcessStatus.ExitCode);

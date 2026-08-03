@@ -42,6 +42,34 @@ Confirm the application login works:
 psql -h 127.0.0.1 -U miningcore -d miningcore -c "SELECT current_user, current_database();"
 ```
 
+### Optional next step for larger pools
+
+Before starting Miningcore or importing shares, consider
+[Advanced share-table partitioning](#advanced-share-table-partitioning). It is optional, but can
+improve query and maintenance isolation for a large multipool deployment. Immediately after initial
+schema creation is the simplest time to enable it because the `shares` table is still empty.
+
+Small and single-pool installations can keep the standard table. Partitioning is not a requirement
+for correctness, and the appendix must not be run automatically against a populated live database.
+
+### Best-share dashboard data
+
+The current `createdb.sql` already creates the storage and indexes used by the miner dashboard's
+`bestShare` and `bestSessionShare` API fields. No separate best-share table or running aggregate is
+required:
+
+- `shares.actualdifficulty` stores the achieved difficulty used for the best-share comparison.
+- `shares.sessionid` associates a share with the worker's logical mining session.
+- `minerstats.sessionid` identifies the current sessions represented by the latest statistics sample.
+
+Miningcore calculates lifetime Best Share as the maximum `actualdifficulty` for the miner. Best
+Session Share is the maximum for the session IDs in the miner's current statistics sample. The same
+values are calculated per worker. Because they are derived from retained share history, deleting or
+archiving old share rows can reduce the reported lifetime Best Share.
+
+Existing databases created from an older schema should verify these columns before deploying the
+current binary. Do not rerun `createdb.sql` over an existing database.
+
 Use `pg_hba.conf`, PostgreSQL TLS and a host firewall when Miningcore and PostgreSQL are on different
 machines. Do not expose port 5432 to the internet.
 
@@ -195,18 +223,21 @@ example blindly.
 ### Inspect and import a recovery journal
 
 If the incident produced `Share Recorder Policy Fallback`, `Fatal share-recovery fallback failure`
-or recovery-journal errors, reconcile the journal before restarting Miningcore. Use the
-absolute journal path reported when the Share Recorder came online. A dual-target failure exits
-with status 74 and creates an independent, hashed fatal latch below the service state directory;
-the exact path is printed in the fatal log and alert. The supplied systemd unit deliberately will
-not restart it, and normal Miningcore startup will refuse to proceed while the latch exists or its
-state cannot be read with certainty. A normal fallback email proves
-only that the batch which emitted it was force-flushed; it does not prove an earlier batch succeeded
-or reveal shares that failed before reaching either durable target. Review the entire outage window
-for both successful fallback and fatal fallback messages.
+or recovery-journal errors, reconcile the journal before restarting Miningcore. Use the absolute
+journal path reported when the Share Recorder came online.
+
+A normal fallback email proves only that its batch was force-flushed. It does not prove every earlier
+batch succeeded or reveal shares that reached neither durable target. Review the complete outage
+window for successful and fatal fallback messages.
+
+A dual-target failure exits with status 74 and creates a hashed fatal latch below the service state
+directory. The fatal log and alert give its exact path. The supplied systemd unit does not restart
+status 74, and normal startup remains blocked while the latch exists or cannot be read safely.
+
+#### 1. Stop and preserve the source
 
 Stop Miningcore before inspecting or importing an active journal. Record its metadata and checksum,
-then preserve the original as incident evidence:
+then copy the original as incident evidence:
 
 ```console
 sudo systemctl stop miningcore
@@ -216,15 +247,26 @@ sudo cp --preserve=all -- REPLACE_WITH_ABSOLUTE_RECOVERY_FILE \
   REPLACE_WITH_EVIDENCE_COPY
 ```
 
-Do not edit, truncate or import a corrupt original in place. A missing final newline, invalid JSON,
-or batch sequence/chain/count/hash mismatch can represent a partial write or replay. Older unframed journals can only prove
-their final newline boundary, not that the final multi-record batch was complete. Retain the
-original and create a separate repaired input containing
-only complete, operator-reviewed records; do not guess missing fields or add braces merely to make a
-fragment parse. Ordinary share loss can affect reward accounting in proportional and PPLNS schemes,
-so do not dismiss incomplete records merely because no block candidate is present.
+#### 2. Review damaged records
 
-Run the one-shot importer against the reviewed source only after PostgreSQL is healthy:
+Do not edit, truncate or import a corrupt original in place. Treat any of the following as possible
+partial-write or replay evidence:
+
+- a missing final newline;
+- invalid JSON;
+- a sequence, previous-frame link, count or hash mismatch; or
+- a nested, unclosed or otherwise malformed frame.
+
+Older unframed journals prove only their final newline boundary, not that the last multi-record batch
+was complete. Retain the original and create a separate input containing only complete,
+operator-reviewed records. Do not guess missing fields or add braces merely to make a fragment parse.
+
+Ordinary share loss can affect proportional and PPLNS reward accounting. Do not dismiss an incomplete
+record merely because it is not a block candidate.
+
+#### 3. Run the one-shot importer
+
+Use the reviewed source only after PostgreSQL is healthy:
 
 ```console
 cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
@@ -232,53 +274,74 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
-The importer validates every versioned frame's markers, contiguous sequence, previous-frame link,
-count, record SHA-256 and deterministic frame digest before opening its transaction, then ignores
-those already-verified comment lines while deserializing records. Hash validation normalises line
-endings to `\n`, so it protects logical records rather than preserving the original physical newline
-encoding. It
-commits all records and its
-SHA-256 manifest atomically. Before the transaction it writes an independent path-scoped import
-marker; after commit it advances a durable retirement state machine through `Committed`,
-`ArchiveDurable`, `AnchorRetirementAuthorised`, and `AnchorRetired`, retaining the expected terminal
-sequence and digest throughout. It atomically renames the source with an `.imported-*` suffix,
-synchronises the source directory, retires the terminal anchor only after durable authorisation,
-and removes and synchronises the marker last.
-Normal startup and fallback appends are blocked while an import marker remains. Before any
-non-pending marker can retire the source or its terminal anchor, Miningcore opens a fresh PostgreSQL
-connection and re-confirms the exact `share_recovery_imports` file hash, filename and record count.
-If that proof is absent or unavailable, the source, marker and anchor remain untouched. If recovery
-reports an archive, directory-sync or anchor-retirement failure, do not edit, replace or grow the source:
-rerun the same recovery command with the same configuration and exact source path. Miningcore
-revalidates the complete chain, terminal anchor, semantic hash and record count before resuming
-retirement, and retains the committed marker if any property changed. A symlink or hard-link alias of
-the configured journal is rejected because it could otherwise acquire different path-scoped safety
-state. A stable symlink for the configured parent directory is supported: import reads and archive
-retirement remain bound to the physical directory retained when ownership was acquired. Retargeting
-that parent fails closed before database import or destructive retirement. Final-component symlinks,
-FIFOs and other non-regular sources are rejected before database access. Miningcore resumes retirement and uses the database manifest to avoid reinserting already
-committed records. Retain
-the archive and confirm the matching `share_recovery_imports` row and record count. Do not blindly
-import unexplained journals from old working directories or previous deployments; reconcile their
-origin and existing manifest first. Manifests identify whole semantic files, not individual shares:
-importing `A` and then an overlapping `A+B` source can duplicate `A`, so never combine or import
-overlapping recovery sets.
+#### What the importer verifies
+
+Before opening its PostgreSQL transaction, the importer validates:
+
+- every versioned frame's markers, sequence and previous-frame link;
+- the declared record count, record SHA-256 and deterministic frame digest;
+- the complete terminal anchor when importing the configured chained-v2 recovery journal; and
+- the source's stable regular-file identity.
+
+Frame hashes normalise line endings to `\n`, so they protect logical records rather than the original
+physical newline encoding. Verified frame-comment lines are skipped while records are deserialized.
+
+The importer then commits the records and their `share_recovery_imports` manifest atomically. Its
+durable source-retirement marker advances through these phases:
+
+1. `Committed`
+2. `ArchiveDurable`
+3. `AnchorRetirementAuthorised`
+4. `AnchorRetired`
+
+The source is atomically renamed with an `.imported-*` suffix and its directory is synchronized.
+The terminal anchor is retired only after durable authorization, and the marker is removed and
+synchronized last. Normal startup and fallback appends remain blocked while that marker exists.
+
+#### Resume an interrupted retirement
+
+If recovery reports an archive, directory-sync or anchor-retirement failure:
+
+1. Do not edit, replace or grow the source.
+2. Rerun the same recovery command with the same configuration and exact source path.
+3. Retain the source, marker and terminal anchor if Miningcore reports changed or unavailable proof.
+
+Before a committed marker can retire the source or anchor, Miningcore uses a fresh PostgreSQL
+connection to confirm the exact manifest hash, filename and record count. It then revalidates the
+complete chain, terminal anchor, semantic hash, record count and file identity. This allows retirement
+to resume without inserting committed records again.
+
+#### Path and overlap safety
+
+- Symlink and hard-link aliases of the configured journal are rejected.
+- A stable parent-directory symlink is supported, but later retargeting fails closed.
+- Final-component symlinks, FIFOs and other non-regular sources are rejected before database access.
+- Retain the imported archive and confirm its manifest row and record count.
+- Reconcile the origin and existing manifest of journals from old working directories or deployments.
+
+Manifests identify complete semantic files, not individual shares. Importing `A` and later importing
+an overlapping `A+B` source can duplicate `A`; never combine or import overlapping recovery sets.
 
 ### Reconcile fatal share-recovery state
 
 An `Uncertain PostgreSQL share commit` incident is deliberately different from an ordinary recovery
 journal. Miningcore cannot prove whether PostgreSQL committed, so it does **not** append those shares
-to the importable journal. The small status-74 fatal latch names an exact-share sidecar and its
-expected SHA-256. That sidecar contains one `shareJsonBase64=` record per line for read-only
-reconciliation. Verify the sidecar hash, decode and compare those records with PostgreSQL; do not
-copy them into a journal or replay them unless reconciliation proves they are absent. A
-`detailState=hash-pending` latch is authoritative even if its sidecar is absent or partial. Earlier
-v2 incidents may call the equivalent state `incomplete`. Preserve the fixed latch, every immutable
-`.incident` metadata record, sidecar and temporary incident evidence until every record has a
-conclusive disposition.
+to the importable journal.
 
-Use the read-only verifier before manual reconciliation. Supply the same configuration used by the
-service so Miningcore resolves the exact recovery journal and independent state directory:
+The status-74 latch names an exact-share sidecar and its expected SHA-256. The sidecar contains one
+`shareJsonBase64=` record per line for read-only reconciliation. Verify its hash, decode the records
+and compare them with PostgreSQL. Do not copy them into a journal or replay them unless reconciliation
+proves they are absent.
+
+A `detailState=hash-pending` latch remains authoritative even if its sidecar is absent or partial.
+Earlier v2 incidents may call the equivalent state `incomplete`. Preserve the fixed latch, every
+immutable `.incident` file, every sidecar and temporary evidence until each record has a conclusive
+disposition.
+
+#### 1. Verify the evidence read-only
+
+Use the same configuration as the service so Miningcore resolves the correct journal and state
+directory:
 
 ```console
 cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
@@ -286,37 +349,43 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
 echo "exit=$?"
 ```
 
-The command enumerates every path-scoped `.incident` record, validates its metadata and v3
-sequence/previous-digest chain against the fixed latch's expected count and tip, verifies the
-referenced sidecar SHA-256, decodes every Base64 JSON share and checks the record count. Sidecar
-records are allocation-bounded to 1,048,576 characters and are parsed while the same restrictive
-file handle incrementally calculates the hash. Stable identity and length checks reject concurrent
-modification or path replacement. The smaller `.fatal`, `.incident`, and `.acknowledged` metadata
-files are likewise
-read as strict UTF-8 from one restrictive no-follow handle, with an exact cumulatively enforced
-64-KiB raw-byte total (including physical CRLF bytes), a 16-KiB per-line limit, and the same stable
-identity/path checks. Memory exhaustion is reported as a failed verification rather
-than allowing the command to continue. It returns
-status 74 when evidence is missing, malformed, hash-pending or otherwise incomplete. The one exact
-recoverable exception is a completed, verified incident and sidecar whose durable latch still records
-the immediately preceding hash-pending state; startup or acknowledgement safely completes that latch
-transition under the mutation lock and still requires operator reconciliation. A successful
-verification proves only that the recorded evidence is structurally complete; it cannot prove that
-the uncertain records were reconciled against PostgreSQL. Complete that database comparison before
-acknowledging an active fatal latch. A first v3 incident anchors every legacy-v2 incident then present,
-but evidence lost before that upgrade cannot be detected retroactively. The verifier never edits,
-imports or deletes recovery files.
+The verifier checks:
 
-Frame chains detect duplicated, missing and reordered middle frames. New writes also commit the
-expected final sequence and digest under the independently stored
-`shareRecoveryStateDirectory/share-recovery-terminal` directory. Startup and import reject a
-shorter valid prefix, so preserve this anchor with the journal during inspection and restore. A
-legacy/v1 journal cannot gain retroactive protection for history written before its first anchored
-v2 append. Retain the incident checksum captured before repair/import and compare it with backups or
-monitoring evidence when earlier truncation is plausible. Miningcore does not use a best-effort
-existence check for terminal or import markers: it must successfully enumerate the exact state
-directory before absence is accepted. A directory, symlink, malformed or inaccessible marker is
-unreconciled state and blocks startup with status 74.
+- every path-scoped incident's metadata, sequence and previous-digest chain;
+- the fixed latch's expected incident count and chain tip;
+- each sidecar's SHA-256 and decoded record count; and
+- stable file identity and length while the restrictive no-follow handle remains open.
+
+Sidecar records are limited to 1,048,576 characters. The smaller `.fatal`, `.incident` and
+`.acknowledged` files use strict UTF-8, a cumulative 64-KiB raw-byte limit and a 16-KiB per-line limit.
+Concurrent modification, path replacement, malformed data and memory exhaustion all fail
+verification instead of being ignored.
+
+The command returns status 74 when evidence is missing, malformed, hash-pending or incomplete. A
+completed verified sidecar whose latch still records the immediately preceding hash-pending state is
+the one recoverable transition; startup or acknowledgement completes that transition under the
+mutation lock but still requires operator reconciliation.
+
+> [!IMPORTANT]
+> Successful verification proves only that the evidence is structurally complete. It does not prove
+> the uncertain shares were reconciled against PostgreSQL. The verifier never edits, imports or
+> deletes recovery files.
+
+#### 2. Preserve the journal frame chain and terminal anchor
+
+Recovery-journal frame chains detect duplicated, missing and reordered middle frames. Fatal
+incidents use the separate sequence and previous-digest chain verified in the preceding step. New
+journal writes also store their final sequence and digest under
+`shareRecoveryStateDirectory/share-recovery-terminal`. Preserve this anchor with the journal during
+inspection, backup and restore; startup and import reject a shorter otherwise-valid prefix.
+
+Legacy/v1 history cannot gain retroactive protection. Retain the checksum captured before repair or
+import and compare it with backups or monitoring when earlier truncation is plausible. Miningcore
+must successfully enumerate the exact state directory before treating a marker as absent. A
+directory, symlink, malformed or inaccessible marker remains unreconciled and blocks startup with
+status 74.
+
+#### 3. Remove a corrupt journal from the live path
 
 If the configured active journal is corrupt and a separate reviewed copy was imported, preserve the
 original evidence but remove it from the live journal path before clearing the latch. Prefer an
@@ -332,10 +401,16 @@ sudo sha256sum -- \
   REPLACE_WITH_ABSOLUTE_RECOVERY_FILE.corrupt-evidence-YYYYMMDDTHHMMSSZ
 ```
 
-Only after the reviewed import, its manifest/count, the active-path disposition, and every uncertain
-sidecar record have been reconciled, verify and durably acknowledge the incident chain. Use the same
-configuration as the service; do not delete the fatal latch, incident metadata, sidecars, or journal
-evidence manually:
+#### 4. Acknowledge only after reconciliation
+
+Continue only after all of these are complete:
+
+- the reviewed import and its manifest/count are verified;
+- the corrupt active path has a recorded disposition; and
+- every uncertain sidecar record has been reconciled against PostgreSQL.
+
+Use the same configuration as the service. Do not manually delete the latch, incident metadata,
+sidecars or journal evidence:
 
 ```console
 cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
@@ -345,23 +420,27 @@ echo "verify_exit=$?"
 echo "acknowledge_exit=$?"
 ```
 
-Both commands return status 74 when evidence is incomplete or unsafe. The acknowledgement command
-performs the structural verification again, atomically and force-durably publishes an immutable
-`.acknowledged` anchor covering the retained chain, then removes the active `.fatal` latch and
-synchronises its directory. It is idempotent if the process stops between those steps. Successful
-acknowledgement does not delete evidence and does not prove the database reconciliation on the
-operator's behalf. Startup accepts an acknowledged chain only when its latest anchor covers every
-retained incident; deleting or modifying covered evidence blocks startup. Later fatal incidents
-extend from that acknowledged tip and require a new acknowledgement after reconciliation. Startup
-also re-hashes and parses every retained sidecar on every launch, so a missing, truncated or
-replaced sidecar remains a status-74 failure even after acknowledgement.
+Both commands return status 74 when evidence is incomplete or unsafe. Acknowledgement:
 
-Prerelease v2-only incident sets are acknowledged through a v4 legacy-set anchor that preserves the
-original v2 evidence and lets the next v3 incident extend from it. Do not rename or rewrite those
-legacy files. Startup inspection, incident publication and acknowledgement share a path-scoped,
-cross-process `.mutation.lock` in the recovery-state directory. Leave that file in place. If the
-service or another recovery command owns it, stop the competing process or wait for it to finish;
-do not bypass the lock or edit the state by hand.
+1. repeats structural verification;
+2. force-durably publishes an immutable `.acknowledged` anchor for the retained chain;
+3. removes the active `.fatal` latch; and
+4. synchronizes the state directory.
+
+This process is idempotent if interrupted. It does not delete evidence or perform database
+reconciliation for the operator. Startup accepts the acknowledged chain only while its latest anchor
+covers every retained incident and every referenced sidecar still passes complete hash, framing and
+record-count validation. Later incidents extend from that tip and require another reconciliation and
+acknowledgement.
+
+#### Legacy evidence and recovery locks
+
+Prerelease v2-only sets use a v4 legacy-set anchor that preserves the original evidence. Do not rename
+or rewrite those files.
+
+Startup inspection, incident publication and acknowledgement share a cross-process `.mutation.lock`
+in the recovery-state directory. Leave it in place. If Miningcore or another recovery command owns
+the lock, stop the competing process or wait; never bypass the lock or edit the state by hand.
 
 ### Restart and verify
 

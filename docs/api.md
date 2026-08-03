@@ -63,6 +63,13 @@ changes under `/api/v2/...`. They should be preferred by new front ends where pa
 response shape differs from the legacy endpoint. Inspect `/api/help` and the controller response on a
 test instance before binding a public UI to it.
 
+The miner response from `/api/pools/{poolId}/miners/{address}` includes `bestShare` and
+`bestSessionShare` for both the miner aggregate and each current worker. Best Share is the highest
+achieved difficulty retained in that miner's share history. Best Session Share is limited to the
+logical session IDs represented by the latest miner-statistics sample. See
+[Best-share dashboard data](database.md#best-share-dashboard-data) for the PostgreSQL fields and
+retention implications.
+
 ## WebSocket notifications
 
 Miningcore exposes live notifications at:
@@ -165,6 +172,10 @@ emergency-journal depth requires investigation of PostgreSQL latency or primary-
 A static front end should call only the public API. Put both behind HTTPS, restrict cross-origin access
 to expected sites, rate-limit expensive miner/history routes, and cache only responses whose freshness
 requirements permit it.
+
+The companion [NINJAK1DD/Miningcore.WebUI](https://github.com/NINJAK1DD/Miningcore.WebUI) consumes
+this fork's `bestShare` and `bestSessionShare` miner fields. Keep the frontend and backend API
+contracts aligned when updating either repository.
 
 The community [btclinux/Miningcore.WebUI](https://github.com/btclinux/Miningcore.WebUI) is an optional
 starting point, not part of this repository. It targets another Miningcore fork. Review its current
