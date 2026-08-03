@@ -157,11 +157,10 @@ Choose one deployment path:
 Keep the existing production configuration outside the application directory. Do **not** replace it
 with `config.example.json`. Instead, compare the old file with the target release's example and
 merge intentional additions or renamed settings while retaining pool, daemon, wallet, database,
-relay and notification values. Validate JSON after editing:
-
-```console
-jq empty /etc/miningcore/config.json
-```
+relay and notification values. The supplied file is JSON with comments, so `jq empty` is not an
+authoritative validator and can reject a configuration Miningcore accepts. Use a JSON-with-comments
+aware editor with `src/Miningcore/config.schema.json`, then validate the staged configuration on an
+isolated test instance before it can own payouts or accept production miners.
 
 Verify the staged application and native library loader without starting mining:
 
@@ -286,8 +285,8 @@ application versions.
 
 ## Further reading
 
-- [Canonical: set up .NET on Ubuntu](https://documentation.ubuntu.com/ubuntu-for-developers/howto/dotnet-setup/)
-- [Canonical: available .NET versions](https://documentation.ubuntu.com/ubuntu-for-developers/reference/availability/dotnet/)
+- [Canonical: set up .NET on Ubuntu](https://ubuntu.com/developers/docs/howto/dotnet-setup/)
+- [Canonical: available .NET versions](https://ubuntu.com/developers/docs/reference/availability/dotnet/)
 - [Microsoft: choose and troubleshoot .NET packages on Ubuntu](https://learn.microsoft.com/dotnet/core/install/linux-ubuntu-decision)
 - [Microsoft: remove .NET runtimes and SDKs](https://learn.microsoft.com/dotnet/core/install/remove-runtime-sdk-versions)
 - [Microsoft: .NET 10 breaking changes](https://learn.microsoft.com/dotnet/core/compatibility/10/)

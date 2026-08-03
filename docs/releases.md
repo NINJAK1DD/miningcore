@@ -16,6 +16,11 @@ If this replaces an existing .NET 6 deployment, first follow the dedicated
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
 commands below as an instruction to overwrite a live configuration or database.
 
+New installations can continue at [Choose a version](#choose-a-version). Existing operators should
+first read [Logging and disk recovery](#logging-and-disk-recovery) and
+[Payout and WebSocket compatibility](#payout-and-websocket-compatibility) for behavior changes that
+may require monitoring, migration or front-end work.
+
 ## Logging and disk recovery
 
 Miningcore now rotates every configured NLog file natively before a write would grow it beyond
@@ -222,10 +227,10 @@ download these two files:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz`
 - `SHA256SUMS`
 
-The examples below use `v0.1.0-rc.1`. Substitute the version you selected.
+The examples below use the current `v0.1.0-rc.8`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.1
+export MININGCORE_VERSION=v0.1.0-rc.8
 curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz"
 curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
 sha256sum --check SHA256SUMS
@@ -353,6 +358,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
+export MININGCORE_VERSION=v0.1.0-rc.8  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -360,7 +366,7 @@ sudo curl -fL \
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
 sudo chown 10001:10001 /var/lib/miningcore
-sudo docker pull ghcr.io/ninjak1dd/miningcore:v0.1.0-rc.1
+sudo docker pull "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
@@ -368,7 +374,7 @@ sudo docker run -d \
   -p 3032:3032 \
   -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
   -v /var/lib/miningcore:/var/lib/miningcore \
-  ghcr.io/ninjak1dd/miningcore:v0.1.0-rc.1
+  "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
 ```
 
 Publish every API and Stratum port used by your configuration. The container runs as fixed non-root
@@ -378,7 +384,7 @@ from the container network.
 
 ## Maintainer release procedure
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.1` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.9` or
 `v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
 runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
 checks that the binary reports the release version and source commit, packages the result,
@@ -392,8 +398,9 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-git tag -s v0.1.0-rc.1 -m "Miningcore v0.1.0-rc.1"
-git push origin v0.1.0-rc.1
+NEXT_VERSION=v0.1.0-rc.9  # Replace with the next unused SemVer version.
+git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
+git push origin "$NEXT_VERSION"
 ```
 
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight

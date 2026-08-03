@@ -3,6 +3,17 @@
 This guide expands the beginner database steps in the root README. Commands assume PostgreSQL is on
 the local Linux host; adjust host names and access controls for a private database server.
 
+| Task | Section |
+| --- | --- |
+| Create a new database | [New installation](#new-installation) |
+| Back up and prove a restore | [Back up and restore](#back-up-and-restore) |
+| Upgrade an existing schema | [Upgrade an existing database](#upgrade-an-existing-database) |
+| Recover a full filesystem or share journal | [Recover after disk exhaustion](#recover-after-disk-exhaustion) |
+| Reconcile a fatal share-accounting incident | [Fatal share-recovery state](#reconcile-fatal-share-recovery-state) |
+| Release a stale payout owner safely | [Payout-manager ownership](#recover-payout-manager-ownership-safely) |
+| Inspect the live database | [Routine inspection](#routine-inspection) |
+| Partition a large shares table | [Advanced partitioning](#advanced-share-table-partitioning) |
+
 ## New installation
 
 Use a currently supported PostgreSQL release. PostgreSQL 15 or newer is a sensible baseline for a
@@ -60,7 +71,7 @@ A backup is not proven until it has been restored and checked.
 ## Upgrade an existing database
 
 > [!IMPORTANT]
-> This revision changes the payout safety contract for every coin family. The payout-manager
+> The current release series changes the payout safety contract for every coin family. The payout-manager
 > ownership migration is mandatory before starting any node with payment processing enabled, not
 > only an LTC/DOGE node. Treat this as a breaking upgrade and schedule a maintenance window.
 
@@ -181,6 +192,8 @@ its normal blockchain-information call to succeed before starting Miningcore. Us
 CLI clients, RPC ports and authentication from the deployment rather than copying a coin-specific
 example blindly.
 
+### Inspect and import a recovery journal
+
 If the incident produced `Share Recorder Policy Fallback`, `Fatal share-recovery fallback failure`
 or recovery-journal errors, reconcile the journal before restarting Miningcore. Use the
 absolute journal path reported when the Share Recorder came online. A dual-target failure exits
@@ -250,6 +263,8 @@ import unexplained journals from old working directories or previous deployments
 origin and existing manifest first. Manifests identify whole semantic files, not individual shares:
 importing `A` and then an overlapping `A+B` source can duplicate `A`, so never combine or import
 overlapping recovery sets.
+
+### Reconcile fatal share-recovery state
 
 An `Uncertain PostgreSQL share commit` incident is deliberately different from an ordinary recovery
 journal. Miningcore cannot prove whether PostgreSQL committed, so it does **not** append those shares
@@ -347,6 +362,8 @@ legacy files. Startup inspection, incident publication and acknowledgement share
 cross-process `.mutation.lock` in the recovery-state directory. Leave that file in place. If the
 service or another recovery command owns it, stop the competing process or wait for it to finish;
 do not bypass the lock or edit the state by hand.
+
+### Restart and verify
 
 Finally start Miningcore and inspect its complete startup, API health and pool state:
 

@@ -1,6 +1,6 @@
 # Miningcore API
 
-This guide describes the API implemented by this repository revision. The root URL is normally
+This guide describes the API implemented by the current repository. The root URL is normally
 `http://HOST:4000`; use HTTPS through a trusted reverse proxy for public access.
 
 ## Configuration
@@ -143,7 +143,7 @@ When `metricsPort` is configured, Prometheus-compatible metrics are served from 
 listener. Administrative routes are under `/api/admin` on `adminPort`; they can change logging and
 payment-processing state. Never publish the admin port through the public reverse proxy.
 
-Share-accounting backlog monitoring uses three gauges with a fixed `queue` label:
+Share-accounting backlog monitoring uses three gauges and one counter with a fixed `queue` label:
 
 | Metric | Meaning |
 | --- | --- |
@@ -167,5 +167,5 @@ to expected sites, rate-limit expensive miner/history routes, and cache only res
 requirements permit it.
 
 The community [btclinux/Miningcore.WebUI](https://github.com/btclinux/Miningcore.WebUI) is an optional
-starting point, not part of this repository. It targets another Miningcore fork, has not received a code
-push since December 2023, and GitHub does not currently detect a licence. Audit and adapt it before use.
+starting point, not part of this repository. It targets another Miningcore fork. Review its current
+maintenance, licence and API compatibility, then audit and adapt it before use.
