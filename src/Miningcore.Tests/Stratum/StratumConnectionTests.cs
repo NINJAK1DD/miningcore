@@ -68,7 +68,8 @@ public class StratumConnectionTests : TestBase
 
         failStop.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sendLoop);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            sendLoop.WaitAsync(TestTimeout));
         Assert.False(transmitted);
     }
 

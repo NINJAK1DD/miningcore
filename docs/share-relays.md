@@ -39,6 +39,12 @@ In the usual topology, each sender binds one protected relay endpoint and the ce
 connects to it. Generate a different long random secret for each sender/receiver relationship and
 keep the port private to the participating hosts.
 
+For example, generate a secret and copy the complete single-line output into both configurations:
+
+```console
+openssl rand -base64 32
+```
+
 Sender:
 
 ```json
@@ -64,6 +70,14 @@ Receiver/recorder:
 name. The endpoint must be reachable from the receiver. Bind to an interface appropriate for the
 host and restrict the port with host and network firewalls. Never commit the shared secret or place a
 real secret in an issue, log excerpt or example configuration.
+
+The built-in CURVE configuration encrypts relay traffic and allows the receiver to authenticate the
+sender. It does not authenticate or authorise receiver clients on the sender because Miningcore does
+not configure a ZeroMQ Authentication Protocol (ZAP) handler or client-key allowlist. Any client that
+knows the sender's CURVE public key and can reach the endpoint may subscribe without the original
+`sharedEncryptionKey`. Restrict the relay port to the intended receiver hosts with host and network
+firewalls or a private VPN. Use an operator-managed ZeroMQ proxy with client authentication when the
+sender must also verify receiver identity.
 
 The first publisher/subscriber connection has the normal ZeroMQ slow-joiner window. Start the
 receiver before admitting miners to a new sender and confirm receiver logs and PostgreSQL inserts
