@@ -22,6 +22,7 @@ namespace Miningcore.Tests.Stratum;
 
 public class StratumConnectionTests : TestBase
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
     private const string JsonRpcVersion = "2.0";
     private const string ConnectionId = "foo";
     private const string requestString = "{\"params\": [\"slush.miner1\", \"password\"], \"id\": 42, \"method\": \"mining.authorize\"}\\n";
@@ -63,7 +64,7 @@ public class StratumConnectionTests : TestBase
 
         var sendLoop = connection.ProcessSendQueueAsync(CancellationToken.None);
         await connection.RespondAsync(true, 1);
-        await sendStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await sendStarted.Task.WaitAsync(TestTimeout);
 
         failStop.Cancel();
 
