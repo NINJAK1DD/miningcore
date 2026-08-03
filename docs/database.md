@@ -42,6 +42,34 @@ Confirm the application login works:
 psql -h 127.0.0.1 -U miningcore -d miningcore -c "SELECT current_user, current_database();"
 ```
 
+### Optional next step for larger pools
+
+Before starting Miningcore or importing shares, consider
+[Advanced share-table partitioning](#advanced-share-table-partitioning). It is optional, but can
+improve query and maintenance isolation for a large multipool deployment. Immediately after initial
+schema creation is the simplest time to enable it because the `shares` table is still empty.
+
+Small and single-pool installations can keep the standard table. Partitioning is not a requirement
+for correctness, and the appendix must not be run automatically against a populated live database.
+
+### Best-share dashboard data
+
+The current `createdb.sql` already creates the storage and indexes used by the miner dashboard's
+`bestShare` and `bestSessionShare` API fields. No separate best-share table or running aggregate is
+required:
+
+- `shares.actualdifficulty` stores the achieved difficulty used for the best-share comparison.
+- `shares.sessionid` associates a share with the worker's logical mining session.
+- `minerstats.sessionid` identifies the current sessions represented by the latest statistics sample.
+
+Miningcore calculates lifetime Best Share as the maximum `actualdifficulty` for the miner. Best
+Session Share is the maximum for the session IDs in the miner's current statistics sample. The same
+values are calculated per worker. Because they are derived from retained share history, deleting or
+archiving old share rows can reduce the reported lifetime Best Share.
+
+Existing databases created from an older schema should verify these columns before deploying the
+current binary. Do not rerun `createdb.sql` over an existing database.
+
 Use `pg_hba.conf`, PostgreSQL TLS and a host firewall when Miningcore and PostgreSQL are on different
 machines. Do not expose port 5432 to the internet.
 
