@@ -79,6 +79,7 @@ namespace Miningcore;
 
 public class Program : ProcessStatusBackgroundService
 {
+    internal const int DefaultApiPort = 4000;
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -208,7 +209,7 @@ public class Program : ProcessStatusBackgroundService
                     ? (clusterConfig.Api.ListenAddress != "*" ? IPAddress.Parse(clusterConfig.Api.ListenAddress) : IPAddress.Any)
                     : IPAddress.Parse("127.0.0.1");
 
-                var port = clusterConfig.Api?.Port ?? 4000;
+                var endpointPorts = ResolveApiEndpointPorts(clusterConfig.Api);
                 var enableApiRateLimiting = clusterConfig.Api?.RateLimiting?.Disabled != true;
                 var apiTlsEnable = clusterConfig.Api?.Tls?.Enabled == true || !string.IsNullOrEmpty(clusterConfig.Api?.Tls?.TlsPfxFile);
 
@@ -266,14 +267,29 @@ public class Program : ProcessStatusBackgroundService
                     })
                     .UseKestrel(options =>
                     {
-                        options.Listen(address, port, listenOptions =>
+                        foreach(var port in endpointPorts.ListenerPorts)
                         {
-                            if(apiTlsEnable)
-                                listenOptions.UseHttps(clusterConfig.Api.Tls.TlsPfxFile, clusterConfig.Api.Tls.TlsPfxPassword);
-                        });
+                            options.Listen(address, port, listenOptions =>
+                            {
+                                if(apiTlsEnable)
+                                    listenOptions.UseHttps(clusterConfig.Api.Tls.TlsPfxFile, clusterConfig.Api.Tls.TlsPfxPassword);
+                            });
+                        }
                     })
                     .Configure(app =>
                     {
+                        app.Use(async (context, next) =>
+                        {
+                            if(!IsApiRequestAllowed(context.Connection.LocalPort,
+                                context.Request.Path, endpointPorts))
+                            {
+                                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                                return;
+                            }
+
+                            await next();
+                        });
+
                         if(enableApiRateLimiting)
                             app.UseIpRateLimiting();
 
@@ -303,8 +319,12 @@ public class Program : ProcessStatusBackgroundService
                         app.UseMvc();
                     });
 
-                    logger.Info(() => $"Prometheus Metrics API listening on http{(apiTlsEnable ? "s" : "")}://{address}:{port}/metrics");
-                    logger.Info(() => $"WebSocket Events streaming on ws{(apiTlsEnable ? "s" : "")}://{address}:{port}/notifications");
+                    var httpScheme = $"http{(apiTlsEnable ? "s" : "")}";
+                    var webSocketScheme = $"ws{(apiTlsEnable ? "s" : "")}";
+                    logger.Info(() => $"Public API listening on {httpScheme}://{address}:{endpointPorts.PublicPort}");
+                    logger.Info(() => $"Administrative API listening on {httpScheme}://{address}:{endpointPorts.AdminPort}/api/admin");
+                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{address}:{endpointPorts.MetricsPort}/metrics");
+                    logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{address}:{endpointPorts.PublicPort}/notifications");
                 });
             }
 
@@ -624,6 +644,64 @@ public class Program : ProcessStatusBackgroundService
     internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
         !recoveryMode && (api == null || api.Enabled);
 
+    internal sealed record ApiEndpointPorts(int PublicPort, int AdminPort,
+        int MetricsPort)
+    {
+        public int[] ListenerPorts => new[]
+        {
+            PublicPort,
+            AdminPort,
+            MetricsPort,
+        }
+        .Distinct()
+        .ToArray();
+    }
+
+    internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
+    {
+        var publicPort = api?.Port ?? DefaultApiPort;
+        return new ApiEndpointPorts(
+            publicPort,
+            api?.AdminPort ?? publicPort,
+            api?.MetricsPort ?? publicPort);
+    }
+
+    internal static bool IsApiRequestAllowed(int localPort, PathString path,
+        ApiEndpointPorts ports)
+    {
+        ArgumentNullException.ThrowIfNull(ports);
+
+        if(path.StartsWithSegments("/api/admin",
+            StringComparison.OrdinalIgnoreCase))
+            return localPort == ports.AdminPort;
+
+        if(path.StartsWithSegments("/metrics",
+            StringComparison.OrdinalIgnoreCase))
+            return localPort == ports.MetricsPort;
+
+        return localPort == ports.PublicPort;
+    }
+
+    internal static int? FindApiListenerStratumPortConflict(
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        if(config.Api?.Enabled == false)
+            return null;
+
+        var apiPorts = ResolveApiEndpointPorts(config.Api).ListenerPorts
+            .ToHashSet();
+
+        return config.Pools?
+            .Where(pool => pool.Enabled && pool.EnableInternalStratum == true &&
+                pool.Ports != null)
+            .SelectMany(pool => pool.Ports.Keys)
+            .Where(apiPorts.Contains)
+            .Cast<int?>()
+            .FirstOrDefault();
+    }
+
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
     {
@@ -792,6 +870,12 @@ public class Program : ProcessStatusBackgroundService
         {
             clusterConfig.Validate();
             ValidateMergedMiningDeployment(clusterConfig);
+
+            var listenerConflict = FindApiListenerStratumPortConflict(
+                clusterConfig);
+            if(listenerConflict.HasValue)
+                throw new PoolStartupException(
+                    $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
 
             if(clusterConfig.Notifications?.Admin?.Enabled == true)
             {

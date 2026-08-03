@@ -26,6 +26,17 @@ Keep the admin and metrics listeners private. If `adminIpWhitelist` or `metricsI
 the default is localhost. If a reverse proxy is used, test which client address Miningcore observes
 before changing a whitelist.
 
+When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
+only that route family on it. Public REST and WebSocket routes remain on `port`; requests for
+`/api/admin` or `/metrics` on the public listener, and requests for public routes on a dedicated
+listener, return `404 Not Found`. The IP whitelists remain an independent second control. Apply a
+firewall rule as well because all three ports bind to `listenAddress`.
+
+Omitting either optional port preserves the previous shared-listener behavior for that route. An
+explicit dedicated port must be different from the public port and from the other dedicated port.
+All API ports must be between 1 and 65535 and must not overlap an enabled local Stratum endpoint;
+invalid, duplicate or conflicting values stop startup with a configuration error.
+
 ## Discovery and health
 
 ```console
@@ -149,6 +160,22 @@ displaying `error`.
 When `metricsPort` is configured, Prometheus-compatible metrics are served from `/metrics` on that
 listener. Administrative routes are under `/api/admin` on `adminPort`; they can change logging and
 payment-processing state. Never publish the admin port through the public reverse proxy.
+
+For the example configuration, local checks and a Prometheus scrape target use:
+
+```console
+curl http://127.0.0.1:4001/api/admin/stats/gc
+curl http://127.0.0.1:4002/metrics
+```
+
+After migrating an existing installation that sets dedicated ports, change any scrape target from
+`http://127.0.0.1:4000/metrics` to `http://127.0.0.1:4002/metrics`. Confirm that the public listener
+returns 404 for protected route families before treating the separation as deployed:
+
+```console
+curl --output /dev/null --write-out '%{http_code}\n' http://127.0.0.1:4000/metrics
+curl --output /dev/null --write-out '%{http_code}\n' http://127.0.0.1:4000/api/admin/stats/gc
+```
 
 Share-accounting backlog monitoring uses three gauges and one counter with a fixed `queue` label:
 

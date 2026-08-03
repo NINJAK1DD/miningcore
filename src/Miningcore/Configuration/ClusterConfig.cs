@@ -1206,6 +1206,11 @@ public partial class ApiConfig
 {
     public bool Enabled { get; set; }
     public string ListenAddress { get; set; }
+
+    /// <summary>
+    /// Public REST API and WebSocket listener port.
+    /// </summary>
+    [Range(1, ushort.MaxValue)]
     public int Port { get; set; }
 
     public ApiTlsConfig Tls { get; set; }
@@ -1213,13 +1218,17 @@ public partial class ApiConfig
     public ApiRateLimitConfig RateLimiting { get; set; }
 
     /// <summary>
-    /// Port for admin-apis
+    /// Dedicated port for administrative APIs. When omitted, administrative
+    /// routes remain on Port for backwards compatibility.
     /// </summary>
+    [Range(1, ushort.MaxValue)]
     public int? AdminPort { get; set; }
 
     /// <summary>
-    /// Port for prometheus compatible metrics endpoint /metrics
+    /// Dedicated port for the Prometheus-compatible /metrics endpoint. When
+    /// omitted, metrics remain on Port for backwards compatibility.
     /// </summary>
+    [Range(1, ushort.MaxValue)]
     public int? MetricsPort { get; set; }
 
     /// <summary>

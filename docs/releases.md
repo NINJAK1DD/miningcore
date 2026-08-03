@@ -193,6 +193,28 @@ from the container network.
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
 
+### Dedicated admin and metrics listeners
+
+`api.adminPort` and `api.metricsPort` now create real, route-isolated listeners. When configured,
+`/api/admin` and `/metrics` are no longer served on the public `api.port`; public REST and WebSocket
+routes are not served on either dedicated port. The existing IP whitelists continue to apply.
+
+Before upgrading a configuration that sets these ports:
+
+1. Permit the required trusted sources to reach the dedicated ports through the firewall.
+2. Point Prometheus at `http://127.0.0.1:4002/metrics` or the configured equivalent. For example,
+   change `http://127.0.0.1:5000/metrics` to `http://127.0.0.1:5002/metrics` when `metricsPort` is 5002.
+3. Keep reverse proxies and public clients on `api.port` only.
+4. Publish the extra ports explicitly for a container deployment.
+5. Verify firewall, container and reverse-proxy mappings before restarting, then confirm protected
+   routes return 404 on the public port.
+
+Omitting either optional port keeps that route on the public listener for backwards compatibility.
+Explicit API ports must be unique and in the range 1–65535. TLS-enabled deployments use the same
+configured certificate on every listener. An API listener that overlaps an enabled local Stratum
+endpoint now stops startup with the conflicting port identified. See
+[API listener isolation](configuration.md#api-listener-isolation).
+
 ### Logging and disk recovery
 
 Miningcore now rotates every configured NLog file natively before a write would grow it beyond

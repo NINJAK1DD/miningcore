@@ -38,9 +38,12 @@
     "listenAddress": "*",
     // Main public API and WebSocket port.
     "port": 4000,
-    // Administrative API port. Restrict this with both the whitelist and a firewall.
+    // Dedicated administrative API port. When omitted, /api/admin remains on
+    // the public port for backwards compatibility. Restrict it with both the
+    // whitelist and a firewall.
     "adminPort": 4001,
-    // Prometheus metrics port.
+    // Dedicated Prometheus metrics port. When omitted, /metrics remains on
+    // the public port for backwards compatibility.
     "metricsPort": 4002,
     // Clients allowed to use administrative API endpoints.
     "adminIpWhitelist": [ "127.0.0.1" ],

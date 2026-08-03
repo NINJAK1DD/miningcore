@@ -253,7 +253,9 @@ Before returning normal traffic, confirm:
 - exactly the intended node owns payment processing;
 - Stratum authentication and a low-risk test share work;
 - share relay and recovery journaling work if the deployment uses them; and
-- API, metrics, reverse proxy, firewall and log paths behave as before.
+- Public API and WebSocket routes behave as before. When `adminPort` or `metricsPort` is configured,
+  move administrative clients and Prometheus to those dedicated ports, update firewall/container
+  mappings, and verify that the protected routes return 404 on the public port.
 
 Keep the old application and .NET 6 runtime for an observation period appropriate to the pool's
 risk, payout interval and operational change policy.

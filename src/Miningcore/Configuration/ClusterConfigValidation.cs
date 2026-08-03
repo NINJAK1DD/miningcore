@@ -110,8 +110,31 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
             .WithMessage("API: listenAddress missing or empty");
 
         RuleFor(j => j.Port)
-            .GreaterThan(0)
+            .InclusiveBetween(1, ushort.MaxValue)
             .WithMessage("API: Invalid port number '{PropertyValue}'");
+
+        RuleFor(j => j.AdminPort.Value)
+            .InclusiveBetween(1, ushort.MaxValue)
+            .When(j => j.AdminPort.HasValue)
+            .WithMessage("API: Invalid adminPort number '{PropertyValue}'");
+
+        RuleFor(j => j.MetricsPort.Value)
+            .InclusiveBetween(1, ushort.MaxValue)
+            .When(j => j.MetricsPort.HasValue)
+            .WithMessage("API: Invalid metricsPort number '{PropertyValue}'");
+
+        RuleFor(j => j)
+            .Must(j => !j.AdminPort.HasValue || j.AdminPort.Value != j.Port)
+            .WithMessage("API: adminPort must differ from port when configured");
+
+        RuleFor(j => j)
+            .Must(j => !j.MetricsPort.HasValue || j.MetricsPort.Value != j.Port)
+            .WithMessage("API: metricsPort must differ from port when configured");
+
+        RuleFor(j => j)
+            .Must(j => !j.AdminPort.HasValue || !j.MetricsPort.HasValue ||
+                j.AdminPort.Value != j.MetricsPort.Value)
+            .WithMessage("API: adminPort and metricsPort must differ when configured");
     }
 }
 
@@ -208,6 +231,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .GreaterThan((byte) 0)
             .When(x => x.InstanceId.HasValue)
             .WithMessage("instanceId must either be omitted or be non-zero");;
+
+        RuleFor(j => j.Api)
+            .SetValidator(new ApiConfigValidator())
+            .When(j => j.Api?.Enabled == true);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)

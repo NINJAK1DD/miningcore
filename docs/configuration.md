@@ -41,6 +41,31 @@ The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff`
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
 
+## API listener isolation
+
+`api.port` serves the public REST API and WebSocket notifications. Setting `api.adminPort` moves
+`/api/admin` to a dedicated listener, while `api.metricsPort` moves `/metrics` to another dedicated
+listener. A configured dedicated route is unavailable on the public port, and public routes are
+unavailable on either dedicated port. Omitting an optional port retains the legacy shared-port
+behavior for that route.
+
+Every explicit API port must be unique, between 1 and 65535, and different from every enabled local
+Stratum endpoint. Dedicated listeners bind to the same `api.listenAddress` and use the same TLS
+certificate as the public API, so retain the admin/metrics IP whitelists and restrict the ports with
+the host or network firewall. Reverse proxies should publish only `api.port`; a local Prometheus
+service normally scrapes `127.0.0.1:metricsPort`.
+
+Container operators must publish the dedicated ports separately. Bind them to host loopback unless
+a trusted remote monitoring or administration network requires access:
+
+```console
+-p 4000:4000 \
+-p 127.0.0.1:4001:4001 \
+-p 127.0.0.1:4002:4002
+```
+
+See [API and monitoring](api.md#configuration) for the route matrix and post-upgrade checks.
+
 ## Coin definitions and native resources
 
 Miningcore always loads the bundled `coins.json` beside the application. `coinTemplates` can add

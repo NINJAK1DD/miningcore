@@ -191,8 +191,9 @@ sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
 Pin a published version rather than copying the example version indefinitely. Copy and edit the
-configuration, then run the image. This example publishes the API and merged-mining LTC Stratum
-port; publish every additional port used by your configuration:
+configuration, then run the image. This example publishes the public API, binds the admin and
+metrics ports to host loopback, and publishes the merged-mining LTC Stratum port. Publish every
+additional port used by your configuration:
 
 ```console
 MININGCORE_VERSION=v0.1.0-rc.8  # Replace with the release you selected.
@@ -207,6 +208,8 @@ sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
   -p 4000:4000 \
+  -p 127.0.0.1:4001:4001 \
+  -p 127.0.0.1:4002:4002 \
   -p 3032:3032 \
   -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
   -v /var/lib/miningcore:/var/lib/miningcore \
@@ -229,6 +232,8 @@ sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
   -p 4000:4000 \
+  -p 127.0.0.1:4001:4001 \
+  -p 127.0.0.1:4002:4002 \
   -p 3032:3032 \
   -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
   -v /var/lib/miningcore:/var/lib/miningcore \
