@@ -71,19 +71,27 @@ firewall. Reverse proxies should publish only `api.port`; a local Prometheus ser
 scrapes `127.0.0.1:metricsPort`.
 
 Normal startup enforces the port range and conflict rules for an enabled API after configuration
-loading. The JSON schema intentionally leaves listener-port values unconstrained. `-rs` share
-recovery stream-discards every top-level case variant of the unused API section before duplicate,
-ambiguity and schema checks, so damaged, duplicated or stale HTTP listener settings cannot block an
-emergency share import or recovery-state command. After strict duplicate and case-variant checks,
-recovery also replaces every pool's unused `ports` subtree with an empty object before schema
-validation and typed dictionary binding. Damaged, nonnumeric or out-of-range Stratum port keys
-therefore cannot block recovery, while ambiguous configuration names remain errors. Recovery skips
-the remaining Stratum port, address and TLS certificate checks because it starts neither API nor
-Stratum listeners. Normal startup applies
-those Stratum listener checks only to enabled pools with internal Stratum enabled, and rejects
-case-variant duplicate names in schema-bound configuration objects. The intentionally free-form
-`payoutSchemeConfig` object is exempt because its keys are consumed by payout-scheme implementations
-rather than bound to CLR properties.
+loading. The JSON schema intentionally leaves listener-port values unconstrained. Stratum listener
+checks apply only to enabled pools with internal Stratum enabled. If a disabled pool retains
+internal Stratum endpoints, Miningcore logs that their validation was skipped and validates them
+when the pool is enabled. Case-variant duplicate names remain errors in schema-bound configuration
+objects. The intentionally free-form `payoutSchemeConfig` object is exempt because its keys are
+consumed by payout-scheme implementations rather than bound to CLR properties.
+
+### Recovery-mode listener handling
+
+`-rs` share recovery opens neither API nor Stratum sockets. Miningcore prints a recovery-mode
+diagnostic, discards every top-level case variant of the unused API section, and leaves `api` unset
+in the in-memory recovery configuration. Damaged, duplicated or stale HTTP listener settings
+therefore cannot block an emergency share import or recovery-state command.
+
+After strict duplicate and case-variant checks, recovery replaces every pool's unused `ports`
+subtree with an empty object before schema validation and typed dictionary binding. Damaged,
+nonnumeric or out-of-range Stratum port keys cannot block recovery, while ambiguous configuration
+names remain errors. Recovery also skips the remaining Stratum port, address and TLS certificate
+checks.
+
+### Containers and reverse proxies
 
 Container host traffic does not appear as container loopback. To publish protected ports to host
 loopback, use a user-defined bridge with a fixed gateway, add that gateway to both IP whitelists,

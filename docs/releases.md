@@ -226,10 +226,12 @@ public listener for backwards compatibility. If `adminPort` is omitted, explicit
 protection. If `metricsPort` is omitted, likewise deny `/metrics` unless public metric exposure is
 intentional. A same-host reverse proxy normally reaches Miningcore from trusted loopback, so the
 application whitelist alone does not block a route forwarded by that proxy. Explicit API ports must
-be unique and in the range 1–65535. TLS-enabled deployments use
-the same configured certificate on every listener. An API listener that uses the same port and an
-overlapping bind address as an enabled local Stratum endpoint now stops startup with the conflicting
-port identified; different specific bind addresses may reuse a port. See
+be unique and in the range 1–65535. Enabled internal Stratum ports must also be in that range;
+port `0` is now rejected instead of creating an unpredictable ephemeral mining endpoint.
+TLS-enabled deployments use the same configured certificate on every listener. An API listener
+that uses the same port and an overlapping bind address as an enabled local Stratum endpoint now
+stops startup with the conflicting port identified; different specific bind addresses may reuse a
+port. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
@@ -240,6 +242,11 @@ Stratum port, address and TLS certificate checks. Exact duplicates outside the u
 case-variant ambiguities remain errors. The configuration schema therefore defers listener range and
 conflict enforcement to normal startup so an invalid, duplicated or stale listener setting cannot
 block a durable-share import or recovery-state command.
+
+The regenerated configuration schema also corrects previously omitted boolean fields
+(`banning.banOnLoginFailure`, `logging.gpdrCompliant`, `pools[].enableAsicBoost` and
+`persistence.postgres.enableLegacyTimestamps`) and requires non-null strings in `coinTemplates` and
+all address-whitelist arrays.
 
 ### Logging and disk recovery
 

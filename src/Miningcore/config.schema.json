@@ -909,10 +909,7 @@
         "null"
       ],
       "items": {
-        "type": [
-          "string",
-          "null"
-        ]
+        "type": "string"
       }
     },
     "cryptonightMaxThreads": {

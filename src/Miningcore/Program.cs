@@ -183,6 +183,7 @@ public class Program : ProcessStatusBackgroundService
             var apiConfig = clusterConfig.Api;
 
             ConfigureLogging();
+            LogSkippedStratumListenerValidation(clusterConfig);
             LogRuntimeInfo();
             ValidateRuntimeEnvironment();
 
@@ -670,22 +671,34 @@ public class Program : ProcessStatusBackgroundService
         bool recoveryMode)
     {
         var config = ReadConfig(file, recoveryMode);
-        NormalizeApiConfig(config);
+        if(!recoveryMode)
+            NormalizeApiConfig(config);
         ValidateConfig(config, recoveryMode);
         return config;
     }
 
-    internal sealed record ApiEndpointPorts(int PublicPort, int AdminPort,
-        int MetricsPort)
+    internal sealed class ApiEndpointPorts
     {
-        public int[] ListenerPorts { get; } = new[]
+        public ApiEndpointPorts(int publicPort, int adminPort,
+            int metricsPort)
         {
-            PublicPort,
-            AdminPort,
-            MetricsPort,
+            PublicPort = publicPort;
+            AdminPort = adminPort;
+            MetricsPort = metricsPort;
+            ListenerPorts = Array.AsReadOnly(new[]
+            {
+                publicPort,
+                adminPort,
+                metricsPort,
+            }
+            .Distinct()
+            .ToArray());
         }
-        .Distinct()
-        .ToArray();
+
+        public int PublicPort { get; }
+        public int AdminPort { get; }
+        public int MetricsPort { get; }
+        public IReadOnlyList<int> ListenerPorts { get; }
     }
 
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
@@ -1082,6 +1095,32 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    internal static string[] GetPoolsWithSkippedStratumListenerValidation(
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        return config.Pools?
+            .Where(pool => !pool.Enabled &&
+                pool.EnableInternalStratum == true &&
+                pool.Ports?.Any() == true)
+            .Select(pool => string.IsNullOrEmpty(pool.Id)
+                ? "<unnamed>"
+                : pool.Id)
+            .ToArray() ?? Array.Empty<string>();
+    }
+
+    private static void LogSkippedStratumListenerValidation(
+        ClusterConfig config)
+    {
+        var poolIds = GetPoolsWithSkippedStratumListenerValidation(config);
+        if(poolIds.Length == 0)
+            return;
+
+        logger.Info(() =>
+            $"Stratum listener validation skipped for disabled pool(s): {string.Join(", ", poolIds)}. Listener settings will be validated when the pool is enabled");
+    }
+
     internal static JObject GenerateJsonConfigSchemaDocument()
     {
         var generator = new JSchemaGenerator
@@ -1133,6 +1172,9 @@ public class Program : ProcessStatusBackgroundService
         try
         {
             Console.WriteLine($"Using configuration file '{file}'");
+            if(skipApiListenerSettings)
+                Console.WriteLine(
+                    "Recovery mode: API and Stratum listener configuration discarded (no sockets are opened)");
 
             var serializer = JsonSerializer.Create(new JsonSerializerSettings
             {
@@ -1214,7 +1256,7 @@ public class Program : ProcessStatusBackgroundService
             property.Name.Equals("payoutSchemeConfig",
                 StringComparison.OrdinalIgnoreCase));
 
-    private static JObject LoadConfigurationDocument(JsonReader reader,
+    internal static JObject LoadConfigurationDocument(JsonReader reader,
         bool skipApiConfiguration)
     {
         var strictSettings = new JsonLoadSettings
@@ -1260,7 +1302,7 @@ public class Program : ProcessStatusBackgroundService
 
             if(!rootProperties.Add(propertyName))
                 throw new JsonSerializationException(
-                    $"Property '{propertyName}' already exists at '$'");
+                    $"Property with the name '{propertyName}' already exists in the current JSON object");
 
             document.Add(propertyName, JToken.Load(reader, strictSettings));
         }

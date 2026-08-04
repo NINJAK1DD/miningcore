@@ -1400,6 +1400,7 @@ public partial class ClusterConfig
     /// <summary>
     /// One or more files containing coin definitions
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] CoinTemplates { get; set; }
 
     public string ClusterName { get; set; }

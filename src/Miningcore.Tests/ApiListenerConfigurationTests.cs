@@ -67,7 +67,7 @@ public class ApiListenerConfigurationTests
 
         // Use an ephemeral port for the real host while retaining the assertions
         // above for the production default.
-        using var host = await StartRouteTestHostWithRetryAsync(true);
+        await using var host = await StartRouteTestHostWithRetryAsync(true);
         api.Port = host.Ports.PublicPort;
         using var client = new HttpClient();
 
@@ -91,6 +91,8 @@ public class ApiListenerConfigurationTests
     [Fact]
     public void CommittedConfigSchema_MatchesGenerator()
     {
+        // The build-output schema is the runtime-shipped artifact. MSBuild refreshes
+        // it from src/Miningcore/config.schema.json before this test executes.
         var path = Path.Combine(AppContext.BaseDirectory,
             "config.schema.json");
         var committed = JObject.Parse(File.ReadAllText(path));
@@ -105,9 +107,52 @@ public class ApiListenerConfigurationTests
                     "definitions.ApiConfig.properties.metricsIpWhitelist.items.type",
                     "definitions.ApiRateLimitConfig.properties.ipWhitelist.items.type",
                     "definitions.TcpProxyProtocolConfig.properties.proxyAddresses.items.type",
+                    "properties.coinTemplates.items.type",
                 })
             Assert.Equal("string",
                 committed.SelectToken(itemTypePath)?.Value<string>());
+    }
+
+    [Fact]
+    public void RecoveryLoader_MatchesStrictJsonParsingAfterRemovingApi()
+    {
+        var exampleConfig = File.ReadAllText(FindRepositoryFile(
+            "config.example.json"));
+        var corpus = new[]
+        {
+            exampleConfig,
+            CreateRecoveryConfigDocument(true).ToString(Formatting.None),
+            "{/* root */\"api\":{/* listener */\"enabled\":true}," +
+            "\"pools\":[],\"logging\":{}}",
+        };
+
+        foreach(var json in corpus)
+        {
+            JObject expected;
+            using(var expectedReader = new JsonTextReader(
+                      new StringReader(json)))
+            {
+                expected = JObject.Load(expectedReader, new JsonLoadSettings
+                {
+                    DuplicatePropertyNameHandling =
+                        DuplicatePropertyNameHandling.Error,
+                });
+            }
+
+            foreach(var property in expected.Properties()
+                        .Where(property => string.Equals(property.Name, "api",
+                            StringComparison.OrdinalIgnoreCase))
+                        .ToArray())
+                property.Remove();
+
+            JObject actual;
+            using(var actualReader = new JsonTextReader(
+                      new StringReader(json)))
+                actual = Program.LoadConfigurationDocument(actualReader,
+                    true);
+
+            Assert.True(JToken.DeepEquals(expected, actual));
+        }
     }
 
     [Theory]
@@ -492,6 +537,48 @@ public class ApiListenerConfigurationTests
         {
             File.Delete(configFile);
         }
+    }
+
+    [Fact]
+    public void DisabledInternalStratumPools_AreReportedAsSkippedValidation()
+    {
+        var config = new ClusterConfig
+        {
+            Pools = new[]
+            {
+                new PoolConfig
+                {
+                    Id = "disabled-internal",
+                    EnableInternalStratum = true,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [3333] = new(),
+                    },
+                },
+                new PoolConfig
+                {
+                    Id = "disabled-relay-only",
+                    EnableInternalStratum = false,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [4444] = new(),
+                    },
+                },
+                new PoolConfig
+                {
+                    Id = "enabled-internal",
+                    Enabled = true,
+                    EnableInternalStratum = true,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [5555] = new(),
+                    },
+                },
+            },
+        };
+
+        Assert.Equal(new[] { "disabled-internal" },
+            Program.GetPoolsWithSkippedStratumListenerValidation(config));
     }
 
     [Fact]
@@ -1022,7 +1109,7 @@ public class ApiListenerConfigurationTests
                 Program.ReadAndValidateConfig(configFile, false));
 
             var config = Program.ReadAndValidateConfig(configFile, true);
-            Assert.Null(config.Api.MetricsPort);
+            Assert.Null(config.Api);
             await Program.RunRecoveryModeAsync(() =>
             {
                 recovered = true;
@@ -1054,8 +1141,7 @@ public class ApiListenerConfigurationTests
 
             Assert.False(normalConfig.Api.Enabled);
             Assert.Null(normalConfig.Api.MetricsPort);
-            Assert.True(recoveryConfig.Api.Enabled);
-            Assert.Null(recoveryConfig.Api.MetricsPort);
+            Assert.Null(recoveryConfig.Api);
         }
         finally
         {
@@ -1115,9 +1201,7 @@ public class ApiListenerConfigurationTests
 
             var config = Program.ReadAndValidateConfig(configFile, true);
 
-            Assert.NotNull(config.Api);
-            Assert.True(config.Api.Enabled);
-            Assert.Null(config.Api.MetricsPort);
+            Assert.Null(config.Api);
         }
         finally
         {
@@ -1161,8 +1245,7 @@ public class ApiListenerConfigurationTests
 
             // -rs validates the remaining recovery configuration before invoking the importer.
             var importConfig = Program.ReadAndValidateConfig(configFile, true);
-            Assert.NotNull(importConfig.Api);
-            Assert.Null(importConfig.Api.MetricsPort);
+            Assert.Null(importConfig.Api);
 
             var recovered = false;
             var stopped = false;
@@ -1201,8 +1284,9 @@ public class ApiListenerConfigurationTests
 
             var error = Assert.Throws<PoolStartupException>(() =>
                 Program.ReadConfig(configFile, true));
-            Assert.Contains("Property 'pools' already exists", error.Message,
-                StringComparison.Ordinal);
+            Assert.Contains(
+                "Property with the name 'pools' already exists",
+                error.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -1289,7 +1373,7 @@ public class ApiListenerConfigurationTests
 
             var recoveryConfig = Program.ReadAndValidateConfig(configFile,
                 true);
-            Assert.Null(recoveryConfig.Api.AdminIpWhitelist);
+            Assert.Null(recoveryConfig.Api);
         }
         finally
         {
@@ -1338,7 +1422,7 @@ public class ApiListenerConfigurationTests
     [Fact]
     public async Task DedicatedHttpListeners_EnforceCompleteRouteMatrix()
     {
-        using var host = await StartRouteTestHostWithRetryAsync();
+        await using var host = await StartRouteTestHostWithRetryAsync();
         var ports = host.Ports;
         using var client = new HttpClient();
 
@@ -1380,7 +1464,7 @@ public class ApiListenerConfigurationTests
     [Fact]
     public async Task OmittedPorts_ServeLegacyRoutesOnSharedHttpListener()
     {
-        using var host = await StartRouteTestHostWithRetryAsync(true);
+        await using var host = await StartRouteTestHostWithRetryAsync(true);
         var ports = host.Ports;
         var port = ports.PublicPort;
         using var client = new HttpClient();
@@ -1398,7 +1482,7 @@ public class ApiListenerConfigurationTests
     public async Task DedicatedTlsListeners_UseHttpsAndRetainRouteIsolation()
     {
         using var certificate = CreateServerCertificate();
-        using var host = await StartRouteTestHostWithRetryAsync(false,
+        await using var host = await StartRouteTestHostWithRetryAsync(false,
             certificate);
         var ports = host.Ports;
 
@@ -1750,22 +1834,58 @@ public class ApiListenerConfigurationTests
         }
     }
 
-    private static bool IsAddressInUse(Exception exception) =>
-        exception is AddressInUseException ||
-        exception is SocketException
+    private static bool IsAddressInUse(Exception exception)
+    {
+        while(exception != null)
         {
-            SocketErrorCode: SocketError.AddressAlreadyInUse,
-        } || exception.InnerException != null &&
-        IsAddressInUse(exception.InnerException);
+            if(exception is AddressInUseException ||
+                exception is SocketException
+                {
+                    SocketErrorCode: SocketError.AddressAlreadyInUse,
+                })
+                return true;
+
+            exception = exception.InnerException;
+        }
+
+        return false;
+    }
 
     private const int ListenerStartAttempts = 5;
 
     private sealed class RunningRouteTestHost(IHost host,
-        Program.ApiEndpointPorts ports) : IDisposable
+        Program.ApiEndpointPorts ports) : IAsyncDisposable
     {
         public Program.ApiEndpointPorts Ports { get; } = ports;
 
-        public void Dispose() => host.Dispose();
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await host.StopAsync();
+            }
+            finally
+            {
+                host.Dispose();
+            }
+        }
+    }
+
+    private static string FindRepositoryFile(string fileName)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while(directory != null)
+        {
+            var candidate = Path.Combine(directory.FullName, fileName);
+            if(File.Exists(candidate))
+                return candidate;
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException(
+            $"Could not locate repository file '{fileName}'");
     }
 
     private static async Task AssertStatusAsync(HttpClient client, int port,
