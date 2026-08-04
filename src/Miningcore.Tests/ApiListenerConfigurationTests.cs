@@ -116,8 +116,8 @@ public class ApiListenerConfigurationTests
     [Fact]
     public void RecoveryLoader_MatchesStrictJsonParsingAfterRemovingApi()
     {
-        var exampleConfig = File.ReadAllText(FindRepositoryFile(
-            "config.example.json"));
+        var exampleConfig = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "config.example.json"));
         var corpus = new[]
         {
             exampleConfig,
@@ -1384,8 +1384,7 @@ public class ApiListenerConfigurationTests
     {
         var document = CreateRecoveryConfigDocument(true);
         var pools = document["pools"].ToString(Formatting.None);
-        var rawConfig = CreateRawConfigurationWithRootProperties(document,
-            ("pools", pools), ("pools", pools));
+        var rawConfig = $"{{\n\"pools\":{pools},\n\"pools\":{pools}\n}}";
         var configFile = Path.GetTempFileName();
 
         try
@@ -1396,6 +1395,8 @@ public class ApiListenerConfigurationTests
                 Program.ReadConfig(configFile, true));
             Assert.Contains(
                 "Property with the name 'pools' already exists",
+                error.Message, StringComparison.Ordinal);
+            Assert.Contains("Path 'pools', line 3, position",
                 error.Message, StringComparison.Ordinal);
         }
         finally
@@ -1979,23 +1980,6 @@ public class ApiListenerConfigurationTests
                 host.Dispose();
             }
         }
-    }
-
-    private static string FindRepositoryFile(string fileName)
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-
-        while(directory != null)
-        {
-            var candidate = Path.Combine(directory.FullName, fileName);
-            if(File.Exists(candidate))
-                return candidate;
-
-            directory = directory.Parent;
-        }
-
-        throw new FileNotFoundException(
-            $"Could not locate repository file '{fileName}'");
     }
 
     private static async Task AssertStatusAsync(HttpClient client, int port,

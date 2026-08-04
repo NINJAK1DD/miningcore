@@ -1191,6 +1191,12 @@ public class Program : ProcessStatusBackgroundService
                     RejectCaseInsensitivePropertyDuplicates(document);
                     if(skipApiListenerSettings)
                     {
+                        // Recovery configuration policy:
+                        // - api: stream-discarded because recovery opens no HTTP sockets;
+                        // - pools[].ports: replaced because recovery opens no Stratum sockets;
+                        // - coinTemplates: valid paths retained, malformed optional metadata removed.
+                        // Configuration consumed by recovery remains subject to normal duplicate,
+                        // schema and CLR-binding validation.
                         RemoveStratumConfigurationForRecovery(document);
                         SanitizeCoinTemplatesForRecovery(document);
                     }
@@ -1293,6 +1299,13 @@ public class Program : ProcessStatusBackgroundService
                     $"Expected a configuration property but found {reader.TokenType}");
 
             var propertyName = (string) reader.Value;
+            var lineInfo = reader as IJsonLineInfo;
+            var propertyLine = lineInfo?.HasLineInfo() == true
+                ? lineInfo.LineNumber
+                : (int?) null;
+            var propertyPosition = lineInfo?.HasLineInfo() == true
+                ? lineInfo.LinePosition
+                : (int?) null;
             if(!ReadNextContentToken(reader))
                 throw new JsonSerializationException(
                     $"Configuration property '{propertyName}' has no value");
@@ -1304,8 +1317,13 @@ public class Program : ProcessStatusBackgroundService
             }
 
             if(!rootProperties.Add(propertyName))
+            {
+                var location = propertyLine.HasValue
+                    ? $" Path '{propertyName}', line {propertyLine}, position {propertyPosition}."
+                    : string.Empty;
                 throw new JsonSerializationException(
-                    $"Property with the name '{propertyName}' already exists in the current JSON object");
+                    $"Property with the name '{propertyName}' already exists in the current JSON object.{location}");
+            }
 
             document.Add(propertyName, JToken.Load(reader, strictSettings));
         }
@@ -1351,7 +1369,7 @@ public class Program : ProcessStatusBackgroundService
 
     private static void SanitizeCoinTemplatesForRecovery(JObject document)
     {
-        var property = document.Properties().SingleOrDefault(property =>
+        var property = document.Properties().FirstOrDefault(property =>
             property.Name.Equals("coinTemplates",
                 StringComparison.OrdinalIgnoreCase));
         if(property == null)

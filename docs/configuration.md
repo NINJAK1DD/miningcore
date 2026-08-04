@@ -74,9 +74,11 @@ Normal startup enforces the port range and conflict rules for an enabled API aft
 loading. The JSON schema intentionally leaves listener-port values unconstrained. Stratum listener
 checks apply only to enabled pools with internal Stratum enabled. If a disabled pool retains
 internal Stratum endpoints, Miningcore logs that their validation was skipped and validates them
-when the pool is enabled. Case-variant duplicate names remain errors in schema-bound configuration
-objects. The intentionally free-form `payoutSchemeConfig` object is exempt because its keys are
-consumed by payout-scheme implementations rather than bound to CLR properties.
+when the pool is enabled. Endpoint validation is also skipped for an enabled relay-only pool because
+`enableInternalStratum: false` means its local `ports` are not bound; changing that setting to true
+validates the endpoints before startup. Case-variant duplicate names remain errors in schema-bound
+configuration objects. The intentionally free-form `payoutSchemeConfig` object is exempt because
+its keys are consumed by payout-scheme implementations rather than bound to CLR properties.
 
 ### Recovery-mode configuration handling
 
