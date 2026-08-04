@@ -45,9 +45,12 @@
     // Dedicated Prometheus metrics port. When omitted, /metrics remains on
     // the public port for backwards compatibility.
     "metricsPort": 4002,
-    // Clients allowed to use administrative API endpoints.
+    // Clients allowed to use administrative API endpoints. In Docker, host traffic does not
+    // appear as container loopback; use and verify a fixed bridge gateway before publishing this
+    // port to the host.
     "adminIpWhitelist": [ "127.0.0.1" ],
-    // Clients allowed to scrape Prometheus metrics.
+    // Clients allowed to scrape Prometheus metrics. A containerised Prometheus service should use
+    // a dedicated network and a predictable, explicitly whitelisted address.
     "metricsIpWhitelist": [ "127.0.0.1" ],
     // Restore the older API's null-property serialization when required by a legacy UI.
     "legacyNullValueHandling": false,

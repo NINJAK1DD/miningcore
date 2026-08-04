@@ -57,6 +57,74 @@ jobs:
       - name: Smoke-test source container
         run: docker run --rm miningcore-source-test:${{ github.sha }} --version
 
+      - name: Setup .NET for container listener test
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install container listener test build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build build-essential libssl-dev pkg-config
+          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+
+      - name: Publish container listener test host
+        run: >-
+          dotnet publish src/Miningcore.Tests.ProcessHost/Miningcore.Tests.ProcessHost.csproj
+          --configuration Release
+          --output api-listener-smoke-host
+
+      - name: Test protected container listeners from host loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          network=miningcore-api-smoke
+          container=miningcore-api-smoke
+
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create --driver bridge \
+            --subnet 172.30.56.0/24 --gateway 172.30.56.1 "$network"
+
+          docker run --detach --name "$container" \
+            --network "$network" \
+            --publish 127.0.0.1:4001:4001 \
+            --publish 127.0.0.1:4002:4002 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          admin_status=000
+          for attempt in {1..30}; do
+            admin_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4001/api/admin/status || true)"
+            if [[ "$admin_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$admin_status" != 200 ]]; then
+            docker logs "$container"
+            echo "Host admin request returned HTTP $admin_status instead of 200"
+            exit 1
+          fi
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4001/api/pools)" = 404
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/api/pools)" = 404
+
   build-release:
     name: Test and package Ubuntu 22.04 x64
     runs-on: ubuntu-22.04

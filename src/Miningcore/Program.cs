@@ -76,6 +76,7 @@ using static Miningcore.Util.ActionUtils;
 // ReSharper disable PossibleNullReferenceException
 
 [assembly: InternalsVisibleToAttribute("Miningcore.Tests")]
+[assembly: InternalsVisibleToAttribute("Miningcore.Tests.ProcessHost")]
 
 namespace Miningcore;
 
@@ -321,10 +322,15 @@ public class Program : ProcessStatusBackgroundService
 
                     var httpScheme = $"http{(apiTlsEnable ? "s" : "")}";
                     var webSocketScheme = $"ws{(apiTlsEnable ? "s" : "")}";
-                    logger.Info(() => $"Public API listening on {httpScheme}://{address}:{endpointPorts.PublicPort}");
-                    logger.Info(() => $"Administrative API listening on {httpScheme}://{address}:{endpointPorts.AdminPort}/api/admin");
-                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{address}:{endpointPorts.MetricsPort}/metrics");
-                    logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{address}:{endpointPorts.PublicPort}/notifications");
+                    var listenerHost = FormatListenerHost(address);
+                    logger.Info(() => $"Public API listening on {httpScheme}://{listenerHost}:{endpointPorts.PublicPort}");
+                    logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}/api/admin");
+                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}/metrics");
+                    logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{listenerHost}:{endpointPorts.PublicPort}/notifications");
+
+                    foreach(var warning in GetSharedProtectedRouteWarnings(
+                                apiConfig))
+                        logger.Warn(warning);
                 });
             }
 
@@ -696,6 +702,30 @@ public class Program : ProcessStatusBackgroundService
             IPAddress.Parse(listenAddress);
 
         return address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+    }
+
+    internal static string FormatListenerHost(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        return address.AddressFamily == AddressFamily.InterNetworkV6
+            ? $"[{address}]"
+            : address.ToString();
+    }
+
+    internal static string[] GetSharedProtectedRouteWarnings(ApiConfig api)
+    {
+        ArgumentNullException.ThrowIfNull(api);
+
+        var warnings = new List<string>();
+
+        if(!api.AdminPort.HasValue)
+            warnings.Add("api.adminPort is omitted; /api/admin is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
+
+        if(!api.MetricsPort.HasValue)
+            warnings.Add("api.metricsPort is omitted; /metrics is served on the public listener. A public reverse proxy must deny this path unless exposing metrics is intentional");
+
+        return warnings.ToArray();
     }
 
     internal static void ConfigureApiListeners(KestrelServerOptions options,

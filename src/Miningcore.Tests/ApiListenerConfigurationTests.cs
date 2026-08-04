@@ -88,6 +88,38 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
+    [InlineData("127.0.0.1", "127.0.0.1")]
+    [InlineData("::1", "[::1]")]
+    [InlineData("::", "[::]")]
+    public void ListenerHostFormatting_ProducesCopyableUriHost(
+        string addressValue, string expected)
+    {
+        Assert.Equal(expected, Program.FormatListenerHost(
+            IPAddress.Parse(addressValue)));
+    }
+
+    [Theory]
+    [InlineData(null, null, 2)]
+    [InlineData(4001, null, 1)]
+    [InlineData(null, 4002, 1)]
+    [InlineData(4001, 4002, 0)]
+    public void SharedProtectedRoutes_ProduceStartupWarnings(
+        int? adminPort, int? metricsPort, int expectedCount)
+    {
+        var warnings = Program.GetSharedProtectedRouteWarnings(new ApiConfig
+        {
+            AdminPort = adminPort,
+            MetricsPort = metricsPort,
+        });
+
+        Assert.Equal(expectedCount, warnings.Length);
+        Assert.Equal(!adminPort.HasValue,
+            warnings.Any(message => message.Contains("/api/admin")));
+        Assert.Equal(!metricsPort.HasValue,
+            warnings.Any(message => message.Contains("/metrics")));
+    }
+
+    [Theory]
     [InlineData(4000, "/api/pools", true)]
     [InlineData(4000, "/notifications", true)]
     [InlineData(4000, "/api/admin/logging/level/info", false)]
@@ -719,6 +751,36 @@ public class ApiListenerConfigurationTests
         Assert.Equal(!protectedRoute, nextCalled);
         Assert.Equal(protectedRoute ? StatusCodes.Status403Forbidden :
             StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("203.0.113.10", "::ffff:203.0.113.10", true)]
+    [InlineData("::ffff:203.0.113.10", "203.0.113.10", true)]
+    [InlineData("203.0.113.10", "198.51.100.20", false)]
+    [InlineData("203.0.113.10", "2001:db8::10", false)]
+    [InlineData("2001:db8::10", "2001:db8::11", false)]
+    public async Task WhitelistMatching_NormalizesMappedClientAddresses(
+        string whitelistAddress, string remoteAddress, bool expectedAuthorized)
+    {
+        var nextCalled = false;
+        var middleware = new IPAccessWhitelistMiddleware(
+            _ =>
+            {
+                nextCalled = true;
+                return Task.CompletedTask;
+            },
+            new[] { "/api/admin" },
+            new[] { IPAddress.Parse(whitelistAddress) },
+            false);
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/admin/status";
+        context.Connection.RemoteIpAddress = IPAddress.Parse(remoteAddress);
+
+        await middleware.Invoke(context);
+
+        Assert.Equal(expectedAuthorized, nextCalled);
+        Assert.Equal(expectedAuthorized ? StatusCodes.Status200OK :
+            StatusCodes.Status403Forbidden, context.Response.StatusCode);
     }
 
     private static Program.ApiEndpointPorts CreateEndpointPorts()

@@ -53,6 +53,9 @@ behavior for that route.
 If `adminPort` is omitted, `/api/admin` remains reachable through the public listener. Configure the
 reverse proxy to deny that path unless the existing admin IP whitelist and firewall are the intended
 protection; publishing only `api.port` does not isolate a shared administrative route by itself.
+If `metricsPort` is omitted, `/metrics` also remains on the public listener; a public reverse proxy
+must deny that path unless exposing the metrics endpoint is intentional. Miningcore evaluates the
+proxy connection's source address, so a same-host proxy normally appears as trusted loopback.
 
 Every explicit API port must be unique and between 1 and 65535. An API listener conflicts with an
 enabled local Stratum endpoint only when both use the same port and their bind addresses overlap;
@@ -68,14 +71,35 @@ loading. The JSON schema intentionally leaves listener-port values unconstrained
 recovery cannot be blocked by listener-only settings; recovery mode starts neither API nor Stratum
 listeners.
 
-Container operators must publish the dedicated ports separately. Bind them to host loopback unless
-a trusted remote monitoring or administration network requires access:
+Container host traffic does not appear as container loopback. To publish protected ports to host
+loopback, use a user-defined bridge with a fixed gateway, add that gateway to both IP whitelists,
+and verify the observed source address before relying on it:
+
+```console
+docker network create --driver bridge \
+  --subnet 172.30.56.0/24 --gateway 172.30.56.1 miningcore
+```
+
+```json
+"adminIpWhitelist": [ "172.30.56.1" ],
+"metricsIpWhitelist": [ "172.30.56.1" ]
+```
+
+Choose another unused private subnet when this example overlaps an existing host or Docker network,
+then use that network's fixed gateway in both whitelist entries.
+
+Then start the container with `--network miningcore` and publish only the protected ports that the
+host actually needs:
 
 ```console
 -p 4000:4000 \
 -p 127.0.0.1:4001:4001 \
 -p 127.0.0.1:4002:4002
 ```
+
+For a containerised Prometheus service, place both containers on a dedicated network and whitelist
+Prometheus's predictable address instead. Do not assume Docker host traffic will appear as
+`127.0.0.1` inside Miningcore.
 
 See [API and monitoring](api.md#configuration) for the route matrix and post-upgrade checks.
 

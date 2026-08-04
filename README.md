@@ -191,9 +191,9 @@ sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
 Pin a published version rather than copying the example version indefinitely. Copy and edit the
-configuration, then run the image. This example publishes the public API, binds the admin and
-metrics ports to host loopback, and publishes the merged-mining LTC Stratum port. Publish every
-additional port used by your configuration:
+configuration, then run the image. This example uses a fixed Docker bridge gateway, publishes the
+public API, binds the admin and metrics ports to host loopback, and publishes the merged-mining LTC
+Stratum port. Publish every additional port used by your configuration:
 
 ```console
 MININGCORE_VERSION=v0.1.0-rc.8  # Replace with the release you selected.
@@ -204,9 +204,29 @@ sudo curl -fL \
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
 sudo chown 10001:10001 /var/lib/miningcore
+sudo docker network create --driver bridge \
+  --subnet 172.30.56.0/24 --gateway 172.30.56.1 miningcore
+sudoedit /etc/miningcore/config.json
+```
+
+In the configuration, replace the container-local loopback whitelist entries for the two published
+protected ports with the fixed bridge gateway:
+
+```json
+"adminIpWhitelist": [ "172.30.56.1" ],
+"metricsIpWhitelist": [ "172.30.56.1" ]
+```
+
+If that subnet overlaps the host network, choose another unused private subnet and use its selected
+gateway in both whitelist entries.
+
+Then start Miningcore:
+
+```console
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --network miningcore \
   -p 4000:4000 \
   -p 127.0.0.1:4001:4001 \
   -p 127.0.0.1:4002:4002 \
@@ -231,6 +251,7 @@ Run it with the same `/etc/miningcore/config.json` and `/var/lib/miningcore` mou
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --network miningcore \
   -p 4000:4000 \
   -p 127.0.0.1:4001:4001 \
   -p 127.0.0.1:4002:4002 \
@@ -245,14 +266,23 @@ Useful management commands:
 ```console
 sudo docker logs -f miningcore
 sudo docker restart miningcore
+curl --fail http://127.0.0.1:4001/api/admin/stats/gc
+curl --fail http://127.0.0.1:4002/metrics --output /dev/null
 sudo docker stop miningcore
 sudo docker rm miningcore
 ```
 
 The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
-means the container itself, not the Docker host. Build on hardware compatible with the production
-host because native hashing libraries can be affected by CPU architecture and features. The full
-release, checksum, provenance, container and update procedure is in [the release guide](docs/releases.md).
+means the container itself, not the Docker host. Host traffic on a published port normally appears
+from the bridge gateway; confirm the observed address in Miningcore's unauthorized-request log if a
+protected request returns `403`, and never broaden a whitelist without verifying that address. A
+containerised Prometheus service should use a dedicated network and a predictable whitelisted
+address. PostgreSQL or coin daemons running directly on the Docker host must likewise be configured
+for controlled access through `172.30.56.1` (or the selected gateway), rather than container-local
+`127.0.0.1`, and restricted with their own authentication and firewall rules. Build on hardware
+compatible with the production host because native hashing libraries can be affected by CPU
+architecture and features. The full release, checksum, provenance, container and update procedure
+is in [the release guide](docs/releases.md).
 
 ## Database setup
 

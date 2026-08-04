@@ -35,7 +35,9 @@ firewall rule as well because all three ports bind to `listenAddress`.
 `api.port` defaults to `4000` when it is omitted. Omitting either optional port preserves the
 previous shared-listener behavior for that route. In particular, omitting `adminPort` leaves
 `/api/admin` on the public listener: a reverse proxy must explicitly deny that path unless the
-admin whitelist and firewall are the intended protection. An explicit dedicated port must be
+admin whitelist and firewall are the intended protection. Omitting `metricsPort` likewise leaves
+`/metrics` on the public listener; a public reverse proxy must deny that path unless exposing pool
+metrics is intentional. An explicit dedicated port must be
 different from the public port and from the other dedicated port. All API ports must be between 1
 and 65535. An API listener and an enabled local Stratum endpoint may share a number only when they
 bind different specific addresses; the same address and wildcard/specific overlaps stop startup
@@ -44,6 +46,18 @@ with a configuration error.
 The port limits and duplicate checks run for an enabled API during normal startup rather than schema
 loading. This allows the one-shot `-rs` share importer to remain available when listener-only
 settings are stale or temporarily invalid; recovery mode does not open API or Stratum sockets.
+
+For nginx, deny both protected paths whenever they share the public listener:
+
+```nginx
+location ^~ /api/admin {
+    return 404;
+}
+
+location = /metrics {
+    return 404;
+}
+```
 
 ## Discovery and health
 
