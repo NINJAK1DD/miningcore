@@ -81,9 +81,13 @@ jobs:
 
           network=miningcore-api-smoke
           container=miningcore-api-smoke
+          shared_container=miningcore-api-shared
+          proxy_container=miningcore-api-nginx
 
           cleanup() {
             docker rm -f "$container" >/dev/null 2>&1 || true
+            docker rm -f "$proxy_container" >/dev/null 2>&1 || true
+            docker rm -f "$shared_container" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
@@ -124,6 +128,68 @@ jobs:
             http://127.0.0.1:4001/api/pools)" = 404
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4002/api/pools)" = 404
+
+          docker rm -f "$container" >/dev/null
+
+          docker run --detach --name "$shared_container" \
+            --network "$network" \
+            --ip 172.30.56.2 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          docker run --detach --name "$proxy_container" \
+            --network "$network" \
+            --ip 172.30.56.3 \
+            --publish 127.0.0.1:4080:8080 \
+            --volume "$GITHUB_WORKSPACE/scripts/release/nginx-shared-listener.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:alpine
+
+          proxy_status=000
+          for attempt in {1..30}; do
+            proxy_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4080/api/administrator || true)"
+            if [[ "$proxy_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$proxy_status" != 200 ]]; then
+            docker logs "$shared_container"
+            docker logs "$proxy_container"
+            echo "nginx public lookalike request returned HTTP $proxy_status instead of 200"
+            exit 1
+          fi
+
+          assert_status() {
+            local expected=$1
+            local path=$2
+            local actual
+            actual="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              "http://127.0.0.1:4080${path}")"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "nginx request $path returned HTTP $actual instead of $expected"
+              return 1
+            fi
+          }
+
+          for path in \
+            /api/admin \
+            /API/ADMIN/payment/processing/disable \
+            /metrics \
+            /METRICS \
+            /metrics/ \
+            /metrics/export; do
+            assert_status 404 "$path"
+          done
+
+          for path in /api/administrator /metrics-export; do
+            assert_status 200 "$path"
+          done
 
   build-release:
     name: Test and package Ubuntu 22.04 x64

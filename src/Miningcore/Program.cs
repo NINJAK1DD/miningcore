@@ -56,6 +56,7 @@ using Miningcore.Persistence.Repositories;
 using Miningcore.Util;
 using NBitcoin.Zcash;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Schema;
 using Newtonsoft.Json.Schema.Generation;
 using Newtonsoft.Json.Serialization;
@@ -121,7 +122,7 @@ public class Program : ProcessStatusBackgroundService
             if(verifyShareRecoveryStateOption.HasValue())
             {
                 clusterConfig = configFileOption.HasValue()
-                    ? ReadConfig(configFileOption.Value())
+                    ? ReadConfig(configFileOption.Value(), true)
                     : new ClusterConfig();
                 processStatus = new ProcessStatus();
                 var verification = ShareRecoveryIncidentVerifier.Verify(
@@ -137,7 +138,7 @@ public class Program : ProcessStatusBackgroundService
             if(acknowledgeShareRecoveryStateOption.HasValue())
             {
                 clusterConfig = configFileOption.HasValue()
-                    ? ReadConfig(configFileOption.Value())
+                    ? ReadConfig(configFileOption.Value(), true)
                     : new ClusterConfig();
                 processStatus = new ProcessStatus();
 
@@ -665,7 +666,7 @@ public class Program : ProcessStatusBackgroundService
     internal static ClusterConfig ReadAndValidateConfig(string file,
         bool recoveryMode)
     {
-        var config = ReadConfig(file);
+        var config = ReadConfig(file, recoveryMode);
         NormalizeApiConfig(config);
         ValidateConfig(config, recoveryMode);
         return config;
@@ -1088,7 +1089,8 @@ public class Program : ProcessStatusBackgroundService
         return app;
     }
 
-    internal static ClusterConfig ReadConfig(string file)
+    internal static ClusterConfig ReadConfig(string file,
+        bool skipApiListenerSettings = false)
     {
         try
         {
@@ -1108,7 +1110,13 @@ public class Program : ProcessStatusBackgroundService
                         Schema =  LoadSchema()
                     })
                     {
-                        return serializer.Deserialize<ClusterConfig>(validatingReader);
+                        var document = JObject.Load(validatingReader);
+                        RemoveInactiveApiListenerSettings(document,
+                            skipApiListenerSettings);
+
+                        using var documentReader = document.CreateReader();
+                        return serializer.Deserialize<ClusterConfig>(
+                            documentReader);
                     }
                 }
             }
@@ -1133,6 +1141,32 @@ public class Program : ProcessStatusBackgroundService
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
+    }
+
+    private static void RemoveInactiveApiListenerSettings(JObject document,
+        bool skipApiListenerSettings)
+    {
+        var api = document.GetValue("api",
+            StringComparison.OrdinalIgnoreCase) as JObject;
+        if(api == null)
+            return;
+
+        var enabled = api.GetValue("enabled",
+            StringComparison.OrdinalIgnoreCase)?.Value<bool>() ?? false;
+        if(!skipApiListenerSettings && enabled)
+            return;
+
+        // These values are irrelevant whenever no API sockets are opened. Remove them before
+        // binding to int-backed properties so stale JSON integers outside the CLR range cannot
+        // block recovery, recovery-state maintenance, or an explicitly disabled API.
+        foreach(var name in new[]
+                {
+                    "listenAddress",
+                    "port",
+                    "adminPort",
+                    "metricsPort",
+                })
+            api.Property(name, StringComparison.OrdinalIgnoreCase)?.Remove();
     }
 
     private static JSchema LoadSchema()

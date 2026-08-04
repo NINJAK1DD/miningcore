@@ -1,4 +1,5 @@
 using FluentValidation;
+using System.Net;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Miningcore.Configuration;
@@ -105,9 +106,10 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
     public ApiConfigValidator()
     {
         RuleFor(j => j.ListenAddress)
-            .Must(address => address == null ||
-                !string.IsNullOrWhiteSpace(address))
-            .WithMessage("API: listenAddress must not be empty when configured");
+            .Must(address => address == null || address == "*" ||
+                IPAddress.TryParse(address, out _))
+            .WithMessage(
+                "API: listenAddress must be '*' or a valid IPv4/IPv6 address");
 
         RuleFor(j => j.Port)
             .InclusiveBetween(1, ushort.MaxValue)

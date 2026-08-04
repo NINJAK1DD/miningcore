@@ -22,6 +22,7 @@ using Miningcore.Configuration;
 using Miningcore.Mining;
 using Miningcore.Stratum;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 using Xunit;
 
@@ -316,9 +317,19 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
-    [InlineData("")]
-    [InlineData(" ")]
-    public void ExplicitEmptyListenAddress_IsRejected(string listenAddress)
+    [InlineData(null, true)]
+    [InlineData("*", true)]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("0.0.0.0", true)]
+    [InlineData("::1", true)]
+    [InlineData("::", true)]
+    [InlineData("", false)]
+    [InlineData(" ", false)]
+    [InlineData("localhost", false)]
+    [InlineData("not-an-ip-address", false)]
+    [InlineData("127.0.0.999", false)]
+    public void ListenAddress_RequiresWildcardOrIpLiteral(
+        string listenAddress, bool expectedValid)
     {
         var result = new ApiConfigValidator().Validate(new ApiConfig
         {
@@ -327,8 +338,10 @@ public class ApiListenerConfigurationTests
             Port = 4000,
         });
 
-        Assert.Contains(result.Errors, error => error.ErrorMessage ==
-            "API: listenAddress must not be empty when configured");
+        Assert.Equal(expectedValid, result.IsValid);
+        Assert.Equal(!expectedValid, result.Errors.Any(error =>
+            error.ErrorMessage ==
+            "API: listenAddress must be '*' or a valid IPv4/IPv6 address"));
     }
 
     [Fact]
@@ -568,6 +581,63 @@ public class ApiListenerConfigurationTests
                 SerializeConfig(sourceConfig));
             var config = Program.ReadAndValidateConfig(configFile, false);
             Assert.False(config.Api.Enabled);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryMode_OutOfClrRangeListenerPortDoesNotBlockImporter()
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        document["api"]["metricsPort"] = (long) int.MaxValue + 1;
+        var configFile = Path.GetTempFileName();
+        var recovered = false;
+        var stopped = false;
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+            Assert.Null(config.Api.MetricsPort);
+            await Program.RunRecoveryModeAsync(() =>
+            {
+                recovered = true;
+                return Task.CompletedTask;
+            }, () => stopped = true);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+
+        Assert.True(recovered);
+        Assert.True(stopped);
+    }
+
+    [Fact]
+    public void DisabledApi_OutOfClrRangeListenerPortDoesNotBlockStartup()
+    {
+        var document = CreateRecoveryConfigDocument(false);
+        document["api"]["metricsPort"] = (long) int.MaxValue + 1;
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var normalConfig = Program.ReadAndValidateConfig(configFile, false);
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.False(normalConfig.Api.Enabled);
+            Assert.Null(normalConfig.Api.MetricsPort);
+            Assert.False(recoveryConfig.Api.Enabled);
+            Assert.Null(recoveryConfig.Api.MetricsPort);
         }
         finally
         {
@@ -822,6 +892,13 @@ public class ApiListenerConfigurationTests
                 },
             },
         };
+
+    private static JObject CreateRecoveryConfigDocument(bool apiEnabled) =>
+        JObject.Parse(SerializeConfig(CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = apiEnabled,
+            Port = 4000,
+        })));
 
     private static string SerializeConfig(ClusterConfig config) =>
         JsonConvert.SerializeObject(config, new JsonSerializerSettings

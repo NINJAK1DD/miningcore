@@ -50,14 +50,15 @@ settings are stale or temporarily invalid; recovery mode does not open API or St
 For nginx, deny both protected paths whenever they share the public listener:
 
 ```nginx
-location ^~ /api/admin {
-    return 404;
-}
-
-location = /metrics {
+location ~* ^/(?:api/admin|metrics)(?:/|$) {
     return 404;
 }
 ```
+
+The case-insensitive, segment-bounded expression protects every admin and metrics subpath without
+blocking public lookalikes such as `/api/administrator` or `/metrics-export`. Keep this denial before
+any other regular-expression locations. Do not use a public `^~` prefix that would prevent nginx
+from evaluating the protected-route expression.
 
 ## Discovery and health
 
