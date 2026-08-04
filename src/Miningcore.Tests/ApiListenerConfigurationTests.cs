@@ -344,6 +344,46 @@ public class ApiListenerConfigurationTests
             "API: listenAddress must be '*' or a valid IPv4/IPv6 address"));
     }
 
+    [Theory]
+    [InlineData(true, null,
+        "API: adminIpWhitelist[0] must not be null")]
+    [InlineData(true, "localhost",
+        "API: adminIpWhitelist[0] contains invalid IP address 'localhost'")]
+    [InlineData(false, null,
+        "API: metricsIpWhitelist[0] must not be null")]
+    [InlineData(false, "127.0.0.999",
+        "API: metricsIpWhitelist[0] contains invalid IP address '127.0.0.999'")]
+    public void IpWhitelists_RequireNonNullIpLiterals(bool admin,
+        string address, string expectedMessage)
+    {
+        var config = new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+            AdminIpWhitelist = admin ? new[] { address } : null,
+            MetricsIpWhitelist = admin ? null : new[] { address },
+        };
+
+        var result = new ApiConfigValidator().Validate(config);
+
+        Assert.Contains(result.Errors,
+            error => error.ErrorMessage == expectedMessage);
+    }
+
+    [Fact]
+    public void IpWhitelists_AcceptIpv4Ipv6AndMappedLiterals()
+    {
+        var config = new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+            AdminIpWhitelist = new[] { "127.0.0.1", "::1" },
+            MetricsIpWhitelist = new[] { "::ffff:192.0.2.1" },
+        };
+
+        new ApiConfigValidator().ValidateAndThrow(config);
+    }
+
     [Fact]
     public void ClusterValidation_ExecutesEnabledApiValidation()
     {
@@ -638,6 +678,73 @@ public class ApiListenerConfigurationTests
             Assert.Null(normalConfig.Api.MetricsPort);
             Assert.False(recoveryConfig.Api.Enabled);
             Assert.Null(recoveryConfig.Api.MetricsPort);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("api", "API")]
+    [InlineData("enabled", "Enabled")]
+    [InlineData("metricsPort", "MetricsPort")]
+    public void CaseVariantDuplicateProperties_AreRejectedBeforeApiSanitization(
+        string propertyName, string duplicateName)
+    {
+        var document = CreateRecoveryConfigDocument(false);
+        var api = Assert.IsType<JObject>(document["api"]);
+
+        if(propertyName == "api")
+            document.Add(duplicateName, api.DeepClone());
+        else
+            api.Add(duplicateName, api[propertyName]?.DeepClone() ??
+                JValue.CreateNull());
+
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            foreach(var recoveryMode in new[] { false, true })
+            {
+                var exception = Assert.Throws<PoolStartupException>(() =>
+                    Program.ReadAndValidateConfig(configFile, recoveryMode));
+                Assert.Contains("differ only by case", exception.Message,
+                    StringComparison.Ordinal);
+                Assert.Contains($"'{propertyName}'", exception.Message,
+                    StringComparison.OrdinalIgnoreCase);
+                Assert.Contains($"'{duplicateName}'", exception.Message,
+                    StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_InvalidApiWhitelistDoesNotBlockImporter()
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        document["api"]["adminIpWhitelist"] = new JArray(
+            JValue.CreateNull());
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var startupError = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+            Assert.Contains("api.adminIpWhitelist[0]", startupError.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.Null(recoveryConfig.Api.AdminIpWhitelist);
         }
         finally
         {

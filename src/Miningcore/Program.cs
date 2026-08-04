@@ -1048,17 +1048,33 @@ public class Program : ProcessStatusBackgroundService
             }
         };
 
-        var schema = generator.Generate(typeof(ClusterConfig));
+        var schema = JObject.Parse(generator.Generate(typeof(ClusterConfig))
+            .ToString());
+        RequireApiWhitelistSchemaItems(schema);
 
         using(var stream = File.Create(filename))
         {
             using(var writer = new JsonTextWriter(new StreamWriter(stream, Encoding.UTF8)))
             {
+                writer.Formatting = Formatting.Indented;
                 schema.WriteTo(writer);
 
                 writer.Flush();
             }
         }
+    }
+
+    private static void RequireApiWhitelistSchemaItems(JObject schema)
+    {
+        var apiSchema = schema["definitions"][nameof(ApiConfig)];
+
+        foreach(var propertyName in new[]
+                {
+                    "adminIpWhitelist",
+                    "metricsIpWhitelist",
+                })
+            apiSchema["properties"][propertyName]["items"]["type"] =
+                "string";
     }
 
     private static CommandLineApplication ParseCommandLine(string[] args)
@@ -1105,18 +1121,24 @@ public class Program : ProcessStatusBackgroundService
             {
                 using(var jsonReader = new JsonTextReader(reader))
                 {
-                    using(var validatingReader = new JSchemaValidatingReader(jsonReader)
+                    var document = JObject.Load(jsonReader,
+                        new JsonLoadSettings
+                        {
+                            DuplicatePropertyNameHandling =
+                                DuplicatePropertyNameHandling.Error,
+                        });
+                    RejectCaseInsensitivePropertyDuplicates(document);
+                    RemoveInactiveApiListenerSettings(document,
+                        skipApiListenerSettings);
+
+                    using(var documentReader = document.CreateReader())
+                    using(var validatingReader = new JSchemaValidatingReader(documentReader)
                     {
                         Schema =  LoadSchema()
                     })
                     {
-                        var document = JObject.Load(validatingReader);
-                        RemoveInactiveApiListenerSettings(document,
-                            skipApiListenerSettings);
-
-                        using var documentReader = document.CreateReader();
                         return serializer.Deserialize<ClusterConfig>(
-                            documentReader);
+                            validatingReader);
                     }
                 }
             }
@@ -1143,6 +1165,29 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    private static void RejectCaseInsensitivePropertyDuplicates(
+        JObject document)
+    {
+        foreach(var current in document.DescendantsAndSelf()
+                    .OfType<JObject>())
+        {
+            var duplicate = current.Properties()
+                .GroupBy(property => property.Name,
+                    StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(group => group.Skip(1).Any());
+            if(duplicate == null)
+                continue;
+
+            var names = string.Join(", ", duplicate.Select(property =>
+                $"'{property.Name}'"));
+            var path = string.IsNullOrEmpty(current.Path) ? "$" :
+                current.Path;
+
+            throw new JsonSerializationException(
+                $"Properties {names} at '{path}' differ only by case");
+        }
+    }
+
     private static void RemoveInactiveApiListenerSettings(JObject document,
         bool skipApiListenerSettings)
     {
@@ -1165,6 +1210,8 @@ public class Program : ProcessStatusBackgroundService
                     "port",
                     "adminPort",
                     "metricsPort",
+                    "adminIpWhitelist",
+                    "metricsIpWhitelist",
                 })
             api.Property(name, StringComparison.OrdinalIgnoreCase)?.Remove();
     }

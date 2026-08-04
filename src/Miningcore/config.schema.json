@@ -35,10 +35,7 @@
             "null"
           ],
           "items": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "adminPort": {
@@ -65,10 +62,7 @@
             "null"
           ],
           "items": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "metricsPort": {

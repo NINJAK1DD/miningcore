@@ -111,6 +111,24 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
             .WithMessage(
                 "API: listenAddress must be '*' or a valid IPv4/IPv6 address");
 
+        RuleForEach(j => j.AdminIpWhitelist)
+            .NotNull()
+            .WithMessage(
+                "API: adminIpWhitelist[{CollectionIndex}] must not be null")
+            .Must(address => address == null ||
+                IPAddress.TryParse(address, out _))
+            .WithMessage(
+                "API: adminIpWhitelist[{CollectionIndex}] contains invalid IP address '{PropertyValue}'");
+
+        RuleForEach(j => j.MetricsIpWhitelist)
+            .NotNull()
+            .WithMessage(
+                "API: metricsIpWhitelist[{CollectionIndex}] must not be null")
+            .Must(address => address == null ||
+                IPAddress.TryParse(address, out _))
+            .WithMessage(
+                "API: metricsIpWhitelist[{CollectionIndex}] contains invalid IP address '{PropertyValue}'");
+
         RuleFor(j => j.Port)
             .InclusiveBetween(1, ushort.MaxValue)
             .WithMessage("API: Invalid port number '{PropertyValue}'");
