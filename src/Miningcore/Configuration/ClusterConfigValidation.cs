@@ -105,9 +105,9 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
     public ApiConfigValidator()
     {
         RuleFor(j => j.ListenAddress)
-            .NotNull()
-            .NotEmpty()
-            .WithMessage("API: listenAddress missing or empty");
+            .Must(address => address == null ||
+                !string.IsNullOrWhiteSpace(address))
+            .WithMessage("API: listenAddress must not be empty when configured");
 
         RuleFor(j => j.Port)
             .InclusiveBetween(1, ushort.MaxValue)

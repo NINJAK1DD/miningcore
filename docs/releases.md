@@ -202,8 +202,8 @@ routes are not served on either dedicated port. The existing IP whitelists conti
 Before upgrading a configuration that sets these ports:
 
 1. Permit the required trusted sources to reach the dedicated ports through the firewall.
-2. Point Prometheus at `http://127.0.0.1:4002/metrics` or the configured equivalent. For example,
-   change `http://127.0.0.1:5000/metrics` to `http://127.0.0.1:5002/metrics` when `metricsPort` is 5002.
+2. Point Prometheus at `http://127.0.0.1:4002/metrics` or the configured equivalent. For the
+   standard ports, change `http://127.0.0.1:4000/metrics` to `http://127.0.0.1:4002/metrics`.
 3. Keep reverse proxies and public clients on `api.port` only.
 4. Publish the extra ports explicitly for a container deployment.
 5. Verify firewall, container and reverse-proxy mappings before restarting, then confirm protected

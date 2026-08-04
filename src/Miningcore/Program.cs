@@ -697,11 +697,11 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static int? FindApiListenerStratumPortConflict(
-        ClusterConfig config)
+        ClusterConfig config, bool recoveryMode)
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        if(config.Api?.Enabled == false)
+        if(!ShouldConfigureApi(recoveryMode, config.Api))
             return null;
 
         var apiPorts = ResolveApiEndpointPorts(config.Api).ListenerPorts
@@ -886,7 +886,7 @@ public class Program : ProcessStatusBackgroundService
             ValidateMergedMiningDeployment(clusterConfig);
 
             var listenerConflict = FindApiListenerStratumPortConflict(
-                clusterConfig);
+                clusterConfig, isShareRecoveryMode);
             if(listenerConflict.HasValue)
                 throw new PoolStartupException(
                     $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
