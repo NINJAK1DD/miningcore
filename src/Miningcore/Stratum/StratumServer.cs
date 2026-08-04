@@ -99,7 +99,7 @@ public abstract class StratumServer
 
         var servers = endpoints.Select(port =>
         {
-            var server = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            var server = CreateListenSocket(port.IPEndPoint);
             server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             server.Bind(port.IPEndPoint);
             server.Listen();
@@ -125,6 +125,19 @@ public abstract class StratumServer
 
             await DrainConnectionsAsync();
         }
+    }
+
+    internal static Socket CreateListenSocket(IPEndPoint endpoint)
+    {
+        Contract.RequiresNonNull(endpoint);
+
+        var server = new Socket(endpoint.AddressFamily, SocketType.Stream,
+            ProtocolType.Tcp);
+
+        if(endpoint.Address.Equals(IPAddress.IPv6Any))
+            server.DualMode = true;
+
+        return server;
     }
 
     private async Task Listen(Socket server, StratumEndpoint port, CancellationToken ct)

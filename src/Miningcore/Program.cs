@@ -176,9 +176,9 @@ public class Program : ProcessStatusBackgroundService
             Logo();
 
             isShareRecoveryMode = shareRecoveryOption.HasValue();
-            clusterConfig = ReadConfig(configFileOption.Value());
-
-            ValidateConfig();
+            clusterConfig = ReadAndValidateConfig(configFileOption.Value(),
+                isShareRecoveryMode);
+            var apiConfig = clusterConfig.Api;
 
             ConfigureLogging();
             LogRuntimeInfo();
@@ -205,19 +205,19 @@ public class Program : ProcessStatusBackgroundService
                     ConfigureBackgroundServices(services);
                 });
 
-            if(ShouldConfigureApi(isShareRecoveryMode, clusterConfig.Api))
+            if(ShouldConfigureApi(isShareRecoveryMode, apiConfig))
             {
-                var address = ResolveListenAddress(
-                    clusterConfig.Api?.ListenAddress);
+                var address = ResolveListenAddress(apiConfig.ListenAddress);
 
-                var endpointPorts = ResolveApiEndpointPorts(clusterConfig.Api);
-                var enableApiRateLimiting = clusterConfig.Api?.RateLimiting?.Disabled != true;
-                var apiTlsEnable = clusterConfig.Api?.Tls?.Enabled == true || !string.IsNullOrEmpty(clusterConfig.Api?.Tls?.TlsPfxFile);
+                var endpointPorts = ResolveApiEndpointPorts(apiConfig);
+                var enableApiRateLimiting = apiConfig.RateLimiting?.Disabled != true;
+                var apiTlsEnable = apiConfig.Tls?.Enabled == true ||
+                    !string.IsNullOrEmpty(apiConfig.Tls?.TlsPfxFile);
 
                 if(apiTlsEnable)
                 {
-                    if(!File.Exists(clusterConfig.Api.Tls.TlsPfxFile))
-                        throw new PoolStartupException($"Certificate file {clusterConfig.Api.Tls.TlsPfxFile} does not exist!");
+                    if(!File.Exists(apiConfig.Tls.TlsPfxFile))
+                        throw new PoolStartupException($"Certificate file {apiConfig.Tls.TlsPfxFile} does not exist!");
                 }
 
                 hostBuilder.ConfigureWebHost(builder =>
@@ -250,7 +250,7 @@ public class Program : ProcessStatusBackgroundService
                         {
                             options.JsonSerializerOptions.WriteIndented = true;
 
-                            if(!clusterConfig.Api.LegacyNullValueHandling)
+                            if(!apiConfig.LegacyNullValueHandling)
                                 options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
                         });
 
@@ -272,7 +272,8 @@ public class Program : ProcessStatusBackgroundService
                             listenOptions =>
                             {
                                 if(apiTlsEnable)
-                                    listenOptions.UseHttps(clusterConfig.Api.Tls.TlsPfxFile, clusterConfig.Api.Tls.TlsPfxPassword);
+                                    listenOptions.UseHttps(apiConfig.Tls.TlsPfxFile,
+                                        apiConfig.Tls.TlsPfxPassword);
                             });
                     })
                     .Configure(app =>
@@ -297,11 +298,11 @@ public class Program : ProcessStatusBackgroundService
                         UseIpWhiteList(app, true, new[]
                         {
                             "/api/admin"
-                        }, clusterConfig.Api?.AdminIpWhitelist);
+                        }, apiConfig.AdminIpWhitelist);
                         UseIpWhiteList(app, true, new[]
                         {
                             "/metrics"
-                        }, clusterConfig.Api?.MetricsIpWhitelist);
+                        }, apiConfig.MetricsIpWhitelist);
 
                         #if DEBUG
                         app.UseOpenApi();
@@ -643,6 +644,27 @@ public class Program : ProcessStatusBackgroundService
     internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
         !recoveryMode && (api == null || api.Enabled);
 
+    internal static ApiConfig NormalizeApiConfig(ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        config.Api ??= new ApiConfig
+        {
+            Enabled = true,
+        };
+
+        return config.Api;
+    }
+
+    internal static ClusterConfig ReadAndValidateConfig(string file,
+        bool recoveryMode)
+    {
+        var config = ReadConfig(file);
+        NormalizeApiConfig(config);
+        ValidateConfig(config, recoveryMode);
+        return config;
+    }
+
     internal sealed record ApiEndpointPorts(int PublicPort, int AdminPort,
         int MetricsPort)
     {
@@ -670,8 +692,10 @@ public class Program : ProcessStatusBackgroundService
         if(string.IsNullOrEmpty(listenAddress))
             return IPAddress.Loopback;
 
-        return listenAddress == "*" ? IPAddress.Any :
+        var address = listenAddress == "*" ? IPAddress.Any :
             IPAddress.Parse(listenAddress);
+
+        return address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
     }
 
     internal static void ConfigureApiListeners(KestrelServerOptions options,
@@ -738,17 +762,29 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(first);
         ArgumentNullException.ThrowIfNull(second);
 
+        first = NormalizeMappedAddress(first);
+        second = NormalizeMappedAddress(second);
+
         if(first.Equals(second))
             return true;
 
-        return IsWildcardForAddressFamily(first, second.AddressFamily) ||
-            IsWildcardForAddressFamily(second, first.AddressFamily);
+        // Kestrel and Miningcore's Stratum listener both use a dual-mode socket for
+        // IPv6Any. It therefore occupies IPv4 as well as IPv6 socket space.
+        if(first.Equals(IPAddress.IPv6Any) ||
+            second.Equals(IPAddress.IPv6Any))
+            return true;
+
+        if(first.Equals(IPAddress.Any))
+            return second.AddressFamily == AddressFamily.InterNetwork;
+
+        if(second.Equals(IPAddress.Any))
+            return first.AddressFamily == AddressFamily.InterNetwork;
+
+        return false;
     }
 
-    private static bool IsWildcardForAddressFamily(IPAddress address,
-        AddressFamily family) =>
-        (family == AddressFamily.InterNetwork && address.Equals(IPAddress.Any)) ||
-        (family == AddressFamily.InterNetworkV6 && address.Equals(IPAddress.IPv6Any));
+    private static IPAddress NormalizeMappedAddress(IPAddress address) =>
+        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
@@ -903,9 +939,6 @@ public class Program : ProcessStatusBackgroundService
         return $"{fullSemVer} [{sha}]";
     }
 
-    private static void ValidateConfig() =>
-        ValidateConfig(clusterConfig, isShareRecoveryMode);
-
     internal static void ValidateConfig(ClusterConfig config,
         bool recoveryMode)
     {
@@ -1025,7 +1058,7 @@ public class Program : ProcessStatusBackgroundService
         return app;
     }
 
-    private static ClusterConfig ReadConfig(string file)
+    internal static ClusterConfig ReadConfig(string file)
     {
         try
         {

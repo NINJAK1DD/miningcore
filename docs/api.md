@@ -41,6 +41,10 @@ and 65535. An API listener and an enabled local Stratum endpoint may share a num
 bind different specific addresses; the same address and wildcard/specific overlaps stop startup
 with a configuration error.
 
+The port limits and duplicate checks run for an enabled API during normal startup rather than schema
+loading. This allows the one-shot `-rs` share importer to remain available when listener-only
+settings are stale or temporarily invalid; recovery mode does not open API or Stratum sockets.
+
 ## Discovery and health
 
 ```console

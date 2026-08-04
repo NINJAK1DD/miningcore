@@ -45,9 +45,7 @@
           "type": [
             "integer",
             "null"
-          ],
-          "minimum": 1,
-          "maximum": 65535
+          ]
         },
         "enabled": {
           "type": "boolean"
@@ -77,15 +75,11 @@
           "type": [
             "integer",
             "null"
-          ],
-          "minimum": 1,
-          "maximum": 65535
+          ]
         },
         "port": {
           "type": "integer",
-          "default": 4000,
-          "minimum": 1,
-          "maximum": 65535
+          "default": 4000
         },
         "rateLimiting": {
           "$ref": "#/definitions/ApiRateLimitConfig"

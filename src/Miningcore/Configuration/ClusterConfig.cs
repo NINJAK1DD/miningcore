@@ -1213,7 +1213,6 @@ public partial class ApiConfig
     /// Public REST API and WebSocket listener port.
     /// </summary>
     [DefaultValue(DefaultPort)]
-    [Range(1, ushort.MaxValue)]
     public int Port { get; set; } = DefaultPort;
 
     public ApiTlsConfig Tls { get; set; }
@@ -1224,14 +1223,12 @@ public partial class ApiConfig
     /// Dedicated port for administrative APIs. When omitted, administrative
     /// routes remain on Port for backwards compatibility.
     /// </summary>
-    [Range(1, ushort.MaxValue)]
     public int? AdminPort { get; set; }
 
     /// <summary>
     /// Dedicated port for the Prometheus-compatible /metrics endpoint. When
     /// omitted, metrics remain on Port for backwards compatibility.
     /// </summary>
-    [Range(1, ushort.MaxValue)]
     public int? MetricsPort { get; set; }
 
     /// <summary>

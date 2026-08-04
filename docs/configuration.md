@@ -56,11 +56,17 @@ protection; publishing only `api.port` does not isolate a shared administrative 
 
 Every explicit API port must be unique and between 1 and 65535. An API listener conflicts with an
 enabled local Stratum endpoint only when both use the same port and their bind addresses overlap;
-wildcard addresses overlap every specific address in the same address family. Dedicated listeners
-bind to the same `api.listenAddress` and use the same TLS certificate as the public API, so retain
-the admin/metrics IP whitelists and restrict the ports with the host or network firewall. Reverse
-proxies should publish only `api.port`; a local Prometheus service normally scrapes
-`127.0.0.1:metricsPort`.
+the IPv4 wildcard overlaps every IPv4 address, while the dual-stack IPv6 wildcard overlaps both
+IPv6 and IPv4 addresses. IPv4-mapped IPv6 addresses are treated as their equivalent IPv4 address.
+Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
+public API, so retain the admin/metrics IP whitelists and restrict the ports with the host or network
+firewall. Reverse proxies should publish only `api.port`; a local Prometheus service normally
+scrapes `127.0.0.1:metricsPort`.
+
+Normal startup enforces the port range and conflict rules for an enabled API after configuration
+loading. The JSON schema intentionally leaves listener-port values unconstrained so `-rs` share
+recovery cannot be blocked by listener-only settings; recovery mode starts neither API nor Stratum
+listeners.
 
 Container operators must publish the dedicated ports separately. Bind them to host loopback unless
 a trusted remote monitoring or administration network requires access:

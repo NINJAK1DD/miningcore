@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -19,7 +20,9 @@ using Microsoft.Extensions.Logging;
 using Miningcore.Api.Middlewares;
 using Miningcore.Configuration;
 using Miningcore.Mining;
+using Miningcore.Stratum;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -45,12 +48,30 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
-    public void MissingApiSection_UsesLegacyDefaultListener()
+    public async Task MissingApiSection_StartsLegacyKestrelListener()
     {
-        var ports = Program.ResolveApiEndpointPorts(null);
+        var config = JsonConvert.DeserializeObject<ClusterConfig>("{}");
 
+        Assert.NotNull(config);
+        Assert.Null(config.Api);
+
+        var api = Program.NormalizeApiConfig(config);
+
+        Assert.True(api.Enabled);
+        Assert.Same(api, config.Api);
+        var ports = Program.ResolveApiEndpointPorts(api);
         Assert.Equal(Program.DefaultApiPort, ports.PublicPort);
         Assert.Equal(new[] { Program.DefaultApiPort }, ports.ListenerPorts);
+
+        // Use an ephemeral port for the real host while retaining the assertions
+        // above for the production default.
+        api.Port = GetFreeTcpPort();
+        ports = Program.ResolveApiEndpointPorts(api);
+        using var host = await StartRouteTestHostAsync(ports);
+        using var client = new HttpClient();
+
+        await AssertStatusAsync(client, api.Port, "/api/pools",
+            HttpStatusCode.OK);
     }
 
     [Fact]
@@ -363,6 +384,11 @@ public class ApiListenerConfigurationTests
     [InlineData("127.0.0.1", 4000, "*", 4000, true)]
     [InlineData("127.0.0.1", 4000, "192.168.10.20", 4000, false)]
     [InlineData("127.0.0.1", 4000, "127.0.0.1", 4003, false)]
+    [InlineData("::", 4000, "127.0.0.1", 4000, true)]
+    [InlineData("0.0.0.0", 4000, "::", 4000, true)]
+    [InlineData("127.0.0.1", 4000, "::ffff:127.0.0.1", 4000, true)]
+    [InlineData("::1", 4000, "127.0.0.1", 4000, false)]
+    [InlineData("::1", 4000, "::1", 4000, true)]
     public void ApiStratumConflict_RequiresOverlappingAddressAndPort(
         string apiAddress, int apiPort, string stratumAddress, int stratumPort,
         bool expectedConflict)
@@ -401,33 +427,120 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
+    [InlineData("::", "127.0.0.1")]
+    [InlineData("0.0.0.0", "::")]
+    public async Task DualStackConflictValidation_MatchesRealSocketBinding(
+        string apiListenAddress, string stratumListenAddress)
+    {
+        // Windows permits combinations with SO_REUSEADDR that Linux, the
+        // production target, rejects. Linux CI pins the actual socket behavior;
+        // the comparison cases above remain platform independent.
+        if(!Socket.OSSupportsIPv6 || !OperatingSystem.IsLinux())
+            return;
+
+        var apiAddress = Program.ResolveListenAddress(apiListenAddress);
+        var stratumAddress = Program.ResolveListenAddress(
+            stratumListenAddress);
+        var port = GetFreeTcpPort(apiAddress,
+            apiAddress.Equals(IPAddress.IPv6Any));
+
+        Assert.True(Program.ListenAddressesOverlap(apiAddress,
+            stratumAddress));
+
+        using var host = await StartBindingTestHostAsync(apiAddress, port);
+        using var stratumSocket = StratumServer.CreateListenSocket(
+            new IPEndPoint(stratumAddress, port));
+        stratumSocket.SetSocketOption(SocketOptionLevel.Socket,
+            SocketOptionName.ReuseAddress, true);
+
+        Assert.Throws<SocketException>(() =>
+        {
+            stratumSocket.Bind(new IPEndPoint(stratumAddress, port));
+            stratumSocket.Listen();
+        });
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", AddressFamily.InterNetwork, false)]
+    [InlineData("::1", AddressFamily.InterNetworkV6, false)]
+    [InlineData("::", AddressFamily.InterNetworkV6, true)]
+    public void StratumListenSocket_MirrorsConfiguredAddressFamily(
+        string addressValue, AddressFamily expectedFamily, bool dualMode)
+    {
+        if(expectedFamily == AddressFamily.InterNetworkV6 &&
+            !Socket.OSSupportsIPv6)
+            return;
+
+        var address = IPAddress.Parse(addressValue);
+        using var socket = StratumServer.CreateListenSocket(
+            new IPEndPoint(address, 4000));
+
+        Assert.Equal(expectedFamily, socket.AddressFamily);
+        if(expectedFamily == AddressFamily.InterNetworkV6)
+            Assert.Equal(dualMode, socket.DualMode);
+    }
+
+    [Theory]
     [InlineData(4000, null)]
     [InlineData(null, 0)]
-    public async Task RecoveryMode_ListenerOnlyErrorsDoNotBlockImporter(
+    public async Task RecoveryMode_ConfigFileListenerErrorsDoNotBlockImporter(
         int? adminPort, int? metricsPort)
     {
-        var config = CreateValidRecoveryConfig(new ApiConfig
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
         {
             Enabled = true,
             Port = 4000,
             AdminPort = adminPort,
             MetricsPort = metricsPort,
         });
+        var configFile = Path.GetTempFileName();
         var recovered = false;
         var stopped = false;
 
-        Assert.Throws<PoolStartupException>(() =>
-            Program.ValidateConfig(config, false));
-
-        Program.ValidateConfig(config, true);
-        await Program.RunRecoveryModeAsync(() =>
+        try
         {
-            recovered = true;
-            return Task.CompletedTask;
-        }, () => stopped = true);
+            File.WriteAllText(configFile,
+                SerializeConfig(sourceConfig));
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+            await Program.RunRecoveryModeAsync(() =>
+            {
+                recovered = true;
+                return Task.CompletedTask;
+            }, () => stopped = true);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
 
         Assert.True(recovered);
         Assert.True(stopped);
+    }
+
+    [Fact]
+    public void DisabledApi_ConfigFileAllowsStaleListenerValues()
+    {
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = false,
+            MetricsPort = 0,
+        });
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile,
+                SerializeConfig(sourceConfig));
+            var config = Program.ReadAndValidateConfig(configFile, false);
+            Assert.False(config.Api.Enabled);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
     }
 
     [Fact]
@@ -635,6 +748,7 @@ public class ApiListenerConfigurationTests
                     Enabled = true,
                     EnableInternalStratum = false,
                     Address = "recovery-wallet",
+                    Ports = new Dictionary<int, PoolEndpoint>(),
                     Daemons = new[]
                     {
                         new DaemonEndpointConfig
@@ -647,11 +761,44 @@ public class ApiListenerConfigurationTests
             },
         };
 
+    private static string SerializeConfig(ClusterConfig config) =>
+        JsonConvert.SerializeObject(config, new JsonSerializerSettings
+        {
+            ContractResolver = new CamelCasePropertyNamesContractResolver(),
+        });
+
     private static int GetFreeTcpPort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         return ((IPEndPoint) listener.LocalEndpoint).Port;
+    }
+
+    private static int GetFreeTcpPort(IPAddress address, bool dualMode)
+    {
+        using var listener = new TcpListener(address, 0);
+        if(address.AddressFamily == AddressFamily.InterNetworkV6)
+            listener.Server.DualMode = dualMode;
+        listener.Start();
+        return ((IPEndPoint) listener.LocalEndpoint).Port;
+    }
+
+    private static async Task<IHost> StartBindingTestHostAsync(
+        IPAddress address, int port)
+    {
+        var host = Host.CreateDefaultBuilder()
+            .ConfigureLogging(logging => logging.ClearProviders())
+            .ConfigureWebHostDefaults(builder => builder
+                .UseKestrel(options => options.Listen(address, port))
+                .Configure(app => app.Run(context =>
+                {
+                    context.Response.StatusCode = StatusCodes.Status200OK;
+                    return Task.CompletedTask;
+                })))
+            .Build();
+
+        await host.StartAsync();
+        return host;
     }
 
     private static async Task<IHost> StartRouteTestHostAsync(

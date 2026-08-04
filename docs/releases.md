@@ -218,6 +218,10 @@ overlapping bind address as an enabled local Stratum endpoint now stops startup 
 port identified; different specific bind addresses may reuse a port. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
+Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
+Stratum sockets. The configuration schema therefore defers listener range and conflict enforcement
+to normal startup so an invalid or stale listener setting cannot block a durable-share import.
+
 ### Logging and disk recovery
 
 Miningcore now rotates every configured NLog file natively before a write would grow it beyond
