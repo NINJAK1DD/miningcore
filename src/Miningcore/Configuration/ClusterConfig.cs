@@ -1204,14 +1204,17 @@ public class ApiTlsConfig
 
 public partial class ApiConfig
 {
+    public const int DefaultPort = 4000;
+
     public bool Enabled { get; set; }
     public string ListenAddress { get; set; }
 
     /// <summary>
     /// Public REST API and WebSocket listener port.
     /// </summary>
+    [DefaultValue(DefaultPort)]
     [Range(1, ushort.MaxValue)]
-    public int Port { get; set; }
+    public int Port { get; set; } = DefaultPort;
 
     public ApiTlsConfig Tls { get; set; }
 

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -80,7 +81,7 @@ namespace Miningcore;
 
 public class Program : ProcessStatusBackgroundService
 {
-    internal const int DefaultApiPort = 4000;
+    internal const int DefaultApiPort = ApiConfig.DefaultPort;
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -206,9 +207,8 @@ public class Program : ProcessStatusBackgroundService
 
             if(ShouldConfigureApi(isShareRecoveryMode, clusterConfig.Api))
             {
-                var address = clusterConfig.Api?.ListenAddress != null
-                    ? (clusterConfig.Api.ListenAddress != "*" ? IPAddress.Parse(clusterConfig.Api.ListenAddress) : IPAddress.Any)
-                    : IPAddress.Parse("127.0.0.1");
+                var address = ResolveListenAddress(
+                    clusterConfig.Api?.ListenAddress);
 
                 var endpointPorts = ResolveApiEndpointPorts(clusterConfig.Api);
                 var enableApiRateLimiting = clusterConfig.Api?.RateLimiting?.Disabled != true;
@@ -665,6 +665,15 @@ public class Program : ProcessStatusBackgroundService
             api?.MetricsPort ?? publicPort);
     }
 
+    internal static IPAddress ResolveListenAddress(string listenAddress)
+    {
+        if(string.IsNullOrEmpty(listenAddress))
+            return IPAddress.Loopback;
+
+        return listenAddress == "*" ? IPAddress.Any :
+            IPAddress.Parse(listenAddress);
+    }
+
     internal static void ConfigureApiListeners(KestrelServerOptions options,
         IPAddress address, ApiEndpointPorts ports,
         Action<ListenOptions> configureListener = null)
@@ -704,17 +713,42 @@ public class Program : ProcessStatusBackgroundService
         if(!ShouldConfigureApi(recoveryMode, config.Api))
             return null;
 
+        var apiAddress = ResolveListenAddress(config.Api?.ListenAddress);
         var apiPorts = ResolveApiEndpointPorts(config.Api).ListenerPorts
             .ToHashSet();
 
-        return config.Pools?
-            .Where(pool => pool.Enabled && pool.EnableInternalStratum == true &&
-                pool.Ports != null)
-            .SelectMany(pool => pool.Ports.Keys)
-            .Where(apiPorts.Contains)
-            .Cast<int?>()
-            .FirstOrDefault();
+        foreach(var pool in config.Pools?.Where(pool => pool.Enabled &&
+                    pool.EnableInternalStratum == true && pool.Ports != null) ??
+                Enumerable.Empty<PoolConfig>())
+        {
+            foreach(var (port, endpoint) in pool.Ports)
+            {
+                if(apiPorts.Contains(port) && ListenAddressesOverlap(
+                       apiAddress, ResolveListenAddress(endpoint?.ListenAddress)))
+                    return port;
+            }
+        }
+
+        return null;
     }
+
+    internal static bool ListenAddressesOverlap(IPAddress first,
+        IPAddress second)
+    {
+        ArgumentNullException.ThrowIfNull(first);
+        ArgumentNullException.ThrowIfNull(second);
+
+        if(first.Equals(second))
+            return true;
+
+        return IsWildcardForAddressFamily(first, second.AddressFamily) ||
+            IsWildcardForAddressFamily(second, first.AddressFamily);
+    }
+
+    private static bool IsWildcardForAddressFamily(IPAddress address,
+        AddressFamily family) =>
+        (family == AddressFamily.InterNetwork && address.Equals(IPAddress.Any)) ||
+        (family == AddressFamily.InterNetworkV6 && address.Equals(IPAddress.IPv6Any));
 
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
@@ -869,41 +903,48 @@ public class Program : ProcessStatusBackgroundService
         return $"{fullSemVer} [{sha}]";
     }
 
-    private static void ValidateConfig()
+    private static void ValidateConfig() =>
+        ValidateConfig(clusterConfig, isShareRecoveryMode);
+
+    internal static void ValidateConfig(ClusterConfig config,
+        bool recoveryMode)
     {
-        if(!clusterConfig.Pools.Any(x => x.Enabled))
+        ArgumentNullException.ThrowIfNull(config);
+
+        if(!config.Pools.Any(x => x.Enabled))
             throw new PoolStartupException("No pools are enabled.");
 
         // set some defaults
-        foreach(var config in clusterConfig.Pools)
+        foreach(var poolConfig in config.Pools)
         {
-            config.EnableInternalStratum ??= clusterConfig.ShareRelays == null || clusterConfig.ShareRelays.Length == 0;
+            poolConfig.EnableInternalStratum ??=
+                config.ShareRelays == null || config.ShareRelays.Length == 0;
         }
 
         try
         {
-            clusterConfig.Validate();
-            ValidateMergedMiningDeployment(clusterConfig);
+            config.Validate(recoveryMode);
+            ValidateMergedMiningDeployment(config);
 
             var listenerConflict = FindApiListenerStratumPortConflict(
-                clusterConfig, isShareRecoveryMode);
+                config, recoveryMode);
             if(listenerConflict.HasValue)
                 throw new PoolStartupException(
                     $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
 
-            if(clusterConfig.Notifications?.Admin?.Enabled == true)
+            if(config.Notifications?.Admin?.Enabled == true)
             {
-                if(string.IsNullOrEmpty(clusterConfig.Notifications?.Email?.FromName))
+                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromName))
                     throw new PoolStartupException($"Notifications are enabled but email sender name is not configured (notifications.email.fromName)");
 
-                if(string.IsNullOrEmpty(clusterConfig.Notifications?.Email?.FromAddress))
+                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromAddress))
                     throw new PoolStartupException($"Notifications are enabled but email sender address name is not configured (notifications.email.fromAddress)");
 
-                if(string.IsNullOrEmpty(clusterConfig.Notifications?.Admin?.EmailAddress))
+                if(string.IsNullOrEmpty(config.Notifications?.Admin?.EmailAddress))
                     throw new PoolStartupException($"Admin notifications are enabled but recipient address is not configured (notifications.admin.emailAddress)");
             }
 
-            if(string.IsNullOrEmpty(clusterConfig.Logging.LogFile))
+            if(string.IsNullOrEmpty(config.Logging.LogFile))
             {
                 // emit a newline before regular logging output starts
                 Console.WriteLine();

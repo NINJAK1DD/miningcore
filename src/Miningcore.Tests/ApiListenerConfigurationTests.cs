@@ -18,6 +18,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Miningcore.Api.Middlewares;
 using Miningcore.Configuration;
+using Miningcore.Mining;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -49,6 +51,19 @@ public class ApiListenerConfigurationTests
 
         Assert.Equal(Program.DefaultApiPort, ports.PublicPort);
         Assert.Equal(new[] { Program.DefaultApiPort }, ports.ListenerPorts);
+    }
+
+    [Fact]
+    public void MinimalApiSection_DeserializesToDefaultPublicPort()
+    {
+        var config = JsonConvert.DeserializeObject<ClusterConfig>(
+            "{\"api\":{\"enabled\":true}}");
+
+        Assert.NotNull(config?.Api);
+        Assert.Equal(ApiConfig.DefaultPort, config.Api.Port);
+        Assert.Equal(ApiConfig.DefaultPort,
+            Program.ResolveApiEndpointPorts(config.Api).PublicPort);
+        new ApiConfigValidator().ValidateAndThrow(config.Api);
     }
 
     [Theory]
@@ -342,6 +357,79 @@ public class ApiListenerConfigurationTests
         Assert.Null(Program.FindApiListenerStratumPortConflict(config, true));
     }
 
+    [Theory]
+    [InlineData("127.0.0.1", 4000, "127.0.0.1", 4000, true)]
+    [InlineData("*", 4000, "192.168.10.20", 4000, true)]
+    [InlineData("127.0.0.1", 4000, "*", 4000, true)]
+    [InlineData("127.0.0.1", 4000, "192.168.10.20", 4000, false)]
+    [InlineData("127.0.0.1", 4000, "127.0.0.1", 4003, false)]
+    public void ApiStratumConflict_RequiresOverlappingAddressAndPort(
+        string apiAddress, int apiPort, string stratumAddress, int stratumPort,
+        bool expectedConflict)
+    {
+        var config = new ClusterConfig
+        {
+            Api = new ApiConfig
+            {
+                Enabled = true,
+                ListenAddress = apiAddress,
+                Port = apiPort,
+            },
+            Pools = new[]
+            {
+                new PoolConfig
+                {
+                    Enabled = true,
+                    EnableInternalStratum = true,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [stratumPort] = new()
+                        {
+                            ListenAddress = stratumAddress,
+                        },
+                    },
+                },
+            },
+        };
+
+        var conflict = Program.FindApiListenerStratumPortConflict(config, false);
+
+        if(expectedConflict)
+            Assert.Equal(apiPort, conflict);
+        else
+            Assert.Null(conflict);
+    }
+
+    [Theory]
+    [InlineData(4000, null)]
+    [InlineData(null, 0)]
+    public async Task RecoveryMode_ListenerOnlyErrorsDoNotBlockImporter(
+        int? adminPort, int? metricsPort)
+    {
+        var config = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+            AdminPort = adminPort,
+            MetricsPort = metricsPort,
+        });
+        var recovered = false;
+        var stopped = false;
+
+        Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateConfig(config, false));
+
+        Program.ValidateConfig(config, true);
+        await Program.RunRecoveryModeAsync(() =>
+        {
+            recovered = true;
+            return Task.CompletedTask;
+        }, () => stopped = true);
+
+        Assert.True(recovered);
+        Assert.True(stopped);
+    }
+
     [Fact]
     public void DisabledOrRelayOnlyPools_DoNotConflictWithApiListeners()
     {
@@ -489,10 +577,15 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
-    [InlineData("/api/admin/status", "/api/admin")]
-    [InlineData("/metrics", "/metrics")]
-    public async Task ProtectedRoutes_StillRejectUnauthorizedClients(string path,
-        string protectedLocation)
+    [InlineData("/api/admin/status", "/api/admin", true)]
+    [InlineData("/API/ADMIN/stats/gc", "/api/admin", true)]
+    [InlineData("/Api/Admin/payment/processing/disable", "/api/admin", true)]
+    [InlineData("/metrics", "/metrics", true)]
+    [InlineData("/METRICS", "/metrics", true)]
+    [InlineData("/api/administrator", "/api/admin", false)]
+    [InlineData("/metrics-export", "/metrics", false)]
+    public async Task WhitelistMatching_IsCaseInsensitiveAndSegmentBounded(
+        string path, string protectedLocation, bool protectedRoute)
     {
         var nextCalled = false;
         var middleware = new IPAccessWhitelistMiddleware(
@@ -510,8 +603,9 @@ public class ApiListenerConfigurationTests
 
         await middleware.Invoke(context);
 
-        Assert.False(nextCalled);
-        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Equal(!protectedRoute, nextCalled);
+        Assert.Equal(protectedRoute ? StatusCodes.Status403Forbidden :
+            StatusCodes.Status200OK, context.Response.StatusCode);
     }
 
     private static Program.ApiEndpointPorts CreateEndpointPorts()
@@ -525,6 +619,33 @@ public class ApiListenerConfigurationTests
 
         return new Program.ApiEndpointPorts(ports[0], ports[1], ports[2]);
     }
+
+    private static ClusterConfig CreateValidRecoveryConfig(ApiConfig api) =>
+        new()
+        {
+            Api = api,
+            Logging = new ClusterLoggingConfig(),
+            PaymentProcessing = new ClusterPaymentProcessingConfig(),
+            Pools = new[]
+            {
+                new PoolConfig
+                {
+                    Id = "recovery-pool",
+                    Coin = "bitcoin",
+                    Enabled = true,
+                    EnableInternalStratum = false,
+                    Address = "recovery-wallet",
+                    Daemons = new[]
+                    {
+                        new DaemonEndpointConfig
+                        {
+                            Host = "127.0.0.1",
+                            Port = 1,
+                        },
+                    },
+                },
+            },
+        };
 
     private static int GetFreeTcpPort()
     {

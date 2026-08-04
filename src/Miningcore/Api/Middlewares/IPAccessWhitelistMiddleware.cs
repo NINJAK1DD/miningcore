@@ -24,7 +24,8 @@ public class IPAccessWhitelistMiddleware
 
     public async Task Invoke(HttpContext context)
     {
-        if(locations.Any(x => context.Request.Path.Value.StartsWith(x)))
+        if(locations.Any(location => context.Request.Path.StartsWithSegments(
+               new PathString(location), StringComparison.OrdinalIgnoreCase)))
         {
             var remoteAddress = context.Connection.RemoteIpAddress;
             if(!whitelist.Any(x => x.Equals(remoteAddress)))

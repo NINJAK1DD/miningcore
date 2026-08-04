@@ -209,10 +209,13 @@ Before upgrading a configuration that sets these ports:
 5. Verify firewall, container and reverse-proxy mappings before restarting, then confirm protected
    routes return 404 on the public port.
 
-Omitting either optional port keeps that route on the public listener for backwards compatibility.
-Explicit API ports must be unique and in the range 1–65535. TLS-enabled deployments use the same
-configured certificate on every listener. An API listener that overlaps an enabled local Stratum
-endpoint now stops startup with the conflicting port identified. See
+`api.port` defaults to `4000` when omitted. Omitting either optional port keeps that route on the
+public listener for backwards compatibility. If `adminPort` is omitted, explicitly deny
+`/api/admin` at the reverse proxy unless the admin whitelist and firewall are the intended
+protection. Explicit API ports must be unique and in the range 1–65535. TLS-enabled deployments use
+the same configured certificate on every listener. An API listener that uses the same port and an
+overlapping bind address as an enabled local Stratum endpoint now stops startup with the conflicting
+port identified; different specific bind addresses may reuse a port. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
 ### Logging and disk recovery

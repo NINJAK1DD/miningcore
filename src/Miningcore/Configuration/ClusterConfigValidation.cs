@@ -214,7 +214,7 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
 
 public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 {
-    public ClusterConfigValidator()
+    public ClusterConfigValidator(bool recoveryMode = false)
     {
         RuleFor(j => j.PaymentProcessing)
             .NotNull();
@@ -234,7 +234,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleFor(j => j.Api)
             .SetValidator(new ApiConfigValidator())
-            .When(j => j.Api?.Enabled == true);
+            .When(j => !recoveryMode && j.Api?.Enabled == true);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)
@@ -336,9 +336,9 @@ public partial class PoolConfig
 
 public partial class ClusterConfig
 {
-    public void Validate()
+    public void Validate(bool recoveryMode = false)
     {
-        var validator = new ClusterConfigValidator();
+        var validator = new ClusterConfigValidator(recoveryMode);
         var result = validator.Validate(this);
 
         if(!result.IsValid)

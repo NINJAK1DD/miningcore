@@ -32,10 +32,14 @@ only that route family on it. Public REST and WebSocket routes remain on `port`;
 listener, return `404 Not Found`. The IP whitelists remain an independent second control. Apply a
 firewall rule as well because all three ports bind to `listenAddress`.
 
-Omitting either optional port preserves the previous shared-listener behavior for that route. An
-explicit dedicated port must be different from the public port and from the other dedicated port.
-All API ports must be between 1 and 65535 and must not overlap an enabled local Stratum endpoint;
-invalid, duplicate or conflicting values stop startup with a configuration error.
+`api.port` defaults to `4000` when it is omitted. Omitting either optional port preserves the
+previous shared-listener behavior for that route. In particular, omitting `adminPort` leaves
+`/api/admin` on the public listener: a reverse proxy must explicitly deny that path unless the
+admin whitelist and firewall are the intended protection. An explicit dedicated port must be
+different from the public port and from the other dedicated port. All API ports must be between 1
+and 65535. An API listener and an enabled local Stratum endpoint may share a number only when they
+bind different specific addresses; the same address and wildcard/specific overlaps stop startup
+with a configuration error.
 
 ## Discovery and health
 
