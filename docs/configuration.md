@@ -78,7 +78,7 @@ when the pool is enabled. Case-variant duplicate names remain errors in schema-b
 objects. The intentionally free-form `payoutSchemeConfig` object is exempt because its keys are
 consumed by payout-scheme implementations rather than bound to CLR properties.
 
-### Recovery-mode listener handling
+### Recovery-mode configuration handling
 
 `-rs` share recovery opens neither API nor Stratum sockets. Miningcore prints a recovery-mode
 diagnostic, discards every top-level case variant of the unused API section, and leaves `api` unset
@@ -89,7 +89,9 @@ After strict duplicate and case-variant checks, recovery replaces every pool's u
 subtree with an empty object before schema validation and typed dictionary binding. Damaged,
 nonnumeric or out-of-range Stratum port keys cannot block recovery, while ambiguous configuration
 names remain errors. Recovery also skips the remaining Stratum port, address and TLS certificate
-checks.
+checks. Optional `coinTemplates` metadata is also sanitized before schema validation: valid custom
+template paths are retained, non-string array entries are removed, and a malformed non-array value
+is discarded. Normal startup remains strict and rejects those malformed values.
 
 ### Containers and reverse proxies
 

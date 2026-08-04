@@ -243,6 +243,10 @@ case-variant ambiguities remain errors. The configuration schema therefore defer
 conflict enforcement to normal startup so an invalid, duplicated or stale listener setting cannot
 block a durable-share import or recovery-state command.
 
+Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
+template paths are retained, while non-string entries or a malformed non-array value cannot block
+share import, verification or acknowledgement. Normal startup continues to reject those values.
+
 The regenerated configuration schema also corrects previously omitted boolean fields
 (`banning.banOnLoginFailure`, `logging.gpdrCompliant`, `pools[].enableAsicBoost` and
 `persistence.postgres.enableLegacyTimestamps`) and requires non-null strings in `coinTemplates` and

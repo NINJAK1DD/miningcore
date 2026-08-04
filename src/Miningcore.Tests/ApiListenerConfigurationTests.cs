@@ -1270,6 +1270,116 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
+    public async Task RecoveryOperations_SanitizeOptionalCoinTemplateMetadata()
+    {
+        const string customTemplate = "custom-coins.json";
+        var document = CreateRecoveryConfigDocument(true);
+        document["coinTemplates"] = new JArray(customTemplate,
+            JValue.CreateNull(), 1, new JObject());
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var startupError = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+            Assert.Contains("coinTemplates[1]", startupError.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            var importConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.Equal(new[] { customTemplate },
+                importConfig.CoinTemplates);
+
+            var recovered = false;
+            var stopped = false;
+            await Program.RunRecoveryModeAsync(() =>
+            {
+                recovered = true;
+                return Task.CompletedTask;
+            }, () => stopped = true);
+            Assert.True(recovered);
+            Assert.True(stopped);
+
+            var verificationConfig = Program.ReadConfig(configFile, true);
+            var acknowledgementConfig = Program.ReadConfig(configFile, true);
+            Assert.Equal(new[] { customTemplate },
+                verificationConfig.CoinTemplates);
+            Assert.Equal(new[] { customTemplate },
+                acknowledgementConfig.CoinTemplates);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("1")]
+    [InlineData("\"invalid-scalar\"")]
+    public void RecoveryMode_DiscardsMalformedCoinTemplateContainers(
+        string coinTemplatesJson)
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        document["coinTemplates"] = JToken.Parse(coinTemplatesJson);
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.Null(recoveryConfig.CoinTemplates);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RecoveryMode_StillRejectsAmbiguousCoinTemplateProperties(
+        bool caseVariant)
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        document["coinTemplates"] = new JArray(JValue.CreateNull());
+        string rawConfig;
+
+        if(caseVariant)
+        {
+            document.Add("CoinTemplates", new JArray());
+            rawConfig = document.ToString();
+        }
+        else
+        {
+            rawConfig = CreateRawConfigurationWithRootProperties(document,
+                ("coinTemplates", "[null]"),
+                ("coinTemplates", "[]"));
+        }
+
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, rawConfig);
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
     public void RecoveryMode_StillRejectsExactDuplicatesOutsideApi()
     {
         var document = CreateRecoveryConfigDocument(true);

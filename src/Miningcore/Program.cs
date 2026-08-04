@@ -1190,7 +1190,10 @@ public class Program : ProcessStatusBackgroundService
 
                     RejectCaseInsensitivePropertyDuplicates(document);
                     if(skipApiListenerSettings)
+                    {
                         RemoveStratumConfigurationForRecovery(document);
+                        SanitizeCoinTemplatesForRecovery(document);
+                    }
                     RemoveDisabledApiSettings(document);
 
                     using(var documentReader = document.CreateReader())
@@ -1344,6 +1347,30 @@ public class Program : ProcessStatusBackgroundService
             // Pool ports are required by the schema even though recovery does not use them.
             pool["ports"] = new JObject();
         }
+    }
+
+    private static void SanitizeCoinTemplatesForRecovery(JObject document)
+    {
+        var property = document.Properties().SingleOrDefault(property =>
+            property.Name.Equals("coinTemplates",
+                StringComparison.OrdinalIgnoreCase));
+        if(property == null)
+            return;
+
+        if(property.Value is not JArray templates)
+        {
+            // Recovery can use the bundled definitions without this optional metadata. Remove
+            // malformed values before schema validation so they cannot block emergency work.
+            if(property.Value.Type != JTokenType.Null)
+                property.Remove();
+            return;
+        }
+
+        // Keep valid custom definitions while removing elements that normal startup correctly
+        // rejects. Duplicate and case-variant properties have already failed above.
+        foreach(var item in templates.Where(item =>
+                    item.Type != JTokenType.String).ToArray())
+            item.Remove();
     }
 
     private static void RemoveDisabledApiSettings(JObject document)
