@@ -461,10 +461,20 @@ public class HashingTests : TestBase
     {
         var hasher = new HeavyHash();
         var hash = new byte[32];
-        hasher.Digest(testValue, hash);
+        hasher.Digest(testValue2, hash);
         var result = hash.ToHexString();
 
-        Assert.Equal("e89c26771f3fda42e6f8ed82ca888f805fa15013d8543ab2692904095c6d3dc3", result);
+        Assert.Equal("08f58ffa540660c84bcc8388d2252fdd33ea8d332c0001d08e22c4eb6cb4ec42", result);
+    }
+
+    [Fact]
+    public void Heavy_Hash_Should_Throw_On_Short_Input()
+    {
+        var hasher = new HeavyHash();
+        var hash = new byte[32];
+
+        Assert.Throws<ArgumentException>(() =>
+            hasher.Digest(new byte[35], hash));
     }
 
     [Fact]
