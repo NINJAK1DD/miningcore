@@ -1296,7 +1296,8 @@ public class Program : ProcessStatusBackgroundService
         if(!ReadNextContentToken(reader) ||
             reader.TokenType != JsonToken.StartObject)
             throw new JsonSerializationException(
-                "The configuration root must be a JSON object");
+                "The configuration root must be a JSON object." +
+                GetLocationSuffix(reader));
 
         var document = new JObject();
         var rootProperties = new HashSet<string>(StringComparer.Ordinal);
@@ -1333,7 +1334,8 @@ public class Program : ProcessStatusBackgroundService
         }
 
         throw new JsonSerializationException(
-            "Unexpected end of configuration file");
+            "Unexpected end of configuration file." +
+            GetLocationSuffix(reader));
     }
 
     private static bool ReadNextContentToken(JsonReader reader)

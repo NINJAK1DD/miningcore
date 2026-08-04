@@ -1044,6 +1044,27 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
+    [InlineData("[]", "The configuration root must be a JSON object.",
+        "Line 1, position")]
+    [InlineData("{", "Unexpected end of configuration file.",
+        "Line 1, position")]
+    [InlineData("{\n\"pools\":", "Configuration property 'pools' has no value.",
+        "Path 'pools', line 2, position")]
+    public void RecoveryLoader_StructuralErrorsIncludeLocation(string json,
+        string expectedMessage, string expectedLocation)
+    {
+        using var reader = new JsonTextReader(new StringReader(json));
+
+        var error = Assert.Throws<JsonSerializationException>(() =>
+            Program.LoadConfigurationDocument(reader, true));
+
+        Assert.Contains(expectedMessage, error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(expectedLocation, error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]
     public void InactiveStratumListeners_IgnoreStaleAddressAndTlsSettings(
