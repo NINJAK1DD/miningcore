@@ -460,7 +460,7 @@ public class ApiListenerConfigurationTests
     [Theory]
     [InlineData(0)]
     [InlineData(ushort.MaxValue + 1)]
-    public void RecoveryMode_IgnoresOutOfRangeStratumPorts(int port)
+    public void RecoveryMode_DiscardsOutOfRangeStratumPorts(int port)
     {
         var config = CreateValidRecoveryConfig(new ApiConfig
         {
@@ -486,7 +486,7 @@ public class ApiListenerConfigurationTests
                 Program.ReadAndValidateConfig(configFile, false));
             var recoveryConfig = Program.ReadAndValidateConfig(configFile,
                 true);
-            Assert.True(recoveryConfig.Pools[0].Ports.ContainsKey(port));
+            Assert.Empty(recoveryConfig.Pools[0].Ports);
         }
         finally
         {
@@ -836,8 +836,7 @@ public class ApiListenerConfigurationTests
 
             var recoveryConfig = Program.ReadAndValidateConfig(configFile,
                 true);
-            Assert.Equal("old-stratum.example.com",
-                recoveryConfig.Pools[0].Ports[3333].ListenAddress);
+            Assert.Empty(recoveryConfig.Pools[0].Ports);
             await Program.RunRecoveryModeAsync(() =>
             {
                 recovered = true;
@@ -851,6 +850,110 @@ public class ApiListenerConfigurationTests
 
         Assert.True(recovered);
         Assert.True(stopped);
+    }
+
+    [Theory]
+    [InlineData("2147483648")]
+    [InlineData("not-a-port")]
+    public async Task RecoveryOperations_IgnoreUnbindableRawStratumPortKeys(
+        string rawPort)
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+        pool["enableInternalStratum"] = true;
+        pool["ports"] = new JObject
+        {
+            [rawPort] = new JObject
+            {
+                ["difficulty"] = 1,
+                ["listenAddress"] = "127.0.0.1",
+            },
+        };
+        var configFile = Path.GetTempFileName();
+        var recovered = false;
+        var stopped = false;
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var importConfig = Program.ReadAndValidateConfig(configFile, true);
+            Assert.Empty(importConfig.Pools[0].Ports);
+            await Program.RunRecoveryModeAsync(() =>
+            {
+                recovered = true;
+                return Task.CompletedTask;
+            }, () => stopped = true);
+            Assert.True(recovered);
+            Assert.True(stopped);
+
+            var verificationConfig = Program.ReadConfig(configFile, true);
+            var acknowledgementConfig = Program.ReadConfig(configFile, true);
+            Assert.Empty(verificationConfig.Pools[0].Ports);
+            Assert.Empty(acknowledgementConfig.Pools[0].Ports);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_StillRejectsCaseVariantStratumPorts()
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+        pool.Add("Ports", pool["ports"]?.DeepClone() ?? new JObject());
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+            Assert.Contains("differ only by case", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("'ports'", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_StillRejectsExactDuplicatesInsideStratumPorts()
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+        pool["enableInternalStratum"] = true;
+        pool["ports"] = JObject.Parse(
+            "{\"3333\":{\"difficulty\":1}}");
+        var rawConfig = document.ToString(Formatting.None)
+            .Replace("\"3333\":{\"difficulty\":1}",
+                "\"3333\":{\"difficulty\":1}," +
+                "\"3333\":{\"difficulty\":2}",
+                StringComparison.Ordinal);
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, rawConfig);
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+            Assert.Contains("Property with the name '3333' already exists",
+                error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
     }
 
     [Theory]

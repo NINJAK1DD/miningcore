@@ -1147,6 +1147,8 @@ public class Program : ProcessStatusBackgroundService
                         skipApiListenerSettings);
 
                     RejectCaseInsensitivePropertyDuplicates(document);
+                    if(skipApiListenerSettings)
+                        RemoveStratumConfigurationForRecovery(document);
                     RemoveDisabledApiSettings(document);
 
                     using(var documentReader = document.CreateReader())
@@ -1276,6 +1278,30 @@ public class Program : ProcessStatusBackgroundService
         }
 
         return false;
+    }
+
+    private static void RemoveStratumConfigurationForRecovery(
+        JObject document)
+    {
+        var pools = document.GetValue("pools",
+            StringComparison.OrdinalIgnoreCase) as JArray;
+        if(pools == null)
+            return;
+
+        foreach(var pool in pools.OfType<JObject>())
+        {
+            // Recovery opens no Stratum sockets and never consumes endpoints. Replace the
+            // subtree before schema validation and Dictionary<int, PoolEndpoint> binding so
+            // malformed or out-of-range raw port keys cannot block emergency recovery. Strict
+            // exact-duplicate and case-variant checks have already run above.
+            foreach(var property in pool.Properties().Where(property =>
+                        property.Name.Equals("ports",
+                            StringComparison.OrdinalIgnoreCase)).ToArray())
+                property.Remove();
+
+            // Pool ports are required by the schema even though recovery does not use them.
+            pool["ports"] = new JObject();
+        }
     }
 
     private static void RemoveDisabledApiSettings(JObject document)

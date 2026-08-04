@@ -234,10 +234,12 @@ port identified; different specific bind addresses may reuse a port. See
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
 Stratum sockets. Recovery stream-discards every top-level `api` case variant before strict duplicate
-and schema validation, and skips Stratum port, address and TLS certificate checks. Exact duplicates
-outside the unused API subtree remain errors. The configuration schema therefore defers listener
-range and conflict enforcement to normal startup so an invalid, duplicated or stale listener setting
-cannot block a durable-share import or recovery-state command.
+and schema validation. After strict duplicate and case-variant checks, it replaces each pool's unused
+`ports` subtree before schema validation and typed dictionary binding, then skips the remaining
+Stratum port, address and TLS certificate checks. Exact duplicates outside the unused API subtree and
+case-variant ambiguities remain errors. The configuration schema therefore defers listener range and
+conflict enforcement to normal startup so an invalid, duplicated or stale listener setting cannot
+block a durable-share import or recovery-state command.
 
 ### Logging and disk recovery
 
