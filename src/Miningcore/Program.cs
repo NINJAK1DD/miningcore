@@ -16,6 +16,7 @@ using McMaster.Extensions.CommandLineUtils;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -267,14 +268,12 @@ public class Program : ProcessStatusBackgroundService
                     })
                     .UseKestrel(options =>
                     {
-                        foreach(var port in endpointPorts.ListenerPorts)
-                        {
-                            options.Listen(address, port, listenOptions =>
+                        ConfigureApiListeners(options, address, endpointPorts,
+                            listenOptions =>
                             {
                                 if(apiTlsEnable)
                                     listenOptions.UseHttps(clusterConfig.Api.Tls.TlsPfxFile, clusterConfig.Api.Tls.TlsPfxPassword);
                             });
-                        }
                     })
                     .Configure(app =>
                     {
@@ -664,6 +663,21 @@ public class Program : ProcessStatusBackgroundService
             publicPort,
             api?.AdminPort ?? publicPort,
             api?.MetricsPort ?? publicPort);
+    }
+
+    internal static void ConfigureApiListeners(KestrelServerOptions options,
+        IPAddress address, ApiEndpointPorts ports,
+        Action<ListenOptions> configureListener = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(address);
+        ArgumentNullException.ThrowIfNull(ports);
+
+        foreach(var port in ports.ListenerPorts)
+        {
+            options.Listen(address, port, listenOptions =>
+                configureListener?.Invoke(listenOptions));
+        }
     }
 
     internal static bool IsApiRequestAllowed(int localPort, PathString path,

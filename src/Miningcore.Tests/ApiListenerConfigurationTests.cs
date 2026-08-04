@@ -1,7 +1,22 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 using FluentValidation;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Miningcore.Api.Middlewares;
 using Miningcore.Configuration;
 using Xunit;
 
@@ -92,6 +107,24 @@ public class ApiListenerConfigurationTests
             new PathString("/metrics"), ports));
     }
 
+    [Fact]
+    public void OmittedMetricsPort_FallsBackIndependently()
+    {
+        var ports = Program.ResolveApiEndpointPorts(new ApiConfig
+        {
+            Port = 5000,
+            AdminPort = 5001,
+        });
+
+        Assert.Equal(5001, ports.AdminPort);
+        Assert.Equal(5000, ports.MetricsPort);
+        Assert.Equal(new[] { 5000, 5001 }, ports.ListenerPorts);
+        Assert.True(Program.IsApiRequestAllowed(5000,
+            new PathString("/metrics"), ports));
+        Assert.False(Program.IsApiRequestAllowed(5000,
+            new PathString("/api/admin/stats/gc"), ports));
+    }
+
     [Theory]
     [InlineData("/api/administrator")]
     [InlineData("/metrics-export")]
@@ -113,8 +146,13 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
+    [InlineData(-1, 5001, 5002)]
     [InlineData(0, 5001, 5002)]
+    [InlineData(65536, 5001, 5002)]
+    [InlineData(5000, -1, 5002)]
     [InlineData(5000, 0, 5002)]
+    [InlineData(5000, 65536, 5002)]
+    [InlineData(5000, 5001, -1)]
     [InlineData(5000, 5001, 65536)]
     [InlineData(5000, 5000, 5002)]
     [InlineData(5000, 5001, 5000)]
@@ -134,6 +172,30 @@ public class ApiListenerConfigurationTests
         var result = new ApiConfigValidator().Validate(config);
 
         Assert.False(result.IsValid);
+    }
+
+    [Theory]
+    [InlineData(5000, 5000, 5002,
+        "API: adminPort must differ from port when configured")]
+    [InlineData(5000, 5001, 5000,
+        "API: metricsPort must differ from port when configured")]
+    [InlineData(5000, 5001, 5001,
+        "API: adminPort and metricsPort must differ when configured")]
+    public void DuplicateConfiguredPorts_ReportClearConfigurationErrors(
+        int publicPort, int? adminPort, int? metricsPort,
+        string expectedMessage)
+    {
+        var result = new ApiConfigValidator().Validate(new ApiConfig
+        {
+            Enabled = true,
+            ListenAddress = "127.0.0.1",
+            Port = publicPort,
+            AdminPort = adminPort,
+            MetricsPort = metricsPort,
+        });
+
+        Assert.Contains(result.Errors,
+            error => error.ErrorMessage == expectedMessage);
     }
 
     [Fact]
@@ -250,5 +312,252 @@ public class ApiListenerConfigurationTests
         };
 
         Assert.Null(Program.FindApiListenerStratumPortConflict(config));
+    }
+
+    [Fact]
+    public async Task DedicatedHttpListeners_EnforceCompleteRouteMatrix()
+    {
+        var ports = CreateEndpointPorts();
+        using var host = await StartRouteTestHostAsync(ports);
+        using var client = new HttpClient();
+
+        await AssertStatusAsync(client, ports.PublicPort, "/api/pools",
+            HttpStatusCode.OK);
+        await AssertStatusAsync(client, ports.PublicPort, "/notifications",
+            HttpStatusCode.OK);
+        await AssertStatusAsync(client, ports.PublicPort, "/api/admin/status",
+            HttpStatusCode.NotFound);
+        await AssertStatusAsync(client, ports.PublicPort, "/metrics",
+            HttpStatusCode.NotFound);
+
+        await AssertStatusAsync(client, ports.AdminPort, "/api/admin/status",
+            HttpStatusCode.OK);
+        await AssertStatusAsync(client, ports.AdminPort, "/api/pools",
+            HttpStatusCode.NotFound);
+        await AssertStatusAsync(client, ports.AdminPort, "/notifications",
+            HttpStatusCode.NotFound);
+        await AssertStatusAsync(client, ports.AdminPort, "/metrics",
+            HttpStatusCode.NotFound);
+
+        await AssertStatusAsync(client, ports.MetricsPort, "/metrics",
+            HttpStatusCode.OK);
+        await AssertStatusAsync(client, ports.MetricsPort, "/api/pools",
+            HttpStatusCode.NotFound);
+        await AssertStatusAsync(client, ports.MetricsPort,
+            "/api/admin/status", HttpStatusCode.NotFound);
+        await AssertStatusAsync(client, ports.MetricsPort, "/notifications",
+            HttpStatusCode.NotFound);
+
+        using var webSocket = new ClientWebSocket();
+        await webSocket.ConnectAsync(
+            new Uri($"ws://127.0.0.1:{ports.PublicPort}/notifications"),
+            CancellationToken.None);
+        Assert.True(webSocket.State is WebSocketState.Open or
+            WebSocketState.CloseReceived);
+    }
+
+    [Fact]
+    public async Task OmittedPorts_ServeLegacyRoutesOnSharedHttpListener()
+    {
+        var port = GetFreeTcpPort();
+        var ports = Program.ResolveApiEndpointPorts(new ApiConfig
+        {
+            Port = port,
+        });
+        using var host = await StartRouteTestHostAsync(ports);
+        using var client = new HttpClient();
+
+        Assert.Single(ports.ListenerPorts);
+        await AssertStatusAsync(client, port, "/api/pools", HttpStatusCode.OK);
+        await AssertStatusAsync(client, port, "/api/admin/status",
+            HttpStatusCode.OK);
+        await AssertStatusAsync(client, port, "/metrics", HttpStatusCode.OK);
+        await AssertStatusAsync(client, port, "/notifications",
+            HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task DedicatedTlsListeners_UseHttpsAndRetainRouteIsolation()
+    {
+        var ports = CreateEndpointPorts();
+        using var certificate = CreateServerCertificate();
+        using var host = await StartRouteTestHostAsync(ports, certificate);
+
+        // Windows Schannel on the validation host cannot acquire credentials for
+        // an ephemeral self-signed test certificate. Host startup above still proves
+        // that all HTTPS listeners were configured; Linux CI performs the handshakes.
+        if(OperatingSystem.IsWindows())
+            return;
+
+        using var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+        };
+        using var client = new HttpClient(handler);
+
+        await AssertStatusAsync(client, ports.PublicPort, "/api/pools",
+            HttpStatusCode.OK, true);
+        await AssertStatusAsync(client, ports.AdminPort, "/api/admin/status",
+            HttpStatusCode.OK, true);
+        await AssertStatusAsync(client, ports.MetricsPort, "/metrics",
+            HttpStatusCode.OK, true);
+        await AssertStatusAsync(client, ports.PublicPort, "/metrics",
+            HttpStatusCode.NotFound, true);
+        await AssertStatusAsync(client, ports.AdminPort, "/api/pools",
+            HttpStatusCode.NotFound, true);
+        await AssertStatusAsync(client, ports.MetricsPort, "/api/pools",
+            HttpStatusCode.NotFound, true);
+    }
+
+    [Fact]
+    public void ListenerConfiguration_AppliesTlsSetupToEveryUniquePort()
+    {
+        var ports = new Program.ApiEndpointPorts(5000, 5001, 5002);
+        var configuredPorts = new List<int>();
+        var options = new KestrelServerOptions();
+
+        Program.ConfigureApiListeners(options, IPAddress.Loopback, ports,
+            listenOptions => configuredPorts.Add(listenOptions.IPEndPoint.Port));
+
+        Assert.Equal(ports.ListenerPorts, configuredPorts);
+    }
+
+    [Theory]
+    [InlineData("/api/admin/status", "/api/admin")]
+    [InlineData("/metrics", "/metrics")]
+    public async Task ProtectedRoutes_StillRejectUnauthorizedClients(string path,
+        string protectedLocation)
+    {
+        var nextCalled = false;
+        var middleware = new IPAccessWhitelistMiddleware(
+            _ =>
+            {
+                nextCalled = true;
+                return Task.CompletedTask;
+            },
+            new[] { protectedLocation },
+            new[] { IPAddress.Loopback },
+            false);
+        var context = new DefaultHttpContext();
+        context.Request.Path = path;
+        context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+
+        await middleware.Invoke(context);
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+    }
+
+    private static Program.ApiEndpointPorts CreateEndpointPorts()
+    {
+        var ports = Enumerable.Range(0, 3)
+            .Select(_ => GetFreeTcpPort())
+            .Distinct()
+            .ToArray();
+        if(ports.Length != 3)
+            return CreateEndpointPorts();
+
+        return new Program.ApiEndpointPorts(ports[0], ports[1], ports[2]);
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint) listener.LocalEndpoint).Port;
+    }
+
+    private static async Task<IHost> StartRouteTestHostAsync(
+        Program.ApiEndpointPorts ports, X509Certificate2 certificate = null)
+    {
+        var host = Host.CreateDefaultBuilder()
+            .ConfigureLogging(logging => logging.ClearProviders())
+            .ConfigureWebHostDefaults(builder => builder
+                .UseKestrel(options => Program.ConfigureApiListeners(options,
+                    IPAddress.Loopback, ports, listenOptions =>
+                    {
+                        if(certificate != null)
+                            listenOptions.UseHttps(certificate);
+                    }))
+                .Configure(app =>
+                {
+                    app.Use(async (context, next) =>
+                    {
+                        if(!Program.IsApiRequestAllowed(
+                            context.Connection.LocalPort,
+                            context.Request.Path, ports))
+                        {
+                            context.Response.StatusCode =
+                                StatusCodes.Status404NotFound;
+                            return;
+                        }
+
+                        await next();
+                    });
+                    app.UseWebSockets();
+                    app.Run(async context =>
+                    {
+                        if(context.Request.Path == "/notifications" &&
+                            context.WebSockets.IsWebSocketRequest)
+                        {
+                            using var socket =
+                                await context.WebSockets.AcceptWebSocketAsync();
+                            await socket.CloseOutputAsync(
+                                WebSocketCloseStatus.NormalClosure,
+                                "listener test complete",
+                                context.RequestAborted);
+                            return;
+                        }
+
+                        if(context.Request.Path == "/api/pools" ||
+                            context.Request.Path == "/notifications" ||
+                            context.Request.Path == "/api/admin/status" ||
+                            context.Request.Path == "/metrics")
+                        {
+                            context.Response.StatusCode = StatusCodes.Status200OK;
+                            return;
+                        }
+
+                        context.Response.StatusCode =
+                            StatusCodes.Status404NotFound;
+                    });
+                }))
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task AssertStatusAsync(HttpClient client, int port,
+        string path, HttpStatusCode expected, bool tls = false)
+    {
+        using var response = await client.GetAsync(
+            $"http{(tls ? "s" : string.Empty)}://127.0.0.1:{port}{path}");
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    private static X509Certificate2 CreateServerCertificate()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=localhost",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(
+            new X509BasicConstraintsExtension(false, false, 0, false));
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(
+                X509KeyUsageFlags.DigitalSignature |
+                X509KeyUsageFlags.KeyEncipherment,
+                false));
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddIpAddress(IPAddress.Loopback);
+        san.AddDnsName("localhost");
+        request.CertificateExtensions.Add(san.Build());
+
+        return request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddHours(1));
     }
 }

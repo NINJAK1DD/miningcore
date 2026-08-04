@@ -257,6 +257,11 @@ Before returning normal traffic, confirm:
   move administrative clients and Prometheus to those dedicated ports, update firewall/container
   mappings, and verify that the protected routes return 404 on the public port.
 
+For example, a deployment using public `api.port` 5000 and `api.metricsPort` 5002 must change its
+Prometheus target from `http://127.0.0.1:5000/metrics` to
+`http://127.0.0.1:5002/metrics`. Check the firewall and any container or reverse-proxy mappings
+before restarting because every dedicated listener binds to the configured `api.listenAddress`.
+
 Keep the old application and .NET 6 runtime for an observation period appropriate to the pool's
 risk, payout interval and operational change policy.
 
