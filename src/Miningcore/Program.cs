@@ -1268,6 +1268,18 @@ public class Program : ProcessStatusBackgroundService
     internal static JObject LoadConfigurationDocument(JsonReader reader,
         bool skipApiConfiguration)
     {
+        static string GetLocationSuffix(JsonReader source,
+            string path = null)
+        {
+            if(source is not IJsonLineInfo lineInfo ||
+                !lineInfo.HasLineInfo())
+                return string.Empty;
+
+            return string.IsNullOrEmpty(path)
+                ? $" Line {lineInfo.LineNumber}, position {lineInfo.LinePosition}."
+                : $" Path '{path}', line {lineInfo.LineNumber}, position {lineInfo.LinePosition}.";
+        }
+
         var strictSettings = new JsonLoadSettings
         {
             DuplicatePropertyNameHandling =
@@ -1296,19 +1308,15 @@ public class Program : ProcessStatusBackgroundService
 
             if(reader.TokenType != JsonToken.PropertyName)
                 throw new JsonSerializationException(
-                    $"Expected a configuration property but found {reader.TokenType}");
+                    $"Expected a configuration property but found {reader.TokenType}." +
+                    GetLocationSuffix(reader));
 
             var propertyName = (string) reader.Value;
-            var lineInfo = reader as IJsonLineInfo;
-            var propertyLine = lineInfo?.HasLineInfo() == true
-                ? lineInfo.LineNumber
-                : (int?) null;
-            var propertyPosition = lineInfo?.HasLineInfo() == true
-                ? lineInfo.LinePosition
-                : (int?) null;
+            var propertyLocation = GetLocationSuffix(reader, propertyName);
             if(!ReadNextContentToken(reader))
                 throw new JsonSerializationException(
-                    $"Configuration property '{propertyName}' has no value");
+                    $"Configuration property '{propertyName}' has no value." +
+                    propertyLocation);
 
             if(propertyName.Equals("api", StringComparison.OrdinalIgnoreCase))
             {
@@ -1317,13 +1325,9 @@ public class Program : ProcessStatusBackgroundService
             }
 
             if(!rootProperties.Add(propertyName))
-            {
-                var location = propertyLine.HasValue
-                    ? $" Path '{propertyName}', line {propertyLine}, position {propertyPosition}."
-                    : string.Empty;
                 throw new JsonSerializationException(
-                    $"Property with the name '{propertyName}' already exists in the current JSON object.{location}");
-            }
+                    $"Property with the name '{propertyName}' already exists in the current JSON object." +
+                    propertyLocation);
 
             document.Add(propertyName, JToken.Load(reader, strictSettings));
         }
