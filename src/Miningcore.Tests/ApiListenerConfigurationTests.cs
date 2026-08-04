@@ -416,7 +416,82 @@ public class ApiListenerConfigurationTests
         Assert.Contains(result.Errors, error =>
             error.PropertyName == "Ports[3333].ListenAddress" &&
             error.ErrorMessage ==
-            "Pool 'btc-main' Stratum port 3333: listenAddress must be '*' or a valid IPv4/IPv6 address (received 'stratum.example.com')");
+                "Pool 'btc-main' Stratum port 3333: listenAddress must be '*' or a valid IPv4/IPv6 address (received 'stratum.example.com')");
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(ushort.MaxValue, true)]
+    [InlineData(ushort.MaxValue + 1, false)]
+    public void ActiveStratumPort_RequiresTcpPortRange(int port,
+        bool expectedValid)
+    {
+        var result = new PoolConfigValidator().Validate(new PoolConfig
+        {
+            Id = "btc-main",
+            Coin = "bitcoin",
+            Enabled = true,
+            Address = "wallet",
+            EnableInternalStratum = true,
+            Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [port] = new()
+                {
+                    Difficulty = 1,
+                    ListenAddress = "127.0.0.1",
+                },
+            },
+            Daemons = new[]
+            {
+                new DaemonEndpointConfig
+                {
+                    Host = "127.0.0.1",
+                    Port = 8332,
+                },
+            },
+        });
+
+        Assert.Equal(expectedValid, result.IsValid);
+        Assert.Equal(!expectedValid, result.Errors.Any(error =>
+            error.ErrorMessage ==
+            $"Pool: Invalid stratum port number {port}"));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(ushort.MaxValue + 1)]
+    public void RecoveryMode_IgnoresOutOfRangeStratumPorts(int port)
+    {
+        var config = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        config.Pools[0].EnableInternalStratum = true;
+        config.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [port] = new()
+            {
+                Difficulty = 1,
+                ListenAddress = "127.0.0.1",
+            },
+        };
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, SerializeConfig(config));
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.True(recoveryConfig.Pools[0].Ports.ContainsKey(port));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
     }
 
     [Fact]

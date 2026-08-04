@@ -209,9 +209,12 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
         RuleFor(j => j.Ports)
             .Must((pc, ports, ctx) =>
             {
-                if(ports?.Keys.Any(port => port < 0) == true)
+                if(ports?.Keys.Any(port =>
+                    port is < 1 or > ushort.MaxValue) == true)
                 {
-                    ctx.MessageFormatter.AppendArgument("port", ports.Keys.First(port => port < 0));
+                    var invalidPort = ports.Keys.First(port =>
+                        port is < 1 or > ushort.MaxValue);
+                    ctx.MessageFormatter.AppendArgument("port", invalidPort);
                     return false;
                 }
 

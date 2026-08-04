@@ -61,6 +61,8 @@ Every explicit API port must be unique and between 1 and 65535. An API listener 
 enabled local Stratum endpoint only when both use the same port and their bind addresses overlap;
 the IPv4 wildcard overlaps every IPv4 address, while the dual-stack IPv6 wildcard overlaps both
 IPv6 and IPv4 addresses. IPv4-mapped IPv6 addresses are treated as their equivalent IPv4 address.
+Every configured port for an enabled internal Stratum listener must also be between 1 and 65535;
+port `0` is rejected rather than creating an unpredictable ephemeral mining endpoint.
 For clarity, `listenAddress: "*"` means all IPv4 interfaces (`0.0.0.0`); use `"::"` when a
 dual-stack IPv6-any listener is required.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the

@@ -28,7 +28,7 @@ the original authors and contributors.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
 - Share relays for advanced distributed pool deployments.
-- REST API, WebSocket notifications and Prometheus-compatible metrics.
+- REST API and WebSocket notifications, with isolated administrative and Prometheus listeners.
 - Integrated banning, TLS options, native log rotation and administrative notifications.
 - Litecoin parent-chain and Dogecoin AuxPoW merged mining for SOLO pools.
 - Versioned Ubuntu release archives, non-root containers and source-build paths.
@@ -416,7 +416,10 @@ a change. Manual edits to balances, blocks or payments can cause financial error
 
 ## API and web front ends
 
-The API is enabled in the example on port `4000`. Common endpoints include:
+The API is enabled in the example on port `4000`. Dedicated `adminPort` and `metricsPort` listeners
+keep protected route families off the public listener while retaining their IP whitelists; see the
+[API listener configuration](docs/api.md#configuration) before publishing any HTTP port. Common
+public endpoints include:
 
 ```text
 GET /api/health-check
