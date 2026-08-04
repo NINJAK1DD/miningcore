@@ -392,6 +392,7 @@ public class ApiListenerConfigurationTests
         {
             Id = "btc-main",
             Coin = "bitcoin",
+            Enabled = true,
             Address = "wallet",
             EnableInternalStratum = true,
             Ports = new Dictionary<int, PoolEndpoint>
@@ -718,6 +719,93 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
+    public async Task RecoveryMode_StaleStratumListenerSettingsDoNotBlockImporter()
+    {
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        sourceConfig.Pools[0].EnableInternalStratum = true;
+        sourceConfig.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [3333] = new()
+            {
+                Difficulty = 1,
+                ListenAddress = "old-stratum.example.com",
+                Tls = true,
+                TlsPfxFile = Path.Combine(Path.GetTempPath(),
+                    $"missing-stratum-{Guid.NewGuid():N}.pfx"),
+            },
+        };
+        var configFile = Path.GetTempFileName();
+        var recovered = false;
+        var stopped = false;
+
+        try
+        {
+            File.WriteAllText(configFile, SerializeConfig(sourceConfig));
+
+            var validation = new ClusterConfigValidator().Validate(
+                sourceConfig);
+            Assert.Contains(validation.Errors, error =>
+                error.PropertyName == "Pools[0].Ports[3333].ListenAddress" &&
+                error.ErrorMessage.Contains("old-stratum.example.com",
+                    StringComparison.Ordinal) &&
+                error.ErrorMessage.Contains("recovery-pool",
+                    StringComparison.Ordinal) &&
+                error.ErrorMessage.Contains("3333",
+                    StringComparison.Ordinal));
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.Equal("old-stratum.example.com",
+                recoveryConfig.Pools[0].Ports[3333].ListenAddress);
+            await Program.RunRecoveryModeAsync(() =>
+            {
+                recovered = true;
+                return Task.CompletedTask;
+            }, () => stopped = true);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+
+        Assert.True(recovered);
+        Assert.True(stopped);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void InactiveStratumListeners_IgnoreStaleAddressAndTlsSettings(
+        bool poolEnabled, bool enableInternalStratum)
+    {
+        var config = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        config.Pools[0].Enabled = poolEnabled;
+        config.Pools[0].EnableInternalStratum = enableInternalStratum;
+        config.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [3333] = new()
+            {
+                Difficulty = 1,
+                ListenAddress = "inactive-stratum.example.com",
+                Tls = true,
+                TlsPfxFile = "missing-inactive-stratum.pfx",
+            },
+        };
+
+        config.Validate();
+    }
+
+    [Fact]
     public void DisabledApi_ConfigFileAllowsStaleListenerValues()
     {
         var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
@@ -852,6 +940,91 @@ public class ApiListenerConfigurationTests
             Assert.NotNull(config.Api);
             Assert.True(config.Api.Enabled);
             Assert.Null(config.Api.MetricsPort);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoveryOperations_IgnoreExactDuplicateApiProperties(
+        bool duplicateRootApi)
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        var api = Assert.IsType<JObject>(document["api"]);
+        string rawConfig;
+
+        if(duplicateRootApi)
+        {
+            rawConfig = CreateRawConfigurationWithRootProperties(document,
+                ("api", api.ToString(Formatting.None)),
+                ("api", "{\"enabled\":false}"));
+        }
+        else
+        {
+            var apiJson = api.ToString(Formatting.None);
+            apiJson = apiJson.Insert(apiJson.Length - 1,
+                ",\"metricsPort\":2147483648");
+            rawConfig = CreateRawConfigurationWithRootProperties(document,
+                ("api", apiJson));
+        }
+
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, rawConfig);
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            // -rs validates the remaining recovery configuration before invoking the importer.
+            var importConfig = Program.ReadAndValidateConfig(configFile, true);
+            Assert.NotNull(importConfig.Api);
+            Assert.Null(importConfig.Api.MetricsPort);
+
+            var recovered = false;
+            var stopped = false;
+            await Program.RunRecoveryModeAsync(() =>
+            {
+                recovered = true;
+                return Task.CompletedTask;
+            }, () => stopped = true);
+            Assert.True(recovered);
+            Assert.True(stopped);
+
+            // Both recovery-state commands use the same non-validating recovery reader.
+            var verificationConfig = Program.ReadConfig(configFile, true);
+            var acknowledgementConfig = Program.ReadConfig(configFile, true);
+            Assert.Null(verificationConfig.Api);
+            Assert.Null(acknowledgementConfig.Api);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_StillRejectsExactDuplicatesOutsideApi()
+    {
+        var document = CreateRecoveryConfigDocument(true);
+        var pools = document["pools"].ToString(Formatting.None);
+        var rawConfig = CreateRawConfigurationWithRootProperties(document,
+            ("pools", pools), ("pools", pools));
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, rawConfig);
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+            Assert.Contains("Property 'pools' already exists", error.Message,
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -1203,6 +1376,29 @@ public class ApiListenerConfigurationTests
             Enabled = apiEnabled,
             Port = 4000,
         })));
+
+    private static string CreateRawConfigurationWithRootProperties(
+        JObject source, params (string Name, string Json)[] properties)
+    {
+        var remainder = (JObject) source.DeepClone();
+        foreach(var propertyName in properties.Select(x => x.Name)
+                    .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach(var property in remainder.Properties().Where(property =>
+                        property.Name.Equals(propertyName,
+                            StringComparison.OrdinalIgnoreCase)).ToArray())
+                property.Remove();
+        }
+
+        var injected = string.Join(",", properties.Select(property =>
+            $"{JsonConvert.ToString(property.Name)}:{property.Json}"));
+        var remainderJson = remainder.ToString(Formatting.None);
+        var existing = remainderJson.Length > 2
+            ? remainderJson[1..^1]
+            : string.Empty;
+
+        return $"{{{injected}{(existing.Length > 0 ? "," : string.Empty)}{existing}}}";
+    }
 
     private static string SerializeConfig(ClusterConfig config) =>
         JsonConvert.SerializeObject(config, new JsonSerializerSettings

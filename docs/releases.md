@@ -233,8 +233,11 @@ port identified; different specific bind addresses may reuse a port. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
-Stratum sockets. The configuration schema therefore defers listener range and conflict enforcement
-to normal startup so an invalid or stale listener setting cannot block a durable-share import.
+Stratum sockets. Recovery stream-discards every top-level `api` case variant before strict duplicate
+and schema validation, and skips Stratum port, address and TLS certificate checks. Exact duplicates
+outside the unused API subtree remain errors. The configuration schema therefore defers listener
+range and conflict enforcement to normal startup so an invalid, duplicated or stale listener setting
+cannot block a durable-share import or recovery-state command.
 
 ### Logging and disk recovery
 

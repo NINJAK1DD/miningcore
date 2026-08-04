@@ -70,11 +70,14 @@ scrapes `127.0.0.1:metricsPort`.
 
 Normal startup enforces the port range and conflict rules for an enabled API after configuration
 loading. The JSON schema intentionally leaves listener-port values unconstrained. `-rs` share
-recovery discards the unused API section before ambiguity and schema checks, so damaged or stale
-HTTP listener settings cannot block an emergency share import; recovery mode starts neither API
-nor Stratum listeners. Normal startup rejects case-variant duplicate names in schema-bound
-configuration objects. The intentionally free-form `payoutSchemeConfig` object is exempt because
-its keys are consumed by payout-scheme implementations rather than bound to CLR properties.
+recovery stream-discards every top-level case variant of the unused API section before duplicate,
+ambiguity and schema checks, so damaged, duplicated or stale HTTP listener settings cannot block an
+emergency share import or recovery-state command. Recovery also skips Stratum port, address and TLS
+certificate checks because it starts neither API nor Stratum listeners. Normal startup applies
+those Stratum listener checks only to enabled pools with internal Stratum enabled, and rejects
+case-variant duplicate names in schema-bound configuration objects. The intentionally free-form
+`payoutSchemeConfig` object is exempt because its keys are consumed by payout-scheme implementations
+rather than bound to CLR properties.
 
 Container host traffic does not appear as container loopback. To publish protected ports to host
 loopback, use a user-defined bridge with a fixed gateway, add that gateway to both IP whitelists,

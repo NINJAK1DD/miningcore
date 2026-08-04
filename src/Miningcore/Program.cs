@@ -1143,14 +1143,8 @@ public class Program : ProcessStatusBackgroundService
             {
                 using(var jsonReader = new JsonTextReader(reader))
                 {
-                    var document = JObject.Load(jsonReader,
-                        new JsonLoadSettings
-                        {
-                            DuplicatePropertyNameHandling =
-                                DuplicatePropertyNameHandling.Error,
-                        });
-                    if(skipApiListenerSettings)
-                        RemoveApiConfigurationForRecovery(document);
+                    var document = LoadConfigurationDocument(jsonReader,
+                        skipApiListenerSettings);
 
                     RejectCaseInsensitivePropertyDuplicates(document);
                     RemoveDisabledApiSettings(document);
@@ -1218,15 +1212,70 @@ public class Program : ProcessStatusBackgroundService
             property.Name.Equals("payoutSchemeConfig",
                 StringComparison.OrdinalIgnoreCase));
 
-    private static void RemoveApiConfigurationForRecovery(JObject document)
+    private static JObject LoadConfigurationDocument(JsonReader reader,
+        bool skipApiConfiguration)
     {
-        // Recovery opens no HTTP listeners and does not consume API settings. Remove every
-        // case variant before ambiguity and schema checks so unrelated API damage cannot
-        // prevent a durable-share import or recovery-state maintenance command.
-        foreach(var property in document.Properties().Where(property =>
-                    property.Name.Equals("api",
-                        StringComparison.OrdinalIgnoreCase)).ToArray())
-            property.Remove();
+        var strictSettings = new JsonLoadSettings
+        {
+            DuplicatePropertyNameHandling =
+                DuplicatePropertyNameHandling.Error,
+        };
+
+        if(!skipApiConfiguration)
+            return JObject.Load(reader, strictSettings);
+
+        // Recovery opens no HTTP listeners and does not consume API settings. Filter every
+        // top-level case variant while streaming so even exact duplicate API properties are
+        // discarded before JObject's strict duplicate-property handling. Duplicate properties
+        // everywhere else remain errors.
+        if(!ReadNextContentToken(reader) ||
+            reader.TokenType != JsonToken.StartObject)
+            throw new JsonSerializationException(
+                "The configuration root must be a JSON object");
+
+        var document = new JObject();
+        var rootProperties = new HashSet<string>(StringComparer.Ordinal);
+
+        while(ReadNextContentToken(reader))
+        {
+            if(reader.TokenType == JsonToken.EndObject)
+                return document;
+
+            if(reader.TokenType != JsonToken.PropertyName)
+                throw new JsonSerializationException(
+                    $"Expected a configuration property but found {reader.TokenType}");
+
+            var propertyName = (string) reader.Value;
+            if(!ReadNextContentToken(reader))
+                throw new JsonSerializationException(
+                    $"Configuration property '{propertyName}' has no value");
+
+            if(propertyName.Equals("api", StringComparison.OrdinalIgnoreCase))
+            {
+                reader.Skip();
+                continue;
+            }
+
+            if(!rootProperties.Add(propertyName))
+                throw new JsonSerializationException(
+                    $"Property '{propertyName}' already exists at '$'");
+
+            document.Add(propertyName, JToken.Load(reader, strictSettings));
+        }
+
+        throw new JsonSerializationException(
+            "Unexpected end of configuration file");
+    }
+
+    private static bool ReadNextContentToken(JsonReader reader)
+    {
+        while(reader.Read())
+        {
+            if(reader.TokenType != JsonToken.Comment)
+                return true;
+        }
+
+        return false;
     }
 
     private static void RemoveDisabledApiSettings(JObject document)
