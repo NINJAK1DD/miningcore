@@ -61,15 +61,20 @@ Every explicit API port must be unique and between 1 and 65535. An API listener 
 enabled local Stratum endpoint only when both use the same port and their bind addresses overlap;
 the IPv4 wildcard overlaps every IPv4 address, while the dual-stack IPv6 wildcard overlaps both
 IPv6 and IPv4 addresses. IPv4-mapped IPv6 addresses are treated as their equivalent IPv4 address.
+For clarity, `listenAddress: "*"` means all IPv4 interfaces (`0.0.0.0`); use `"::"` when a
+dual-stack IPv6-any listener is required.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
 public API, so retain the admin/metrics IP whitelists and restrict the ports with the host or network
 firewall. Reverse proxies should publish only `api.port`; a local Prometheus service normally
 scrapes `127.0.0.1:metricsPort`.
 
 Normal startup enforces the port range and conflict rules for an enabled API after configuration
-loading. The JSON schema intentionally leaves listener-port values unconstrained so `-rs` share
-recovery cannot be blocked by listener-only settings; recovery mode starts neither API nor Stratum
-listeners.
+loading. The JSON schema intentionally leaves listener-port values unconstrained. `-rs` share
+recovery discards the unused API section before ambiguity and schema checks, so damaged or stale
+HTTP listener settings cannot block an emergency share import; recovery mode starts neither API
+nor Stratum listeners. Normal startup rejects case-variant duplicate names in schema-bound
+configuration objects. The intentionally free-form `payoutSchemeConfig` object is exempt because
+its keys are consumed by payout-scheme implementations rather than bound to CLR properties.
 
 Container host traffic does not appear as container loopback. To publish protected ports to host
 loopback, use a user-defined bridge with a fixed gateway, add that gateway to both IP whitelists,

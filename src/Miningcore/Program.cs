@@ -280,6 +280,9 @@ public class Program : ProcessStatusBackgroundService
                     })
                     .Configure(app =>
                     {
+                        // Reject wrong-listener requests before rate limiting or routing. This
+                        // deliberately returns a cheap 404 without invoking protected endpoint
+                        // middleware, so the listener reveals no route-family details.
                         app.Use(async (context, next) =>
                         {
                             if(!IsApiRequestAllowed(context.Connection.LocalPort,
@@ -675,7 +678,7 @@ public class Program : ProcessStatusBackgroundService
     internal sealed record ApiEndpointPorts(int PublicPort, int AdminPort,
         int MetricsPort)
     {
-        public int[] ListenerPorts => new[]
+        public int[] ListenerPorts { get; } = new[]
         {
             PublicPort,
             AdminPort,
@@ -696,13 +699,33 @@ public class Program : ProcessStatusBackgroundService
 
     internal static IPAddress ResolveListenAddress(string listenAddress)
     {
+        if(!TryResolveListenAddress(listenAddress, out var address))
+            throw new FormatException(
+                $"Invalid IP listen address '{listenAddress}'");
+
+        return address;
+    }
+
+    internal static bool TryResolveListenAddress(string listenAddress,
+        out IPAddress address)
+    {
         if(string.IsNullOrEmpty(listenAddress))
-            return IPAddress.Loopback;
+        {
+            address = IPAddress.Loopback;
+            return true;
+        }
 
-        var address = listenAddress == "*" ? IPAddress.Any :
-            IPAddress.Parse(listenAddress);
+        if(listenAddress == "*")
+        {
+            address = IPAddress.Any;
+            return true;
+        }
 
-        return address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+        if(!IPAddress.TryParse(listenAddress, out address))
+            return false;
+
+        address = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+        return true;
     }
 
     internal static string FormatListenerHost(IPAddress address)
@@ -719,6 +742,9 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(api);
 
         var warnings = new List<string>();
+
+        // Keep these at warning level even for loopback-only whitelists: a same-host reverse
+        // proxy also appears as loopback and can make a shared protected route public.
 
         if(!api.AdminPort.HasValue)
             warnings.Add("api.adminPort is omitted; /api/admin is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
@@ -778,8 +804,12 @@ public class Program : ProcessStatusBackgroundService
         {
             foreach(var (port, endpoint) in pool.Ports)
             {
-                if(apiPorts.Contains(port) && ListenAddressesOverlap(
-                       apiAddress, ResolveListenAddress(endpoint?.ListenAddress)))
+                if(!apiPorts.Contains(port) ||
+                    !TryResolveListenAddress(endpoint?.ListenAddress,
+                        out var stratumAddress))
+                    continue;
+
+                if(ListenAddressesOverlap(apiAddress, stratumAddress))
                     return port;
             }
         }
@@ -1037,6 +1067,23 @@ public class Program : ProcessStatusBackgroundService
     {
         var filename = generateSchemaOption.Value();
 
+        var schema = GenerateJsonConfigSchemaDocument();
+
+        using(var stream = File.Create(filename))
+        {
+            using(var writer = new JsonTextWriter(new StreamWriter(stream, Encoding.UTF8)))
+            {
+                writer.Formatting = Formatting.Indented;
+                schema.WriteTo(writer);
+                writer.WriteWhitespace(Environment.NewLine);
+
+                writer.Flush();
+            }
+        }
+    }
+
+    internal static JObject GenerateJsonConfigSchemaDocument()
+    {
         var generator = new JSchemaGenerator
         {
             DefaultRequired = Required.Default,
@@ -1048,33 +1095,8 @@ public class Program : ProcessStatusBackgroundService
             }
         };
 
-        var schema = JObject.Parse(generator.Generate(typeof(ClusterConfig))
+        return JObject.Parse(generator.Generate(typeof(ClusterConfig))
             .ToString());
-        RequireApiWhitelistSchemaItems(schema);
-
-        using(var stream = File.Create(filename))
-        {
-            using(var writer = new JsonTextWriter(new StreamWriter(stream, Encoding.UTF8)))
-            {
-                writer.Formatting = Formatting.Indented;
-                schema.WriteTo(writer);
-
-                writer.Flush();
-            }
-        }
-    }
-
-    private static void RequireApiWhitelistSchemaItems(JObject schema)
-    {
-        var apiSchema = schema["definitions"][nameof(ApiConfig)];
-
-        foreach(var propertyName in new[]
-                {
-                    "adminIpWhitelist",
-                    "metricsIpWhitelist",
-                })
-            apiSchema["properties"][propertyName]["items"]["type"] =
-                "string";
     }
 
     private static CommandLineApplication ParseCommandLine(string[] args)
@@ -1127,9 +1149,11 @@ public class Program : ProcessStatusBackgroundService
                             DuplicatePropertyNameHandling =
                                 DuplicatePropertyNameHandling.Error,
                         });
+                    if(skipApiListenerSettings)
+                        RemoveApiConfigurationForRecovery(document);
+
                     RejectCaseInsensitivePropertyDuplicates(document);
-                    RemoveInactiveApiListenerSettings(document,
-                        skipApiListenerSettings);
+                    RemoveDisabledApiSettings(document);
 
                     using(var documentReader = document.CreateReader())
                     using(var validatingReader = new JSchemaValidatingReader(documentReader)
@@ -1169,7 +1193,8 @@ public class Program : ProcessStatusBackgroundService
         JObject document)
     {
         foreach(var current in document.DescendantsAndSelf()
-                    .OfType<JObject>())
+                    .OfType<JObject>()
+                    .Where(current => !IsFreeFormConfigurationObject(current)))
         {
             var duplicate = current.Properties()
                 .GroupBy(property => property.Name,
@@ -1188,32 +1213,46 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    private static void RemoveInactiveApiListenerSettings(JObject document,
-        bool skipApiListenerSettings)
+    private static bool IsFreeFormConfigurationObject(JObject current) =>
+        current.Ancestors().OfType<JProperty>().Any(property =>
+            property.Name.Equals("payoutSchemeConfig",
+                StringComparison.OrdinalIgnoreCase));
+
+    private static void RemoveApiConfigurationForRecovery(JObject document)
+    {
+        // Recovery opens no HTTP listeners and does not consume API settings. Remove every
+        // case variant before ambiguity and schema checks so unrelated API damage cannot
+        // prevent a durable-share import or recovery-state maintenance command.
+        foreach(var property in document.Properties().Where(property =>
+                    property.Name.Equals("api",
+                        StringComparison.OrdinalIgnoreCase)).ToArray())
+            property.Remove();
+    }
+
+    private static void RemoveDisabledApiSettings(JObject document)
     {
         var api = document.GetValue("api",
             StringComparison.OrdinalIgnoreCase) as JObject;
         if(api == null)
             return;
 
-        var enabled = api.GetValue("enabled",
-            StringComparison.OrdinalIgnoreCase)?.Value<bool>() ?? false;
-        if(!skipApiListenerSettings && enabled)
+        var enabledToken = api.GetValue("enabled",
+            StringComparison.OrdinalIgnoreCase);
+        var enabled = enabledToken is JValue
+        {
+            Type: JTokenType.Boolean,
+            Value: bool value,
+        } && value;
+        if(enabled)
             return;
 
-        // These values are irrelevant whenever no API sockets are opened. Remove them before
-        // binding to int-backed properties so stale JSON integers outside the CLR range cannot
-        // block recovery, recovery-state maintenance, or an explicitly disabled API.
-        foreach(var name in new[]
-                {
-                    "listenAddress",
-                    "port",
-                    "adminPort",
-                    "metricsPort",
-                    "adminIpWhitelist",
-                    "metricsIpWhitelist",
-                })
-            api.Property(name, StringComparison.OrdinalIgnoreCase)?.Remove();
+        // No API setting other than the disabled marker is consumed when no HTTP sockets are
+        // opened. Remove the inactive subtree before schema validation and CLR binding; an
+        // invalid enabled token remains so the schema reports its real type error.
+        foreach(var property in api.Properties().Where(property =>
+                    !property.Name.Equals("enabled",
+                        StringComparison.OrdinalIgnoreCase)).ToArray())
+            property.Remove();
     }
 
     private static JSchema LoadSchema()

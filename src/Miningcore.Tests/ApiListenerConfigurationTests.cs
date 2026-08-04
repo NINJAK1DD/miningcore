@@ -11,6 +11,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentValidation;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -66,9 +67,8 @@ public class ApiListenerConfigurationTests
 
         // Use an ephemeral port for the real host while retaining the assertions
         // above for the production default.
-        api.Port = GetFreeTcpPort();
-        ports = Program.ResolveApiEndpointPorts(api);
-        using var host = await StartRouteTestHostAsync(ports);
+        using var host = await StartRouteTestHostWithRetryAsync(true);
+        api.Port = host.Ports.PublicPort;
         using var client = new HttpClient();
 
         await AssertStatusAsync(client, api.Port, "/api/pools",
@@ -86,6 +86,28 @@ public class ApiListenerConfigurationTests
         Assert.Equal(ApiConfig.DefaultPort,
             Program.ResolveApiEndpointPorts(config.Api).PublicPort);
         new ApiConfigValidator().ValidateAndThrow(config.Api);
+    }
+
+    [Fact]
+    public void CommittedConfigSchema_MatchesGenerator()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory,
+            "config.schema.json");
+        var committed = JObject.Parse(File.ReadAllText(path));
+        var generated = Program.GenerateJsonConfigSchemaDocument();
+
+        Assert.True(JToken.DeepEquals(generated, committed),
+            "src/Miningcore/config.schema.json is stale; regenerate it with Miningcore -gcs");
+
+        foreach(var itemTypePath in new[]
+                {
+                    "definitions.ApiConfig.properties.adminIpWhitelist.items.type",
+                    "definitions.ApiConfig.properties.metricsIpWhitelist.items.type",
+                    "definitions.ApiRateLimitConfig.properties.ipWhitelist.items.type",
+                    "definitions.TcpProxyProtocolConfig.properties.proxyAddresses.items.type",
+                })
+            Assert.Equal("string",
+                committed.SelectToken(itemTypePath)?.Value<string>());
     }
 
     [Theory]
@@ -156,6 +178,7 @@ public class ApiListenerConfigurationTests
         });
 
         Assert.Equal(new[] { 4000, 4001, 4002 }, ports.ListenerPorts);
+        Assert.Same(ports.ListenerPorts, ports.ListenerPorts);
     }
 
     [Fact]
@@ -267,6 +290,24 @@ public class ApiListenerConfigurationTests
             error => error.ErrorMessage == expectedMessage);
     }
 
+    [Theory]
+    [InlineData(0, 4002, "adminPort")]
+    [InlineData(4001, 65536, "metricsPort")]
+    public void DedicatedPortRangeErrors_UsePublicPropertyNames(
+        int? adminPort, int? metricsPort, string expectedPropertyName)
+    {
+        var result = new ApiConfigValidator().Validate(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+            AdminPort = adminPort,
+            MetricsPort = metricsPort,
+        });
+
+        Assert.Contains(result.Errors, error =>
+            error.PropertyName == expectedPropertyName);
+    }
+
     [Fact]
     public void DistinctConfiguredPorts_AreValid()
     {
@@ -342,6 +383,62 @@ public class ApiListenerConfigurationTests
         Assert.Equal(!expectedValid, result.Errors.Any(error =>
             error.ErrorMessage ==
             "API: listenAddress must be '*' or a valid IPv4/IPv6 address"));
+    }
+
+    [Fact]
+    public void StratumListenAddress_ReportsPoolAndPort()
+    {
+        var result = new PoolConfigValidator().Validate(new PoolConfig
+        {
+            Id = "btc-main",
+            Coin = "bitcoin",
+            Address = "wallet",
+            EnableInternalStratum = true,
+            Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [3333] = new()
+                {
+                    Difficulty = 1,
+                    ListenAddress = "stratum.example.com",
+                },
+            },
+            Daemons = new[]
+            {
+                new DaemonEndpointConfig
+                {
+                    Host = "127.0.0.1",
+                    Port = 8332,
+                },
+            },
+        });
+
+        Assert.Contains(result.Errors, error =>
+            error.PropertyName == "Ports[3333].ListenAddress" &&
+            error.ErrorMessage ==
+            "Pool 'btc-main' Stratum port 3333: listenAddress must be '*' or a valid IPv4/IPv6 address (received 'stratum.example.com')");
+    }
+
+    [Fact]
+    public void ConflictScan_SkipsMalformedStratumAddressWithoutThrowing()
+    {
+        var config = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        config.Pools[0].EnableInternalStratum = true;
+        config.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [4000] = new()
+            {
+                Difficulty = 1,
+                ListenAddress = "stratum.example.com",
+            },
+        };
+
+        Assert.Null(Program.FindApiListenerStratumPortConflict(config, false));
+        Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateConfig(config, false));
     }
 
     [Theory]
@@ -512,6 +609,22 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
+    [InlineData("0.0.0.0", "::1")]
+    [InlineData("0.0.0.0", "127.0.0.1")]
+    [InlineData("::", "127.0.0.1")]
+    [InlineData("::", "2001:db8::10")]
+    [InlineData("127.0.0.1", "::ffff:127.0.0.1")]
+    public void ListenAddressOverlap_IsSymmetric(string firstValue,
+        string secondValue)
+    {
+        var first = Program.ResolveListenAddress(firstValue);
+        var second = Program.ResolveListenAddress(secondValue);
+
+        Assert.Equal(Program.ListenAddressesOverlap(first, second),
+            Program.ListenAddressesOverlap(second, first));
+    }
+
+    [Theory]
     [InlineData("::", "127.0.0.1")]
     [InlineData("0.0.0.0", "::")]
     public async Task DualStackConflictValidation_MatchesRealSocketBinding(
@@ -526,13 +639,12 @@ public class ApiListenerConfigurationTests
         var apiAddress = Program.ResolveListenAddress(apiListenAddress);
         var stratumAddress = Program.ResolveListenAddress(
             stratumListenAddress);
-        var port = GetFreeTcpPort(apiAddress,
-            apiAddress.Equals(IPAddress.IPv6Any));
-
         Assert.True(Program.ListenAddressesOverlap(apiAddress,
             stratumAddress));
 
-        using var host = await StartBindingTestHostAsync(apiAddress, port);
+        var binding = await StartBindingTestHostWithRetryAsync(apiAddress);
+        using var host = binding.Host;
+        var port = binding.Port;
         using var stratumSocket = StratumServer.CreateListenSocket(
             new IPEndPoint(stratumAddress, port));
         stratumSocket.SetSocketOption(SocketOptionLevel.Socket,
@@ -589,7 +701,7 @@ public class ApiListenerConfigurationTests
             Assert.Throws<PoolStartupException>(() =>
                 Program.ReadAndValidateConfig(configFile, false));
 
-            var config = Program.ReadAndValidateConfig(configFile, true);
+            Program.ReadAndValidateConfig(configFile, true);
             await Program.RunRecoveryModeAsync(() =>
             {
                 recovered = true;
@@ -676,7 +788,7 @@ public class ApiListenerConfigurationTests
 
             Assert.False(normalConfig.Api.Enabled);
             Assert.Null(normalConfig.Api.MetricsPort);
-            Assert.False(recoveryConfig.Api.Enabled);
+            Assert.True(recoveryConfig.Api.Enabled);
             Assert.Null(recoveryConfig.Api.MetricsPort);
         }
         finally
@@ -689,7 +801,7 @@ public class ApiListenerConfigurationTests
     [InlineData("api", "API")]
     [InlineData("enabled", "Enabled")]
     [InlineData("metricsPort", "MetricsPort")]
-    public void CaseVariantDuplicateProperties_AreRejectedBeforeApiSanitization(
+    public void CaseVariantDuplicateProperties_AreRejectedDuringNormalStartup(
         string propertyName, string duplicateName)
     {
         var document = CreateRecoveryConfigDocument(false);
@@ -707,17 +819,99 @@ public class ApiListenerConfigurationTests
         {
             File.WriteAllText(configFile, document.ToString());
 
-            foreach(var recoveryMode in new[] { false, true })
-            {
-                var exception = Assert.Throws<PoolStartupException>(() =>
-                    Program.ReadAndValidateConfig(configFile, recoveryMode));
-                Assert.Contains("differ only by case", exception.Message,
-                    StringComparison.Ordinal);
-                Assert.Contains($"'{propertyName}'", exception.Message,
-                    StringComparison.OrdinalIgnoreCase);
-                Assert.Contains($"'{duplicateName}'", exception.Message,
-                    StringComparison.Ordinal);
-            }
+            var exception = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+            Assert.Contains("differ only by case", exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains($"'{propertyName}'", exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains($"'{duplicateName}'", exception.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_IgnoresCaseVariantApiDuplicates()
+    {
+        var document = CreateRecoveryConfigDocument(false);
+        var api = Assert.IsType<JObject>(document["api"]);
+        api.Add("MetricsPort", (long) int.MaxValue + 1);
+        document.Add("API", api.DeepClone());
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.NotNull(config.Api);
+            Assert.True(config.Api.Enabled);
+            Assert.Null(config.Api.MetricsPort);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("\"yes\"")]
+    [InlineData("1")]
+    [InlineData("{}")]
+    public void MalformedApiEnabled_ReportsConfigurationError(string tokenJson)
+    {
+        var document = CreateRecoveryConfigDocument(false);
+        document["api"]["enabled"] = JToken.Parse(tokenJson);
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var exception = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            Assert.Contains("Configuration file error:", exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("api.enabled", exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void FreeFormPayoutSchemeConfig_AllowsCaseVariantKeys()
+    {
+        var document = CreateRecoveryConfigDocument(false);
+        document["pools"][0]["paymentProcessing"] = new JObject
+        {
+            ["enabled"] = false,
+            ["minimumPayment"] = 0,
+            ["payoutScheme"] = "PPLNS",
+            ["payoutSchemeConfig"] = JObject.Parse(
+                "{\"Window\":1,\"window\":2}"),
+        };
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var config = Program.ReadConfig(configFile);
+            var payoutConfig = Assert.IsType<JObject>(
+                config.Pools[0].PaymentProcessing.PayoutSchemeConfig);
+
+            Assert.Equal(1, payoutConfig["Window"]?.Value<int>());
+            Assert.Equal(2, payoutConfig["window"]?.Value<int>());
         }
         finally
         {
@@ -793,8 +987,8 @@ public class ApiListenerConfigurationTests
     [Fact]
     public async Task DedicatedHttpListeners_EnforceCompleteRouteMatrix()
     {
-        var ports = CreateEndpointPorts();
-        using var host = await StartRouteTestHostAsync(ports);
+        using var host = await StartRouteTestHostWithRetryAsync();
+        var ports = host.Ports;
         using var client = new HttpClient();
 
         await AssertStatusAsync(client, ports.PublicPort, "/api/pools",
@@ -835,12 +1029,9 @@ public class ApiListenerConfigurationTests
     [Fact]
     public async Task OmittedPorts_ServeLegacyRoutesOnSharedHttpListener()
     {
-        var port = GetFreeTcpPort();
-        var ports = Program.ResolveApiEndpointPorts(new ApiConfig
-        {
-            Port = port,
-        });
-        using var host = await StartRouteTestHostAsync(ports);
+        using var host = await StartRouteTestHostWithRetryAsync(true);
+        var ports = host.Ports;
+        var port = ports.PublicPort;
         using var client = new HttpClient();
 
         Assert.Single(ports.ListenerPorts);
@@ -855,9 +1046,10 @@ public class ApiListenerConfigurationTests
     [Fact]
     public async Task DedicatedTlsListeners_UseHttpsAndRetainRouteIsolation()
     {
-        var ports = CreateEndpointPorts();
         using var certificate = CreateServerCertificate();
-        using var host = await StartRouteTestHostAsync(ports, certificate);
+        using var host = await StartRouteTestHostWithRetryAsync(false,
+            certificate);
+        var ports = host.Ports;
 
         // Windows Schannel on the validation host cannot acquire credentials for
         // an ephemeral self-signed test certificate. Host startup above still proves
@@ -962,14 +1154,19 @@ public class ApiListenerConfigurationTests
 
     private static Program.ApiEndpointPorts CreateEndpointPorts()
     {
-        var ports = Enumerable.Range(0, 3)
-            .Select(_ => GetFreeTcpPort())
-            .Distinct()
-            .ToArray();
-        if(ports.Length != 3)
-            return CreateEndpointPorts();
+        for(var attempt = 0; attempt < ListenerStartAttempts; attempt++)
+        {
+            var ports = Enumerable.Range(0, 3)
+                .Select(_ => GetFreeTcpPort())
+                .Distinct()
+                .ToArray();
+            if(ports.Length == 3)
+                return new Program.ApiEndpointPorts(ports[0], ports[1],
+                    ports[2]);
+        }
 
-        return new Program.ApiEndpointPorts(ports[0], ports[1], ports[2]);
+        throw new InvalidOperationException(
+            "Unable to reserve three distinct listener test ports");
     }
 
     private static ClusterConfig CreateValidRecoveryConfig(ApiConfig api) =>
@@ -1029,6 +1226,30 @@ public class ApiListenerConfigurationTests
         return ((IPEndPoint) listener.LocalEndpoint).Port;
     }
 
+    private static async Task<(IHost Host, int Port)>
+        StartBindingTestHostWithRetryAsync(IPAddress address)
+    {
+        Exception lastError = null;
+
+        for(var attempt = 0; attempt < ListenerStartAttempts; attempt++)
+        {
+            var port = GetFreeTcpPort(address,
+                address.Equals(IPAddress.IPv6Any));
+            try
+            {
+                return (await StartBindingTestHostAsync(address, port), port);
+            }
+            catch(Exception ex) when(IsAddressInUse(ex))
+            {
+                lastError = ex;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Unable to start the listener binding test after bounded port retries",
+            lastError);
+    }
+
     private static async Task<IHost> StartBindingTestHostAsync(
         IPAddress address, int port)
     {
@@ -1043,8 +1264,47 @@ public class ApiListenerConfigurationTests
                 })))
             .Build();
 
-        await host.StartAsync();
-        return host;
+        try
+        {
+            await host.StartAsync();
+            return host;
+        }
+        catch
+        {
+            host.Dispose();
+            throw;
+        }
+    }
+
+    private static async Task<RunningRouteTestHost>
+        StartRouteTestHostWithRetryAsync(bool shared = false,
+            X509Certificate2 certificate = null)
+    {
+        Exception lastError = null;
+
+        for(var attempt = 0; attempt < ListenerStartAttempts; attempt++)
+        {
+            var ports = shared
+                ? Program.ResolveApiEndpointPorts(new ApiConfig
+                {
+                    Port = GetFreeTcpPort(),
+                })
+                : CreateEndpointPorts();
+
+            try
+            {
+                var host = await StartRouteTestHostAsync(ports, certificate);
+                return new RunningRouteTestHost(host, ports);
+            }
+            catch(Exception ex) when(IsAddressInUse(ex))
+            {
+                lastError = ex;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Unable to start the API listener test after bounded port retries",
+            lastError);
     }
 
     private static async Task<IHost> StartRouteTestHostAsync(
@@ -1104,8 +1364,34 @@ public class ApiListenerConfigurationTests
                 }))
             .Build();
 
-        await host.StartAsync();
-        return host;
+        try
+        {
+            await host.StartAsync();
+            return host;
+        }
+        catch
+        {
+            host.Dispose();
+            throw;
+        }
+    }
+
+    private static bool IsAddressInUse(Exception exception) =>
+        exception is AddressInUseException ||
+        exception is SocketException
+        {
+            SocketErrorCode: SocketError.AddressAlreadyInUse,
+        } || exception.InnerException != null &&
+        IsAddressInUse(exception.InnerException);
+
+    private const int ListenerStartAttempts = 5;
+
+    private sealed class RunningRouteTestHost(IHost host,
+        Program.ApiEndpointPorts ports) : IDisposable
+    {
+        public Program.ApiEndpointPorts Ports { get; } = ports;
+
+        public void Dispose() => host.Dispose();
     }
 
     private static async Task AssertStatusAsync(HttpClient client, int port,

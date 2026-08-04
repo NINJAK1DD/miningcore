@@ -193,6 +193,17 @@ from the container network.
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
 
+### Security: administrative API whitelist enforcement
+
+This release fixes an administrative API whitelist bypass that affected shared public/API
+listeners. ASP.NET Core routes paths case-insensitively, but the previous whitelist check compared
+path prefixes case-sensitively. A differently cased path such as `/API/ADMIN/...` could therefore
+reach an administrative controller without passing through the configured admin IP whitelist.
+Protected-path matching is now case-insensitive and path-segment bounded. It also fails closed when
+the remote address is unavailable and correctly treats IPv4-mapped IPv6 addresses as their IPv4
+equivalent. Operators who keep `/api/admin` on the shared public listener should treat this as a
+security fix and update promptly.
+
 ### Dedicated admin and metrics listeners
 
 `api.adminPort` and `api.metricsPort` now create real, route-isolated listeners. When configured,

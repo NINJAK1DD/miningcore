@@ -98,10 +98,7 @@
             "null"
           ],
           "items": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "rules": {
@@ -156,6 +153,12 @@
             "null"
           ]
         },
+        "banOnLoginFailure": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "manager": {
           "type": [
             "string",
@@ -185,6 +188,9 @@
           "type": "boolean"
         },
         "enableConsoleLog": {
+          "type": "boolean"
+        },
+        "gpdrCompliant": {
           "type": "boolean"
         },
         "level": {
@@ -410,6 +416,12 @@
             "$ref": "#/definitions/DaemonEndpointConfig"
           }
         },
+        "enableAsicBoost": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -526,11 +538,11 @@
           "type": "string",
           "enum": [
             "PPLNS",
-            "PPLNSBF",
             "PROP",
             "SOLO",
             "PPS",
-            "PPBS"
+            "PPBS",
+            "PPLNSBF"
           ]
         },
         "payoutSchemeConfig": {}
@@ -551,9 +563,6 @@
         "invalidPercent": {
           "type": "number"
         },
-        "time": {
-          "type": "integer"
-        },
         "minerEffortPercent": {
           "type": [
             "number",
@@ -565,6 +574,9 @@
             "integer",
             "null"
           ]
+        },
+        "time": {
+          "type": "integer"
         }
       }
     },
@@ -583,6 +595,12 @@
         "database": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "enableLegacyTimestamps": {
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -833,10 +851,7 @@
             "null"
           ],
           "items": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         }
       }

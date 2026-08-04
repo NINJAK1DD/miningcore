@@ -136,12 +136,14 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
         RuleFor(j => j.AdminPort.Value)
             .InclusiveBetween(1, ushort.MaxValue)
             .When(j => j.AdminPort.HasValue)
-            .WithMessage("API: Invalid adminPort number '{PropertyValue}'");
+            .WithMessage("API: Invalid adminPort number '{PropertyValue}'")
+            .OverridePropertyName("adminPort");
 
         RuleFor(j => j.MetricsPort.Value)
             .InclusiveBetween(1, ushort.MaxValue)
             .When(j => j.MetricsPort.HasValue)
-            .WithMessage("API: Invalid metricsPort number '{PropertyValue}'");
+            .WithMessage("API: Invalid metricsPort number '{PropertyValue}'")
+            .OverridePropertyName("metricsPort");
 
         RuleFor(j => j)
             .Must(j => !j.AdminPort.HasValue || j.AdminPort.Value != j.Port)
@@ -212,6 +214,25 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 return true;
             })
             .WithMessage("Pool: Invalid stratum port number {port}");
+
+        RuleFor(j => j.Ports)
+            .Custom((ports, context) =>
+            {
+                if(ports == null)
+                    return;
+
+                var pool = context.InstanceToValidate;
+                foreach(var (port, endpoint) in ports)
+                {
+                    var address = endpoint?.ListenAddress;
+                    if(address == null || address == "*" ||
+                        IPAddress.TryParse(address, out _))
+                        continue;
+
+                    context.AddFailure($"Ports[{port}].ListenAddress",
+                        $"Pool '{pool.Id}' Stratum port {port}: listenAddress must be '*' or a valid IPv4/IPv6 address (received '{address}')");
+                }
+            });
 
         RuleForEach(j => j.Ports.Values)
             .SetValidator(x => new PoolEndpointValidator())
