@@ -232,6 +232,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test administrative API systemd permissions
+        run: bash scripts/release/test-admin-api-systemd-permissions.sh
+
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash

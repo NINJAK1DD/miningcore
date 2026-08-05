@@ -41,4 +41,9 @@ public abstract class ApiControllerBase : ControllerBase
 
         return pool;
     }
+
+    internal static string NormalizeMinerAddress(PoolConfig pool, string address) =>
+        pool?.Template?.Family == CoinFamily.Ethereum
+            ? address?.ToLowerInvariant()
+            : address;
 }

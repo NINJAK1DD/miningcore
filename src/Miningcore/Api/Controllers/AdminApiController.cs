@@ -166,6 +166,7 @@ public class AdminApiController : ApiControllerBase
     [HttpGet("pools/{poolId}/miners/{address}/getbalance")]
     public async Task<decimal> GetMinerBalanceAsync(string poolId, string address)
     {
+        address = NormalizeMinerAddress(GetPoolNoThrow(poolId), address);
         return await cf.Run(con => balanceRepo.GetBalanceAsync(con, poolId, address));
     }
 
@@ -176,6 +177,8 @@ public class AdminApiController : ApiControllerBase
 
         if(string.IsNullOrEmpty(address))
             throw new ApiException("Invalid or missing miner address", HttpStatusCode.NotFound);
+
+        address = NormalizeMinerAddress(pool, address);
 
         var result = await cf.Run(con=> minerRepo.GetSettingsAsync(con, null, pool.Id, address));
 
@@ -196,6 +199,8 @@ public class AdminApiController : ApiControllerBase
 
         if(settings == null)
             throw new ApiException("Invalid or missing settings", HttpStatusCode.BadRequest);
+
+        address = NormalizeMinerAddress(pool, address);
 
         // map settings
         var mapped = mapper.Map<Persistence.Model.MinerSettings>(settings);

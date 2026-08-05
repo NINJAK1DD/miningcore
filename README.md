@@ -276,9 +276,12 @@ Useful management commands:
 ```console
 sudo docker logs -f miningcore
 sudo docker restart miningcore
-sudo sh -c '. /etc/miningcore/miningcore.env; curl --fail \
-  --header "Authorization: Bearer $MININGCORE_ADMIN_API_TOKEN" \
-  http://127.0.0.1:4001/api/admin/stats/gc'
+sudo sh -c '
+  . /etc/miningcore/miningcore.env
+  printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
+    curl --fail --header @- \
+      http://127.0.0.1:4001/api/admin/stats/gc
+'
 curl --fail http://127.0.0.1:4002/metrics --output /dev/null
 sudo docker stop miningcore
 sudo docker rm miningcore

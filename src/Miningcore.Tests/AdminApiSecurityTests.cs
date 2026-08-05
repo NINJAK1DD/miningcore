@@ -27,6 +27,32 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
+    public void CredentialValidation_EnforcesMaximumLength()
+    {
+        var maximumLengthToken = new string('a',
+            AdminApiCredential.MaximumTokenCharacters);
+        var credential = AdminApiCredential.Create(maximumLengthToken);
+
+        Assert.Equal(AdminApiCredentialStatus.Configured, credential.Status);
+        Assert.True(credential.Verify(maximumLengthToken));
+        Assert.Equal(AdminApiCredentialStatus.Invalid,
+            AdminApiCredential.Create(new string('a',
+                AdminApiCredential.MaximumTokenCharacters + 1)).Status);
+        Assert.False(credential.Verify(new string('a',
+            AdminApiCredential.MaximumTokenCharacters + 1)));
+    }
+
+    [Fact]
+    public void CredentialValidation_AcceptsNonAsciiTokenByUtf8ByteLength()
+    {
+        const string token = "テスト用管理トークン安全認証";
+        var credential = AdminApiCredential.Create(token);
+
+        Assert.Equal(AdminApiCredentialStatus.Configured, credential.Status);
+        Assert.True(credential.Verify(token));
+    }
+
+    [Fact]
     public void CredentialVerification_AcceptsOnlyExactToken()
     {
         var credential = AdminApiCredential.Create(ValidToken);
@@ -171,6 +197,22 @@ public class AdminApiSecurityTests
 
         var action = Assert.Single(settingsActions);
         Assert.Equal(new[] { "GET" }, action.HttpMethods);
+    }
+
+    [Fact]
+    public void MinerAddressNormalization_CanonicalizesEthereumAddresses()
+    {
+        var pool = new Configuration.PoolConfig
+        {
+            Template = new Configuration.EthereumCoinTemplate
+            {
+                Family = Configuration.CoinFamily.Ethereum,
+            },
+        };
+
+        Assert.Equal("0xabcdef0123456789",
+            ApiControllerBase.NormalizeMinerAddress(pool,
+                "0xAbCdEf0123456789"));
     }
 
     private static AdminApiAuthenticationMiddleware CreateMiddleware(

@@ -355,7 +355,10 @@ public class Program : ProcessStatusBackgroundService
                                 logger.Warn("Administrative API bearer authentication is using HTTP on a non-loopback listener; restrict the listener to a trusted network or enable TLS before sending the token");
                             break;
                         case AdminApiCredentialStatus.Invalid:
-                            logger.Warn($"Administrative API disabled: {AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} must contain at least {AdminApiCredential.MinimumTokenBytes} UTF-8 bytes and no whitespace");
+                            logger.Warn($"Administrative API disabled: " +
+                                $"{AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} must contain at least " +
+                                $"{AdminApiCredential.MinimumTokenBytes} UTF-8 bytes, no whitespace and no more than " +
+                                $"{AdminApiCredential.MaximumTokenCharacters} characters");
                             break;
                         default:
                             logger.Warn($"Administrative API disabled until {AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} is configured");

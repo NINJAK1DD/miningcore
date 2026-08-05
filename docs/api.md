@@ -194,9 +194,12 @@ whitelist. Never publish the admin port through the public reverse proxy.
 For the example configuration, local checks and a Prometheus scrape target use:
 
 ```console
-sudo sh -c '. /etc/miningcore/miningcore.env; curl --fail \
-  --header "Authorization: Bearer $MININGCORE_ADMIN_API_TOKEN" \
-  http://127.0.0.1:4001/api/admin/stats/gc'
+sudo sh -c '
+  . /etc/miningcore/miningcore.env
+  printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
+    curl --fail --header @- \
+      http://127.0.0.1:4001/api/admin/stats/gc
+'
 curl http://127.0.0.1:4002/metrics
 ```
 

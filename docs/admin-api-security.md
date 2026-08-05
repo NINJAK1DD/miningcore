@@ -16,7 +16,7 @@ token to a browser, public WebUI, URL, configuration file, log or source-control
 Generate at least 32 unpredictable bytes. A 64-character hexadecimal value is suitable:
 
 ```console
-sudo install -d -m 0750 -o root -g root /etc/miningcore
+sudo mkdir -p /etc/miningcore
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
@@ -35,7 +35,20 @@ administrative route. This fail-closed state is reported at startup without logg
 ### systemd
 
 The packaged service reads the optional `/etc/miningcore/miningcore.env` file. For an existing custom
-unit, add a drop-in:
+unit, retain directory traversal for the service group, then add a drop-in. Only the environment
+file itself should be restricted to `root:root` mode `0600`:
+
+```console
+sudo chown root:miningcore /etc/miningcore
+sudo chmod 0750 /etc/miningcore
+sudo chown root:root /etc/miningcore/miningcore.env
+sudo chmod 0600 /etc/miningcore/miningcore.env
+```
+
+Do not change `/etc/miningcore` to `root:root` mode `0750`: that prevents the `miningcore` service
+account from traversing the directory to read `config.json`.
+
+Add the environment file to a custom unit with:
 
 ```console
 sudo systemctl edit miningcore
@@ -70,9 +83,27 @@ daemon as root-equivalent and never commit an environment file to source control
 Read the root-owned token only for the command that needs it:
 
 ```console
-sudo sh -c '. /etc/miningcore/miningcore.env; curl --fail \
-  --header "Authorization: Bearer $MININGCORE_ADMIN_API_TOKEN" \
-  http://127.0.0.1:4001/api/admin/stats/gc'
+sudo sh -c '
+  . /etc/miningcore/miningcore.env
+  printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
+    curl --fail --header @- \
+      http://127.0.0.1:4001/api/admin/stats/gc
+'
+```
+
+Reading the header from standard input keeps the bearer value out of `curl`'s process arguments.
+To replace a miner's settings, send the settings object directly (replace the example pool and
+address):
+
+```console
+sudo sh -c '
+  . /etc/miningcore/miningcore.env
+  printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
+    curl --fail --request PUT --header @- \
+      --header "Content-Type: application/json" \
+      --data "{\"paymentThreshold\":0.1}" \
+      http://127.0.0.1:4001/api/admin/pools/btc1-solo/miners/REPLACE_WITH_MINER_ADDRESS/settings
+'
 ```
 
 Use the configured admin port. When `adminPort` is omitted, the route remains on the public port for
