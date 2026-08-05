@@ -210,9 +210,10 @@ return to them after completing the deployment steps above.
 
 Every `/api/admin` request now requires both the existing source-IP whitelist and a bearer token
 provided through the `MININGCORE_ADMIN_API_TOKEN` environment variable. The secret is deliberately
-not accepted in `config.json`. If it is missing, malformed or too short, Miningcore keeps mining and
-public API services online but returns `503 Service Unavailable` for administrative routes. Admin
-routes emit no CORS headers, and operators must never expose the token to a browser or public WebUI.
+not accepted in `config.json`. It must contain exactly 64 hexadecimal characters. If it is missing
+or malformed, Miningcore keeps mining and public API services online but returns `503 Service
+Unavailable` for administrative routes. Admin routes emit no CORS headers, and operators must never
+expose the token to a browser or public WebUI.
 
 Before upgrading, generate and provision a token using the
 [administrative API security guide](admin-api-security.md). Existing administrative clients must add

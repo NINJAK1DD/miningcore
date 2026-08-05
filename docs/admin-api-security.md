@@ -13,7 +13,7 @@ token to a browser, public WebUI, URL, configuration file, log or source-control
 
 ## Generate and store a token
 
-Generate at least 32 unpredictable bytes. A 64-character hexadecimal value is suitable:
+Generate exactly 32 unpredictable bytes encoded as 64 hexadecimal characters:
 
 ```console
 sudo mkdir -p /etc/miningcore
@@ -25,12 +25,14 @@ sudo chown root:root /etc/miningcore/miningcore.env
 sudo chmod 0600 /etc/miningcore/miningcore.env
 ```
 
-Miningcore rejects tokens shorter than 32 UTF-8 bytes, containing whitespace or longer than 4096
-characters. Its authentication object retains only a SHA-256 digest and compares supplied
-credentials in constant time. Like any environment secret, the original value remains available to
-the service process and privileged host/container administrators. If the variable is missing or
-invalid, Miningcore starts the pools and public API but returns `503 Service Unavailable` from every
-administrative route. This fail-closed state is reported at startup without logging the token.
+Miningcore accepts exactly 64 ASCII hexadecimal characters (`0-9`, `a-f` or `A-F`). It rejects
+shorter, longer, Unicode or punctuation-bearing values so the credential has an unambiguous format
+across HTTP clients, proxies, shells and service managers. Its authentication object retains only a
+SHA-256 digest and compares supplied credentials in constant time. Like any environment secret, the
+original value remains available to the service process and privileged host/container
+administrators. If the variable is missing or invalid, Miningcore starts the pools and public API
+but returns `503 Service Unavailable` from every administrative route. This fail-closed state is
+reported at startup without logging the token.
 
 ### systemd
 

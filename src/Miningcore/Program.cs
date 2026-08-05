@@ -356,9 +356,8 @@ public class Program : ProcessStatusBackgroundService
                             break;
                         case AdminApiCredentialStatus.Invalid:
                             logger.Warn($"Administrative API disabled: " +
-                                $"{AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} must contain at least " +
-                                $"{AdminApiCredential.MinimumTokenBytes} UTF-8 bytes, no whitespace and no more than " +
-                                $"{AdminApiCredential.MaximumTokenCharacters} characters");
+                                $"{AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} must contain exactly " +
+                                $"{AdminApiCredential.RequiredTokenCharacters} hexadecimal characters");
                             break;
                         default:
                             logger.Warn($"Administrative API disabled until {AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} is configured");

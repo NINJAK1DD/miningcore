@@ -29,8 +29,9 @@ before changing a whitelist.
 Every administrative request also requires `Authorization: Bearer TOKEN`, where `TOKEN` comes only
 from the `MININGCORE_ADMIN_API_TOKEN` process environment. Missing or invalid token configuration
 fails closed for `/api/admin` without stopping pools or the public API. Administrative responses do
-not include CORS headers, and the token must never be supplied to browser code. Generate, provision,
-test and rotate it using the [administrative API security guide](admin-api-security.md).
+not include CORS headers, and the token must never be supplied to browser code. The token must be
+exactly 64 hexadecimal characters. Generate, provision, test and rotate it using the
+[administrative API security guide](admin-api-security.md).
 
 When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
 only that route family on it. Public REST and WebSocket routes remain on `port`; requests for

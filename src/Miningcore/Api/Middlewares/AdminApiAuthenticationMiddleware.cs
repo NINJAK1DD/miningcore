@@ -24,8 +24,7 @@ public sealed class AdminApiCredential
 
     private readonly byte[] tokenHash;
 
-    public const int MinimumTokenBytes = 32;
-    public const int MaximumTokenCharacters = 4096;
+    public const int RequiredTokenCharacters = 64;
 
     public AdminApiCredentialStatus Status { get; }
 
@@ -34,22 +33,36 @@ public sealed class AdminApiCredential
         if(string.IsNullOrEmpty(token))
             return new AdminApiCredential(AdminApiCredentialStatus.Missing);
 
-        if(token.Length > MaximumTokenCharacters || token.Any(char.IsWhiteSpace) ||
-            Encoding.UTF8.GetByteCount(token) < MinimumTokenBytes)
+        if(!IsValidToken(token))
             return new AdminApiCredential(AdminApiCredentialStatus.Invalid);
 
         return new AdminApiCredential(AdminApiCredentialStatus.Configured,
-            SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+            SHA256.HashData(Encoding.ASCII.GetBytes(token)));
     }
 
     public bool Verify(string candidate)
     {
-        if(Status != AdminApiCredentialStatus.Configured || string.IsNullOrEmpty(candidate) ||
-            candidate.Length > MaximumTokenCharacters || candidate.Any(char.IsWhiteSpace))
+        if(Status != AdminApiCredentialStatus.Configured || !IsValidToken(candidate))
             return false;
 
-        var candidateHash = SHA256.HashData(Encoding.UTF8.GetBytes(candidate));
+        var candidateHash = SHA256.HashData(Encoding.ASCII.GetBytes(candidate));
         return CryptographicOperations.FixedTimeEquals(tokenHash, candidateHash);
+    }
+
+    private static bool IsValidToken(string token)
+    {
+        if(token?.Length != RequiredTokenCharacters)
+            return false;
+
+        foreach(var c in token)
+        {
+            if(c is not (>= '0' and <= '9') and
+               not (>= 'a' and <= 'f') and
+               not (>= 'A' and <= 'F'))
+                return false;
+        }
+
+        return true;
     }
 }
 

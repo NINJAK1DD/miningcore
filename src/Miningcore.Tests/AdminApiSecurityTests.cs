@@ -27,29 +27,46 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
-    public void CredentialValidation_EnforcesMaximumLength()
+    public void CredentialValidation_RequiresExactly64HexadecimalCharacters()
     {
-        var maximumLengthToken = new string('a',
-            AdminApiCredential.MaximumTokenCharacters);
-        var credential = AdminApiCredential.Create(maximumLengthToken);
+        var credential = AdminApiCredential.Create(ValidToken);
+        var uppercaseToken = ValidToken.ToUpperInvariant();
+        var uppercaseCredential = AdminApiCredential.Create(uppercaseToken);
 
         Assert.Equal(AdminApiCredentialStatus.Configured, credential.Status);
-        Assert.True(credential.Verify(maximumLengthToken));
+        Assert.True(credential.Verify(ValidToken));
+        Assert.Equal(AdminApiCredentialStatus.Configured,
+            uppercaseCredential.Status);
+        Assert.True(uppercaseCredential.Verify(uppercaseToken));
         Assert.Equal(AdminApiCredentialStatus.Invalid,
             AdminApiCredential.Create(new string('a',
-                AdminApiCredential.MaximumTokenCharacters + 1)).Status);
-        Assert.False(credential.Verify(new string('a',
-            AdminApiCredential.MaximumTokenCharacters + 1)));
+                AdminApiCredential.RequiredTokenCharacters - 1)).Status);
+        Assert.Equal(AdminApiCredentialStatus.Invalid,
+            AdminApiCredential.Create(new string('a',
+                AdminApiCredential.RequiredTokenCharacters + 1)).Status);
     }
 
     [Fact]
-    public void CredentialValidation_AcceptsNonAsciiTokenByUtf8ByteLength()
+    public void CredentialValidation_RejectsCharactersOutsideHexadecimalAlphabet()
     {
-        const string token = "テスト用管理トークン安全認証";
-        var credential = AdminApiCredential.Create(token);
+        var invalidTokens = new[]
+        {
+            $"{ValidToken[..^1]}テ",
+            $"{ValidToken[..^1]}\"",
+            $"{ValidToken[..^1]}'",
+            $"{ValidToken[..^1]}$",
+            $"{ValidToken[..^1]};",
+            $"{ValidToken[..^1]}\u001f",
+            $"{ValidToken[..^1]}_",
+        };
+        var credential = AdminApiCredential.Create(ValidToken);
 
-        Assert.Equal(AdminApiCredentialStatus.Configured, credential.Status);
-        Assert.True(credential.Verify(token));
+        foreach(var token in invalidTokens)
+        {
+            Assert.Equal(AdminApiCredentialStatus.Invalid,
+                AdminApiCredential.Create(token).Status);
+            Assert.False(credential.Verify(token));
+        }
     }
 
     [Fact]

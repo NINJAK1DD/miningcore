@@ -217,6 +217,9 @@ sudo docker network create --driver bridge \
 sudoedit /etc/miningcore/config.json
 ```
 
+The administrative token must remain a 64-character hexadecimal value; the `openssl` command above
+generates the required format.
+
 In the configuration, replace the container-local loopback whitelist entries for the two published
 protected ports with the fixed bridge gateway:
 

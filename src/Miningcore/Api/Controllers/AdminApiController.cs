@@ -166,7 +166,8 @@ public class AdminApiController : ApiControllerBase
     [HttpGet("pools/{poolId}/miners/{address}/getbalance")]
     public async Task<decimal> GetMinerBalanceAsync(string poolId, string address)
     {
-        address = NormalizeMinerAddress(GetPoolNoThrow(poolId), address);
+        // Balances remain queryable for configured pools that are temporarily disabled.
+        address = NormalizeMinerAddress(FindPoolConfigNoThrow(poolId), address);
         return await cf.Run(con => balanceRepo.GetBalanceAsync(con, poolId, address));
     }
 

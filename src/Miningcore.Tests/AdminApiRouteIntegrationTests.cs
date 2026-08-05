@@ -102,6 +102,23 @@ public class AdminApiRouteIntegrationTests
         Assert.Equal(0.1m, running.StoredSettings.PaymentThreshold);
     }
 
+    [Fact]
+    public async Task DisabledEthereumPool_BalanceLookupCanonicalizesAddress()
+    {
+        await using var running = await StartHostWithRetryAsync(false);
+        using var client = new HttpClient();
+        var origin = new Uri($"http://127.0.0.1:{running.Port}");
+
+        using var request = CreateAdminRequest(HttpMethod.Get,
+            new Uri(origin,
+                $"/api/admin/pools/{PoolId}/miners/{MixedCaseAddress}/getbalance"));
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(MixedCaseAddress.ToLowerInvariant(),
+            running.LastBalanceAddress);
+    }
+
     private static HttpRequestMessage CreateAdminRequest(HttpMethod method,
         Uri uri)
     {
@@ -114,7 +131,8 @@ public class AdminApiRouteIntegrationTests
     private static StringContent JsonContent(string json) => new(json,
         Encoding.UTF8, "application/json");
 
-    private static async Task<RunningAdminHost> StartHostWithRetryAsync()
+    private static async Task<RunningAdminHost> StartHostWithRetryAsync(
+        bool poolEnabled = true)
     {
         Exception lastError = null;
 
@@ -125,7 +143,7 @@ public class AdminApiRouteIntegrationTests
 
             try
             {
-                running = CreateHost(port);
+                running = CreateHost(port, poolEnabled);
                 await running.StartAsync();
                 return running;
             }
@@ -142,7 +160,7 @@ public class AdminApiRouteIntegrationTests
             lastError);
     }
 
-    private static RunningAdminHost CreateHost(int port)
+    private static RunningAdminHost CreateHost(int port, bool poolEnabled)
     {
         var minerRepo = Substitute.For<IMinerRepository>();
         var paymentRepo = Substitute.For<IPaymentRepository>();
@@ -151,6 +169,7 @@ public class AdminApiRouteIntegrationTests
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
         global::Miningcore.Persistence.Model.MinerSettings storedSettings = null;
+        string lastBalanceAddress = null;
 
         connectionFactory.OpenConnectionAsync().Returns(
             Task.FromResult(connection));
@@ -163,6 +182,12 @@ public class AdminApiRouteIntegrationTests
         minerRepo.GetSettingsAsync(connection, Arg.Any<IDbTransaction>(), PoolId,
                 MixedCaseAddress.ToLowerInvariant())
             .Returns(_ => Task.FromResult(storedSettings));
+        balanceRepo.GetBalanceAsync(connection, PoolId, Arg.Any<string>())
+            .Returns(call =>
+            {
+                lastBalanceAddress = call.ArgAt<string>(2);
+                return Task.FromResult(0.25m);
+            });
 
         var clusterConfig = new ClusterConfig
         {
@@ -171,7 +196,7 @@ public class AdminApiRouteIntegrationTests
                 new PoolConfig
                 {
                     Id = PoolId,
-                    Enabled = true,
+                    Enabled = poolEnabled,
                     PaymentProcessing = new PoolPaymentProcessingConfig
                     {
                         MinimumPayment = 0.01m,
@@ -232,7 +257,7 @@ public class AdminApiRouteIntegrationTests
             .Build();
 
         return new RunningAdminHost(host, container, port,
-            () => storedSettings);
+            () => storedSettings, () => lastBalanceAddress);
     }
 
     private static int GetFreeTcpPort()
@@ -261,12 +286,14 @@ public class AdminApiRouteIntegrationTests
 
     private sealed class RunningAdminHost(IHost host, IContainer container,
         int port,
-        Func<global::Miningcore.Persistence.Model.MinerSettings> getStoredSettings) :
+        Func<global::Miningcore.Persistence.Model.MinerSettings> getStoredSettings,
+        Func<string> getLastBalanceAddress) :
         IAsyncDisposable
     {
         public int Port { get; } = port;
         public global::Miningcore.Persistence.Model.MinerSettings StoredSettings =>
             getStoredSettings();
+        public string LastBalanceAddress => getLastBalanceAddress();
 
         public Task StartAsync() => host.StartAsync();
 

@@ -29,6 +29,14 @@ public abstract class ApiControllerBase : ControllerBase
         return pool;
     }
 
+    protected PoolConfig FindPoolConfigNoThrow(string poolId)
+    {
+        if(string.IsNullOrEmpty(poolId))
+            return null;
+
+        return clusterConfig.Pools.FirstOrDefault(x => x.Id == poolId);
+    }
+
     protected PoolConfig GetPool(string poolId)
     {
         if(string.IsNullOrEmpty(poolId))

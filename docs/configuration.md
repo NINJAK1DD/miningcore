@@ -72,9 +72,10 @@ scrapes `127.0.0.1:metricsPort`.
 
 The admin IP whitelist is necessary but not sufficient. Every `/api/admin` request also requires the
 bearer token provided through `MININGCORE_ADMIN_API_TOKEN`; there is intentionally no JSON property
-for this secret. Missing or invalid token configuration disables administrative requests while the
-pool continues running. See [Administrative API security](admin-api-security.md) for systemd and
-Docker provisioning, TLS requirements, request verbs and rotation.
+for this secret. The value must contain exactly 64 hexadecimal characters. Missing or invalid token
+configuration disables administrative requests while the pool continues running. See
+[Administrative API security](admin-api-security.md) for systemd and Docker provisioning, TLS
+requirements, request verbs and rotation.
 
 Normal startup enforces the port range and conflict rules for an enabled API after configuration
 loading. The JSON schema intentionally leaves listener-port values unconstrained. Stratum listener
