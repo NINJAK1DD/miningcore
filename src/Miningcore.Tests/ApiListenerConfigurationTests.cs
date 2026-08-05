@@ -1002,10 +1002,6 @@ public class ApiListenerConfigurationTests
 
             var error = Assert.Throws<PoolStartupException>(() =>
                 Program.ReadConfig(configFile, true));
-            Assert.Contains("differ only by case", error.Message,
-                StringComparison.Ordinal);
-            Assert.Contains("'ports'", error.Message,
-                StringComparison.OrdinalIgnoreCase);
             Assert.Contains(
                 "Properties 'ports', 'Ports' differ only by case. " +
                 "Path 'pools[0].Ports', line",
@@ -1198,18 +1194,10 @@ public class ApiListenerConfigurationTests
 
             var exception = Assert.Throws<PoolStartupException>(() =>
                 Program.ReadAndValidateConfig(configFile, false));
-            Assert.Contains("differ only by case", exception.Message,
-                StringComparison.Ordinal);
-            Assert.Contains($"'{propertyName}'", exception.Message,
-                StringComparison.OrdinalIgnoreCase);
-            Assert.Contains($"'{duplicateName}'", exception.Message,
-                StringComparison.Ordinal);
             Assert.Contains(
                 $"Properties '{propertyName}', '{duplicateName}' " +
                 $"differ only by case. Path '{expectedPath}', line ",
                 exception.Message, StringComparison.Ordinal);
-            Assert.Contains(", line ", exception.Message,
-                StringComparison.Ordinal);
             Assert.Contains(", position ", exception.Message,
                 StringComparison.Ordinal);
         }
