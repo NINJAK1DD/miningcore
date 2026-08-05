@@ -1254,9 +1254,18 @@ public class Program : ProcessStatusBackgroundService
                 $"'{property.Name}'"));
             var path = string.IsNullOrEmpty(current.Path) ? "$" :
                 current.Path;
+            var locationProperty = duplicate.Skip(1)
+                .Concat(duplicate.Take(1))
+                .FirstOrDefault(property =>
+                    property is IJsonLineInfo lineInfo &&
+                    lineInfo.HasLineInfo());
+            var location = GetJsonLocationSuffix(
+                locationProperty as IJsonLineInfo,
+                locationProperty?.Path);
 
             throw new JsonSerializationException(
-                $"Properties {names} at '{path}' differ only by case");
+                $"Properties {names} at '{path}' differ only by case." +
+                location);
         }
     }
 
@@ -1265,21 +1274,20 @@ public class Program : ProcessStatusBackgroundService
             property.Name.Equals("payoutSchemeConfig",
                 StringComparison.OrdinalIgnoreCase));
 
+    private static string GetJsonLocationSuffix(IJsonLineInfo source,
+        string path = null)
+    {
+        if(source?.HasLineInfo() != true)
+            return string.Empty;
+
+        return string.IsNullOrEmpty(path)
+            ? $" Line {source.LineNumber}, position {source.LinePosition}."
+            : $" Path '{path}', line {source.LineNumber}, position {source.LinePosition}.";
+    }
+
     internal static JObject LoadConfigurationDocument(JsonReader reader,
         bool skipApiConfiguration)
     {
-        static string GetLocationSuffix(JsonReader source,
-            string path = null)
-        {
-            if(source is not IJsonLineInfo lineInfo ||
-                !lineInfo.HasLineInfo())
-                return string.Empty;
-
-            return string.IsNullOrEmpty(path)
-                ? $" Line {lineInfo.LineNumber}, position {lineInfo.LinePosition}."
-                : $" Path '{path}', line {lineInfo.LineNumber}, position {lineInfo.LinePosition}.";
-        }
-
         var strictSettings = new JsonLoadSettings
         {
             DuplicatePropertyNameHandling =
@@ -1297,7 +1305,8 @@ public class Program : ProcessStatusBackgroundService
             reader.TokenType != JsonToken.StartObject)
             throw new JsonSerializationException(
                 "The configuration root must be a JSON object." +
-                GetLocationSuffix(reader));
+                GetJsonLocationSuffix(reader as IJsonLineInfo,
+                    reader.Path));
 
         var document = new JObject();
         var rootProperties = new HashSet<string>(StringComparer.Ordinal);
@@ -1310,10 +1319,12 @@ public class Program : ProcessStatusBackgroundService
             if(reader.TokenType != JsonToken.PropertyName)
                 throw new JsonSerializationException(
                     $"Expected a configuration property but found {reader.TokenType}." +
-                    GetLocationSuffix(reader));
+                    GetJsonLocationSuffix(reader as IJsonLineInfo,
+                        reader.Path));
 
             var propertyName = (string) reader.Value;
-            var propertyLocation = GetLocationSuffix(reader, propertyName);
+            var propertyLocation = GetJsonLocationSuffix(
+                reader as IJsonLineInfo, propertyName);
             if(!ReadNextContentToken(reader))
                 throw new JsonSerializationException(
                     $"Configuration property '{propertyName}' has no value." +
@@ -1335,7 +1346,8 @@ public class Program : ProcessStatusBackgroundService
 
         throw new JsonSerializationException(
             "Unexpected end of configuration file." +
-            GetLocationSuffix(reader));
+            GetJsonLocationSuffix(reader as IJsonLineInfo,
+                reader.Path));
     }
 
     private static bool ReadNextContentToken(JsonReader reader)

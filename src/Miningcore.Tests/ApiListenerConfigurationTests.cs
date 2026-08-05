@@ -1006,6 +1006,8 @@ public class ApiListenerConfigurationTests
                 StringComparison.Ordinal);
             Assert.Contains("'ports'", error.Message,
                 StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Path 'pools[0].Ports', line",
+                error.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -1199,6 +1201,12 @@ public class ApiListenerConfigurationTests
             Assert.Contains($"'{propertyName}'", exception.Message,
                 StringComparison.OrdinalIgnoreCase);
             Assert.Contains($"'{duplicateName}'", exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("Path '", exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(", line ", exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(", position ", exception.Message,
                 StringComparison.Ordinal);
         }
         finally
