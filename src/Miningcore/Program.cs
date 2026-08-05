@@ -1262,9 +1262,12 @@ public class Program : ProcessStatusBackgroundService
             var location = GetJsonLocationSuffix(
                 locationProperty as IJsonLineInfo,
                 locationProperty?.Path);
+            var container = string.IsNullOrEmpty(location)
+                ? $" at '{path}'"
+                : string.Empty;
 
             throw new JsonSerializationException(
-                $"Properties {names} at '{path}' differ only by case." +
+                $"Properties {names}{container} differ only by case." +
                 location);
         }
     }
@@ -1317,10 +1320,15 @@ public class Program : ProcessStatusBackgroundService
                 return document;
 
             if(reader.TokenType != JsonToken.PropertyName)
+            {
+                // JsonTextReader rejects malformed object structure before reaching this
+                // branch. Keep the reader path for custom readers that can surface an
+                // unexpected structural token with meaningful path context.
                 throw new JsonSerializationException(
                     $"Expected a configuration property but found {reader.TokenType}." +
                     GetJsonLocationSuffix(reader as IJsonLineInfo,
                         reader.Path));
+            }
 
             var propertyName = (string) reader.Value;
             var propertyLocation = GetJsonLocationSuffix(

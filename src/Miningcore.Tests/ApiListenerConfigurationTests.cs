@@ -1006,7 +1006,9 @@ public class ApiListenerConfigurationTests
                 StringComparison.Ordinal);
             Assert.Contains("'ports'", error.Message,
                 StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("Path 'pools[0].Ports', line",
+            Assert.Contains(
+                "Properties 'ports', 'Ports' differ only by case. " +
+                "Path 'pools[0].Ports', line",
                 error.Message, StringComparison.Ordinal);
         }
         finally
@@ -1173,11 +1175,11 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
-    [InlineData("api", "API")]
-    [InlineData("enabled", "Enabled")]
-    [InlineData("metricsPort", "MetricsPort")]
+    [InlineData("api", "API", "API")]
+    [InlineData("enabled", "Enabled", "api.Enabled")]
+    [InlineData("metricsPort", "MetricsPort", "api.MetricsPort")]
     public void CaseVariantDuplicateProperties_AreRejectedDuringNormalStartup(
-        string propertyName, string duplicateName)
+        string propertyName, string duplicateName, string expectedPath)
     {
         var document = CreateRecoveryConfigDocument(false);
         var api = Assert.IsType<JObject>(document["api"]);
@@ -1202,11 +1204,40 @@ public class ApiListenerConfigurationTests
                 StringComparison.OrdinalIgnoreCase);
             Assert.Contains($"'{duplicateName}'", exception.Message,
                 StringComparison.Ordinal);
-            Assert.Contains("Path '", exception.Message,
-                StringComparison.Ordinal);
+            Assert.Contains(
+                $"Properties '{propertyName}', '{duplicateName}' " +
+                $"differ only by case. Path '{expectedPath}', line ",
+                exception.Message, StringComparison.Ordinal);
             Assert.Contains(", line ", exception.Message,
                 StringComparison.Ordinal);
             Assert.Contains(", position ", exception.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_CaseVariantRootDuplicateWithoutLineInfoRetainsContainerPath()
+    {
+        var document = CreateRecoveryConfigDocument(false);
+        document.Add("PaymentProcessing",
+            document["paymentProcessing"]?.DeepClone() ?? new JObject());
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, document.ToString());
+
+            var exception = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+            Assert.Contains(
+                "Properties 'paymentProcessing', 'PaymentProcessing' at '$' " +
+                "differ only by case.",
+                exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(" Path '", exception.Message,
                 StringComparison.Ordinal);
         }
         finally
