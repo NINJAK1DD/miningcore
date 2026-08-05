@@ -5,6 +5,7 @@ using AspNetCoreRateLimit;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Schema.Generation;
 // ReSharper disable UnusedAutoPropertyAccessor.Global
 // ReSharper disable PropertyCanBeMadeInitOnly.Global
 // ReSharper disable ClassNeverInstantiated.Global
@@ -1011,6 +1012,7 @@ public class TcpProxyProtocolConfig
     /// <summary>
     /// List of IP addresses of valid proxy addresses. If absent, localhost is used
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] ProxyAddresses { get; set; }
 }
 
@@ -1191,6 +1193,7 @@ public class ApiRateLimitConfig
     public bool Disabled { get; set; }
 
     public RateLimitRule[] Rules { get; set; }
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] IpWhitelist { get; set; }
 }
 
@@ -1204,21 +1207,30 @@ public class ApiTlsConfig
 
 public partial class ApiConfig
 {
+    public const int DefaultPort = 4000;
+
     public bool Enabled { get; set; }
     public string ListenAddress { get; set; }
-    public int Port { get; set; }
+
+    /// <summary>
+    /// Public REST API and WebSocket listener port.
+    /// </summary>
+    [DefaultValue(DefaultPort)]
+    public int Port { get; set; } = DefaultPort;
 
     public ApiTlsConfig Tls { get; set; }
 
     public ApiRateLimitConfig RateLimiting { get; set; }
 
     /// <summary>
-    /// Port for admin-apis
+    /// Dedicated port for administrative APIs. When omitted, administrative
+    /// routes remain on Port for backwards compatibility.
     /// </summary>
     public int? AdminPort { get; set; }
 
     /// <summary>
-    /// Port for prometheus compatible metrics endpoint /metrics
+    /// Dedicated port for the Prometheus-compatible /metrics endpoint. When
+    /// omitted, metrics remain on Port for backwards compatibility.
     /// </summary>
     public int? MetricsPort { get; set; }
 
@@ -1226,12 +1238,14 @@ public partial class ApiConfig
     /// Restricts access to the admin API to these IP addresses
     /// If this list null or empty, the default is 127.0.0.1
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] AdminIpWhitelist { get; set; }
 
     /// <summary>
     /// Restricts access to the /metrics endpoint to these IP addresses
     /// If this list null or empty, the default is 127.0.0.1
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] MetricsIpWhitelist { get; set; }
 
     /// <summary>
@@ -1386,6 +1400,7 @@ public partial class ClusterConfig
     /// <summary>
     /// One or more files containing coin definitions
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] CoinTemplates { get; set; }
 
     public string ClusterName { get; set; }
@@ -1425,7 +1440,7 @@ public partial class ClusterConfig
     [Description("Write-through emergency share journal. In production use an absolute path on separately monitored or reserved storage when possible.")]
     public string ShareRecoveryFile { get; set; }
 
-    [Description("Independent service-owned directory for persistent share-recovery fatal latches and journal terminal anchors. Defaults to systemd StateDirectory or the platform application-data directory.")]
+    [Description("Independent service-owned directory for persistent share-recovery fatal latches, journal terminal anchors, and recovery-import retirement markers. Defaults to systemd StateDirectory or the platform application-data directory.")]
     public string ShareRecoveryStateDirectory { get; set; }
 
     [Required]

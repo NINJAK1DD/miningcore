@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -16,6 +17,7 @@ using McMaster.Extensions.CommandLineUtils;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -54,6 +56,7 @@ using Miningcore.Persistence.Repositories;
 using Miningcore.Util;
 using NBitcoin.Zcash;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Schema;
 using Newtonsoft.Json.Schema.Generation;
 using Newtonsoft.Json.Serialization;
@@ -74,11 +77,13 @@ using static Miningcore.Util.ActionUtils;
 // ReSharper disable PossibleNullReferenceException
 
 [assembly: InternalsVisibleToAttribute("Miningcore.Tests")]
+[assembly: InternalsVisibleToAttribute("Miningcore.Tests.ProcessHost")]
 
 namespace Miningcore;
 
 public class Program : ProcessStatusBackgroundService
 {
+    internal const int DefaultApiPort = ApiConfig.DefaultPort;
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -117,7 +122,7 @@ public class Program : ProcessStatusBackgroundService
             if(verifyShareRecoveryStateOption.HasValue())
             {
                 clusterConfig = configFileOption.HasValue()
-                    ? ReadConfig(configFileOption.Value())
+                    ? ReadConfig(configFileOption.Value(), true)
                     : new ClusterConfig();
                 processStatus = new ProcessStatus();
                 var verification = ShareRecoveryIncidentVerifier.Verify(
@@ -133,7 +138,7 @@ public class Program : ProcessStatusBackgroundService
             if(acknowledgeShareRecoveryStateOption.HasValue())
             {
                 clusterConfig = configFileOption.HasValue()
-                    ? ReadConfig(configFileOption.Value())
+                    ? ReadConfig(configFileOption.Value(), true)
                     : new ClusterConfig();
                 processStatus = new ProcessStatus();
 
@@ -173,11 +178,12 @@ public class Program : ProcessStatusBackgroundService
             Logo();
 
             isShareRecoveryMode = shareRecoveryOption.HasValue();
-            clusterConfig = ReadConfig(configFileOption.Value());
-
-            ValidateConfig();
+            clusterConfig = ReadAndValidateConfig(configFileOption.Value(),
+                isShareRecoveryMode);
+            var apiConfig = clusterConfig.Api;
 
             ConfigureLogging();
+            LogSkippedStratumListenerValidation(clusterConfig);
             LogRuntimeInfo();
             ValidateRuntimeEnvironment();
 
@@ -202,20 +208,19 @@ public class Program : ProcessStatusBackgroundService
                     ConfigureBackgroundServices(services);
                 });
 
-            if(ShouldConfigureApi(isShareRecoveryMode, clusterConfig.Api))
+            if(ShouldConfigureApi(isShareRecoveryMode, apiConfig))
             {
-                var address = clusterConfig.Api?.ListenAddress != null
-                    ? (clusterConfig.Api.ListenAddress != "*" ? IPAddress.Parse(clusterConfig.Api.ListenAddress) : IPAddress.Any)
-                    : IPAddress.Parse("127.0.0.1");
+                var address = ResolveListenAddress(apiConfig.ListenAddress);
 
-                var port = clusterConfig.Api?.Port ?? 4000;
-                var enableApiRateLimiting = clusterConfig.Api?.RateLimiting?.Disabled != true;
-                var apiTlsEnable = clusterConfig.Api?.Tls?.Enabled == true || !string.IsNullOrEmpty(clusterConfig.Api?.Tls?.TlsPfxFile);
+                var endpointPorts = ResolveApiEndpointPorts(apiConfig);
+                var enableApiRateLimiting = apiConfig.RateLimiting?.Disabled != true;
+                var apiTlsEnable = apiConfig.Tls?.Enabled == true ||
+                    !string.IsNullOrEmpty(apiConfig.Tls?.TlsPfxFile);
 
                 if(apiTlsEnable)
                 {
-                    if(!File.Exists(clusterConfig.Api.Tls.TlsPfxFile))
-                        throw new PoolStartupException($"Certificate file {clusterConfig.Api.Tls.TlsPfxFile} does not exist!");
+                    if(!File.Exists(apiConfig.Tls.TlsPfxFile))
+                        throw new PoolStartupException($"Certificate file {apiConfig.Tls.TlsPfxFile} does not exist!");
                 }
 
                 hostBuilder.ConfigureWebHost(builder =>
@@ -248,7 +253,7 @@ public class Program : ProcessStatusBackgroundService
                         {
                             options.JsonSerializerOptions.WriteIndented = true;
 
-                            if(!clusterConfig.Api.LegacyNullValueHandling)
+                            if(!apiConfig.LegacyNullValueHandling)
                                 options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
                         });
 
@@ -266,14 +271,31 @@ public class Program : ProcessStatusBackgroundService
                     })
                     .UseKestrel(options =>
                     {
-                        options.Listen(address, port, listenOptions =>
-                        {
-                            if(apiTlsEnable)
-                                listenOptions.UseHttps(clusterConfig.Api.Tls.TlsPfxFile, clusterConfig.Api.Tls.TlsPfxPassword);
-                        });
+                        ConfigureApiListeners(options, address, endpointPorts,
+                            listenOptions =>
+                            {
+                                if(apiTlsEnable)
+                                    listenOptions.UseHttps(apiConfig.Tls.TlsPfxFile,
+                                        apiConfig.Tls.TlsPfxPassword);
+                            });
                     })
                     .Configure(app =>
                     {
+                        // Reject wrong-listener requests before rate limiting or routing. This
+                        // deliberately returns a cheap 404 without invoking protected endpoint
+                        // middleware, so the listener reveals no route-family details.
+                        app.Use(async (context, next) =>
+                        {
+                            if(!IsApiRequestAllowed(context.Connection.LocalPort,
+                                context.Request.Path, endpointPorts))
+                            {
+                                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                                return;
+                            }
+
+                            await next();
+                        });
+
                         if(enableApiRateLimiting)
                             app.UseIpRateLimiting();
 
@@ -282,11 +304,11 @@ public class Program : ProcessStatusBackgroundService
                         UseIpWhiteList(app, true, new[]
                         {
                             "/api/admin"
-                        }, clusterConfig.Api?.AdminIpWhitelist);
+                        }, apiConfig.AdminIpWhitelist);
                         UseIpWhiteList(app, true, new[]
                         {
                             "/metrics"
-                        }, clusterConfig.Api?.MetricsIpWhitelist);
+                        }, apiConfig.MetricsIpWhitelist);
 
                         #if DEBUG
                         app.UseOpenApi();
@@ -303,8 +325,17 @@ public class Program : ProcessStatusBackgroundService
                         app.UseMvc();
                     });
 
-                    logger.Info(() => $"Prometheus Metrics API listening on http{(apiTlsEnable ? "s" : "")}://{address}:{port}/metrics");
-                    logger.Info(() => $"WebSocket Events streaming on ws{(apiTlsEnable ? "s" : "")}://{address}:{port}/notifications");
+                    var httpScheme = $"http{(apiTlsEnable ? "s" : "")}";
+                    var webSocketScheme = $"ws{(apiTlsEnable ? "s" : "")}";
+                    var listenerHost = FormatListenerHost(address);
+                    logger.Info(() => $"Public API listening on {httpScheme}://{listenerHost}:{endpointPorts.PublicPort}");
+                    logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}/api/admin");
+                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}/metrics");
+                    logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{listenerHost}:{endpointPorts.PublicPort}/notifications");
+
+                    foreach(var warning in GetSharedProtectedRouteWarnings(
+                                apiConfig))
+                        logger.Warn(warning);
                 });
             }
 
@@ -624,6 +655,211 @@ public class Program : ProcessStatusBackgroundService
     internal static bool ShouldConfigureApi(bool recoveryMode, ApiConfig api) =>
         !recoveryMode && (api == null || api.Enabled);
 
+    internal static ApiConfig NormalizeApiConfig(ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        config.Api ??= new ApiConfig
+        {
+            Enabled = true,
+        };
+
+        return config.Api;
+    }
+
+    internal static ClusterConfig ReadAndValidateConfig(string file,
+        bool recoveryMode)
+    {
+        var config = ReadConfig(file, recoveryMode);
+        if(!recoveryMode)
+            NormalizeApiConfig(config);
+        ValidateConfig(config, recoveryMode);
+        return config;
+    }
+
+    internal sealed class ApiEndpointPorts
+    {
+        public ApiEndpointPorts(int publicPort, int adminPort,
+            int metricsPort)
+        {
+            PublicPort = publicPort;
+            AdminPort = adminPort;
+            MetricsPort = metricsPort;
+            ListenerPorts = Array.AsReadOnly(new[]
+            {
+                publicPort,
+                adminPort,
+                metricsPort,
+            }
+            .Distinct()
+            .ToArray());
+        }
+
+        public int PublicPort { get; }
+        public int AdminPort { get; }
+        public int MetricsPort { get; }
+        public IReadOnlyList<int> ListenerPorts { get; }
+    }
+
+    internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
+    {
+        var publicPort = api?.Port ?? DefaultApiPort;
+        return new ApiEndpointPorts(
+            publicPort,
+            api?.AdminPort ?? publicPort,
+            api?.MetricsPort ?? publicPort);
+    }
+
+    internal static IPAddress ResolveListenAddress(string listenAddress)
+    {
+        if(!TryResolveListenAddress(listenAddress, out var address))
+            throw new FormatException(
+                $"Invalid IP listen address '{listenAddress}'");
+
+        return address;
+    }
+
+    internal static bool TryResolveListenAddress(string listenAddress,
+        out IPAddress address)
+    {
+        if(string.IsNullOrEmpty(listenAddress))
+        {
+            address = IPAddress.Loopback;
+            return true;
+        }
+
+        if(listenAddress == "*")
+        {
+            address = IPAddress.Any;
+            return true;
+        }
+
+        if(!IPAddress.TryParse(listenAddress, out address))
+            return false;
+
+        address = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+        return true;
+    }
+
+    internal static string FormatListenerHost(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        return address.AddressFamily == AddressFamily.InterNetworkV6
+            ? $"[{address}]"
+            : address.ToString();
+    }
+
+    internal static string[] GetSharedProtectedRouteWarnings(ApiConfig api)
+    {
+        ArgumentNullException.ThrowIfNull(api);
+
+        var warnings = new List<string>();
+
+        // Keep these at warning level even for loopback-only whitelists: a same-host reverse
+        // proxy also appears as loopback and can make a shared protected route public.
+
+        if(!api.AdminPort.HasValue)
+            warnings.Add("api.adminPort is omitted; /api/admin is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
+
+        if(!api.MetricsPort.HasValue)
+            warnings.Add("api.metricsPort is omitted; /metrics is served on the public listener. A public reverse proxy must deny this path unless exposing metrics is intentional");
+
+        return warnings.ToArray();
+    }
+
+    internal static void ConfigureApiListeners(KestrelServerOptions options,
+        IPAddress address, ApiEndpointPorts ports,
+        Action<ListenOptions> configureListener = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(address);
+        ArgumentNullException.ThrowIfNull(ports);
+
+        foreach(var port in ports.ListenerPorts)
+        {
+            options.Listen(address, port, listenOptions =>
+                configureListener?.Invoke(listenOptions));
+        }
+    }
+
+    internal static bool IsApiRequestAllowed(int localPort, PathString path,
+        ApiEndpointPorts ports)
+    {
+        ArgumentNullException.ThrowIfNull(ports);
+
+        if(path.StartsWithSegments("/api/admin",
+            StringComparison.OrdinalIgnoreCase))
+            return localPort == ports.AdminPort;
+
+        if(path.StartsWithSegments("/metrics",
+            StringComparison.OrdinalIgnoreCase))
+            return localPort == ports.MetricsPort;
+
+        return localPort == ports.PublicPort;
+    }
+
+    internal static int? FindApiListenerStratumPortConflict(
+        ClusterConfig config, bool recoveryMode)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        if(!ShouldConfigureApi(recoveryMode, config.Api))
+            return null;
+
+        var apiAddress = ResolveListenAddress(config.Api?.ListenAddress);
+        var apiPorts = ResolveApiEndpointPorts(config.Api).ListenerPorts
+            .ToHashSet();
+
+        foreach(var pool in config.Pools?.Where(pool => pool.Enabled &&
+                    pool.EnableInternalStratum == true && pool.Ports != null) ??
+                Enumerable.Empty<PoolConfig>())
+        {
+            foreach(var (port, endpoint) in pool.Ports)
+            {
+                if(!apiPorts.Contains(port) ||
+                    !TryResolveListenAddress(endpoint?.ListenAddress,
+                        out var stratumAddress))
+                    continue;
+
+                if(ListenAddressesOverlap(apiAddress, stratumAddress))
+                    return port;
+            }
+        }
+
+        return null;
+    }
+
+    internal static bool ListenAddressesOverlap(IPAddress first,
+        IPAddress second)
+    {
+        ArgumentNullException.ThrowIfNull(first);
+        ArgumentNullException.ThrowIfNull(second);
+
+        first = NormalizeMappedAddress(first);
+        second = NormalizeMappedAddress(second);
+
+        if(first.Equals(second))
+            return true;
+
+        // Kestrel and Miningcore's Stratum listener both use a dual-mode socket for
+        // IPv6Any. It therefore occupies IPv4 as well as IPv6 socket space.
+        if(first.Equals(IPAddress.IPv6Any) ||
+            second.Equals(IPAddress.IPv6Any))
+            return true;
+
+        if(first.Equals(IPAddress.Any))
+            return second.AddressFamily == AddressFamily.InterNetwork;
+
+        if(second.Equals(IPAddress.Any))
+            return first.AddressFamily == AddressFamily.InterNetwork;
+
+        return false;
+    }
+
+    private static IPAddress NormalizeMappedAddress(IPAddress address) =>
+        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
     {
@@ -777,35 +1013,45 @@ public class Program : ProcessStatusBackgroundService
         return $"{fullSemVer} [{sha}]";
     }
 
-    private static void ValidateConfig()
+    internal static void ValidateConfig(ClusterConfig config,
+        bool recoveryMode)
     {
-        if(!clusterConfig.Pools.Any(x => x.Enabled))
+        ArgumentNullException.ThrowIfNull(config);
+
+        if(!config.Pools.Any(x => x.Enabled))
             throw new PoolStartupException("No pools are enabled.");
 
         // set some defaults
-        foreach(var config in clusterConfig.Pools)
+        foreach(var poolConfig in config.Pools)
         {
-            config.EnableInternalStratum ??= clusterConfig.ShareRelays == null || clusterConfig.ShareRelays.Length == 0;
+            poolConfig.EnableInternalStratum ??=
+                config.ShareRelays == null || config.ShareRelays.Length == 0;
         }
 
         try
         {
-            clusterConfig.Validate();
-            ValidateMergedMiningDeployment(clusterConfig);
+            config.Validate(recoveryMode);
+            ValidateMergedMiningDeployment(config);
 
-            if(clusterConfig.Notifications?.Admin?.Enabled == true)
+            var listenerConflict = FindApiListenerStratumPortConflict(
+                config, recoveryMode);
+            if(listenerConflict.HasValue)
+                throw new PoolStartupException(
+                    $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
+
+            if(config.Notifications?.Admin?.Enabled == true)
             {
-                if(string.IsNullOrEmpty(clusterConfig.Notifications?.Email?.FromName))
+                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromName))
                     throw new PoolStartupException($"Notifications are enabled but email sender name is not configured (notifications.email.fromName)");
 
-                if(string.IsNullOrEmpty(clusterConfig.Notifications?.Email?.FromAddress))
+                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromAddress))
                     throw new PoolStartupException($"Notifications are enabled but email sender address name is not configured (notifications.email.fromAddress)");
 
-                if(string.IsNullOrEmpty(clusterConfig.Notifications?.Admin?.EmailAddress))
+                if(string.IsNullOrEmpty(config.Notifications?.Admin?.EmailAddress))
                     throw new PoolStartupException($"Admin notifications are enabled but recipient address is not configured (notifications.admin.emailAddress)");
             }
 
-            if(string.IsNullOrEmpty(clusterConfig.Logging.LogFile))
+            if(string.IsNullOrEmpty(config.Logging.LogFile))
             {
                 // emit a newline before regular logging output starts
                 Console.WriteLine();
@@ -834,6 +1080,49 @@ public class Program : ProcessStatusBackgroundService
     {
         var filename = generateSchemaOption.Value();
 
+        var schema = GenerateJsonConfigSchemaDocument();
+
+        using(var stream = File.Create(filename))
+        {
+            using(var writer = new JsonTextWriter(new StreamWriter(stream, Encoding.UTF8)))
+            {
+                writer.Formatting = Formatting.Indented;
+                schema.WriteTo(writer);
+                writer.WriteWhitespace(Environment.NewLine);
+
+                writer.Flush();
+            }
+        }
+    }
+
+    internal static string[] GetPoolsWithSkippedStratumListenerValidation(
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        return config.Pools?
+            .Where(pool => !pool.Enabled &&
+                pool.EnableInternalStratum == true &&
+                pool.Ports?.Any() == true)
+            .Select(pool => string.IsNullOrEmpty(pool.Id)
+                ? "<unnamed>"
+                : pool.Id)
+            .ToArray() ?? Array.Empty<string>();
+    }
+
+    private static void LogSkippedStratumListenerValidation(
+        ClusterConfig config)
+    {
+        var poolIds = GetPoolsWithSkippedStratumListenerValidation(config);
+        if(poolIds.Length == 0)
+            return;
+
+        logger.Info(() =>
+            $"Stratum listener validation skipped for disabled pool(s): {string.Join(", ", poolIds)}. Listener settings will be validated when the pool is enabled");
+    }
+
+    internal static JObject GenerateJsonConfigSchemaDocument()
+    {
         var generator = new JSchemaGenerator
         {
             DefaultRequired = Required.Default,
@@ -845,17 +1134,8 @@ public class Program : ProcessStatusBackgroundService
             }
         };
 
-        var schema = generator.Generate(typeof(ClusterConfig));
-
-        using(var stream = File.Create(filename))
-        {
-            using(var writer = new JsonTextWriter(new StreamWriter(stream, Encoding.UTF8)))
-            {
-                schema.WriteTo(writer);
-
-                writer.Flush();
-            }
-        }
+        return JObject.Parse(generator.Generate(typeof(ClusterConfig))
+            .ToString());
     }
 
     private static CommandLineApplication ParseCommandLine(string[] args)
@@ -886,11 +1166,15 @@ public class Program : ProcessStatusBackgroundService
         return app;
     }
 
-    private static ClusterConfig ReadConfig(string file)
+    internal static ClusterConfig ReadConfig(string file,
+        bool skipApiListenerSettings = false)
     {
         try
         {
             Console.WriteLine($"Using configuration file '{file}'");
+            if(skipApiListenerSettings)
+                Console.WriteLine(
+                    "Recovery mode: API and Stratum listener configuration discarded (no sockets are opened)");
 
             var serializer = JsonSerializer.Create(new JsonSerializerSettings
             {
@@ -901,12 +1185,31 @@ public class Program : ProcessStatusBackgroundService
             {
                 using(var jsonReader = new JsonTextReader(reader))
                 {
-                    using(var validatingReader = new JSchemaValidatingReader(jsonReader)
+                    var document = LoadConfigurationDocument(jsonReader,
+                        skipApiListenerSettings);
+
+                    RejectCaseInsensitivePropertyDuplicates(document);
+                    if(skipApiListenerSettings)
+                    {
+                        // Recovery configuration policy:
+                        // - api: stream-discarded because recovery opens no HTTP sockets;
+                        // - pools[].ports: replaced because recovery opens no Stratum sockets;
+                        // - coinTemplates: valid paths retained, malformed optional metadata removed.
+                        // Configuration consumed by recovery remains subject to normal duplicate,
+                        // schema and CLR-binding validation.
+                        RemoveStratumConfigurationForRecovery(document);
+                        SanitizeCoinTemplatesForRecovery(document);
+                    }
+                    RemoveDisabledApiSettings(document);
+
+                    using(var documentReader = document.CreateReader())
+                    using(var validatingReader = new JSchemaValidatingReader(documentReader)
                     {
                         Schema =  LoadSchema()
                     })
                     {
-                        return serializer.Deserialize<ClusterConfig>(validatingReader);
+                        return serializer.Deserialize<ClusterConfig>(
+                            validatingReader);
                     }
                 }
             }
@@ -931,6 +1234,213 @@ public class Program : ProcessStatusBackgroundService
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
+    }
+
+    private static void RejectCaseInsensitivePropertyDuplicates(
+        JObject document)
+    {
+        foreach(var current in document.DescendantsAndSelf()
+                    .OfType<JObject>()
+                    .Where(current => !IsFreeFormConfigurationObject(current)))
+        {
+            var duplicate = current.Properties()
+                .GroupBy(property => property.Name,
+                    StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(group => group.Skip(1).Any());
+            if(duplicate == null)
+                continue;
+
+            var names = string.Join(", ", duplicate.Select(property =>
+                $"'{property.Name}'"));
+            var path = string.IsNullOrEmpty(current.Path) ? "$" :
+                current.Path;
+            var locationProperty = duplicate.Skip(1)
+                .Concat(duplicate.Take(1))
+                .FirstOrDefault(property =>
+                    property is IJsonLineInfo lineInfo &&
+                    lineInfo.HasLineInfo());
+            var location = GetJsonLocationSuffix(
+                locationProperty as IJsonLineInfo,
+                locationProperty?.Path);
+            var container = string.IsNullOrEmpty(location)
+                ? $" at '{path}'"
+                : string.Empty;
+
+            throw new JsonSerializationException(
+                $"Properties {names}{container} differ only by case." +
+                location);
+        }
+    }
+
+    private static bool IsFreeFormConfigurationObject(JObject current) =>
+        current.Ancestors().OfType<JProperty>().Any(property =>
+            property.Name.Equals("payoutSchemeConfig",
+                StringComparison.OrdinalIgnoreCase));
+
+    private static string GetJsonLocationSuffix(IJsonLineInfo source,
+        string path = null)
+    {
+        if(source?.HasLineInfo() != true)
+            return string.Empty;
+
+        return string.IsNullOrEmpty(path)
+            ? $" Line {source.LineNumber}, position {source.LinePosition}."
+            : $" Path '{path}', line {source.LineNumber}, position {source.LinePosition}.";
+    }
+
+    internal static JObject LoadConfigurationDocument(JsonReader reader,
+        bool skipApiConfiguration)
+    {
+        var strictSettings = new JsonLoadSettings
+        {
+            DuplicatePropertyNameHandling =
+                DuplicatePropertyNameHandling.Error,
+        };
+
+        if(!skipApiConfiguration)
+            return JObject.Load(reader, strictSettings);
+
+        // Recovery opens no HTTP listeners and does not consume API settings. Filter every
+        // top-level case variant while streaming so even exact duplicate API properties are
+        // discarded before JObject's strict duplicate-property handling. Duplicate properties
+        // everywhere else remain errors.
+        if(!ReadNextContentToken(reader) ||
+            reader.TokenType != JsonToken.StartObject)
+            throw new JsonSerializationException(
+                "The configuration root must be a JSON object." +
+                GetJsonLocationSuffix(reader as IJsonLineInfo,
+                    reader.Path));
+
+        var document = new JObject();
+        var rootProperties = new HashSet<string>(StringComparer.Ordinal);
+
+        while(ReadNextContentToken(reader))
+        {
+            if(reader.TokenType == JsonToken.EndObject)
+                return document;
+
+            if(reader.TokenType != JsonToken.PropertyName)
+            {
+                // JsonTextReader rejects malformed object structure before reaching this
+                // branch. Keep the reader path for custom readers that can surface an
+                // unexpected structural token with meaningful path context.
+                throw new JsonSerializationException(
+                    $"Expected a configuration property but found {reader.TokenType}." +
+                    GetJsonLocationSuffix(reader as IJsonLineInfo,
+                        reader.Path));
+            }
+
+            var propertyName = (string) reader.Value;
+            var propertyLocation = GetJsonLocationSuffix(
+                reader as IJsonLineInfo, propertyName);
+            if(!ReadNextContentToken(reader))
+                throw new JsonSerializationException(
+                    $"Configuration property '{propertyName}' has no value." +
+                    propertyLocation);
+
+            if(propertyName.Equals("api", StringComparison.OrdinalIgnoreCase))
+            {
+                reader.Skip();
+                continue;
+            }
+
+            if(!rootProperties.Add(propertyName))
+                throw new JsonSerializationException(
+                    $"Property with the name '{propertyName}' already exists in the current JSON object." +
+                    propertyLocation);
+
+            document.Add(propertyName, JToken.Load(reader, strictSettings));
+        }
+
+        throw new JsonSerializationException(
+            "Unexpected end of configuration file." +
+            GetJsonLocationSuffix(reader as IJsonLineInfo,
+                reader.Path));
+    }
+
+    private static bool ReadNextContentToken(JsonReader reader)
+    {
+        while(reader.Read())
+        {
+            if(reader.TokenType != JsonToken.Comment)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static void RemoveStratumConfigurationForRecovery(
+        JObject document)
+    {
+        var pools = document.GetValue("pools",
+            StringComparison.OrdinalIgnoreCase) as JArray;
+        if(pools == null)
+            return;
+
+        foreach(var pool in pools.OfType<JObject>())
+        {
+            // Recovery opens no Stratum sockets and never consumes endpoints. Replace the
+            // subtree before schema validation and Dictionary<int, PoolEndpoint> binding so
+            // malformed or out-of-range raw port keys cannot block emergency recovery. Strict
+            // exact-duplicate and case-variant checks have already run above.
+            foreach(var property in pool.Properties().Where(property =>
+                        property.Name.Equals("ports",
+                            StringComparison.OrdinalIgnoreCase)).ToArray())
+                property.Remove();
+
+            // Pool ports are required by the schema even though recovery does not use them.
+            pool["ports"] = new JObject();
+        }
+    }
+
+    private static void SanitizeCoinTemplatesForRecovery(JObject document)
+    {
+        var property = document.Properties().FirstOrDefault(property =>
+            property.Name.Equals("coinTemplates",
+                StringComparison.OrdinalIgnoreCase));
+        if(property == null)
+            return;
+
+        if(property.Value is not JArray templates)
+        {
+            // Recovery can use the bundled definitions without this optional metadata. Remove
+            // malformed values before schema validation so they cannot block emergency work.
+            if(property.Value.Type != JTokenType.Null)
+                property.Remove();
+            return;
+        }
+
+        // Keep valid custom definitions while removing elements that normal startup correctly
+        // rejects. Duplicate and case-variant properties have already failed above.
+        foreach(var item in templates.Where(item =>
+                    item.Type != JTokenType.String).ToArray())
+            item.Remove();
+    }
+
+    private static void RemoveDisabledApiSettings(JObject document)
+    {
+        var api = document.GetValue("api",
+            StringComparison.OrdinalIgnoreCase) as JObject;
+        if(api == null)
+            return;
+
+        var enabledToken = api.GetValue("enabled",
+            StringComparison.OrdinalIgnoreCase);
+        var enabled = enabledToken is JValue
+        {
+            Type: JTokenType.Boolean,
+            Value: bool value,
+        } && value;
+        if(enabled)
+            return;
+
+        // No API setting other than the disabled marker is consumed when no HTTP sockets are
+        // opened. Remove the inactive subtree before schema validation and CLR binding; an
+        // invalid enabled token remains so the schema reports its real type error.
+        foreach(var property in api.Properties().Where(property =>
+                    !property.Name.Equals("enabled",
+                        StringComparison.OrdinalIgnoreCase)).ToArray())
+            property.Remove();
     }
 
     private static JSchema LoadSchema()

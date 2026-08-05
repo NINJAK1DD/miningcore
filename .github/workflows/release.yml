@@ -29,6 +29,7 @@ jobs:
   source-container-check:
     name: Test source container
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -56,6 +57,146 @@ jobs:
 
       - name: Smoke-test source container
         run: docker run --rm miningcore-source-test:${{ github.sha }} --version
+
+      - name: Setup .NET for container listener test
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install container listener test build dependencies
+        if: github.event_name == 'pull_request'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build build-essential libssl-dev pkg-config
+          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+
+      - name: Publish container listener test host
+        if: github.event_name == 'pull_request'
+        run: >-
+          dotnet publish src/Miningcore.Tests.ProcessHost/Miningcore.Tests.ProcessHost.csproj
+          --configuration Release
+          --output api-listener-smoke-host
+
+      - name: Test protected container listeners from host loopback
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          network=miningcore-api-smoke
+          container=miningcore-api-smoke
+          shared_container=miningcore-api-shared
+          proxy_container=miningcore-api-nginx
+
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker rm -f "$proxy_container" >/dev/null 2>&1 || true
+            docker rm -f "$shared_container" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create --driver bridge \
+            --subnet 172.30.56.0/24 --gateway 172.30.56.1 "$network"
+
+          docker run --detach --name "$container" \
+            --network "$network" \
+            --publish 127.0.0.1:4001:4001 \
+            --publish 127.0.0.1:4002:4002 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          admin_status=000
+          for attempt in {1..30}; do
+            admin_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4001/api/admin/status || true)"
+            if [[ "$admin_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$admin_status" != 200 ]]; then
+            docker logs "$container"
+            echo "Host admin request returned HTTP $admin_status instead of 200"
+            exit 1
+          fi
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4001/api/pools)" = 404
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/api/pools)" = 404
+
+          docker rm -f "$container" >/dev/null
+
+          docker run --detach --name "$shared_container" \
+            --network "$network" \
+            --ip 172.30.56.2 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          # Review the pinned nginx version and digest at least quarterly and
+          # whenever upstream Alpine security updates are released.
+          docker run --detach --name "$proxy_container" \
+            --network "$network" \
+            --ip 172.30.56.3 \
+            --publish 127.0.0.1:4080:8080 \
+            --volume "$GITHUB_WORKSPACE/scripts/release/nginx-shared-listener.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
+
+          proxy_status=000
+          for attempt in {1..30}; do
+            proxy_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4080/api/administrator || true)"
+            if [[ "$proxy_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$proxy_status" != 200 ]]; then
+            docker logs "$shared_container"
+            docker logs "$proxy_container"
+            echo "nginx public lookalike request returned HTTP $proxy_status instead of 200"
+            exit 1
+          fi
+
+          assert_status() {
+            local expected=$1
+            local path=$2
+            local actual
+            actual="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              "http://127.0.0.1:4080${path}")"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "nginx request $path returned HTTP $actual instead of $expected"
+              return 1
+            fi
+          }
+
+          for path in \
+            /api/admin \
+            /API/ADMIN/payment/processing/disable \
+            /metrics \
+            /METRICS \
+            /metrics/ \
+            /metrics/export; do
+            assert_status 404 "$path"
+          done
+
+          for path in /api/administrator /metrics-export; do
+            assert_status 200 "$path"
+          done
 
   build-release:
     name: Test and package Ubuntu 22.04 x64

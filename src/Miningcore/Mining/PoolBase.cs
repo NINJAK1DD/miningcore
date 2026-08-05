@@ -362,6 +362,9 @@ public abstract class PoolBase : StratumServer,
         if(!string.IsNullOrEmpty(pep.ListenAddress))
             listenAddress = pep.ListenAddress != "*" ? IPAddress.Parse(pep.ListenAddress) : IPAddress.Any;
 
+        if(listenAddress.IsIPv4MappedToIPv6)
+            listenAddress = listenAddress.MapToIPv4();
+
         return new StratumEndpoint(new IPEndPoint(listenAddress, port), pep);
     }
 

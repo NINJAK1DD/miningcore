@@ -1,4 +1,5 @@
 using FluentValidation;
+using System.Net;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Miningcore.Configuration;
@@ -105,13 +106,57 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
     public ApiConfigValidator()
     {
         RuleFor(j => j.ListenAddress)
+            .Must(address => address == null || address == "*" ||
+                IPAddress.TryParse(address, out _))
+            .WithMessage(
+                "API: listenAddress must be '*' or a valid IPv4/IPv6 address");
+
+        RuleForEach(j => j.AdminIpWhitelist)
             .NotNull()
-            .NotEmpty()
-            .WithMessage("API: listenAddress missing or empty");
+            .WithMessage(
+                "API: adminIpWhitelist[{CollectionIndex}] must not be null")
+            .Must(address => address == null ||
+                IPAddress.TryParse(address, out _))
+            .WithMessage(
+                "API: adminIpWhitelist[{CollectionIndex}] contains invalid IP address '{PropertyValue}'");
+
+        RuleForEach(j => j.MetricsIpWhitelist)
+            .NotNull()
+            .WithMessage(
+                "API: metricsIpWhitelist[{CollectionIndex}] must not be null")
+            .Must(address => address == null ||
+                IPAddress.TryParse(address, out _))
+            .WithMessage(
+                "API: metricsIpWhitelist[{CollectionIndex}] contains invalid IP address '{PropertyValue}'");
 
         RuleFor(j => j.Port)
-            .GreaterThan(0)
+            .InclusiveBetween(1, ushort.MaxValue)
             .WithMessage("API: Invalid port number '{PropertyValue}'");
+
+        RuleFor(j => j.AdminPort.Value)
+            .InclusiveBetween(1, ushort.MaxValue)
+            .When(j => j.AdminPort.HasValue)
+            .WithMessage("API: Invalid adminPort number '{PropertyValue}'")
+            .OverridePropertyName("adminPort");
+
+        RuleFor(j => j.MetricsPort.Value)
+            .InclusiveBetween(1, ushort.MaxValue)
+            .When(j => j.MetricsPort.HasValue)
+            .WithMessage("API: Invalid metricsPort number '{PropertyValue}'")
+            .OverridePropertyName("metricsPort");
+
+        RuleFor(j => j)
+            .Must(j => !j.AdminPort.HasValue || j.AdminPort.Value != j.Port)
+            .WithMessage("API: adminPort must differ from port when configured");
+
+        RuleFor(j => j)
+            .Must(j => !j.MetricsPort.HasValue || j.MetricsPort.Value != j.Port)
+            .WithMessage("API: metricsPort must differ from port when configured");
+
+        RuleFor(j => j)
+            .Must(j => !j.AdminPort.HasValue || !j.MetricsPort.HasValue ||
+                j.AdminPort.Value != j.MetricsPort.Value)
+            .WithMessage("API: adminPort and metricsPort must differ when configured");
     }
 }
 
@@ -140,8 +185,12 @@ public class VarDiffConfigValidator : AbstractValidator<VarDiffConfig>
 
 public class PoolConfigValidator : AbstractValidator<PoolConfig>
 {
-    public PoolConfigValidator()
+    public PoolConfigValidator(bool recoveryMode = false)
     {
+        bool ShouldValidateStratumListeners(PoolConfig pool) =>
+            !recoveryMode && pool.Enabled &&
+            pool.EnableInternalStratum == true;
+
         RuleFor(j => j.Id)
             .NotNull()
             .NotEmpty()
@@ -154,25 +203,50 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
         RuleFor(j => j.Ports)
             .NotNull()
             .NotEmpty()
-            .When(j => j.EnableInternalStratum == true)
+            .When(ShouldValidateStratumListeners)
             .WithMessage("Pool: Stratum port config missing or empty");
 
         RuleFor(j => j.Ports)
             .Must((pc, ports, ctx) =>
             {
-                if(ports?.Keys.Any(port => port < 0) == true)
+                if(ports?.Keys.Any(port =>
+                    port is < 1 or > ushort.MaxValue) == true)
                 {
-                    ctx.MessageFormatter.AppendArgument("port", ports.Keys.First(port => port < 0));
+                    var invalidPort = ports.Keys.First(port =>
+                        port is < 1 or > ushort.MaxValue);
+                    ctx.MessageFormatter.AppendArgument("port", invalidPort);
                     return false;
                 }
 
                 return true;
             })
+            .When(ShouldValidateStratumListeners)
             .WithMessage("Pool: Invalid stratum port number {port}");
+
+        RuleFor(j => j.Ports)
+            .Custom((ports, context) =>
+            {
+                if(ports == null)
+                    return;
+
+                var pool = context.InstanceToValidate;
+                foreach(var (port, endpoint) in ports)
+                {
+                    var address = endpoint?.ListenAddress;
+                    if(address == null || address == "*" ||
+                        IPAddress.TryParse(address, out _))
+                        continue;
+
+                    context.AddFailure($"Ports[{port}].ListenAddress",
+                        $"Pool '{pool.Id}' Stratum port {port}: listenAddress must be '*' or a valid IPv4/IPv6 address (received '{address}')");
+                }
+            })
+            .When(ShouldValidateStratumListeners);
 
         RuleForEach(j => j.Ports.Values)
             .SetValidator(x => new PoolEndpointValidator())
-            .When(x => x.Ports != null);
+            .When(x => x.Ports != null &&
+                ShouldValidateStratumListeners(x));
 
         RuleFor(j => j.Address)
             .NotNull()
@@ -191,7 +265,7 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
 
 public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 {
-    public ClusterConfigValidator()
+    public ClusterConfigValidator(bool recoveryMode = false)
     {
         RuleFor(j => j.PaymentProcessing)
             .NotNull();
@@ -208,6 +282,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .GreaterThan((byte) 0)
             .When(x => x.InstanceId.HasValue)
             .WithMessage("instanceId must either be omitted or be non-zero");;
+
+        RuleFor(j => j.Api)
+            .SetValidator(new ApiConfigValidator())
+            .When(j => !recoveryMode && j.Api?.Enabled == true);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)
@@ -231,7 +309,11 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.Pools)
             .Must((pc, pools, ctx) =>
             {
-                var ports = pools.Where(x => x.Ports?.Any() == true).SelectMany(x => x.Ports.Select(y => y.Key))
+                var ports = pools
+                    .Where(x => x.Enabled &&
+                        x.EnableInternalStratum == true &&
+                        x.Ports?.Any() == true)
+                    .SelectMany(x => x.Ports.Select(y => y.Key))
                     .GroupBy(x => x)
                     .ToArray();
 
@@ -246,10 +328,11 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
                 return true;
             })
+            .When(_ => !recoveryMode)
             .WithMessage("Stratum port {port} assigned multiple times");
 
         RuleForEach(j => j.Pools)
-            .SetValidator(new PoolConfigValidator());
+            .SetValidator(new PoolConfigValidator(recoveryMode));
     }
 }
 
@@ -309,9 +392,9 @@ public partial class PoolConfig
 
 public partial class ClusterConfig
 {
-    public void Validate()
+    public void Validate(bool recoveryMode = false)
     {
-        var validator = new ClusterConfigValidator();
+        var validator = new ClusterConfigValidator(recoveryMode);
         var result = validator.Validate(this);
 
         if(!result.IsValid)

@@ -26,6 +26,40 @@ Keep the admin and metrics listeners private. If `adminIpWhitelist` or `metricsI
 the default is localhost. If a reverse proxy is used, test which client address Miningcore observes
 before changing a whitelist.
 
+When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
+only that route family on it. Public REST and WebSocket routes remain on `port`; requests for
+`/api/admin` or `/metrics` on the public listener, and requests for public routes on a dedicated
+listener, return `404 Not Found`. The IP whitelists remain an independent second control. Apply a
+firewall rule as well because all three ports bind to `listenAddress`.
+
+`api.port` defaults to `4000` when it is omitted. Omitting either optional port preserves the
+previous shared-listener behavior for that route. In particular, omitting `adminPort` leaves
+`/api/admin` on the public listener: a reverse proxy must explicitly deny that path unless the
+admin whitelist and firewall are the intended protection. Omitting `metricsPort` likewise leaves
+`/metrics` on the public listener; a public reverse proxy must deny that path unless exposing pool
+metrics is intentional. An explicit dedicated port must be
+different from the public port and from the other dedicated port. All API ports must be between 1
+and 65535. An API listener and an enabled local Stratum endpoint may share a number only when they
+bind different specific addresses; the same address and wildcard/specific overlaps stop startup
+with a configuration error.
+
+The port limits and duplicate checks run for an enabled API during normal startup rather than schema
+loading. This allows the one-shot `-rs` share importer to remain available when listener-only
+settings are stale or temporarily invalid; recovery mode does not open API or Stratum sockets.
+
+For nginx, deny both protected paths whenever they share the public listener:
+
+```nginx
+location ~* ^/(?:api/admin|metrics)(?:/|$) {
+    return 404;
+}
+```
+
+The case-insensitive, segment-bounded expression protects every admin and metrics subpath without
+blocking public lookalikes such as `/api/administrator` or `/metrics-export`. Keep this denial before
+any other regular-expression locations. Do not use a public `^~` prefix that would prevent nginx
+from evaluating the protected-route expression.
+
 ## Discovery and health
 
 ```console
@@ -149,6 +183,22 @@ displaying `error`.
 When `metricsPort` is configured, Prometheus-compatible metrics are served from `/metrics` on that
 listener. Administrative routes are under `/api/admin` on `adminPort`; they can change logging and
 payment-processing state. Never publish the admin port through the public reverse proxy.
+
+For the example configuration, local checks and a Prometheus scrape target use:
+
+```console
+curl http://127.0.0.1:4001/api/admin/stats/gc
+curl http://127.0.0.1:4002/metrics
+```
+
+After migrating an existing installation that sets dedicated ports, change any scrape target from
+`http://127.0.0.1:4000/metrics` to `http://127.0.0.1:4002/metrics`. Confirm that the public listener
+returns 404 for protected route families before treating the separation as deployed:
+
+```console
+curl --output /dev/null --write-out '%{http_code}\n' http://127.0.0.1:4000/metrics
+curl --output /dev/null --write-out '%{http_code}\n' http://127.0.0.1:4000/api/admin/stats/gc
+```
 
 Share-accounting backlog monitoring uses three gauges and one counter with a fixed `queue` label:
 

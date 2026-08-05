@@ -447,8 +447,12 @@ public class ShareRecorderTests
         finally
         {
             releaseJournal.TrySetResult();
+            // An assertion or timeout after a successful competing Acquire must not leave the
+            // Windows ownership handle open and replace the real failure during directory cleanup.
+            competingOwnership.Release();
             ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
-            Directory.Delete(directory, true);
+            if(Directory.Exists(directory))
+                Directory.Delete(directory, true);
         }
     }
 

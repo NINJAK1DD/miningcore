@@ -253,7 +253,14 @@ Before returning normal traffic, confirm:
 - exactly the intended node owns payment processing;
 - Stratum authentication and a low-risk test share work;
 - share relay and recovery journaling work if the deployment uses them; and
-- API, metrics, reverse proxy, firewall and log paths behave as before.
+- Public API and WebSocket routes behave as before. When `adminPort` or `metricsPort` is configured,
+  move administrative clients and Prometheus to those dedicated ports, update firewall/container
+  mappings, and verify that the protected routes return 404 on the public port.
+
+For example, a deployment using the standard public `api.port` 4000 and `api.metricsPort` 4002 must
+change its Prometheus target from `http://127.0.0.1:4000/metrics` to
+`http://127.0.0.1:4002/metrics`. Check the firewall and any container or reverse-proxy mappings
+before restarting because every dedicated listener binds to the configured `api.listenAddress`.
 
 Keep the old application and .NET 6 runtime for an observation period appropriate to the pool's
 risk, payout interval and operational change policy.

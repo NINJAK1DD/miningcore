@@ -193,6 +193,65 @@ from the container network.
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
 
+### Security: administrative API whitelist enforcement
+
+This release fixes an administrative API whitelist bypass that affected shared public/API
+listeners. ASP.NET Core routes paths case-insensitively, but the previous whitelist check compared
+path prefixes case-sensitively. A differently cased path such as `/API/ADMIN/...` could therefore
+reach an administrative controller without passing through the configured admin IP whitelist.
+Protected-path matching is now case-insensitive and path-segment bounded. It also fails closed when
+the remote address is unavailable and correctly treats IPv4-mapped IPv6 addresses as their IPv4
+equivalent. Operators who keep `/api/admin` on the shared public listener should treat this as a
+security fix and update promptly.
+
+### Dedicated admin and metrics listeners
+
+`api.adminPort` and `api.metricsPort` now create real, route-isolated listeners. When configured,
+`/api/admin` and `/metrics` are no longer served on the public `api.port`; public REST and WebSocket
+routes are not served on either dedicated port. The existing IP whitelists continue to apply.
+
+Before upgrading a configuration that sets these ports:
+
+1. Permit the required trusted sources to reach the dedicated ports through the firewall.
+2. Point Prometheus at `http://127.0.0.1:4002/metrics` or the configured equivalent. For the
+   standard ports, change `http://127.0.0.1:4000/metrics` to `http://127.0.0.1:4002/metrics`.
+3. Keep reverse proxies and public clients on `api.port` only.
+4. Publish the extra ports explicitly for a container deployment.
+5. Verify firewall, container and reverse-proxy mappings before restarting, then confirm protected
+   routes return 404 on the public port.
+
+`api.port` defaults to `4000` when omitted. Omitting either optional port keeps that route on the
+public listener for backwards compatibility. If `adminPort` is omitted, explicitly deny
+`/api/admin` at the reverse proxy unless the admin whitelist and firewall are the intended
+protection. If `metricsPort` is omitted, likewise deny `/metrics` unless public metric exposure is
+intentional. A same-host reverse proxy normally reaches Miningcore from trusted loopback, so the
+application whitelist alone does not block a route forwarded by that proxy. Explicit API ports must
+be unique and in the range 1–65535. Enabled internal Stratum ports must also be in that range;
+port `0` is now rejected instead of creating an unpredictable ephemeral mining endpoint.
+TLS-enabled deployments use the same configured certificate on every listener. An API listener
+that uses the same port and an overlapping bind address as an enabled local Stratum endpoint now
+stops startup with the conflicting port identified; different specific bind addresses may reuse a
+port. See
+[API listener isolation](configuration.md#api-listener-isolation).
+
+Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
+Stratum sockets. Recovery stream-discards every top-level `api` case variant before strict duplicate
+and schema validation. After strict duplicate and case-variant checks, it replaces each pool's unused
+`ports` subtree before schema validation and typed dictionary binding, then skips the remaining
+Stratum port, address and TLS certificate checks. Exact duplicates outside the unused API subtree and
+case-variant ambiguities remain errors. The configuration schema therefore defers listener range and
+conflict enforcement to normal startup so an invalid, duplicated or stale listener setting cannot
+block a durable-share import or recovery-state command.
+
+Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
+template paths are retained, while non-string entries or a malformed non-array value cannot block
+share import, verification or acknowledgement. Normal startup continues to reject those values.
+
+The regenerated configuration schema also corrects previously omitted boolean fields
+(`banning.banOnLoginFailure`, `logging.gpdrCompliant`, `pools[].enableAsicBoost` and
+`persistence.postgres.enableLegacyTimestamps`) and requires non-null strings in `coinTemplates` and
+all address-whitelist arrays.
+
 ### Logging and disk recovery
 
 Miningcore now rotates every configured NLog file natively before a write would grow it beyond

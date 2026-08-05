@@ -28,7 +28,7 @@ the original authors and contributors.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
 - Share relays for advanced distributed pool deployments.
-- REST API, WebSocket notifications and Prometheus-compatible metrics.
+- REST API and WebSocket notifications, with isolated administrative and Prometheus listeners.
 - Integrated banning, TLS options, native log rotation and administrative notifications.
 - Litecoin parent-chain and Dogecoin AuxPoW merged mining for SOLO pools.
 - Versioned Ubuntu release archives, non-root containers and source-build paths.
@@ -191,8 +191,9 @@ sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
 Pin a published version rather than copying the example version indefinitely. Copy and edit the
-configuration, then run the image. This example publishes the API and merged-mining LTC Stratum
-port; publish every additional port used by your configuration:
+configuration, then run the image. This example uses a fixed Docker bridge gateway, publishes the
+public API, binds the admin and metrics ports to host loopback, and publishes the merged-mining LTC
+Stratum port. Publish every additional port used by your configuration:
 
 ```console
 MININGCORE_VERSION=v0.1.0-rc.8  # Replace with the release you selected.
@@ -203,10 +204,32 @@ sudo curl -fL \
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
 sudo chown 10001:10001 /var/lib/miningcore
+sudo docker network create --driver bridge \
+  --subnet 172.30.56.0/24 --gateway 172.30.56.1 miningcore
+sudoedit /etc/miningcore/config.json
+```
+
+In the configuration, replace the container-local loopback whitelist entries for the two published
+protected ports with the fixed bridge gateway:
+
+```json
+"adminIpWhitelist": [ "172.30.56.1" ],
+"metricsIpWhitelist": [ "172.30.56.1" ]
+```
+
+If that subnet overlaps the host network, choose another unused private subnet and use its selected
+gateway in both whitelist entries.
+
+Then start Miningcore:
+
+```console
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --network miningcore \
   -p 4000:4000 \
+  -p 127.0.0.1:4001:4001 \
+  -p 127.0.0.1:4002:4002 \
   -p 3032:3032 \
   -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
   -v /var/lib/miningcore:/var/lib/miningcore \
@@ -228,7 +251,10 @@ Run it with the same `/etc/miningcore/config.json` and `/var/lib/miningcore` mou
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --network miningcore \
   -p 4000:4000 \
+  -p 127.0.0.1:4001:4001 \
+  -p 127.0.0.1:4002:4002 \
   -p 3032:3032 \
   -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
   -v /var/lib/miningcore:/var/lib/miningcore \
@@ -240,14 +266,23 @@ Useful management commands:
 ```console
 sudo docker logs -f miningcore
 sudo docker restart miningcore
+curl --fail http://127.0.0.1:4001/api/admin/stats/gc
+curl --fail http://127.0.0.1:4002/metrics --output /dev/null
 sudo docker stop miningcore
 sudo docker rm miningcore
 ```
 
 The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
-means the container itself, not the Docker host. Build on hardware compatible with the production
-host because native hashing libraries can be affected by CPU architecture and features. The full
-release, checksum, provenance, container and update procedure is in [the release guide](docs/releases.md).
+means the container itself, not the Docker host. Host traffic on a published port normally appears
+from the bridge gateway; confirm the observed address in Miningcore's unauthorized-request log if a
+protected request returns `403`, and never broaden a whitelist without verifying that address. A
+containerised Prometheus service should use a dedicated network and a predictable whitelisted
+address. PostgreSQL or coin daemons running directly on the Docker host must likewise be configured
+for controlled access through `172.30.56.1` (or the selected gateway), rather than container-local
+`127.0.0.1`, and restricted with their own authentication and firewall rules. Build on hardware
+compatible with the production host because native hashing libraries can be affected by CPU
+architecture and features. The full release, checksum, provenance, container and update procedure
+is in [the release guide](docs/releases.md).
 
 ## Database setup
 
@@ -381,7 +416,10 @@ a change. Manual edits to balances, blocks or payments can cause financial error
 
 ## API and web front ends
 
-The API is enabled in the example on port `4000`. Common endpoints include:
+The API is enabled in the example on port `4000`. Dedicated `adminPort` and `metricsPort` listeners
+keep protected route families off the public listener while retaining their IP whitelists; see the
+[API listener configuration](docs/api.md#configuration) before publishing any HTTP port. Common
+public endpoints include:
 
 ```text
 GET /api/health-check
