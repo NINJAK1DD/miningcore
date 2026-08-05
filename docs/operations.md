@@ -30,13 +30,18 @@ sudo systemctl status miningcore --no-pager
 sudo journalctl -u miningcore --since '30 minutes ago' --no-pager
 curl --fail http://127.0.0.1:4000/api/health-check
 curl --fail http://127.0.0.1:4000/api/pools
-curl --fail http://127.0.0.1:4001/api/admin/stats/gc
+sudo sh -c '. /etc/miningcore/miningcore.env; curl --fail \
+  --header "Authorization: Bearer $MININGCORE_ADMIN_API_TOKEN" \
+  http://127.0.0.1:4001/api/admin/stats/gc'
 curl --fail http://127.0.0.1:4002/metrics --output /dev/null
 ```
 
 The last two checks use the dedicated ports from `config.example.json`; substitute the production
 values or the shared public port when those optional listeners are omitted. A public-port request to
 a configured protected route should return 404.
+Provision the admin credential according to the
+[administrative API security guide](admin-api-security.md); never put it in `config.json` or a
+public dashboard.
 
 Confirm that:
 

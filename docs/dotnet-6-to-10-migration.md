@@ -256,6 +256,9 @@ Before returning normal traffic, confirm:
 - Public API and WebSocket routes behave as before. When `adminPort` or `metricsPort` is configured,
   move administrative clients and Prometheus to those dedicated ports, update firewall/container
   mappings, and verify that the protected routes return 404 on the public port.
+- Provision `MININGCORE_ADMIN_API_TOKEN` outside `config.json`, add the bearer header to every
+  administrative client, and update state-changing calls to the verbs documented in the
+  [administrative API security guide](admin-api-security.md). Do not give this token to a WebUI.
 
 For example, a deployment using the standard public `api.port` 4000 and `api.metricsPort` 4002 must
 change its Prometheus target from `http://127.0.0.1:4000/metrics` to

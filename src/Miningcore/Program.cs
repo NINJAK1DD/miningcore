@@ -216,6 +216,10 @@ public class Program : ProcessStatusBackgroundService
                 var enableApiRateLimiting = apiConfig.RateLimiting?.Disabled != true;
                 var apiTlsEnable = apiConfig.Tls?.Enabled == true ||
                     !string.IsNullOrEmpty(apiConfig.Tls?.TlsPfxFile);
+                var adminApiCredential = AdminApiCredential.Create(
+                    Environment.GetEnvironmentVariable(
+                        AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
+                var gpdrCompliantLogging = clusterConfig.Logging?.GPDRCompliant == true;
 
                 if(apiTlsEnable)
                 {
@@ -309,13 +313,23 @@ public class Program : ProcessStatusBackgroundService
                         {
                             "/metrics"
                         }, apiConfig.MetricsIpWhitelist);
+                        app.UseMiddleware<AdminApiAuthenticationMiddleware>(
+                            adminApiCredential, gpdrCompliantLogging);
 
                         #if DEBUG
                         app.UseOpenApi();
                         #endif
 
                         app.UseResponseCompression();
-                        app.UseCors(corsPolicyBuilder => corsPolicyBuilder.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+                        // Public API clients retain the existing permissive policy. Administrative
+                        // routes deliberately receive no CORS headers so browser applications cannot
+                        // be taught to carry the operator bearer token.
+                        app.UseWhen(context =>
+                                !AdminApiAuthenticationMiddleware.IsAdminRequest(
+                                    context.Request.Path),
+                            publicApi => publicApi.UseCors(corsPolicyBuilder =>
+                                corsPolicyBuilder.AllowAnyOrigin().AllowAnyMethod()
+                                    .AllowAnyHeader()));
                         app.UseWebSockets();
                         app.MapWebSocketManager("/notifications", app.ApplicationServices.GetService<WebSocketNotificationsRelay>());
                         app.UseMetricServer();
@@ -332,6 +346,21 @@ public class Program : ProcessStatusBackgroundService
                     logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}/api/admin");
                     logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}/metrics");
                     logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{listenerHost}:{endpointPorts.PublicPort}/notifications");
+
+                    switch(adminApiCredential.Status)
+                    {
+                        case AdminApiCredentialStatus.Configured:
+                            logger.Info("Administrative API bearer authentication enabled");
+                            if(!apiTlsEnable && !IPAddress.IsLoopback(address))
+                                logger.Warn("Administrative API bearer authentication is using HTTP on a non-loopback listener; restrict the listener to a trusted network or enable TLS before sending the token");
+                            break;
+                        case AdminApiCredentialStatus.Invalid:
+                            logger.Warn($"Administrative API disabled: {AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} must contain at least {AdminApiCredential.MinimumTokenBytes} UTF-8 bytes and no whitespace");
+                            break;
+                        default:
+                            logger.Warn($"Administrative API disabled until {AdminApiAuthenticationMiddleware.TokenEnvironmentVariable} is configured");
+                            break;
+                    }
 
                     foreach(var warning in GetSharedProtectedRouteWarnings(
                                 apiConfig))

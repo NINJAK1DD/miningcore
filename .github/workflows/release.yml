@@ -88,6 +88,7 @@ jobs:
           container=miningcore-api-smoke
           shared_container=miningcore-api-shared
           proxy_container=miningcore-api-nginx
+          admin_token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
           cleanup() {
             docker rm -f "$container" >/dev/null 2>&1 || true
@@ -102,6 +103,7 @@ jobs:
 
           docker run --detach --name "$container" \
             --network "$network" \
+            --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
             --publish 127.0.0.1:4001:4001 \
             --publish 127.0.0.1:4002:4002 \
             --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
@@ -114,6 +116,7 @@ jobs:
           for attempt in {1..30}; do
             admin_status="$(curl --silent --output /dev/null \
               --write-out '%{http_code}' \
+              --header "Authorization: Bearer $admin_token" \
               http://127.0.0.1:4001/api/admin/status || true)"
             if [[ "$admin_status" == 200 ]]; then
               break
@@ -128,6 +131,9 @@ jobs:
           fi
 
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4001/api/admin/status)" = 401
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4002/metrics)" = 200
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4001/api/pools)" = 404
@@ -139,6 +145,7 @@ jobs:
           docker run --detach --name "$shared_container" \
             --network "$network" \
             --ip 172.30.56.2 \
+            --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
             --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \

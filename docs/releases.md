@@ -128,6 +128,12 @@ allows 90 seconds for the application's bounded clean shutdown and durable recov
 
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service
+token="$(openssl rand -hex 32)"
+printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
+  sudo tee /etc/miningcore/miningcore.env >/dev/null
+unset token
+sudo chown root:root /etc/miningcore/miningcore.env
+sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now miningcore
 sudo systemctl status miningcore
@@ -171,11 +177,18 @@ sudo curl -fL \
   -o /etc/miningcore/config.json
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
+token="$(openssl rand -hex 32)"
+printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
+  sudo tee /etc/miningcore/miningcore.env >/dev/null
+unset token
+sudo chown root:root /etc/miningcore/miningcore.env
+sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo chown 10001:10001 /var/lib/miningcore
 sudo docker pull "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --env-file /etc/miningcore/miningcore.env \
   -p 4000:4000 \
   -p 3032:3032 \
   -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
@@ -192,6 +205,23 @@ from the container network.
 
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
+
+### Security: administrative API bearer authentication and safe verbs
+
+Every `/api/admin` request now requires both the existing source-IP whitelist and a bearer token
+provided through the `MININGCORE_ADMIN_API_TOKEN` environment variable. The secret is deliberately
+not accepted in `config.json`. If it is missing, malformed or too short, Miningcore keeps mining and
+public API services online but returns `503 Service Unavailable` for administrative routes. Admin
+routes emit no CORS headers, and operators must never expose the token to a browser or public WebUI.
+
+Before upgrading, generate and provision a token using the
+[administrative API security guide](admin-api-security.md). Existing administrative clients must add
+the `Authorization: Bearer TOKEN` header. Logging-level and payment-processing mutations, and the
+admin miner-settings mutation, now use `PUT` rather than `GET` or `POST`; force-GC remains `POST`.
+Read-only administrative `GET` routes also require authentication. The former public
+`POST /api/pools/{poolId}/miners/{address}/settings` endpoint has been removed because knowledge of a
+recent mining IP address was not adequate authorization. This is a breaking but necessary security
+change for admin scripts and front ends.
 
 ### Security: administrative API whitelist enforcement
 

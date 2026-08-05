@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Miningcore.Api.Middlewares;
@@ -60,10 +61,14 @@ static async Task<int> RunApiListenerAsync(string[] args)
     var ports = MiningcoreProgram.ResolveApiEndpointPorts(api);
     var adminWhitelist = BuildWhitelist(api.AdminIpWhitelist);
     var metricsWhitelist = BuildWhitelist(api.MetricsIpWhitelist);
+    var adminCredential = AdminApiCredential.Create(
+        Environment.GetEnvironmentVariable(
+            AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
 
     using var host = Host.CreateDefaultBuilder()
         .ConfigureLogging(logging => logging.ClearProviders())
         .ConfigureWebHostDefaults(builder => builder
+            .ConfigureServices(services => services.AddCors())
             .UseKestrel(options => MiningcoreProgram.ConfigureApiListeners(options,
                 address, ports))
             .Configure(app =>
@@ -85,6 +90,13 @@ static async Task<int> RunApiListenerAsync(string[] args)
                     new[] { "/api/admin" }, adminWhitelist, false);
                 app.UseMiddleware<IPAccessWhitelistMiddleware>(
                     new[] { "/metrics" }, metricsWhitelist, false);
+                app.UseMiddleware<AdminApiAuthenticationMiddleware>(
+                    adminCredential, false);
+                app.UseWhen(context =>
+                        !AdminApiAuthenticationMiddleware.IsAdminRequest(
+                            context.Request.Path),
+                    publicApi => publicApi.UseCors(cors => cors.AllowAnyOrigin()
+                        .AllowAnyMethod().AllowAnyHeader()));
                 app.Run(context =>
                 {
                     context.Response.StatusCode = StatusCodes.Status200OK;

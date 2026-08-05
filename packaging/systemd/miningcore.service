@@ -26,6 +26,8 @@ TimeoutStopSec=90
 
 Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
 Environment=LD_LIBRARY_PATH=/opt/miningcore
+# Optional root-owned secrets file. The administrative API fails closed when its token is absent.
+EnvironmentFile=-/etc/miningcore/miningcore.env
 
 StateDirectory=miningcore
 StateDirectoryMode=0750

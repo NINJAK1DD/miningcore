@@ -35,7 +35,7 @@ public class AdminApiController : ApiControllerBase
 
     #region Actions
 
-    [HttpGet("logging/level/{level}")]
+    [HttpPut("logging/level/{level}")]
     public ActionResult<string> SetLoggingLevel(string level)
     {
         if (string.IsNullOrEmpty(level))
@@ -75,7 +75,7 @@ public class AdminApiController : ApiControllerBase
         return "Ok";
     }
 
-    [HttpGet("payment/processing/enable")]
+    [HttpPut("payment/processing/enable")]
     public ActionResult<string> EnablePoolsPaymentProcessing()
     {
         var poolIdsUpdated = new List<string>();
@@ -95,7 +95,7 @@ public class AdminApiController : ApiControllerBase
         return poolIdsCsv;
     }
 
-    [HttpGet("payment/processing/disable")]
+    [HttpPut("payment/processing/disable")]
     public ActionResult<string> DisablePoolsPaymentProcessing()
     {
         var poolIdsUpdated = new List<string>();
@@ -115,7 +115,7 @@ public class AdminApiController : ApiControllerBase
         return poolIdsCsv;
     }
 
-    [HttpGet("payment/processing/{poolId}/enable")]
+    [HttpPut("payment/processing/{poolId}/enable")]
     public ActionResult<string> EnablePoolPaymentProcessing(string poolId)
     {
         if (string.IsNullOrEmpty(poolId))
@@ -130,7 +130,7 @@ public class AdminApiController : ApiControllerBase
         return "Ok";
     }
 
-    [HttpGet("payment/processing/{poolId}/disable")]
+    [HttpPut("payment/processing/{poolId}/disable")]
     public ActionResult<string> DisablePoolPaymentProcessing(string poolId)
     {
         if (string.IsNullOrEmpty(poolId))
@@ -185,7 +185,7 @@ public class AdminApiController : ApiControllerBase
         return mapper.Map<Responses.MinerSettings>(result);
     }
 
-    [HttpPost("pools/{poolId}/miners/{address}/settings")]
+    [HttpPut("pools/{poolId}/miners/{address}/settings")]
     public async Task<Responses.MinerSettings> SetMinerSettingsAsync(string poolId, string address,
         [FromBody] Responses.MinerSettings settings)
     {

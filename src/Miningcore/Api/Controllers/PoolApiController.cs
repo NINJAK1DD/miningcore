@@ -744,57 +744,6 @@ public class PoolApiController : ApiControllerBase
         return mapper.Map<Responses.MinerSettings>(result);
     }
 
-    [HttpPost("{poolId}/miners/{address}/settings")]
-    public async Task<Responses.MinerSettings> SetMinerSettingsAsync(string poolId, string address,
-        [FromBody] Requests.UpdateMinerSettingsRequest request, CancellationToken ct)
-    {
-        var pool = GetPool(poolId);
-
-        if(string.IsNullOrEmpty(address))
-            throw new ApiException("Invalid or missing miner address", HttpStatusCode.NotFound);
-
-        if(pool.Template.Family == CoinFamily.Ethereum)
-            address = address.ToLower();
-
-        if(request?.Settings == null)
-            throw new ApiException("Invalid or missing settings", HttpStatusCode.BadRequest);
-
-        if(!IPAddress.TryParse(request.IpAddress, out var requestIp))
-            throw new ApiException("Invalid IP address", HttpStatusCode.BadRequest);
-
-        // fetch recent IPs
-        var ips = await cf.Run(con => shareRepo.GetRecentyUsedIpAddressesAsync(con, null, poolId, address, ct));
-
-        // any known ips?
-        if(ips == null || ips.Length == 0)
-            throw new ApiException("Address not recently used for mining", HttpStatusCode.NotFound);
-
-        // match?
-        if(!ips.Any(x => IPAddress.TryParse(x, out var ipAddress) && ipAddress.IsEqual(requestIp)))
-            throw new ApiException("None of the recently used IP addresses matches the request", HttpStatusCode.Forbidden);
-
-        // map settings
-        var mapped = mapper.Map<Persistence.Model.MinerSettings>(request.Settings);
-
-        // clamp limit
-        if(pool.PaymentProcessing != null)
-            mapped.PaymentThreshold = Math.Max(mapped.PaymentThreshold, pool.PaymentProcessing.MinimumPayment);
-
-        mapped.PoolId = pool.Id;
-        mapped.Address = address;
-
-        // finally update the settings
-        return await cf.RunTx(async (con, tx) =>
-        {
-            await minerRepo.UpdateSettingsAsync(con, tx, mapped);
-
-            logger.Info(() => $"Updated settings for pool {pool.Id}, miner {address}");
-
-            var result = await minerRepo.GetSettingsAsync(con, tx, mapped.PoolId, mapped.Address);
-            return mapper.Map<Responses.MinerSettings>(result);
-        });
-    }
-
     #endregion // Actions
 
     private async Task<Responses.WorkerPerformanceStatsContainer[]> GetMinerPerformanceInternal(

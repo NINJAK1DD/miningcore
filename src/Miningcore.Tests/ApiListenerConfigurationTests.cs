@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -17,6 +18,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Miningcore.Api.Middlewares;
 using Miningcore.Configuration;
@@ -1821,6 +1823,73 @@ public class ApiListenerConfigurationTests
         return $"{{{injected}{(existing.Length > 0 ? "," : string.Empty)}{existing}}}";
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdministrativeRoutes_RequireBearerToken(bool shared)
+    {
+        await using var host = await StartRouteTestHostWithRetryAsync(shared);
+        using var client = new HttpClient();
+        var uri = $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status";
+
+        using var missing = await client.GetAsync(uri);
+        Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
+        Assert.Equal("Bearer", missing.Headers.WwwAuthenticate.Single().Scheme);
+        Assert.Equal("no-store", missing.Headers.CacheControl?.ToString());
+
+        using var wrongRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        wrongRequest.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", new string('b', 64));
+        using var wrong = await client.SendAsync(wrongRequest);
+        Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
+
+        using var validRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        validRequest.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", TestAdminToken);
+        using var valid = await client.SendAsync(validRequest);
+        Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingAdministrativeCredential_FailsClosedWithoutBlockingPublicApi(
+        bool shared)
+    {
+        await using var host = await StartRouteTestHostWithRetryAsync(shared,
+            null, false);
+        using var client = new HttpClient();
+
+        await AssertStatusAsync(client, host.Ports.PublicPort, "/api/pools",
+            HttpStatusCode.OK);
+
+        using var response = await client.GetAsync(
+            $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+    }
+
+    [Fact]
+    public async Task Cors_IsAvailableForPublicRoutesButNotAdministrativeRoutes()
+    {
+        await using var host = await StartRouteTestHostWithRetryAsync();
+        using var client = new HttpClient();
+
+        using var publicRequest = CreatePreflightRequest(
+            $"http://127.0.0.1:{host.Ports.PublicPort}/api/pools");
+        using var publicResponse = await client.SendAsync(publicRequest);
+        Assert.Equal(HttpStatusCode.NoContent, publicResponse.StatusCode);
+        Assert.Contains("*", publicResponse.Headers.GetValues(
+            "Access-Control-Allow-Origin"));
+
+        using var adminRequest = CreatePreflightRequest(
+            $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
+        using var adminResponse = await client.SendAsync(adminRequest);
+        Assert.Equal(HttpStatusCode.Unauthorized, adminResponse.StatusCode);
+        Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Origin"));
+        Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Headers"));
+    }
+
     private static string SerializeConfig(ClusterConfig config) =>
         JsonConvert.SerializeObject(config, new JsonSerializerSettings
         {
@@ -1895,7 +1964,8 @@ public class ApiListenerConfigurationTests
 
     private static async Task<RunningRouteTestHost>
         StartRouteTestHostWithRetryAsync(bool shared = false,
-            X509Certificate2 certificate = null)
+            X509Certificate2 certificate = null,
+            bool configureAdminCredential = true)
     {
         Exception lastError = null;
 
@@ -1910,7 +1980,8 @@ public class ApiListenerConfigurationTests
 
             try
             {
-                var host = await StartRouteTestHostAsync(ports, certificate);
+                var host = await StartRouteTestHostAsync(ports, certificate,
+                    configureAdminCredential);
                 return new RunningRouteTestHost(host, ports);
             }
             catch(Exception ex) when(IsAddressInUse(ex))
@@ -1925,11 +1996,15 @@ public class ApiListenerConfigurationTests
     }
 
     private static async Task<IHost> StartRouteTestHostAsync(
-        Program.ApiEndpointPorts ports, X509Certificate2 certificate = null)
+        Program.ApiEndpointPorts ports, X509Certificate2 certificate = null,
+        bool configureAdminCredential = true)
     {
+        var adminCredential = AdminApiCredential.Create(
+            configureAdminCredential ? TestAdminToken : null);
         var host = Host.CreateDefaultBuilder()
             .ConfigureLogging(logging => logging.ClearProviders())
             .ConfigureWebHostDefaults(builder => builder
+                .ConfigureServices(services => services.AddCors())
                 .UseKestrel(options => Program.ConfigureApiListeners(options,
                     IPAddress.Loopback, ports, listenOptions =>
                     {
@@ -1951,6 +2026,14 @@ public class ApiListenerConfigurationTests
 
                         await next();
                     });
+                    app.UseMiddleware<AdminApiAuthenticationMiddleware>(
+                        adminCredential, false);
+                    app.UseWhen(context =>
+                            !AdminApiAuthenticationMiddleware.IsAdminRequest(
+                                context.Request.Path),
+                        publicApi => publicApi.UseCors(cors =>
+                            cors.AllowAnyOrigin().AllowAnyMethod()
+                                .AllowAnyHeader()));
                     app.UseWebSockets();
                     app.Run(async context =>
                     {
@@ -2033,10 +2116,26 @@ public class ApiListenerConfigurationTests
     private static async Task AssertStatusAsync(HttpClient client, int port,
         string path, HttpStatusCode expected, bool tls = false)
     {
-        using var response = await client.GetAsync(
+        using var request = new HttpRequestMessage(HttpMethod.Get,
             $"http{(tls ? "s" : string.Empty)}://127.0.0.1:{port}{path}");
+        if(AdminApiAuthenticationMiddleware.IsAdminRequest(path))
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", TestAdminToken);
+        using var response = await client.SendAsync(request);
         Assert.Equal(expected, response.StatusCode);
     }
+
+    private static HttpRequestMessage CreatePreflightRequest(string uri)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Options, uri);
+        request.Headers.Add("Origin", "https://dashboard.example");
+        request.Headers.Add("Access-Control-Request-Method", "GET");
+        request.Headers.Add("Access-Control-Request-Headers", "authorization");
+        return request;
+    }
+
+    private const string TestAdminToken =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     private static X509Certificate2 CreateServerCertificate()
     {
