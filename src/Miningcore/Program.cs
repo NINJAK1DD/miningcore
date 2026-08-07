@@ -90,7 +90,7 @@ public class Program : ProcessStatusBackgroundService
     internal const int MaxLogArchiveFiles = 4;
 
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
-    private static readonly AdminApiCredentialProvider AdminApiCredentialProvider =
+    private static readonly AdminApiCredentialProvider adminApiCredentialProvider =
         new();
 
     public static async Task<int> Main(string[] args)
@@ -859,7 +859,7 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static AdminApiCredential GetAdminApiCredential() =>
-        AdminApiCredentialProvider.Get();
+        adminApiCredentialProvider.Get();
 
     internal static int? FindApiListenerStratumPortConflict(
         ClusterConfig config, bool recoveryMode)

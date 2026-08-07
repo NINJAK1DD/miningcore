@@ -78,6 +78,8 @@ internal sealed class AdminApiCredentialProvider
         credential = new Lazy<AdminApiCredential>(CreateFromEnvironment);
     }
 
+    // Repeated in-process host construction must reuse the original credential
+    // instead of silently downgrading to Missing after its environment copy is cleared.
     private readonly Lazy<AdminApiCredential> credential;
 
     public AdminApiCredential Get()

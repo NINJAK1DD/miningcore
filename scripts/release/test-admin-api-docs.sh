@@ -45,6 +45,6 @@ assert_contains "root-only credential mode" \
 assert_prose_contains "Docker recreation warning" \
   '`docker[[:space:]]+restart`[[:space:]]+is[[:space:]]+insufficient'
 assert_prose_contains "tombstone-route prohibition" \
-  '`410[[:space:]]+Gone`[[:space:]]+tombstone[[:space:]]+is[[:space:]]+registered[[:space:]]+by[[:space:]]+design'
+  'No[[:space:]]+unauthenticated[[:space:]]+`410[[:space:]]+Gone`[[:space:]]+tombstone[[:space:]]+is[[:space:]]+registered[[:space:]]+by[[:space:]]+design'
 
 echo "Administrative API documentation invariants are present"

@@ -84,7 +84,7 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
-    public void EnvironmentCredential_IsDigestedRemovedAndCachedForProcessLifetime()
+    public void EnvironmentCredential_IsDigestedRemovedAndCachedForProviderLifetime()
     {
         var variable = AdminApiAuthenticationMiddleware
             .TokenEnvironmentVariable;
