@@ -15,6 +15,18 @@ assert_contains() {
   fi
 }
 
+assert_prose_contains() {
+  local description=$1
+  local pattern=$2
+
+  # Treat the document as one record so ordinary Markdown reflow does not
+  # invalidate security invariants merely by moving words across lines.
+  if ! grep -Ezq "$pattern" "$security_guide"; then
+    echo "Administrative API guide is missing: $description" >&2
+    exit 1
+  fi
+}
+
 if grep -Eq 'install -d.*-g root.*/etc/miningcore' "$security_guide"; then
   echo "Administrative API guide must not make /etc/miningcore root:root mode 0750" >&2
   exit 1
@@ -30,7 +42,9 @@ assert_contains "root-only credential ownership" \
   'sudo chown root:root /etc/miningcore/miningcore.env'
 assert_contains "root-only credential mode" \
   'sudo chmod 0600 /etc/miningcore/miningcore.env'
-assert_contains "Docker recreation warning" \
-  '`docker restart` is insufficient'
+assert_prose_contains "Docker recreation warning" \
+  '`docker[[:space:]]+restart`[[:space:]]+is[[:space:]]+insufficient'
+assert_prose_contains "tombstone-route prohibition" \
+  '`410[[:space:]]+Gone`[[:space:]]+tombstone[[:space:]]+is[[:space:]]+registered[[:space:]]+by[[:space:]]+design'
 
 echo "Administrative API documentation invariants are present"
