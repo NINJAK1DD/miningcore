@@ -65,9 +65,13 @@ public class HostedServiceStartupTests
     {
         var telemetry = new Subject<TelemetryEvent>();
         var hashrates = new Subject<HashrateNotification>();
+        var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
+        var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
         var messageBus = Substitute.For<IMessageBus>();
         messageBus.Listen<TelemetryEvent>().Returns(telemetry);
         messageBus.Listen<HashrateNotification>().Returns(hashrates);
+        messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
+        messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
         var publisher = new MetricsPublisher(messageBus);
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
@@ -75,6 +79,8 @@ public class HostedServiceStartupTests
 
         Assert.True(telemetry.HasObservers);
         Assert.True(hashrates.HasObservers);
+        Assert.True(auxiliaryRpc.HasObservers);
+        Assert.True(auxiliaryState.HasObservers);
         telemetry.OnNext(new TelemetryEvent("pool", TelemetryCategory.Share,
             TimeSpan.Zero, true));
         hashrates.OnNext(new HashrateNotification { PoolId = "pool", Hashrate = 1 });
@@ -83,6 +89,62 @@ public class HostedServiceStartupTests
 
         Assert.False(telemetry.HasObservers);
         Assert.False(hashrates.HasObservers);
+        Assert.False(auxiliaryRpc.HasObservers);
+        Assert.False(auxiliaryState.HasObservers);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_ExportsAuxiliaryTemplateOutcomesAndFallbackState()
+    {
+        var telemetry = new Subject<TelemetryEvent>();
+        var hashrates = new Subject<HashrateNotification>();
+        var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
+        var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<TelemetryEvent>().Returns(telemetry);
+        messageBus.Listen<HashrateNotification>().Returns(hashrates);
+        messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
+        messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        var registry = Metrics.NewCustomRegistry();
+        var publisher = new MetricsPublisher(messageBus, null,
+            Metrics.WithCustomRegistry(registry), registry);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await publisher.StartAsync(stop.Token);
+
+        auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("doge-solo",
+            AuxiliaryTemplateRpcOutcome.Timeout, TimeSpan.FromMilliseconds(1000)));
+        auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("doge-solo",
+            AuxiliaryTemplateRpcOutcome.Cancellation, TimeSpan.FromMilliseconds(25)));
+        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("doge-solo",
+            true, true));
+
+        var degraded = await WaitForMetricsAsync(registry, text =>
+            text.Contains("miningcore_auxiliary_template_degraded{pool=\"doge-solo\"} 1") &&
+            text.Contains("miningcore_auxiliary_template_rpc_total{pool=\"doge-solo\",outcome=\"timeout\"} 1") &&
+            text.Contains("miningcore_auxiliary_template_rpc_total{pool=\"doge-solo\",outcome=\"cancellation\"} 1"),
+            stop.Token);
+
+        Assert.Contains(
+            "miningcore_auxiliary_template_rpc_duration_ms_sum{pool=\"doge-solo\",outcome=\"timeout\"} 1000",
+            degraded);
+        Assert.Contains(
+            "miningcore_auxiliary_template_rpc_duration_ms_count{pool=\"doge-solo\",outcome=\"timeout\"} 1",
+            degraded);
+        Assert.Contains(
+            "miningcore_auxiliary_template_fallback_total{pool=\"doge-solo\"} 1",
+            degraded);
+
+        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("doge-solo",
+            false, false));
+        var recovered = await WaitForMetricsAsync(registry, text =>
+            text.Contains("miningcore_auxiliary_template_degraded{pool=\"doge-solo\"} 0"),
+            stop.Token);
+
+        Assert.Contains(
+            "miningcore_auxiliary_template_fallback_total{pool=\"doge-solo\"} 1",
+            recovered);
+        await publisher.StopAsync(stop.Token);
     }
 
     [Fact]
@@ -350,5 +412,21 @@ public class HostedServiceStartupTests
     {
         while(!condition())
             await Task.Delay(10, ct);
+    }
+
+    private static async Task<string> WaitForMetricsAsync(CollectorRegistry registry,
+        Func<string, bool> condition, CancellationToken ct)
+    {
+        while(true)
+        {
+            await using var stream = new MemoryStream();
+            await registry.CollectAndExportAsTextAsync(stream, ct);
+            var text = Encoding.UTF8.GetString(stream.ToArray());
+
+            if(condition(text))
+                return text;
+
+            await Task.Delay(10, ct);
+        }
     }
 }

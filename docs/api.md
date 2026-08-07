@@ -239,6 +239,19 @@ so concurrent producers cannot make the high-water mark miss a reached capacity.
 depth approaches capacity and on any increase in the overflow counter. A sustained non-zero
 emergency-journal depth requires investigation of PostgreSQL latency or primary-queue saturation.
 
+Litecoin-Dogecoin merged mining publishes four auxiliary-template series:
+
+| Metric | Meaning |
+| --- | --- |
+| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by auxiliary pool and bounded outcome |
+| `miningcore_auxiliary_template_rpc_total` | Attempts by `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` outcome |
+| `miningcore_auxiliary_template_fallback_total` | Refreshes that reused the last valid auxiliary template |
+| `miningcore_auxiliary_template_degraded` | `1` while a cached template is in use; otherwise `0` |
+
+The outcome labels are fixed and contain no daemon errors, addresses or other unbounded values.
+Use the [merged-mining operations guide](merged-mining-litecoin-dogecoin.md#template-refresh) before
+changing `auxiliaryTemplatePollTimeoutMs`; increasing it can delay a new parent-chain job.
+
 ## Front ends and reverse proxies
 
 A static front end should call only the public API. Put both behind HTTPS, restrict cross-origin access

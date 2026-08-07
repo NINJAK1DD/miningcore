@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -7,6 +9,7 @@ using Miningcore.Contracts;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -53,6 +56,12 @@ internal enum ParentBlockLookupResult
     KnownInactive,
     Unavailable,
 }
+
+internal sealed record AuxiliaryTemplateRpcResult(
+    RpcResponse<AuxBlockTemplate> Response,
+    AuxiliaryTemplateRpcOutcome Outcome,
+    TimeSpan Elapsed,
+    TimeSpan Timeout);
 
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
 {
@@ -175,10 +184,15 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         do
         {
-            var response = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout);
+            var request = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout);
+            if(request.Outcome == AuxiliaryTemplateRpcOutcome.Cancellation)
+                ct.ThrowIfCancellationRequested();
+
+            var response = request.Response;
             if(response.Error == null && response.Response != null)
             {
                 startupAuxiliaryTemplate = response.Response;
+                PublishAuxiliaryTemplateState(false, false);
                 logger.Info(() => $"Auxiliary daemon for {auxiliaryCoin.Name} is synched");
                 return;
             }
@@ -194,14 +208,72 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
-    private async Task<RpcResponse<AuxBlockTemplate>> GetAuxBlockTemplateAsync(CancellationToken ct,
+    private async Task<AuxiliaryTemplateRpcResult> GetAuxBlockTemplateAsync(CancellationToken ct,
         TimeSpan timeout)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(timeout);
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct,
+            timeoutCts.Token);
+        var stopwatch = Stopwatch.StartNew();
 
-        return await auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger, CreateAuxBlock, cts.Token,
-            new[] { auxiliaryPoolConfig.Address });
+        var response = await auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger,
+            CreateAuxBlock, requestCts.Token, new[] { auxiliaryPoolConfig.Address });
+        stopwatch.Stop();
+        timeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
+
+        var outcome = ClassifyAuxiliaryTemplateRpcOutcome(response,
+            ct.IsCancellationRequested, timeoutCts.IsCancellationRequested);
+        messageBus.SendMessage(new AuxiliaryTemplateRpcTelemetryEvent(
+            auxiliaryPoolConfig.Id, outcome, stopwatch.Elapsed));
+
+        return new AuxiliaryTemplateRpcResult(response, outcome,
+            stopwatch.Elapsed, timeout);
+    }
+
+    internal static AuxiliaryTemplateRpcOutcome ClassifyAuxiliaryTemplateRpcOutcome(
+        RpcResponse<AuxBlockTemplate> response, bool callerCancellationRequested,
+        bool timeoutCancellationRequested)
+    {
+        if(response?.Error == null && response?.Response != null)
+            return AuxiliaryTemplateRpcOutcome.Success;
+
+        if(callerCancellationRequested)
+            return AuxiliaryTemplateRpcOutcome.Cancellation;
+
+        if(timeoutCancellationRequested)
+            return AuxiliaryTemplateRpcOutcome.Timeout;
+
+        if(response == null || response.Error?.InnerException != null ||
+            response.Error == null)
+            return AuxiliaryTemplateRpcOutcome.TransportFailure;
+
+        return AuxiliaryTemplateRpcOutcome.RpcError;
+    }
+
+    internal static string DescribeAuxiliaryTemplateRpcFailure(
+        AuxiliaryTemplateRpcResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        return result.Outcome switch
+        {
+            AuxiliaryTemplateRpcOutcome.Timeout =>
+                $"timed out after {result.Timeout.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture)} ms",
+            AuxiliaryTemplateRpcOutcome.Cancellation =>
+                "cancelled by host shutdown",
+            AuxiliaryTemplateRpcOutcome.RpcError =>
+                result.Response?.Error?.Message ?? "RPC error",
+            AuxiliaryTemplateRpcOutcome.TransportFailure =>
+                result.Response?.Error?.Message ?? "transport failure",
+            _ => throw new InvalidOperationException(
+                "A successful auxiliary-template RPC has no failure description"),
+        };
+    }
+
+    private void PublishAuxiliaryTemplateState(bool degraded, bool fallbackUsed)
+    {
+        messageBus.SendMessage(new AuxiliaryTemplateStateTelemetryEvent(
+            auxiliaryPoolConfig.Id, degraded, fallbackUsed));
     }
 
     internal static AuxiliaryTemplateChange ClassifyAuxiliaryTemplateChange(
@@ -262,28 +334,33 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 var auxiliaryTemplateTimeout = previousAuxiliaryTemplate == null
                     ? AuxiliaryStartupTimeout
                     : GetAuxiliaryTemplatePollTimeout();
-                var auxiliaryResponse = await GetAuxBlockTemplateAsync(ct,
+                var auxiliaryRequest = await GetAuxBlockTemplateAsync(ct,
                     auxiliaryTemplateTimeout);
+                if(auxiliaryRequest.Outcome == AuxiliaryTemplateRpcOutcome.Cancellation)
+                    ct.ThrowIfCancellationRequested();
+
+                var auxiliaryResponse = auxiliaryRequest.Response;
                 var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
                     previousAuxiliaryTemplate, auxiliaryResponse,
                     out auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
 
                 if(!hasAuxiliaryTemplate)
                 {
-                    var error = auxiliaryResponse.Error?.Message ?? "empty response";
+                    var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
                     logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
                     return (false, forceUpdate);
                 }
 
                 if(usedCachedAuxiliaryTemplate)
                 {
-                    var error = auxiliaryResponse.Error?.Message ?? "empty response";
+                    var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
                     if(!auxiliaryTemplateDegraded)
                         logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
                     else
                         logger.Debug(() => $"Auxiliary template remains unavailable: {error}");
 
                     auxiliaryTemplateDegraded = true;
+                    PublishAuxiliaryTemplateState(true, true);
                 }
                 else
                 {
@@ -291,6 +368,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                         logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
 
                     auxiliaryTemplateDegraded = false;
+                    PublishAuxiliaryTemplateState(false, false);
                 }
             }
 

@@ -94,6 +94,34 @@ Startup, recurring polling, address validation, submission and ambiguity lookup 
 timeouts. `auxiliaryTemplatePollTimeoutMs` controls recurring Dogecoin `createauxblock` calls and
 defaults to 500 ms.
 
+When a recurring request exceeds that deadline, Miningcore reports `timed out after N ms` rather
+than the transport client's generic `Cancelled` text. Host or shutdown cancellation is classified
+separately and does not place the auxiliary-template path into a degraded state. A timeout or other
+failed refresh reuses the last valid DOGE template so Litecoin mining can continue; the first
+fallback logs `Auxiliary template update failed`, and a later successful refresh logs
+`Auxiliary template updates recovered`.
+
+Do not raise the timeout solely because one warning appears. Confirm recovery, then inspect warning
+frequency, Dogecoin synchronization, CPU and storage pressure, RPC saturation, and correlation with
+payout activity. Increase the setting modestly only when a healthy local daemon consistently needs
+longer. A longer deadline can delay a fresh parent Litecoin job. The 500 ms default remains the
+general recommendation; an operator-specific 1000 ms setting can be reasonable when measurements
+support it.
+
+Prometheus exposes the complete refresh path, including attempts that time out or are cancelled:
+
+| Metric | Meaning |
+| --- | --- |
+| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by auxiliary pool and bounded outcome |
+| `miningcore_auxiliary_template_rpc_total` | Attempt count with outcome `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` |
+| `miningcore_auxiliary_template_fallback_total` | Number of refreshes that reused the last valid template |
+| `miningcore_auxiliary_template_degraded` | `1` while parent mining uses a cached auxiliary template; `0` after recovery |
+
+Alert on a sustained degraded gauge, any continuing increase in the timeout or transport-failure
+counters, or fallbacks without a prompt return to zero. The ordinary
+`miningcore_rpcrequest_execution_time` series remains useful for other RPC methods, but these
+auxiliary-specific series are the authoritative view of failed and cancelled template attempts.
+
 ### Candidate ownership and deadlines
 
 Merged share processing obtains a preparation lease before proof validation. Once local validation
