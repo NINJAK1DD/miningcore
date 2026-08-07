@@ -26,6 +26,22 @@ Keep the admin and metrics listeners private. If `adminIpWhitelist` or `metricsI
 the default is localhost. If a reverse proxy is used, test which client address Miningcore observes
 before changing a whitelist.
 
+Every administrative request also requires `Authorization: Bearer TOKEN`, where `TOKEN` comes only
+from the `MININGCORE_ADMIN_API_TOKEN` process environment. Missing or invalid token configuration
+fails closed for `/api/admin` without stopping pools or the public API. Administrative responses do
+not include CORS headers, and the token must never be supplied to browser code. The token must be
+exactly 64 hexadecimal characters. Generate, provision, test and rotate it using the
+[administrative API security guide](admin-api-security.md).
+
+The public `/api/help` route lists only public API operations. It deliberately omits
+`/api/admin` routes so unauthenticated callers cannot use it as an administrative route catalogue.
+Prometheus exports `miningcore_admin_api_authentication_total` with `accepted`, `rejected` and
+`unavailable` outcomes so operators can alert on authentication failures without relying on
+per-request log messages. Miningcore writes the first rejected bearer attempt and at most one
+suppression summary per minute at `Info`; intervening details remain available at `Debug`. This
+process-wide limit uses a monotonic elapsed-time clock and prevents unauthenticated clients from
+flooding normal operational logs even when the host wall clock is corrected.
+
 When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
 only that route family on it. Public REST and WebSocket routes remain on `port`; requests for
 `/api/admin` or `/metrics` on the public listener, and requests for public routes on a dedicated
@@ -182,12 +198,18 @@ displaying `error`.
 
 When `metricsPort` is configured, Prometheus-compatible metrics are served from `/metrics` on that
 listener. Administrative routes are under `/api/admin` on `adminPort`; they can change logging and
-payment-processing state. Never publish the admin port through the public reverse proxy.
+payment-processing state. All read and write routes require the bearer token in addition to the IP
+whitelist. Never publish the admin port through the public reverse proxy.
 
 For the example configuration, local checks and a Prometheus scrape target use:
 
 ```console
-curl http://127.0.0.1:4001/api/admin/stats/gc
+sudo sh -c '
+  . /etc/miningcore/miningcore.env
+  printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
+    curl --fail --header @- \
+      http://127.0.0.1:4001/api/admin/stats/gc
+'
 curl http://127.0.0.1:4002/metrics
 ```
 
@@ -222,6 +244,12 @@ emergency-journal depth requires investigation of PostgreSQL latency or primary-
 A static front end should call only the public API. Put both behind HTTPS, restrict cross-origin access
 to expected sites, rate-limit expensive miner/history routes, and cache only responses whose freshness
 requirements permit it.
+
+The public miner-settings route is read-only. Updating settings requires authenticated
+`PUT /api/admin/pools/{poolId}/miners/{address}/settings`. A public WebUI must not call this route
+directly or receive the operator token. If self-service settings are required, place a trusted
+server-side service with its own user authentication and authorization between the browser and
+Miningcore.
 
 The companion [NINJAK1DD/Miningcore.WebUI](https://github.com/NINJAK1DD/Miningcore.WebUI) consumes
 this fork's `bestShare` and `bestSessionShare` miner fields. Keep the frontend and backend API

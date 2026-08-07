@@ -18,6 +18,7 @@ contains the shortest installation path; the documents below hold the operationa
 | Task | Guide |
 | --- | --- |
 | Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
+| Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
 | Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |

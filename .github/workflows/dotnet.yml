@@ -32,6 +32,10 @@ jobs:
       with:
         fetch-depth: 0
 
+    - name: Validate administrative API documentation
+      shell: bash
+      run: bash scripts/release/test-admin-api-docs.sh
+
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
       # libzmq5 package provides libzmq.so.5, while libzmq3-dev also provides the

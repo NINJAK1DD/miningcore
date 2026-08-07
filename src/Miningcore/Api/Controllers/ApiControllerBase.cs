@@ -29,6 +29,14 @@ public abstract class ApiControllerBase : ControllerBase
         return pool;
     }
 
+    protected PoolConfig FindPoolIncludingDisabled(string poolId)
+    {
+        if(string.IsNullOrEmpty(poolId))
+            return null;
+
+        return clusterConfig.Pools.FirstOrDefault(x => x.Id == poolId);
+    }
+
     protected PoolConfig GetPool(string poolId)
     {
         if(string.IsNullOrEmpty(poolId))
@@ -41,4 +49,9 @@ public abstract class ApiControllerBase : ControllerBase
 
         return pool;
     }
+
+    internal static string NormalizeMinerAddress(PoolConfig pool, string address) =>
+        pool?.Template?.Family == CoinFamily.Ethereum
+            ? address?.ToLowerInvariant()
+            : address;
 }

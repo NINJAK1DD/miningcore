@@ -35,7 +35,7 @@ public class AdminApiController : ApiControllerBase
 
     #region Actions
 
-    [HttpGet("logging/level/{level}")]
+    [HttpPut("logging/level/{level}")]
     public ActionResult<string> SetLoggingLevel(string level)
     {
         if (string.IsNullOrEmpty(level))
@@ -45,9 +45,6 @@ public class AdminApiController : ApiControllerBase
 
         if (logLevel == null)
             throw new ApiException("Invalid logging level", HttpStatusCode.BadRequest);
-
-        logger.Error("Admin update Logging Level this is Error");
-        logger.Trace("Admin update Logging Level this is Trace");
 
         foreach (var rule in LogManager.Configuration.LoggingRules)
         {
@@ -68,14 +65,11 @@ public class AdminApiController : ApiControllerBase
 
         LogManager.ReconfigExistingLoggers();
 
-        logger.Error("Admin update Logging Level this is Error AFTER");
-        logger.Trace("Admin update Logging Level this is Trace AFTER");
-
         logger.Info($"Logging level set to {level}");
         return "Ok";
     }
 
-    [HttpGet("payment/processing/enable")]
+    [HttpPut("payment/processing/enable")]
     public ActionResult<string> EnablePoolsPaymentProcessing()
     {
         var poolIdsUpdated = new List<string>();
@@ -95,7 +89,7 @@ public class AdminApiController : ApiControllerBase
         return poolIdsCsv;
     }
 
-    [HttpGet("payment/processing/disable")]
+    [HttpPut("payment/processing/disable")]
     public ActionResult<string> DisablePoolsPaymentProcessing()
     {
         var poolIdsUpdated = new List<string>();
@@ -115,7 +109,7 @@ public class AdminApiController : ApiControllerBase
         return poolIdsCsv;
     }
 
-    [HttpGet("payment/processing/{poolId}/enable")]
+    [HttpPut("payment/processing/{poolId}/enable")]
     public ActionResult<string> EnablePoolPaymentProcessing(string poolId)
     {
         if (string.IsNullOrEmpty(poolId))
@@ -130,7 +124,7 @@ public class AdminApiController : ApiControllerBase
         return "Ok";
     }
 
-    [HttpGet("payment/processing/{poolId}/disable")]
+    [HttpPut("payment/processing/{poolId}/disable")]
     public ActionResult<string> DisablePoolPaymentProcessing(string poolId)
     {
         if (string.IsNullOrEmpty(poolId))
@@ -166,7 +160,16 @@ public class AdminApiController : ApiControllerBase
     [HttpGet("pools/{poolId}/miners/{address}/getbalance")]
     public async Task<decimal> GetMinerBalanceAsync(string poolId, string address)
     {
-        return await cf.Run(con => balanceRepo.GetBalanceAsync(con, poolId, address));
+        // Balances remain queryable for configured pools that are temporarily disabled.
+        var pool = FindPoolIncludingDisabled(poolId);
+        if(pool == null)
+            throw new ApiException($"Unknown pool {poolId}", HttpStatusCode.NotFound);
+
+        if(string.IsNullOrEmpty(address))
+            throw new ApiException("Invalid or missing miner address", HttpStatusCode.NotFound);
+
+        address = NormalizeMinerAddress(pool, address);
+        return await cf.Run(con => balanceRepo.GetBalanceAsync(con, pool.Id, address));
     }
 
     [HttpGet("pools/{poolId}/miners/{address}/settings")]
@@ -177,6 +180,8 @@ public class AdminApiController : ApiControllerBase
         if(string.IsNullOrEmpty(address))
             throw new ApiException("Invalid or missing miner address", HttpStatusCode.NotFound);
 
+        address = NormalizeMinerAddress(pool, address);
+
         var result = await cf.Run(con=> minerRepo.GetSettingsAsync(con, null, pool.Id, address));
 
         if(result == null)
@@ -185,7 +190,7 @@ public class AdminApiController : ApiControllerBase
         return mapper.Map<Responses.MinerSettings>(result);
     }
 
-    [HttpPost("pools/{poolId}/miners/{address}/settings")]
+    [HttpPut("pools/{poolId}/miners/{address}/settings")]
     public async Task<Responses.MinerSettings> SetMinerSettingsAsync(string poolId, string address,
         [FromBody] Responses.MinerSettings settings)
     {
@@ -196,6 +201,8 @@ public class AdminApiController : ApiControllerBase
 
         if(settings == null)
             throw new ApiException("Invalid or missing settings", HttpStatusCode.BadRequest);
+
+        address = NormalizeMinerAddress(pool, address);
 
         // map settings
         var mapped = mapper.Map<Persistence.Model.MinerSettings>(settings);

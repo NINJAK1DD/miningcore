@@ -28,7 +28,8 @@ the original authors and contributors.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
 - Share relays for advanced distributed pool deployments.
-- REST API and WebSocket notifications, with isolated administrative and Prometheus listeners.
+- REST API and WebSocket notifications, with bearer-authenticated, route-isolated administration
+  and dedicated Prometheus listeners.
 - Integrated banning, TLS options, native log rotation and administrative notifications.
 - Litecoin parent-chain and Dogecoin AuxPoW merged mining for SOLO pools.
 - Versioned Ubuntu release archives, non-root containers and source-build paths.
@@ -70,6 +71,7 @@ replaced. The following sections walk through each step.
 | Operate and monitor a production service | [Operator handbook](docs/operations.md) |
 | Set up, back up or recover PostgreSQL | [Database and recovery guide](docs/database.md) |
 | Use the API, WebSocket events or metrics | [API guide](docs/api.md) |
+| Secure and call administrative routes | [Administrative API security](docs/admin-api-security.md) |
 | Deploy distributed Stratum/recorder roles | [Share-relay guide](docs/share-relays.md) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
@@ -203,11 +205,20 @@ sudo curl -fL \
   -o /etc/miningcore/config.json
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
+token="$(openssl rand -hex 32)"
+printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
+  sudo tee /etc/miningcore/miningcore.env >/dev/null
+unset token
+sudo chown root:root /etc/miningcore/miningcore.env
+sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo chown 10001:10001 /var/lib/miningcore
 sudo docker network create --driver bridge \
   --subnet 172.30.56.0/24 --gateway 172.30.56.1 miningcore
 sudoedit /etc/miningcore/config.json
 ```
+
+The administrative token must remain a 64-character hexadecimal value; the `openssl` command above
+generates the required format.
 
 In the configuration, replace the container-local loopback whitelist entries for the two published
 protected ports with the fixed bridge gateway:
@@ -226,6 +237,7 @@ Then start Miningcore:
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --env-file /etc/miningcore/miningcore.env \
   --network miningcore \
   -p 4000:4000 \
   -p 127.0.0.1:4001:4001 \
@@ -251,6 +263,7 @@ Run it with the same `/etc/miningcore/config.json` and `/var/lib/miningcore` mou
 sudo docker run -d \
   --name miningcore \
   --restart unless-stopped \
+  --env-file /etc/miningcore/miningcore.env \
   --network miningcore \
   -p 4000:4000 \
   -p 127.0.0.1:4001:4001 \
@@ -265,12 +278,22 @@ Useful management commands:
 
 ```console
 sudo docker logs -f miningcore
-sudo docker restart miningcore
-curl --fail http://127.0.0.1:4001/api/admin/stats/gc
+sudo sh -c '
+  . /etc/miningcore/miningcore.env
+  printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
+    curl --fail --header @- \
+      http://127.0.0.1:4001/api/admin/stats/gc
+'
 curl --fail http://127.0.0.1:4002/metrics --output /dev/null
 sudo docker stop miningcore
 sudo docker rm miningcore
 ```
+
+`docker restart` does not reload `--env-file`. After rotating the administrative token, changing a
+version, or changing container creation options, remove and recreate the container with the full
+version-pinned `docker run` command above. See the
+[administrative API security guide](docs/admin-api-security.md#rotate-or-revoke) for safe token
+rotation.
 
 The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
 means the container itself, not the Docker host. Host traffic on a published port normally appears
@@ -417,7 +440,9 @@ a change. Manual edits to balances, blocks or payments can cause financial error
 ## API and web front ends
 
 The API is enabled in the example on port `4000`. Dedicated `adminPort` and `metricsPort` listeners
-keep protected route families off the public listener while retaining their IP whitelists; see the
+keep protected route families off the public listener. Administrative requests additionally require
+a bearer token kept outside the JSON configuration and public WebUI. See the
+[administrative API security guide](docs/admin-api-security.md) and
 [API listener configuration](docs/api.md#configuration) before publishing any HTTP port. Common
 public endpoints include:
 
