@@ -137,7 +137,9 @@ State-changing requests use explicit non-GET verbs:
 
 Read-only administrative routes remain `GET`, but require the same bearer token and IP whitelist.
 The former public `POST /api/pools/{poolId}/miners/{address}/settings` route has been removed because
-a caller-supplied recent mining IP address is not adequate authorization.
+a caller-supplied recent mining IP address is not adequate authorization. No unauthenticated
+`410 Gone` tombstone is registered by design: retaining the public route solely to announce its
+removal would preserve an unnecessary attack surface and permanent cleanup obligation.
 
 ## Rotate or revoke
 
