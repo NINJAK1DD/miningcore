@@ -11,6 +11,7 @@ using Autofac;
 using AutoMapper;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,7 @@ using Miningcore.Configuration;
 using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Time;
 using NSubstitute;
 using Xunit;
 
@@ -123,6 +125,24 @@ public class AdminApiRouteIntegrationTests
             running.LastBalanceAddress);
     }
 
+    [Fact]
+    public async Task PublicHelp_CatalogueOmitsAdministrativeRoutes()
+    {
+        await using var running = await StartHostWithRetryAsync();
+        using var client = new HttpClient();
+        var origin = new Uri($"http://127.0.0.1:{running.Port}");
+
+        using var response = await client.GetAsync(
+            new Uri(origin, "/api/help"));
+        var catalogue = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("api/pools", catalogue,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("api/admin", catalogue,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static HttpRequestMessage CreateAdminRequest(HttpMethod method,
         Uri uri)
     {
@@ -169,6 +189,10 @@ public class AdminApiRouteIntegrationTests
         var minerRepo = Substitute.For<IMinerRepository>();
         var paymentRepo = Substitute.For<IPaymentRepository>();
         var balanceRepo = Substitute.For<IBalanceRepository>();
+        var statsRepo = Substitute.For<IStatsRepository>();
+        var blockRepo = Substitute.For<IBlockRepository>();
+        var shareRepo = Substitute.For<IShareRepository>();
+        var clock = Substitute.For<IMasterClock>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
@@ -226,6 +250,10 @@ public class AdminApiRouteIntegrationTests
             .As<IPaymentRepository>();
         containerBuilder.RegisterInstance(balanceRepo)
             .As<IBalanceRepository>();
+        containerBuilder.RegisterInstance(statsRepo).As<IStatsRepository>();
+        containerBuilder.RegisterInstance(blockRepo).As<IBlockRepository>();
+        containerBuilder.RegisterInstance(shareRepo).As<IShareRepository>();
+        containerBuilder.RegisterInstance(clock).As<IMasterClock>();
         containerBuilder.RegisterInstance(
             new ConcurrentDictionary<string, IMiningPool>());
         var container = containerBuilder.Build();
@@ -245,6 +273,8 @@ public class AdminApiRouteIntegrationTests
                         .AddApplicationPart(typeof(AdminApiController).Assembly)
                         .AddControllersAsServices();
                     services.AddSingleton(controller);
+                    services.AddSingleton(sp => new PoolApiController(container,
+                        sp.GetRequiredService<IActionDescriptorCollectionProvider>()));
                 })
                 .Configure(app =>
                 {

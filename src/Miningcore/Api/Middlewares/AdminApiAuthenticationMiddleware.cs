@@ -84,6 +84,8 @@ public sealed class AdminApiAuthenticationMiddleware
     private readonly RequestDelegate next;
     private readonly AdminApiCredential credential;
     private readonly bool gpdrCompliantLogging;
+    private static readonly AdminApiAuthenticationLogLimiter RejectionLogLimiter =
+        new(TimeSpan.FromMinutes(1));
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private static readonly Counter AuthenticationCounter = Metrics.CreateCounter(
         "miningcore_admin_api_authentication_total",
@@ -129,7 +131,19 @@ public sealed class AdminApiAuthenticationMiddleware
             var remoteDisplay = remoteAddress != null
                 ? remoteAddress.CensorOrReturn(gpdrCompliantLogging).ToString()
                 : "unknown";
-            logger.Debug(() => $"Unauthenticated administrative API request to {context.Request.Path.Value} from {remoteDisplay}");
+            var message =
+                $"Rejected administrative bearer authentication to {context.Request.Path.Value} from {remoteDisplay}";
+            if(RejectionLogLimiter.TryAcquire(DateTimeOffset.UtcNow,
+                   out var suppressed))
+            {
+                if(suppressed > 0)
+                    message +=
+                        $"; {suppressed} additional rejection(s) suppressed since the previous informational entry";
+
+                logger.Info(message);
+            }
+            else
+                logger.Debug(message);
 
             AuthenticationCounter.WithLabels("rejected").Inc();
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -141,5 +155,40 @@ public sealed class AdminApiAuthenticationMiddleware
 
         AuthenticationCounter.WithLabels("accepted").Inc();
         await next(context);
+    }
+}
+
+internal sealed class AdminApiAuthenticationLogLimiter
+{
+    public AdminApiAuthenticationLogLimiter(TimeSpan interval)
+    {
+        if(interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval));
+
+        this.interval = interval;
+    }
+
+    private readonly object gate = new();
+    private readonly TimeSpan interval;
+    private DateTimeOffset nextInformationalEntry;
+    private int suppressed;
+
+    public bool TryAcquire(DateTimeOffset now, out int suppressedSinceLastEntry)
+    {
+        lock(gate)
+        {
+            if(nextInformationalEntry == default ||
+                now >= nextInformationalEntry)
+            {
+                suppressedSinceLastEntry = suppressed;
+                suppressed = 0;
+                nextInformationalEntry = now.Add(interval);
+                return true;
+            }
+
+            suppressed++;
+            suppressedSinceLastEntry = 0;
+            return false;
+        }
     }
 }

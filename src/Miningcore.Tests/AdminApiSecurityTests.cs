@@ -112,6 +112,25 @@ public class AdminApiSecurityTests
         }
     }
 
+    [Fact]
+    public void AuthenticationRejectionLogLimiter_BoundsAndSummarizesEntries()
+    {
+        var limiter = new AdminApiAuthenticationLogLimiter(
+            TimeSpan.FromMinutes(1));
+        var start = new DateTimeOffset(2026, 8, 7, 12, 0, 0,
+            TimeSpan.Zero);
+
+        Assert.True(limiter.TryAcquire(start, out var firstSuppressed));
+        Assert.Equal(0, firstSuppressed);
+        Assert.False(limiter.TryAcquire(start.AddSeconds(1), out _));
+        Assert.False(limiter.TryAcquire(start.AddSeconds(30), out _));
+        Assert.True(limiter.TryAcquire(start.AddMinutes(1),
+            out var summarized));
+        Assert.Equal(2, summarized);
+        Assert.False(limiter.TryAcquire(start.AddMinutes(1).AddSeconds(1),
+            out _));
+    }
+
     [Theory]
     [InlineData("/api/admin", true)]
     [InlineData("/api/admin/", true)]
