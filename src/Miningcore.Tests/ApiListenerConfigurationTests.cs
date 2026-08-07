@@ -1787,7 +1787,7 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
-    public async Task ApiPipeline_CorsPreflightShortCircuitsBeforeResponseCompression()
+    public async Task ApiPipeline_CorsPreflightShortCircuitsBeforeAfterAccessControlMiddleware()
     {
         var services = new ServiceCollection();
         services.AddLogging();

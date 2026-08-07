@@ -84,7 +84,7 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
-    public void EnvironmentCredential_IsDigestedAndRemovedFromManagedProcess()
+    public void EnvironmentCredential_IsDigestedRemovedAndCachedForProcessLifetime()
     {
         var variable = AdminApiAuthenticationMiddleware
             .TokenEnvironmentVariable;
@@ -100,6 +100,18 @@ public class AdminApiSecurityTests
             Assert.Equal(AdminApiCredentialStatus.Configured,
                 credential.Status);
             Assert.True(credential.Verify(ValidToken));
+            Assert.Null(Environment.GetEnvironmentVariable(variable));
+
+            var replacement = new string('b',
+                AdminApiCredential.RequiredTokenCharacters);
+            Environment.SetEnvironmentVariable(variable, replacement);
+
+            var repeatedRead = Program
+                .ReadAdminApiCredentialFromEnvironment();
+
+            Assert.Same(credential, repeatedRead);
+            Assert.True(repeatedRead.Verify(ValidToken));
+            Assert.False(repeatedRead.Verify(replacement));
             Assert.Null(Environment.GetEnvironmentVariable(variable));
         }
         finally

@@ -90,6 +90,8 @@ public class Program : ProcessStatusBackgroundService
     internal const int MaxLogArchiveFiles = 4;
 
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
+    private static readonly Lazy<AdminApiCredential> CachedAdminApiCredential =
+        new(CreateAdminApiCredentialFromEnvironment);
 
     public static async Task<int> Main(string[] args)
     {
@@ -859,11 +861,13 @@ public class Program : ProcessStatusBackgroundService
     internal static AdminApiCredential ReadAdminApiCredentialFromEnvironment()
     {
         var variable = AdminApiAuthenticationMiddleware.TokenEnvironmentVariable;
-        var token = Environment.GetEnvironmentVariable(variable);
 
         try
         {
-            return AdminApiCredential.Create(token);
+            // Authentication identity is immutable for this process. Repeated in-process
+            // host construction reuses the original credential instead of silently
+            // downgrading to Missing after the managed environment copy is cleared.
+            return CachedAdminApiCredential.Value;
         }
         finally
         {
@@ -873,6 +877,10 @@ public class Program : ProcessStatusBackgroundService
             Environment.SetEnvironmentVariable(variable, null);
         }
     }
+
+    private static AdminApiCredential CreateAdminApiCredentialFromEnvironment() =>
+        AdminApiCredential.Create(Environment.GetEnvironmentVariable(
+            AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
 
     internal static int? FindApiListenerStratumPortConflict(
         ClusterConfig config, bool recoveryMode)
