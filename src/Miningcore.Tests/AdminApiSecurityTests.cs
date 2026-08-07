@@ -89,13 +89,13 @@ public class AdminApiSecurityTests
         var variable = AdminApiAuthenticationMiddleware
             .TokenEnvironmentVariable;
         var original = Environment.GetEnvironmentVariable(variable);
+        var provider = new AdminApiCredentialProvider();
 
         try
         {
             Environment.SetEnvironmentVariable(variable, ValidToken);
 
-            var credential = Program
-                .ReadAdminApiCredentialFromEnvironment();
+            var credential = provider.Get();
 
             Assert.Equal(AdminApiCredentialStatus.Configured,
                 credential.Status);
@@ -106,8 +106,7 @@ public class AdminApiSecurityTests
                 AdminApiCredential.RequiredTokenCharacters);
             Environment.SetEnvironmentVariable(variable, replacement);
 
-            var repeatedRead = Program
-                .ReadAdminApiCredentialFromEnvironment();
+            var repeatedRead = provider.Get();
 
             Assert.Same(credential, repeatedRead);
             Assert.True(repeatedRead.Verify(ValidToken));

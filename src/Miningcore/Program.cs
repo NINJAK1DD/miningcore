@@ -90,8 +90,8 @@ public class Program : ProcessStatusBackgroundService
     internal const int MaxLogArchiveFiles = 4;
 
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
-    private static readonly Lazy<AdminApiCredential> CachedAdminApiCredential =
-        new(CreateAdminApiCredentialFromEnvironment);
+    private static readonly AdminApiCredentialProvider AdminApiCredentialProvider =
+        new();
 
     public static async Task<int> Main(string[] args)
     {
@@ -220,7 +220,7 @@ public class Program : ProcessStatusBackgroundService
                     !string.IsNullOrEmpty(apiConfig.Tls?.TlsPfxFile);
                 // The process constructs one API host and reads the credential once.
                 // Token rotation therefore requires the documented service/container restart.
-                var adminApiCredential = ReadAdminApiCredentialFromEnvironment();
+                var adminApiCredential = GetAdminApiCredential();
                 var gpdrCompliantLogging = clusterConfig.Logging?.GPDRCompliant == true;
 
                 if(apiTlsEnable)
@@ -858,29 +858,8 @@ public class Program : ProcessStatusBackgroundService
         afterAccessControl?.Invoke(app);
     }
 
-    internal static AdminApiCredential ReadAdminApiCredentialFromEnvironment()
-    {
-        var variable = AdminApiAuthenticationMiddleware.TokenEnvironmentVariable;
-
-        try
-        {
-            // Authentication identity is immutable for this process. Repeated in-process
-            // host construction reuses the original credential instead of silently
-            // downgrading to Missing after the managed environment copy is cleared.
-            return CachedAdminApiCredential.Value;
-        }
-        finally
-        {
-            // The immutable credential keeps only a digest. Remove the managed-process
-            // copy so child processes do not inherit the bearer value. The service manager
-            // or container runtime may still retain its configured environment metadata.
-            Environment.SetEnvironmentVariable(variable, null);
-        }
-    }
-
-    private static AdminApiCredential CreateAdminApiCredentialFromEnvironment() =>
-        AdminApiCredential.Create(Environment.GetEnvironmentVariable(
-            AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
+    internal static AdminApiCredential GetAdminApiCredential() =>
+        AdminApiCredentialProvider.Get();
 
     internal static int? FindApiListenerStratumPortConflict(
         ClusterConfig config, bool recoveryMode)

@@ -60,7 +60,7 @@ static async Task<int> RunApiListenerAsync(string[] args)
     var address = MiningcoreProgram.ResolveListenAddress(api.ListenAddress);
     var ports = MiningcoreProgram.ResolveApiEndpointPorts(api);
     var adminCredential = MiningcoreProgram
-        .ReadAdminApiCredentialFromEnvironment();
+        .GetAdminApiCredential();
 
     using var host = Host.CreateDefaultBuilder()
         .ConfigureLogging(logging => logging.ClearProviders())

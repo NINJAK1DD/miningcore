@@ -71,6 +71,36 @@ public sealed class AdminApiCredential
     }
 }
 
+internal sealed class AdminApiCredentialProvider
+{
+    public AdminApiCredentialProvider()
+    {
+        credential = new Lazy<AdminApiCredential>(CreateFromEnvironment);
+    }
+
+    private readonly Lazy<AdminApiCredential> credential;
+
+    public AdminApiCredential Get()
+    {
+        try
+        {
+            return credential.Value;
+        }
+        finally
+        {
+            // Remove every managed-process copy, including a replacement supplied
+            // after the immutable process credential was initialized. The service
+            // manager or container runtime may still retain its configured metadata.
+            Environment.SetEnvironmentVariable(
+                AdminApiAuthenticationMiddleware.TokenEnvironmentVariable, null);
+        }
+    }
+
+    private static AdminApiCredential CreateFromEnvironment() =>
+        AdminApiCredential.Create(Environment.GetEnvironmentVariable(
+            AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
+}
+
 public sealed class AdminApiAuthenticationMiddleware
 {
     public AdminApiAuthenticationMiddleware(RequestDelegate next,
