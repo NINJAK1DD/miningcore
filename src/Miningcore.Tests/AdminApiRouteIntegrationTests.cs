@@ -257,8 +257,6 @@ public class AdminApiRouteIntegrationTests
         containerBuilder.RegisterInstance(
             new ConcurrentDictionary<string, IMiningPool>());
         var container = containerBuilder.Build();
-        var controller = new AdminApiController(container);
-
         var host = Host.CreateDefaultBuilder()
             .ConfigureLogging(logging => logging.ClearProviders())
             .ConfigureWebHostDefaults(builder => builder
@@ -272,8 +270,8 @@ public class AdminApiRouteIntegrationTests
                         })
                         .AddApplicationPart(typeof(AdminApiController).Assembly)
                         .AddControllersAsServices();
-                    services.AddSingleton(controller);
-                    services.AddSingleton(sp => new PoolApiController(container,
+                    services.AddTransient(_ => new AdminApiController(container));
+                    services.AddTransient(sp => new PoolApiController(container,
                         sp.GetRequiredService<IActionDescriptorCollectionProvider>()));
                 })
                 .Configure(app =>
@@ -282,8 +280,8 @@ public class AdminApiRouteIntegrationTests
                         new Program.ApiEndpointPorts(port, port, port),
                         null, null,
                         AdminApiCredential.Create(AdminToken), false,
-                        beforeAccessControl: pipeline =>
-                            pipeline.UseMiddleware<ApiExceptionHandlingMiddleware>(),
+                        new Program.ApiPipelineOptions(
+                            EnableExceptionHandling: true),
                         afterAccessControl: pipeline => pipeline.UseMvc());
                 }))
             .Build();

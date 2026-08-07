@@ -127,22 +127,10 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(!authorized)
         {
-            var remoteAddress = context.Connection.RemoteIpAddress;
-            var remoteDisplay = remoteAddress != null
-                ? remoteAddress.CensorOrReturn(gpdrCompliantLogging).ToString()
-                : "unknown";
-            var message =
-                $"Rejected administrative bearer authentication to {context.Request.Path.Value} from {remoteDisplay}";
             if(RejectionLogLimiter.TryAcquire(out var suppressed))
-            {
-                if(suppressed > 0)
-                    message +=
-                        $"; {suppressed} additional rejection(s) suppressed since the previous informational entry";
-
-                logger.Info(message);
-            }
+                logger.Info(() => FormatRejection(context, suppressed));
             else
-                logger.Debug(message);
+                logger.Debug(() => FormatRejection(context, 0));
 
             AuthenticationCounter.WithLabels("rejected").Inc();
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -154,6 +142,22 @@ public sealed class AdminApiAuthenticationMiddleware
 
         AuthenticationCounter.WithLabels("accepted").Inc();
         await next(context);
+    }
+
+    private string FormatRejection(HttpContext context, long suppressed)
+    {
+        var remoteAddress = context.Connection.RemoteIpAddress;
+        var remoteDisplay = remoteAddress != null
+            ? remoteAddress.CensorOrReturn(gpdrCompliantLogging).ToString()
+            : "unknown";
+        var result =
+            $"Rejected administrative bearer authentication to {context.Request.Path.Value} from {remoteDisplay}";
+
+        if(suppressed > 0)
+            result +=
+                $"; {suppressed} additional rejection(s) occurred after the previous informational entry and were suppressed";
+
+        return result;
     }
 }
 

@@ -216,6 +216,8 @@ public class Program : ProcessStatusBackgroundService
                 var enableApiRateLimiting = apiConfig.RateLimiting?.Disabled != true;
                 var apiTlsEnable = apiConfig.Tls?.Enabled == true ||
                     !string.IsNullOrEmpty(apiConfig.Tls?.TlsPfxFile);
+                // The process constructs one API host and reads the credential once.
+                // Token rotation therefore requires the documented service/container restart.
                 var adminApiCredential = ReadAdminApiCredentialFromEnvironment();
                 var gpdrCompliantLogging = clusterConfig.Logging?.GPDRCompliant == true;
 
@@ -287,13 +289,9 @@ public class Program : ProcessStatusBackgroundService
                             apiConfig.AdminIpWhitelist,
                             apiConfig.MetricsIpWhitelist,
                             adminApiCredential, gpdrCompliantLogging,
-                            beforeAccessControl: pipeline =>
-                            {
-                                if(enableApiRateLimiting)
-                                    pipeline.UseIpRateLimiting();
-
-                                pipeline.UseMiddleware<ApiExceptionHandlingMiddleware>();
-                            },
+                            new ApiPipelineOptions(
+                                EnableIpRateLimiting: enableApiRateLimiting,
+                                EnableExceptionHandling: true),
                             afterAccessControl: pipeline =>
                             {
                                 #if DEBUG
@@ -703,6 +701,10 @@ public class Program : ProcessStatusBackgroundService
         public IReadOnlyList<int> ListenerPorts { get; }
     }
 
+    internal sealed record ApiPipelineOptions(
+        bool EnableIpRateLimiting = false,
+        bool EnableExceptionHandling = false);
+
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
     {
         var publicPort = api?.Port ?? DefaultApiPort;
@@ -805,12 +807,13 @@ public class Program : ProcessStatusBackgroundService
         ApiEndpointPorts ports, string[] adminIpWhitelist,
         string[] metricsIpWhitelist, AdminApiCredential adminCredential,
         bool gpdrCompliantLogging,
-        Action<IApplicationBuilder> beforeAccessControl = null,
+        ApiPipelineOptions options = null,
         Action<IApplicationBuilder> afterAccessControl = null)
     {
         ArgumentNullException.ThrowIfNull(app);
         ArgumentNullException.ThrowIfNull(ports);
         ArgumentNullException.ThrowIfNull(adminCredential);
+        options ??= new ApiPipelineOptions();
 
         // Reject wrong-listener requests before rate limiting or routing. This
         // deliberately returns a cheap 404 without invoking protected endpoint
@@ -827,7 +830,11 @@ public class Program : ProcessStatusBackgroundService
             await next();
         });
 
-        beforeAccessControl?.Invoke(app);
+        if(options.EnableIpRateLimiting)
+            app.UseIpRateLimiting();
+
+        if(options.EnableExceptionHandling)
+            app.UseMiddleware<ApiExceptionHandlingMiddleware>();
 
         UseIpWhiteList(app, true, new[] { "/api/admin" },
             adminIpWhitelist, gpdrCompliantLogging);

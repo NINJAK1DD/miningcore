@@ -225,6 +225,11 @@ Read-only administrative `GET` routes also require authentication. The former pu
 recent mining IP address was not adequate authorization. This is a breaking but necessary security
 change for admin scripts and front ends.
 
+Two read-only responses also become stricter. An administrative balance lookup for an unknown pool
+now returns `404 Not Found` instead of a misleading zero balance, and the public `/api/help`
+catalogue no longer lists administrative routes. Update scripts that depended on either legacy
+behaviour before deploying.
+
 ### Security: administrative API whitelist enforcement
 
 This release fixes an administrative API whitelist bypass that affected shared public/API

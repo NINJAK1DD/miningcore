@@ -1786,6 +1786,52 @@ public class ApiListenerConfigurationTests
             "WWW-Authenticate"));
     }
 
+    [Fact]
+    public async Task ApiPipeline_CorsPreflightShortCircuitsBeforeResponseCompression()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCors();
+        services.AddResponseCompression();
+        using var provider = services.BuildServiceProvider();
+        var app = new ApplicationBuilder(provider);
+        var endpointReached = false;
+        var ports = new Program.ApiEndpointPorts(4000, 4000, 4000);
+
+        Program.ConfigureApiPipeline(app, ports, null, null,
+            AdminApiCredential.Create(TestAdminToken), false,
+            afterAccessControl: pipeline =>
+            {
+                pipeline.UseResponseCompression();
+                pipeline.Run(_ =>
+                {
+                    endpointReached = true;
+                    return Task.CompletedTask;
+                });
+            });
+
+        var context = new DefaultHttpContext
+        {
+            RequestServices = provider,
+        };
+        context.Connection.LocalPort = ports.PublicPort;
+        context.Connection.RemoteIpAddress = IPAddress.Loopback;
+        context.Request.Method = HttpMethods.Options;
+        context.Request.Path = "/api/pools";
+        context.Request.Headers.Origin = "https://dashboard.example";
+        context.Request.Headers.AccessControlRequestMethod = HttpMethods.Get;
+        context.Request.Headers.AcceptEncoding = "gzip";
+        context.Response.Body = new MemoryStream();
+
+        await app.Build()(context);
+
+        Assert.False(endpointReached);
+        Assert.Equal(StatusCodes.Status204NoContent,
+            context.Response.StatusCode);
+        Assert.Equal("*", context.Response.Headers.AccessControlAllowOrigin);
+        Assert.False(context.Response.Headers.ContainsKey("Content-Encoding"));
+    }
+
     private static Program.ApiEndpointPorts CreateEndpointPorts()
     {
         for(var attempt = 0; attempt < ListenerStartAttempts; attempt++)

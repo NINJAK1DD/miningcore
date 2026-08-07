@@ -12,10 +12,9 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
+[Collection(AdminApiEnvironmentCollection.Name)]
 public class AdminApiSecurityTests
 {
-    private static readonly object EnvironmentGate = new();
-
     [Theory]
     [InlineData(null, AdminApiCredentialStatus.Missing)]
     [InlineData("", AdminApiCredentialStatus.Missing)]
@@ -87,28 +86,25 @@ public class AdminApiSecurityTests
     [Fact]
     public void EnvironmentCredential_IsDigestedAndRemovedFromManagedProcess()
     {
-        lock(EnvironmentGate)
+        var variable = AdminApiAuthenticationMiddleware
+            .TokenEnvironmentVariable;
+        var original = Environment.GetEnvironmentVariable(variable);
+
+        try
         {
-            var variable = AdminApiAuthenticationMiddleware
-                .TokenEnvironmentVariable;
-            var original = Environment.GetEnvironmentVariable(variable);
+            Environment.SetEnvironmentVariable(variable, ValidToken);
 
-            try
-            {
-                Environment.SetEnvironmentVariable(variable, ValidToken);
+            var credential = Program
+                .ReadAdminApiCredentialFromEnvironment();
 
-                var credential = Program
-                    .ReadAdminApiCredentialFromEnvironment();
-
-                Assert.Equal(AdminApiCredentialStatus.Configured,
-                    credential.Status);
-                Assert.True(credential.Verify(ValidToken));
-                Assert.Null(Environment.GetEnvironmentVariable(variable));
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(variable, original);
-            }
+            Assert.Equal(AdminApiCredentialStatus.Configured,
+                credential.Status);
+            Assert.True(credential.Verify(ValidToken));
+            Assert.Null(Environment.GetEnvironmentVariable(variable));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, original);
         }
     }
 
