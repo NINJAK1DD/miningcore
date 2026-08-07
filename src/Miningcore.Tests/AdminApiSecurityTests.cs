@@ -113,22 +113,41 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
-    public void AuthenticationRejectionLogLimiter_BoundsAndSummarizesEntries()
+    public void AuthenticationRejectionLogLimiter_UsesMonotonicElapsedTimeAndSummarizesEntries()
     {
+        var timeProvider = new ManualTimeProvider();
         var limiter = new AdminApiAuthenticationLogLimiter(
-            TimeSpan.FromMinutes(1));
-        var start = new DateTimeOffset(2026, 8, 7, 12, 0, 0,
+            TimeSpan.FromMinutes(1), timeProvider);
+
+        Assert.True(limiter.TryAcquire(out var firstSuppressed));
+        Assert.Equal(0L, firstSuppressed);
+        timeProvider.AdvanceMonotonic(TimeSpan.FromSeconds(1));
+        Assert.False(limiter.TryAcquire(out _));
+        timeProvider.MoveWallClock(TimeSpan.FromDays(-1));
+        timeProvider.AdvanceMonotonic(TimeSpan.FromSeconds(29));
+        Assert.False(limiter.TryAcquire(out _));
+        timeProvider.AdvanceMonotonic(TimeSpan.FromSeconds(30));
+        Assert.True(limiter.TryAcquire(out var summarized));
+        Assert.Equal(2L, summarized);
+        timeProvider.AdvanceMonotonic(TimeSpan.FromSeconds(1));
+        Assert.False(limiter.TryAcquire(out _));
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private long timestamp;
+        private DateTimeOffset utcNow = new(2026, 8, 7, 12, 0, 0,
             TimeSpan.Zero);
 
-        Assert.True(limiter.TryAcquire(start, out var firstSuppressed));
-        Assert.Equal(0, firstSuppressed);
-        Assert.False(limiter.TryAcquire(start.AddSeconds(1), out _));
-        Assert.False(limiter.TryAcquire(start.AddSeconds(30), out _));
-        Assert.True(limiter.TryAcquire(start.AddMinutes(1),
-            out var summarized));
-        Assert.Equal(2, summarized);
-        Assert.False(limiter.TryAcquire(start.AddMinutes(1).AddSeconds(1),
-            out _));
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => timestamp;
+        public override DateTimeOffset GetUtcNow() => utcNow;
+
+        public void AdvanceMonotonic(TimeSpan elapsed) =>
+            timestamp += elapsed.Ticks;
+
+        public void MoveWallClock(TimeSpan change) =>
+            utcNow = utcNow.Add(change);
     }
 
     [Theory]

@@ -39,7 +39,8 @@ Prometheus exports `miningcore_admin_api_authentication_total` with `accepted`, 
 `unavailable` outcomes so operators can alert on authentication failures without relying on
 per-request log messages. Miningcore writes the first rejected bearer attempt and at most one
 suppression summary per minute at `Info`; intervening details remain available at `Debug`. This
-process-wide limit prevents unauthenticated clients from flooding normal operational logs.
+process-wide limit uses a monotonic elapsed-time clock and prevents unauthenticated clients from
+flooding normal operational logs even when the host wall clock is corrected.
 
 When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
 only that route family on it. Public REST and WebSocket routes remain on `port`; requests for

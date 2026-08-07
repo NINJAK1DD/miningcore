@@ -133,8 +133,7 @@ public sealed class AdminApiAuthenticationMiddleware
                 : "unknown";
             var message =
                 $"Rejected administrative bearer authentication to {context.Request.Path.Value} from {remoteDisplay}";
-            if(RejectionLogLimiter.TryAcquire(DateTimeOffset.UtcNow,
-                   out var suppressed))
+            if(RejectionLogLimiter.TryAcquire(out var suppressed))
             {
                 if(suppressed > 0)
                     message +=
@@ -160,29 +159,37 @@ public sealed class AdminApiAuthenticationMiddleware
 
 internal sealed class AdminApiAuthenticationLogLimiter
 {
-    public AdminApiAuthenticationLogLimiter(TimeSpan interval)
+    public AdminApiAuthenticationLogLimiter(TimeSpan interval,
+        TimeProvider timeProvider = null)
     {
         if(interval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(interval));
 
         this.interval = interval;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private readonly object gate = new();
     private readonly TimeSpan interval;
-    private DateTimeOffset nextInformationalEntry;
-    private int suppressed;
+    private readonly TimeProvider timeProvider;
+    private long previousInformationalTimestamp;
+    private long suppressed;
+    private bool hasInformationalEntry;
 
-    public bool TryAcquire(DateTimeOffset now, out int suppressedSinceLastEntry)
+    public bool TryAcquire(out long suppressedSinceLastEntry)
     {
         lock(gate)
         {
-            if(nextInformationalEntry == default ||
-                now >= nextInformationalEntry)
+            var now = timeProvider.GetTimestamp();
+
+            if(!hasInformationalEntry ||
+                timeProvider.GetElapsedTime(previousInformationalTimestamp,
+                    now) >= interval)
             {
                 suppressedSinceLastEntry = suppressed;
                 suppressed = 0;
-                nextInformationalEntry = now.Add(interval);
+                previousInformationalTimestamp = now;
+                hasInformationalEntry = true;
                 return true;
             }
 
