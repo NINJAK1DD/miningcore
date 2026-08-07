@@ -59,11 +59,8 @@ static async Task<int> RunApiListenerAsync(string[] args)
     var api = MiningcoreProgram.NormalizeApiConfig(config);
     var address = MiningcoreProgram.ResolveListenAddress(api.ListenAddress);
     var ports = MiningcoreProgram.ResolveApiEndpointPorts(api);
-    var adminWhitelist = BuildWhitelist(api.AdminIpWhitelist);
-    var metricsWhitelist = BuildWhitelist(api.MetricsIpWhitelist);
-    var adminCredential = AdminApiCredential.Create(
-        Environment.GetEnvironmentVariable(
-            AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
+    var adminCredential = MiningcoreProgram
+        .ReadAdminApiCredentialFromEnvironment();
 
     using var host = Host.CreateDefaultBuilder()
         .ConfigureLogging(logging => logging.ClearProviders())
@@ -73,56 +70,17 @@ static async Task<int> RunApiListenerAsync(string[] args)
                 address, ports))
             .Configure(app =>
             {
-                app.Use(async (context, next) =>
-                {
-                    if(!MiningcoreProgram.IsApiRequestAllowed(
-                           context.Connection.LocalPort,
-                           context.Request.Path, ports))
+                MiningcoreProgram.ConfigureApiPipeline(app, ports,
+                    api.AdminIpWhitelist, api.MetricsIpWhitelist,
+                    adminCredential, false,
+                    afterAccessControl: pipeline => pipeline.Run(context =>
                     {
-                        context.Response.StatusCode =
-                            StatusCodes.Status404NotFound;
-                        return;
-                    }
-
-                    await next();
-                });
-                app.UseMiddleware<IPAccessWhitelistMiddleware>(
-                    new[] { "/api/admin" }, adminWhitelist, false);
-                app.UseMiddleware<IPAccessWhitelistMiddleware>(
-                    new[] { "/metrics" }, metricsWhitelist, false);
-                app.UseMiddleware<AdminApiAuthenticationMiddleware>(
-                    adminCredential, false);
-                app.UseWhen(context =>
-                        !AdminApiAuthenticationMiddleware.IsAdminRequest(
-                            context.Request.Path),
-                    publicApi => publicApi.UseCors(cors => cors.AllowAnyOrigin()
-                        .AllowAnyMethod().AllowAnyHeader()));
-                app.Run(context =>
-                {
-                    context.Response.StatusCode = StatusCodes.Status200OK;
-                    return context.Response.WriteAsync("ok\n");
-                });
+                        context.Response.StatusCode = StatusCodes.Status200OK;
+                        return context.Response.WriteAsync("ok\n");
+                    }));
             }))
         .Build();
 
     await host.RunAsync();
     return 0;
-}
-
-static IPAddress[] BuildWhitelist(string[] configured)
-{
-    var result = configured?.Select(IPAddress.Parse).ToList() ?? new();
-
-    foreach(var loopback in new[]
-            {
-                IPAddress.Loopback,
-                IPAddress.IPv6Loopback,
-                IPAddress.Parse("::ffff:127.0.0.1"),
-            })
-    {
-        if(!result.Contains(loopback))
-            result.Add(loopback);
-    }
-
-    return result.ToArray();
 }

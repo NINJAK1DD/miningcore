@@ -46,9 +46,6 @@ public class AdminApiController : ApiControllerBase
         if (logLevel == null)
             throw new ApiException("Invalid logging level", HttpStatusCode.BadRequest);
 
-        logger.Error("Admin update Logging Level this is Error");
-        logger.Trace("Admin update Logging Level this is Trace");
-
         foreach (var rule in LogManager.Configuration.LoggingRules)
         {
             rule.EnableLoggingForLevel(logLevel);
@@ -67,9 +64,6 @@ public class AdminApiController : ApiControllerBase
         }
 
         LogManager.ReconfigExistingLoggers();
-
-        logger.Error("Admin update Logging Level this is Error AFTER");
-        logger.Trace("Admin update Logging Level this is Trace AFTER");
 
         logger.Info($"Logging level set to {level}");
         return "Ok";
@@ -167,8 +161,15 @@ public class AdminApiController : ApiControllerBase
     public async Task<decimal> GetMinerBalanceAsync(string poolId, string address)
     {
         // Balances remain queryable for configured pools that are temporarily disabled.
-        address = NormalizeMinerAddress(FindPoolConfigNoThrow(poolId), address);
-        return await cf.Run(con => balanceRepo.GetBalanceAsync(con, poolId, address));
+        var pool = FindPoolIncludingDisabled(poolId);
+        if(pool == null)
+            throw new ApiException($"Unknown pool {poolId}", HttpStatusCode.NotFound);
+
+        if(string.IsNullOrEmpty(address))
+            throw new ApiException("Invalid or missing miner address", HttpStatusCode.NotFound);
+
+        address = NormalizeMinerAddress(pool, address);
+        return await cf.Run(con => balanceRepo.GetBalanceAsync(con, pool.Id, address));
     }
 
     [HttpGet("pools/{poolId}/miners/{address}/settings")]

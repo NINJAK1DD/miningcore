@@ -1,9 +1,9 @@
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.Http;
 using Miningcore.Extensions;
 using NLog;
+using Prometheus;
 
 namespace Miningcore.Api.Middlewares;
 
@@ -37,7 +37,7 @@ public sealed class AdminApiCredential
             return new AdminApiCredential(AdminApiCredentialStatus.Invalid);
 
         return new AdminApiCredential(AdminApiCredentialStatus.Configured,
-            SHA256.HashData(Encoding.ASCII.GetBytes(token)));
+            HashToken(token));
     }
 
     public bool Verify(string candidate)
@@ -45,9 +45,14 @@ public sealed class AdminApiCredential
         if(Status != AdminApiCredentialStatus.Configured || !IsValidToken(candidate))
             return false;
 
-        var candidateHash = SHA256.HashData(Encoding.ASCII.GetBytes(candidate));
+        // Format validation is allowed to short-circuit because token length and alphabet
+        // are public protocol requirements. Only the secret value comparison must be fixed-time.
+        var candidateHash = HashToken(candidate);
         return CryptographicOperations.FixedTimeEquals(tokenHash, candidateHash);
     }
+
+    private static byte[] HashToken(string token) =>
+        SHA256.HashData(Convert.FromHexString(token));
 
     private static bool IsValidToken(string token)
     {
@@ -80,6 +85,13 @@ public sealed class AdminApiAuthenticationMiddleware
     private readonly AdminApiCredential credential;
     private readonly bool gpdrCompliantLogging;
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
+    private static readonly Counter AuthenticationCounter = Metrics.CreateCounter(
+        "miningcore_admin_api_authentication_total",
+        "Administrative API authentication outcomes",
+        new CounterConfiguration
+        {
+            LabelNames = new[] { "outcome" },
+        });
 
     public const string TokenEnvironmentVariable = "MININGCORE_ADMIN_API_TOKEN";
 
@@ -98,7 +110,9 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(credential.Status != AdminApiCredentialStatus.Configured)
         {
+            AuthenticationCounter.WithLabels("unavailable").Inc();
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            context.Response.ContentType = "text/plain; charset=utf-8";
             await context.Response.WriteAsync("Administrative API authentication is unavailable.\n");
             return;
         }
@@ -115,14 +129,17 @@ public sealed class AdminApiAuthenticationMiddleware
             var remoteDisplay = remoteAddress != null
                 ? remoteAddress.CensorOrReturn(gpdrCompliantLogging).ToString()
                 : "unknown";
-            logger.Info(() => $"Unauthenticated administrative API request to {context.Request.Path.Value} from {remoteDisplay}");
+            logger.Debug(() => $"Unauthenticated administrative API request to {context.Request.Path.Value} from {remoteDisplay}");
 
+            AuthenticationCounter.WithLabels("rejected").Inc();
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "text/plain; charset=utf-8";
             context.Response.Headers.WWWAuthenticate = "Bearer realm=\"Miningcore administrative API\"";
             await context.Response.WriteAsync("Administrative API authentication required.\n");
             return;
         }
 
+        AuthenticationCounter.WithLabels("accepted").Inc();
         await next(context);
     }
 }

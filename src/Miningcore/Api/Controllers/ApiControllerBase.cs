@@ -29,7 +29,7 @@ public abstract class ApiControllerBase : ControllerBase
         return pool;
     }
 
-    protected PoolConfig FindPoolConfigNoThrow(string poolId)
+    protected PoolConfig FindPoolIncludingDisabled(string poolId)
     {
         if(string.IsNullOrEmpty(poolId))
             return null;

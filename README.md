@@ -278,7 +278,6 @@ Useful management commands:
 
 ```console
 sudo docker logs -f miningcore
-sudo docker restart miningcore
 sudo sh -c '
   . /etc/miningcore/miningcore.env
   printf "Authorization: Bearer %s\n" "$MININGCORE_ADMIN_API_TOKEN" |
@@ -289,6 +288,12 @@ curl --fail http://127.0.0.1:4002/metrics --output /dev/null
 sudo docker stop miningcore
 sudo docker rm miningcore
 ```
+
+`docker restart` does not reload `--env-file`. After rotating the administrative token, changing a
+version, or changing container creation options, remove and recreate the container with the full
+version-pinned `docker run` command above. See the
+[administrative API security guide](docs/admin-api-security.md#rotate-or-revoke) for safe token
+rotation.
 
 The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
 means the container itself, not the Docker host. Host traffic on a published port normally appears

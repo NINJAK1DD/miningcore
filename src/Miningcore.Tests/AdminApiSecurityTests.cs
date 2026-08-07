@@ -14,6 +14,8 @@ namespace Miningcore.Tests;
 
 public class AdminApiSecurityTests
 {
+    private static readonly object EnvironmentGate = new();
+
     [Theory]
     [InlineData(null, AdminApiCredentialStatus.Missing)]
     [InlineData("", AdminApiCredentialStatus.Missing)]
@@ -38,6 +40,8 @@ public class AdminApiSecurityTests
         Assert.Equal(AdminApiCredentialStatus.Configured,
             uppercaseCredential.Status);
         Assert.True(uppercaseCredential.Verify(uppercaseToken));
+        Assert.True(credential.Verify(uppercaseToken));
+        Assert.True(uppercaseCredential.Verify(ValidToken));
         Assert.Equal(AdminApiCredentialStatus.Invalid,
             AdminApiCredential.Create(new string('a',
                 AdminApiCredential.RequiredTokenCharacters - 1)).Status);
@@ -80,9 +84,42 @@ public class AdminApiSecurityTests
         Assert.False(credential.Verify(null));
     }
 
+    [Fact]
+    public void EnvironmentCredential_IsDigestedAndRemovedFromManagedProcess()
+    {
+        lock(EnvironmentGate)
+        {
+            var variable = AdminApiAuthenticationMiddleware
+                .TokenEnvironmentVariable;
+            var original = Environment.GetEnvironmentVariable(variable);
+
+            try
+            {
+                Environment.SetEnvironmentVariable(variable, ValidToken);
+
+                var credential = Program
+                    .ReadAdminApiCredentialFromEnvironment();
+
+                Assert.Equal(AdminApiCredentialStatus.Configured,
+                    credential.Status);
+                Assert.True(credential.Verify(ValidToken));
+                Assert.Null(Environment.GetEnvironmentVariable(variable));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(variable, original);
+            }
+        }
+    }
+
     [Theory]
     [InlineData("/api/admin", true)]
+    [InlineData("/api/admin/", true)]
     [InlineData("/API/ADMIN/stats/gc", true)]
+    [InlineData("//api/admin/status", false)]
+    [InlineData("/api//admin", false)]
+    // PathString canonicalizes percent-encoded unreserved characters before matching.
+    [InlineData("/api/%61dmin", true)]
     [InlineData("/api/administer", false)]
     [InlineData("/api/administrator", false)]
     [InlineData("/api/pools", false)]
@@ -128,6 +165,8 @@ public class AdminApiSecurityTests
         Assert.Equal("no-store", context.Response.Headers.CacheControl);
         Assert.Equal("Bearer realm=\"Miningcore administrative API\"",
             context.Response.Headers.WWWAuthenticate);
+        Assert.Equal("text/plain; charset=utf-8",
+            context.Response.ContentType);
     }
 
     [Fact]
@@ -166,6 +205,8 @@ public class AdminApiSecurityTests
         Assert.Equal(StatusCodes.Status503ServiceUnavailable,
             context.Response.StatusCode);
         Assert.Equal("no-store", context.Response.Headers.CacheControl);
+        Assert.Equal("text/plain; charset=utf-8",
+            context.Response.ContentType);
     }
 
     [Fact]
@@ -214,6 +255,17 @@ public class AdminApiSecurityTests
 
         var action = Assert.Single(settingsActions);
         Assert.Equal(new[] { "GET" }, action.HttpMethods);
+    }
+
+    [Theory]
+    [InlineData("api/pools", true)]
+    [InlineData("/api/health-check", true)]
+    [InlineData("api/admin/stats/gc", false)]
+    [InlineData("/API/ADMIN/payment/processing/disable", false)]
+    public void PublicHelp_OmitsAdministrativeRoutes(string template,
+        bool expected)
+    {
+        Assert.Equal(expected, PoolApiController.IsPublicHelpRoute(template));
     }
 
     [Fact]

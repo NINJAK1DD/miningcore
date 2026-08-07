@@ -216,9 +216,7 @@ public class Program : ProcessStatusBackgroundService
                 var enableApiRateLimiting = apiConfig.RateLimiting?.Disabled != true;
                 var apiTlsEnable = apiConfig.Tls?.Enabled == true ||
                     !string.IsNullOrEmpty(apiConfig.Tls?.TlsPfxFile);
-                var adminApiCredential = AdminApiCredential.Create(
-                    Environment.GetEnvironmentVariable(
-                        AdminApiAuthenticationMiddleware.TokenEnvironmentVariable));
+                var adminApiCredential = ReadAdminApiCredentialFromEnvironment();
                 var gpdrCompliantLogging = clusterConfig.Logging?.GPDRCompliant == true;
 
                 if(apiTlsEnable)
@@ -285,58 +283,31 @@ public class Program : ProcessStatusBackgroundService
                     })
                     .Configure(app =>
                     {
-                        // Reject wrong-listener requests before rate limiting or routing. This
-                        // deliberately returns a cheap 404 without invoking protected endpoint
-                        // middleware, so the listener reveals no route-family details.
-                        app.Use(async (context, next) =>
-                        {
-                            if(!IsApiRequestAllowed(context.Connection.LocalPort,
-                                context.Request.Path, endpointPorts))
+                        ConfigureApiPipeline(app, endpointPorts,
+                            apiConfig.AdminIpWhitelist,
+                            apiConfig.MetricsIpWhitelist,
+                            adminApiCredential, gpdrCompliantLogging,
+                            beforeAccessControl: pipeline =>
                             {
-                                context.Response.StatusCode = StatusCodes.Status404NotFound;
-                                return;
-                            }
+                                if(enableApiRateLimiting)
+                                    pipeline.UseIpRateLimiting();
 
-                            await next();
-                        });
+                                pipeline.UseMiddleware<ApiExceptionHandlingMiddleware>();
+                            },
+                            afterAccessControl: pipeline =>
+                            {
+                                #if DEBUG
+                                pipeline.UseOpenApi();
+                                #endif
 
-                        if(enableApiRateLimiting)
-                            app.UseIpRateLimiting();
-
-                        app.UseMiddleware<ApiExceptionHandlingMiddleware>();
-
-                        UseIpWhiteList(app, true, new[]
-                        {
-                            "/api/admin"
-                        }, apiConfig.AdminIpWhitelist);
-                        UseIpWhiteList(app, true, new[]
-                        {
-                            "/metrics"
-                        }, apiConfig.MetricsIpWhitelist);
-                        app.UseMiddleware<AdminApiAuthenticationMiddleware>(
-                            adminApiCredential, gpdrCompliantLogging);
-
-                        #if DEBUG
-                        app.UseOpenApi();
-                        #endif
-
-                        app.UseResponseCompression();
-                        // Public API clients retain the existing permissive policy. Administrative
-                        // routes deliberately receive no CORS headers so browser applications cannot
-                        // be taught to carry the operator bearer token.
-                        app.UseWhen(context =>
-                                !AdminApiAuthenticationMiddleware.IsAdminRequest(
-                                    context.Request.Path),
-                            publicApi => publicApi.UseCors(corsPolicyBuilder =>
-                                corsPolicyBuilder.AllowAnyOrigin().AllowAnyMethod()
-                                    .AllowAnyHeader()));
-                        app.UseWebSockets();
-                        app.MapWebSocketManager("/notifications", app.ApplicationServices.GetService<WebSocketNotificationsRelay>());
-                        app.UseMetricServer();
-
-                        app.UseMiddleware<ApiRequestMetricsMiddleware>();
-
-                        app.UseMvc();
+                                pipeline.UseResponseCompression();
+                                pipeline.UseWebSockets();
+                                pipeline.MapWebSocketManager("/notifications",
+                                    pipeline.ApplicationServices.GetService<WebSocketNotificationsRelay>());
+                                pipeline.UseMetricServer();
+                                pipeline.UseMiddleware<ApiRequestMetricsMiddleware>();
+                                pipeline.UseMvc();
+                            });
                     });
 
                     var httpScheme = $"http{(apiTlsEnable ? "s" : "")}";
@@ -828,6 +799,72 @@ public class Program : ProcessStatusBackgroundService
             return localPort == ports.MetricsPort;
 
         return localPort == ports.PublicPort;
+    }
+
+    internal static void ConfigureApiPipeline(IApplicationBuilder app,
+        ApiEndpointPorts ports, string[] adminIpWhitelist,
+        string[] metricsIpWhitelist, AdminApiCredential adminCredential,
+        bool gpdrCompliantLogging,
+        Action<IApplicationBuilder> beforeAccessControl = null,
+        Action<IApplicationBuilder> afterAccessControl = null)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(ports);
+        ArgumentNullException.ThrowIfNull(adminCredential);
+
+        // Reject wrong-listener requests before rate limiting or routing. This
+        // deliberately returns a cheap 404 without invoking protected endpoint
+        // middleware, so the listener reveals no route-family details.
+        app.Use(async (context, next) =>
+        {
+            if(!IsApiRequestAllowed(context.Connection.LocalPort,
+                   context.Request.Path, ports))
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            await next();
+        });
+
+        beforeAccessControl?.Invoke(app);
+
+        UseIpWhiteList(app, true, new[] { "/api/admin" },
+            adminIpWhitelist, gpdrCompliantLogging);
+        UseIpWhiteList(app, true, new[] { "/metrics" },
+            metricsIpWhitelist, gpdrCompliantLogging);
+        app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
+            gpdrCompliantLogging);
+
+        // Public API clients retain the existing permissive policy. Administrative
+        // routes deliberately receive no CORS headers so browser applications cannot
+        // be taught to carry the operator bearer token.
+        app.UseWhen(context =>
+                !AdminApiAuthenticationMiddleware.IsAdminRequest(
+                    context.Request.Path),
+            publicApi => publicApi.UseCors(corsPolicyBuilder =>
+                corsPolicyBuilder.AllowAnyOrigin().AllowAnyMethod()
+                    .AllowAnyHeader()));
+
+        afterAccessControl?.Invoke(app);
+    }
+
+    internal static AdminApiCredential ReadAdminApiCredentialFromEnvironment()
+    {
+        var variable = AdminApiAuthenticationMiddleware.TokenEnvironmentVariable;
+        var token = Environment.GetEnvironmentVariable(variable);
+
+        try
+        {
+            return AdminApiCredential.Create(token);
+        }
+        finally
+        {
+            // The immutable credential keeps only a digest. Remove the managed-process
+            // copy so child processes do not inherit the bearer value. The service manager
+            // or container runtime may still retain its configured environment metadata.
+            Environment.SetEnvironmentVariable(variable, null);
+        }
     }
 
     internal static int? FindApiListenerStratumPortConflict(
@@ -2022,7 +2059,9 @@ public class Program : ProcessStatusBackgroundService
         return CoinTemplateLoader.Load(container, clusterConfig.CoinTemplates);
     }
 
-    private static void UseIpWhiteList(IApplicationBuilder app, bool defaultToLoopback, string[] locations, string[] whitelist)
+    private static void UseIpWhiteList(IApplicationBuilder app,
+        bool defaultToLoopback, string[] locations, string[] whitelist,
+        bool gpdrCompliantLogging)
     {
         var ipList = whitelist?.Select(IPAddress.Parse).ToList();
         if(defaultToLoopback && (ipList == null || ipList.Count == 0))
@@ -2041,9 +2080,10 @@ public class Program : ProcessStatusBackgroundService
             if(!ipList.Any(x => x.Equals(IPUtils.IPv4LoopBackOnIPv6)))
                 ipList.Add(IPUtils.IPv4LoopBackOnIPv6);
 
-            logger.Info(() => $"API Access to {string.Join(",", locations)} restricted to {string.Join(",", ipList.Select(x => x.ToString()))}");
+            logger?.Info(() => $"API Access to {string.Join(",", locations)} restricted to {string.Join(",", ipList.Select(x => x.ToString()))}");
 
-            app.UseMiddleware<IPAccessWhitelistMiddleware>(locations, ipList.ToArray(), clusterConfig.Logging.GPDRCompliant);
+            app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
+                ipList.ToArray(), gpdrCompliantLogging);
         }
     }
 

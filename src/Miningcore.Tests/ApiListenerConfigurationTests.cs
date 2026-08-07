@@ -1748,6 +1748,44 @@ public class ApiListenerConfigurationTests
             StatusCodes.Status403Forbidden, context.Response.StatusCode);
     }
 
+    [Fact]
+    public async Task ApiPipeline_RejectsNonWhitelistedAdminClientBeforeAuthentication()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCors();
+        using var provider = services.BuildServiceProvider();
+        var app = new ApplicationBuilder(provider);
+        var nextCalled = false;
+        var ports = new Program.ApiEndpointPorts(4000, 4000, 4000);
+
+        Program.ConfigureApiPipeline(app, ports,
+            new[] { "198.51.100.10" }, null,
+            AdminApiCredential.Create(TestAdminToken), false,
+            afterAccessControl: pipeline => pipeline.Run(_ =>
+            {
+                nextCalled = true;
+                return Task.CompletedTask;
+            }));
+
+        var context = new DefaultHttpContext
+        {
+            RequestServices = provider,
+        };
+        context.Connection.LocalPort = ports.AdminPort;
+        context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+        context.Request.Path = "/api/admin/status";
+        context.Response.Body = new MemoryStream();
+
+        await app.Build()(context);
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status403Forbidden,
+            context.Response.StatusCode);
+        Assert.False(context.Response.Headers.ContainsKey(
+            "WWW-Authenticate"));
+    }
+
     private static Program.ApiEndpointPorts CreateEndpointPorts()
     {
         for(var attempt = 0; attempt < ListenerStartAttempts; attempt++)
@@ -2013,54 +2051,38 @@ public class ApiListenerConfigurationTests
                     }))
                 .Configure(app =>
                 {
-                    app.Use(async (context, next) =>
-                    {
-                        if(!Program.IsApiRequestAllowed(
-                            context.Connection.LocalPort,
-                            context.Request.Path, ports))
+                    Program.ConfigureApiPipeline(app, ports, null, null,
+                        adminCredential, false,
+                        afterAccessControl: pipeline =>
                         {
-                            context.Response.StatusCode =
-                                StatusCodes.Status404NotFound;
-                            return;
-                        }
+                            pipeline.UseWebSockets();
+                            pipeline.Run(async context =>
+                            {
+                                if(context.Request.Path == "/notifications" &&
+                                    context.WebSockets.IsWebSocketRequest)
+                                {
+                                    using var socket =
+                                        await context.WebSockets.AcceptWebSocketAsync();
+                                    await socket.CloseOutputAsync(
+                                        WebSocketCloseStatus.NormalClosure,
+                                        "listener test complete",
+                                        context.RequestAborted);
+                                    return;
+                                }
 
-                        await next();
-                    });
-                    app.UseMiddleware<AdminApiAuthenticationMiddleware>(
-                        adminCredential, false);
-                    app.UseWhen(context =>
-                            !AdminApiAuthenticationMiddleware.IsAdminRequest(
-                                context.Request.Path),
-                        publicApi => publicApi.UseCors(cors =>
-                            cors.AllowAnyOrigin().AllowAnyMethod()
-                                .AllowAnyHeader()));
-                    app.UseWebSockets();
-                    app.Run(async context =>
-                    {
-                        if(context.Request.Path == "/notifications" &&
-                            context.WebSockets.IsWebSocketRequest)
-                        {
-                            using var socket =
-                                await context.WebSockets.AcceptWebSocketAsync();
-                            await socket.CloseOutputAsync(
-                                WebSocketCloseStatus.NormalClosure,
-                                "listener test complete",
-                                context.RequestAborted);
-                            return;
-                        }
+                                if(context.Request.Path == "/api/pools" ||
+                                    context.Request.Path == "/notifications" ||
+                                    context.Request.Path == "/api/admin/status" ||
+                                    context.Request.Path == "/metrics")
+                                {
+                                    context.Response.StatusCode = StatusCodes.Status200OK;
+                                    return;
+                                }
 
-                        if(context.Request.Path == "/api/pools" ||
-                            context.Request.Path == "/notifications" ||
-                            context.Request.Path == "/api/admin/status" ||
-                            context.Request.Path == "/metrics")
-                        {
-                            context.Response.StatusCode = StatusCodes.Status200OK;
-                            return;
-                        }
-
-                        context.Response.StatusCode =
-                            StatusCodes.Status404NotFound;
-                    });
+                                context.Response.StatusCode =
+                                    StatusCodes.Status404NotFound;
+                            });
+                        });
                 }))
             .Build();
 

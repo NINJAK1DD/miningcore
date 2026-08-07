@@ -33,6 +33,12 @@ not include CORS headers, and the token must never be supplied to browser code. 
 exactly 64 hexadecimal characters. Generate, provision, test and rotate it using the
 [administrative API security guide](admin-api-security.md).
 
+The public `/api/help` route lists only public API operations. It deliberately omits
+`/api/admin` routes so unauthenticated callers cannot use it as an administrative route catalogue.
+Prometheus exports `miningcore_admin_api_authentication_total` with `accepted`, `rejected` and
+`unavailable` outcomes so operators can alert on authentication failures without relying on
+per-request log messages.
+
 When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
 only that route family on it. Public REST and WebSocket routes remain on `port`; requests for
 `/api/admin` or `/metrics` on the public listener, and requests for public routes on a dedicated

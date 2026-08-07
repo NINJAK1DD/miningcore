@@ -4,9 +4,11 @@ using System.Globalization;
 using System.Net;
 using Autofac;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.ActionConstraints;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Miningcore.Api.Extensions;
+using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain;
 using Miningcore.Configuration;
@@ -103,7 +105,8 @@ public class PoolApiController : ApiControllerBase
     public ActionResult GetHelp()
     {
         var tmp = adcp.ActionDescriptors.Items
-            .Where(x => x.AttributeRouteInfo != null)
+            .Where(x => x.AttributeRouteInfo != null &&
+                IsPublicHelpRoute(x.AttributeRouteInfo.Template))
             .Select(x =>
             {
                 // Get and pad http method
@@ -117,6 +120,15 @@ public class PoolApiController : ApiControllerBase
         var result = string.Join("\n", tmp).Replace("{", "<").Replace("}", ">") + "\n";
 
         return Content(result);
+    }
+
+    internal static bool IsPublicHelpRoute(string template)
+    {
+        if(string.IsNullOrEmpty(template))
+            return false;
+
+        return !AdminApiAuthenticationMiddleware.IsAdminRequest(
+            new PathString($"/{template.TrimStart('/')}"));
     }
 
     [HttpGet("/api/health-check")]

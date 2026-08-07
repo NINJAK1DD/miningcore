@@ -73,11 +73,8 @@ public class AdminApiRouteIntegrationTests
             removedPublicWriter.Content = JsonContent(
                 "{\"settings\":{\"paymentThreshold\":0.1}}");
             using var response = await client.SendAsync(removedPublicWriter);
-            Assert.Contains(response.StatusCode, new[]
-            {
-                HttpStatusCode.NotFound,
-                HttpStatusCode.MethodNotAllowed,
-            });
+            Assert.Equal(HttpStatusCode.NotFound,
+                response.StatusCode);
         }
 
         using(var update = CreateAdminRequest(HttpMethod.Put,
@@ -100,6 +97,13 @@ public class AdminApiRouteIntegrationTests
             running.StoredSettings.Address);
         Assert.Equal(PoolId, running.StoredSettings.PoolId);
         Assert.Equal(0.1m, running.StoredSettings.PaymentThreshold);
+
+        using var unknownPool = CreateAdminRequest(HttpMethod.Get,
+            new Uri(origin,
+                $"/api/admin/pools/unknown/miners/{MixedCaseAddress}/getbalance"));
+        using var unknownPoolResponse = await client.SendAsync(unknownPool);
+        Assert.Equal(HttpStatusCode.NotFound,
+            unknownPoolResponse.StatusCode);
     }
 
     [Fact]
@@ -244,15 +248,13 @@ public class AdminApiRouteIntegrationTests
                 })
                 .Configure(app =>
                 {
-                    app.UseMiddleware<AdminApiAuthenticationMiddleware>(
-                        AdminApiCredential.Create(AdminToken), false);
-                    app.UseWhen(context =>
-                            !AdminApiAuthenticationMiddleware.IsAdminRequest(
-                                context.Request.Path),
-                        publicApi => publicApi.UseCors(cors =>
-                            cors.AllowAnyOrigin().AllowAnyMethod()
-                                .AllowAnyHeader()));
-                    app.UseMvc();
+                    Program.ConfigureApiPipeline(app,
+                        new Program.ApiEndpointPorts(port, port, port),
+                        null, null,
+                        AdminApiCredential.Create(AdminToken), false,
+                        beforeAccessControl: pipeline =>
+                            pipeline.UseMiddleware<ApiExceptionHandlingMiddleware>(),
+                        afterAccessControl: pipeline => pipeline.UseMvc());
                 }))
             .Build();
 

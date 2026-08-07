@@ -128,6 +128,7 @@ allows 90 seconds for the application's bounded clean shutdown and durable recov
 
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service
+sudo mkdir -p /etc/miningcore
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null

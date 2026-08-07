@@ -86,12 +86,14 @@ jobs:
 
           network=miningcore-api-smoke
           container=miningcore-api-smoke
+          unconfigured_container=miningcore-api-unconfigured
           shared_container=miningcore-api-shared
           proxy_container=miningcore-api-nginx
-          admin_token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          admin_token="$(openssl rand -hex 32)"
 
           cleanup() {
             docker rm -f "$container" >/dev/null 2>&1 || true
+            docker rm -f "$unconfigured_container" >/dev/null 2>&1 || true
             docker rm -f "$proxy_container" >/dev/null 2>&1 || true
             docker rm -f "$shared_container" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
@@ -141,6 +143,34 @@ jobs:
             http://127.0.0.1:4002/api/pools)" = 404
 
           docker rm -f "$container" >/dev/null
+
+          docker run --detach --name "$unconfigured_container" \
+            --network "$network" \
+            --publish 127.0.0.1:4001:4001 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          unavailable_status=000
+          for attempt in {1..30}; do
+            unavailable_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4001/api/admin/status || true)"
+            if [[ "$unavailable_status" == 503 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$unavailable_status" != 503 ]]; then
+            docker logs "$unconfigured_container"
+            echo "Unconfigured admin credential returned HTTP $unavailable_status instead of 503"
+            exit 1
+          fi
+
+          docker rm -f "$unconfigured_container" >/dev/null
 
           docker run --detach --name "$shared_container" \
             --network "$network" \

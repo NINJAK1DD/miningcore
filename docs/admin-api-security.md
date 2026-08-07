@@ -27,10 +27,12 @@ sudo chmod 0600 /etc/miningcore/miningcore.env
 
 Miningcore accepts exactly 64 ASCII hexadecimal characters (`0-9`, `a-f` or `A-F`). It rejects
 shorter, longer, Unicode or punctuation-bearing values so the credential has an unambiguous format
-across HTTP clients, proxies, shells and service managers. Its authentication object retains only a
-SHA-256 digest and compares supplied credentials in constant time. Like any environment secret, the
-original value remains available to the service process and privileged host/container
-administrators. If the variable is missing or invalid, Miningcore starts the pools and public API
+across HTTP clients, proxies, shells and service managers. Uppercase and lowercase hexadecimal
+forms are equivalent. Its authentication object retains only a SHA-256 digest, compares supplied
+credentials in constant time, and clears Miningcore's managed-process copy after startup so child
+processes do not inherit it. Like any environment secret, the original value can remain available
+to the service manager or container runtime and privileged host/container administrators. If the
+variable is missing or invalid, Miningcore starts the pools and public API
 but returns `503 Service Unavailable` from every administrative route. This fail-closed state is
 reported at startup without logging the token.
 
@@ -139,7 +141,44 @@ a caller-supplied recent mining IP address is not adequate authorization.
 
 ## Rotate or revoke
 
-Generate a replacement value, atomically replace the environment file, restart Miningcore, and test
-one read-only route. A restart immediately invalidates the old token. If compromise is suspected,
-also review admin-request logs, payment-processing state, miner settings and firewall/reverse-proxy
-exposure before restoring administrative access.
+Generate a replacement value, replace the environment file, restart or recreate Miningcore, and
+test one read-only route. Once the new process starts, the old token is immediately invalid. If
+compromise is suspected, also review admin-request logs, payment-processing state, miner settings
+and firewall/reverse-proxy exposure before restoring administrative access.
+
+For systemd, replace the file and restart the service:
+
+```console
+token="$(openssl rand -hex 32)"
+printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
+  sudo tee /etc/miningcore/miningcore.env.new >/dev/null
+unset token
+sudo chown root:root /etc/miningcore/miningcore.env.new
+sudo chmod 0600 /etc/miningcore/miningcore.env.new
+sudo mv /etc/miningcore/miningcore.env.new /etc/miningcore/miningcore.env
+sudo systemctl restart miningcore
+```
+
+For Docker, `docker restart` is insufficient because it preserves the environment captured when
+the container was created. Replace the file, remove the old container, and repeat the complete
+version-pinned `docker run` command from the installation guide, including every network, port and
+volume option:
+
+```console
+sudo docker rm -f miningcore
+sudo docker run -d \
+  --name miningcore \
+  --restart unless-stopped \
+  --env-file /etc/miningcore/miningcore.env \
+  --network miningcore \
+  -p 4000:4000 \
+  -p 127.0.0.1:4001:4001 \
+  -p 127.0.0.1:4002:4002 \
+  -p 3032:3032 \
+  -v /etc/miningcore/config.json:/etc/miningcore/config.json:ro \
+  -v /var/lib/miningcore:/var/lib/miningcore \
+  "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
+```
+
+Generate and install the replacement file using the commands at the start of this guide before
+removing the running container. Adjust the example to match the original deployment exactly.
