@@ -17,11 +17,12 @@ public class AuxiliaryTemplateRpcObservabilityTests
     [Theory]
     [InlineData("success", false, false, (int) AuxiliaryTemplateRpcOutcome.Success)]
     [InlineData("rpc_error", false, false, (int) AuxiliaryTemplateRpcOutcome.RpcError)]
-    [InlineData("cancelled", false, true, (int) AuxiliaryTemplateRpcOutcome.Timeout)]
-    [InlineData("cancelled", true, true, (int) AuxiliaryTemplateRpcOutcome.Cancellation)]
+    [InlineData("client_cancelled", false, true, (int) AuxiliaryTemplateRpcOutcome.Timeout)]
+    [InlineData("client_cancelled", true, true, (int) AuxiliaryTemplateRpcOutcome.Cancellation)]
     [InlineData("transport", false, false, (int) AuxiliaryTemplateRpcOutcome.TransportFailure)]
     [InlineData("malformed", false, false, (int) AuxiliaryTemplateRpcOutcome.RpcError)]
-    [InlineData("cancelled", false, false, (int) AuxiliaryTemplateRpcOutcome.TransportFailure)]
+    [InlineData("client_cancelled", false, false, (int) AuxiliaryTemplateRpcOutcome.TransportFailure)]
+    [InlineData("daemon_cancelled", false, false, (int) AuxiliaryTemplateRpcOutcome.RpcError)]
     [InlineData("empty", false, false, (int) AuxiliaryTemplateRpcOutcome.TransportFailure)]
     public void Classifier_DistinguishesEveryBoundedOutcome(
         string responseKind, bool callerCancellationWon,
@@ -114,7 +115,9 @@ public class AuxiliaryTemplateRpcObservabilityTests
             "success" => new RpcResponse<AuxBlockTemplate>(new AuxBlockTemplate()),
             "rpc_error" => ErrorResponse(new JsonRpcError(-1,
                 "daemon rejected", null)),
-            "cancelled" => ErrorResponse(new JsonRpcError(-500,
+            "client_cancelled" => ErrorResponse(new JsonRpcError(-500,
+                "Cancelled", null, new OperationCanceledException("cancelled"))),
+            "daemon_cancelled" => ErrorResponse(new JsonRpcError(-500,
                 "Cancelled", null)),
             "transport" => ErrorResponse(new JsonRpcError(-500,
                 "connection refused", null,

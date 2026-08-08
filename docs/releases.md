@@ -300,6 +300,8 @@ whether the parent pool is currently using cached auxiliary data. Every series i
 Litecoin parent and Dogecoin auxiliary pool. RPC series also separate ten-second startup
 synchronization from recurring template refreshes, so two parents that share one auxiliary pool
 cannot overwrite each other's state or combine different timeout policies.
+The histogram has ten bounded label sets per configured parent/auxiliary pair (two phases by five
+outcomes); each label set exports the configured buckets plus `+Inf`, `_sum` and `_count`.
 
 Miningcore continues Litecoin mining with the last valid Dogecoin template during a temporary
 auxiliary refresh failure and clears the degraded gauge after the next successful refresh. Deadline

@@ -361,8 +361,13 @@ public class MergedMiningManagerReorgTests
         manager.Enqueue(CreateParentTemplate());
         await manager.Update(CancellationToken.None).WaitAsync(testTimeout);
 
-        // The counter represents fallback episodes, not every cached refresh.
-        Assert.Single(stateEvents);
+        // The stopped listener makes this second refresh fail quickly by connection
+        // refusal. Level-triggered gauge state is reasserted, while the counter still
+        // represents fallback episodes rather than every cached refresh.
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
     }
 
     [Fact]

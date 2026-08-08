@@ -81,13 +81,15 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private static readonly TimeSpan BlockSubmissionTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AmbiguousSubmissionLookupTimeout = TimeSpan.FromSeconds(5);
     private const int ValidatedAuxiliaryAddressCacheCapacity = 4096;
+    private readonly record struct AuxiliaryTemplateStateTransition(
+        bool FallbackStarted,
+        bool Recovered);
 
     private MergedMiningConfig mergedMiningConfig;
     private PoolConfig auxiliaryPoolConfig;
     private BitcoinTemplate parentCoin;
     private BitcoinTemplate auxiliaryCoin;
     private RpcClient auxiliaryRpc;
-    private bool? auxiliaryTemplateAvailable;
     private bool auxiliaryTemplateDegraded;
     private AuxBlockTemplate startupAuxiliaryTemplate;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
@@ -194,12 +196,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             if(freshTemplate != null)
             {
                 startupAuxiliaryTemplate = freshTemplate;
-                PublishAuxiliaryTemplateState(true, false, false);
+                SetAndPublishAuxiliaryTemplateState(true, false);
                 logger.Info(() => $"Auxiliary daemon for {auxiliaryCoin.Name} is synched");
                 return;
             }
 
-            PublishAuxiliaryTemplateState(false, false, false);
+            SetAndPublishAuxiliaryTemplateState(false, false);
 
             if(!notificationShown)
             {
@@ -268,15 +270,14 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         // RpcClient attaches JSON/protocol parsing failures as inner exceptions. The
         // endpoint replied but did not produce a usable RPC envelope, so keep those
         // distinct from connection and other transport failures.
-        if(response?.Error?.InnerException is JsonException)
+        if(response?.Error?.InnerException is Newtonsoft.Json.JsonException)
             return AuxiliaryTemplateRpcOutcome.RpcError;
 
-        // A synthetic Cancelled response with neither local contender winning comes
-        // from a client-level cancellation such as HttpClient's own timeout.
+        // RpcClient preserves client-side cancellation and transport failures as
+        // inner exceptions. Daemon-originated errors, even if their text happens to
+        // be "Cancelled", remain RPC errors instead of being classified by message.
         if(response == null || response.Error?.InnerException != null ||
-            response.Error == null ||
-            response.Error.Code == -500 && string.Equals(response.Error.Message,
-                "Cancelled", StringComparison.OrdinalIgnoreCase))
+            response.Error == null)
             return AuxiliaryTemplateRpcOutcome.TransportFailure;
 
         return AuxiliaryTemplateRpcOutcome.RpcError;
@@ -302,20 +303,22 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         };
     }
 
-    private void PublishAuxiliaryTemplateState(bool available, bool degraded,
-        bool fallbackStarted)
+    private AuxiliaryTemplateStateTransition SetAndPublishAuxiliaryTemplateState(
+        bool available, bool degraded)
     {
-        var stateChanged = auxiliaryTemplateAvailable != available ||
-            auxiliaryTemplateDegraded != degraded;
-        auxiliaryTemplateAvailable = available;
+        var transition = new AuxiliaryTemplateStateTransition(
+            FallbackStarted: degraded && !auxiliaryTemplateDegraded,
+            Recovered: !degraded && auxiliaryTemplateDegraded);
         auxiliaryTemplateDegraded = degraded;
 
-        if(!stateChanged && !fallbackStarted)
-            return;
-
+        // Gauges are level-triggered: reassert unchanged state so a transient
+        // subscriber/metric update failure self-heals on the next refresh. Only the
+        // FallbackStarted flag retains edge semantics for its counter.
         messageBus.SendMessage(new AuxiliaryTemplateStateTelemetryEvent(
             poolConfig.Id, auxiliaryPoolConfig.Id, available, degraded,
-            fallbackStarted));
+            transition.FallbackStarted));
+
+        return transition;
     }
 
     internal static AuxiliaryTemplateChange ClassifyAuxiliaryTemplateChange(
@@ -387,7 +390,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 if(!hasAuxiliaryTemplate)
                 {
                     var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
-                    PublishAuxiliaryTemplateState(false, false, false);
+                    SetAndPublishAuxiliaryTemplateState(false, false);
                     logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
                     return (false, forceUpdate);
                 }
@@ -395,20 +398,17 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 if(usedCachedAuxiliaryTemplate)
                 {
                     var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
-                    var fallbackStarted = !auxiliaryTemplateDegraded;
-                    if(fallbackStarted)
+                    var transition = SetAndPublishAuxiliaryTemplateState(true, true);
+                    if(transition.FallbackStarted)
                         logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
                     else
                         logger.Debug(() => $"Auxiliary template remains unavailable: {error}");
-
-                    PublishAuxiliaryTemplateState(true, true, fallbackStarted);
                 }
                 else
                 {
-                    if(auxiliaryTemplateDegraded)
+                    var transition = SetAndPublishAuxiliaryTemplateState(true, false);
+                    if(transition.Recovered)
                         logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
-
-                    PublishAuxiliaryTemplateState(true, false, false);
                 }
             }
 
