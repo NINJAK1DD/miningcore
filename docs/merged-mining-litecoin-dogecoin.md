@@ -123,9 +123,10 @@ when both reference the same auxiliary pool. Separate phase labels keep ten-seco
 out of recurring timeout analysis. Histogram buckets straddle the 500 ms default and extend through
 the ten-second startup deadline. State gauges are reasserted on each auxiliary poll refresh so a
 transient telemetry processing failure self-heals, while the fallback counter increments only on a
-new degraded episode. Parent stream events that reuse the cached auxiliary template do not reassert
-the gauges; the next configured `blockRefreshInterval` poll does. A missing or nonpositive interval
-defaults to 1000 ms, while an explicitly configured positive interval is respected.
+new degraded episode. After an active merged job exists, parent stream events that merely reuse its
+cached auxiliary template do not reassert the gauges; the next configured `blockRefreshInterval`
+poll does. A missing or nonpositive interval defaults to 1000 ms, while an explicitly configured
+positive interval is respected.
 The histogram remains bounded to ten label sets per configured parent/auxiliary pair (two phases by
 five outcomes); each set exports the configured buckets plus `+Inf`, `_sum` and `_count`. For example,
 the fraction of refresh attempts within 500 ms is:
