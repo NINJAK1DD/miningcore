@@ -615,6 +615,56 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task StartupTemplate_InstalledByBlockTemplateStream_PublishesAvailableImmediately()
+    {
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var startupAuxiliary = CreateAuxiliaryTemplate();
+        manager.SeedStartup(startupAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        var available = Assert.Single(stateEvents);
+        Assert.True(available.Available);
+        Assert.False(available.Degraded);
+        Assert.False(available.FallbackStarted);
+        Assert.Null(manager.StartupAuxiliaryTemplate);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.True(stateEvents[1].FallbackStarted);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, stateEvents.Count);
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
     public async Task MinerEof_DoesNotCancelManagerOwnedCandidatePersistence()
     {
         var builder = new ContainerBuilder();
@@ -974,13 +1024,19 @@ public class MergedMiningManagerReorgTests
         public void Seed(BlockTemplate parent, AuxBlockTemplate auxiliary) =>
             currentJob = TestJob.Create(parent, auxiliary, "seed");
 
+        public void SeedStartup(AuxBlockTemplate auxiliary)
+        {
+            currentJob = null;
+            CacheStartupAuxiliaryTemplate(auxiliary);
+        }
+
         public void Enqueue(BlockTemplate template) =>
             responses.Enqueue(new RpcResponse<BlockTemplate>(template));
 
         public void InitializeJobUpdates(CancellationToken ct) => SetupJobUpdates(ct);
 
-        public Task<(bool IsNew, bool Force)> Update(CancellationToken ct) =>
-            UpdateJob(ct, false);
+        public Task<(bool IsNew, bool Force)> Update(CancellationToken ct,
+            string via = null) => UpdateJob(ct, false, via);
 
         protected override Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(
             CancellationToken ct) => Task.FromResult(responses.Dequeue());

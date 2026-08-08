@@ -88,7 +88,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private BitcoinTemplate auxiliaryCoin;
     private RpcClient auxiliaryRpc;
     private bool auxiliaryTemplateDegraded;
-    private AuxBlockTemplate startupAuxiliaryTemplate;
+    internal AuxBlockTemplate StartupAuxiliaryTemplate { get; private set; }
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
     private readonly AuxiliaryAddressValidationCache validatedAuxiliaryAddresses =
         new(ValidatedAuxiliaryAddressCacheCapacity);
@@ -192,7 +192,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 : null;
             if(freshTemplate != null)
             {
-                startupAuxiliaryTemplate = freshTemplate;
+                CacheStartupAuxiliaryTemplate(freshTemplate);
                 // A parseable daemon response is not yet a usable mining template.
                 // Keep availability false until UpdateJob successfully constructs and
                 // installs the first merged-mining job from it.
@@ -363,7 +363,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             var blockTemplate = parentResponse.Response;
 
             var previousAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate ??
-                startupAuxiliaryTemplate;
+                StartupAuxiliaryTemplate;
             var shouldRefreshAuxiliaryTemplate = ShouldRefreshAuxiliaryTemplate(via,
                 previousAuxiliaryTemplate != null);
             AuxBlockTemplate auxiliaryTemplate;
@@ -430,6 +430,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             var auxiliaryChange = ClassifyAuxiliaryTemplateChange(
                 previousJob?.AuxiliaryBlockTemplate, auxiliaryTemplate);
             var auxiliaryIsNew = auxiliaryChange != AuxiliaryTemplateChange.None;
+            var installsStartupAuxiliaryTemplate = previousJob == null &&
+                ReferenceEquals(auxiliaryTemplate, StartupAuxiliaryTemplate);
 
             if(parentIsNew)
                 messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
@@ -505,6 +507,17 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 else if(cachedAuxiliaryTemplatePendingCommit)
                     PublishAuxiliaryTemplateFallback(auxiliaryTemplate,
                         cachedAuxiliaryTemplateFailure);
+                else if(installsStartupAuxiliaryTemplate)
+                {
+                    // A parent Template Stream update can install the first usable job
+                    // without refreshing DOGE. This first commit proves the startup
+                    // template usable; later parent-only updates still cannot prove
+                    // recovery from an established degraded state.
+                    PublishAuxiliaryTemplateRecovery(auxiliaryTemplate);
+                }
+
+                if(previousJob == null)
+                    StartupAuxiliaryTemplate = null;
             }
             else if(freshAuxiliaryTemplatePendingCommit)
             {
@@ -532,6 +545,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(transition.Recovered)
             logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
     }
+
+    internal void CacheStartupAuxiliaryTemplate(AuxBlockTemplate auxiliaryTemplate) =>
+        StartupAuxiliaryTemplate = auxiliaryTemplate;
 
     private void PublishAuxiliaryTemplateFallback(AuxBlockTemplate auxiliaryTemplate,
         string error)
