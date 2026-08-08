@@ -414,6 +414,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                         // construction proves that the cached response is usable.
                         cachedAuxiliaryTemplatePendingCommit = true;
                         cachedAuxiliaryTemplateFailure = error;
+                        startupAuxiliaryTemplateFallbackFailure = error;
                     }
                 }
                 else
@@ -423,6 +424,16 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     // template is installed, or after proving that the active job
                     // already contains the identical template.
                     freshAuxiliaryTemplatePendingCommit = true;
+
+                    if(previousJob == null && StartupAuxiliaryTemplate != null &&
+                        ClassifyAuxiliaryTemplateChange(StartupAuxiliaryTemplate,
+                            auxiliaryTemplate) == AuxiliaryTemplateChange.None)
+                    {
+                        // A successful refresh has proven the startup identity current
+                        // again. Do not retain older fallback provenance if this combined
+                        // parent/auxiliary job attempt subsequently fails to initialize.
+                        startupAuxiliaryTemplateFallbackFailure = null;
+                    }
                 }
             }
 
