@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reactive.Linq;
@@ -22,6 +23,7 @@ using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NLog;
 using NSubstitute;
 using Xunit;
@@ -450,6 +452,98 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task FreshAuxiliaryTemplate_RecoversOnlyAfterReplacementJobIsInstalled()
+    {
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = cachedAuxiliary.Hash;
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"),
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var parentTemplate = CreateParentTemplate();
+        manager.Seed(parentTemplate, cachedAuxiliary);
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        var fallback = Assert.Single(stateEvents);
+        Assert.True(fallback.Available);
+        Assert.True(fallback.Degraded);
+        Assert.True(fallback.FallbackStarted);
+
+        manager.JobCreationException = new InvalidOperationException(
+            "fresh auxiliary template is unusable");
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Single(stateEvents);
+
+        manager.JobCreationException = null;
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task FreshAuxiliaryTemplate_ThatCannotInitialize_RemainsUnavailable()
+    {
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>())
+        {
+            JobCreationException = new InvalidOperationException(
+                "initial auxiliary template is unusable"),
+        };
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), null);
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unavailable = Assert.Single(stateEvents);
+        Assert.False(unavailable.Available);
+        Assert.False(unavailable.Degraded);
+        Assert.False(unavailable.FallbackStarted);
+        Assert.Null(manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
     public async Task MinerEof_DoesNotCancelManagerOwnedCandidatePersistence()
     {
         var builder = new ContainerBuilder();
@@ -802,6 +896,7 @@ public class MergedMiningManagerReorgTests
         public Func<MergedMiningShareResult> ProcessMergedShareHandler { get; set; }
         public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
         public Exception ParentSubmissionException { get; set; }
+        public Exception JobCreationException { get; set; }
 
         public MergedMiningBitcoinJob Current => (MergedMiningBitcoinJob) currentJob;
 
@@ -841,9 +936,14 @@ public class MergedMiningManagerReorgTests
         }
 
         protected override MergedMiningBitcoinJob CreateMergedMiningJob(
-            BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate) =>
-            TestJob.Create(blockTemplate, auxiliaryTemplate,
+            BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate)
+        {
+            if(JobCreationException != null)
+                throw JobCreationException;
+
+            return TestJob.Create(blockTemplate, auxiliaryTemplate,
                 $"test-{Interlocked.Increment(ref testJobId)}");
+        }
     }
 
     private sealed class TestJob : MergedMiningBitcoinJob
@@ -916,6 +1016,130 @@ public class MergedMiningManagerReorgTests
             catch(ObjectDisposedException) when(stop.IsCancellationRequested)
             {
             }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await stop.CancelAsync();
+            listener.Stop();
+            await serverTask;
+            stop.Dispose();
+        }
+    }
+
+    private sealed class SequenceJsonRpcServer : IAsyncDisposable
+    {
+        public SequenceJsonRpcServer(params JObject[] responses)
+        {
+            this.responses = new Queue<JObject>(responses);
+            listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Port = ((IPEndPoint) listener.LocalEndpoint).Port;
+            serverTask = ServeAsync();
+        }
+
+        private readonly TcpListener listener;
+        private readonly CancellationTokenSource stop = new();
+        private readonly Queue<JObject> responses;
+        private readonly Task serverTask;
+
+        public int Port { get; }
+
+        public static JObject Success(AuxBlockTemplate template) => new()
+        {
+            ["result"] = JObject.FromObject(template),
+            ["error"] = null,
+        };
+
+        public static JObject RpcError(int code, string message) => new()
+        {
+            ["result"] = null,
+            ["error"] = new JObject
+            {
+                ["code"] = code,
+                ["message"] = message,
+            },
+        };
+
+        private async Task ServeAsync()
+        {
+            try
+            {
+                while(responses.Count > 0)
+                {
+                    using var client = await listener.AcceptTcpClientAsync(stop.Token);
+                    await RespondAsync(client, responses.Dequeue(), stop.Token);
+                }
+            }
+            catch(OperationCanceledException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(SocketException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(ObjectDisposedException) when(stop.IsCancellationRequested)
+            {
+            }
+        }
+
+        private static async Task RespondAsync(TcpClient client, JObject response,
+            CancellationToken ct)
+        {
+            var stream = client.GetStream();
+            using var requestBuffer = new MemoryStream();
+            var buffer = new byte[4096];
+            var headerEnd = -1;
+            var contentLength = 0;
+
+            while(true)
+            {
+                var read = await stream.ReadAsync(buffer, ct);
+                if(read == 0)
+                    throw new IOException("JSON-RPC client closed before sending a request");
+
+                requestBuffer.Write(buffer, 0, read);
+                var requestBytes = requestBuffer.ToArray();
+                headerEnd = FindHeaderEnd(requestBytes);
+                if(headerEnd < 0)
+                    continue;
+
+                var headers = Encoding.ASCII.GetString(requestBytes, 0, headerEnd);
+                contentLength = headers.Split("\r\n")
+                    .Select(x => x.Split(':', 2))
+                    .Where(x => x.Length == 2 && string.Equals(x[0], "Content-Length",
+                        StringComparison.OrdinalIgnoreCase))
+                    .Select(x => int.Parse(x[1].Trim()))
+                    .Single();
+
+                if(requestBytes.Length >= headerEnd + 4 + contentLength)
+                    break;
+            }
+
+            var completeRequest = requestBuffer.ToArray();
+            var requestJson = Encoding.UTF8.GetString(completeRequest,
+                headerEnd + 4, contentLength);
+            var request = JObject.Parse(requestJson);
+            response["jsonrpc"] = "2.0";
+            response["id"] = request["id"]?.DeepClone();
+            var body = Encoding.UTF8.GetBytes(response.ToString(Formatting.None));
+            var headersBytes = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+
+            await stream.WriteAsync(headersBytes, ct);
+            await stream.WriteAsync(body, ct);
+            await stream.FlushAsync(ct);
+        }
+
+        private static int FindHeaderEnd(byte[] bytes)
+        {
+            for(var index = 0; index <= bytes.Length - 4; index++)
+            {
+                if(bytes[index] == '\r' && bytes[index + 1] == '\n' &&
+                    bytes[index + 2] == '\r' && bytes[index + 3] == '\n')
+                    return index;
+            }
+
+            return -1;
         }
 
         public async ValueTask DisposeAsync()
