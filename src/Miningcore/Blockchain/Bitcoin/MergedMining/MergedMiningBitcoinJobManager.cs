@@ -470,7 +470,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 {
                     job = CreateMergedMiningJob(blockTemplate, auxiliaryTemplate);
                 }
-                catch
+                catch(Exception ex) when(ex is not OperationCanceledException)
                 {
                     if(freshAuxiliaryTemplatePendingCommit &&
                         previousJob?.AuxiliaryBlockTemplate != null)
@@ -565,10 +565,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 }
 
                 if(previousJob == null)
-                {
-                    StartupAuxiliaryTemplate = null;
-                    startupAuxiliaryTemplateFallbackFailure = null;
-                }
+                    ClearStartupAuxiliaryTemplate();
             }
             else if(freshAuxiliaryTemplatePendingCommit)
             {
@@ -600,6 +597,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     internal void CacheStartupAuxiliaryTemplate(AuxBlockTemplate auxiliaryTemplate)
     {
         StartupAuxiliaryTemplate = auxiliaryTemplate;
+        startupAuxiliaryTemplateFallbackFailure = null;
+    }
+
+    private void ClearStartupAuxiliaryTemplate()
+    {
+        StartupAuxiliaryTemplate = null;
         startupAuxiliaryTemplateFallbackFailure = null;
     }
 

@@ -602,6 +602,49 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task AuxiliaryJobCreationCancellation_DoesNotPublishTemplateState()
+    {
+        var activeAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = activeAuxiliary.Hash;
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>())
+        {
+            JobCreationException = new OperationCanceledException(
+                "job creation cancelled during shutdown"),
+        };
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), activeAuxiliary);
+        var activeJob = manager.Current;
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        var result = await manager.Update(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.Empty(stateEvents);
+        Assert.Same(activeJob, manager.Current);
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
     public async Task FreshAuxiliaryTemplate_ThatCannotReplaceHealthyJob_EntersFallback()
     {
         var activeAuxiliary = CreateAuxiliaryTemplate();

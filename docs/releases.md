@@ -295,20 +295,25 @@ Litecoin-Dogecoin merged mining now distinguishes a configured `createauxblock` 
 or shutdown cancellation. Timeout logs name the configured deadline instead of reporting the
 generic `Cancelled` transport text. Failed, timed-out and cancelled attempts are included in a new
 seconds-based auxiliary RPC histogram with bounded phase and outcome labels. Its `_count` series is
-the attempt counter. Separate metrics report fallback episodes, usable-template availability and
-whether the parent pool is currently using cached auxiliary data. Every series identifies both the
-Litecoin parent and Dogecoin auxiliary pool. RPC series also separate ten-second startup
+the attempt counter. Separate metrics report entries into degraded cached-template operation,
+whether a usable merged-mining job is installed and whether the parent pool is currently using
+cached auxiliary data. Every series identifies both the Litecoin parent and Dogecoin auxiliary
+pool. RPC series also separate ten-second startup
 synchronization from recurring template refreshes, so two parents that share one auxiliary pool
 cannot overwrite each other's state or combine different timeout policies.
 The histogram has ten bounded label sets per configured parent/auxiliary pair (two phases by five
 outcomes); each label set exports the configured buckets plus `+Inf`, `_sum` and `_count`.
 
 Miningcore continues Litecoin mining with the last valid Dogecoin template during a temporary
-auxiliary refresh failure and clears the degraded gauge after the next successful refresh. Deadline
-enforcement is now deterministic: a response that arrives after timeout or shutdown already won is
-discarded rather than allowed to override that result. This can expose a narrow increase in cached
-fallback episodes at the configured deadline boundary. Review the troubleshooting guidance before
-changing `auxiliaryTemplatePollTimeoutMs`, because a longer deadline can delay a fresh parent job.
+auxiliary refresh failure. A successful refresh clears the degraded gauge only after its template
+is installed in a merged-mining job, or when it reconfirms the auxiliary identity already installed.
+Availability remains zero between daemon synchronization and installation of the first usable
+merged-mining job, even when the daemon returned a parseable template. Deadline enforcement is now
+deterministic: a response that arrives after timeout or shutdown already won is discarded rather
+than allowed to override that result. This can expose a narrow increase in entries into degraded
+cached-template operation at the configured deadline boundary. Review the troubleshooting guidance
+before changing `auxiliaryTemplatePollTimeoutMs`, because a longer deadline can delay a fresh parent
+job.
 
 ### Logging and disk recovery
 
