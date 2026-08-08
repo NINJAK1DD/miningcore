@@ -268,7 +268,9 @@ port `0` is now rejected instead of creating an unpredictable ephemeral mining e
 TLS-enabled deployments use the same configured certificate on every listener. An API listener
 that uses the same port and an overlapping bind address as an enabled local Stratum endpoint now
 stops startup with the conflicting port identified; different specific bind addresses may reuse a
-port. See
+port. Enabled Stratum endpoints follow the same address-aware rule: two pools may share a numeric
+port on distinct specific IPv4 or IPv6 addresses, while identical addresses, wildcards and
+IPv4-mapped equivalents fail startup with both pool and endpoint identities. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or

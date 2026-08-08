@@ -265,6 +265,16 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
 
 public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 {
+    internal sealed record StratumListenerBinding(string PoolId, int Port,
+        IPAddress Address)
+    {
+        internal string Endpoint =>
+            $"{ListenerAddressUtils.FormatHost(Address)}:{Port}";
+    }
+
+    internal sealed record StratumListenerConflict(
+        StratumListenerBinding First, StratumListenerBinding Second);
+
     public ClusterConfigValidator(bool recoveryMode = false)
     {
         RuleFor(j => j.PaymentProcessing)
@@ -305,34 +315,68 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             })
             .WithMessage("Duplicate pool id '{poolId}'");
 
-        // ensure stratum ports are not assigned multiple times
+        // Reject only listener pairs that the operating system cannot bind
+        // concurrently. Distinct specific addresses may safely reuse a port.
         RuleFor(j => j.Pools)
-            .Must((pc, pools, ctx) =>
+            .Custom((pools, context) =>
             {
-                var ports = pools
-                    .Where(x => x.Enabled &&
-                        x.EnableInternalStratum == true &&
-                        x.Ports?.Any() == true)
-                    .SelectMany(x => x.Ports.Select(y => y.Key))
-                    .GroupBy(x => x)
-                    .ToArray();
+                var conflict = FindStratumListenerConflict(pools);
+                if(conflict == null)
+                    return;
 
-                foreach(var port in ports)
-                {
-                    if(port.Count() > 1)
-                    {
-                        ctx.MessageFormatter.AppendArgument("port", port.Key);
-                        return false;
-                    }
-                }
-
-                return true;
+                context.AddFailure(nameof(ClusterConfig.Pools),
+                    $"Stratum listener conflict: pool '{conflict.First.PoolId}' endpoint {conflict.First.Endpoint} overlaps pool '{conflict.Second.PoolId}' endpoint {conflict.Second.Endpoint}");
             })
-            .When(_ => !recoveryMode)
-            .WithMessage("Stratum port {port} assigned multiple times");
+            .When(_ => !recoveryMode);
 
         RuleForEach(j => j.Pools)
             .SetValidator(new PoolConfigValidator(recoveryMode));
+    }
+
+    internal static StratumListenerConflict FindStratumListenerConflict(
+        IEnumerable<PoolConfig> pools)
+    {
+        var bindings = (pools ?? Enumerable.Empty<PoolConfig>())
+            .Where(pool => pool.Enabled &&
+                pool.EnableInternalStratum == true &&
+                pool.Ports?.Any() == true)
+            .SelectMany(pool => pool.Ports.Select(entry =>
+                (Pool: pool, Port: entry.Key, Endpoint: entry.Value)))
+            .Select(item =>
+            {
+                if(!ListenerAddressUtils.TryResolve(
+                    item.Endpoint?.ListenAddress, out var address))
+                    return null;
+
+                return new StratumListenerBinding(item.Pool.Id,
+                    item.Port, address);
+            })
+            // Malformed addresses are reported by PoolConfigValidator. The
+            // conflict scan must never replace that diagnostic with an exception.
+            .Where(binding => binding != null)
+            .ToArray();
+
+        foreach(var group in bindings.GroupBy(binding => binding.Port))
+        {
+            var candidates = group.ToArray();
+
+            for(var first = 0; first < candidates.Length; first++)
+            {
+                for(var second = first + 1; second < candidates.Length;
+                    second++)
+                {
+                    if(ListenerAddressUtils.Overlaps(
+                        candidates[first].Address,
+                        candidates[second].Address))
+                    {
+                        return new StratumListenerConflict(
+                            candidates[first], candidates[second]);
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 }
 
