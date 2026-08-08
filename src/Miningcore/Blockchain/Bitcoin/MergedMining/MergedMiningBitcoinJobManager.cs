@@ -467,16 +467,27 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 }
                 catch
                 {
-                    if(freshAuxiliaryTemplatePendingCommit && auxiliaryIsNew &&
+                    if(freshAuxiliaryTemplatePendingCommit &&
                         previousJob?.AuxiliaryBlockTemplate != null)
                     {
-                        // A changed fresh template exists, but the only installed job
-                        // still uses the previous identity. That is cached fallback even
-                        // when the refresh RPC itself succeeded. Reasserting this state
-                        // while already degraded does not start another episode.
-                        PublishAuxiliaryTemplateFallback(
-                            previousJob.AuxiliaryBlockTemplate,
-                            "replacement job initialization failed");
+                        if(auxiliaryIsNew)
+                        {
+                            // A changed fresh template exists, but the only installed job
+                            // still uses the previous identity. That is cached fallback even
+                            // when the refresh RPC itself succeeded. Reasserting this state
+                            // while already degraded does not start another episode.
+                            PublishAuxiliaryTemplateFallback(
+                                previousJob.AuxiliaryBlockTemplate,
+                                "replacement job initialization failed");
+                        }
+                        else
+                        {
+                            // The fresh RPC reconfirmed the identity already installed in
+                            // currentJob. An unrelated parent-job initialization failure must
+                            // not keep that auxiliary identity marked degraded.
+                            PublishAuxiliaryTemplateRecovery(
+                                previousJob.AuxiliaryBlockTemplate);
+                        }
                     }
                     else if((freshAuxiliaryTemplatePendingCommit ||
                         cachedAuxiliaryTemplatePendingCommit) &&

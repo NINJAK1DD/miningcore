@@ -510,6 +510,56 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task FreshActiveIdentity_ReconfirmedWhileParentJobInitializationFails_RecoversDegradedState()
+    {
+        var activeAuxiliary = CreateAuxiliaryTemplate();
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"),
+            SequenceJsonRpcServer.Success(activeAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var activeParent = CreateParentTemplate();
+        manager.Seed(activeParent, activeAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var fallback = Assert.Single(stateEvents);
+        Assert.True(fallback.Available);
+        Assert.True(fallback.Degraded);
+        Assert.True(fallback.FallbackStarted);
+
+        var newParent = CreateParentTemplate();
+        newParent.Height++;
+        newParent.PreviousBlockhash = new string('2', 64);
+        manager.JobCreationException = new InvalidOperationException(
+            "parent job cannot initialize");
+        manager.Enqueue(newParent);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(activeParent, manager.Current.BlockTemplate);
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.False(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
+    }
+
+    [Fact]
     public async Task FreshAuxiliaryTemplate_ThatCannotReplaceHealthyJob_EntersFallback()
     {
         var activeAuxiliary = CreateAuxiliaryTemplate();
