@@ -92,14 +92,14 @@ template allows fresh LTC jobs to continue through a temporary auxiliary-daemon 
 
 Startup, recurring polling, address validation, submission and ambiguity lookup have separate
 timeouts. `auxiliaryTemplatePollTimeoutMs` controls recurring Dogecoin `createauxblock` calls and
-defaults to 500 ms.
+defaults to 500 ms; startup synchronization retains its separate ten-second deadline.
 
-When a recurring request exceeds that deadline, Miningcore reports `timed out after N ms` rather
-than the transport client's generic `Cancelled` text. Host or shutdown cancellation is classified
-separately and does not place the auxiliary-template path into a degraded state. A timeout or other
-failed refresh reuses the last valid DOGE template so Litecoin mining can continue; the first
-fallback logs `Auxiliary template update failed`, and a later successful refresh logs
-`Auxiliary template updates recovered`.
+When a startup or recurring request exceeds its deadline, Miningcore reports
+`timed out after N ms` rather than the transport client's generic `Cancelled` text. Host or
+shutdown cancellation is classified separately and does not place the auxiliary-template path
+into a degraded state. A timeout or other failed refresh reuses the last valid DOGE template so
+Litecoin mining can continue; the first fallback logs `Auxiliary template update failed`, and a
+later successful refresh logs `Auxiliary template updates recovered`.
 
 Do not raise the timeout solely because one warning appears. Confirm recovery, then inspect warning
 frequency, Dogecoin synchronization, CPU and storage pressure, RPC saturation, and correlation with
@@ -108,7 +108,8 @@ longer. A longer deadline can delay a fresh parent Litecoin job. The 500 ms defa
 general recommendation; an operator-specific 1000 ms setting can be reasonable when measurements
 support it.
 
-Prometheus exposes the complete refresh path, including attempts that time out or are cancelled:
+Prometheus exposes the complete startup and refresh paths, including attempts that time out or are
+cancelled:
 
 | Metric | Meaning |
 | --- | --- |

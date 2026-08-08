@@ -186,11 +186,11 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         {
             var request = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout,
                 AuxiliaryTemplateRpcPhase.Startup);
-            if(request.Outcome == AuxiliaryTemplateRpcOutcome.Cancellation)
-                ct.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
 
             var response = request.Response;
-            if(response.Error == null && response.Response != null)
+            if(request.Outcome == AuxiliaryTemplateRpcOutcome.Success &&
+                response?.Error == null && response.Response != null)
             {
                 startupAuxiliaryTemplate = response.Response;
                 PublishAuxiliaryTemplateState(false, false);
@@ -204,8 +204,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 notificationShown = true;
             }
 
-            if(response.Error != null)
-                logger.Debug(() => $"Auxiliary daemon reports: {response.Error.Message}");
+            logger.Debug(() => $"Auxiliary daemon reports: " +
+                DescribeAuxiliaryTemplateRpcFailure(request));
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
@@ -240,11 +240,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         stopwatch.Stop();
         await deadlineCts.CancelAsync();
 
-        // Shutdown keeps priority when it begins while a deadline-triggered HTTP
-        // cancellation is draining, but cannot replace an RPC result that already won.
-        if(deadlineWon && ct.IsCancellationRequested)
-            callerCancellationWon = true;
-
         var outcome = ClassifyAuxiliaryTemplateRpcOutcome(response,
             callerCancellationWon, deadlineWon);
         messageBus.SendMessage(new AuxiliaryTemplateRpcTelemetryEvent(
@@ -256,17 +251,17 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     }
 
     internal static AuxiliaryTemplateRpcOutcome ClassifyAuxiliaryTemplateRpcOutcome(
-        RpcResponse<AuxBlockTemplate> response, bool callerCancellationRequested,
-        bool timeoutCancellationRequested)
+        RpcResponse<AuxBlockTemplate> response, bool callerCancellationWon,
+        bool deadlineWon)
     {
-        if(response?.Error == null && response?.Response != null)
-            return AuxiliaryTemplateRpcOutcome.Success;
-
-        if(callerCancellationRequested)
+        if(callerCancellationWon)
             return AuxiliaryTemplateRpcOutcome.Cancellation;
 
-        if(timeoutCancellationRequested)
+        if(deadlineWon)
             return AuxiliaryTemplateRpcOutcome.Timeout;
+
+        if(response?.Error == null && response?.Response != null)
+            return AuxiliaryTemplateRpcOutcome.Success;
 
         if(response == null || response.Error?.InnerException != null ||
             response.Error == null)
@@ -361,12 +356,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     : GetAuxiliaryTemplatePollTimeout();
                 var auxiliaryRequest = await GetAuxBlockTemplateAsync(ct,
                     auxiliaryTemplateTimeout, AuxiliaryTemplateRpcPhase.Refresh);
-                if(auxiliaryRequest.Outcome == AuxiliaryTemplateRpcOutcome.Cancellation)
-                    ct.ThrowIfCancellationRequested();
+                ct.ThrowIfCancellationRequested();
 
-                var auxiliaryResponse = auxiliaryRequest.Response;
                 var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
-                    previousAuxiliaryTemplate, auxiliaryResponse,
+                    previousAuxiliaryTemplate, auxiliaryRequest,
                     out auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
 
                 if(!hasAuxiliaryTemplate)
@@ -499,11 +492,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     }
 
     internal static bool TryResolveAuxiliaryTemplate(AuxBlockTemplate previous,
-        RpcResponse<AuxBlockTemplate> response, out AuxBlockTemplate template, out bool usedCached)
+        AuxiliaryTemplateRpcResult result, out AuxBlockTemplate template,
+        out bool usedCached)
     {
-        if(response?.Error == null && response?.Response != null)
+        if(result?.Outcome == AuxiliaryTemplateRpcOutcome.Success &&
+            result.Response?.Error == null && result.Response.Response != null)
         {
-            template = response.Response;
+            template = result.Response.Response;
             usedCached = false;
             return true;
         }

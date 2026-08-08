@@ -46,12 +46,29 @@ public class AuxiliaryTemplateRpcObservabilityTests
     [Theory]
     [MemberData(nameof(Outcomes))]
     public void Classifier_DistinguishesEveryBoundedOutcome(
-        RpcResponse<AuxBlockTemplate> response, bool callerCancelled,
-        bool timeoutCancelled, int expected)
+        RpcResponse<AuxBlockTemplate> response, bool callerCancellationWon,
+        bool deadlineWon, int expected)
     {
         var result = MergedMiningBitcoinJobManager
-            .ClassifyAuxiliaryTemplateRpcOutcome(response, callerCancelled,
-                timeoutCancelled);
+            .ClassifyAuxiliaryTemplateRpcOutcome(response, callerCancellationWon,
+                deadlineWon);
+
+        Assert.Equal((AuxiliaryTemplateRpcOutcome) expected, result);
+    }
+
+    [Theory]
+    [InlineData(true, false, (int) AuxiliaryTemplateRpcOutcome.Cancellation)]
+    [InlineData(false, true, (int) AuxiliaryTemplateRpcOutcome.Timeout)]
+    [InlineData(true, true, (int) AuxiliaryTemplateRpcOutcome.Cancellation)]
+    public void Classifier_RaceWinnerOverridesLateSuccessfulResponse(
+        bool callerCancellationWon, bool deadlineWon,
+        int expected)
+    {
+        var response = new RpcResponse<AuxBlockTemplate>(new AuxBlockTemplate());
+
+        var result = MergedMiningBitcoinJobManager
+            .ClassifyAuxiliaryTemplateRpcOutcome(response, callerCancellationWon,
+                deadlineWon);
 
         Assert.Equal((AuxiliaryTemplateRpcOutcome) expected, result);
     }
