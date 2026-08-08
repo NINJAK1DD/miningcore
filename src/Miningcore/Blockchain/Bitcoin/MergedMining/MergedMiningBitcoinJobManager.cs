@@ -81,9 +81,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private static readonly TimeSpan BlockSubmissionTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AmbiguousSubmissionLookupTimeout = TimeSpan.FromSeconds(5);
     private const int ValidatedAuxiliaryAddressCacheCapacity = 4096;
-    private readonly record struct AuxiliaryTemplateStateTransition(
-        bool FallbackStarted,
-        bool Recovered);
 
     private MergedMiningConfig mergedMiningConfig;
     private PoolConfig auxiliaryPoolConfig;
@@ -196,12 +193,14 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             if(freshTemplate != null)
             {
                 startupAuxiliaryTemplate = freshTemplate;
-                SetAndPublishAuxiliaryTemplateState(true, false);
+                // Startup has not entered cached fallback, so only the level state
+                // matters and no transition needs logging here.
+                _ = SetAndPublishAuxiliaryTemplateState(true, false);
                 logger.Info(() => $"Auxiliary daemon for {auxiliaryCoin.Name} is synched");
                 return;
             }
 
-            SetAndPublishAuxiliaryTemplateState(false, false);
+            _ = SetAndPublishAuxiliaryTemplateState(false, false);
 
             if(!notificationShown)
             {
@@ -390,7 +389,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 if(!hasAuxiliaryTemplate)
                 {
                     var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
-                    SetAndPublishAuxiliaryTemplateState(false, false);
+                    // With no usable template there cannot be an earlier cached
+                    // fallback episode; publish the level and deliberately ignore
+                    // the transition result.
+                    _ = SetAndPublishAuxiliaryTemplateState(false, false);
                     logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
                     return (false, forceUpdate);
                 }
@@ -1237,4 +1239,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             : ParentBlockLookupResult.Accepted;
     }
 
+    private readonly record struct AuxiliaryTemplateStateTransition(
+        bool FallbackStarted,
+        bool Recovered);
 }

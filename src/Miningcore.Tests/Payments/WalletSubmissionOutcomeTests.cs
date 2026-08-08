@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using Miningcore.JsonRpc;
 using Miningcore.Payments;
 using Xunit;
@@ -16,6 +17,18 @@ public class WalletSubmissionOutcomeTests
 
         Assert.Throws<PayoutOutcomeUncertainException>(() =>
             WalletSubmissionOutcome.ThrowIfUnknown(error, "send transaction"));
+    }
+
+    [Fact]
+    public void CancelledRpcError_IsUnknownAndPreservesCause()
+    {
+        var cancellation = new TaskCanceledException("wallet request cancelled");
+        var error = new JsonRpcError(-500, "Cancelled", null, cancellation);
+
+        var exception = Assert.Throws<PayoutOutcomeUncertainException>(() =>
+            WalletSubmissionOutcome.ThrowIfUnknown(error, "send transaction"));
+
+        Assert.Same(cancellation, exception.InnerException);
     }
 
     [Fact]
