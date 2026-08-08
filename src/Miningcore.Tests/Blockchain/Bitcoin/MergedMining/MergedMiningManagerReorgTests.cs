@@ -665,6 +665,74 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task StartupTemplate_InstalledAfterFreshInitializationFailure_PublishesFallback()
+    {
+        var startupAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = new string('d', 64);
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.SeedStartup(startupAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        var rejectFreshTemplate = true;
+        manager.JobCreationExceptionFactory = auxiliaryTemplate =>
+            rejectFreshTemplate && string.Equals(auxiliaryTemplate.Hash,
+                freshAuxiliary.Hash, StringComparison.OrdinalIgnoreCase)
+                ? new InvalidOperationException("fresh template cannot initialize")
+                : null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unavailable = Assert.Single(stateEvents);
+        Assert.False(unavailable.Available);
+        Assert.False(unavailable.Degraded);
+        Assert.False(unavailable.FallbackStarted);
+        Assert.Null(manager.Current);
+
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.True(stateEvents[1].FallbackStarted);
+        Assert.Null(manager.StartupAuxiliaryTemplate);
+
+        rejectFreshTemplate = false;
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(freshAuxiliary.Height,
+            manager.Current.AuxiliaryBlockTemplate.Height);
+        Assert.Equal(freshAuxiliary.Hash,
+            manager.Current.AuxiliaryBlockTemplate.Hash);
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.False(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
+    }
+
+    [Fact]
     public async Task MinerEof_DoesNotCancelManagerOwnedCandidatePersistence()
     {
         var builder = new ContainerBuilder();
@@ -1018,6 +1086,7 @@ public class MergedMiningManagerReorgTests
         public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
         public Exception ParentSubmissionException { get; set; }
         public Exception JobCreationException { get; set; }
+        public Func<AuxBlockTemplate, Exception> JobCreationExceptionFactory { get; set; }
 
         public MergedMiningBitcoinJob Current => (MergedMiningBitcoinJob) currentJob;
 
@@ -1065,8 +1134,10 @@ public class MergedMiningManagerReorgTests
         protected override MergedMiningBitcoinJob CreateMergedMiningJob(
             BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate)
         {
-            if(JobCreationException != null)
-                throw JobCreationException;
+            var exception = JobCreationExceptionFactory?.Invoke(auxiliaryTemplate) ??
+                JobCreationException;
+            if(exception != null)
+                throw exception;
 
             return TestJob.Create(blockTemplate, auxiliaryTemplate,
                 $"test-{Interlocked.Increment(ref testJobId)}");

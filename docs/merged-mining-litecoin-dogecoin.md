@@ -114,7 +114,7 @@ cancelled:
 | Metric | Meaning |
 | --- | --- |
 | `miningcore_auxiliary_template_rpc_duration_seconds` | Histogram of `createauxblock` duration by parent `pool`, `aux_pool`, `startup`/`refresh` phase and bounded outcome; its `_count` series is the attempt count |
-| `miningcore_auxiliary_template_fallback_total` | Number of healthy-to-degraded fallback episodes by parent/auxiliary pair |
+| `miningcore_auxiliary_template_fallback_total` | Number of entries into degraded cached-template operation by parent/auxiliary pair |
 | `miningcore_auxiliary_template_available` | `1` when a usable auxiliary template exists; `0` when no usable auxiliary template is available, preventing construction of a merged-mining job |
 | `miningcore_auxiliary_template_degraded` | `1` while that parent uses a cached template from the named auxiliary pool; otherwise `0` |
 
