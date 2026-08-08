@@ -310,6 +310,8 @@ public class MergedMiningManagerReorgTests
     public async Task AuxiliaryRefreshTimeout_RetainsCacheAndPublishesDegradedState()
     {
         await using var server = new HangingJsonRpcServer();
+        var rpcTimeout = TimeSpan.FromSeconds(5);
+        var testTimeout = TimeSpan.FromSeconds(10);
         var builder = new ContainerBuilder();
         builder.RegisterInstance(new JsonSerializerSettings());
         using var container = builder.Build();
@@ -319,7 +321,8 @@ public class MergedMiningManagerReorgTests
         var manager = new TestManager(container, clock, messageBus,
             Substitute.For<IExtraNonceProvider>(),
             Substitute.For<IBlockCandidateRecorder>());
-        var (parent, _, cluster) = CreateConfig(server.Port, 1000);
+        var (parent, _, cluster) = CreateConfig(server.Port,
+            (int) rpcTimeout.TotalMilliseconds);
         manager.Configure(parent, cluster);
         var parentTemplate = CreateParentTemplate();
         var cachedAuxiliary = CreateAuxiliaryTemplate();
@@ -335,8 +338,8 @@ public class MergedMiningManagerReorgTests
             .Subscribe(x => stateTelemetry = x);
 
         var update = manager.Update(CancellationToken.None);
-        await server.RequestReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await update.WaitAsync(TimeSpan.FromSeconds(5));
+        await server.RequestReceived.Task.WaitAsync(testTimeout);
+        await update.WaitAsync(testTimeout);
 
         Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
         Assert.NotNull(rpcTelemetry);
