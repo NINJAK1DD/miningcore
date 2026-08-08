@@ -448,13 +448,25 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 }
                 catch
                 {
-                    // With no active auxiliary job, advertise the failed initialization
-                    // as unavailable. During cached fallback, preserve the degraded state
-                    // and episode edge until a replacement job is actually installed.
-                    if((freshAuxiliaryTemplatePendingCommit ||
+                    if(freshAuxiliaryTemplatePendingCommit && auxiliaryIsNew &&
+                        previousJob?.AuxiliaryBlockTemplate != null)
+                    {
+                        // A changed fresh template exists, but the only installed job
+                        // still uses the previous identity. That is cached fallback even
+                        // when the refresh RPC itself succeeded. Reasserting this state
+                        // while already degraded does not start another episode.
+                        PublishAuxiliaryTemplateFallback(
+                            previousJob.AuxiliaryBlockTemplate,
+                            "replacement job initialization failed");
+                    }
+                    else if((freshAuxiliaryTemplatePendingCommit ||
                         cachedAuxiliaryTemplatePendingCommit) &&
-                       previousJob?.AuxiliaryBlockTemplate == null)
+                        previousJob?.AuxiliaryBlockTemplate == null)
+                    {
+                        // With no active auxiliary job, advertise failed initialization
+                        // as unavailable until a usable merged-mining job is installed.
                         _ = SetAndPublishAuxiliaryTemplateState(false, false);
+                    }
 
                     throw;
                 }

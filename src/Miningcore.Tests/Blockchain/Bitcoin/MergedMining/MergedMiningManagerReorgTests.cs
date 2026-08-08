@@ -494,16 +494,87 @@ public class MergedMiningManagerReorgTests
         await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
-        Assert.Single(stateEvents);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
 
         manager.JobCreationException = null;
         manager.Enqueue(CreateParentTemplate());
         await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.True(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task FreshAuxiliaryTemplate_ThatCannotReplaceHealthyJob_EntersFallback()
+    {
+        var activeAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = activeAuxiliary.Hash;
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>())
+        {
+            JobCreationException = new InvalidOperationException(
+                "fresh auxiliary template is unusable"),
+        };
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), activeAuxiliary);
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        var fallback = Assert.Single(stateEvents);
+        Assert.True(fallback.Available);
+        Assert.True(fallback.Degraded);
+        Assert.True(fallback.FallbackStarted);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
         Assert.Equal(2, stateEvents.Count);
         Assert.True(stateEvents[1].Available);
         Assert.True(stateEvents[1].Degraded);
         Assert.False(stateEvents[1].FallbackStarted);
+
+        manager.JobCreationException = null;
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotSame(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(freshAuxiliary.Height,
+            manager.Current.AuxiliaryBlockTemplate.Height);
+        Assert.Equal(freshAuxiliary.Hash,
+            manager.Current.AuxiliaryBlockTemplate.Hash);
+        Assert.Equal(freshAuxiliary.PreviousBlockhash,
+            manager.Current.AuxiliaryBlockTemplate.PreviousBlockhash);
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.False(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
     }
 
     [Fact]
