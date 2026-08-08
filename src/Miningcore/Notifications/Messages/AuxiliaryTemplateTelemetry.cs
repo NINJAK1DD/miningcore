@@ -9,8 +9,15 @@ internal enum AuxiliaryTemplateRpcOutcome
     TransportFailure,
 }
 
-internal record AuxiliaryTemplateRpcTelemetryEvent(string PoolId,
+internal enum AuxiliaryTemplateRpcPhase
+{
+    Startup,
+    Refresh,
+}
+
+internal record AuxiliaryTemplateRpcTelemetryEvent(string ParentPoolId,
+    string AuxiliaryPoolId, AuxiliaryTemplateRpcPhase Phase,
     AuxiliaryTemplateRpcOutcome Outcome, TimeSpan Elapsed);
 
-internal record AuxiliaryTemplateStateTelemetryEvent(string PoolId,
-    bool Degraded, bool FallbackUsed);
+internal record AuxiliaryTemplateStateTelemetryEvent(string ParentPoolId,
+    string AuxiliaryPoolId, bool Degraded, bool FallbackUsed);

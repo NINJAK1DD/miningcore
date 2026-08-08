@@ -74,8 +74,11 @@ public class AuxiliaryTemplateRpcObservabilityTests
     [Fact]
     public void MetricLabels_AreStableAndBounded()
     {
-        var labels = Enum.GetValues<AuxiliaryTemplateRpcOutcome>()
+        var outcomeLabels = Enum.GetValues<AuxiliaryTemplateRpcOutcome>()
             .Select(MetricsPublisher.GetAuxiliaryTemplateRpcOutcomeLabel)
+            .ToArray();
+        var phaseLabels = Enum.GetValues<AuxiliaryTemplateRpcPhase>()
+            .Select(MetricsPublisher.GetAuxiliaryTemplateRpcPhaseLabel)
             .ToArray();
 
         Assert.Equal(new[]
@@ -85,8 +88,12 @@ public class AuxiliaryTemplateRpcObservabilityTests
             "timeout",
             "cancellation",
             "transport_failure",
-        }, labels);
-        Assert.Equal(labels.Length, labels.Distinct(StringComparer.Ordinal).Count());
+        }, outcomeLabels);
+        Assert.Equal(outcomeLabels.Length,
+            outcomeLabels.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(new[] { "startup", "refresh" }, phaseLabels);
+        Assert.Equal(phaseLabels.Length,
+            phaseLabels.Distinct(StringComparer.Ordinal).Count());
     }
 
     private static RpcResponse<AuxBlockTemplate> ErrorResponse(JsonRpcError error) =>

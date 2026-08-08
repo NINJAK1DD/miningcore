@@ -184,7 +184,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         do
         {
-            var request = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout);
+            var request = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout,
+                AuxiliaryTemplateRpcPhase.Startup);
             if(request.Outcome == AuxiliaryTemplateRpcOutcome.Cancellation)
                 ct.ThrowIfCancellationRequested();
 
@@ -209,22 +210,46 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     }
 
     private async Task<AuxiliaryTemplateRpcResult> GetAuxBlockTemplateAsync(CancellationToken ct,
-        TimeSpan timeout)
+        TimeSpan timeout, AuxiliaryTemplateRpcPhase phase)
     {
-        using var timeoutCts = new CancellationTokenSource(timeout);
-        using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct,
-            timeoutCts.Token);
+        using var requestCts = new CancellationTokenSource();
+        using var deadlineCts = new CancellationTokenSource();
+        var callerCancellation = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var callerCancellationRegistration = ct.Register(() =>
+            callerCancellation.TrySetResult(true));
         var stopwatch = Stopwatch.StartNew();
 
-        var response = await auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger,
+        var rpcTask = auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger,
             CreateAuxBlock, requestCts.Token, new[] { auxiliaryPoolConfig.Address });
+        var callerCancellationTask = callerCancellation.Task;
+        var deadlineTask = Task.Delay(timeout, deadlineCts.Token);
+
+        // Let the RPC task and both cancellation sources compete once. If the RPC wins,
+        // its outcome is fixed here and a deadline firing before the continuation resumes
+        // cannot retroactively reclassify the completed response as a timeout.
+        var completedTask = await Task.WhenAny(rpcTask, callerCancellationTask,
+            deadlineTask);
+        var callerCancellationWon = completedTask == callerCancellationTask;
+        var deadlineWon = completedTask == deadlineTask;
+
+        if(completedTask != rpcTask)
+            requestCts.Cancel();
+
+        var response = await rpcTask;
         stopwatch.Stop();
-        timeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
+        await deadlineCts.CancelAsync();
+
+        // Shutdown keeps priority when it begins while a deadline-triggered HTTP
+        // cancellation is draining, but cannot replace an RPC result that already won.
+        if(deadlineWon && ct.IsCancellationRequested)
+            callerCancellationWon = true;
 
         var outcome = ClassifyAuxiliaryTemplateRpcOutcome(response,
-            ct.IsCancellationRequested, timeoutCts.IsCancellationRequested);
+            callerCancellationWon, deadlineWon);
         messageBus.SendMessage(new AuxiliaryTemplateRpcTelemetryEvent(
-            auxiliaryPoolConfig.Id, outcome, stopwatch.Elapsed));
+            poolConfig.Id, auxiliaryPoolConfig.Id, phase, outcome,
+            stopwatch.Elapsed));
 
         return new AuxiliaryTemplateRpcResult(response, outcome,
             stopwatch.Elapsed, timeout);
@@ -273,7 +298,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private void PublishAuxiliaryTemplateState(bool degraded, bool fallbackUsed)
     {
         messageBus.SendMessage(new AuxiliaryTemplateStateTelemetryEvent(
-            auxiliaryPoolConfig.Id, degraded, fallbackUsed));
+            poolConfig.Id, auxiliaryPoolConfig.Id, degraded, fallbackUsed));
     }
 
     internal static AuxiliaryTemplateChange ClassifyAuxiliaryTemplateChange(
@@ -335,7 +360,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     ? AuxiliaryStartupTimeout
                     : GetAuxiliaryTemplatePollTimeout();
                 var auxiliaryRequest = await GetAuxBlockTemplateAsync(ct,
-                    auxiliaryTemplateTimeout);
+                    auxiliaryTemplateTimeout, AuxiliaryTemplateRpcPhase.Refresh);
                 if(auxiliaryRequest.Outcome == AuxiliaryTemplateRpcOutcome.Cancellation)
                     ct.ThrowIfCancellationRequested();
 

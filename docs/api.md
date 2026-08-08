@@ -243,12 +243,13 @@ Litecoin-Dogecoin merged mining publishes four auxiliary-template series:
 
 | Metric | Meaning |
 | --- | --- |
-| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by auxiliary pool and bounded outcome |
-| `miningcore_auxiliary_template_rpc_total` | Attempts by `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` outcome |
-| `miningcore_auxiliary_template_fallback_total` | Refreshes that reused the last valid auxiliary template |
-| `miningcore_auxiliary_template_degraded` | `1` while a cached template is in use; otherwise `0` |
+| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by parent pool, auxiliary pool, bounded phase and outcome |
+| `miningcore_auxiliary_template_rpc_total` | Attempts by parent/auxiliary pair, `startup` or `refresh` phase, and `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` outcome |
+| `miningcore_auxiliary_template_fallback_total` | Refreshes by parent/auxiliary pair that reused the last valid auxiliary template |
+| `miningcore_auxiliary_template_degraded` | `1` while that parent pool uses a cached template from the named auxiliary pool; otherwise `0` |
 
-The outcome labels are fixed and contain no daemon errors, addresses or other unbounded values.
+The `pool` and `aux_pool` labels are configured IDs; `phase` is bounded to `startup` or `refresh`,
+and outcome labels are fixed. No daemon errors, addresses or other unbounded values enter labels.
 Use the [merged-mining operations guide](merged-mining-litecoin-dogecoin.md#template-refresh) before
 changing `auxiliaryTemplatePollTimeoutMs`; increasing it can delay a new parent-chain job.
 

@@ -296,7 +296,9 @@ or shutdown cancellation. Timeout logs name the configured deadline instead of r
 generic `Cancelled` transport text. Failed, timed-out and cancelled attempts are included in the
 new auxiliary RPC duration and bounded outcome metrics. Separate counter and gauge series report
 cached-template fallback use and whether the parent pool is currently operating in that degraded
-state.
+state. Every series identifies both the Litecoin parent and Dogecoin auxiliary pool. RPC series also
+separate ten-second startup synchronization from recurring template refreshes, so two parents that
+share one auxiliary pool cannot overwrite each other's state or combine different timeout policies.
 
 This is an observability change; the fallback policy is unchanged. Miningcore continues Litecoin
 mining with the last valid Dogecoin template during a temporary auxiliary refresh failure and

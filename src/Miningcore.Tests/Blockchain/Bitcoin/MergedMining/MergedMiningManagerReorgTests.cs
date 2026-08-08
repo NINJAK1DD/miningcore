@@ -307,6 +307,95 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task AuxiliaryRefreshTimeout_RetainsCacheAndPublishesDegradedState()
+    {
+        await using var server = new HangingJsonRpcServer();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port, 1000);
+        manager.Configure(parent, cluster);
+        var parentTemplate = CreateParentTemplate();
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        manager.Seed(parentTemplate, cachedAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        AuxiliaryTemplateRpcTelemetryEvent rpcTelemetry = null;
+        AuxiliaryTemplateStateTelemetryEvent stateTelemetry = null;
+        using var rpcSubscription = messageBus
+            .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+            .Subscribe(x => rpcTelemetry = x);
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(x => stateTelemetry = x);
+
+        var update = manager.Update(CancellationToken.None);
+        await server.RequestReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await update.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.NotNull(rpcTelemetry);
+        Assert.Equal(parent.Id, rpcTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", rpcTelemetry.AuxiliaryPoolId);
+        Assert.Equal(AuxiliaryTemplateRpcPhase.Refresh, rpcTelemetry.Phase);
+        Assert.Equal(AuxiliaryTemplateRpcOutcome.Timeout, rpcTelemetry.Outcome);
+        Assert.NotNull(stateTelemetry);
+        Assert.Equal(parent.Id, stateTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", stateTelemetry.AuxiliaryPoolId);
+        Assert.True(stateTelemetry.Degraded);
+        Assert.True(stateTelemetry.FallbackUsed);
+    }
+
+    [Fact]
+    public async Task AuxiliaryRefreshHostCancellation_DoesNotEnterFallbackState()
+    {
+        await using var server = new HangingJsonRpcServer();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port, 10_000);
+        manager.Configure(parent, cluster);
+        var parentTemplate = CreateParentTemplate();
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        manager.Seed(parentTemplate, cachedAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        AuxiliaryTemplateRpcTelemetryEvent rpcTelemetry = null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var rpcSubscription = messageBus
+            .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+            .Subscribe(x => rpcTelemetry = x);
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+        using var shutdown = new CancellationTokenSource();
+
+        var update = manager.Update(shutdown.Token);
+        await server.RequestReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        shutdown.Cancel();
+        await update.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.NotNull(rpcTelemetry);
+        Assert.Equal(parent.Id, rpcTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", rpcTelemetry.AuxiliaryPoolId);
+        Assert.Equal(AuxiliaryTemplateRpcPhase.Refresh, rpcTelemetry.Phase);
+        Assert.Equal(AuxiliaryTemplateRpcOutcome.Cancellation,
+            rpcTelemetry.Outcome);
+        Assert.Empty(stateEvents);
+    }
+
+    [Fact]
     public async Task MinerEof_DoesNotCancelManagerOwnedCandidatePersistence()
     {
         var builder = new ContainerBuilder();
@@ -567,7 +656,24 @@ public class MergedMiningManagerReorgTests
         Assert.Equal((ulong) 101, heightNotification?.BlockHeight);
     }
 
-    private static (PoolConfig Parent, PoolConfig Auxiliary, ClusterConfig Cluster) CreateConfig()
+    private static BlockTemplate CreateParentTemplate() => new()
+    {
+        Height = 102,
+        PreviousBlockhash = new string('1', 64),
+        Target = new string('f', 64),
+        Bits = "207fffff",
+    };
+
+    private static AuxBlockTemplate CreateAuxiliaryTemplate() => new()
+    {
+        Height = 220,
+        Hash = new string('a', 64),
+        PreviousBlockhash = new string('b', 64),
+        Bits = "207fffff",
+    };
+
+    private static (PoolConfig Parent, PoolConfig Auxiliary, ClusterConfig Cluster) CreateConfig(
+        int auxiliaryRpcPort = 44555, int auxiliaryTemplatePollTimeoutMs = 500)
     {
         var parent = new PoolConfig
         {
@@ -593,6 +699,7 @@ public class MergedMiningManagerReorgTests
                 {
                     ["enabled"] = true,
                     ["auxPoolId"] = "doge-solo",
+                    ["auxiliaryTemplatePollTimeoutMs"] = auxiliaryTemplatePollTimeoutMs,
                 },
             },
             BlockRefreshInterval = 1000,
@@ -604,7 +711,14 @@ public class MergedMiningManagerReorgTests
             Coin = "dogecoin",
             Enabled = true,
             Address = "DTestAddress",
-            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 44555 } },
+            Daemons = new[]
+            {
+                new DaemonEndpointConfig
+                {
+                    Host = "127.0.0.1",
+                    Port = auxiliaryRpcPort,
+                },
+            },
             PaymentProcessing = new PoolPaymentProcessingConfig
             {
                 Enabled = true,
@@ -644,6 +758,9 @@ public class MergedMiningManagerReorgTests
             responses.Enqueue(new RpcResponse<BlockTemplate>(template));
 
         public void InitializeJobUpdates(CancellationToken ct) => SetupJobUpdates(ct);
+
+        public Task<(bool IsNew, bool Force)> Update(CancellationToken ct) =>
+            UpdateJob(ct, false);
 
         protected override Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(
             CancellationToken ct) => Task.FromResult(responses.Dequeue());
@@ -693,6 +810,55 @@ public class MergedMiningManagerReorgTests
                 "", parent.Bits, "", false,
             };
             return job;
+        }
+    }
+
+    private sealed class HangingJsonRpcServer : IAsyncDisposable
+    {
+        public HangingJsonRpcServer()
+        {
+            listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Port = ((IPEndPoint) listener.LocalEndpoint).Port;
+            serverTask = ServeAsync();
+        }
+
+        private readonly TcpListener listener;
+        private readonly CancellationTokenSource stop = new();
+        private readonly Task serverTask;
+
+        public int Port { get; }
+        public TaskCompletionSource<bool> RequestReceived { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private async Task ServeAsync()
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync(stop.Token);
+                var stream = client.GetStream();
+                var buffer = new byte[4096];
+                var read = await stream.ReadAsync(buffer, stop.Token);
+
+                if(read > 0)
+                    RequestReceived.TrySetResult(true);
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, stop.Token);
+            }
+            catch(OperationCanceledException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(SocketException) when(stop.IsCancellationRequested)
+            {
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await stop.CancelAsync();
+            listener.Stop();
+            await serverTask;
+            stop.Dispose();
         }
     }
 }

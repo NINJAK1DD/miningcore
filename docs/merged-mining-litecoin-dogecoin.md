@@ -112,13 +112,16 @@ Prometheus exposes the complete refresh path, including attempts that time out o
 
 | Metric | Meaning |
 | --- | --- |
-| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by auxiliary pool and bounded outcome |
-| `miningcore_auxiliary_template_rpc_total` | Attempt count with outcome `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` |
-| `miningcore_auxiliary_template_fallback_total` | Number of refreshes that reused the last valid template |
-| `miningcore_auxiliary_template_degraded` | `1` while parent mining uses a cached auxiliary template; `0` after recovery |
+| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by parent `pool`, `aux_pool`, `startup`/`refresh` phase and bounded outcome |
+| `miningcore_auxiliary_template_rpc_total` | Attempt count using the same identities, phase and `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` outcome |
+| `miningcore_auxiliary_template_fallback_total` | Number of refreshes by parent/auxiliary pair that reused the last valid template |
+| `miningcore_auxiliary_template_degraded` | `1` while that parent uses a cached template from the named auxiliary pool; `0` after recovery |
 
-Alert on a sustained degraded gauge, any continuing increase in the timeout or transport-failure
-counters, or fallbacks without a prompt return to zero. The ordinary
+Separate parent-pool labels prevent a healthy parent from clearing another parent's degraded state
+when both reference the same auxiliary pool. Separate phase labels keep ten-second startup probes
+out of recurring timeout analysis. Alert on a sustained degraded gauge, a continuing increase in
+timeout or transport-failure counters, or repeated fallback increments where the degraded gauge
+does not promptly return to zero. The ordinary
 `miningcore_rpcrequest_execution_time` series remains useful for other RPC methods, but these
 auxiliary-specific series are the authoritative view of failed and cancelled template attempts.
 

@@ -112,37 +112,43 @@ public class HostedServiceStartupTests
 
         await publisher.StartAsync(stop.Token);
 
-        auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("doge-solo",
-            AuxiliaryTemplateRpcOutcome.Timeout, TimeSpan.FromMilliseconds(1000)));
-        auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("doge-solo",
-            AuxiliaryTemplateRpcOutcome.Cancellation, TimeSpan.FromMilliseconds(25)));
-        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("doge-solo",
+        auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("ltc-a", "doge-solo",
+            AuxiliaryTemplateRpcPhase.Refresh, AuxiliaryTemplateRpcOutcome.Timeout,
+            TimeSpan.FromMilliseconds(1000)));
+        auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("ltc-a", "doge-solo",
+            AuxiliaryTemplateRpcPhase.Startup, AuxiliaryTemplateRpcOutcome.Cancellation,
+            TimeSpan.FromMilliseconds(25)));
+        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("ltc-a", "doge-solo",
             true, true));
+        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("ltc-b", "doge-solo",
+            false, false));
 
         var degraded = await WaitForMetricsAsync(registry, text =>
-            text.Contains("miningcore_auxiliary_template_degraded{pool=\"doge-solo\"} 1") &&
-            text.Contains("miningcore_auxiliary_template_rpc_total{pool=\"doge-solo\",outcome=\"timeout\"} 1") &&
-            text.Contains("miningcore_auxiliary_template_rpc_total{pool=\"doge-solo\",outcome=\"cancellation\"} 1"),
+            text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 1") &&
+            text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-b\",aux_pool=\"doge-solo\"} 0") &&
+            text.Contains("miningcore_auxiliary_template_rpc_total{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"refresh\",outcome=\"timeout\"} 1") &&
+            text.Contains("miningcore_auxiliary_template_rpc_total{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"startup\",outcome=\"cancellation\"} 1"),
             stop.Token);
 
         Assert.Contains(
-            "miningcore_auxiliary_template_rpc_duration_ms_sum{pool=\"doge-solo\",outcome=\"timeout\"} 1000",
+            "miningcore_auxiliary_template_rpc_duration_ms_sum{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"refresh\",outcome=\"timeout\"} 1000",
             degraded);
         Assert.Contains(
-            "miningcore_auxiliary_template_rpc_duration_ms_count{pool=\"doge-solo\",outcome=\"timeout\"} 1",
+            "miningcore_auxiliary_template_rpc_duration_ms_count{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"refresh\",outcome=\"timeout\"} 1",
             degraded);
         Assert.Contains(
-            "miningcore_auxiliary_template_fallback_total{pool=\"doge-solo\"} 1",
+            "miningcore_auxiliary_template_fallback_total{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 1",
             degraded);
 
-        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("doge-solo",
+        auxiliaryState.OnNext(new AuxiliaryTemplateStateTelemetryEvent("ltc-a", "doge-solo",
             false, false));
         var recovered = await WaitForMetricsAsync(registry, text =>
-            text.Contains("miningcore_auxiliary_template_degraded{pool=\"doge-solo\"} 0"),
+            text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 0") &&
+            text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-b\",aux_pool=\"doge-solo\"} 0"),
             stop.Token);
 
         Assert.Contains(
-            "miningcore_auxiliary_template_fallback_total{pool=\"doge-solo\"} 1",
+            "miningcore_auxiliary_template_fallback_total{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 1",
             recovered);
         await publisher.StopAsync(stop.Token);
     }
