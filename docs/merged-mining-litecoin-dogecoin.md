@@ -98,8 +98,9 @@ When a startup or recurring request exceeds its deadline, Miningcore reports
 `timed out after N ms` rather than the transport client's generic `Cancelled` text. Host or
 shutdown cancellation is classified separately and does not place the auxiliary-template path
 into a degraded state. A timeout or other failed refresh reuses the last valid DOGE template so
-Litecoin mining can continue; the first fallback logs `Auxiliary template update failed`, and a
-later successful refresh logs `Auxiliary template updates recovered`.
+Litecoin mining can continue; the first fallback logs `Auxiliary template update failed`. Recovery
+is logged only after a fresh template is successfully installed or a fresh response reconfirms the
+already-installed auxiliary identity.
 
 Do not raise the timeout solely because one warning appears. Confirm recovery, then inspect warning
 frequency, Dogecoin synchronization, CPU and storage pressure, RPC saturation, and correlation with
