@@ -56,9 +56,9 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Gauge sharePersistenceQueueHighWatermarkGauge;
     private Gauge sharePersistenceQueueCapacityGauge;
     private Counter sharePersistenceQueueOverflowCounter;
-    private Summary auxiliaryTemplateRpcDurationSummary;
-    private Counter auxiliaryTemplateRpcOutcomeCounter;
+    private Histogram auxiliaryTemplateRpcDurationHistogram;
     private Counter auxiliaryTemplateFallbackCounter;
+    private Gauge auxiliaryTemplateAvailableGauge;
     private Gauge auxiliaryTemplateDegradedGauge;
     private readonly object sharePersistenceOverflowPublishGate = new();
     private long publishedPrimaryOverflowCount;
@@ -133,24 +133,25 @@ public class MetricsPublisher : StartupGatedBackgroundService
             "Number of writes rejected by a bounded share persistence queue",
             new CounterConfiguration { LabelNames = new[] { "queue" } });
 
-        auxiliaryTemplateRpcDurationSummary = metricFactory.CreateSummary(
-            "miningcore_auxiliary_template_rpc_duration_ms",
-            "Duration of auxiliary createauxblock RPC attempts in milliseconds",
-            new SummaryConfiguration
+        auxiliaryTemplateRpcDurationHistogram = metricFactory.CreateHistogram(
+            "miningcore_auxiliary_template_rpc_duration_seconds",
+            "Duration of auxiliary createauxblock RPC attempts in seconds",
+            new HistogramConfiguration
             {
                 LabelNames = new[] { "pool", "aux_pool", "phase", "outcome" },
-            });
-        auxiliaryTemplateRpcOutcomeCounter = metricFactory.CreateCounter(
-            "miningcore_auxiliary_template_rpc_total",
-            "Number of auxiliary createauxblock RPC attempts by outcome",
-            new CounterConfiguration
-            {
-                LabelNames = new[] { "pool", "aux_pool", "phase", "outcome" },
+                Buckets = new[]
+                {
+                    0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 2, 5, 10, 15,
+                },
             });
         auxiliaryTemplateFallbackCounter = metricFactory.CreateCounter(
             "miningcore_auxiliary_template_fallback_total",
-            "Number of auxiliary template refreshes that reused the last valid template",
+            "Number of auxiliary template fallback episodes",
             new CounterConfiguration { LabelNames = new[] { "pool", "aux_pool" } });
+        auxiliaryTemplateAvailableGauge = metricFactory.CreateGauge(
+            "miningcore_auxiliary_template_available",
+            "Whether a usable auxiliary template is currently available",
+            new GaugeConfiguration { LabelNames = new[] { "pool", "aux_pool" } });
         auxiliaryTemplateDegradedGauge = metricFactory.CreateGauge(
             "miningcore_auxiliary_template_degraded",
             "Whether parent mining is currently using a cached auxiliary template",
@@ -246,21 +247,22 @@ public class MetricsPublisher : StartupGatedBackgroundService
     {
         var outcome = GetAuxiliaryTemplateRpcOutcomeLabel(msg.Outcome);
         var phase = GetAuxiliaryTemplateRpcPhaseLabel(msg.Phase);
-        auxiliaryTemplateRpcDurationSummary.WithLabels(msg.ParentPoolId,
+        auxiliaryTemplateRpcDurationHistogram.WithLabels(msg.ParentPoolId,
                 msg.AuxiliaryPoolId, phase, outcome)
-            .Observe(msg.Elapsed.TotalMilliseconds);
-        auxiliaryTemplateRpcOutcomeCounter.WithLabels(msg.ParentPoolId,
-            msg.AuxiliaryPoolId, phase, outcome).Inc();
+            .Observe(msg.Elapsed.TotalSeconds);
     }
 
     private void OnAuxiliaryTemplateStateTelemetry(
         AuxiliaryTemplateStateTelemetryEvent msg)
     {
+        auxiliaryTemplateAvailableGauge.WithLabels(msg.ParentPoolId,
+                msg.AuxiliaryPoolId)
+            .Set(msg.Available ? 1 : 0);
         auxiliaryTemplateDegradedGauge.WithLabels(msg.ParentPoolId,
                 msg.AuxiliaryPoolId)
             .Set(msg.Degraded ? 1 : 0);
 
-        if(msg.FallbackUsed)
+        if(msg.FallbackStarted)
             auxiliaryTemplateFallbackCounter.WithLabels(msg.ParentPoolId,
                 msg.AuxiliaryPoolId).Inc();
     }

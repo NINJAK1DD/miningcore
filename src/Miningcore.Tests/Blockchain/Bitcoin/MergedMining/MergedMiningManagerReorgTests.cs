@@ -310,6 +310,9 @@ public class MergedMiningManagerReorgTests
     public async Task AuxiliaryRefreshTimeout_RetainsCacheAndPublishesDegradedState()
     {
         await using var server = new HangingJsonRpcServer();
+        // This deadline includes runner scheduling and loopback connection setup. A
+        // one-second budget proved flaky on loaded Linux CI before the server could
+        // observe the request, so keep a generous admission margin here.
         var rpcTimeout = TimeSpan.FromSeconds(5);
         var testTimeout = TimeSpan.FromSeconds(10);
         var builder = new ContainerBuilder();
@@ -329,13 +332,13 @@ public class MergedMiningManagerReorgTests
         manager.Seed(parentTemplate, cachedAuxiliary);
         manager.Enqueue(CreateParentTemplate());
         AuxiliaryTemplateRpcTelemetryEvent rpcTelemetry = null;
-        AuxiliaryTemplateStateTelemetryEvent stateTelemetry = null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
         using var rpcSubscription = messageBus
             .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
             .Subscribe(x => rpcTelemetry = x);
         using var stateSubscription = messageBus
             .Listen<AuxiliaryTemplateStateTelemetryEvent>()
-            .Subscribe(x => stateTelemetry = x);
+            .Subscribe(stateEvents.Add);
 
         var update = manager.Update(CancellationToken.None);
         await server.RequestReceived.Task.WaitAsync(testTimeout);
@@ -347,11 +350,54 @@ public class MergedMiningManagerReorgTests
         Assert.Equal("doge-solo", rpcTelemetry.AuxiliaryPoolId);
         Assert.Equal(AuxiliaryTemplateRpcPhase.Refresh, rpcTelemetry.Phase);
         Assert.Equal(AuxiliaryTemplateRpcOutcome.Timeout, rpcTelemetry.Outcome);
+        var stateTelemetry = Assert.Single(stateEvents);
         Assert.NotNull(stateTelemetry);
         Assert.Equal(parent.Id, stateTelemetry.ParentPoolId);
         Assert.Equal("doge-solo", stateTelemetry.AuxiliaryPoolId);
+        Assert.True(stateTelemetry.Available);
         Assert.True(stateTelemetry.Degraded);
-        Assert.True(stateTelemetry.FallbackUsed);
+        Assert.True(stateTelemetry.FallbackStarted);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(testTimeout);
+
+        // The counter represents fallback episodes, not every cached refresh.
+        Assert.Single(stateEvents);
+    }
+
+    [Fact]
+    public async Task AuxiliaryRefreshWithoutCache_PublishesUnavailableState()
+    {
+        var unavailableEndpoint = new HangingJsonRpcServer();
+        var port = unavailableEndpoint.Port;
+        await unavailableEndpoint.DisposeAsync();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(port, 5000);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), null);
+        manager.Enqueue(CreateParentTemplate());
+        AuxiliaryTemplateStateTelemetryEvent stateTelemetry = null;
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(x => stateTelemetry = x);
+
+        await manager.Update(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(stateTelemetry);
+        Assert.Equal(parent.Id, stateTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", stateTelemetry.AuxiliaryPoolId);
+        Assert.False(stateTelemetry.Available);
+        Assert.False(stateTelemetry.Degraded);
+        Assert.False(stateTelemetry.FallbackStarted);
     }
 
     [Fact]
@@ -839,6 +885,9 @@ public class MergedMiningManagerReorgTests
             try
             {
                 using var client = await listener.AcceptTcpClientAsync(stop.Token);
+                // This fixture models one RPC attempt. Reject any unexpected reconnect
+                // instead of leaving it queued silently behind the hanging request.
+                listener.Stop();
                 var stream = client.GetStream();
                 var buffer = new byte[4096];
                 var read = await stream.ReadAsync(buffer, stop.Token);
@@ -852,6 +901,14 @@ public class MergedMiningManagerReorgTests
             {
             }
             catch(SocketException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(IOException)
+            {
+                // The client is expected to abort the hanging request when its deadline
+                // or host-cancellation token wins.
+            }
+            catch(ObjectDisposedException) when(stop.IsCancellationRequested)
             {
             }
         }

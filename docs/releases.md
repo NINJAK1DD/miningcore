@@ -293,18 +293,20 @@ all address-whitelist arrays.
 
 Litecoin-Dogecoin merged mining now distinguishes a configured `createauxblock` timeout from host
 or shutdown cancellation. Timeout logs name the configured deadline instead of reporting the
-generic `Cancelled` transport text. Failed, timed-out and cancelled attempts are included in the
-new auxiliary RPC duration and bounded outcome metrics. Separate counter and gauge series report
-cached-template fallback use and whether the parent pool is currently operating in that degraded
-state. Every series identifies both the Litecoin parent and Dogecoin auxiliary pool. RPC series also
-separate ten-second startup synchronization from recurring template refreshes, so two parents that
-share one auxiliary pool cannot overwrite each other's state or combine different timeout policies.
+generic `Cancelled` transport text. Failed, timed-out and cancelled attempts are included in a new
+seconds-based auxiliary RPC histogram with bounded phase and outcome labels. Its `_count` series is
+the attempt counter. Separate metrics report fallback episodes, usable-template availability and
+whether the parent pool is currently using cached auxiliary data. Every series identifies both the
+Litecoin parent and Dogecoin auxiliary pool. RPC series also separate ten-second startup
+synchronization from recurring template refreshes, so two parents that share one auxiliary pool
+cannot overwrite each other's state or combine different timeout policies.
 
-This is an observability change; the fallback policy is unchanged. Miningcore continues Litecoin
-mining with the last valid Dogecoin template during a temporary auxiliary refresh failure and
-clears the degraded gauge after the next successful refresh. Review the troubleshooting guidance
-before changing `auxiliaryTemplatePollTimeoutMs`, because a longer deadline can delay a fresh
-parent job.
+Miningcore continues Litecoin mining with the last valid Dogecoin template during a temporary
+auxiliary refresh failure and clears the degraded gauge after the next successful refresh. Deadline
+enforcement is now deterministic: a response that arrives after timeout or shutdown already won is
+discarded rather than allowed to override that result. This can expose a narrow increase in cached
+fallback episodes at the configured deadline boundary. Review the troubleshooting guidance before
+changing `auxiliaryTemplatePollTimeoutMs`, because a longer deadline can delay a fresh parent job.
 
 ### Logging and disk recovery
 

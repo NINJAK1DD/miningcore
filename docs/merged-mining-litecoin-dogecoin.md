@@ -113,16 +113,24 @@ cancelled:
 
 | Metric | Meaning |
 | --- | --- |
-| `miningcore_auxiliary_template_rpc_duration_ms` | `createauxblock` duration by parent `pool`, `aux_pool`, `startup`/`refresh` phase and bounded outcome |
-| `miningcore_auxiliary_template_rpc_total` | Attempt count using the same identities, phase and `success`, `rpc_error`, `timeout`, `cancellation` or `transport_failure` outcome |
-| `miningcore_auxiliary_template_fallback_total` | Number of refreshes by parent/auxiliary pair that reused the last valid template |
-| `miningcore_auxiliary_template_degraded` | `1` while that parent uses a cached template from the named auxiliary pool; `0` after recovery |
+| `miningcore_auxiliary_template_rpc_duration_seconds` | Histogram of `createauxblock` duration by parent `pool`, `aux_pool`, `startup`/`refresh` phase and bounded outcome; its `_count` series is the attempt count |
+| `miningcore_auxiliary_template_fallback_total` | Number of healthy-to-degraded fallback episodes by parent/auxiliary pair |
+| `miningcore_auxiliary_template_available` | `1` when a usable auxiliary template exists; `0` when the parent pool cannot construct merged-mining jobs |
+| `miningcore_auxiliary_template_degraded` | `1` while that parent uses a cached template from the named auxiliary pool; otherwise `0` |
 
 Separate parent-pool labels prevent a healthy parent from clearing another parent's degraded state
 when both reference the same auxiliary pool. Separate phase labels keep ten-second startup probes
-out of recurring timeout analysis. Alert on a sustained degraded gauge, a continuing increase in
-timeout or transport-failure counters, or repeated fallback increments where the degraded gauge
-does not promptly return to zero. The ordinary
+out of recurring timeout analysis. Histogram buckets straddle the 500 ms default and extend through
+the ten-second startup deadline. For example, the fraction of refresh attempts within 500 ms is:
+
+```promql
+sum by (pool, aux_pool) (rate(miningcore_auxiliary_template_rpc_duration_seconds_bucket{phase="refresh",le="0.5"}[5m]))
+/
+sum by (pool, aux_pool) (rate(miningcore_auxiliary_template_rpc_duration_seconds_count{phase="refresh"}[5m]))
+```
+
+Alert immediately when `available` is `0`, on a sustained degraded gauge, on a new fallback episode,
+or on continuing timeout/transport-failure histogram counts. The ordinary
 `miningcore_rpcrequest_execution_time` series remains useful for other RPC methods, but these
 auxiliary-specific series are the authoritative view of failed and cancelled template attempts.
 

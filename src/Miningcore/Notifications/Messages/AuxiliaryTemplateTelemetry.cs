@@ -20,4 +20,5 @@ internal record AuxiliaryTemplateRpcTelemetryEvent(string ParentPoolId,
     AuxiliaryTemplateRpcOutcome Outcome, TimeSpan Elapsed);
 
 internal record AuxiliaryTemplateStateTelemetryEvent(string ParentPoolId,
-    string AuxiliaryPoolId, bool Degraded, bool FallbackUsed);
+    string AuxiliaryPoolId, bool Available, bool Degraded,
+    bool FallbackStarted);

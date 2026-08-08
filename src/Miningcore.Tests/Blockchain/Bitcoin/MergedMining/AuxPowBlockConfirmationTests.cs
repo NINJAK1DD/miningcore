@@ -423,7 +423,7 @@ public class AuxPowBlockConfirmationTests
 
     private static AuxiliaryTemplateRpcResult RpcResult(
         RpcResponse<AuxBlockTemplate> response, AuxiliaryTemplateRpcOutcome outcome) =>
-        new(response, outcome, TimeSpan.Zero, TimeSpan.FromMilliseconds(500));
+        new(response, outcome, TimeSpan.FromMilliseconds(500));
 
     private static AuxBlockTemplate Template(uint height, string previousBlockHash, string hash)
     {
