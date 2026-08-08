@@ -92,7 +92,58 @@ template allows fresh LTC jobs to continue through a temporary auxiliary-daemon 
 
 Startup, recurring polling, address validation, submission and ambiguity lookup have separate
 timeouts. `auxiliaryTemplatePollTimeoutMs` controls recurring Dogecoin `createauxblock` calls and
-defaults to 500 ms.
+defaults to 500 ms; startup synchronization retains its separate ten-second deadline.
+
+When a startup or recurring request exceeds its deadline, Miningcore reports
+`timed out after N ms` rather than the transport client's generic `Cancelled` text. Host or
+shutdown cancellation is classified separately and does not place the auxiliary-template path
+into a degraded state. A timeout or other failed refresh reuses the last valid DOGE template so
+Litecoin mining can continue; the first fallback logs `Auxiliary template update failed`. Recovery
+is logged only after a fresh template is successfully installed or a fresh response reconfirms the
+already-installed auxiliary identity.
+
+Do not raise the timeout solely because one warning appears. Confirm recovery, then inspect warning
+frequency, Dogecoin synchronization, CPU and storage pressure, RPC saturation, and correlation with
+payout activity. Increase the setting modestly only when a healthy local daemon consistently needs
+longer. A longer deadline can delay a fresh parent Litecoin job. The 500 ms default remains the
+general recommendation; an operator-specific 1000 ms setting can be reasonable when measurements
+support it.
+
+Prometheus exposes the complete startup and refresh paths, including attempts that time out or are
+cancelled:
+
+| Metric | Meaning |
+| --- | --- |
+| `miningcore_auxiliary_template_rpc_duration_seconds` | Histogram of `createauxblock` duration by parent `pool`, `aux_pool`, `startup`/`refresh` phase and bounded outcome; its `_count` series is the attempt count |
+| `miningcore_auxiliary_template_fallback_total` | Number of entries into degraded cached-template operation by parent/auxiliary pair |
+| `miningcore_auxiliary_template_available` | `1` when a usable auxiliary template exists; `0` when no usable auxiliary template is available, preventing construction of a merged-mining job |
+| `miningcore_auxiliary_template_degraded` | `1` while that parent uses a cached template from the named auxiliary pool; otherwise `0` |
+
+Separate parent-pool labels prevent a healthy parent from clearing another parent's degraded state
+when both reference the same auxiliary pool. Separate phase labels keep ten-second startup probes
+out of recurring timeout analysis. Histogram buckets straddle the 500 ms default and extend through
+the ten-second startup deadline. State gauges are reasserted on each auxiliary poll refresh so a
+transient telemetry processing failure self-heals, while the fallback counter increments only on a
+new degraded episode. After an active merged job exists, parent stream events that merely reuse its
+cached auxiliary template do not reassert the gauges; the next configured `blockRefreshInterval`
+poll does. A missing or nonpositive interval defaults to 1000 ms, while an explicitly configured
+positive interval is respected.
+The histogram remains bounded to ten label sets per configured parent/auxiliary pair (two phases by
+five outcomes); each set exports the configured buckets plus `+Inf`, `_sum` and `_count`. For example,
+the fraction of refresh attempts within 500 ms is:
+
+```promql
+sum by (pool, aux_pool) (rate(miningcore_auxiliary_template_rpc_duration_seconds_bucket{phase="refresh",le="0.5"}[5m]))
+/
+sum by (pool, aux_pool) (rate(miningcore_auxiliary_template_rpc_duration_seconds_count{phase="refresh"}[5m]))
+```
+
+Alert when `available` remains `0` beyond the expected daemon startup or synchronization grace
+period. Use a Prometheus `for:` duration appropriate to the deployment so ordinary restarts do not
+page operators. Also alert on a sustained degraded gauge, a new fallback episode, or continuing
+timeout/transport-failure histogram counts. The ordinary
+`miningcore_rpcrequest_execution_time` series remains useful for other RPC methods, but these
+auxiliary-specific series are the authoritative view of failed and cancelled template attempts.
 
 ### Candidate ownership and deadlines
 

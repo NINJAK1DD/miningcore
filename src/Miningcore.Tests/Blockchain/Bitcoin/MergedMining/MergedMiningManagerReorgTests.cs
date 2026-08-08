@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reactive.Linq;
@@ -22,6 +23,7 @@ using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NLog;
 using NSubstitute;
 using Xunit;
@@ -307,6 +309,676 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task AuxiliaryRefreshTimeout_RetainsCacheAndPublishesDegradedState()
+    {
+        await using var server = new HangingJsonRpcServer();
+        // This deadline includes runner scheduling and loopback connection setup. A
+        // one-second budget proved flaky on loaded Linux CI before the server could
+        // observe the request, so keep a generous admission margin here.
+        var rpcTimeout = TimeSpan.FromSeconds(5);
+        var testTimeout = TimeSpan.FromSeconds(10);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port,
+            (int) rpcTimeout.TotalMilliseconds);
+        manager.Configure(parent, cluster);
+        var parentTemplate = CreateParentTemplate();
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        manager.Seed(parentTemplate, cachedAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        AuxiliaryTemplateRpcTelemetryEvent rpcTelemetry = null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var rpcSubscription = messageBus
+            .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+            .Subscribe(x => rpcTelemetry = x);
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        var update = manager.Update(CancellationToken.None);
+        await server.RequestReceived.Task.WaitAsync(testTimeout);
+        await update.WaitAsync(testTimeout);
+
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.NotNull(rpcTelemetry);
+        Assert.Equal(parent.Id, rpcTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", rpcTelemetry.AuxiliaryPoolId);
+        Assert.Equal(AuxiliaryTemplateRpcPhase.Refresh, rpcTelemetry.Phase);
+        Assert.Equal(AuxiliaryTemplateRpcOutcome.Timeout, rpcTelemetry.Outcome);
+        var stateTelemetry = Assert.Single(stateEvents);
+        Assert.NotNull(stateTelemetry);
+        Assert.Equal(parent.Id, stateTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", stateTelemetry.AuxiliaryPoolId);
+        Assert.True(stateTelemetry.Available);
+        Assert.True(stateTelemetry.Degraded);
+        Assert.True(stateTelemetry.FallbackStarted);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(testTimeout);
+
+        // The stopped listener makes this second refresh fail quickly by connection
+        // refusal. Level-triggered gauge state is reasserted, while the counter still
+        // represents fallback episodes rather than every cached refresh.
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task AuxiliaryRefreshWithoutCache_PublishesUnavailableState()
+    {
+        var unavailableEndpoint = new HangingJsonRpcServer();
+        var port = unavailableEndpoint.Port;
+        await unavailableEndpoint.DisposeAsync();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(port, 5000);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), null);
+        manager.Enqueue(CreateParentTemplate());
+        AuxiliaryTemplateStateTelemetryEvent stateTelemetry = null;
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(x => stateTelemetry = x);
+
+        await manager.Update(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(stateTelemetry);
+        Assert.Equal(parent.Id, stateTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", stateTelemetry.AuxiliaryPoolId);
+        Assert.False(stateTelemetry.Available);
+        Assert.False(stateTelemetry.Degraded);
+        Assert.False(stateTelemetry.FallbackStarted);
+    }
+
+    [Fact]
+    public async Task AuxiliaryRefreshHostCancellation_DoesNotEnterFallbackState()
+    {
+        await using var server = new HangingJsonRpcServer();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port, 10_000);
+        manager.Configure(parent, cluster);
+        var parentTemplate = CreateParentTemplate();
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        manager.Seed(parentTemplate, cachedAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        AuxiliaryTemplateRpcTelemetryEvent rpcTelemetry = null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var rpcSubscription = messageBus
+            .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+            .Subscribe(x => rpcTelemetry = x);
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+        using var shutdown = new CancellationTokenSource();
+
+        var update = manager.Update(shutdown.Token);
+        await server.RequestReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        shutdown.Cancel();
+        await update.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.NotNull(rpcTelemetry);
+        Assert.Equal(parent.Id, rpcTelemetry.ParentPoolId);
+        Assert.Equal("doge-solo", rpcTelemetry.AuxiliaryPoolId);
+        Assert.Equal(AuxiliaryTemplateRpcPhase.Refresh, rpcTelemetry.Phase);
+        Assert.Equal(AuxiliaryTemplateRpcOutcome.Cancellation,
+            rpcTelemetry.Outcome);
+        Assert.Empty(stateEvents);
+    }
+
+    [Fact]
+    public async Task AuxiliaryRefresh_PreCancelledHostToken_DoesNotStartAuxiliaryRpc()
+    {
+        await using var server = new HangingJsonRpcServer();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port, 10_000);
+        manager.Configure(parent, cluster);
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        manager.Seed(CreateParentTemplate(), cachedAuxiliary);
+        var cachedJob = manager.Current;
+        manager.Enqueue(CreateParentTemplate());
+        var rpcEvents = new List<AuxiliaryTemplateRpcTelemetryEvent>();
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var rpcSubscription = messageBus
+            .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+            .Subscribe(rpcEvents.Add);
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+        using var shutdown = new CancellationTokenSource();
+        shutdown.Cancel();
+
+        var result = await manager.Update(shutdown.Token)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.False(server.RequestReceived.Task.IsCompleted);
+        Assert.Empty(rpcEvents);
+        Assert.Empty(stateEvents);
+        Assert.Same(cachedJob, manager.Current);
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
+    public async Task FreshAuxiliaryTemplate_RecoversOnlyAfterReplacementJobIsInstalled()
+    {
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = cachedAuxiliary.Hash;
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"),
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var parentTemplate = CreateParentTemplate();
+        manager.Seed(parentTemplate, cachedAuxiliary);
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        var fallback = Assert.Single(stateEvents);
+        Assert.True(fallback.Available);
+        Assert.True(fallback.Degraded);
+        Assert.True(fallback.FallbackStarted);
+
+        manager.JobCreationException = new InvalidOperationException(
+            "fresh auxiliary template is unusable");
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
+
+        manager.JobCreationException = null;
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.True(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task FreshActiveIdentity_ReconfirmedWhileParentJobInitializationFails_RecoversDegradedState()
+    {
+        var activeAuxiliary = CreateAuxiliaryTemplate();
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"),
+            SequenceJsonRpcServer.Success(activeAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var activeParent = CreateParentTemplate();
+        manager.Seed(activeParent, activeAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var fallback = Assert.Single(stateEvents);
+        Assert.True(fallback.Available);
+        Assert.True(fallback.Degraded);
+        Assert.True(fallback.FallbackStarted);
+
+        var newParent = CreateParentTemplate();
+        newParent.Height++;
+        newParent.PreviousBlockhash = new string('2', 64);
+        manager.JobCreationException = new InvalidOperationException(
+            "parent job cannot initialize");
+        manager.Enqueue(newParent);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(activeParent, manager.Current.BlockTemplate);
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.False(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task AuxiliaryJobCreationCancellation_DoesNotPublishTemplateState()
+    {
+        var activeAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = activeAuxiliary.Hash;
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>())
+        {
+            JobCreationException = new OperationCanceledException(
+                "job creation cancelled during shutdown"),
+        };
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), activeAuxiliary);
+        var activeJob = manager.Current;
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        var result = await manager.Update(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.Empty(stateEvents);
+        Assert.Same(activeJob, manager.Current);
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
+    public async Task FreshAuxiliaryTemplate_ThatCannotReplaceHealthyJob_EntersFallback()
+    {
+        var activeAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = activeAuxiliary.Hash;
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>())
+        {
+            JobCreationException = new InvalidOperationException(
+                "fresh auxiliary template is unusable"),
+        };
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), activeAuxiliary);
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        var fallback = Assert.Single(stateEvents);
+        Assert.True(fallback.Available);
+        Assert.True(fallback.Degraded);
+        Assert.True(fallback.FallbackStarted);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.False(stateEvents[1].FallbackStarted);
+
+        manager.JobCreationException = null;
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotSame(activeAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(freshAuxiliary.Height,
+            manager.Current.AuxiliaryBlockTemplate.Height);
+        Assert.Equal(freshAuxiliary.Hash,
+            manager.Current.AuxiliaryBlockTemplate.Hash);
+        Assert.Equal(freshAuxiliary.PreviousBlockhash,
+            manager.Current.AuxiliaryBlockTemplate.PreviousBlockhash);
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.False(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task FreshAuxiliaryTemplate_ThatCannotInitialize_RemainsUnavailable()
+    {
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>())
+        {
+            JobCreationException = new InvalidOperationException(
+                "initial auxiliary template is unusable"),
+        };
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), null);
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unavailable = Assert.Single(stateEvents);
+        Assert.False(unavailable.Available);
+        Assert.False(unavailable.Degraded);
+        Assert.False(unavailable.FallbackStarted);
+        Assert.Null(manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
+    public async Task StartupTemplate_InstalledByBlockTemplateStream_PublishesAvailableImmediately()
+    {
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var startupAuxiliary = CreateAuxiliaryTemplate();
+        manager.SeedStartup(startupAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        var available = Assert.Single(stateEvents);
+        Assert.True(available.Available);
+        Assert.False(available.Degraded);
+        Assert.False(available.FallbackStarted);
+        Assert.Null(manager.StartupAuxiliaryTemplate);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.True(stateEvents[1].FallbackStarted);
+
+        manager.Enqueue(CreateParentTemplate());
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, stateEvents.Count);
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
+    public async Task StartupTemplate_InstalledAfterFreshInitializationFailure_PublishesFallback()
+    {
+        var startupAuxiliary = CreateAuxiliaryTemplate();
+        var freshAuxiliary = CreateAuxiliaryTemplate();
+        freshAuxiliary.Height++;
+        freshAuxiliary.Hash = new string('c', 64);
+        freshAuxiliary.PreviousBlockhash = new string('d', 64);
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(freshAuxiliary),
+            SequenceJsonRpcServer.Success(freshAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.SeedStartup(startupAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        var rejectFreshTemplate = true;
+        manager.JobCreationExceptionFactory = auxiliaryTemplate =>
+            rejectFreshTemplate && string.Equals(auxiliaryTemplate.Hash,
+                freshAuxiliary.Hash, StringComparison.OrdinalIgnoreCase)
+                ? new InvalidOperationException("fresh template cannot initialize")
+                : null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unavailable = Assert.Single(stateEvents);
+        Assert.False(unavailable.Available);
+        Assert.False(unavailable.Degraded);
+        Assert.False(unavailable.FallbackStarted);
+        Assert.Null(manager.Current);
+
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.True(stateEvents[1].FallbackStarted);
+        Assert.Null(manager.StartupAuxiliaryTemplate);
+
+        rejectFreshTemplate = false;
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(freshAuxiliary.Height,
+            manager.Current.AuxiliaryBlockTemplate.Height);
+        Assert.Equal(freshAuxiliary.Hash,
+            manager.Current.AuxiliaryBlockTemplate.Hash);
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.False(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
+    }
+
+    [Fact]
+    public async Task StartupCache_RefreshFailureAndFailedFirstJob_ThenStreamInstall_EntersFallback()
+    {
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.RpcError(-1, "daemon unavailable"));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        var startupAuxiliary = CreateAuxiliaryTemplate();
+        manager.SeedStartup(startupAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        var rejectFirstJob = true;
+        manager.JobCreationExceptionFactory = _ =>
+        {
+            if(!rejectFirstJob)
+                return null;
+
+            rejectFirstJob = false;
+            return new InvalidOperationException("first job cannot initialize");
+        };
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var unavailable = Assert.Single(stateEvents);
+        Assert.False(unavailable.Available);
+        Assert.False(unavailable.Degraded);
+        Assert.False(unavailable.FallbackStarted);
+        Assert.Null(manager.Current);
+
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(2, stateEvents.Count);
+        Assert.True(stateEvents[1].Available);
+        Assert.True(stateEvents[1].Degraded);
+        Assert.True(stateEvents[1].FallbackStarted);
+        Assert.Null(manager.StartupAuxiliaryTemplate);
+    }
+
+    [Fact]
+    public async Task StartupCache_FreshIdentityReconfirmedAfterStaleFailure_ThenStreamInstall_IsHealthy()
+    {
+        var startupAuxiliary = CreateAuxiliaryTemplate();
+        var supersedingAuxiliary = CreateAuxiliaryTemplate();
+        supersedingAuxiliary.Height++;
+        supersedingAuxiliary.Hash = new string('c', 64);
+        supersedingAuxiliary.PreviousBlockhash = new string('d', 64);
+        await using var server = new SequenceJsonRpcServer(
+            SequenceJsonRpcServer.Success(supersedingAuxiliary),
+            SequenceJsonRpcServer.Success(startupAuxiliary));
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port);
+        manager.Configure(parent, cluster);
+        manager.SeedStartup(startupAuxiliary);
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        manager.Enqueue(CreateParentTemplate());
+        var remainingFailures = 2;
+        manager.JobCreationExceptionFactory = _ => remainingFailures-- > 0
+            ? new InvalidOperationException("job cannot initialize")
+            : null;
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        await manager.Update(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, stateEvents.Count);
+        Assert.All(stateEvents, state =>
+        {
+            Assert.False(state.Available);
+            Assert.False(state.Degraded);
+            Assert.False(state.FallbackStarted);
+        });
+        Assert.Null(manager.Current);
+
+        await manager.Update(CancellationToken.None,
+            JobRefreshBy.BlockTemplateStream).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Same(startupAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+        Assert.Equal(3, stateEvents.Count);
+        Assert.True(stateEvents[2].Available);
+        Assert.False(stateEvents[2].Degraded);
+        Assert.False(stateEvents[2].FallbackStarted);
+        Assert.Null(manager.StartupAuxiliaryTemplate);
+    }
+
+    [Fact]
     public async Task MinerEof_DoesNotCancelManagerOwnedCandidatePersistence()
     {
         var builder = new ContainerBuilder();
@@ -567,7 +1239,24 @@ public class MergedMiningManagerReorgTests
         Assert.Equal((ulong) 101, heightNotification?.BlockHeight);
     }
 
-    private static (PoolConfig Parent, PoolConfig Auxiliary, ClusterConfig Cluster) CreateConfig()
+    private static BlockTemplate CreateParentTemplate() => new()
+    {
+        Height = 102,
+        PreviousBlockhash = new string('1', 64),
+        Target = new string('f', 64),
+        Bits = "207fffff",
+    };
+
+    private static AuxBlockTemplate CreateAuxiliaryTemplate() => new()
+    {
+        Height = 220,
+        Hash = new string('a', 64),
+        PreviousBlockhash = new string('b', 64),
+        Bits = "207fffff",
+    };
+
+    private static (PoolConfig Parent, PoolConfig Auxiliary, ClusterConfig Cluster) CreateConfig(
+        int auxiliaryRpcPort = 44555, int auxiliaryTemplatePollTimeoutMs = 500)
     {
         var parent = new PoolConfig
         {
@@ -593,6 +1282,7 @@ public class MergedMiningManagerReorgTests
                 {
                     ["enabled"] = true,
                     ["auxPoolId"] = "doge-solo",
+                    ["auxiliaryTemplatePollTimeoutMs"] = auxiliaryTemplatePollTimeoutMs,
                 },
             },
             BlockRefreshInterval = 1000,
@@ -604,7 +1294,14 @@ public class MergedMiningManagerReorgTests
             Coin = "dogecoin",
             Enabled = true,
             Address = "DTestAddress",
-            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 44555 } },
+            Daemons = new[]
+            {
+                new DaemonEndpointConfig
+                {
+                    Host = "127.0.0.1",
+                    Port = auxiliaryRpcPort,
+                },
+            },
             PaymentProcessing = new PoolPaymentProcessingConfig
             {
                 Enabled = true,
@@ -634,16 +1331,27 @@ public class MergedMiningManagerReorgTests
         public Func<MergedMiningShareResult> ProcessMergedShareHandler { get; set; }
         public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
         public Exception ParentSubmissionException { get; set; }
+        public Exception JobCreationException { get; set; }
+        public Func<AuxBlockTemplate, Exception> JobCreationExceptionFactory { get; set; }
 
         public MergedMiningBitcoinJob Current => (MergedMiningBitcoinJob) currentJob;
 
         public void Seed(BlockTemplate parent, AuxBlockTemplate auxiliary) =>
             currentJob = TestJob.Create(parent, auxiliary, "seed");
 
+        public void SeedStartup(AuxBlockTemplate auxiliary)
+        {
+            currentJob = null;
+            CacheStartupAuxiliaryTemplate(auxiliary);
+        }
+
         public void Enqueue(BlockTemplate template) =>
             responses.Enqueue(new RpcResponse<BlockTemplate>(template));
 
         public void InitializeJobUpdates(CancellationToken ct) => SetupJobUpdates(ct);
+
+        public Task<(bool IsNew, bool Force)> Update(CancellationToken ct,
+            string via = null) => UpdateJob(ct, false, via);
 
         protected override Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(
             CancellationToken ct) => Task.FromResult(responses.Dequeue());
@@ -670,9 +1378,16 @@ public class MergedMiningManagerReorgTests
         }
 
         protected override MergedMiningBitcoinJob CreateMergedMiningJob(
-            BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate) =>
-            TestJob.Create(blockTemplate, auxiliaryTemplate,
+            BlockTemplate blockTemplate, AuxBlockTemplate auxiliaryTemplate)
+        {
+            var exception = JobCreationExceptionFactory?.Invoke(auxiliaryTemplate) ??
+                JobCreationException;
+            if(exception != null)
+                throw exception;
+
+            return TestJob.Create(blockTemplate, auxiliaryTemplate,
                 $"test-{Interlocked.Increment(ref testJobId)}");
+        }
     }
 
     private sealed class TestJob : MergedMiningBitcoinJob
@@ -693,6 +1408,190 @@ public class MergedMiningManagerReorgTests
                 "", parent.Bits, "", false,
             };
             return job;
+        }
+    }
+
+    private sealed class HangingJsonRpcServer : IAsyncDisposable
+    {
+        public HangingJsonRpcServer()
+        {
+            listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Port = ((IPEndPoint) listener.LocalEndpoint).Port;
+            serverTask = ServeAsync();
+        }
+
+        private readonly TcpListener listener;
+        private readonly CancellationTokenSource stop = new();
+        private readonly Task serverTask;
+
+        public int Port { get; }
+        public TaskCompletionSource<bool> RequestReceived { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private async Task ServeAsync()
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync(stop.Token);
+                // This fixture models one RPC attempt. Reject any unexpected reconnect
+                // instead of leaving it queued silently behind the hanging request.
+                listener.Stop();
+                var stream = client.GetStream();
+                var buffer = new byte[4096];
+                var read = await stream.ReadAsync(buffer, stop.Token);
+
+                if(read > 0)
+                    RequestReceived.TrySetResult(true);
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, stop.Token);
+            }
+            catch(OperationCanceledException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(SocketException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(IOException)
+            {
+                // The client is expected to abort the hanging request when its deadline
+                // or host-cancellation token wins.
+            }
+            catch(ObjectDisposedException) when(stop.IsCancellationRequested)
+            {
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await stop.CancelAsync();
+            listener.Stop();
+            await serverTask;
+            stop.Dispose();
+        }
+    }
+
+    private sealed class SequenceJsonRpcServer : IAsyncDisposable
+    {
+        public SequenceJsonRpcServer(params JObject[] responses)
+        {
+            this.responses = new Queue<JObject>(responses);
+            listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Port = ((IPEndPoint) listener.LocalEndpoint).Port;
+            serverTask = ServeAsync();
+        }
+
+        private readonly TcpListener listener;
+        private readonly CancellationTokenSource stop = new();
+        private readonly Queue<JObject> responses;
+        private readonly Task serverTask;
+
+        public int Port { get; }
+
+        public static JObject Success(AuxBlockTemplate template) => new()
+        {
+            ["result"] = JObject.FromObject(template),
+            ["error"] = null,
+        };
+
+        public static JObject RpcError(int code, string message) => new()
+        {
+            ["result"] = null,
+            ["error"] = new JObject
+            {
+                ["code"] = code,
+                ["message"] = message,
+            },
+        };
+
+        private async Task ServeAsync()
+        {
+            try
+            {
+                while(responses.Count > 0)
+                {
+                    using var client = await listener.AcceptTcpClientAsync(stop.Token);
+                    await RespondAsync(client, responses.Dequeue(), stop.Token);
+                }
+            }
+            catch(OperationCanceledException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(SocketException) when(stop.IsCancellationRequested)
+            {
+            }
+            catch(ObjectDisposedException) when(stop.IsCancellationRequested)
+            {
+            }
+        }
+
+        private static async Task RespondAsync(TcpClient client, JObject response,
+            CancellationToken ct)
+        {
+            var stream = client.GetStream();
+            using var requestBuffer = new MemoryStream();
+            var buffer = new byte[4096];
+            var headerEnd = -1;
+            var contentLength = 0;
+
+            while(true)
+            {
+                var read = await stream.ReadAsync(buffer, ct);
+                if(read == 0)
+                    throw new IOException("JSON-RPC client closed before sending a request");
+
+                requestBuffer.Write(buffer, 0, read);
+                var requestBytes = requestBuffer.ToArray();
+                headerEnd = FindHeaderEnd(requestBytes);
+                if(headerEnd < 0)
+                    continue;
+
+                var headers = Encoding.ASCII.GetString(requestBytes, 0, headerEnd);
+                contentLength = headers.Split("\r\n")
+                    .Select(x => x.Split(':', 2))
+                    .Where(x => x.Length == 2 && string.Equals(x[0], "Content-Length",
+                        StringComparison.OrdinalIgnoreCase))
+                    .Select(x => int.Parse(x[1].Trim()))
+                    .Single();
+
+                if(requestBytes.Length >= headerEnd + 4 + contentLength)
+                    break;
+            }
+
+            var completeRequest = requestBuffer.ToArray();
+            var requestJson = Encoding.UTF8.GetString(completeRequest,
+                headerEnd + 4, contentLength);
+            var request = JObject.Parse(requestJson);
+            response["jsonrpc"] = "2.0";
+            response["id"] = request["id"]?.DeepClone();
+            var body = Encoding.UTF8.GetBytes(response.ToString(Formatting.None));
+            var headersBytes = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+
+            await stream.WriteAsync(headersBytes, ct);
+            await stream.WriteAsync(body, ct);
+            await stream.FlushAsync(ct);
+        }
+
+        private static int FindHeaderEnd(byte[] bytes)
+        {
+            for(var index = 0; index <= bytes.Length - 4; index++)
+            {
+                if(bytes[index] == '\r' && bytes[index + 1] == '\n' &&
+                    bytes[index + 2] == '\r' && bytes[index + 3] == '\n')
+                    return index;
+            }
+
+            return -1;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await stop.CancelAsync();
+            listener.Stop();
+            await serverTask;
+            stop.Dispose();
         }
     }
 }

@@ -307,6 +307,8 @@
         // submission is skipped for workers that do not supply one.
         "requireAuxAddress": true,
         // Milliseconds allowed for recurring createauxblock polling after startup.
+        // Investigate repeated timeout/fallback metrics before raising this: a longer
+        // deadline can delay a fresh parent Litecoin job.
         "auxiliaryTemplatePollTimeoutMs": 500
       }
     },

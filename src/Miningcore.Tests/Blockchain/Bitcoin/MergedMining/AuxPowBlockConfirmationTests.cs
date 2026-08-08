@@ -1,7 +1,9 @@
+using System;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Blockchain;
 using Miningcore.JsonRpc;
+using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Newtonsoft.Json.Linq;
 using System.Threading;
@@ -137,21 +139,38 @@ public class AuxPowBlockConfirmationTests
             new JsonRpcError(-500, "unavailable", null));
 
         Assert.False(MergedMiningBitcoinJobManager.TryResolveAuxiliaryTemplate(
-            null, unavailable, out var missing, out var missingUsedCache));
+            null, RpcResult(unavailable, AuxiliaryTemplateRpcOutcome.TransportFailure),
+            out var missing, out var missingUsedCache));
         Assert.Null(missing);
         Assert.False(missingUsedCache);
 
         Assert.True(MergedMiningBitcoinJobManager.TryResolveAuxiliaryTemplate(
-            cached, unavailable, out var fallback, out var fallbackUsedCache));
+            cached, RpcResult(unavailable, AuxiliaryTemplateRpcOutcome.TransportFailure),
+            out var fallback, out var fallbackUsedCache));
         Assert.Same(cached, fallback);
         Assert.True(fallbackUsedCache);
 
         var fresh = Template(101, "cached-hash", "fresh-hash");
         Assert.True(MergedMiningBitcoinJobManager.TryResolveAuxiliaryTemplate(
-            cached, new RpcResponse<AuxBlockTemplate>(fresh), out var resolved,
+            cached, RpcResult(new RpcResponse<AuxBlockTemplate>(fresh),
+                AuxiliaryTemplateRpcOutcome.Success), out var resolved,
             out var resolvedUsedCache));
         Assert.Same(fresh, resolved);
         Assert.False(resolvedUsedCache);
+    }
+
+    [Fact]
+    public void AuxiliaryTemplateResolution_DeadlineWinnerUsesCacheInsteadOfLateResponse()
+    {
+        var cached = Template(100, "previous", "cached-hash");
+        var late = Template(101, "cached-hash", "late-fresh-hash");
+        var request = RpcResult(new RpcResponse<AuxBlockTemplate>(late),
+            AuxiliaryTemplateRpcOutcome.Timeout);
+
+        Assert.True(MergedMiningBitcoinJobManager.TryResolveAuxiliaryTemplate(
+            cached, request, out var resolved, out var usedCache));
+        Assert.Same(cached, resolved);
+        Assert.True(usedCache);
     }
 
     [Fact]
@@ -401,6 +420,10 @@ public class AuxPowBlockConfirmationTests
         Assert.True(MergedMiningBitcoinJobManager.ShouldRefreshAuxiliaryTemplate(
             JobRefreshBy.BlockTemplateStream, false));
     }
+
+    private static AuxiliaryTemplateRpcResult RpcResult(
+        RpcResponse<AuxBlockTemplate> response, AuxiliaryTemplateRpcOutcome outcome) =>
+        new(response, outcome, TimeSpan.FromMilliseconds(500));
 
     private static AuxBlockTemplate Template(uint height, string previousBlockHash, string hash)
     {

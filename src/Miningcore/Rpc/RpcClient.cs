@@ -72,9 +72,13 @@ public class RpcClient
             return new RpcResponse<TResponse>((TResponse) response.Result, response.Error);
         }
 
-        catch(TaskCanceledException)
+        catch(TaskCanceledException ex)
         {
-            return new RpcResponse<TResponse>(null, new JsonRpcError(-500, "Cancelled", null));
+            // Preserve the structural cause. Callers that need to distinguish a
+            // client-side timeout/cancellation from a daemon error must not have to
+            // pattern-match this synthetic message.
+            return new RpcResponse<TResponse>(null,
+                new JsonRpcError(-500, "Cancelled", null, ex));
         }
 
         catch(Exception ex)

@@ -56,6 +56,10 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Gauge sharePersistenceQueueHighWatermarkGauge;
     private Gauge sharePersistenceQueueCapacityGauge;
     private Counter sharePersistenceQueueOverflowCounter;
+    private Histogram auxiliaryTemplateRpcDurationHistogram;
+    private Counter auxiliaryTemplateFallbackCounter;
+    private Gauge auxiliaryTemplateAvailableGauge;
+    private Gauge auxiliaryTemplateDegradedGauge;
     private readonly object sharePersistenceOverflowPublishGate = new();
     private long publishedPrimaryOverflowCount;
     private long publishedEmergencyOverflowCount;
@@ -128,6 +132,30 @@ public class MetricsPublisher : StartupGatedBackgroundService
             "miningcore_share_persistence_queue_overflow_total",
             "Number of writes rejected by a bounded share persistence queue",
             new CounterConfiguration { LabelNames = new[] { "queue" } });
+
+        auxiliaryTemplateRpcDurationHistogram = metricFactory.CreateHistogram(
+            "miningcore_auxiliary_template_rpc_duration_seconds",
+            "Duration of auxiliary createauxblock RPC attempts in seconds",
+            new HistogramConfiguration
+            {
+                LabelNames = new[] { "pool", "aux_pool", "phase", "outcome" },
+                Buckets = new[]
+                {
+                    0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 2, 5, 10, 15,
+                },
+            });
+        auxiliaryTemplateFallbackCounter = metricFactory.CreateCounter(
+            "miningcore_auxiliary_template_fallback_total",
+            "Number of auxiliary template fallback episodes",
+            new CounterConfiguration { LabelNames = new[] { "pool", "aux_pool" } });
+        auxiliaryTemplateAvailableGauge = metricFactory.CreateGauge(
+            "miningcore_auxiliary_template_available",
+            "Whether a usable auxiliary template is currently available",
+            new GaugeConfiguration { LabelNames = new[] { "pool", "aux_pool" } });
+        auxiliaryTemplateDegradedGauge = metricFactory.CreateGauge(
+            "miningcore_auxiliary_template_degraded",
+            "Whether parent mining is currently using a cached auxiliary template",
+            new GaugeConfiguration { LabelNames = new[] { "pool", "aux_pool" } });
     }
 
     private void PublishSharePersistenceMetrics()
@@ -214,6 +242,52 @@ public class MetricsPublisher : StartupGatedBackgroundService
         poolHashrateGauge.WithLabels(msg.PoolId).Set(msg.Hashrate);
     }
 
+    private void OnAuxiliaryTemplateRpcTelemetry(
+        AuxiliaryTemplateRpcTelemetryEvent msg)
+    {
+        var outcome = GetAuxiliaryTemplateRpcOutcomeLabel(msg.Outcome);
+        var phase = GetAuxiliaryTemplateRpcPhaseLabel(msg.Phase);
+        auxiliaryTemplateRpcDurationHistogram.WithLabels(msg.ParentPoolId,
+                msg.AuxiliaryPoolId, phase, outcome)
+            .Observe(msg.Elapsed.TotalSeconds);
+    }
+
+    private void OnAuxiliaryTemplateStateTelemetry(
+        AuxiliaryTemplateStateTelemetryEvent msg)
+    {
+        auxiliaryTemplateAvailableGauge.WithLabels(msg.ParentPoolId,
+                msg.AuxiliaryPoolId)
+            .Set(msg.Available ? 1 : 0);
+        auxiliaryTemplateDegradedGauge.WithLabels(msg.ParentPoolId,
+                msg.AuxiliaryPoolId)
+            .Set(msg.Degraded ? 1 : 0);
+
+        if(msg.FallbackStarted)
+            auxiliaryTemplateFallbackCounter.WithLabels(msg.ParentPoolId,
+                msg.AuxiliaryPoolId).Inc();
+    }
+
+    internal static string GetAuxiliaryTemplateRpcOutcomeLabel(
+        AuxiliaryTemplateRpcOutcome outcome) => outcome switch
+    {
+        AuxiliaryTemplateRpcOutcome.Success => "success",
+        AuxiliaryTemplateRpcOutcome.RpcError => "rpc_error",
+        AuxiliaryTemplateRpcOutcome.Timeout => "timeout",
+        AuxiliaryTemplateRpcOutcome.Cancellation => "cancellation",
+        AuxiliaryTemplateRpcOutcome.TransportFailure => "transport_failure",
+        _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome,
+            "Unknown auxiliary-template RPC outcome"),
+    };
+
+    internal static string GetAuxiliaryTemplateRpcPhaseLabel(
+        AuxiliaryTemplateRpcPhase phase) => phase switch
+    {
+        AuxiliaryTemplateRpcPhase.Startup => "startup",
+        AuxiliaryTemplateRpcPhase.Refresh => "refresh",
+        _ => throw new ArgumentOutOfRangeException(nameof(phase), phase,
+            "Unknown auxiliary-template RPC phase"),
+    };
+
     protected override Task ExecuteAsync(CancellationToken ct)
     {
         try
@@ -228,7 +302,22 @@ public class MetricsPublisher : StartupGatedBackgroundService
                 .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> logger.Error(ex.Message)))
                 .Select(_=> Unit.Default);
 
-            var processing = Observable.Merge(telemetryEvents, hashrateNotifications)
+            var auxiliaryTemplateRpcTelemetry = messageBus
+                .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x => Guard(() => OnAuxiliaryTemplateRpcTelemetry(x),
+                    ex => logger.Error(ex.Message)))
+                .Select(_ => Unit.Default);
+
+            var auxiliaryTemplateStateTelemetry = messageBus
+                .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x => Guard(() => OnAuxiliaryTemplateStateTelemetry(x),
+                    ex => logger.Error(ex.Message)))
+                .Select(_ => Unit.Default);
+
+            var processing = Observable.Merge(telemetryEvents, hashrateNotifications,
+                    auxiliaryTemplateRpcTelemetry, auxiliaryTemplateStateTelemetry)
                 .ToTask(ct);
             SignalStartupReady();
             return processing;

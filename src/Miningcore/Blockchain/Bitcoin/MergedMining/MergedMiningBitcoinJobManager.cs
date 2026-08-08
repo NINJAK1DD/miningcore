@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -7,6 +9,7 @@ using Miningcore.Contracts;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -54,6 +57,11 @@ internal enum ParentBlockLookupResult
     Unavailable,
 }
 
+internal sealed record AuxiliaryTemplateRpcResult(
+    RpcResponse<AuxBlockTemplate> Response,
+    AuxiliaryTemplateRpcOutcome Outcome,
+    TimeSpan Timeout);
+
 public class MergedMiningBitcoinJobManager : BitcoinJobManager
 {
     public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
@@ -80,7 +88,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private BitcoinTemplate auxiliaryCoin;
     private RpcClient auxiliaryRpc;
     private bool auxiliaryTemplateDegraded;
-    private AuxBlockTemplate startupAuxiliaryTemplate;
+    private string startupAuxiliaryTemplateFallbackFailure;
+    internal AuxBlockTemplate StartupAuxiliaryTemplate { get; private set; }
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
     private readonly AuxiliaryAddressValidationCache validatedAuxiliaryAddresses =
         new(ValidatedAuxiliaryAddressCacheCapacity);
@@ -175,13 +184,25 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         do
         {
-            var response = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout);
-            if(response.Error == null && response.Response != null)
+            var request = await GetAuxBlockTemplateAsync(ct, AuxiliaryStartupTimeout,
+                AuxiliaryTemplateRpcPhase.Startup);
+            ct.ThrowIfCancellationRequested();
+
+            var freshTemplate = request.Outcome == AuxiliaryTemplateRpcOutcome.Success
+                ? request.Response?.Response
+                : null;
+            if(freshTemplate != null)
             {
-                startupAuxiliaryTemplate = response.Response;
+                CacheStartupAuxiliaryTemplate(freshTemplate);
+                // A parseable daemon response is not yet a usable mining template.
+                // Keep availability false until UpdateJob successfully constructs and
+                // installs the first merged-mining job from it.
+                _ = SetAndPublishAuxiliaryTemplateState(false, false);
                 logger.Info(() => $"Auxiliary daemon for {auxiliaryCoin.Name} is synched");
                 return;
             }
+
+            _ = SetAndPublishAuxiliaryTemplateState(false, false);
 
             if(!notificationShown)
             {
@@ -189,19 +210,121 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 notificationShown = true;
             }
 
-            if(response.Error != null)
-                logger.Debug(() => $"Auxiliary daemon reports: {response.Error.Message}");
+            logger.Debug(() => $"Auxiliary daemon reports: " +
+                DescribeAuxiliaryTemplateRpcFailure(request));
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
-    private async Task<RpcResponse<AuxBlockTemplate>> GetAuxBlockTemplateAsync(CancellationToken ct,
-        TimeSpan timeout)
+    private async Task<AuxiliaryTemplateRpcResult> GetAuxBlockTemplateAsync(CancellationToken ct,
+        TimeSpan timeout, AuxiliaryTemplateRpcPhase phase)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(timeout);
+        // Do not create an RPC attempt after host shutdown has already won. In-flight
+        // requests still use the independent token below so completion, deadline, and
+        // caller cancellation can be arbitrated exactly once.
+        ct.ThrowIfCancellationRequested();
 
-        return await auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger, CreateAuxBlock, cts.Token,
-            new[] { auxiliaryPoolConfig.Address });
+        using var requestCts = new CancellationTokenSource();
+        using var deadlineCts = new CancellationTokenSource();
+        var callerCancellation = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var callerCancellationRegistration = ct.Register(() =>
+            callerCancellation.TrySetResult(true));
+        var stopwatch = Stopwatch.StartNew();
+
+        var rpcTask = auxiliaryRpc.ExecuteAsync<AuxBlockTemplate>(logger,
+            CreateAuxBlock, requestCts.Token, new[] { auxiliaryPoolConfig.Address });
+        var callerCancellationTask = callerCancellation.Task;
+        var deadlineTask = Task.Delay(timeout, deadlineCts.Token);
+
+        // Let the RPC task and both cancellation sources compete once. If the RPC wins,
+        // its outcome is fixed here and a deadline firing before the continuation resumes
+        // cannot retroactively reclassify the completed response as a timeout.
+        var completedTask = await Task.WhenAny(rpcTask, callerCancellationTask,
+            deadlineTask);
+        var callerCancellationWon = completedTask == callerCancellationTask;
+        var deadlineWon = completedTask == deadlineTask;
+
+        if(completedTask != rpcTask)
+            await requestCts.CancelAsync();
+
+        var response = await rpcTask;
+        stopwatch.Stop();
+        await deadlineCts.CancelAsync();
+
+        var outcome = ClassifyAuxiliaryTemplateRpcOutcome(response,
+            callerCancellationWon, deadlineWon);
+        messageBus.SendMessage(new AuxiliaryTemplateRpcTelemetryEvent(
+            poolConfig.Id, auxiliaryPoolConfig.Id, phase, outcome,
+            stopwatch.Elapsed));
+
+        return new AuxiliaryTemplateRpcResult(response, outcome, timeout);
+    }
+
+    internal static AuxiliaryTemplateRpcOutcome ClassifyAuxiliaryTemplateRpcOutcome(
+        RpcResponse<AuxBlockTemplate> response, bool callerCancellationWon,
+        bool deadlineWon)
+    {
+        if(callerCancellationWon)
+            return AuxiliaryTemplateRpcOutcome.Cancellation;
+
+        if(deadlineWon)
+            return AuxiliaryTemplateRpcOutcome.Timeout;
+
+        if(response?.Error == null && response?.Response != null)
+            return AuxiliaryTemplateRpcOutcome.Success;
+
+        // RpcClient attaches JSON/protocol parsing failures as inner exceptions. The
+        // endpoint replied but did not produce a usable RPC envelope, so keep those
+        // distinct from connection and other transport failures.
+        if(response?.Error?.InnerException is Newtonsoft.Json.JsonException)
+            return AuxiliaryTemplateRpcOutcome.RpcError;
+
+        // RpcClient preserves client-side cancellation and transport failures as
+        // inner exceptions. Daemon-originated errors, even if their text happens to
+        // be "Cancelled", remain RPC errors instead of being classified by message.
+        if(response == null || response.Error?.InnerException != null ||
+            response.Error == null)
+            return AuxiliaryTemplateRpcOutcome.TransportFailure;
+
+        return AuxiliaryTemplateRpcOutcome.RpcError;
+    }
+
+    internal static string DescribeAuxiliaryTemplateRpcFailure(
+        AuxiliaryTemplateRpcResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        return result.Outcome switch
+        {
+            AuxiliaryTemplateRpcOutcome.Timeout =>
+                $"timed out after {result.Timeout.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture)} ms",
+            AuxiliaryTemplateRpcOutcome.Cancellation =>
+                "cancelled by host shutdown",
+            AuxiliaryTemplateRpcOutcome.RpcError =>
+                result.Response?.Error?.Message ?? "RPC error",
+            AuxiliaryTemplateRpcOutcome.TransportFailure =>
+                result.Response?.Error?.Message ?? "transport failure",
+            AuxiliaryTemplateRpcOutcome.Success => "completed successfully",
+            _ => "unknown auxiliary-template RPC failure",
+        };
+    }
+
+    private AuxiliaryTemplateStateTransition SetAndPublishAuxiliaryTemplateState(
+        bool available, bool degraded)
+    {
+        var transition = new AuxiliaryTemplateStateTransition(
+            FallbackStarted: degraded && !auxiliaryTemplateDegraded,
+            Recovered: !degraded && auxiliaryTemplateDegraded);
+        auxiliaryTemplateDegraded = degraded;
+
+        // Gauges are level-triggered: reassert unchanged state so a transient
+        // subscriber/metric update failure self-heals on the next refresh. Only the
+        // FallbackStarted flag retains edge semantics for its counter.
+        messageBus.SendMessage(new AuxiliaryTemplateStateTelemetryEvent(
+            poolConfig.Id, auxiliaryPoolConfig.Id, available, degraded,
+            transition.FallbackStarted));
+
+        return transition;
     }
 
     internal static AuxiliaryTemplateChange ClassifyAuxiliaryTemplateChange(
@@ -246,10 +369,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             var blockTemplate = parentResponse.Response;
 
             var previousAuxiliaryTemplate = previousJob?.AuxiliaryBlockTemplate ??
-                startupAuxiliaryTemplate;
+                StartupAuxiliaryTemplate;
             var shouldRefreshAuxiliaryTemplate = ShouldRefreshAuxiliaryTemplate(via,
                 previousAuxiliaryTemplate != null);
             AuxBlockTemplate auxiliaryTemplate;
+            var freshAuxiliaryTemplatePendingCommit = false;
+            var cachedAuxiliaryTemplatePendingCommit = false;
+            string cachedAuxiliaryTemplateFailure = null;
 
             if(!shouldRefreshAuxiliaryTemplate)
             {
@@ -262,35 +388,57 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 var auxiliaryTemplateTimeout = previousAuxiliaryTemplate == null
                     ? AuxiliaryStartupTimeout
                     : GetAuxiliaryTemplatePollTimeout();
-                var auxiliaryResponse = await GetAuxBlockTemplateAsync(ct,
-                    auxiliaryTemplateTimeout);
+                var auxiliaryRequest = await GetAuxBlockTemplateAsync(ct,
+                    auxiliaryTemplateTimeout, AuxiliaryTemplateRpcPhase.Refresh);
+                ct.ThrowIfCancellationRequested();
+
                 var hasAuxiliaryTemplate = TryResolveAuxiliaryTemplate(
-                    previousAuxiliaryTemplate, auxiliaryResponse,
+                    previousAuxiliaryTemplate, auxiliaryRequest,
                     out auxiliaryTemplate, out var usedCachedAuxiliaryTemplate);
 
                 if(!hasAuxiliaryTemplate)
                 {
-                    var error = auxiliaryResponse.Error?.Message ?? "empty response";
+                    var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
+                    // With no usable template there cannot be an earlier cached
+                    // fallback episode; publish the level and deliberately ignore
+                    // the transition result.
+                    _ = SetAndPublishAuxiliaryTemplateState(false, false);
                     logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
                     return (false, forceUpdate);
                 }
 
                 if(usedCachedAuxiliaryTemplate)
                 {
-                    var error = auxiliaryResponse.Error?.Message ?? "empty response";
-                    if(!auxiliaryTemplateDegraded)
-                        logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
+                    var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
+                    if(previousJob?.AuxiliaryBlockTemplate != null)
+                        PublishAuxiliaryTemplateFallback(auxiliaryTemplate, error);
                     else
-                        logger.Debug(() => $"Auxiliary template remains unavailable: {error}");
-
-                    auxiliaryTemplateDegraded = true;
+                    {
+                        // startupAuxiliaryTemplate has not yet powered an active job.
+                        // Defer availability and the fallback episode until successful
+                        // construction proves that the cached response is usable.
+                        cachedAuxiliaryTemplatePendingCommit = true;
+                        cachedAuxiliaryTemplateFailure = error;
+                        startupAuxiliaryTemplateFallbackFailure = error;
+                    }
                 }
                 else
                 {
-                    if(auxiliaryTemplateDegraded)
-                        logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
+                    // Receiving a fresh response does not prove that it can produce a
+                    // usable merged-mining job. Commit recovery only after the fresh
+                    // template is installed, or after proving that the active job
+                    // already contains the identical template.
+                    freshAuxiliaryTemplatePendingCommit = true;
 
-                    auxiliaryTemplateDegraded = false;
+                    if(previousJob == null && StartupAuxiliaryTemplate != null &&
+                        ClassifyAuxiliaryTemplateChange(StartupAuxiliaryTemplate,
+                            auxiliaryTemplate) == AuxiliaryTemplateChange.None)
+                    {
+                        // A successful refresh has proven the startup identity current
+                        // again. Do not retain older fallback provenance if this combined
+                        // parent/auxiliary job attempt subsequently fails to initialize.
+                        startupAuxiliaryTemplateFallbackFailure = null;
+                    }
                 }
             }
 
@@ -299,6 +447,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             var auxiliaryChange = ClassifyAuxiliaryTemplateChange(
                 previousJob?.AuxiliaryBlockTemplate, auxiliaryTemplate);
             var auxiliaryIsNew = auxiliaryChange != AuxiliaryTemplateChange.None;
+            var installsStartupAuxiliaryTemplate = previousJob == null &&
+                ReferenceEquals(auxiliaryTemplate, StartupAuxiliaryTemplate);
+            var freshTemplateDiffersFromStartup = previousJob == null &&
+                freshAuxiliaryTemplatePendingCommit &&
+                StartupAuxiliaryTemplate != null &&
+                ClassifyAuxiliaryTemplateChange(StartupAuxiliaryTemplate,
+                    auxiliaryTemplate) != AuxiliaryTemplateChange.None;
 
             if(parentIsNew)
                 messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
@@ -309,7 +464,56 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
             if(parentIsNew || auxiliaryIsNew || forceUpdate)
             {
-                var job = CreateMergedMiningJob(blockTemplate, auxiliaryTemplate);
+                MergedMiningBitcoinJob job;
+
+                try
+                {
+                    job = CreateMergedMiningJob(blockTemplate, auxiliaryTemplate);
+                }
+                catch(Exception ex) when(ex is not OperationCanceledException)
+                {
+                    if(freshAuxiliaryTemplatePendingCommit &&
+                        previousJob?.AuxiliaryBlockTemplate != null)
+                    {
+                        if(auxiliaryIsNew)
+                        {
+                            // A changed fresh template exists, but the only installed job
+                            // still uses the previous identity. That is cached fallback even
+                            // when the refresh RPC itself succeeded. Reasserting this state
+                            // while already degraded does not start another episode.
+                            PublishAuxiliaryTemplateFallback(
+                                previousJob.AuxiliaryBlockTemplate,
+                                "replacement job initialization failed");
+                        }
+                        else
+                        {
+                            // The fresh RPC reconfirmed the identity already installed in
+                            // currentJob. An unrelated parent-job initialization failure must
+                            // not keep that auxiliary identity marked degraded.
+                            PublishAuxiliaryTemplateRecovery(
+                                previousJob.AuxiliaryBlockTemplate);
+                        }
+                    }
+                    else if((freshAuxiliaryTemplatePendingCommit ||
+                        cachedAuxiliaryTemplatePendingCommit) &&
+                        previousJob?.AuxiliaryBlockTemplate == null)
+                    {
+                        if(freshTemplateDiffersFromStartup)
+                        {
+                            // A newer fresh identity could not replace the uninstalled
+                            // startup cache. If a parent-only stream event subsequently
+                            // installs that older cache, it is fallback rather than healthy.
+                            startupAuxiliaryTemplateFallbackFailure =
+                                "fresh auxiliary template job initialization failed before the first job";
+                        }
+
+                        // With no active auxiliary job, advertise failed initialization
+                        // as unavailable until a usable merged-mining job is installed.
+                        _ = SetAndPublishAuxiliaryTemplateState(false, false);
+                    }
+
+                    throw;
+                }
 
                 if(parentIsNew)
                 {
@@ -339,6 +543,35 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 }
 
                 currentJob = job;
+
+                if(freshAuxiliaryTemplatePendingCommit)
+                    PublishAuxiliaryTemplateRecovery(auxiliaryTemplate);
+                else if(cachedAuxiliaryTemplatePendingCommit)
+                    PublishAuxiliaryTemplateFallback(auxiliaryTemplate,
+                        cachedAuxiliaryTemplateFailure);
+                else if(installsStartupAuxiliaryTemplate)
+                {
+                    // A parent Template Stream update can install the first usable job
+                    // without refreshing DOGE. This first commit proves the startup
+                    // template usable; later parent-only updates still cannot prove
+                    // recovery from an established degraded state.
+                    if(startupAuxiliaryTemplateFallbackFailure != null)
+                    {
+                        PublishAuxiliaryTemplateFallback(auxiliaryTemplate,
+                            startupAuxiliaryTemplateFallbackFailure);
+                    }
+                    else
+                        PublishAuxiliaryTemplateRecovery(auxiliaryTemplate);
+                }
+
+                if(previousJob == null)
+                    ClearStartupAuxiliaryTemplate();
+            }
+            else if(freshAuxiliaryTemplatePendingCommit)
+            {
+                // The freshly fetched identity is already installed in currentJob, so
+                // no replacement is necessary and recovery can be committed immediately.
+                PublishAuxiliaryTemplateRecovery(auxiliaryTemplate);
             }
 
             return (parentIsNew || auxiliaryIsNew, forceUpdate);
@@ -352,6 +585,35 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         }
 
         return (false, forceUpdate);
+    }
+
+    private void PublishAuxiliaryTemplateRecovery(AuxBlockTemplate auxiliaryTemplate)
+    {
+        var transition = SetAndPublishAuxiliaryTemplateState(true, false);
+        if(transition.Recovered)
+            logger.Info(() => $"Auxiliary template updates recovered at block {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]");
+    }
+
+    internal void CacheStartupAuxiliaryTemplate(AuxBlockTemplate auxiliaryTemplate)
+    {
+        StartupAuxiliaryTemplate = auxiliaryTemplate;
+        startupAuxiliaryTemplateFallbackFailure = null;
+    }
+
+    private void ClearStartupAuxiliaryTemplate()
+    {
+        StartupAuxiliaryTemplate = null;
+        startupAuxiliaryTemplateFallbackFailure = null;
+    }
+
+    private void PublishAuxiliaryTemplateFallback(AuxBlockTemplate auxiliaryTemplate,
+        string error)
+    {
+        var transition = SetAndPublishAuxiliaryTemplateState(true, true);
+        if(transition.FallbackStarted)
+            logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {auxiliaryTemplate.Height} [{auxiliaryTemplate.Hash}]: {error}");
+        else
+            logger.Debug(() => $"Auxiliary template remains degraded: {error}");
     }
 
     protected virtual MergedMiningBitcoinJob CreateMergedMiningJob(BlockTemplate blockTemplate,
@@ -396,11 +658,15 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     }
 
     internal static bool TryResolveAuxiliaryTemplate(AuxBlockTemplate previous,
-        RpcResponse<AuxBlockTemplate> response, out AuxBlockTemplate template, out bool usedCached)
+        AuxiliaryTemplateRpcResult result, out AuxBlockTemplate template,
+        out bool usedCached)
     {
-        if(response?.Error == null && response?.Response != null)
+        var freshTemplate = result?.Outcome == AuxiliaryTemplateRpcOutcome.Success
+            ? result.Response?.Response
+            : null;
+        if(freshTemplate != null)
         {
-            template = response.Response;
+            template = freshTemplate;
             usedCached = false;
             return true;
         }
@@ -1115,4 +1381,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             : ParentBlockLookupResult.Accepted;
     }
 
+    private readonly record struct AuxiliaryTemplateStateTransition(
+        bool FallbackStarted,
+        bool Recovered);
 }
