@@ -218,6 +218,11 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private async Task<AuxiliaryTemplateRpcResult> GetAuxBlockTemplateAsync(CancellationToken ct,
         TimeSpan timeout, AuxiliaryTemplateRpcPhase phase)
     {
+        // Do not create an RPC attempt after host shutdown has already won. In-flight
+        // requests still use the independent token below so completion, deadline, and
+        // caller cancellation can be arbitrated exactly once.
+        ct.ThrowIfCancellationRequested();
+
         using var requestCts = new CancellationTokenSource();
         using var deadlineCts = new CancellationTokenSource();
         var callerCancellation = new TaskCompletionSource<bool>(

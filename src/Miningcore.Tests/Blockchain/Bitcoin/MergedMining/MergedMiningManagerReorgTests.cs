@@ -452,6 +452,48 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task AuxiliaryRefresh_PreCancelledHostToken_DoesNotStartAuxiliaryRpc()
+    {
+        await using var server = new HangingJsonRpcServer();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig(server.Port, 10_000);
+        manager.Configure(parent, cluster);
+        var cachedAuxiliary = CreateAuxiliaryTemplate();
+        manager.Seed(CreateParentTemplate(), cachedAuxiliary);
+        var cachedJob = manager.Current;
+        manager.Enqueue(CreateParentTemplate());
+        var rpcEvents = new List<AuxiliaryTemplateRpcTelemetryEvent>();
+        var stateEvents = new List<AuxiliaryTemplateStateTelemetryEvent>();
+        using var rpcSubscription = messageBus
+            .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
+            .Subscribe(rpcEvents.Add);
+        using var stateSubscription = messageBus
+            .Listen<AuxiliaryTemplateStateTelemetryEvent>()
+            .Subscribe(stateEvents.Add);
+        using var shutdown = new CancellationTokenSource();
+        shutdown.Cancel();
+
+        var result = await manager.Update(shutdown.Token)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.False(server.RequestReceived.Task.IsCompleted);
+        Assert.Empty(rpcEvents);
+        Assert.Empty(stateEvents);
+        Assert.Same(cachedJob, manager.Current);
+        Assert.Same(cachedAuxiliary, manager.Current.AuxiliaryBlockTemplate);
+    }
+
+    [Fact]
     public async Task FreshAuxiliaryTemplate_RecoversOnlyAfterReplacementJobIsInstalled()
     {
         var cachedAuxiliary = CreateAuxiliaryTemplate();
