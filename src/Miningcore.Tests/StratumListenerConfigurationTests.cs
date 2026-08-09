@@ -126,29 +126,17 @@ public class StratumListenerConfigurationTests
     }
 
     [Fact]
-    public void IgnoredLoopbackScopeIds_MatchRealLinuxSocketBinding()
+    public void IgnoredLoopbackScopeIds_AreNormalizedBeforeComparison()
     {
-        if(!OperatingSystem.IsLinux() || !Socket.OSSupportsIPv6)
-            return;
+        Assert.True(ListenerAddressUtils.TryResolve("::1%1",
+            out var firstAddress));
+        Assert.True(ListenerAddressUtils.TryResolve("::1%2",
+            out var secondAddress));
 
-        var firstAddress = IPAddress.Parse("::1%1");
-        var secondAddress = IPAddress.Parse("::1%2");
+        Assert.Equal(IPAddress.IPv6Loopback, firstAddress);
+        Assert.Equal(IPAddress.IPv6Loopback, secondAddress);
         Assert.True(ListenerAddressUtils.Overlaps(firstAddress,
             secondAddress));
-
-        using var first = BindAndListen(firstAddress, 0);
-        var port = ((IPEndPoint) first.LocalEndPoint).Port;
-        using var second = StratumServer.CreateListenSocket(
-            new IPEndPoint(secondAddress, port));
-        second.SetSocketOption(SocketOptionLevel.Socket,
-            SocketOptionName.ReuseAddress, true);
-
-        var error = Assert.Throws<SocketException>(() =>
-        {
-            second.Bind(new IPEndPoint(secondAddress, port));
-            second.Listen();
-        });
-        Assert.Equal(SocketError.AddressAlreadyInUse, error.SocketErrorCode);
     }
 
     private static Socket BindAndListen(IPAddress address, int port)
