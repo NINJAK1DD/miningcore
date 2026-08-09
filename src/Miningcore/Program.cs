@@ -1062,8 +1062,10 @@ public class Program : ProcessStatusBackgroundService
         if(!recoveryMode && !config.Pools.Any(x => x.Enabled))
             throw new PoolStartupException("No pools are enabled.");
 
-        // set some defaults
-        foreach(var poolConfig in config.Pools.Where(pool => pool != null))
+        // Live-pool defaults are irrelevant during one-shot recovery and should not
+        // reintroduce service state after the recovery allowlist has removed it.
+        foreach(var poolConfig in config.Pools.Where(pool => pool != null &&
+                    !recoveryMode))
         {
             poolConfig.EnableInternalStratum ??=
                 config.ShareRelays == null || config.ShareRelays.Length == 0;
@@ -1217,7 +1219,8 @@ public class Program : ProcessStatusBackgroundService
             Console.WriteLine($"Using configuration file '{file}'");
             if(skipApiListenerSettings)
                 Console.WriteLine(
-                    "Recovery mode: API and Stratum listener configuration discarded (no sockets are opened)");
+                    "Recovery mode: API and unused live-pool configuration discarded " +
+                    "(no API, Stratum, payout, or daemon services are started)");
 
             var serializer = JsonSerializer.Create(new JsonSerializerSettings
             {
@@ -1236,14 +1239,12 @@ public class Program : ProcessStatusBackgroundService
                     {
                         // Recovery configuration policy:
                         // - api: stream-discarded because recovery opens no HTTP sockets;
-                        // - pools[].ports: replaced because recovery opens no Stratum sockets;
-                        // - live payout, wallet and daemon settings: discarded because import
-                        //   neither pays miners nor contacts coin daemons;
+                        // - pools[]: rebuilt from the recovery allowlist (id plus optional coin
+                        //   metadata) because import starts no live pool services;
                         // - coinTemplates: valid paths retained, malformed optional metadata removed.
                         // Configuration consumed by recovery remains subject to normal duplicate,
                         // schema and CLR-binding validation.
-                        RemoveStratumConfigurationForRecovery(document);
-                        RemoveUnusedLiveConfigurationForRecovery(document);
+                        SanitizeConfigurationForRecovery(document);
                         SanitizeCoinTemplatesForRecovery(document);
                     }
                     RemoveDisabledApiSettings(document);
@@ -1415,31 +1416,7 @@ public class Program : ProcessStatusBackgroundService
         return false;
     }
 
-    private static void RemoveStratumConfigurationForRecovery(
-        JObject document)
-    {
-        var pools = document.GetValue("pools",
-            StringComparison.OrdinalIgnoreCase) as JArray;
-        if(pools == null)
-            return;
-
-        foreach(var pool in pools.OfType<JObject>())
-        {
-            // Recovery opens no Stratum sockets and never consumes endpoints. Replace the
-            // subtree before schema validation and Dictionary<int, PoolEndpoint> binding so
-            // malformed or out-of-range raw port keys cannot block emergency recovery. Strict
-            // exact-duplicate and case-variant checks have already run above.
-            foreach(var property in pool.Properties().Where(property =>
-                        property.Name.Equals("ports",
-                            StringComparison.OrdinalIgnoreCase)).ToArray())
-                property.Remove();
-
-            // Pool ports are required by the schema even though recovery does not use them.
-            pool["ports"] = new JObject();
-        }
-    }
-
-    private static void RemoveUnusedLiveConfigurationForRecovery(
+    private static void SanitizeConfigurationForRecovery(
         JObject document)
     {
         foreach(var property in document.Properties().Where(property =>
@@ -1454,29 +1431,30 @@ public class Program : ProcessStatusBackgroundService
 
         foreach(var pool in pools.OfType<JObject>())
         {
-            // Import uses the pool ID for attribution. Wallet, payout and daemon settings are
-            // live-pool concerns, so remove them after ambiguity checks and before schema/CLR
-            // binding. Preserve a valid coin string for best-effort notification enrichment;
-            // use an empty sentinel when optional metadata is missing or malformed.
-            foreach(var property in pool.Properties().Where(property =>
-                        property.Name.Equals("address",
-                            StringComparison.OrdinalIgnoreCase) ||
-                        property.Name.Equals("paymentProcessing",
-                            StringComparison.OrdinalIgnoreCase) ||
-                        property.Name.Equals("daemons",
-                            StringComparison.OrdinalIgnoreCase)).ToArray())
-                property.Remove();
-
-            pool["daemons"] = new JArray();
-
+            // Import consumes only the pool ID for attribution and optional coin metadata for
+            // best-effort notification enrichment. Rebuild the object from that allowlist so
+            // malformed live-only settings cannot block emergency recovery. Duplicate and
+            // case-variant ambiguity checks have already run above.
+            var id = pool.Properties().FirstOrDefault(property =>
+                property.Name.Equals("id",
+                    StringComparison.OrdinalIgnoreCase))?.Value.DeepClone();
             var coin = pool.Properties().FirstOrDefault(property =>
                 property.Name.Equals("coin",
                     StringComparison.OrdinalIgnoreCase));
             var coinValue = coin?.Value.Type == JTokenType.String
                 ? coin.Value.Value<string>() ?? string.Empty
                 : string.Empty;
-            coin?.Remove();
+
+            pool.RemoveAll();
+
+            // Do not synthesize pool identity: missing or malformed IDs remain subject to the
+            // normal schema and recovery validator. Canonical schema fillers represent services
+            // recovery deliberately does not start.
+            if(id != null)
+                pool["id"] = id;
             pool["coin"] = coinValue;
+            pool["ports"] = new JObject();
+            pool["daemons"] = new JArray();
         }
     }
 

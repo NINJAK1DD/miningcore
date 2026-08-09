@@ -100,13 +100,14 @@ diagnostic, discards every top-level case variant of the unused API section, and
 in the in-memory recovery configuration. Damaged, duplicated or stale HTTP listener settings
 therefore cannot block an emergency share import or recovery-state command.
 
-After strict duplicate and case-variant checks, recovery replaces every pool's unused `ports`
-subtree with an empty object before schema validation and typed dictionary binding. Damaged,
-nonnumeric or out-of-range Stratum port keys cannot block recovery, while ambiguous configuration
-names remain errors. Recovery also discards unused cluster and pool payment-processing settings,
-wallet addresses and daemon endpoints, then skips the remaining Stratum port, address and TLS
-certificate checks. Pools may all be disabled during import. A non-empty pool collection with
-unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory.
+After strict duplicate and case-variant checks, recovery rebuilds every pool object from the only
+pool fields it consumes: required `id` and optional string `coin` metadata. It discards every
+live-only field, including enabled state, Stratum listeners, wallet and daemon settings, payout and
+banning policy, reward recipients, timing values and extension data. Empty `ports` and `daemons`
+placeholders satisfy the configuration schema without starting those services. Damaged or stale
+live-pool values therefore cannot block recovery, while ambiguous names and missing or malformed
+pool identity remain errors. Pools may all be disabled during import. A non-empty pool collection
+with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory.
 
 Optional template metadata is best-effort notification enrichment. Valid custom `coinTemplates`
 paths are retained, non-string array entries are removed, and a malformed non-array value is

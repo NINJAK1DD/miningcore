@@ -19,23 +19,55 @@ public class RecoveryConfigurationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RecoveryMode_DiscardsUnusedLivePoolSettings(bool omitSettings)
+    public void RecoveryMode_DiscardsMissingOrMalformedUnusedLivePoolSettings(
+        bool omitSettings)
     {
         var document = CreateRecoveryDocument();
         document.Property("paymentProcessing")?.Remove();
         var pool = Assert.IsType<JObject>(document["pools"]?[0]);
-        pool["enabled"] = false;
+        var unusedSettings = new[]
+        {
+            "address",
+            "banning",
+            "blockRefreshInterval",
+            "clientConnectionTimeout",
+            "daemons",
+            "enableAsicBoost",
+            "enabled",
+            "enableInternalStratum",
+            "jobRebroadcastTimeout",
+            "paymentProcessing",
+            "ports",
+            "pubKey",
+            "rewardRecipients",
+            "vardiffIdleSweepInterval",
+        };
+
         if(omitSettings)
         {
-            pool.Property("address")?.Remove();
-            pool.Property("daemons")?.Remove();
-            pool.Property("paymentProcessing")?.Remove();
+            foreach(var propertyName in unusedSettings)
+                pool.Property(propertyName)?.Remove();
         }
         else
         {
             pool["address"] = new JObject { ["stale"] = true };
+            pool["banning"] = "stale";
+            pool["blockRefreshInterval"] = "stale";
+            pool["clientConnectionTimeout"] = new JObject();
             pool["daemons"] = new JObject { ["malformed"] = true };
+            pool["enableAsicBoost"] = "stale";
+            pool["enabled"] = "false";
+            pool["enableInternalStratum"] = new JArray();
+            pool["jobRebroadcastTimeout"] = false;
             pool["paymentProcessing"] = "stale";
+            pool["ports"] = "stale";
+            pool["pubKey"] = new JObject();
+            pool["rewardRecipients"] = new JObject();
+            pool["vardiffIdleSweepInterval"] = "stale";
+            pool["staleExtensionSetting"] = new JObject
+            {
+                ["malformed"] = true,
+            };
         }
         pool["coin"] = "undefined-coin";
         var configFile = WriteTemporaryConfig(document);
@@ -53,7 +85,18 @@ public class RecoveryConfigurationTests
             Assert.False(recoveredPool.Enabled);
             Assert.Null(recoveredPool.Address);
             Assert.Empty(recoveredPool.Daemons);
+            Assert.Empty(recoveredPool.Ports);
             Assert.Null(recoveredPool.PaymentProcessing);
+            Assert.Null(recoveredPool.Banning);
+            Assert.Empty(recoveredPool.RewardRecipients);
+            Assert.Equal(0, recoveredPool.BlockRefreshInterval);
+            Assert.Equal(0, recoveredPool.ClientConnectionTimeout);
+            Assert.Equal(0, recoveredPool.JobRebroadcastTimeout);
+            Assert.Null(recoveredPool.EnableAsicBoost);
+            Assert.Null(recoveredPool.EnableInternalStratum);
+            Assert.Null(recoveredPool.PubKey);
+            Assert.Null(recoveredPool.VardiffIdleSweepInterval);
+            Assert.Null(recoveredPool.Extra);
             Assert.Equal("undefined-coin", recoveredPool.Coin);
 
             // Verification and acknowledgement use this non-validating recovery reader and
@@ -62,6 +105,60 @@ public class RecoveryConfigurationTests
             var acknowledgementConfig = Program.ReadConfig(configFile, true);
             Assert.Single(verificationConfig.Pools);
             Assert.Single(acknowledgementConfig.Pools);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("\"\"")]
+    public void RecoveryMode_MissingOrMalformedPoolIdentityStillBlocksImport(
+        string idJson)
+    {
+        var document = CreateRecoveryDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+
+        if(idJson == null)
+            pool.Property("id")?.Remove();
+        else
+            pool["id"] = JToken.Parse(idJson);
+
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, true));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_RejectsCaseVariantPoolIdentityBeforeSanitization()
+    {
+        var document = CreateRecoveryDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+        pool["Id"] = pool.Value<string>("id");
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+
+            Assert.Contains("Properties 'id', 'Id'", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("differ only by case", error.Message,
+                StringComparison.Ordinal);
         }
         finally
         {

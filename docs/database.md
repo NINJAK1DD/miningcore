@@ -280,10 +280,11 @@ unique, non-empty pool IDs so every journal record can be attributed, and config
 import. The configured recovery path and state directory still identify active journal ownership,
 terminal anchors and interrupted retirement markers, even when `-rs` names a reviewed copy.
 
-Live mining settings do not need to be repaired before an emergency import. Recovery discards the
-cluster and pool payment-processing settings, wallet addresses, daemon endpoints, API listeners and
-Stratum listeners before binding and validation. Normal startup restores strict validation for all
-of them, so correct the live configuration before restarting the pool.
+Live mining settings do not need to be repaired before an emergency import. After ambiguity checks,
+recovery rebuilds every pool object from its required `id` and optional string `coin` metadata. All
+other pool fields are discarded, including enabled state, wallet and daemon settings, API/Stratum
+listeners, payout and banning policy, reward recipients, timing values and extension data. Normal
+startup restores strict validation for live configuration, so correct it before restarting the pool.
 
 Coin definitions are notification enrichment, not an import prerequisite. Recovery retains valid
 custom template paths and attempts to load and assign templates to every configured pool, including
