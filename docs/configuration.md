@@ -65,6 +65,12 @@ Every configured port for an enabled internal Stratum listener must also be betw
 port `0` is rejected rather than creating an unpredictable ephemeral mining endpoint.
 For clarity, `listenAddress: "*"` means all IPv4 interfaces (`0.0.0.0`); use `"::"` when a
 dual-stack IPv6-any listener is required.
+
+Enabled Stratum endpoints may reuse the same numeric port only when they bind distinct,
+non-overlapping specific addresses. The default address is `127.0.0.1`; identical addresses,
+IPv4-mapped equivalents, and any pairing covered by an IPv4 or dual-stack wildcard are rejected
+before pools start. Startup reports every overlapping pair in one validation pass and identifies
+both conflicting pools and their effective endpoints.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
 public API, so retain the admin/metrics IP whitelists and restrict the ports with the host or network
 firewall. Reverse proxies should publish only `api.port`; a local Prometheus service normally

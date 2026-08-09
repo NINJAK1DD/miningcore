@@ -726,34 +726,12 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static bool TryResolveListenAddress(string listenAddress,
-        out IPAddress address)
-    {
-        if(string.IsNullOrEmpty(listenAddress))
-        {
-            address = IPAddress.Loopback;
-            return true;
-        }
-
-        if(listenAddress == "*")
-        {
-            address = IPAddress.Any;
-            return true;
-        }
-
-        if(!IPAddress.TryParse(listenAddress, out address))
-            return false;
-
-        address = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
-        return true;
-    }
+        out IPAddress address) =>
+        ListenerAddressUtils.TryResolve(listenAddress, out address);
 
     internal static string FormatListenerHost(IPAddress address)
     {
-        ArgumentNullException.ThrowIfNull(address);
-
-        return address.AddressFamily == AddressFamily.InterNetworkV6
-            ? $"[{address}]"
-            : address.ToString();
+        return ListenerAddressUtils.FormatHost(address);
     }
 
     internal static string[] GetSharedProtectedRouteWarnings(ApiConfig api)
@@ -893,34 +871,8 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static bool ListenAddressesOverlap(IPAddress first,
-        IPAddress second)
-    {
-        ArgumentNullException.ThrowIfNull(first);
-        ArgumentNullException.ThrowIfNull(second);
-
-        first = NormalizeMappedAddress(first);
-        second = NormalizeMappedAddress(second);
-
-        if(first.Equals(second))
-            return true;
-
-        // Kestrel and Miningcore's Stratum listener both use a dual-mode socket for
-        // IPv6Any. It therefore occupies IPv4 as well as IPv6 socket space.
-        if(first.Equals(IPAddress.IPv6Any) ||
-            second.Equals(IPAddress.IPv6Any))
-            return true;
-
-        if(first.Equals(IPAddress.Any))
-            return second.AddressFamily == AddressFamily.InterNetwork;
-
-        if(second.Equals(IPAddress.Any))
-            return first.AddressFamily == AddressFamily.InterNetwork;
-
-        return false;
-    }
-
-    private static IPAddress NormalizeMappedAddress(IPAddress address) =>
-        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+        IPAddress second) =>
+        ListenerAddressUtils.Overlaps(first, second);
 
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)

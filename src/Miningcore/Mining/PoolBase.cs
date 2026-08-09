@@ -358,12 +358,11 @@ public abstract class PoolBase : StratumServer,
 
     private StratumEndpoint PoolEndpoint2IPEndpoint(int port, PoolEndpoint pep)
     {
-        var listenAddress = IPAddress.Parse("127.0.0.1");
-        if(!string.IsNullOrEmpty(pep.ListenAddress))
-            listenAddress = pep.ListenAddress != "*" ? IPAddress.Parse(pep.ListenAddress) : IPAddress.Any;
-
-        if(listenAddress.IsIPv4MappedToIPv6)
-            listenAddress = listenAddress.MapToIPv4();
+        if(!ListenerAddressUtils.TryResolve(pep.ListenAddress,
+            out var listenAddress))
+            throw new PoolStartupException(
+                $"Invalid Stratum listen address '{pep.ListenAddress}'",
+                poolConfig.Id);
 
         return new StratumEndpoint(new IPEndPoint(listenAddress, port), pep);
     }

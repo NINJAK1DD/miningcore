@@ -218,6 +218,7 @@
       // Example: [ { "address": "LTC_FEE_ADDRESS", "percentage": 1.0 } ]
       "rewardRecipients": [],
       // One pool may expose several ports with different initial/variable difficulties.
+      // Different pools may reuse a port only on distinct, non-overlapping specific addresses.
       "ports": {
         // JSON property name is the TCP port miners connect to.
         "3032": {
