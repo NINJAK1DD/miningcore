@@ -74,7 +74,9 @@ internal static class ListenerAddressUtils
         // including loopback and global unicast. IPAddress.Equals does not, so
         // discard the ignored value before validating whether listeners overlap.
         // Preserve interface zones for link-local and multicast addresses where
-        // the kernel uses them to select a distinct scope.
+        // the kernel uses them to select a distinct scope. Deprecated site-local
+        // addresses are treated as ordinary unicast because RFC 3879 removed
+        // portable zone semantics for fec0::/10.
         if(address.AddressFamily == AddressFamily.InterNetworkV6 &&
             address.ScopeId != 0 &&
             !address.IsIPv6LinkLocal &&

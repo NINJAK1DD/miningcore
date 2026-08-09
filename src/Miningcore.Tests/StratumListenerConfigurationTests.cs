@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using Miningcore.Configuration;
@@ -7,6 +8,15 @@ using Miningcore.Stratum;
 using Xunit;
 
 namespace Miningcore.Tests;
+
+internal sealed class LinuxFactAttribute : FactAttribute
+{
+    public LinuxFactAttribute()
+    {
+        if(!OperatingSystem.IsLinux())
+            Skip = "Requires Linux TCP socket binding semantics";
+    }
+}
 
 public class StratumListenerConfigurationTests
 {
@@ -18,7 +28,11 @@ public class StratumListenerConfigurationTests
     [InlineData("*", 3032, "127.0.0.2", 3032, true)]
     [InlineData(null, 3032, "127.0.0.1", 3032, true)]
     [InlineData("0.0.0.0", 3032, "::ffff:127.0.0.1", 3032, true)]
+    [InlineData("::ffff:0.0.0.0", 3032, "127.0.0.2", 3032, true)]
+    [InlineData("::ffff:0.0.0.0", 3032, "::1", 3032, false)]
     [InlineData("0.0.0.0", 3032, "::1", 3032, false)]
+    [InlineData("*", 3032, "::", 3032, true)]
+    [InlineData("0.0.0.0", 3032, "::", 3032, true)]
     [InlineData("::", 3032, "127.0.0.2", 3032, true)]
     [InlineData("::", 3032, "2001:db8::2", 3032, true)]
     [InlineData("127.0.0.1", 3032, "::ffff:127.0.0.1", 3032, true)]
@@ -37,10 +51,10 @@ public class StratumListenerConfigurationTests
             CreatePool("pool-b", secondPort, secondAddress),
         };
 
-        var conflict = ClusterConfigValidator
-            .FindStratumListenerConflict(pools);
+        var conflicts = ClusterConfigValidator
+            .FindStratumListenerConflicts(pools);
 
-        Assert.Equal(expectedConflict, conflict != null);
+        Assert.Equal(expectedConflict, conflicts.Count != 0);
     }
 
     [Fact]
@@ -50,7 +64,10 @@ public class StratumListenerConfigurationTests
         {
             ("0.0.0.0", "127.0.0.2"),
             ("0.0.0.0", "::ffff:127.0.0.1"),
+            ("::ffff:0.0.0.0", "127.0.0.2"),
             ("0.0.0.0", "::1"),
+            ("*", "::"),
+            ("0.0.0.0", "::"),
             ("::", "127.0.0.2"),
             ("::", "2001:db8::2"),
             ("127.0.0.1", "::ffff:127.0.0.1"),
@@ -95,6 +112,31 @@ public class StratumListenerConfigurationTests
     }
 
     [Fact]
+    public void AllConflictingListeners_AreReportedTogether()
+    {
+        var config = CreateCluster(
+            CreatePool("pool-a", 3032, "*"),
+            CreatePool("pool-b", 3032, "0.0.0.0"),
+            CreatePool("pool-c", 3032, "127.0.0.1"));
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var errors = result.Errors.Where(failure =>
+            failure.ErrorMessage.StartsWith("Stratum listener conflict:"))
+            .ToArray();
+        Assert.Equal(3, errors.Length);
+        Assert.Contains(errors, failure =>
+            failure.ErrorMessage.Contains("pool 'pool-a'") &&
+            failure.ErrorMessage.Contains("pool 'pool-b'"));
+        Assert.Contains(errors, failure =>
+            failure.ErrorMessage.Contains("pool 'pool-a'") &&
+            failure.ErrorMessage.Contains("pool 'pool-c'"));
+        Assert.Contains(errors, failure =>
+            failure.ErrorMessage.Contains("pool 'pool-b'") &&
+            failure.ErrorMessage.Contains("pool 'pool-c'"));
+    }
+
+    [Fact]
     public void DistinctSpecificAddresses_MayReusePort()
     {
         var config = CreateCluster(
@@ -120,12 +162,9 @@ public class StratumListenerConfigurationTests
             failure.ErrorMessage.StartsWith("Stratum listener conflict:"));
     }
 
-    [Fact]
+    [LinuxFact]
     public void DistinctSpecificAddresses_MatchRealLinuxSocketBinding()
     {
-        if(!OperatingSystem.IsLinux())
-            return;
-
         var firstAddress = IPAddress.Parse("127.0.0.1");
         var secondAddress = IPAddress.Parse("127.0.0.2");
         Assert.False(ListenerAddressUtils.Overlaps(firstAddress,

@@ -270,7 +270,8 @@ that uses the same port and an overlapping bind address as an enabled local Stra
 stops startup with the conflicting port identified; different specific bind addresses may reuse a
 port. Enabled Stratum endpoints follow the same address-aware rule: two pools may share a numeric
 port on distinct specific IPv4 or IPv6 addresses, while identical addresses, wildcards and
-IPv4-mapped equivalents fail startup with both pool and endpoint identities. See
+IPv4-mapped equivalents fail startup with both pool and endpoint identities. All overlapping pairs
+are reported together so operators can correct the complete configuration before restart. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or

@@ -106,8 +106,8 @@ public class ApiConfigValidator : AbstractValidator<ApiConfig>
     public ApiConfigValidator()
     {
         RuleFor(j => j.ListenAddress)
-            .Must(address => address == null || address == "*" ||
-                IPAddress.TryParse(address, out _))
+            .Must(address => ListenerAddressUtils.TryResolve(address,
+                out _))
             .WithMessage(
                 "API: listenAddress must be '*' or a valid IPv4/IPv6 address");
 
@@ -233,8 +233,7 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 foreach(var (port, endpoint) in ports)
                 {
                     var address = endpoint?.ListenAddress;
-                    if(address == null || address == "*" ||
-                        IPAddress.TryParse(address, out _))
+                    if(ListenerAddressUtils.TryResolve(address, out _))
                         continue;
 
                     context.AddFailure($"Ports[{port}].ListenAddress",
@@ -320,12 +319,11 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.Pools)
             .Custom((pools, context) =>
             {
-                var conflict = FindStratumListenerConflict(pools);
-                if(conflict == null)
-                    return;
-
-                context.AddFailure(nameof(ClusterConfig.Pools),
-                    $"Stratum listener conflict: pool '{conflict.First.PoolId}' endpoint {conflict.First.Endpoint} overlaps pool '{conflict.Second.PoolId}' endpoint {conflict.Second.Endpoint}");
+                foreach(var conflict in FindStratumListenerConflicts(pools))
+                {
+                    context.AddFailure(nameof(ClusterConfig.Pools),
+                        $"Stratum listener conflict: pool '{conflict.First.PoolId}' endpoint {conflict.First.Endpoint} overlaps pool '{conflict.Second.PoolId}' endpoint {conflict.Second.Endpoint}");
+                }
             })
             .When(_ => !recoveryMode);
 
@@ -333,7 +331,8 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .SetValidator(new PoolConfigValidator(recoveryMode));
     }
 
-    internal static StratumListenerConflict FindStratumListenerConflict(
+    internal static IReadOnlyList<StratumListenerConflict>
+        FindStratumListenerConflicts(
         IEnumerable<PoolConfig> pools)
     {
         var bindings = (pools ?? Enumerable.Empty<PoolConfig>())
@@ -355,6 +354,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             // conflict scan must never replace that diagnostic with an exception.
             .Where(binding => binding != null)
             .ToArray();
+        var conflicts = new List<StratumListenerConflict>();
 
         foreach(var group in bindings.GroupBy(binding => binding.Port))
         {
@@ -369,14 +369,14 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
                         candidates[first].Address,
                         candidates[second].Address))
                     {
-                        return new StratumListenerConflict(
-                            candidates[first], candidates[second]);
+                        conflicts.Add(new StratumListenerConflict(
+                            candidates[first], candidates[second]));
                     }
                 }
             }
         }
 
-        return null;
+        return conflicts;
     }
 }
 

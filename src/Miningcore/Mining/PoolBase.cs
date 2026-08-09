@@ -360,8 +360,9 @@ public abstract class PoolBase : StratumServer,
     {
         if(!ListenerAddressUtils.TryResolve(pep.ListenAddress,
             out var listenAddress))
-            throw new FormatException(
-                $"Invalid Stratum listen address '{pep.ListenAddress}'");
+            throw new PoolStartupException(
+                $"Invalid Stratum listen address '{pep.ListenAddress}'",
+                poolConfig.Id);
 
         return new StratumEndpoint(new IPEndPoint(listenAddress, port), pep);
     }
