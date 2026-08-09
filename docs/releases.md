@@ -504,6 +504,16 @@ balance deduction; any residual remains on the balance for a later payout. Revie
 [configuration guidance](configuration.md#bitcoin-family-payout-precision), particularly when a
 template relies on the four-decimal fallback.
 
+Before enabling Bitcoin-family payments, confirm whether the pool or miners pay transaction fees.
+Pool-paid fees require a confirmed spendable reserve because a matured coinbase may cover the
+recipient outputs but not the additional fee, causing `sendmany` to return `Insufficient funds`
+code `-6`. Normal `sendmany` requests can deduct fees from recipients when `minersPayTxFees` is
+enabled, but per-recipient fallback submissions can still require additional spendable input. Follow the
+[wallet-readiness and backup runbook](operations.md#bitcoin-family-payout-wallets); do not repair
+balances or issue a replacement payment manually. A complete Dogecoin mainnet cycle on RC.8,
+including this conclusive failure and scheduled recovery after funding, is recorded in the
+[mainnet validation record](mainnet-validation.md#rc8-dogecoin-merged-mining-payout).
+
 The public WebSocket `payment` event is also revised. It adds `outcome`, `submittedAmount`,
 `precisionAdjustment` and safe accepted/failed/uncertain/not-attempted aggregate counts and amounts.
 It no longer exposes `error` or recipient-level reconciliation because those fields can reveal wallet

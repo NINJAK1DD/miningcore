@@ -36,6 +36,14 @@ jobs:
       shell: bash
       run: bash scripts/release/test-admin-api-docs.sh
 
+    - name: Validate wallet-backup documentation
+      shell: bash
+      run: bash scripts/release/test-wallet-backup-docs.sh
+
+    - name: Validate documentation links
+      shell: bash
+      run: python3 scripts/release/test-doc-links.py
+
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
       # libzmq5 package provides libzmq.so.5, while libzmq3-dev also provides the

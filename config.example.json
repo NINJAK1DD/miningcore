@@ -288,6 +288,10 @@
       // Parent-chain block reconciliation and miner payouts.
       "paymentProcessing": {
         // Must be true for this merged-mining SOLO parent pool.
+        // When this pool pays transaction fees, fund this exact wallet with a confirmed
+        // reserve; minersPayTxFees covers normal sendmany fees but per-recipient fallback
+        // submissions can still require additional spendable input.
+        // See docs/operations.md#fee-reserve-and-balance-readiness.
         "enabled": true,
         // Smallest LTC balance paid automatically, denominated in whole LTC.
         "minimumPayment": 0.01,
@@ -363,6 +367,10 @@
       // Auxiliary block reconciliation and DOGE SOLO payouts.
       "paymentProcessing": {
         // Must remain enabled so AuxPoW blocks mature, credit and pay normally.
+        // When this pool pays transaction fees, fund this exact wallet with a confirmed
+        // reserve; minersPayTxFees covers normal sendmany fees but per-recipient fallback
+        // submissions can still require additional spendable input.
+        // See docs/operations.md#fee-reserve-and-balance-readiness.
         "enabled": true,
         // Smallest automatic payout, denominated in whole DOGE.
         "minimumPayment": 1.0,

@@ -1559,6 +1559,7 @@ public class BitcoinPayoutHandlerTests : TestBase
             new Balance { PoolId = fixture.Config.Id, Address = "DTest", Amount = 1 },
         }, CancellationToken.None);
 
+        Assert.Equal(1, Assert.IsType<int>(fixture.Handler.LastSendManyArgs[2]));
         var subtractFeesFrom = Assert.IsType<string[]>(fixture.Handler.LastSendManyArgs[4]);
         Assert.Equal(new[] { "DTest" }, subtractFeesFrom);
         var rendered = NotificationService.FormatPaymentNotification(notification,
