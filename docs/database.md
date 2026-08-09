@@ -655,11 +655,37 @@ WHERE poolid = 'REPLACE_WITH_POOL_ID'
 ORDER BY id;
 ```
 
-A `payment_batches` row and its `payments` rows are committed together. A batch with no matching
-payment rows is an accounting anomaly: stop and investigate instead of releasing ownership. No
-matching batch does **not** prove that the wallet submitted nothing. When a transport failure loses
-the wallet response, Miningcore may never receive the transaction ID and therefore cannot persist
-it; use the unknown-ID procedure below.
+A `payment_batches` row, any public `payments` rows and the corresponding balance resets are committed
+together. Miningcore deliberately omits configured `rewardRecipients` from public payment history,
+so a batch with no matching `payments` rows can be valid when every balance represented by that
+transaction belonged to a configured reward recipient. This is especially plausible for a
+per-recipient payout path in which one wallet transaction pays only one reward recipient.
+
+Treat a zero-public-payment batch as requiring reconciliation, not as corruption by itself. Inspect
+the production `rewardRecipients` configuration that was active at payout time, the transaction's
+wallet outputs, the bounded Miningcore log and nearby `balance_changes` rows whose usage is
+`Balance reset after payment`. Current configuration alone is insufficient if reward recipients
+changed after the payout, and timestamp proximity is supporting evidence rather than a transaction-ID
+link. If any represented wallet recipient was not a configured reward recipient, or the evidence is
+incomplete, stop and investigate before releasing ownership.
+
+```sql
+SELECT poolid,
+       address,
+       amount,
+       usage,
+       created
+FROM REPLACE_WITH_SCHEMA.balance_changes
+WHERE poolid = 'REPLACE_WITH_POOL_ID'
+  AND usage = 'Balance reset after payment'
+  AND created >= TIMESTAMPTZ 'REPLACE_WITH_BATCH_TIME_MINUS_MARGIN'
+  AND created <= TIMESTAMPTZ 'REPLACE_WITH_BATCH_TIME_PLUS_MARGIN'
+ORDER BY created, id;
+```
+
+No matching batch does **not** prove that the wallet submitted nothing. When a transport failure
+loses the wallet response, Miningcore may never receive the transaction ID and therefore cannot
+persist it; use the unknown-ID procedure below.
 
 For a known transaction ID, query the node mempool and the exact wallet that Miningcore uses. These
 commands are read-only. Supply the same RPC authentication, network and wallet-selection arguments

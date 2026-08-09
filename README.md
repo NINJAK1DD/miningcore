@@ -15,7 +15,7 @@ the original authors and contributors.
 > **Production status:** the software targets the supported .NET 10 LTS runtime, but production
 > deployment still requires the operational controls below. Read
 > [Production operation](#production-operation) and the
-> live [merged-mining validation record](docs/merged-mining-regtest-validation.md) before using real
+> live [mainnet validation record](docs/mainnet-validation.md) before using real
 > funds.
 
 ## Features
@@ -512,7 +512,9 @@ Before advertising a public pool:
 - Run Miningcore on a maintained Linux release with a serviced .NET 10 runtime.
 - Isolate daemon, wallet, PostgreSQL, admin API and relay ports with host/network firewalls.
 - Put the public API and website behind an HTTPS reverse proxy; do not expose the admin API port.
-- Keep hot-wallet balances limited and test encrypted wallet, database and configuration backups.
+- Keep hot-wallet balances limited. When the pool pays Bitcoin-family transaction fees, maintain a
+  confirmed fee reserve; account for `minersPayTxFees` and per-recipient fallback behavior. Test
+  daemon-generated wallet backups, database backups and configuration recovery.
 - Use systemd or an equivalent supervisor with restart policy, resource limits and sufficient clean
   shutdown time. Keep its forced-stop timeout above Miningcore's 45-second internal budget.
 - Monitor daemon sync, pool hashrate, rejected shares, uncertain blocks, reconciliation, disk space,

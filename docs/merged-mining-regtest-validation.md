@@ -91,20 +91,7 @@ were made against the same PostgreSQL instance used by the running payout manage
   balance mutation; committed wallet transaction IDs are
   idempotent payment-batch keys so database retry cannot reset balances twice.
 
-## Remaining mainnet gates
-
-Do not enable mainnet funds solely because the passed rows above are green.
-
-1. **Physical relay route — passed for the current lab.** Real traffic, interruption and reconnect
-   passed between two physical hosts on a routed LAN, including sender-side firewall fault
-   injection, PostgreSQL persistence and exact merged-block attribution. If the production hosts,
-   firewall or route differ, repeat `bash scripts/regtest/validate-physical-relay.sh` on that final
-   path. Ordinary ZeroMQ shares remain intentionally unacknowledged and are not replayed after an
-   outage; this is an accepted deployment characteristic, not durable-queue validation.
-2. **Payout-manager ownership — tests passed; operating rule remains.** The fail-closed backend
-   termination, controlled recovery, block-credit serialization and payment-batch idempotency tests
-   passed against PostgreSQL 17. Automatic/hot-standby failover remains intentionally unsupported.
-   After every unclean stop, confirm the old process has fully terminated and reconcile wallet history
-   before explicitly clearing its durable ownership row. A TCP forwarding layer may keep the dead
-   process's PostgreSQL backend alive temporarily; if its verified backend still holds the advisory
-   lock, terminate that backend as part of the same controlled recovery.
+Historical production evidence and the remaining production-validation status are maintained in the
+separate [mainnet validation record](mainnet-validation.md). Keeping that evidence outside this
+regtest procedure prevents version-pinned production observations from obscuring the reproducible
+lab test plan.
