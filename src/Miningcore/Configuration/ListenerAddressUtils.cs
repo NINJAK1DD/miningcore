@@ -8,7 +8,7 @@ internal static class ListenerAddressUtils
     internal static bool TryResolve(string listenAddress,
         out IPAddress address)
     {
-        if(string.IsNullOrEmpty(listenAddress))
+        if(listenAddress == null)
         {
             address = IPAddress.Loopback;
             return true;

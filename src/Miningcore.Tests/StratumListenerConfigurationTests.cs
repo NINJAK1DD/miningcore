@@ -17,6 +17,7 @@ public class StratumListenerConfigurationTests
     [InlineData("::1", 3032, "::1", 3032, true)]
     [InlineData("*", 3032, "127.0.0.2", 3032, true)]
     [InlineData(null, 3032, "127.0.0.1", 3032, true)]
+    [InlineData("0.0.0.0", 3032, "::ffff:127.0.0.1", 3032, true)]
     [InlineData("0.0.0.0", 3032, "::1", 3032, false)]
     [InlineData("::", 3032, "127.0.0.2", 3032, true)]
     [InlineData("::", 3032, "2001:db8::2", 3032, true)]
@@ -48,6 +49,7 @@ public class StratumListenerConfigurationTests
         var pairs = new[]
         {
             ("0.0.0.0", "127.0.0.2"),
+            ("0.0.0.0", "::ffff:127.0.0.1"),
             ("0.0.0.0", "::1"),
             ("::", "127.0.0.2"),
             ("::", "2001:db8::2"),
@@ -63,6 +65,17 @@ public class StratumListenerConfigurationTests
             Assert.Equal(ListenerAddressUtils.Overlaps(first, second),
                 ListenerAddressUtils.Overlaps(second, first));
         }
+    }
+
+    [Fact]
+    public void Resolver_DefaultsOnlyOmittedAddressToLoopback()
+    {
+        Assert.True(ListenerAddressUtils.TryResolve(null,
+            out var omittedAddress));
+        Assert.Equal(IPAddress.Loopback, omittedAddress);
+
+        Assert.False(ListenerAddressUtils.TryResolve(string.Empty,
+            out _));
     }
 
     [Fact]
