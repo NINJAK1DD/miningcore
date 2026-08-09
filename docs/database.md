@@ -274,6 +274,23 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
+The one-shot importer validates only configuration it consumes. Keep a non-empty `pools` array with
+unique, non-empty pool IDs so every journal record can be attributed, and configure a complete
+`persistence.postgres` endpoint for the target database. Pools may all remain disabled during the
+import. The configured recovery path and state directory still identify active journal ownership,
+terminal anchors and interrupted retirement markers, even when `-rs` names a reviewed copy.
+
+Live mining settings do not need to be repaired before an emergency import. Recovery discards the
+cluster and pool payment-processing settings, wallet addresses, daemon endpoints, API listeners and
+Stratum listeners before binding and validation. Normal startup restores strict validation for all
+of them, so correct the live configuration before restarting the pool.
+
+Coin definitions are notification enrichment, not an import prerequisite. Recovery retains valid
+custom template paths and attempts to load and assign templates to every configured pool, including
+disabled pools. A missing or malformed path, missing coin metadata, or undefined coin logs a warning
+and import continues; a recovered block-found notification may be skipped when no template could be
+assigned. Database persistence and journal integrity failures remain fatal.
+
 #### What the importer verifies
 
 Before opening its PostgreSQL transaction, the importer validates:

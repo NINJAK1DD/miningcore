@@ -287,6 +287,13 @@ Recovery also sanitizes optional `coinTemplates` metadata before schema validati
 template paths are retained, while non-string entries or a malformed non-array value cannot block
 share import, verification or acknowledgement. Normal startup continues to reject those values.
 
+Share import now validates the configuration boundary it actually consumes. `-rs` accepts an
+all-disabled pool set and discards unused cluster/pool payment settings, wallet addresses and daemon
+endpoints before schema binding. Pool IDs and complete PostgreSQL persistence remain mandatory.
+Best-effort template loading now includes disabled pools so recovered block notifications retain coin
+metadata when available; missing paths, missing metadata or undefined coins warn and continue.
+Normal startup remains unchanged and strict.
+
 The regenerated configuration schema also corrects previously omitted boolean fields
 (`banning.banOnLoginFailure`, `logging.gpdrCompliant`, `pools[].enableAsicBoost` and
 `persistence.postgres.enableLegacyTimestamps`) and requires non-null strings in `coinTemplates` and

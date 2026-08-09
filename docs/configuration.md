@@ -103,10 +103,17 @@ therefore cannot block an emergency share import or recovery-state command.
 After strict duplicate and case-variant checks, recovery replaces every pool's unused `ports`
 subtree with an empty object before schema validation and typed dictionary binding. Damaged,
 nonnumeric or out-of-range Stratum port keys cannot block recovery, while ambiguous configuration
-names remain errors. Recovery also skips the remaining Stratum port, address and TLS certificate
-checks. Optional `coinTemplates` metadata is also sanitized before schema validation: valid custom
-template paths are retained, non-string array entries are removed, and a malformed non-array value
-is discarded. Normal startup remains strict and rejects those malformed values.
+names remain errors. Recovery also discards unused cluster and pool payment-processing settings,
+wallet addresses and daemon endpoints, then skips the remaining Stratum port, address and TLS
+certificate checks. Pools may all be disabled during import. A non-empty pool collection with
+unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory.
+
+Optional template metadata is best-effort notification enrichment. Valid custom `coinTemplates`
+paths are retained, non-string array entries are removed, and a malformed non-array value is
+discarded. Miningcore attempts to assign loaded templates to every configured pool, including
+disabled pools. Missing template files, missing pool coin metadata and undefined coins warn without
+blocking the import; recovered block notifications may be skipped when no template is available.
+Normal startup remains strict and rejects stale live-pool or template configuration.
 
 ### Containers and reverse proxies
 

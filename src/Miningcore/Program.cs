@@ -492,7 +492,7 @@ public class Program : ProcessStatusBackgroundService
                         // notification after the transaction succeeds. Coin metadata improves
                         // those notifications, but it must never prevent the journal import.
                         var recoveryCoinTemplates = LoadCoinTemplates();
-                        AssignPoolTemplates(clusterConfig.Pools.Where(config => config.Enabled),
+                        AssignRecoveryPoolTemplates(clusterConfig,
                             recoveryCoinTemplates);
                     },
                     () => RecoverSharesAsync(shareRecoveryOption.Value()),
@@ -959,6 +959,33 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    internal static void AssignRecoveryPoolTemplates(ClusterConfig config,
+        IReadOnlyDictionary<string, CoinTemplate> coinTemplates)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(coinTemplates);
+
+        // Enabled state controls live mining, not journal attribution. Recovery may use an
+        // all-disabled safety configuration, so enrich every configured pool when its template
+        // remains available.
+        var missing = new List<string>();
+        foreach(var pool in config.Pools)
+        {
+            if(!string.IsNullOrEmpty(pool.Coin) &&
+               coinTemplates.TryGetValue(pool.Coin, out var template))
+            {
+                pool.Template = template;
+                continue;
+            }
+
+            missing.Add($"{pool.Id} ({pool.Coin ?? "<missing>"})");
+        }
+
+        if(missing.Count > 0)
+            throw new PoolStartupException(
+                $"Recovery coin templates are unavailable for pool(s): {string.Join(", ", missing)}");
+    }
+
     private async Task RunPool(PoolConfig poolConfig, CancellationToken ct)
     {
         // resolve implementation
@@ -1032,11 +1059,11 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        if(!config.Pools.Any(x => x.Enabled))
+        if(!recoveryMode && !config.Pools.Any(x => x.Enabled))
             throw new PoolStartupException("No pools are enabled.");
 
         // set some defaults
-        foreach(var poolConfig in config.Pools)
+        foreach(var poolConfig in config.Pools.Where(pool => pool != null))
         {
             poolConfig.EnableInternalStratum ??=
                 config.ShareRelays == null || config.ShareRelays.Length == 0;
@@ -1045,7 +1072,8 @@ public class Program : ProcessStatusBackgroundService
         try
         {
             config.Validate(recoveryMode);
-            ValidateMergedMiningDeployment(config);
+            if(!recoveryMode)
+                ValidateMergedMiningDeployment(config);
 
             var listenerConflict = FindApiListenerStratumPortConflict(
                 config, recoveryMode);
@@ -1053,7 +1081,8 @@ public class Program : ProcessStatusBackgroundService
                 throw new PoolStartupException(
                     $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
 
-            if(config.Notifications?.Admin?.Enabled == true)
+            if(!recoveryMode &&
+               config.Notifications?.Admin?.Enabled == true)
             {
                 if(string.IsNullOrEmpty(config.Notifications?.Email?.FromName))
                     throw new PoolStartupException($"Notifications are enabled but email sender name is not configured (notifications.email.fromName)");
@@ -1065,7 +1094,7 @@ public class Program : ProcessStatusBackgroundService
                     throw new PoolStartupException($"Admin notifications are enabled but recipient address is not configured (notifications.admin.emailAddress)");
             }
 
-            if(string.IsNullOrEmpty(config.Logging.LogFile))
+            if(string.IsNullOrEmpty(config.Logging?.LogFile))
             {
                 // emit a newline before regular logging output starts
                 Console.WriteLine();
@@ -1208,10 +1237,13 @@ public class Program : ProcessStatusBackgroundService
                         // Recovery configuration policy:
                         // - api: stream-discarded because recovery opens no HTTP sockets;
                         // - pools[].ports: replaced because recovery opens no Stratum sockets;
+                        // - live payout, wallet and daemon settings: discarded because import
+                        //   neither pays miners nor contacts coin daemons;
                         // - coinTemplates: valid paths retained, malformed optional metadata removed.
                         // Configuration consumed by recovery remains subject to normal duplicate,
                         // schema and CLR-binding validation.
                         RemoveStratumConfigurationForRecovery(document);
+                        RemoveUnusedLiveConfigurationForRecovery(document);
                         SanitizeCoinTemplatesForRecovery(document);
                     }
                     RemoveDisabledApiSettings(document);
@@ -1404,6 +1436,47 @@ public class Program : ProcessStatusBackgroundService
 
             // Pool ports are required by the schema even though recovery does not use them.
             pool["ports"] = new JObject();
+        }
+    }
+
+    private static void RemoveUnusedLiveConfigurationForRecovery(
+        JObject document)
+    {
+        foreach(var property in document.Properties().Where(property =>
+                    property.Name.Equals("paymentProcessing",
+                        StringComparison.OrdinalIgnoreCase)).ToArray())
+            property.Remove();
+
+        var pools = document.GetValue("pools",
+            StringComparison.OrdinalIgnoreCase) as JArray;
+        if(pools == null)
+            return;
+
+        foreach(var pool in pools.OfType<JObject>())
+        {
+            // Import uses the pool ID for attribution. Wallet, payout and daemon settings are
+            // live-pool concerns, so remove them after ambiguity checks and before schema/CLR
+            // binding. Preserve a valid coin string for best-effort notification enrichment;
+            // use an empty sentinel when optional metadata is missing or malformed.
+            foreach(var property in pool.Properties().Where(property =>
+                        property.Name.Equals("address",
+                            StringComparison.OrdinalIgnoreCase) ||
+                        property.Name.Equals("paymentProcessing",
+                            StringComparison.OrdinalIgnoreCase) ||
+                        property.Name.Equals("daemons",
+                            StringComparison.OrdinalIgnoreCase)).ToArray())
+                property.Remove();
+
+            pool["daemons"] = new JArray();
+
+            var coin = pool.Properties().FirstOrDefault(property =>
+                property.Name.Equals("coin",
+                    StringComparison.OrdinalIgnoreCase));
+            var coinValue = coin?.Value.Type == JTokenType.String
+                ? coin.Value.Value<string>() ?? string.Empty
+                : string.Empty;
+            coin?.Remove();
+            pool["coin"] = coinValue;
         }
     }
 

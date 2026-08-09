@@ -1855,6 +1855,16 @@ public class ApiListenerConfigurationTests
             Api = api,
             Logging = new ClusterLoggingConfig(),
             PaymentProcessing = new ClusterPaymentProcessingConfig(),
+            Persistence = new PersistenceConfig
+            {
+                Postgres = new PostgresConfig
+                {
+                    Host = "127.0.0.1",
+                    Port = 5432,
+                    Database = "miningcore",
+                    User = "miningcore",
+                },
+            },
             Pools = new[]
             {
                 new PoolConfig
