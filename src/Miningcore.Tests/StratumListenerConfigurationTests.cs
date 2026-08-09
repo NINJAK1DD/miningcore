@@ -21,6 +21,10 @@ public class StratumListenerConfigurationTests
     [InlineData("::", 3032, "127.0.0.2", 3032, true)]
     [InlineData("::", 3032, "2001:db8::2", 3032, true)]
     [InlineData("127.0.0.1", 3032, "::ffff:127.0.0.1", 3032, true)]
+    [InlineData("::1%1", 3032, "::1%2", 3032, true)]
+    [InlineData("2001:db8::1%1", 3032, "2001:db8::1%2", 3032, true)]
+    [InlineData("fe80::1%1", 3032, "fe80::1%2", 3032, false)]
+    [InlineData("fe80::1%1", 3032, "fe80::1%1", 3032, true)]
     [InlineData("127.0.0.1", 3032, "127.0.0.1", 3033, false)]
     public void ConflictDetection_UsesEffectiveAddressAndPort(
         string firstAddress, int firstPort, string secondAddress,
@@ -119,6 +123,32 @@ public class StratumListenerConfigurationTests
         using var second = BindAndListen(secondAddress, port);
 
         Assert.Equal(port, ((IPEndPoint) second.LocalEndPoint).Port);
+    }
+
+    [Fact]
+    public void IgnoredLoopbackScopeIds_MatchRealLinuxSocketBinding()
+    {
+        if(!OperatingSystem.IsLinux() || !Socket.OSSupportsIPv6)
+            return;
+
+        var firstAddress = IPAddress.Parse("::1%1");
+        var secondAddress = IPAddress.Parse("::1%2");
+        Assert.True(ListenerAddressUtils.Overlaps(firstAddress,
+            secondAddress));
+
+        using var first = BindAndListen(firstAddress, 0);
+        var port = ((IPEndPoint) first.LocalEndPoint).Port;
+        using var second = StratumServer.CreateListenSocket(
+            new IPEndPoint(secondAddress, port));
+        second.SetSocketOption(SocketOptionLevel.Socket,
+            SocketOptionName.ReuseAddress, true);
+
+        var error = Assert.Throws<SocketException>(() =>
+        {
+            second.Bind(new IPEndPoint(secondAddress, port));
+            second.Listen();
+        });
+        Assert.Equal(SocketError.AddressAlreadyInUse, error.SocketErrorCode);
     }
 
     private static Socket BindAndListen(IPAddress address, int port)

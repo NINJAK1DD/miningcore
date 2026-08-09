@@ -23,7 +23,7 @@ internal static class ListenerAddressUtils
         if(!IPAddress.TryParse(listenAddress, out address))
             return false;
 
-        address = NormalizeMappedAddress(address);
+        address = NormalizeListenerAddress(address);
         return true;
     }
 
@@ -32,8 +32,8 @@ internal static class ListenerAddressUtils
         ArgumentNullException.ThrowIfNull(first);
         ArgumentNullException.ThrowIfNull(second);
 
-        first = NormalizeMappedAddress(first);
-        second = NormalizeMappedAddress(second);
+        first = NormalizeListenerAddress(first);
+        second = NormalizeListenerAddress(second);
 
         // Some kernels permit identical TCP listeners when SO_REUSEADDR is set,
         // but connection ownership is then ambiguous. Never allow two pools to
@@ -65,6 +65,24 @@ internal static class ListenerAddressUtils
             : address.ToString();
     }
 
-    private static IPAddress NormalizeMappedAddress(IPAddress address) =>
-        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+    private static IPAddress NormalizeListenerAddress(IPAddress address)
+    {
+        if(address.IsIPv4MappedToIPv6)
+            return address.MapToIPv4();
+
+        // Linux ignores sin6_scope_id when binding non-scoped unicast addresses,
+        // including loopback and global unicast. IPAddress.Equals does not, so
+        // discard the ignored value before validating whether listeners overlap.
+        // Preserve interface zones for link-local and multicast addresses where
+        // the kernel uses them to select a distinct scope.
+        if(address.AddressFamily == AddressFamily.InterNetworkV6 &&
+            address.ScopeId != 0 &&
+            !address.IsIPv6LinkLocal &&
+            !address.IsIPv6Multicast)
+        {
+            return new IPAddress(address.GetAddressBytes());
+        }
+
+        return address;
+    }
 }
