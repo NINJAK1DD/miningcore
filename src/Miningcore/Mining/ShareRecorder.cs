@@ -1517,13 +1517,32 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
                 // Pass one validates every record before a database transaction is opened.
                 var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
+                var requiresBlockIdempotencyIndexes = false;
                 validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
                 {
                     validationHash.Append(shares);
+                    requiresBlockIdempotencyIndexes |= shares.Any(
+                        BlockOnlyCandidatePersistenceRules.RequiresIdempotencyIndexes);
                     return Task.CompletedTask;
                 });
                 fileHash = validationHash.GetHash();
                 operationOwnership.EnsureJournalPathIsExclusive();
+
+                // Recovery deliberately strips live merged-mining settings, so the validated
+                // evidence—not current deployment configuration—decides whether these indexes
+                // are required. Check before publishing the pending marker or opening the import
+                // transaction, while the locked source handle still pins the validated journal.
+                if(requiresBlockIdempotencyIndexes)
+                {
+                    var schemaReady = await cf.Run(con =>
+                        blockRepo.HasMergedMiningBlockIndexesAsync(con,
+                            CancellationToken.None));
+                    if(!schemaReady)
+                        throw new PoolStartupException(
+                            BlockOnlyCandidatePersistenceRules.MissingIndexesMessage);
+
+                    operationOwnership.EnsureJournalPathIsExclusive();
+                }
 
                 // Publish an independent pending marker before the database transaction begins.
                 // A crash after commit but before source retirement can therefore be resumed

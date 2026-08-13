@@ -290,7 +290,10 @@ share import, verification or acknowledgement. Normal startup continues to rejec
 Share import now validates the configuration boundary it actually consumes. `-rs` accepts an
 all-disabled pool set and rebuilds each pool from its required ID plus optional string coin metadata;
 all enabled-state, listener, wallet, daemon, payout, banning, recipient, timing and extension fields
-are discarded before schema binding. Pool IDs and complete PostgreSQL persistence remain mandatory.
+and unused cluster instance identity are discarded before schema binding. Pool IDs and complete
+PostgreSQL persistence remain mandatory. Recovery partition preflight checks every configured pool
+ID, and validated journal records that use merged-mining block persistence trigger the AuxPoW
+idempotency-index preflight before the import transaction begins.
 Best-effort template loading now includes disabled pools so recovered block notifications retain coin
 metadata when available; missing paths, missing metadata or undefined coins warn and continue.
 Normal startup remains unchanged and strict.

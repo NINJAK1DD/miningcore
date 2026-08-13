@@ -1,15 +1,20 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Mining;
+using Miningcore.Persistence;
+using Miningcore.Persistence.Repositories;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
+using NSubstitute;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -159,6 +164,71 @@ public class RecoveryConfigurationTests
                 StringComparison.Ordinal);
             Assert.Contains("differ only by case", error.Message,
                 StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryMode_SanitizedDisabledPoolsStillRequireSharePartitions()
+    {
+        var document = CreateRecoveryDocument();
+        var configFile = WriteTemporaryConfig(document);
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        shareRepository.GetMissingSharePartitionsAsync(connection,
+                Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { "recovery-pool" });
+
+        try
+        {
+            var config = Program.ReadAndValidateConfig(configFile, true);
+            Assert.All(config.Pools, pool => Assert.False(pool.Enabled));
+
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                Program.EnsureSharePartitionsAsync(true, config,
+                    connectionFactory, shareRepository,
+                    CancellationToken.None));
+
+            Assert.Contains("configured recovery pool ID(s)", error.Message,
+                StringComparison.Ordinal);
+            await shareRepository.Received(1).GetMissingSharePartitionsAsync(
+                connection,
+                Arg.Is<IEnumerable<string>>(ids =>
+                    ids.SequenceEqual(new[] { "recovery-pool" })),
+                Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_DiscardsUnusedInstanceIdentityWhileNormalStartupRejectsIt()
+    {
+        var document = CreateRecoveryDocument();
+        document["instanceId"] = 0;
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+            Assert.Null(config.InstanceId);
+
+            var directConfig = CreateRecoveryConfig();
+            directConfig.InstanceId = 0;
+            Assert.False(new ClusterConfigValidator().Validate(directConfig)
+                .IsValid);
+            Assert.True(new ClusterConfigValidator(true).Validate(directConfig)
+                .IsValid);
         }
         finally
         {

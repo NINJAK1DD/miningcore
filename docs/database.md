@@ -282,9 +282,17 @@ terminal anchors and interrupted retirement markers, even when `-rs` names a rev
 
 Live mining settings do not need to be repaired before an emergency import. After ambiguity checks,
 recovery rebuilds every pool object from its required `id` and optional string `coin` metadata. All
-other pool fields are discarded, including enabled state, wallet and daemon settings, API/Stratum
-listeners, payout and banning policy, reward recipients, timing values and extension data. Normal
-startup restores strict validation for live configuration, so correct it before restarting the pool.
+other pool fields are discarded, including cluster instance identity, enabled state, wallet and
+daemon settings, API/Stratum listeners, payout and banning policy, reward recipients, timing values
+and extension data. Normal startup restores strict validation for live configuration, so correct it
+before restarting the pool.
+
+Recovery checks a partition for every configured pool ID even though all sanitized pools are
+disabled. Once the complete journal has passed integrity and semantic validation, Miningcore also
+requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses `auxpow`,
+`auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
+recovery evidence itself rather than discarded live merged-mining settings, and it is checked before
+the import transaction begins.
 
 Coin definitions are notification enrichment, not an import prerequisite. Recovery retains valid
 custom template paths and attempts to load and assign templates to every configured pool, including
@@ -965,8 +973,9 @@ pool later. An auxiliary DOGE block-only record does not create an ordinary shar
 that can accept direct miners still needs its own partition.
 
 Miningcore now checks this during startup on direct recorder nodes, share-relay receivers and
-recovery imports. If an enabled pool has no matching partition, startup fails before Stratum opens
-or recovery data is imported. Sender-only share-relay nodes skip this local check because their
+recovery imports. Normal startup checks enabled pool IDs; recovery checks every configured recovery
+pool ID because enabled state is deliberately discarded. A missing partition fails before Stratum
+opens or recovery data is imported. Sender-only share-relay nodes skip this local check because their
 ordinary shares are recorded elsewhere.
 
 A PostgreSQL `DEFAULT` partition is also routable and therefore passes the preflight, but dedicated

@@ -7,6 +7,11 @@ internal sealed record BlockOnlyCandidatePersistenceRule(string Type,
 
 internal static class BlockOnlyCandidatePersistenceRules
 {
+    internal const string MissingIndexesMessage =
+        "Merged-mining recovery records require the AuxPoW block idempotency migration. " +
+        "Apply add_auxpow_block_idempotency.sql before importing the recovery journal; " +
+        "the recovery journal has not been imported.";
+
     private static readonly IReadOnlyDictionary<string,
         BlockOnlyCandidatePersistenceRule> Rules =
         new Dictionary<string, BlockOnlyCandidatePersistenceRule>(
@@ -36,6 +41,11 @@ internal static class BlockOnlyCandidatePersistenceRules
         rule = null;
         return false;
     }
+
+    internal static bool RequiresIdempotencyIndexes(Share candidate) =>
+        candidate?.IsBlockCandidate == true &&
+        !candidate.BlockRecordEmitted &&
+        TryGet(candidate.BlockType, out _);
 
     internal static void EnsureDeclared(Share candidate)
     {

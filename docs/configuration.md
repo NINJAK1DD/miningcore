@@ -102,12 +102,19 @@ therefore cannot block an emergency share import or recovery-state command.
 
 After strict duplicate and case-variant checks, recovery rebuilds every pool object from the only
 pool fields it consumes: required `id` and optional string `coin` metadata. It discards every
-live-only field, including enabled state, Stratum listeners, wallet and daemon settings, payout and
-banning policy, reward recipients, timing values and extension data. Empty `ports` and `daemons`
-placeholders satisfy the configuration schema without starting those services. Damaged or stale
+live-only field, including cluster instance identity, enabled state, Stratum listeners, wallet and
+daemon settings, payout and banning policy, reward recipients, timing values and extension data.
+Empty `ports` and `daemons` placeholders satisfy the configuration schema without starting those
+services. Damaged or stale
 live-pool values therefore cannot block recovery, while ambiguous names and missing or malformed
 pool identity remain errors. Pools may all be disabled during import. A non-empty pool collection
 with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory.
+
+Before import, Miningcore checks share-table partition coverage for every configured recovery pool
+ID, including pools whose discarded live configuration had them disabled. After validating the
+complete journal, it also checks the AuxPoW block-idempotency indexes when any record that would be
+inserted uses a declared merged-mining block type. This evidence-driven check does not depend on the
+discarded live `mergedMining` extension and runs before the import transaction or pending marker.
 
 Optional template metadata is best-effort notification enrichment. Valid custom `coinTemplates`
 paths are retained, non-string array entries are removed, and a malformed non-array value is

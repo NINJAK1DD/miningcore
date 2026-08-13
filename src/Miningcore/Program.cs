@@ -1420,6 +1420,11 @@ public class Program : ProcessStatusBackgroundService
         JObject document)
     {
         foreach(var property in document.Properties().Where(property =>
+                    property.Name.Equals("instanceId",
+                        StringComparison.OrdinalIgnoreCase)).ToArray())
+            property.Remove();
+
+        foreach(var property in document.Properties().Where(property =>
                     property.Name.Equals("paymentProcessing",
                         StringComparison.OrdinalIgnoreCase)).ToArray())
             property.Remove();
@@ -1706,7 +1711,10 @@ public class Program : ProcessStatusBackgroundService
             services.GetService<IConnectionFactory>(),
             services.GetService<IShareRepository>(), CancellationToken.None);
 
-        if(RequiresMergedMiningPersistence(clusterConfig))
+        // Live startup derives this requirement from configured merged mining. Recovery has
+        // deliberately discarded that live configuration and performs the equivalent check
+        // from validated journal records immediately before opening its import transaction.
+        if(!isShareRecoveryMode && RequiresMergedMiningPersistence(clusterConfig))
         {
             await EnsureMergedMiningSchemaAsync(clusterConfig,
                 services.GetService<IConnectionFactory>(),
@@ -1825,7 +1833,7 @@ public class Program : ProcessStatusBackgroundService
                 "PostgreSQL share persistence is configured but its repository services are unavailable.");
 
         var poolIds = config.Pools?
-            .Where(x => x.Enabled)
+            .Where(x => recoveryMode || x.Enabled)
             .Select(x => x.Id)
             .ToArray() ?? Array.Empty<string>();
 
@@ -1842,8 +1850,9 @@ public class Program : ProcessStatusBackgroundService
             ? "The recovery journal has not been imported."
             : "Startup stopped before the share recorder or Stratum opened.";
 
+        var poolScope = recoveryMode ? "configured recovery" : "enabled";
         throw new PoolStartupException(
-            $"The partitioned PostgreSQL shares table has no partition for enabled pool ID(s): " +
+            $"The partitioned PostgreSQL shares table has no partition for {poolScope} pool ID(s): " +
             $"{formattedPoolIds}. Create one LIST partition per pool before starting Miningcore " +
             "or importing a recovery journal. See 'Advanced share-table partitioning' in " +
             $"docs/database.md. {failureBoundary}");

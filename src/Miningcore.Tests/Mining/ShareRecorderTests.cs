@@ -3145,6 +3145,9 @@ public class ShareRecorderTests
         fixture.BlockRepository.InsertAsync(fixture.Connection,
                 fixture.Transaction, Arg.Any<Block>())
             .Returns(true);
+        fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(true);
         fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
                 fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
                 Arg.Any<CancellationToken>())
@@ -3177,6 +3180,94 @@ public class ShareRecorderTests
                 File.Delete(archiveFilename);
             if(replayArchiveFilename != null)
                 File.Delete(replayArchiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_SanitizedAuxPowRecordRequiresIndexesBeforeImportTransaction()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-schema-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var configFilename = Path.Combine(directory, "config.json");
+        var recoveryFilename = Path.Combine(directory, "reviewed-recovery.txt");
+        var activeRecoveryFilename = Path.Combine(directory,
+            "active-recovery.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var configDocument = new
+        {
+            instanceId = 0,
+            persistence = new
+            {
+                postgres = new
+                {
+                    host = "127.0.0.1",
+                    port = 5432,
+                    database = "miningcore",
+                    user = "miningcore",
+                },
+            },
+            shareRecoveryFile = activeRecoveryFilename,
+            shareRecoveryStateDirectory = stateDirectory,
+            pools = new[]
+            {
+                new
+                {
+                    id = "doge-solo",
+                    coin = "dogecoin",
+                    enabled = true,
+                    extra = new
+                    {
+                        mergedMining = new
+                        {
+                            enabled = true,
+                        },
+                    },
+                },
+            },
+        };
+        var candidate = CreateDurableCandidate("recovered-auxpow", "auxpow");
+
+        try
+        {
+            await File.WriteAllTextAsync(configFilename,
+                JsonConvert.SerializeObject(configDocument));
+            await File.WriteAllTextAsync(recoveryFilename,
+                JsonConvert.SerializeObject(candidate) + Environment.NewLine);
+            var config = Program.ReadAndValidateConfig(configFilename, true);
+            var recoveredPool = Assert.Single(config.Pools);
+            Assert.False(recoveredPool.Enabled);
+            Assert.Null(recoveredPool.Extra);
+            Assert.Null(config.InstanceId);
+            var fixture = CreateConfiguredRecoveryFixture(config);
+            fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                    fixture.Connection, Arg.Any<CancellationToken>())
+                .Returns(false);
+
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                fixture.Recorder.RecoverSharesAsync(recoveryFilename));
+
+            Assert.Contains("add_auxpow_block_idempotency.sql", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("has not been imported", error.Message,
+                StringComparison.Ordinal);
+            Assert.True(File.Exists(recoveryFilename));
+            fixture.Connection.DidNotReceive().BeginTransaction(
+                Arg.Any<IsolationLevel>());
+            await fixture.ShareRepository.DidNotReceive()
+                .TryRegisterRecoveryImportAsync(Arg.Any<IDbConnection>(),
+                    Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+                    Arg.Any<string>(), Arg.Any<int>(),
+                    Arg.Any<CancellationToken>());
+            await fixture.BlockRepository.Received(1)
+                .HasMergedMiningBlockIndexesAsync(fixture.Connection,
+                    Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(
+                activeRecoveryFilename);
+            Directory.Delete(directory, true);
         }
     }
 

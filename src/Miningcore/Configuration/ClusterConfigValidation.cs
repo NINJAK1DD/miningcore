@@ -313,7 +313,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleFor(j => j.InstanceId)
             .GreaterThan((byte) 0)
-            .When(x => x.InstanceId.HasValue)
+            .When(x => !recoveryMode && x.InstanceId.HasValue)
             .WithMessage("instanceId must either be omitted or be non-zero");;
 
         RuleFor(j => j.Api)
