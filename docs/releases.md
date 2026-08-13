@@ -241,6 +241,18 @@ the remote address is unavailable and correctly treats IPv4-mapped IPv6 addresse
 equivalent. Operators who keep `/api/admin` on the shared public listener should treat this as a
 security fix and update promptly.
 
+### Security hardening: metrics CORS isolation
+
+The Prometheus `/metrics` route family no longer receives the public API's permissive CORS headers.
+This applies case-insensitively on both dedicated metrics listeners and legacy shared listeners;
+segment-bounded matching leaves public lookalikes such as `/metrics-export` unchanged. Public REST
+and WebSocket routes retain their existing CORS behavior, while `/api/admin` remains restricted.
+
+Prometheus, `curl` and other non-browser scrapers require no changes because CORS is a browser
+control. A custom browser dashboard that directly scraped `/metrics` from another origin must move
+that access behind a deliberately secured same-origin telemetry service. Listener isolation,
+`metricsIpWhitelist`, TLS and firewall behavior are unchanged.
+
 ### Dedicated admin and metrics listeners
 
 `api.adminPort` and `api.metricsPort` now create real, route-isolated listeners. When configured,

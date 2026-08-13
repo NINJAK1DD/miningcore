@@ -793,6 +793,11 @@ public class Program : ProcessStatusBackgroundService
         return localPort == ports.PublicPort;
     }
 
+    internal static bool ShouldApplyPublicCors(PathString path) =>
+        !AdminApiAuthenticationMiddleware.IsAdminRequest(path) &&
+        !path.StartsWithSegments("/metrics",
+            StringComparison.OrdinalIgnoreCase);
+
     internal static void ConfigureApiPipeline(IApplicationBuilder app,
         ApiEndpointPorts ports, string[] adminIpWhitelist,
         string[] metricsIpWhitelist, AdminApiCredential adminCredential,
@@ -833,12 +838,10 @@ public class Program : ProcessStatusBackgroundService
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
             gpdrCompliantLogging);
 
-        // Public API clients retain the existing permissive policy. Administrative
-        // routes deliberately receive no CORS headers so browser applications cannot
-        // be taught to carry the operator bearer token.
-        app.UseWhen(context =>
-                !AdminApiAuthenticationMiddleware.IsAdminRequest(
-                    context.Request.Path),
+        // Public API clients retain the existing permissive policy. Administrative and
+        // metrics routes deliberately receive no CORS headers: browsers must not carry
+        // the operator token or gain cross-origin access to operational telemetry.
+        app.UseWhen(context => ShouldApplyPublicCors(context.Request.Path),
             publicApi => publicApi.UseCors(corsPolicyBuilder =>
                 corsPolicyBuilder.AllowAnyOrigin().AllowAnyMethod()
                     .AllowAnyHeader()));

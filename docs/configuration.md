@@ -76,6 +76,11 @@ public API, so retain the admin/metrics IP whitelists and restrict the ports wit
 firewall. Reverse proxies should publish only `api.port`; a local Prometheus service normally
 scrapes `127.0.0.1:metricsPort`.
 
+Permissive browser CORS remains enabled for public REST and WebSocket routes, but not for
+`/api/admin` or `/metrics`. This applies on both dedicated and shared listeners and does not affect
+Prometheus or other non-browser scrapers. Browser dashboards that previously read `/metrics`
+directly across origins must use a deliberately secured same-origin telemetry service.
+
 The admin IP whitelist is necessary but not sufficient. Every `/api/admin` request also requires the
 bearer token provided through `MININGCORE_ADMIN_API_TOKEN`; there is intentionally no JSON property
 for this secret. The value must contain exactly 64 hexadecimal characters. Missing or invalid token
