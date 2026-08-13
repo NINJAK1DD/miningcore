@@ -2070,7 +2070,7 @@ public class ShareRecorderTests
         var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
         var config = new ClusterConfig
         {
-            Pools = Array.Empty<PoolConfig>(),
+            Pools = new[] { new PoolConfig { Id = "ltc-solo" } },
             ShareRecoveryFile = recoveryFilename,
             ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
         };
@@ -2184,7 +2184,7 @@ public class ShareRecorderTests
         var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
         var config = new ClusterConfig
         {
-            Pools = Array.Empty<PoolConfig>(),
+            Pools = new[] { new PoolConfig { Id = "ltc-solo" } },
             ShareRecoveryFile = recoveryFilename,
             ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
         };
@@ -3180,6 +3180,42 @@ public class ShareRecorderTests
                 File.Delete(archiveFilename);
             if(replayArchiveFilename != null)
                 File.Delete(replayArchiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_UnconfiguredPoolFailsBeforeMarkerOrTransaction()
+    {
+        var fixture = CreateRecoveryFixture();
+        var record = JsonConvert.DeserializeObject<Share>(RecoveryShareJson(1));
+        record.PoolId = "unknown-or-typo-pool";
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            JsonConvert.SerializeObject(record),
+        });
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            Assert.Contains("line 1", error.Message, StringComparison.Ordinal);
+            Assert.Contains("unconfigured pool ID \"unknown-or-typo-pool\"",
+                error.Message, StringComparison.Ordinal);
+            Assert.Contains("no recovery records were imported", error.Message,
+                StringComparison.Ordinal);
+            Assert.True(File.Exists(filename));
+            fixture.Connection.DidNotReceive().BeginTransaction(
+                Arg.Any<IsolationLevel>());
+            await fixture.ShareRepository.DidNotReceive()
+                .TryRegisterRecoveryImportAsync(Arg.Any<IDbConnection>(),
+                    Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+                    Arg.Any<string>(), Arg.Any<int>(),
+                    Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(filename);
         }
     }
 
@@ -7565,10 +7601,15 @@ public class ShareRecorderTests
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = messageBusOverride ?? Substitute.For<IMessageBus>();
         var mapper = AutoMapperFactory.CreateMapper();
-        var pool = new PoolConfig
+        var dogecoinPool = new PoolConfig
         {
             Id = "doge-solo",
             Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+        var litecoinPool = new PoolConfig
+        {
+            Id = "ltc-solo",
+            Template = new BitcoinTemplate { Symbol = "LTC", Name = "Litecoin" },
         };
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
@@ -7584,7 +7625,8 @@ public class ShareRecorderTests
 
         var recorder = new ShareRecorder(connectionFactory, mapper,
             new JsonSerializerSettings(), shareRepository, blockRepository,
-            new ClusterConfig { Pools = new[] { pool } }, messageBus);
+            new ClusterConfig { Pools = new[] { dogecoinPool, litecoinPool } },
+            messageBus);
 
         return new RecoveryFixture(recorder, connectionFactory, connection,
             transaction, shareRepository, blockRepository, messageBus);
@@ -7592,6 +7634,13 @@ public class ShareRecorderTests
 
     private static RecoveryFixture CreateConfiguredRecoveryFixture(ClusterConfig config)
     {
+        if(config.Pools?.Length == 0)
+        {
+            // Recovery mechanics in these fixtures use ltc-solo journal records. Production
+            // recovery now treats configured pool IDs as an explicit import allowlist.
+            config.Pools = new[] { new PoolConfig { Id = "ltc-solo" } };
+        }
+
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();

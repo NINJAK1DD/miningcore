@@ -116,7 +116,7 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
-    public void RecoveryLoader_MatchesStrictJsonParsingAfterRemovingApi()
+    public void RecoveryLoader_MatchesStrictJsonParsingAfterApplyingAllowlist()
     {
         var exampleConfig = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory, "config.example.json"));
@@ -141,9 +141,19 @@ public class ApiListenerConfigurationTests
                 });
             }
 
+            var recoveryProperties = new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase)
+            {
+                "coinTemplates",
+                "logging",
+                "persistence",
+                "pools",
+                "shareRecoveryFile",
+                "shareRecoveryStateDirectory",
+            };
             foreach(var property in expected.Properties()
-                        .Where(property => string.Equals(property.Name, "api",
-                            StringComparison.OrdinalIgnoreCase))
+                        .Where(property =>
+                            !recoveryProperties.Contains(property.Name))
                         .ToArray())
                 property.Remove();
 
@@ -1213,8 +1223,8 @@ public class ApiListenerConfigurationTests
     public void RecoveryMode_CaseVariantRootDuplicateWithoutLineInfoRetainsContainerPath()
     {
         var document = CreateRecoveryConfigDocument(false);
-        document.Add("PaymentProcessing",
-            document["paymentProcessing"]?.DeepClone() ?? new JObject());
+        document.Add("Pools",
+            document["pools"]?.DeepClone() ?? new JArray());
         var configFile = Path.GetTempFileName();
 
         try
@@ -1224,7 +1234,7 @@ public class ApiListenerConfigurationTests
             var exception = Assert.Throws<PoolStartupException>(() =>
                 Program.ReadConfig(configFile, true));
             Assert.Contains(
-                "Properties 'paymentProcessing', 'PaymentProcessing' at '$' " +
+                "Properties 'pools', 'Pools' at '$' " +
                 "differ only by case.",
                 exception.Message, StringComparison.Ordinal);
             Assert.DoesNotContain(" Path '", exception.Message,

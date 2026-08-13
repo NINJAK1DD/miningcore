@@ -22,6 +22,103 @@ namespace Miningcore.Tests;
 public class RecoveryConfigurationTests
 {
     [Theory]
+    [InlineData("statistics", "\"stale\"")]
+    [InlineData("nicehash", "[]")]
+    [InlineData("banning", "\"stale\"")]
+    [InlineData("shareRelay", "false")]
+    [InlineData("shareRelays", "{}")]
+    [InlineData("notifications", "\"stale\"")]
+    [InlineData("memory", "[]")]
+    [InlineData("equihashMaxThreads", "\"stale\"")]
+    [InlineData("cryptonightMaxThreads", "{}")]
+    [InlineData("clusterName", "[]")]
+    public void RecoveryMode_DiscardsMalformedUnusedClusterSettings(
+        string propertyName, string valueJson)
+    {
+        var document = CreateRecoveryDocument();
+        document[propertyName] = JToken.Parse(valueJson);
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.Null(config.Statistics);
+            Assert.Null(config.Nicehash);
+            Assert.Null(config.Banning);
+            Assert.Null(config.ShareRelay);
+            Assert.Null(config.ShareRelays);
+            Assert.Null(config.Notifications);
+            Assert.Null(config.Memory);
+            Assert.Null(config.EquihashMaxThreads);
+            Assert.Null(config.CryptonightMaxThreads);
+            Assert.Null(config.ClusterName);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_DiscardsExactDuplicateUnusedClusterSettings()
+    {
+        var document = CreateRecoveryDocument();
+        var pools = document["pools"].ToString(Formatting.None);
+        var persistence = document["persistence"].ToString(Formatting.None);
+        var rawConfig = "{" +
+            $"\"persistence\":{persistence}," +
+            "\"statistics\":\"first-stale-value\"," +
+            "\"statistics\":[]," +
+            $"\"pools\":{pools}" +
+            "}";
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, rawConfig);
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+            var config = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.Null(config.Statistics);
+            Assert.Single(config.Pools);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("logging", "\"stale\"")]
+    [InlineData("persistence", "\"stale\"")]
+    [InlineData("pools", "\"stale\"")]
+    [InlineData("shareRecoveryFile", "{}")]
+    [InlineData("shareRecoveryStateDirectory", "[]")]
+    public void RecoveryMode_RetainsStrictValidationForConsumedClusterSettings(
+        string propertyName, string valueJson)
+    {
+        var document = CreateRecoveryDocument();
+        document[propertyName] = JToken.Parse(valueJson);
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, true));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void RecoveryMode_DiscardsMissingOrMalformedUnusedLivePoolSettings(

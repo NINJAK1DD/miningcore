@@ -95,10 +95,15 @@ its keys are consumed by payout-scheme implementations rather than bound to CLR 
 
 ### Recovery-mode configuration handling
 
-`-rs` share recovery opens neither API nor Stratum sockets. Miningcore prints a recovery-mode
-diagnostic, discards every top-level case variant of the unused API section, and leaves `api` unset
-in the in-memory recovery configuration. Damaged, duplicated or stale HTTP listener settings
-therefore cannot block an emergency share import or recovery-state command.
+`-rs` share recovery opens neither API nor Stratum sockets and does not initialize mining, hashing
+or native solver runtimes. Miningcore prints a recovery-mode diagnostic and rebuilds the cluster
+configuration from an explicit allowlist: `logging`, `persistence`, `pools`, `shareRecoveryFile`,
+`shareRecoveryStateDirectory` and optional `coinTemplates`. Other top-level live settings are
+discarded while the JSON is streamed, so malformed or duplicate API, statistics, relay, banning,
+notification, NiceHash, memory, mining-concurrency and cluster-identity settings cannot block an
+emergency import or recovery-state command. Allowlisted settings retain strict duplicate, schema
+and CLR-binding validation because recovery consumes them; logging remains allowlisted so the
+one-shot command can honor its configured console level and formatting.
 
 After strict duplicate and case-variant checks, recovery rebuilds every pool object from the only
 pool fields it consumes: required `id` and optional string `coin` metadata. It discards every
@@ -108,7 +113,11 @@ Empty `ports` and `daemons` placeholders satisfy the configuration schema withou
 services. Damaged or stale
 live-pool values therefore cannot block recovery, while ambiguous names and missing or malformed
 pool identity remain errors. Pools may all be disabled during import. A non-empty pool collection
-with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory.
+with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory. Those
+IDs form a fail-closed import allowlist: every journal record must name one exactly. An unknown,
+missing or mistyped record pool ID stops recovery before the pending marker, database transaction
+or manifest registration so the operator can inspect the journal and add an intentional historical
+pool explicitly.
 
 Before import, Miningcore checks share-table partition coverage for every configured recovery pool
 ID, including pools whose discarded live configuration had them disabled. After validating the

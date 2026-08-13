@@ -274,11 +274,21 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
-The one-shot importer validates only configuration it consumes. Keep a non-empty `pools` array with
-unique, non-empty pool IDs so every journal record can be attributed, and configure a complete
+The one-shot importer validates only configuration it consumes. At cluster level that allowlist is
+`logging`, `persistence`, `pools`, `shareRecoveryFile`, `shareRecoveryStateDirectory` and optional
+`coinTemplates`; malformed or duplicate live-only top-level settings are discarded while the file
+is streamed. Logging remains strict because the recovery command honors its console level and
+formatting. Recovery returns after its ownership and PostgreSQL preflights and does not initialize
+mining, hashing or native solver runtimes.
+
+Keep a non-empty `pools` array with unique, non-empty pool IDs and configure a complete
 `persistence.postgres` endpoint for the target database. Pools may all remain disabled during the
-import. The configured recovery path and state directory still identify active journal ownership,
-terminal anchors and interrupted retirement markers, even when `-rs` names a reviewed copy.
+import. Configured pool IDs are an explicit import allowlist: every journal record must match one
+exactly. An unknown or mistyped record ID fails before a pending marker, transaction or manifest is
+created. Add an intentional historical pool ID to the recovery configuration only after inspecting
+the retained journal. The configured recovery path and state directory still identify active
+journal ownership, terminal anchors and interrupted retirement markers, even when `-rs` names a
+reviewed copy.
 
 Live mining settings do not need to be repaired before an emergency import. After ambiguity checks,
 recovery rebuilds every pool object from its required `id` and optional string `coin` metadata. All
@@ -307,7 +317,8 @@ Before opening its PostgreSQL transaction, the importer validates:
 - every versioned frame's markers, sequence and previous-frame link;
 - the declared record count, record SHA-256 and deterministic frame digest;
 - the complete terminal anchor when importing the configured chained-v2 recovery journal; and
-- the source's stable regular-file identity.
+- the source's stable regular-file identity; and
+- every record's pool ID against the configured recovery pool allowlist.
 
 Frame hashes normalise line endings to `\n`, so they protect logical records rather than the original
 physical newline encoding. Verified frame-comment lines are skipped while records are deserialized.

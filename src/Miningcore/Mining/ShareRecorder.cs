@@ -1951,6 +1951,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 throw new InvalidDataException(
                     $"Recovery record at line {lineNumber} is null");
 
+            if(share.PoolId == null || !pools.ContainsKey(share.PoolId))
+            {
+                var poolId = JsonConvert.SerializeObject(share.PoolId);
+                throw new InvalidDataException(
+                    $"Recovery record at line {lineNumber} references unconfigured pool ID {poolId}. " +
+                    "Add the exact historical pool ID to the recovery configuration and review " +
+                    "the journal before retrying; no recovery records were imported.");
+            }
+
             shares.Add(share);
 
             if(shares.Count < bufferSize)

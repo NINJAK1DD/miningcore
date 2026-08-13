@@ -92,6 +92,16 @@ public class Program : ProcessStatusBackgroundService
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
     private static readonly AdminApiCredentialProvider adminApiCredentialProvider =
         new();
+    private static readonly HashSet<string> RecoveryConfigurationProperties =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "coinTemplates",
+            "logging",
+            "persistence",
+            "pools",
+            "shareRecoveryFile",
+            "shareRecoveryStateDirectory",
+        };
 
     public static async Task<int> Main(string[] args)
     {
@@ -1219,7 +1229,7 @@ public class Program : ProcessStatusBackgroundService
             Console.WriteLine($"Using configuration file '{file}'");
             if(skipApiListenerSettings)
                 Console.WriteLine(
-                    "Recovery mode: API and unused live-pool configuration discarded " +
+                    "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");
 
             var serializer = JsonSerializer.Create(new JsonSerializerSettings
@@ -1238,7 +1248,7 @@ public class Program : ProcessStatusBackgroundService
                     if(skipApiListenerSettings)
                     {
                         // Recovery configuration policy:
-                        // - api: stream-discarded because recovery opens no HTTP sockets;
+                        // - cluster: stream-rebuilt from the explicit recovery allowlist;
                         // - pools[]: rebuilt from the recovery allowlist (id plus optional coin
                         //   metadata) because import starts no live pool services;
                         // - coinTemplates: valid paths retained, malformed optional metadata removed.
@@ -1336,7 +1346,7 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static JObject LoadConfigurationDocument(JsonReader reader,
-        bool skipApiConfiguration)
+        bool recoveryMode)
     {
         var strictSettings = new JsonLoadSettings
         {
@@ -1344,13 +1354,13 @@ public class Program : ProcessStatusBackgroundService
                 DuplicatePropertyNameHandling.Error,
         };
 
-        if(!skipApiConfiguration)
+        if(!recoveryMode)
             return JObject.Load(reader, strictSettings);
 
-        // Recovery opens no HTTP listeners and does not consume API settings. Filter every
-        // top-level case variant while streaming so even exact duplicate API properties are
-        // discarded before JObject's strict duplicate-property handling. Duplicate properties
-        // everywhere else remain errors.
+        // Recovery consumes only the allowlisted cluster properties. Filter every other
+        // top-level case variant while streaming so malformed or duplicate live-only settings
+        // cannot block emergency work. Exact and case-variant duplicates within the recovery
+        // boundary remain errors.
         if(!ReadNextContentToken(reader) ||
             reader.TokenType != JsonToken.StartObject)
             throw new JsonSerializationException(
@@ -1385,7 +1395,7 @@ public class Program : ProcessStatusBackgroundService
                     $"Configuration property '{propertyName}' has no value." +
                     propertyLocation);
 
-            if(propertyName.Equals("api", StringComparison.OrdinalIgnoreCase))
+            if(!RecoveryConfigurationProperties.Contains(propertyName))
             {
                 reader.Skip();
                 continue;
@@ -1419,16 +1429,6 @@ public class Program : ProcessStatusBackgroundService
     private static void SanitizeConfigurationForRecovery(
         JObject document)
     {
-        foreach(var property in document.Properties().Where(property =>
-                    property.Name.Equals("instanceId",
-                        StringComparison.OrdinalIgnoreCase)).ToArray())
-            property.Remove();
-
-        foreach(var property in document.Properties().Where(property =>
-                    property.Name.Equals("paymentProcessing",
-                        StringComparison.OrdinalIgnoreCase)).ToArray())
-            property.Remove();
-
         var pools = document.GetValue("pools",
             StringComparison.OrdinalIgnoreCase) as JArray;
         if(pools == null)
@@ -1711,10 +1711,13 @@ public class Program : ProcessStatusBackgroundService
             services.GetService<IConnectionFactory>(),
             services.GetService<IShareRepository>(), CancellationToken.None);
 
-        // Live startup derives this requirement from configured merged mining. Recovery has
-        // deliberately discarded that live configuration and performs the equivalent check
-        // from validated journal records immediately before opening its import transaction.
-        if(!isShareRecoveryMode && RequiresMergedMiningPersistence(clusterConfig))
+        // Recovery stops at its database and ownership boundary. It neither consumes mining
+        // concurrency configuration nor initializes native hashing and solver runtimes. The
+        // journal performs its evidence-driven block-index check immediately before import.
+        if(isShareRecoveryMode)
+            return;
+
+        if(RequiresMergedMiningPersistence(clusterConfig))
         {
             await EnsureMergedMiningSchemaAsync(clusterConfig,
                 services.GetService<IConnectionFactory>(),
