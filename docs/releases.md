@@ -292,6 +292,8 @@ validation with the accepted NLog names listed, rather than surfacing later duri
 Committed-journal retirement now remains resumable if a historical pool ID is removed from the
 configuration after the database commit. The resume path still proves the PostgreSQL manifest,
 record count and content hash before destructive retirement and never replays the committed data.
+That committed cleanup also no longer depends on the current AuxPoW indexes; fresh or unproven
+imports still require them before their transaction begins.
 
 Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
 template paths are retained, while non-string entries or a malformed non-array value cannot block

@@ -293,10 +293,12 @@ exactly. An unknown or mistyped record ID fails before a pending marker, transac
 created. Add an intentional historical pool ID to the recovery configuration only after inspecting
 the retained journal. After a committed import, crash-resume retirement revalidates the marker,
 manifest, record count and content hash without requiring those historical IDs to remain in the
-current configuration; it cannot replay the already-committed data. The configured recovery path
-and state directory still identify active
-journal ownership, terminal anchors and interrupted retirement markers, even when `-rs` names a
-reviewed copy.
+current configuration; it cannot replay the already-committed data. Committed cleanup likewise
+does not require current AuxPoW indexes because it never replays a block. Fresh or unproven AuxPoW
+imports still require those indexes before Miningcore publishes a pending marker or opens the
+import transaction. The configured recovery path and state directory still identify active journal
+ownership, terminal anchors and interrupted retirement markers, even when `-rs` names a reviewed
+copy.
 
 Live mining settings do not need to be repaired before an emergency import. After ambiguity checks,
 recovery rebuilds every pool object from its required `id` and optional string `coin` metadata. All
@@ -324,7 +326,7 @@ Before opening its PostgreSQL transaction, the importer validates:
 
 - every versioned frame's markers, sequence and previous-frame link;
 - the declared record count, record SHA-256 and deterministic frame digest;
-- the complete terminal anchor when importing the configured chained-v2 recovery journal; and
+- the complete terminal anchor when importing the configured chained-v2 recovery journal;
 - the source's stable regular-file identity; and
 - every record's pool ID against the configured recovery pool allowlist.
 

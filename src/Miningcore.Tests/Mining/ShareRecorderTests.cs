@@ -2259,10 +2259,11 @@ public class ShareRecorderTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
     public async Task RecoverConfiguredJournal_CommittedDatabaseRetirementDoesNotRequireHistoricalPoolId(
-        bool committedMarkerWasDurable)
+        bool committedMarkerWasDurable, bool auxPowIndexesRemovedAfterCommit)
     {
         var directory = Path.Combine(Path.GetTempPath(),
             $"miningcore-import-retirement-pool-change-{Guid.NewGuid():N}");
@@ -2279,14 +2280,18 @@ public class ShareRecorderTests
 
         try
         {
-            await fixture.Recorder.WriteRecoveryJournalAsync(new[]
-            {
-                new Share
+            var recoveryRecord = auxPowIndexesRemovedAfterCommit
+                ? CreateDurableCandidate("committed-auxpow-before-pool-removal", "auxpow")
+                : new Share
                 {
                     PoolId = "ltc-solo",
                     Miner = "committed-before-pool-removal",
-                },
-            });
+                };
+            recoveryRecord.PoolId = "ltc-solo";
+            fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                    fixture.Connection, Arg.Any<CancellationToken>())
+                .Returns(true);
+            await fixture.Recorder.WriteRecoveryJournalAsync(new[] { recoveryRecord });
             if(committedMarkerWasDurable)
             {
                 fixture.Recorder.RecoveryArchiveMove = (_, _) =>
@@ -2318,6 +2323,14 @@ public class ShareRecorderTests
                     Arg.Any<string>(), Path.GetFileName(recoveryFilename), 1,
                     Arg.Any<CancellationToken>())
                 .Returns(false);
+            if(auxPowIndexesRemovedAfterCommit)
+            {
+                // The database manifest proves this pending marker already committed. Removing
+                // the indexes afterwards must not block evidence retirement or replay the block.
+                fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                        fixture.Connection, Arg.Any<CancellationToken>())
+                    .Returns(false);
+            }
 
             // Simulate the restart using a configuration from which the already-imported
             // historical pool has since been removed. Retirement must authenticate the committed
@@ -2325,9 +2338,39 @@ public class ShareRecorderTests
             var resumeConfig = new ClusterConfig
             {
                 Pools = new[] { new PoolConfig { Id = "current-pool" } },
+                Persistence = new PersistenceConfig
+                {
+                    Postgres = new PostgresConfig
+                    {
+                        Host = "127.0.0.1",
+                        Port = 5432,
+                        Database = "miningcore",
+                        User = "miningcore",
+                    },
+                },
                 ShareRecoveryFile = recoveryFilename,
                 ShareRecoveryStateDirectory = stateDirectory,
             };
+            fixture.ShareRepository.GetMissingSharePartitionsAsync(
+                    fixture.Connection,
+                    Arg.Is<IEnumerable<string>>(ids =>
+                        ids.SequenceEqual(new[] { "current-pool" })),
+                    Arg.Any<CancellationToken>())
+                .Returns(Array.Empty<string>());
+            fixture.ShareRepository.HasRecoveryImportSchemaAsync(
+                    fixture.Connection, Arg.Any<CancellationToken>())
+                .Returns(true);
+
+            // Exercise the same database guards that production -rs runs before invoking the
+            // recorder. They validate today's configured pool, not the retired journal's
+            // historical attribution boundary.
+            await Program.EnsureSharePartitionsAsync(true, resumeConfig,
+                fixture.ConnectionFactory, fixture.ShareRepository,
+                CancellationToken.None);
+            await Program.EnsureShareRecoverySchemaAsync(true, resumeConfig,
+                fixture.ConnectionFactory, fixture.ShareRepository,
+                CancellationToken.None);
+
             var resumed = new ShareRecorder(fixture.ConnectionFactory,
                 AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
                 fixture.ShareRepository, fixture.BlockRepository, resumeConfig,
@@ -2339,16 +2382,31 @@ public class ShareRecorderTests
             Assert.False(File.Exists(recoveryFilename));
             Assert.False(File.Exists(resumed.RecoveryImportStateFilename));
             Assert.False(File.Exists(resumed.RecoveryTerminalStateFilename));
-            await fixture.ShareRepository.Received(
-                    committedMarkerWasDurable ? 1 : 2)
+            await fixture.ShareRepository.Received(1)
                 .TryRegisterRecoveryImportAsync(fixture.Connection,
                     fixture.Transaction, Arg.Any<string>(),
                     Path.GetFileName(recoveryFilename), 1,
                     Arg.Any<CancellationToken>());
-            await fixture.ShareRepository.Received(1).BatchInsertAsync(
-                fixture.Connection, fixture.Transaction,
-                Arg.Any<IEnumerable<PersistedShare>>(),
-                Arg.Any<CancellationToken>());
+            if(auxPowIndexesRemovedAfterCommit)
+            {
+                await fixture.BlockRepository.Received(1)
+                    .HasMergedMiningBlockIndexesAsync(fixture.Connection,
+                        Arg.Any<CancellationToken>());
+                await fixture.BlockRepository.Received(1).InsertAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<Block>(), Arg.Any<CancellationToken>());
+                await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<IEnumerable<PersistedShare>>(),
+                    Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<IEnumerable<PersistedShare>>(),
+                    Arg.Any<CancellationToken>());
+            }
         }
         finally
         {
