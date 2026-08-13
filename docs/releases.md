@@ -289,6 +289,9 @@ command. Stale file-only logging values cannot block import, and an absent, null
 logging section receives a default informational, non-coloured console logger so recovery progress
 remains visible. Invalid but correctly typed log-level names now fail during configuration
 validation with the accepted NLog names listed, rather than surfacing later during logger setup.
+Committed-journal retirement now remains resumable if a historical pool ID is removed from the
+configuration after the database commit. The resume path still proves the PostgreSQL manifest,
+record count and content hash before destructive retirement and never replays the committed data.
 
 Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
 template paths are retained, while non-string entries or a malformed non-array value cannot block

@@ -1484,6 +1484,23 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 return resumedArchive;
             }
 
+            var pendingImportAlreadyCommitted = false;
+            if(existingMarker?.Phase ==
+               ShareRecoveryImportState.ImportPhase.Pending)
+            {
+                // A process can die after PostgreSQL commits but before the pending marker is
+                // advanced. Read-only manifest proof lets validation authenticate that state
+                // without requiring historical pool IDs that may have since left the config.
+                // The transaction below still performs its own atomic registration check, so a
+                // removed or changed manifest can never turn this hint into an unvalidated import.
+                using var manifestConnection = await cf.OpenConnectionAsync();
+                pendingImportAlreadyCommitted =
+                    await shareRepo.HasMatchingRecoveryImportAsync(
+                        manifestConnection, existingMarker.FileHash,
+                        Path.GetFileName(filename), existingMarker.RecordCount,
+                        CancellationToken.None);
+            }
+
             List<(string PoolId, Block Block)> insertedBlocks = new();
             int validatedCount;
             string fileHash;
@@ -1524,7 +1541,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     requiresBlockIdempotencyIndexes |= shares.Any(
                         BlockOnlyCandidatePersistenceRules.RequiresIdempotencyIndexes);
                     return Task.CompletedTask;
-                });
+                }, !pendingImportAlreadyCommitted);
                 fileHash = validationHash.GetHash();
                 operationOwnership.EnsureJournalPathIsExclusive();
 
@@ -1760,11 +1777,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         using var reader = new StreamReader(stream, new UTF8Encoding(false),
             true, 1024, leaveOpen: true);
         var contentHash = new RecoveryContentHasher(jsonSerializerSettings);
+        // The marker and PostgreSQL manifest already prove this content was committed. Retirement
+        // must revalidate the exact record count and canonical content hash, but it must not depend
+        // on the current pool allowlist: an operator may have removed a historical pool after the
+        // commit and before this crash-resume cleanup completed.
         var recordCount = await ProcessRecoveryRecordsAsync(reader, shares =>
         {
             contentHash.Append(shares);
             return Task.CompletedTask;
-        });
+        }, false);
         var fileHash = contentHash.GetHash();
 
         if(recordCount != marker.RecordCount ||
@@ -1905,7 +1926,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     }
 
     private async Task<int> ProcessRecoveryRecordsAsync(StreamReader reader,
-        Func<IList<Share>, Task> processBatch)
+        Func<IList<Share>, Task> processBatch,
+        bool requireConfiguredPool = true)
     {
         const int bufferSize = 100;
         var shares = new List<Share>(bufferSize);
@@ -1951,7 +1973,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 throw new InvalidDataException(
                     $"Recovery record at line {lineNumber} is null");
 
-            if(share.PoolId == null || !pools.ContainsKey(share.PoolId))
+            if(requireConfiguredPool &&
+               (share.PoolId == null || !pools.ContainsKey(share.PoolId)))
             {
                 var poolId = JsonConvert.SerializeObject(share.PoolId);
                 throw new InvalidDataException(

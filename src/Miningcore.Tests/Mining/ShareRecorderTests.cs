@@ -2258,6 +2258,105 @@ public class ShareRecorderTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverConfiguredJournal_CommittedDatabaseRetirementDoesNotRequireHistoricalPoolId(
+        bool committedMarkerWasDurable)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-retirement-pool-change-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var importConfig = new ClusterConfig
+        {
+            Pools = new[] { new PoolConfig { Id = "ltc-solo" } },
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = stateDirectory,
+        };
+        var fixture = CreateConfiguredRecoveryFixture(importConfig);
+
+        try
+        {
+            await fixture.Recorder.WriteRecoveryJournalAsync(new[]
+            {
+                new Share
+                {
+                    PoolId = "ltc-solo",
+                    Miner = "committed-before-pool-removal",
+                },
+            });
+            if(committedMarkerWasDurable)
+            {
+                fixture.Recorder.RecoveryArchiveMove = (_, _) =>
+                    throw new IOException(
+                        "retain committed source before pool change");
+            }
+            else
+            {
+                fixture.Recorder.RecoveryImportStateWriteCheckpoint = phase =>
+                {
+                    if(phase == ShareRecoveryImportState.ImportPhase.Committed)
+                        throw new IOException(
+                            "crash after database commit before marker advance");
+                };
+            }
+
+            await Assert.ThrowsAsync<IOException>(() =>
+                fixture.Recorder.RecoverSharesAsync(recoveryFilename));
+
+            var marker = new ShareRecoveryImportState(recoveryFilename,
+                stateDirectory).TryRead();
+            Assert.Equal(committedMarkerWasDurable
+                    ? ShareRecoveryImportState.ImportPhase.Committed
+                    : ShareRecoveryImportState.ImportPhase.Pending,
+                marker.Phase);
+            fixture.Transaction.Received(1).Commit();
+            fixture.ShareRepository.TryRegisterRecoveryImportAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<string>(), Path.GetFileName(recoveryFilename), 1,
+                    Arg.Any<CancellationToken>())
+                .Returns(false);
+
+            // Simulate the restart using a configuration from which the already-imported
+            // historical pool has since been removed. Retirement must authenticate the committed
+            // evidence rather than reapplying the pre-import attribution allowlist.
+            var resumeConfig = new ClusterConfig
+            {
+                Pools = new[] { new PoolConfig { Id = "current-pool" } },
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = stateDirectory,
+            };
+            var resumed = new ShareRecorder(fixture.ConnectionFactory,
+                AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+                fixture.ShareRepository, fixture.BlockRepository, resumeConfig,
+                fixture.MessageBus);
+
+            var archive = await resumed.RecoverSharesAsync(recoveryFilename);
+
+            Assert.True(File.Exists(archive));
+            Assert.False(File.Exists(recoveryFilename));
+            Assert.False(File.Exists(resumed.RecoveryImportStateFilename));
+            Assert.False(File.Exists(resumed.RecoveryTerminalStateFilename));
+            await fixture.ShareRepository.Received(
+                    committedMarkerWasDurable ? 1 : 2)
+                .TryRegisterRecoveryImportAsync(fixture.Connection,
+                    fixture.Transaction, Arg.Any<string>(),
+                    Path.GetFileName(recoveryFilename), 1,
+                    Arg.Any<CancellationToken>());
+            await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
     [Fact]
     public async Task RecoverConfiguredJournal_RefusesRetirementWhenManifestCannotBeProven()
     {

@@ -141,6 +141,8 @@ public class ApiListenerConfigurationTests
                 });
             }
 
+            // Keep this independently mirrored rather than reading Program's allowlist. The
+            // double-entry assertion detects accidental production-policy drift in either list.
             var recoveryProperties = new HashSet<string>(
                 StringComparer.OrdinalIgnoreCase)
             {

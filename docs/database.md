@@ -286,10 +286,15 @@ solver runtimes.
 
 Keep a non-empty `pools` array with unique, non-empty pool IDs and configure a complete
 `persistence.postgres` endpoint for the target database. Pools may all remain disabled during the
-import. Configured pool IDs are an explicit import allowlist: every journal record must match one
+import. Prefer the minimal set of pool IDs actually present in the reviewed journal: partition
+preflight checks every configured ID, including an extra historical pool that has no record in this
+source. Configured pool IDs are an explicit import allowlist: every journal record must match one
 exactly. An unknown or mistyped record ID fails before a pending marker, transaction or manifest is
 created. Add an intentional historical pool ID to the recovery configuration only after inspecting
-the retained journal. The configured recovery path and state directory still identify active
+the retained journal. After a committed import, crash-resume retirement revalidates the marker,
+manifest, record count and content hash without requiring those historical IDs to remain in the
+current configuration; it cannot replay the already-committed data. The configured recovery path
+and state directory still identify active
 journal ownership, terminal anchors and interrupted retirement markers, even when `-rs` names a
 reviewed copy.
 

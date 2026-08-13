@@ -230,7 +230,7 @@ public class RecoveryConfigurationTests
             error.PropertyName == "Logging.Level"));
 
         Assert.Equal(
-            "Logging: level 'verbose' is invalid; use trace, debug, info, warn/warning, error, fatal, off/none, or omit it for info",
+            "Logging: level 'verbose' is invalid; use trace, debug, info/information, warn/warning, error, fatal, off/none, or omit it for info",
             error.ErrorMessage);
     }
 
@@ -238,6 +238,7 @@ public class RecoveryConfigurationTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("TRACE")]
+    [InlineData("information")]
     [InlineData("warning")]
     [InlineData("none")]
     public void LoggingLevel_AcceptsNLogNamesAliasesAndDefault(
@@ -250,6 +251,16 @@ public class RecoveryConfigurationTests
 
         Assert.DoesNotContain(result.Errors, error =>
             error.PropertyName == "Logging.Level");
+    }
+
+    [Fact]
+    public void NormalStartup_NullPoolEntryUsesConfigurationValidationBoundary()
+    {
+        var config = CreateRecoveryConfig();
+        config.Pools = new PoolConfig[] { null };
+
+        Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateConfig(config, false));
     }
 
     [Theory]

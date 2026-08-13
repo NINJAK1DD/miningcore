@@ -1069,20 +1069,27 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        if(!recoveryMode && !config.Pools.Any(x => x.Enabled))
-            throw new PoolStartupException("No pools are enabled.");
-
-        // Live-pool defaults are irrelevant during one-shot recovery and should not
-        // reintroduce service state after the recovery allowlist has removed it.
-        foreach(var poolConfig in config.Pools.Where(pool => pool != null &&
-                    !recoveryMode))
-        {
-            poolConfig.EnableInternalStratum ??=
-                config.ShareRelays == null || config.ShareRelays.Length == 0;
-        }
-
         try
         {
+            // Let FluentValidation report null collections or entries before live-startup code
+            // dereferences them. JSON schema validation normally catches these first, but direct
+            // callers and tests deserve the same configuration boundary instead of an NRE.
+            if(config.Pools == null || config.Pools.Any(pool => pool == null))
+                config.Validate(recoveryMode);
+
+            if(!recoveryMode && !config.Pools.Any(pool => pool.Enabled))
+                throw new PoolStartupException("No pools are enabled.");
+
+            if(!recoveryMode)
+            {
+                // Apply live-only defaults before the complete validator examines listeners.
+                foreach(var poolConfig in config.Pools)
+                {
+                    poolConfig.EnableInternalStratum ??=
+                        config.ShareRelays == null || config.ShareRelays.Length == 0;
+                }
+            }
+
             config.Validate(recoveryMode);
             if(!recoveryMode)
                 ValidateMergedMiningDeployment(config);

@@ -418,7 +418,7 @@ public class ClusterLoggingConfigValidator : AbstractValidator<ClusterLoggingCon
         RuleFor(j => j.Level)
             .Must(IsValidLogLevel)
             .WithMessage(
-                "Logging: level '{PropertyValue}' is invalid; use trace, debug, info, warn/warning, error, fatal, off/none, or omit it for info");
+                "Logging: level '{PropertyValue}' is invalid; use trace, debug, info/information, warn/warning, error, fatal, off/none, or omit it for info");
     }
 
     private static bool IsValidLogLevel(string level)
