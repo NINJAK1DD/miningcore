@@ -3154,11 +3154,20 @@ public class ShareRecorderTests
 
             fixture.Transaction.Received(1).Rollback();
             fixture.Transaction.DidNotReceive().Commit();
+            fixture.ShareRepository.HasMatchingRecoveryImportAsync(
+                    fixture.Connection, Arg.Any<string>(),
+                    Path.GetFileName(filename), 200,
+                    Arg.Any<CancellationToken>())
+                .Returns(false, true);
 
             archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
 
             fixture.Transaction.Received(1).Rollback();
             fixture.Transaction.Received(1).Commit();
+            await fixture.ShareRepository.Received(2)
+                .HasMatchingRecoveryImportAsync(fixture.Connection,
+                    Arg.Any<string>(), Path.GetFileName(filename), 200,
+                    Arg.Any<CancellationToken>());
             await fixture.ShareRepository.Received(4).BatchInsertAsync(
                 fixture.Connection, fixture.Transaction,
                 Arg.Any<IEnumerable<PersistedShare>>(),
