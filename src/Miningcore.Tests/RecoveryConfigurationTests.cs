@@ -95,7 +95,6 @@ public class RecoveryConfigurationTests
     }
 
     [Theory]
-    [InlineData("logging", "\"stale\"")]
     [InlineData("persistence", "\"stale\"")]
     [InlineData("pools", "\"stale\"")]
     [InlineData("shareRecoveryFile", "{}")]
@@ -105,6 +104,105 @@ public class RecoveryConfigurationTests
     {
         var document = CreateRecoveryDocument();
         document[propertyName] = JToken.Parse(valueJson);
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, true));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("absent")]
+    [InlineData("null")]
+    [InlineData("malformed")]
+    public void RecoveryMode_SynthesizesDefaultConsoleLogging(
+        string loggingShape)
+    {
+        var document = CreateRecoveryDocument();
+
+        if(loggingShape == "absent")
+            document.Property("logging")?.Remove();
+        else if(loggingShape == "null")
+            document["logging"] = JValue.CreateNull();
+        else
+            document["logging"] = "stale";
+
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            if(loggingShape == "malformed")
+                Assert.Throws<PoolStartupException>(() =>
+                    Program.ReadAndValidateConfig(configFile, false));
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.NotNull(config.Logging);
+            Assert.Null(config.Logging.Level);
+            Assert.False(config.Logging.EnableConsoleColors);
+            Assert.False(config.Logging.EnableConsoleLog);
+            Assert.Null(config.Logging.LogFile);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_RetainsOnlyConsumedConsoleLoggingSettings()
+    {
+        var document = CreateRecoveryDocument();
+        document["logging"] = new JObject
+        {
+            ["level"] = "Warn",
+            ["enableConsoleColors"] = true,
+            ["enableConsoleLog"] = new JObject(),
+            ["logFile"] = new JArray(),
+            ["apiLogFile"] = false,
+            ["perPoolLogFile"] = "stale",
+            ["logBaseDirectory"] = new JObject(),
+            ["gpdrCompliant"] = new JArray(),
+        };
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var config = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.Equal("Warn", config.Logging.Level);
+            Assert.True(config.Logging.EnableConsoleColors);
+            Assert.False(config.Logging.EnableConsoleLog);
+            Assert.Null(config.Logging.LogFile);
+            Assert.Null(config.Logging.ApiLogFile);
+            Assert.False(config.Logging.PerPoolLogFile);
+            Assert.Null(config.Logging.LogBaseDirectory);
+            Assert.False(config.Logging.GPDRCompliant);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("level", "{}")]
+    [InlineData("enableConsoleColors", "\"stale\"")]
+    public void RecoveryMode_StrictlyValidatesConsumedConsoleLoggingSettings(
+        string propertyName, string valueJson)
+    {
+        var document = CreateRecoveryDocument();
+        var logging = Assert.IsType<JObject>(document["logging"]);
+        logging[propertyName] = JToken.Parse(valueJson);
         var configFile = WriteTemporaryConfig(document);
 
         try

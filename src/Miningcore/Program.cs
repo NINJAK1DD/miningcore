@@ -1249,12 +1249,14 @@ public class Program : ProcessStatusBackgroundService
                     {
                         // Recovery configuration policy:
                         // - cluster: stream-rebuilt from the explicit recovery allowlist;
+                        // - logging: rebuilt from console settings consumed by recovery;
                         // - pools[]: rebuilt from the recovery allowlist (id plus optional coin
                         //   metadata) because import starts no live pool services;
                         // - coinTemplates: valid paths retained, malformed optional metadata removed.
                         // Configuration consumed by recovery remains subject to normal duplicate,
                         // schema and CLR-binding validation.
                         SanitizeConfigurationForRecovery(document);
+                        SanitizeLoggingForRecovery(document);
                         SanitizeCoinTemplatesForRecovery(document);
                     }
                     RemoveDisabledApiSettings(document);
@@ -1463,6 +1465,35 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    private static void SanitizeLoggingForRecovery(JObject document)
+    {
+        var property = document.Properties().FirstOrDefault(property =>
+            property.Name.Equals("logging",
+                StringComparison.OrdinalIgnoreCase));
+        var sanitized = new JObject();
+
+        if(property?.Value is JObject logging)
+        {
+            // Recovery always writes to the console and only consumes these two settings.
+            // Discard file-only and live-service logging fields so stale values cannot block
+            // an emergency import. Preserve the consumed tokens so schema/CLR validation still
+            // rejects malformed console settings rather than silently changing their meaning.
+            foreach(var name in new[] { "level", "enableConsoleColors" })
+            {
+                var consumed = logging.Properties().FirstOrDefault(candidate =>
+                    candidate.Name.Equals(name,
+                        StringComparison.OrdinalIgnoreCase));
+                if(consumed != null)
+                    sanitized[name] = consumed.Value.DeepClone();
+            }
+        }
+
+        if(property == null)
+            document["logging"] = sanitized;
+        else
+            property.Value = sanitized;
+    }
+
     private static void SanitizeCoinTemplatesForRecovery(JObject document)
     {
         var property = document.Properties().FirstOrDefault(property =>
@@ -1565,7 +1596,10 @@ public class Program : ProcessStatusBackgroundService
 
     private static void ConfigureLogging()
     {
-        var config = clusterConfig.Logging;
+        // Recovery must remain visible even when an operator deliberately supplies the smallest
+        // accepted import configuration or constructs it outside the JSON sanitization path.
+        var config = clusterConfig.Logging ??
+            (isShareRecoveryMode ? new ClusterLoggingConfig() : null);
         var loggingConfig = new LoggingConfiguration();
 
         if(config != null)

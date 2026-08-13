@@ -277,9 +277,12 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
 The one-shot importer validates only configuration it consumes. At cluster level that allowlist is
 `logging`, `persistence`, `pools`, `shareRecoveryFile`, `shareRecoveryStateDirectory` and optional
 `coinTemplates`; malformed or duplicate live-only top-level settings are discarded while the file
-is streamed. Logging remains strict because the recovery command honors its console level and
-formatting. Recovery returns after its ownership and PostgreSQL preflights and does not initialize
-mining, hashing or native solver runtimes.
+is streamed. Recovery retains only the consumed `logging.level` and
+`logging.enableConsoleColors` settings and validates their types; stale file-only logging settings
+are discarded. An absent, null or wholly malformed logging section is replaced with default
+informational, non-coloured console logging so emergency progress remains visible. Recovery returns
+after its ownership and PostgreSQL preflights and does not initialize mining, hashing or native
+solver runtimes.
 
 Keep a non-empty `pools` array with unique, non-empty pool IDs and configure a complete
 `persistence.postgres` endpoint for the target database. Pools may all remain disabled during the

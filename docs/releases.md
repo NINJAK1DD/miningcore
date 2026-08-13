@@ -284,6 +284,11 @@ recovery command consumes. After ambiguity checks, each pool is similarly rebuil
 ID plus optional string coin metadata, so stale listener, wallet, daemon, payout, banning, recipient,
 timing and extension fields are excluded from the recovery boundary.
 
+Recovery logging is now narrowed to the console level and colour settings consumed by the one-shot
+command. Stale file-only logging values cannot block import, and an absent, null or wholly malformed
+logging section receives a default informational, non-coloured console logger so recovery progress
+remains visible.
+
 Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
 template paths are retained, while non-string entries or a malformed non-array value cannot block
 share import, verification or acknowledgement. Normal startup continues to reject those values.

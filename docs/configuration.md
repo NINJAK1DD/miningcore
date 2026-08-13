@@ -101,9 +101,12 @@ configuration from an explicit allowlist: `logging`, `persistence`, `pools`, `sh
 `shareRecoveryStateDirectory` and optional `coinTemplates`. Other top-level live settings are
 discarded while the JSON is streamed, so malformed or duplicate API, statistics, relay, banning,
 notification, NiceHash, memory, mining-concurrency and cluster-identity settings cannot block an
-emergency import or recovery-state command. Allowlisted settings retain strict duplicate, schema
-and CLR-binding validation because recovery consumes them; logging remains allowlisted so the
-one-shot command can honor its configured console level and formatting.
+emergency import or recovery-state command. Recovery rebuilds `logging` from only the console
+`level` and `enableConsoleColors` fields it consumes; malformed file-only settings are discarded,
+while those two console fields remain strictly typed. If `logging` is absent, null or malformed as
+a whole, Miningcore synthesizes the default informational, non-coloured console configuration so
+the one-shot command remains visible. Other allowlisted settings retain strict duplicate, schema
+and CLR-binding validation because recovery consumes them.
 
 After strict duplicate and case-variant checks, recovery rebuilds every pool object from the only
 pool fields it consumes: required `id` and optional string `coin` metadata. It discards every
