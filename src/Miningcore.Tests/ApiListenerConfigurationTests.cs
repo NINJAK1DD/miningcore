@@ -1715,6 +1715,15 @@ public class ApiListenerConfigurationTests
         Assert.Equal(expected, Program.ShouldApplyPublicCors(path));
 
     [Theory]
+    [InlineData("/metrics", true)]
+    [InlineData("/METRICS/custom", true)]
+    [InlineData("/metrics-export", false)]
+    [InlineData("/api/pools", false)]
+    public void MetricsMatching_IsCaseInsensitiveAndSegmentBounded(
+        string path, bool expected) =>
+        Assert.Equal(expected, Program.IsMetricsRequest(path));
+
+    [Theory]
     [InlineData("/api/admin/status", "/api/admin", true)]
     [InlineData("/API/ADMIN/stats/gc", "/api/admin", true)]
     [InlineData("/Api/Admin/payment/processing/disable", "/api/admin", true)]
@@ -2187,9 +2196,9 @@ public class ApiListenerConfigurationTests
                                     return;
                                 }
 
-                                 if(context.Request.Path == "/api/pools" ||
-                                     context.Request.Path == "/notifications" ||
-                                     context.Request.Path == "/api/admin/status")
+                                if(context.Request.Path == "/api/pools" ||
+                                    context.Request.Path == "/notifications" ||
+                                    context.Request.Path == "/api/admin/status")
                                 {
                                     context.Response.StatusCode = StatusCodes.Status200OK;
                                     return;

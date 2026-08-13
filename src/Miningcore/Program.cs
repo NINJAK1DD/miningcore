@@ -717,6 +717,8 @@ public class Program : ProcessStatusBackgroundService
         bool EnableIpRateLimiting = false,
         bool EnableExceptionHandling = false);
 
+    internal const string MetricsRoutePrefix = "/metrics";
+
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
     {
         var publicPort = api?.Port ?? DefaultApiPort;
@@ -786,17 +788,19 @@ public class Program : ProcessStatusBackgroundService
             StringComparison.OrdinalIgnoreCase))
             return localPort == ports.AdminPort;
 
-        if(path.StartsWithSegments("/metrics",
-            StringComparison.OrdinalIgnoreCase))
+        if(IsMetricsRequest(path))
             return localPort == ports.MetricsPort;
 
         return localPort == ports.PublicPort;
     }
 
+    internal static bool IsMetricsRequest(PathString path) =>
+        path.StartsWithSegments(MetricsRoutePrefix,
+            StringComparison.OrdinalIgnoreCase);
+
     internal static bool ShouldApplyPublicCors(PathString path) =>
         !AdminApiAuthenticationMiddleware.IsAdminRequest(path) &&
-        !path.StartsWithSegments("/metrics",
-            StringComparison.OrdinalIgnoreCase);
+        !IsMetricsRequest(path);
 
     internal static void ConfigureApiPipeline(IApplicationBuilder app,
         ApiEndpointPorts ports, string[] adminIpWhitelist,
@@ -833,7 +837,7 @@ public class Program : ProcessStatusBackgroundService
 
         UseIpWhiteList(app, true, new[] { "/api/admin" },
             adminIpWhitelist, gpdrCompliantLogging);
-        UseIpWhiteList(app, true, new[] { "/metrics" },
+        UseIpWhiteList(app, true, new[] { MetricsRoutePrefix },
             metricsIpWhitelist, gpdrCompliantLogging);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
             gpdrCompliantLogging);
