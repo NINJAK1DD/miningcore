@@ -2070,7 +2070,7 @@ public class ShareRecorderTests
         var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
         var config = new ClusterConfig
         {
-            Pools = Array.Empty<PoolConfig>(),
+            Pools = new[] { new PoolConfig { Id = "ltc-solo" } },
             ShareRecoveryFile = recoveryFilename,
             ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
         };
@@ -2184,7 +2184,7 @@ public class ShareRecorderTests
         var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
         var config = new ClusterConfig
         {
-            Pools = Array.Empty<PoolConfig>(),
+            Pools = new[] { new PoolConfig { Id = "ltc-solo" } },
             ShareRecoveryFile = recoveryFilename,
             ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
         };
@@ -2250,6 +2250,163 @@ public class ShareRecorderTests
                 Arg.Any<CancellationToken>());
             await shareRepository.Received(1).BatchInsertAsync(connection, transaction,
                 Arg.Any<IEnumerable<PersistedShare>>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task RecoverConfiguredJournal_CommittedDatabaseRetirementDoesNotRequireHistoricalPoolId(
+        bool committedMarkerWasDurable, bool auxPowIndexesRemovedAfterCommit)
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-import-retirement-pool-change-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var importConfig = new ClusterConfig
+        {
+            Pools = new[] { new PoolConfig { Id = "ltc-solo" } },
+            ShareRecoveryFile = recoveryFilename,
+            ShareRecoveryStateDirectory = stateDirectory,
+        };
+        var fixture = CreateConfiguredRecoveryFixture(importConfig);
+
+        try
+        {
+            var recoveryRecord = auxPowIndexesRemovedAfterCommit
+                ? CreateDurableCandidate("committed-auxpow-before-pool-removal", "auxpow")
+                : new Share
+                {
+                    PoolId = "ltc-solo",
+                    Miner = "committed-before-pool-removal",
+                };
+            recoveryRecord.PoolId = "ltc-solo";
+            fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                    fixture.Connection, Arg.Any<CancellationToken>())
+                .Returns(true);
+            await fixture.Recorder.WriteRecoveryJournalAsync(new[] { recoveryRecord });
+            if(committedMarkerWasDurable)
+            {
+                fixture.Recorder.RecoveryArchiveMove = (_, _) =>
+                    throw new IOException(
+                        "retain committed source before pool change");
+            }
+            else
+            {
+                fixture.Recorder.RecoveryImportStateWriteCheckpoint = phase =>
+                {
+                    if(phase == ShareRecoveryImportState.ImportPhase.Committed)
+                        throw new IOException(
+                            "crash after database commit before marker advance");
+                };
+            }
+
+            await Assert.ThrowsAsync<IOException>(() =>
+                fixture.Recorder.RecoverSharesAsync(recoveryFilename));
+
+            var marker = new ShareRecoveryImportState(recoveryFilename,
+                stateDirectory).TryRead();
+            Assert.Equal(committedMarkerWasDurable
+                    ? ShareRecoveryImportState.ImportPhase.Committed
+                    : ShareRecoveryImportState.ImportPhase.Pending,
+                marker.Phase);
+            fixture.Transaction.Received(1).Commit();
+            fixture.ShareRepository.TryRegisterRecoveryImportAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<string>(), Path.GetFileName(recoveryFilename), 1,
+                    Arg.Any<CancellationToken>())
+                .Returns(false);
+            if(auxPowIndexesRemovedAfterCommit)
+            {
+                // The database manifest proves this pending marker already committed. Removing
+                // the indexes afterwards must not block evidence retirement or replay the block.
+                fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                        fixture.Connection, Arg.Any<CancellationToken>())
+                    .Returns(false);
+            }
+
+            // Simulate the restart using a configuration from which the already-imported
+            // historical pool has since been removed. Retirement must authenticate the committed
+            // evidence rather than reapplying the pre-import attribution allowlist.
+            var resumeConfig = new ClusterConfig
+            {
+                Pools = new[] { new PoolConfig { Id = "current-pool" } },
+                Persistence = new PersistenceConfig
+                {
+                    Postgres = new PostgresConfig
+                    {
+                        Host = "127.0.0.1",
+                        Port = 5432,
+                        Database = "miningcore",
+                        User = "miningcore",
+                    },
+                },
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = stateDirectory,
+            };
+            fixture.ShareRepository.GetMissingSharePartitionsAsync(
+                    fixture.Connection,
+                    Arg.Is<IEnumerable<string>>(ids =>
+                        ids.SequenceEqual(new[] { "current-pool" })),
+                    Arg.Any<CancellationToken>())
+                .Returns(Array.Empty<string>());
+            fixture.ShareRepository.HasRecoveryImportSchemaAsync(
+                    fixture.Connection, Arg.Any<CancellationToken>())
+                .Returns(true);
+
+            // Exercise the same database guards that production -rs runs before invoking the
+            // recorder. They validate today's configured pool, not the retired journal's
+            // historical attribution boundary.
+            await Program.EnsureSharePartitionsAsync(true, resumeConfig,
+                fixture.ConnectionFactory, fixture.ShareRepository,
+                CancellationToken.None);
+            await Program.EnsureShareRecoverySchemaAsync(true, resumeConfig,
+                fixture.ConnectionFactory, fixture.ShareRepository,
+                CancellationToken.None);
+
+            var resumed = new ShareRecorder(fixture.ConnectionFactory,
+                AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+                fixture.ShareRepository, fixture.BlockRepository, resumeConfig,
+                fixture.MessageBus);
+
+            var archive = await resumed.RecoverSharesAsync(recoveryFilename);
+
+            Assert.True(File.Exists(archive));
+            Assert.False(File.Exists(recoveryFilename));
+            Assert.False(File.Exists(resumed.RecoveryImportStateFilename));
+            Assert.False(File.Exists(resumed.RecoveryTerminalStateFilename));
+            await fixture.ShareRepository.Received(1)
+                .TryRegisterRecoveryImportAsync(fixture.Connection,
+                    fixture.Transaction, Arg.Any<string>(),
+                    Path.GetFileName(recoveryFilename), 1,
+                    Arg.Any<CancellationToken>());
+            if(auxPowIndexesRemovedAfterCommit)
+            {
+                await fixture.BlockRepository.Received(1)
+                    .HasMergedMiningBlockIndexesAsync(fixture.Connection,
+                        Arg.Any<CancellationToken>());
+                await fixture.BlockRepository.Received(1).InsertAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<Block>(), Arg.Any<CancellationToken>());
+                await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<IEnumerable<PersistedShare>>(),
+                    Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                await fixture.ShareRepository.Received(1).BatchInsertAsync(
+                    fixture.Connection, fixture.Transaction,
+                    Arg.Any<IEnumerable<PersistedShare>>(),
+                    Arg.Any<CancellationToken>());
+            }
         }
         finally
         {
@@ -2997,11 +3154,20 @@ public class ShareRecorderTests
 
             fixture.Transaction.Received(1).Rollback();
             fixture.Transaction.DidNotReceive().Commit();
+            fixture.ShareRepository.HasMatchingRecoveryImportAsync(
+                    fixture.Connection, Arg.Any<string>(),
+                    Path.GetFileName(filename), 200,
+                    Arg.Any<CancellationToken>())
+                .Returns(false, true);
 
             archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
 
             fixture.Transaction.Received(1).Rollback();
             fixture.Transaction.Received(1).Commit();
+            await fixture.ShareRepository.Received(2)
+                .HasMatchingRecoveryImportAsync(fixture.Connection,
+                    Arg.Any<string>(), Path.GetFileName(filename), 200,
+                    Arg.Any<CancellationToken>());
             await fixture.ShareRepository.Received(4).BatchInsertAsync(
                 fixture.Connection, fixture.Transaction,
                 Arg.Any<IEnumerable<PersistedShare>>(),
@@ -3145,6 +3311,9 @@ public class ShareRecorderTests
         fixture.BlockRepository.InsertAsync(fixture.Connection,
                 fixture.Transaction, Arg.Any<Block>())
             .Returns(true);
+        fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(true);
         fixture.ShareRepository.TryRegisterRecoveryImportAsync(fixture.Connection,
                 fixture.Transaction, Arg.Any<string>(), Arg.Any<string>(), 1,
                 Arg.Any<CancellationToken>())
@@ -3177,6 +3346,130 @@ public class ShareRecorderTests
                 File.Delete(archiveFilename);
             if(replayArchiveFilename != null)
                 File.Delete(replayArchiveFilename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_UnconfiguredPoolFailsBeforeMarkerOrTransaction()
+    {
+        var fixture = CreateRecoveryFixture();
+        var record = JsonConvert.DeserializeObject<Share>(RecoveryShareJson(1));
+        record.PoolId = "unknown-or-typo-pool";
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            JsonConvert.SerializeObject(record),
+        });
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            Assert.Contains("line 1", error.Message, StringComparison.Ordinal);
+            Assert.Contains("unconfigured pool ID \"unknown-or-typo-pool\"",
+                error.Message, StringComparison.Ordinal);
+            Assert.Contains("no recovery records were imported", error.Message,
+                StringComparison.Ordinal);
+            Assert.True(File.Exists(filename));
+            fixture.Connection.DidNotReceive().BeginTransaction(
+                Arg.Any<IsolationLevel>());
+            await fixture.ShareRepository.DidNotReceive()
+                .TryRegisterRecoveryImportAsync(Arg.Any<IDbConnection>(),
+                    Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+                    Arg.Any<string>(), Arg.Any<int>(),
+                    Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_SanitizedAuxPowRecordRequiresIndexesBeforeImportTransaction()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-recovery-schema-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var configFilename = Path.Combine(directory, "config.json");
+        var recoveryFilename = Path.Combine(directory, "reviewed-recovery.txt");
+        var activeRecoveryFilename = Path.Combine(directory,
+            "active-recovery.txt");
+        var stateDirectory = Path.Combine(directory, "state");
+        var configDocument = new
+        {
+            instanceId = 0,
+            persistence = new
+            {
+                postgres = new
+                {
+                    host = "127.0.0.1",
+                    port = 5432,
+                    database = "miningcore",
+                    user = "miningcore",
+                },
+            },
+            shareRecoveryFile = activeRecoveryFilename,
+            shareRecoveryStateDirectory = stateDirectory,
+            pools = new[]
+            {
+                new
+                {
+                    id = "doge-solo",
+                    coin = "dogecoin",
+                    enabled = true,
+                    extra = new
+                    {
+                        mergedMining = new
+                        {
+                            enabled = true,
+                        },
+                    },
+                },
+            },
+        };
+        var candidate = CreateDurableCandidate("recovered-auxpow", "auxpow");
+
+        try
+        {
+            await File.WriteAllTextAsync(configFilename,
+                JsonConvert.SerializeObject(configDocument));
+            await File.WriteAllTextAsync(recoveryFilename,
+                JsonConvert.SerializeObject(candidate) + Environment.NewLine);
+            var config = Program.ReadAndValidateConfig(configFilename, true);
+            var recoveredPool = Assert.Single(config.Pools);
+            Assert.False(recoveredPool.Enabled);
+            Assert.Null(recoveredPool.Extra);
+            Assert.Null(config.InstanceId);
+            var fixture = CreateConfiguredRecoveryFixture(config);
+            fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                    fixture.Connection, Arg.Any<CancellationToken>())
+                .Returns(false);
+
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                fixture.Recorder.RecoverSharesAsync(recoveryFilename));
+
+            Assert.Contains("add_auxpow_block_idempotency.sql", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("has not been imported", error.Message,
+                StringComparison.Ordinal);
+            Assert.True(File.Exists(recoveryFilename));
+            fixture.Connection.DidNotReceive().BeginTransaction(
+                Arg.Any<IsolationLevel>());
+            await fixture.ShareRepository.DidNotReceive()
+                .TryRegisterRecoveryImportAsync(Arg.Any<IDbConnection>(),
+                    Arg.Any<IDbTransaction>(), Arg.Any<string>(),
+                    Arg.Any<string>(), Arg.Any<int>(),
+                    Arg.Any<CancellationToken>());
+            await fixture.BlockRepository.Received(1)
+                .HasMergedMiningBlockIndexesAsync(fixture.Connection,
+                    Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(
+                activeRecoveryFilename);
+            Directory.Delete(directory, true);
         }
     }
 
@@ -7474,10 +7767,15 @@ public class ShareRecorderTests
         var blockRepository = Substitute.For<IBlockRepository>();
         var messageBus = messageBusOverride ?? Substitute.For<IMessageBus>();
         var mapper = AutoMapperFactory.CreateMapper();
-        var pool = new PoolConfig
+        var dogecoinPool = new PoolConfig
         {
             Id = "doge-solo",
             Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+        };
+        var litecoinPool = new PoolConfig
+        {
+            Id = "ltc-solo",
+            Template = new BitcoinTemplate { Symbol = "LTC", Name = "Litecoin" },
         };
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
@@ -7493,7 +7791,8 @@ public class ShareRecorderTests
 
         var recorder = new ShareRecorder(connectionFactory, mapper,
             new JsonSerializerSettings(), shareRepository, blockRepository,
-            new ClusterConfig { Pools = new[] { pool } }, messageBus);
+            new ClusterConfig { Pools = new[] { dogecoinPool, litecoinPool } },
+            messageBus);
 
         return new RecoveryFixture(recorder, connectionFactory, connection,
             transaction, shareRepository, blockRepository, messageBus);
@@ -7501,6 +7800,13 @@ public class ShareRecorderTests
 
     private static RecoveryFixture CreateConfiguredRecoveryFixture(ClusterConfig config)
     {
+        if(config.Pools?.Length == 0)
+        {
+            // Recovery mechanics in these fixtures use ltc-solo journal records. Production
+            // recovery now treats configured pool IDs as an explicit import allowlist.
+            config.Pools = new[] { new PoolConfig { Id = "ltc-solo" } };
+        }
+
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();

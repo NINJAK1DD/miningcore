@@ -36,6 +36,12 @@ public class BlockRepositoryTests
         {
             Assert.True(BlockOnlyCandidatePersistenceRules.TryGet(type,
                 out var rule));
+            Assert.True(BlockOnlyCandidatePersistenceRules
+                .RequiresIdempotencyIndexes(new global::Miningcore.Blockchain.Share
+                {
+                    IsBlockCandidate = true,
+                    BlockType = type,
+                }));
             var connection = new RecordingDbConnection();
 
             await repository.InsertAsync(connection, null, new Block
@@ -52,6 +58,30 @@ public class BlockRepositoryTests
             Assert.Contains(rule.ConflictClause, connection.CommandText,
                 StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    [Fact]
+    public void RecoveryIndexRequirementExcludesRecordsThatCannotInsertBlocks()
+    {
+        Assert.False(BlockOnlyCandidatePersistenceRules
+            .RequiresIdempotencyIndexes(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = false,
+                BlockType = "auxpow",
+            }));
+        Assert.False(BlockOnlyCandidatePersistenceRules
+            .RequiresIdempotencyIndexes(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = true,
+                BlockRecordEmitted = true,
+                BlockType = "auxpow",
+            }));
+        Assert.False(BlockOnlyCandidatePersistenceRules
+            .RequiresIdempotencyIndexes(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = true,
+                BlockType = "ordinary",
+            }));
     }
 
     [Fact]

@@ -92,6 +92,16 @@ public class Program : ProcessStatusBackgroundService
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
     private static readonly AdminApiCredentialProvider adminApiCredentialProvider =
         new();
+    private static readonly HashSet<string> RecoveryConfigurationProperties =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "coinTemplates",
+            "logging",
+            "persistence",
+            "pools",
+            "shareRecoveryFile",
+            "shareRecoveryStateDirectory",
+        };
 
     public static async Task<int> Main(string[] args)
     {
@@ -492,7 +502,7 @@ public class Program : ProcessStatusBackgroundService
                         // notification after the transaction succeeds. Coin metadata improves
                         // those notifications, but it must never prevent the journal import.
                         var recoveryCoinTemplates = LoadCoinTemplates();
-                        AssignPoolTemplates(clusterConfig.Pools.Where(config => config.Enabled),
+                        AssignRecoveryPoolTemplates(clusterConfig,
                             recoveryCoinTemplates);
                     },
                     () => RecoverSharesAsync(shareRecoveryOption.Value()),
@@ -959,6 +969,33 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    internal static void AssignRecoveryPoolTemplates(ClusterConfig config,
+        IReadOnlyDictionary<string, CoinTemplate> coinTemplates)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(coinTemplates);
+
+        // Enabled state controls live mining, not journal attribution. Recovery may use an
+        // all-disabled safety configuration, so enrich every configured pool when its template
+        // remains available.
+        var missing = new List<string>();
+        foreach(var pool in config.Pools)
+        {
+            if(!string.IsNullOrEmpty(pool.Coin) &&
+               coinTemplates.TryGetValue(pool.Coin, out var template))
+            {
+                pool.Template = template;
+                continue;
+            }
+
+            missing.Add($"{pool.Id} ({pool.Coin ?? "<missing>"})");
+        }
+
+        if(missing.Count > 0)
+            throw new PoolStartupException(
+                $"Recovery coin templates are unavailable for pool(s): {string.Join(", ", missing)}");
+    }
+
     private async Task RunPool(PoolConfig poolConfig, CancellationToken ct)
     {
         // resolve implementation
@@ -1032,20 +1069,30 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        if(!config.Pools.Any(x => x.Enabled))
-            throw new PoolStartupException("No pools are enabled.");
-
-        // set some defaults
-        foreach(var poolConfig in config.Pools)
-        {
-            poolConfig.EnableInternalStratum ??=
-                config.ShareRelays == null || config.ShareRelays.Length == 0;
-        }
-
         try
         {
+            // Let FluentValidation report null collections or entries before live-startup code
+            // dereferences them. JSON schema validation normally catches these first, but direct
+            // callers and tests deserve the same configuration boundary instead of an NRE.
+            if(config.Pools == null || config.Pools.Any(pool => pool == null))
+                config.Validate(recoveryMode);
+
+            if(!recoveryMode && !config.Pools.Any(pool => pool.Enabled))
+                throw new PoolStartupException("No pools are enabled.");
+
+            if(!recoveryMode)
+            {
+                // Apply live-only defaults before the complete validator examines listeners.
+                foreach(var poolConfig in config.Pools)
+                {
+                    poolConfig.EnableInternalStratum ??=
+                        config.ShareRelays == null || config.ShareRelays.Length == 0;
+                }
+            }
+
             config.Validate(recoveryMode);
-            ValidateMergedMiningDeployment(config);
+            if(!recoveryMode)
+                ValidateMergedMiningDeployment(config);
 
             var listenerConflict = FindApiListenerStratumPortConflict(
                 config, recoveryMode);
@@ -1053,7 +1100,8 @@ public class Program : ProcessStatusBackgroundService
                 throw new PoolStartupException(
                     $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
 
-            if(config.Notifications?.Admin?.Enabled == true)
+            if(!recoveryMode &&
+               config.Notifications?.Admin?.Enabled == true)
             {
                 if(string.IsNullOrEmpty(config.Notifications?.Email?.FromName))
                     throw new PoolStartupException($"Notifications are enabled but email sender name is not configured (notifications.email.fromName)");
@@ -1065,7 +1113,7 @@ public class Program : ProcessStatusBackgroundService
                     throw new PoolStartupException($"Admin notifications are enabled but recipient address is not configured (notifications.admin.emailAddress)");
             }
 
-            if(string.IsNullOrEmpty(config.Logging.LogFile))
+            if(string.IsNullOrEmpty(config.Logging?.LogFile))
             {
                 // emit a newline before regular logging output starts
                 Console.WriteLine();
@@ -1188,7 +1236,8 @@ public class Program : ProcessStatusBackgroundService
             Console.WriteLine($"Using configuration file '{file}'");
             if(skipApiListenerSettings)
                 Console.WriteLine(
-                    "Recovery mode: API and Stratum listener configuration discarded (no sockets are opened)");
+                    "Recovery mode: unused live cluster and pool configuration discarded " +
+                    "(no API, Stratum, payout, or daemon services are started)");
 
             var serializer = JsonSerializer.Create(new JsonSerializerSettings
             {
@@ -1206,12 +1255,15 @@ public class Program : ProcessStatusBackgroundService
                     if(skipApiListenerSettings)
                     {
                         // Recovery configuration policy:
-                        // - api: stream-discarded because recovery opens no HTTP sockets;
-                        // - pools[].ports: replaced because recovery opens no Stratum sockets;
+                        // - cluster: stream-rebuilt from the explicit recovery allowlist;
+                        // - logging: rebuilt from console settings consumed by recovery;
+                        // - pools[]: rebuilt from the recovery allowlist (id plus optional coin
+                        //   metadata) because import starts no live pool services;
                         // - coinTemplates: valid paths retained, malformed optional metadata removed.
                         // Configuration consumed by recovery remains subject to normal duplicate,
                         // schema and CLR-binding validation.
-                        RemoveStratumConfigurationForRecovery(document);
+                        SanitizeConfigurationForRecovery(document);
+                        SanitizeLoggingForRecovery(document);
                         SanitizeCoinTemplatesForRecovery(document);
                     }
                     RemoveDisabledApiSettings(document);
@@ -1303,7 +1355,7 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static JObject LoadConfigurationDocument(JsonReader reader,
-        bool skipApiConfiguration)
+        bool recoveryMode)
     {
         var strictSettings = new JsonLoadSettings
         {
@@ -1311,13 +1363,13 @@ public class Program : ProcessStatusBackgroundService
                 DuplicatePropertyNameHandling.Error,
         };
 
-        if(!skipApiConfiguration)
+        if(!recoveryMode)
             return JObject.Load(reader, strictSettings);
 
-        // Recovery opens no HTTP listeners and does not consume API settings. Filter every
-        // top-level case variant while streaming so even exact duplicate API properties are
-        // discarded before JObject's strict duplicate-property handling. Duplicate properties
-        // everywhere else remain errors.
+        // Recovery consumes only the allowlisted cluster properties. Filter every other
+        // top-level case variant while streaming so malformed or duplicate live-only settings
+        // cannot block emergency work. Exact and case-variant duplicates within the recovery
+        // boundary remain errors.
         if(!ReadNextContentToken(reader) ||
             reader.TokenType != JsonToken.StartObject)
             throw new JsonSerializationException(
@@ -1352,7 +1404,7 @@ public class Program : ProcessStatusBackgroundService
                     $"Configuration property '{propertyName}' has no value." +
                     propertyLocation);
 
-            if(propertyName.Equals("api", StringComparison.OrdinalIgnoreCase))
+            if(!RecoveryConfigurationProperties.Contains(propertyName))
             {
                 reader.Skip();
                 continue;
@@ -1383,7 +1435,7 @@ public class Program : ProcessStatusBackgroundService
         return false;
     }
 
-    private static void RemoveStratumConfigurationForRecovery(
+    private static void SanitizeConfigurationForRecovery(
         JObject document)
     {
         var pools = document.GetValue("pools",
@@ -1393,18 +1445,60 @@ public class Program : ProcessStatusBackgroundService
 
         foreach(var pool in pools.OfType<JObject>())
         {
-            // Recovery opens no Stratum sockets and never consumes endpoints. Replace the
-            // subtree before schema validation and Dictionary<int, PoolEndpoint> binding so
-            // malformed or out-of-range raw port keys cannot block emergency recovery. Strict
-            // exact-duplicate and case-variant checks have already run above.
-            foreach(var property in pool.Properties().Where(property =>
-                        property.Name.Equals("ports",
-                            StringComparison.OrdinalIgnoreCase)).ToArray())
-                property.Remove();
+            // Import consumes only the pool ID for attribution and optional coin metadata for
+            // best-effort notification enrichment. Rebuild the object from that allowlist so
+            // malformed live-only settings cannot block emergency recovery. Duplicate and
+            // case-variant ambiguity checks have already run above.
+            var id = pool.Properties().FirstOrDefault(property =>
+                property.Name.Equals("id",
+                    StringComparison.OrdinalIgnoreCase))?.Value.DeepClone();
+            var coin = pool.Properties().FirstOrDefault(property =>
+                property.Name.Equals("coin",
+                    StringComparison.OrdinalIgnoreCase));
+            var coinValue = coin?.Value.Type == JTokenType.String
+                ? coin.Value.Value<string>() ?? string.Empty
+                : string.Empty;
 
-            // Pool ports are required by the schema even though recovery does not use them.
+            pool.RemoveAll();
+
+            // Do not synthesize pool identity: missing or malformed IDs remain subject to the
+            // normal schema and recovery validator. Canonical schema fillers represent services
+            // recovery deliberately does not start.
+            if(id != null)
+                pool["id"] = id;
+            pool["coin"] = coinValue;
             pool["ports"] = new JObject();
+            pool["daemons"] = new JArray();
         }
+    }
+
+    private static void SanitizeLoggingForRecovery(JObject document)
+    {
+        var property = document.Properties().FirstOrDefault(property =>
+            property.Name.Equals("logging",
+                StringComparison.OrdinalIgnoreCase));
+        var sanitized = new JObject();
+
+        if(property?.Value is JObject logging)
+        {
+            // Recovery always writes to the console and only consumes these two settings.
+            // Discard file-only and live-service logging fields so stale values cannot block
+            // an emergency import. Preserve the consumed tokens so schema/CLR validation still
+            // rejects malformed console settings rather than silently changing their meaning.
+            foreach(var name in new[] { "level", "enableConsoleColors" })
+            {
+                var consumed = logging.Properties().FirstOrDefault(candidate =>
+                    candidate.Name.Equals(name,
+                        StringComparison.OrdinalIgnoreCase));
+                if(consumed != null)
+                    sanitized[name] = consumed.Value.DeepClone();
+            }
+        }
+
+        if(property == null)
+            document["logging"] = sanitized;
+        else
+            property.Value = sanitized;
     }
 
     private static void SanitizeCoinTemplatesForRecovery(JObject document)
@@ -1509,7 +1603,10 @@ public class Program : ProcessStatusBackgroundService
 
     private static void ConfigureLogging()
     {
-        var config = clusterConfig.Logging;
+        // Recovery must remain visible even when an operator deliberately supplies the smallest
+        // accepted import configuration or constructs it outside the JSON sanitization path.
+        var config = clusterConfig.Logging ??
+            (isShareRecoveryMode ? new ClusterLoggingConfig() : null);
         var loggingConfig = new LoggingConfiguration();
 
         if(config != null)
@@ -1655,6 +1752,12 @@ public class Program : ProcessStatusBackgroundService
             services.GetService<IConnectionFactory>(),
             services.GetService<IShareRepository>(), CancellationToken.None);
 
+        // Recovery stops at its database and ownership boundary. It neither consumes mining
+        // concurrency configuration nor initializes native hashing and solver runtimes. The
+        // journal performs its evidence-driven block-index check immediately before import.
+        if(isShareRecoveryMode)
+            return;
+
         if(RequiresMergedMiningPersistence(clusterConfig))
         {
             await EnsureMergedMiningSchemaAsync(clusterConfig,
@@ -1774,7 +1877,7 @@ public class Program : ProcessStatusBackgroundService
                 "PostgreSQL share persistence is configured but its repository services are unavailable.");
 
         var poolIds = config.Pools?
-            .Where(x => x.Enabled)
+            .Where(x => recoveryMode || x.Enabled)
             .Select(x => x.Id)
             .ToArray() ?? Array.Empty<string>();
 
@@ -1791,8 +1894,9 @@ public class Program : ProcessStatusBackgroundService
             ? "The recovery journal has not been imported."
             : "Startup stopped before the share recorder or Stratum opened.";
 
+        var poolScope = recoveryMode ? "configured recovery" : "enabled";
         throw new PoolStartupException(
-            $"The partitioned PostgreSQL shares table has no partition for enabled pool ID(s): " +
+            $"The partitioned PostgreSQL shares table has no partition for {poolScope} pool ID(s): " +
             $"{formattedPoolIds}. Create one LIST partition per pool before starting Miningcore " +
             "or importing a recovery journal. See 'Advanced share-table partitioning' in " +
             $"docs/database.md. {failureBoundary}");

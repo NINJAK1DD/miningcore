@@ -274,14 +274,61 @@ cd REPLACE_WITH_MININGCORE_INSTALL_DIRECTORY
   -rs REPLACE_WITH_REVIEWED_RECOVERY_FILE
 ```
 
+The one-shot importer validates only configuration it consumes. At cluster level that allowlist is
+`logging`, `persistence`, `pools`, `shareRecoveryFile`, `shareRecoveryStateDirectory` and optional
+`coinTemplates`; malformed or duplicate live-only top-level settings are discarded while the file
+is streamed. Recovery retains only the consumed `logging.level` and
+`logging.enableConsoleColors` settings and validates their types; stale file-only logging settings
+are discarded. An absent, null or wholly malformed logging section is replaced with default
+informational, non-coloured console logging so emergency progress remains visible. Recovery returns
+after its ownership and PostgreSQL preflights and does not initialize mining, hashing or native
+solver runtimes.
+
+Keep a non-empty `pools` array with unique, non-empty pool IDs and configure a complete
+`persistence.postgres` endpoint for the target database. Pools may all remain disabled during the
+import. Prefer the minimal set of pool IDs actually present in the reviewed journal: partition
+preflight checks every configured ID, including an extra historical pool that has no record in this
+source. Configured pool IDs are an explicit import allowlist: every journal record must match one
+exactly. An unknown or mistyped record ID fails before a pending marker, transaction or manifest is
+created. Add an intentional historical pool ID to the recovery configuration only after inspecting
+the retained journal. After a committed import, crash-resume retirement revalidates the marker,
+manifest, record count and content hash without requiring those historical IDs to remain in the
+current configuration; it cannot replay the already-committed data. Committed cleanup likewise
+does not require current AuxPoW indexes because it never replays a block. Fresh or unproven AuxPoW
+imports still require those indexes before Miningcore publishes a pending marker or opens the
+import transaction. The configured recovery path and state directory still identify active journal
+ownership, terminal anchors and interrupted retirement markers, even when `-rs` names a reviewed
+copy.
+
+Live mining settings do not need to be repaired before an emergency import. After ambiguity checks,
+recovery rebuilds every pool object from its required `id` and optional string `coin` metadata. All
+other pool fields are discarded, including cluster instance identity, enabled state, wallet and
+daemon settings, API/Stratum listeners, payout and banning policy, reward recipients, timing values
+and extension data. Normal startup restores strict validation for live configuration, so correct it
+before restarting the pool.
+
+Recovery checks a partition for every configured pool ID even though all sanitized pools are
+disabled. Once the complete journal has passed integrity and semantic validation, Miningcore also
+requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses `auxpow`,
+`auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
+recovery evidence itself rather than discarded live merged-mining settings, and it is checked before
+the import transaction begins.
+
+Coin definitions are notification enrichment, not an import prerequisite. Recovery retains valid
+custom template paths and attempts to load and assign templates to every configured pool, including
+disabled pools. A missing or malformed path, missing coin metadata, or undefined coin logs a warning
+and import continues; a recovered block-found notification may be skipped when no template could be
+assigned. Database persistence and journal integrity failures remain fatal.
+
 #### What the importer verifies
 
 Before opening its PostgreSQL transaction, the importer validates:
 
 - every versioned frame's markers, sequence and previous-frame link;
 - the declared record count, record SHA-256 and deterministic frame digest;
-- the complete terminal anchor when importing the configured chained-v2 recovery journal; and
-- the source's stable regular-file identity.
+- the complete terminal anchor when importing the configured chained-v2 recovery journal;
+- the source's stable regular-file identity; and
+- every record's pool ID against the configured recovery pool allowlist.
 
 Frame hashes normalise line endings to `\n`, so they protect logical records rather than the original
 physical newline encoding. Verified frame-comment lines are skipped while records are deserialized.
@@ -947,8 +994,9 @@ pool later. An auxiliary DOGE block-only record does not create an ordinary shar
 that can accept direct miners still needs its own partition.
 
 Miningcore now checks this during startup on direct recorder nodes, share-relay receivers and
-recovery imports. If an enabled pool has no matching partition, startup fails before Stratum opens
-or recovery data is imported. Sender-only share-relay nodes skip this local check because their
+recovery imports. Normal startup checks enabled pool IDs; recovery checks every configured recovery
+pool ID because enabled state is deliberately discarded. A missing partition fails before Stratum
+opens or recovery data is imported. Sender-only share-relay nodes skip this local check because their
 ordinary shares are recorded elsewhere.
 
 A PostgreSQL `DEFAULT` partition is also routable and therefore passes the preflight, but dedicated

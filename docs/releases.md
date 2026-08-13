@@ -275,17 +275,40 @@ are reported together so operators can correct the complete configuration before
 [API listener isolation](configuration.md#api-listener-isolation).
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
-Stratum sockets. Recovery stream-discards every top-level `api` case variant before strict duplicate
-and schema validation. After strict duplicate and case-variant checks, it replaces each pool's unused
-`ports` subtree before schema validation and typed dictionary binding, then skips the remaining
-Stratum port, address and TLS certificate checks. Exact duplicates outside the unused API subtree and
-case-variant ambiguities remain errors. The configuration schema therefore defers listener range and
-conflict enforcement to normal startup so an invalid, duplicated or stale listener setting cannot
-block a durable-share import or recovery-state command.
+Stratum sockets. Recovery stream-rebuilds the top-level configuration from `logging`, `persistence`,
+`pools`, `shareRecoveryFile`, `shareRecoveryStateDirectory` and optional `coinTemplates`. Malformed
+or duplicate live-only API, statistics, relay, banning, notification, NiceHash, memory,
+mining-concurrency and cluster-identity settings therefore cannot block a durable-share import or
+recovery-state command. Strict duplicate, schema and CLR validation remains for the settings the
+recovery command consumes. After ambiguity checks, each pool is similarly rebuilt from its required
+ID plus optional string coin metadata, so stale listener, wallet, daemon, payout, banning, recipient,
+timing and extension fields are excluded from the recovery boundary.
+
+Recovery logging is now narrowed to the console level and colour settings consumed by the one-shot
+command. Stale file-only logging values cannot block import, and an absent, null or wholly malformed
+logging section receives a default informational, non-coloured console logger so recovery progress
+remains visible. Invalid but correctly typed log-level names now fail during configuration
+validation with the accepted NLog names listed, rather than surfacing later during logger setup.
+Committed-journal retirement now remains resumable if a historical pool ID is removed from the
+configuration after the database commit. The resume path still proves the PostgreSQL manifest,
+record count and content hash before destructive retirement and never replays the committed data.
+That committed cleanup also no longer depends on the current AuxPoW indexes; fresh or unproven
+imports still require them before their transaction begins.
 
 Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
 template paths are retained, while non-string entries or a malformed non-array value cannot block
 share import, verification or acknowledgement. Normal startup continues to reject those values.
+
+Share import now validates the configuration boundary it actually consumes. `-rs` accepts an
+all-disabled pool set and returns from preflight before mining, hashing or native solver
+initialization. Pool IDs and complete PostgreSQL persistence remain mandatory. Recovery partition
+preflight checks every configured pool ID, and those IDs form an explicit journal allowlist: an
+unknown or mistyped record ID fails before a pending marker, transaction or manifest registration.
+Validated journal records that use merged-mining block persistence trigger the AuxPoW
+idempotency-index preflight before the import transaction begins.
+Best-effort template loading now includes disabled pools so recovered block notifications retain coin
+metadata when available; missing paths, missing metadata or undefined coins warn and continue.
+Normal startup remains unchanged and strict.
 
 The regenerated configuration schema also corrects previously omitted boolean fields
 (`banning.banOnLoginFailure`, `logging.gpdrCompliant`, `pools[].enableAsicBoost` and

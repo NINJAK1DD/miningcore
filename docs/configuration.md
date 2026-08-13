@@ -95,18 +95,45 @@ its keys are consumed by payout-scheme implementations rather than bound to CLR 
 
 ### Recovery-mode configuration handling
 
-`-rs` share recovery opens neither API nor Stratum sockets. Miningcore prints a recovery-mode
-diagnostic, discards every top-level case variant of the unused API section, and leaves `api` unset
-in the in-memory recovery configuration. Damaged, duplicated or stale HTTP listener settings
-therefore cannot block an emergency share import or recovery-state command.
+`-rs` share recovery opens neither API nor Stratum sockets and does not initialize mining, hashing
+or native solver runtimes. Miningcore prints a recovery-mode diagnostic and rebuilds the cluster
+configuration from an explicit allowlist: `logging`, `persistence`, `pools`, `shareRecoveryFile`,
+`shareRecoveryStateDirectory` and optional `coinTemplates`. Other top-level live settings are
+discarded while the JSON is streamed, so malformed or duplicate API, statistics, relay, banning,
+notification, NiceHash, memory, mining-concurrency and cluster-identity settings cannot block an
+emergency import or recovery-state command. Recovery rebuilds `logging` from only the console
+`level` and `enableConsoleColors` fields it consumes; malformed file-only settings are discarded,
+while those two console fields remain strictly typed. If `logging` is absent, null or malformed as
+a whole, Miningcore synthesizes the default informational, non-coloured console configuration so
+the one-shot command remains visible. Other allowlisted settings retain strict duplicate, schema
+and CLR-binding validation because recovery consumes them.
 
-After strict duplicate and case-variant checks, recovery replaces every pool's unused `ports`
-subtree with an empty object before schema validation and typed dictionary binding. Damaged,
-nonnumeric or out-of-range Stratum port keys cannot block recovery, while ambiguous configuration
-names remain errors. Recovery also skips the remaining Stratum port, address and TLS certificate
-checks. Optional `coinTemplates` metadata is also sanitized before schema validation: valid custom
-template paths are retained, non-string array entries are removed, and a malformed non-array value
-is discarded. Normal startup remains strict and rejects those malformed values.
+After strict duplicate and case-variant checks, recovery rebuilds every pool object from the only
+pool fields it consumes: required `id` and optional string `coin` metadata. It discards every
+live-only field, including cluster instance identity, enabled state, Stratum listeners, wallet and
+daemon settings, payout and banning policy, reward recipients, timing values and extension data.
+Empty `ports` and `daemons` placeholders satisfy the configuration schema without starting those
+services. Damaged or stale
+live-pool values therefore cannot block recovery, while ambiguous names and missing or malformed
+pool identity remain errors. Pools may all be disabled during import. A non-empty pool collection
+with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory. Those
+IDs form a fail-closed import allowlist: every journal record must name one exactly. An unknown,
+missing or mistyped record pool ID stops recovery before the pending marker, database transaction
+or manifest registration so the operator can inspect the journal and add an intentional historical
+pool explicitly.
+
+Before import, Miningcore checks share-table partition coverage for every configured recovery pool
+ID, including pools whose discarded live configuration had them disabled. After validating the
+complete journal, it also checks the AuxPoW block-idempotency indexes when any record that would be
+inserted uses a declared merged-mining block type. This evidence-driven check does not depend on the
+discarded live `mergedMining` extension and runs before the import transaction or pending marker.
+
+Optional template metadata is best-effort notification enrichment. Valid custom `coinTemplates`
+paths are retained, non-string array entries are removed, and a malformed non-array value is
+discarded. Miningcore attempts to assign loaded templates to every configured pool, including
+disabled pools. Missing template files, missing pool coin metadata and undefined coins warn without
+blocking the import; recovered block notifications may be skipped when no template is available.
+Normal startup remains strict and rejects stale live-pool or template configuration.
 
 ### Containers and reverse proxies
 
@@ -166,6 +193,11 @@ Do not copy a setting from a different coin merely because it uses the same broa
 coin definition and daemon/wallet documentation together.
 
 ## Log files and rotation
+
+`logging.level` accepts NLog's `trace`, `debug`, `info`/`information`, `warn`/`warning`, `error`,
+`fatal` and `off`/`none` names without regard to case. Omit it or use an empty string for the
+default `info` level. Miningcore rejects any other name during configuration validation, before
+logging is configured.
 
 Every file configured by `logging.logFile`, `logging.apiLogFile` or `logging.perPoolLogFile` is
 rotated by Miningcore through NLog. An active file is archived before a write that would grow it

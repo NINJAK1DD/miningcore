@@ -1484,6 +1484,23 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 return resumedArchive;
             }
 
+            var pendingImportAlreadyCommitted = false;
+            if(existingMarker?.Phase ==
+               ShareRecoveryImportState.ImportPhase.Pending)
+            {
+                // A process can die after PostgreSQL commits but before the pending marker is
+                // advanced. Read-only manifest proof lets validation authenticate that state
+                // without requiring historical pool IDs that may have since left the config.
+                // The transaction below still performs its own atomic registration check, so a
+                // removed or changed manifest can never turn this hint into an unvalidated import.
+                using var manifestConnection = await cf.OpenConnectionAsync();
+                pendingImportAlreadyCommitted =
+                    await shareRepo.HasMatchingRecoveryImportAsync(
+                        manifestConnection, existingMarker.FileHash,
+                        Path.GetFileName(filename), existingMarker.RecordCount,
+                        CancellationToken.None);
+            }
+
             List<(string PoolId, Block Block)> insertedBlocks = new();
             int validatedCount;
             string fileHash;
@@ -1517,23 +1534,58 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
                 // Pass one validates every record before a database transaction is opened.
                 var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
+                var requiresBlockIdempotencyIndexes = false;
                 validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
                 {
                     validationHash.Append(shares);
+                    requiresBlockIdempotencyIndexes |= shares.Any(
+                        BlockOnlyCandidatePersistenceRules.RequiresIdempotencyIndexes);
                     return Task.CompletedTask;
-                });
+                }, !pendingImportAlreadyCommitted);
                 fileHash = validationHash.GetHash();
                 operationOwnership.EnsureJournalPathIsExclusive();
 
-                // Publish an independent pending marker before the database transaction begins.
-                // A crash after commit but before source retirement can therefore be resumed
-                // without allowing normal mining to append to the already-imported source.
                 var reservedArchiveFilename = existingMarker?.ArchiveFilename ??
                     BuildRecoveryArchiveFilename(filename);
-                marker = importState.Begin(fileHash, validatedCount,
-                    reservedArchiveFilename, configuredTail?.Sequence,
-                    configuredTail?.FrameDigest,
-                    configuredSource && configuredTail?.IsChainedFormat == true);
+
+                if(pendingImportAlreadyCommitted)
+                {
+                    // Begin proves the locked source matches the existing pending marker. Advance
+                    // it without replay or current-schema checks; retirement independently proves
+                    // the manifest again before changing the source or anchor. New imports take
+                    // the branch below and still check required indexes before marker publication.
+                    marker = importState.Begin(fileHash, validatedCount,
+                        reservedArchiveFilename, configuredTail?.Sequence,
+                        configuredTail?.FrameDigest,
+                        configuredSource && configuredTail?.IsChainedFormat == true);
+                    marker = importState.MarkCommitted(marker);
+                }
+                else
+                {
+                    // Recovery deliberately strips live merged-mining settings, so the validated
+                    // evidence—not deployment configuration—decides whether these indexes are
+                    // required. Check before publishing the pending marker or opening the import
+                    // transaction, while the locked handle still pins the validated journal.
+                    if(requiresBlockIdempotencyIndexes)
+                    {
+                        var schemaReady = await cf.Run(con =>
+                            blockRepo.HasMergedMiningBlockIndexesAsync(con,
+                                CancellationToken.None));
+                        if(!schemaReady)
+                            throw new PoolStartupException(
+                                BlockOnlyCandidatePersistenceRules.MissingIndexesMessage);
+
+                        operationOwnership.EnsureJournalPathIsExclusive();
+                    }
+
+                    // Publish an independent pending marker before the database transaction.
+                    // A crash after commit can then be identified through its manifest without
+                    // allowing normal mining to append to the already-imported source.
+                    marker = importState.Begin(fileHash, validatedCount,
+                        reservedArchiveFilename, configuredTail?.Sequence,
+                        configuredTail?.FrameDigest,
+                        configuredSource && configuredTail?.IsChainedFormat == true);
+                }
 
                 reader.DiscardBufferedData();
                 stream.Seek(0, SeekOrigin.Begin);
@@ -1741,11 +1793,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         using var reader = new StreamReader(stream, new UTF8Encoding(false),
             true, 1024, leaveOpen: true);
         var contentHash = new RecoveryContentHasher(jsonSerializerSettings);
+        // The marker and PostgreSQL manifest already prove this content was committed. Retirement
+        // must revalidate the exact record count and canonical content hash, but it must not depend
+        // on the current pool allowlist: an operator may have removed a historical pool after the
+        // commit and before this crash-resume cleanup completed.
         var recordCount = await ProcessRecoveryRecordsAsync(reader, shares =>
         {
             contentHash.Append(shares);
             return Task.CompletedTask;
-        });
+        }, false);
         var fileHash = contentHash.GetHash();
 
         if(recordCount != marker.RecordCount ||
@@ -1886,7 +1942,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     }
 
     private async Task<int> ProcessRecoveryRecordsAsync(StreamReader reader,
-        Func<IList<Share>, Task> processBatch)
+        Func<IList<Share>, Task> processBatch,
+        bool requireConfiguredPool = true)
     {
         const int bufferSize = 100;
         var shares = new List<Share>(bufferSize);
@@ -1931,6 +1988,16 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             if(share == null)
                 throw new InvalidDataException(
                     $"Recovery record at line {lineNumber} is null");
+
+            if(requireConfiguredPool &&
+               (share.PoolId == null || !pools.ContainsKey(share.PoolId)))
+            {
+                var poolId = JsonConvert.SerializeObject(share.PoolId);
+                throw new InvalidDataException(
+                    $"Recovery record at line {lineNumber} references unconfigured pool ID {poolId}. " +
+                    "Add the exact historical pool ID to the recovery configuration and review " +
+                    "the journal before retrying; no recovery records were imported.");
+            }
 
             shares.Add(share);
 

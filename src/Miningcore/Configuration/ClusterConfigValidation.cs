@@ -198,6 +198,7 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
 
         RuleFor(j => j.Coin)
             .NotNull()
+            .When(_ => !recoveryMode)
             .WithMessage("Pool: Coin config missing or empty");
 
         RuleFor(j => j.Ports)
@@ -250,15 +251,18 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
         RuleFor(j => j.Address)
             .NotNull()
             .NotEmpty()
+            .When(_ => !recoveryMode)
             .WithMessage("Pool: Wallet address missing or empty");
 
         RuleFor(j => j.Daemons)
             .NotNull()
             .NotEmpty()
+            .When(_ => !recoveryMode)
             .WithMessage("Pool: Daemons missing or empty");
 
         RuleForEach(j => j.Daemons)
-            .SetValidator(new AuthenticatedNetworkEndpointConfigValidator<DaemonEndpointConfig>());
+            .SetValidator(new AuthenticatedNetworkEndpointConfigValidator<DaemonEndpointConfig>())
+            .When(_ => !recoveryMode);
     }
 }
 
@@ -276,20 +280,44 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
     public ClusterConfigValidator(bool recoveryMode = false)
     {
+        RuleFor(j => j.Logging)
+            .SetValidator(new ClusterLoggingConfigValidator())
+            .When(j => j.Logging != null);
+
         RuleFor(j => j.PaymentProcessing)
-            .NotNull();
+            .NotNull()
+            .When(_ => !recoveryMode);
 
         RuleFor(j => j.Persistence)
             .NotNull()
-            .When(x => x.PaymentProcessing?.Enabled == true && x.ShareRelay == null);
+            .When(x => !recoveryMode &&
+                x.PaymentProcessing?.Enabled == true && x.ShareRelay == null);
+
+        RuleFor(j => j.Persistence)
+            .NotNull()
+            .When(_ => recoveryMode)
+            .WithMessage("Share recovery requires persistence configuration");
+
+        RuleFor(j => j.Persistence.Postgres)
+            .NotNull()
+            .When(x => recoveryMode && x.Persistence != null)
+            .WithMessage("Share recovery requires PostgreSQL persistence");
+
+        RuleFor(j => j.Persistence.Postgres)
+            .SetValidator(new RecoveryPostgresConfigValidator())
+            .When(x => recoveryMode && x.Persistence?.Postgres != null);
 
         RuleFor(j => j.Pools)
             .NotNull()
             .NotEmpty();
 
+        RuleForEach(j => j.Pools)
+            .NotNull()
+            .WithMessage("Pool configuration entry must not be null");
+
         RuleFor(j => j.InstanceId)
             .GreaterThan((byte) 0)
-            .When(x => x.InstanceId.HasValue)
+            .When(x => !recoveryMode && x.InstanceId.HasValue)
             .WithMessage("instanceId must either be omitted or be non-zero");;
 
         RuleFor(j => j.Api)
@@ -301,6 +329,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .Must((pc, pools, ctx) =>
             {
                 var ids = pools
+                    .Where(pool => pool != null)
                     .GroupBy(x => x.Id)
                     .ToArray();
 
@@ -312,6 +341,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
                 return true;
             })
+            .When(j => j.Pools != null)
             .WithMessage("Duplicate pool id '{poolId}'");
 
         // Reject only listener pairs that the operating system cannot bind
@@ -325,9 +355,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
                         $"Stratum listener conflict: pool '{conflict.First.PoolId}' endpoint {conflict.First.Endpoint} overlaps pool '{conflict.Second.PoolId}' endpoint {conflict.Second.Endpoint}");
                 }
             })
-            .When(_ => !recoveryMode);
+            .When(config => !recoveryMode && config.Pools != null);
 
         RuleForEach(j => j.Pools)
+            .Where(pool => pool != null)
             .SetValidator(new PoolConfigValidator(recoveryMode));
     }
 
@@ -336,7 +367,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         IEnumerable<PoolConfig> pools)
     {
         var bindings = (pools ?? Enumerable.Empty<PoolConfig>())
-            .Where(pool => pool.Enabled &&
+            .Where(pool => pool != null && pool.Enabled &&
                 pool.EnableInternalStratum == true &&
                 pool.Ports?.Any() == true)
             .SelectMany(pool => pool.Ports.Select(entry =>
@@ -377,6 +408,59 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         }
 
         return conflicts;
+    }
+}
+
+public class ClusterLoggingConfigValidator : AbstractValidator<ClusterLoggingConfig>
+{
+    public ClusterLoggingConfigValidator()
+    {
+        RuleFor(j => j.Level)
+            .Must(IsValidLogLevel)
+            .WithMessage(
+                "Logging: level '{PropertyValue}' is invalid; use trace, debug, info/information, warn/warning, error, fatal, off/none, or omit it for info");
+    }
+
+    private static bool IsValidLogLevel(string level)
+    {
+        if(string.IsNullOrEmpty(level))
+            return true;
+
+        try
+        {
+            _ = NLog.LogLevel.FromString(level);
+            return true;
+        }
+        catch(ArgumentException)
+        {
+            return false;
+        }
+    }
+}
+
+internal sealed class RecoveryPostgresConfigValidator :
+    AbstractValidator<PostgresConfig>
+{
+    public RecoveryPostgresConfigValidator()
+    {
+        RuleFor(j => j.Host)
+            .NotNull()
+            .NotEmpty()
+            .WithMessage("Share recovery PostgreSQL host missing or empty");
+
+        RuleFor(j => j.Port)
+            .InclusiveBetween(1, ushort.MaxValue)
+            .WithMessage("Share recovery PostgreSQL port is invalid");
+
+        RuleFor(j => j.Database)
+            .NotNull()
+            .NotEmpty()
+            .WithMessage("Share recovery PostgreSQL database missing or empty");
+
+        RuleFor(j => j.User)
+            .NotNull()
+            .NotEmpty()
+            .WithMessage("Share recovery PostgreSQL user missing or empty");
     }
 }
 
