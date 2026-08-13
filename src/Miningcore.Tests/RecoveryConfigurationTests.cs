@@ -219,6 +219,42 @@ public class RecoveryConfigurationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void InvalidLoggingLevel_FailsValidationBeforeLoggingSetup(
+        bool recoveryMode)
+    {
+        var config = CreateRecoveryConfig();
+        config.Logging.Level = "verbose";
+
+        var result = new ClusterConfigValidator(recoveryMode).Validate(config);
+        var error = Assert.Single(result.Errors.Where(error =>
+            error.PropertyName == "Logging.Level"));
+
+        Assert.Equal(
+            "Logging: level 'verbose' is invalid; use trace, debug, info, warn/warning, error, fatal, off/none, or omit it for info",
+            error.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("TRACE")]
+    [InlineData("warning")]
+    [InlineData("none")]
+    public void LoggingLevel_AcceptsNLogNamesAliasesAndDefault(
+        string level)
+    {
+        var config = CreateRecoveryConfig();
+        config.Logging.Level = level;
+
+        var result = new ClusterConfigValidator(true).Validate(config);
+
+        Assert.DoesNotContain(result.Errors, error =>
+            error.PropertyName == "Logging.Level");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void RecoveryMode_DiscardsMissingOrMalformedUnusedLivePoolSettings(
         bool omitSettings)
     {

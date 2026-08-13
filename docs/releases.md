@@ -287,7 +287,8 @@ timing and extension fields are excluded from the recovery boundary.
 Recovery logging is now narrowed to the console level and colour settings consumed by the one-shot
 command. Stale file-only logging values cannot block import, and an absent, null or wholly malformed
 logging section receives a default informational, non-coloured console logger so recovery progress
-remains visible.
+remains visible. Invalid but correctly typed log-level names now fail during configuration
+validation with the accepted NLog names listed, rather than surfacing later during logger setup.
 
 Recovery also sanitizes optional `coinTemplates` metadata before schema validation. Valid custom
 template paths are retained, while non-string entries or a malformed non-array value cannot block

@@ -280,6 +280,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
     public ClusterConfigValidator(bool recoveryMode = false)
     {
+        RuleFor(j => j.Logging)
+            .SetValidator(new ClusterLoggingConfigValidator())
+            .When(j => j.Logging != null);
+
         RuleFor(j => j.PaymentProcessing)
             .NotNull()
             .When(_ => !recoveryMode);
@@ -404,6 +408,33 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         }
 
         return conflicts;
+    }
+}
+
+public class ClusterLoggingConfigValidator : AbstractValidator<ClusterLoggingConfig>
+{
+    public ClusterLoggingConfigValidator()
+    {
+        RuleFor(j => j.Level)
+            .Must(IsValidLogLevel)
+            .WithMessage(
+                "Logging: level '{PropertyValue}' is invalid; use trace, debug, info, warn/warning, error, fatal, off/none, or omit it for info");
+    }
+
+    private static bool IsValidLogLevel(string level)
+    {
+        if(string.IsNullOrEmpty(level))
+            return true;
+
+        try
+        {
+            _ = NLog.LogLevel.FromString(level);
+            return true;
+        }
+        catch(ArgumentException)
+        {
+            return false;
+        }
     }
 }
 

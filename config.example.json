@@ -11,7 +11,7 @@
 
   // Application and API request logging.
   "logging": {
-    // Minimum level: trace, debug, info, warn, error or fatal.
+    // Minimum level: trace, debug, info, warn, error, fatal or off.
     "level": "info",
     // Write log events to stdout/stderr. Keep this enabled under systemd or Docker.
     "enableConsoleLog": true,

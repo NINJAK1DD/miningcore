@@ -194,6 +194,11 @@ coin definition and daemon/wallet documentation together.
 
 ## Log files and rotation
 
+`logging.level` accepts NLog's `trace`, `debug`, `info`, `warn`/`warning`, `error`, `fatal` and
+`off`/`none` names without regard to case. Omit it or use an empty string for the default `info`
+level. Miningcore rejects any other name during configuration validation, before logging is
+configured.
+
 Every file configured by `logging.logFile`, `logging.apiLogFile` or `logging.perPoolLogFile` is
 rotated by Miningcore through NLog. An active file is archived before a write that would grow it
 beyond 512 MiB, and no more than four archives are retained for each file target. Existing active
