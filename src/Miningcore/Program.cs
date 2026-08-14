@@ -84,6 +84,7 @@ namespace Miningcore;
 public class Program : ProcessStatusBackgroundService
 {
     internal const int DefaultApiPort = ApiConfig.DefaultPort;
+    internal const string MetricsRoutePrefix = "/metrics";
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -717,8 +718,6 @@ public class Program : ProcessStatusBackgroundService
         bool EnableIpRateLimiting = false,
         bool EnableExceptionHandling = false);
 
-    internal const string MetricsRoutePrefix = "/metrics";
-
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
     {
         var publicPort = api?.Port ?? DefaultApiPort;
@@ -784,8 +783,7 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(ports);
 
-        if(path.StartsWithSegments("/api/admin",
-            StringComparison.OrdinalIgnoreCase))
+        if(AdminApiAuthenticationMiddleware.IsAdminRequest(path))
             return localPort == ports.AdminPort;
 
         if(IsMetricsRequest(path))
@@ -835,7 +833,8 @@ public class Program : ProcessStatusBackgroundService
         if(options.EnableExceptionHandling)
             app.UseMiddleware<ApiExceptionHandlingMiddleware>();
 
-        UseIpWhiteList(app, true, new[] { "/api/admin" },
+        UseIpWhiteList(app, true,
+            new[] { AdminApiAuthenticationMiddleware.AdminRoutePrefix },
             adminIpWhitelist, gpdrCompliantLogging);
         UseIpWhiteList(app, true, new[] { MetricsRoutePrefix },
             metricsIpWhitelist, gpdrCompliantLogging);
@@ -2148,11 +2147,11 @@ public class Program : ProcessStatusBackgroundService
     {
         options.EnableEndpointRateLimiting = false;
 
-        // exclude admin api and metrics from throtteling
+        // Exclude the administrative API and metrics from throttling.
         options.EndpointWhitelist = new List<string>
         {
-            "*:/api/admin",
-            "get:/metrics",
+            "*:" + AdminApiAuthenticationMiddleware.AdminRoutePrefix,
+            "get:" + MetricsRoutePrefix,
             "*:/notifications",
         };
 
