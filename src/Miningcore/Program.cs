@@ -2143,17 +2143,24 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    internal static List<string> CreateIpRateLimitEndpointWhitelist() =>
+        new()
+        {
+            // AspNetCoreRateLimit anchors wildcard patterns. Keep separate exact
+            // and descendant entries so public lookalikes remain rate limited.
+            "*:" + AdminApiAuthenticationMiddleware.AdminRoutePrefix,
+            "*:" + AdminApiAuthenticationMiddleware.AdminRoutePrefix + "/*",
+            "get:" + MetricsRoutePrefix,
+            "*:/notifications",
+        };
+
     private static void ConfigureIpRateLimitOptions(IpRateLimitOptions options)
     {
         options.EnableEndpointRateLimiting = false;
 
-        // Exclude the administrative API and metrics from throttling.
-        options.EndpointWhitelist = new List<string>
-        {
-            "*:" + AdminApiAuthenticationMiddleware.AdminRoutePrefix,
-            "get:" + MetricsRoutePrefix,
-            "*:/notifications",
-        };
+        // Exclude the administrative API, metrics and WebSocket notifications
+        // from public API throttling.
+        options.EndpointWhitelist = CreateIpRateLimitEndpointWhitelist();
 
         options.IpWhitelist = clusterConfig.Api?.RateLimiting?.IpWhitelist?.ToList();
 

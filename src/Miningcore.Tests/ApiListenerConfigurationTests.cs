@@ -11,6 +11,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using AspNetCoreRateLimit;
 using FluentValidation;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Builder;
@@ -1724,6 +1725,33 @@ public class ApiListenerConfigurationTests
         Assert.Equal(expected, Program.IsMetricsRequest(path));
 
     [Theory]
+    [InlineData("GET", "/api/admin", true)]
+    [InlineData("POST", "/api/admin/stats/gc", true)]
+    [InlineData("PUT", "/API/ADMIN/payment/processing/disable", true)]
+    [InlineData("POST", "/api/administrator", false)]
+    [InlineData("POST", "/api/administer", false)]
+    [InlineData("GET", "/metrics", true)]
+    [InlineData("POST", "/metrics", false)]
+    [InlineData("GET", "/metrics/custom", false)]
+    public void RateLimitWhitelist_ExemptsOnlyConfiguredProtectedRoutes(
+        string method, string path, bool expected)
+    {
+        var processor = new TestRateLimitProcessor(new RateLimitOptions
+        {
+            EndpointWhitelist = Program.CreateIpRateLimitEndpointWhitelist(),
+        });
+
+        var actual = processor.IsWhitelisted(new ClientRequestIdentity
+        {
+            ClientIp = "203.0.113.10",
+            HttpVerb = method,
+            Path = path,
+        });
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
     [InlineData("/api/admin/status", "/api/admin", true)]
     [InlineData("/API/ADMIN/stats/gc", "/api/admin", true)]
     [InlineData("/Api/Admin/payment/processing/disable", "/api/admin", true)]
@@ -2241,6 +2269,9 @@ public class ApiListenerConfigurationTests
     }
 
     private const int ListenerStartAttempts = 5;
+
+    private sealed class TestRateLimitProcessor(RateLimitOptions options) :
+        RateLimitProcessor(options);
 
     private sealed class RunningRouteTestHost(IHost host,
         Program.ApiEndpointPorts ports) : IAsyncDisposable
