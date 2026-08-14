@@ -134,6 +134,43 @@ public class StratumServerTests
     }
 
     [Fact]
+    public async Task RunAsync_FailStopCancellationWithConnectedClient_AllowsImmediateExclusiveRestart()
+    {
+        using var failStop = new CancellationTokenSource();
+        var coordinator = Substitute.For<IMiningFailStopCoordinator>();
+        coordinator.Token.Returns(failStop.Token);
+        coordinator.IsFailStopRequested.Returns(_ =>
+            failStop.IsCancellationRequested);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container,
+            new MessageBus(coordinator));
+        using var host = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(host.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+
+        // Cancel only the independent mining fail-stop token. Host/listener cancellation must
+        // remain untouched so it cannot mask the accepted-socket cleanup being exercised.
+        failStop.Cancel();
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+        Assert.False(host.IsCancellationRequested);
+
+        // Keep the remote peer alive through listener shutdown and immediate reacquisition.
+        host.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
     public async Task RunAsync_BannedClientRejection_AllowsImmediateExclusiveRestart()
     {
         var banManager = Substitute.For<IBanManager>();

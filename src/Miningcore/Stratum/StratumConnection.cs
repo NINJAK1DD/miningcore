@@ -88,6 +88,11 @@ public class StratumConnection
         this.socket = socket;
         using var shutdownRegistration = ct.Register(() =>
             StratumSocketCleanup.ConfigureAbortiveClose(socket));
+        // Mining fail-stop closes admission before it asks the host to stop. Register the
+        // independent token directly so its synchronous cancellation callback establishes
+        // abortive linger before connection tasks can unwind and dispose the owning stream.
+        using var failStopRegistration = failStopToken.Register(() =>
+            StratumSocketCleanup.ConfigureAbortiveClose(socket));
 
         expectingProxyHeader = endpoint.PoolEndpoint.TcpProxyProtocol?.Enable == true;
 
