@@ -75,6 +75,9 @@ public abstract class StratumServer
 
     protected readonly ConcurrentDictionary<string, StratumConnection> connections = new();
     private readonly ConcurrentDictionary<string, Task> connectionTasks = new();
+    // Lets lifecycle tests distinguish connection unregistration from completion of the
+    // socket-owning dispatch task without widening the production subclass surface.
+    internal int TrackedConnectionTaskCount => connectionTasks.Count;
     protected static readonly ConcurrentDictionary<string, X509Certificate2> certs = new();
     protected static readonly HashSet<int> ignoredSocketErrors;
 

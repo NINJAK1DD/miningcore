@@ -155,11 +155,13 @@ public class StratumServerTests
         await client.ConnectAsync(IPAddress.Loopback, port,
             CancellationToken.None).AsTask().WaitAsync(TestTimeout);
         await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await server.WaitForConnectionTaskCountAsync(1, TestTimeout);
 
         // Cancel only the independent mining fail-stop token. Host/listener cancellation must
         // remain untouched so it cannot mask the accepted-socket cleanup being exercised.
         failStop.Cancel();
         await server.WaitForNoConnectionsAsync(TestTimeout);
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
         Assert.False(host.IsCancellationRequested);
 
         // Keep the remote peer alive through listener shutdown and immediate reacquisition.
@@ -597,6 +599,20 @@ public class StratumServerTests
             using var timeoutCts = new CancellationTokenSource(timeout);
 
             while(!connections.IsEmpty)
+                await Task.Delay(10, timeoutCts.Token);
+        }
+
+        public Task WaitForNoConnectionTasksAsync(TimeSpan timeout)
+        {
+            return WaitForConnectionTaskCountAsync(0, timeout);
+        }
+
+        public async Task WaitForConnectionTaskCountAsync(int count,
+            TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+
+            while(TrackedConnectionTaskCount != count)
                 await Task.Delay(10, timeoutCts.Token);
         }
 
