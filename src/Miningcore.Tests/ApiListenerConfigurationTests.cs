@@ -2079,8 +2079,10 @@ public class ApiListenerConfigurationTests
         Assert.Equal(HttpStatusCode.OK, scrapeResponse.StatusCode);
         Assert.Equal("text/plain", scrapeResponse.Content.Headers.ContentType?.MediaType);
         var scrapeBody = await scrapeResponse.Content.ReadAsStringAsync();
-        Assert.Contains("miningcore_listener_test_scrapes_total", scrapeBody,
-            StringComparison.Ordinal);
+        Assert.Contains(scrapeBody.Split('\n'), line =>
+            line.TrimEnd('\r').Equals(
+                "miningcore_listener_test_scrapes_total 1",
+                StringComparison.Ordinal));
 
         using var lookalikeRequest = CreatePreflightRequest(
             $"http://127.0.0.1:{host.Ports.PublicPort}/metrics-export");
