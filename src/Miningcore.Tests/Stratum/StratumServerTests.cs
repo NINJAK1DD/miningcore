@@ -185,9 +185,8 @@ public class StratumServerTests
             new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
         var runTask = server.RunListenerAsync(cts.Token, endpoint);
         using var client = new TcpClient(AddressFamily.InterNetwork);
-        await client.ConnectAsync(IPAddress.Loopback, port,
-            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
-        await WaitForRejectedSocketAsync(client.Client);
+        await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback,
+            port);
         banManager.Received().IsBanned(Arg.Any<IPAddress>());
 
         cts.Cancel();
@@ -210,9 +209,8 @@ public class StratumServerTests
             new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
         var runTask = server.RunListenerAsync(cts.Token, endpoint);
         using var client = new TcpClient(AddressFamily.InterNetwork);
-        await client.ConnectAsync(IPAddress.Loopback, port,
-            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
-        await WaitForRejectedSocketAsync(client.Client);
+        await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback,
+            port);
         await server.WaitForNoConnectionsAsync(TestTimeout);
 
         cts.Cancel();
@@ -519,6 +517,26 @@ public class StratumServerTests
         }
         catch(SocketException ex)
         {
+            Assert.True(ex.SocketErrorCode is SocketError.ConnectionReset or
+                SocketError.ConnectionAborted,
+                $"Unexpected rejection error {ex.SocketErrorCode}");
+        }
+    }
+
+    private static async Task ConnectAndWaitForRejectionAsync(TcpClient client,
+        IPAddress address, int port)
+    {
+        try
+        {
+            await client.ConnectAsync(address, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await WaitForRejectedSocketAsync(client.Client);
+        }
+        catch(SocketException ex)
+        {
+            // A fast server-side rejection can race the completion of ConnectAsync on Linux.
+            // Both observation points prove that the listener accepted and abortively rejected
+            // this client; refusal, timeout and every other connect failure remain test failures.
             Assert.True(ex.SocketErrorCode is SocketError.ConnectionReset or
                 SocketError.ConnectionAborted,
                 $"Unexpected rejection error {ex.SocketErrorCode}");
