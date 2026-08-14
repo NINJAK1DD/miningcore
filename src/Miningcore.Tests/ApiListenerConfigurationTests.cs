@@ -1725,15 +1725,18 @@ public class ApiListenerConfigurationTests
         Assert.Equal(expected, Program.IsMetricsRequest(path));
 
     [Theory]
-    [InlineData("GET", "/api/admin", true)]
-    [InlineData("POST", "/api/admin/stats/gc", true)]
-    [InlineData("PUT", "/API/ADMIN/payment/processing/disable", true)]
+    [InlineData("GET", "/api/admin", false)]
+    [InlineData("POST", "/api/admin/stats/gc", false)]
+    [InlineData("PUT", "/API/ADMIN/payment/processing/disable", false)]
     [InlineData("POST", "/api/administrator", false)]
     [InlineData("POST", "/api/administer", false)]
     [InlineData("GET", "/metrics", true)]
     [InlineData("POST", "/metrics", false)]
     [InlineData("GET", "/metrics/custom", false)]
-    public void RateLimitWhitelist_ExemptsOnlyConfiguredProtectedRoutes(
+    [InlineData("GET", "/notifications", true)]
+    [InlineData("POST", "/notifications", true)]
+    [InlineData("GET", "/notifications/client", false)]
+    public void RateLimitWhitelist_ExemptsOnlyExplicitNonAdministrativeRoutes(
         string method, string path, bool expected)
     {
         var processor = new TestRateLimitProcessor(new RateLimitOptions

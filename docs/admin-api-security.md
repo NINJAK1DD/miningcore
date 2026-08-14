@@ -115,6 +115,13 @@ listener compatibility but still requires both authentication controls. Missing,
 incorrect credentials return `401 Unauthorized`; a client outside the IP whitelist receives `403
 Forbidden`; a protected route on the wrong dedicated listener receives `404 Not Found`.
 
+Administrative requests remain subject to the public API rate limiter before Miningcore evaluates
+the admin IP whitelist and bearer token. This limits rejection and log amplification from untrusted
+sources, especially when the admin route shares the public listener. Loopback is exempt by default.
+If trusted remote automation needs a rate-limit exemption, add only its narrowly scoped source
+address to `api.rateLimiting.ipWhitelist` as well as `api.adminIpWhitelist`; authentication and the
+admin whitelist remain mandatory.
+
 Administrative routes intentionally emit no cross-origin resource sharing (CORS) headers. Public
 front ends must call only public routes. If users need to change miner settings, implement a trusted
 server-side service with its own user authentication and authorization; that service may call the

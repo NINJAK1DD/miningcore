@@ -241,11 +241,11 @@ the remote address is unavailable and correctly treats IPv4-mapped IPv6 addresse
 equivalent. Operators who keep `/api/admin` on the shared public listener should treat this as a
 security fix and update promptly.
 
-Administrative subpaths are also now correctly exempt from the public API rate limiter. The former
-exact-path exemption matched only the unused bare `/api/admin` path, so a trusted non-loopback
-operator could receive `429 Too Many Requests` while making several legitimate administrative
-requests. The corrected exemption is segment-bounded and does not cover public lookalikes such as
-`/api/administrator`.
+Administrative routes remain subject to the public API rate limiter before the admin IP whitelist
+and bearer token are evaluated. This preserves abuse control and bounds rejection-log amplification
+from unauthorized sources. Loopback is exempt by default; trusted remote automation that requires
+an exemption must add its narrowly scoped source address to `api.rateLimiting.ipWhitelist` as well
+as `api.adminIpWhitelist`.
 
 ### Security hardening: metrics CORS isolation
 
