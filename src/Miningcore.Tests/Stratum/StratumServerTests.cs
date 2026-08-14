@@ -113,7 +113,7 @@ public class StratumServerTests
     }
 
     [Fact]
-    public async Task RunAsync_ShutdownWithConnectedMiner_ClosesGracefullyAfterDrain()
+    public async Task RunAsync_ShutdownWithConnectedMiner_AllowsImmediateExclusiveRestart()
     {
         var server = new TestStratumServer();
         using var cts = new CancellationTokenSource();
@@ -126,13 +126,14 @@ public class StratumServerTests
             CancellationToken.None).AsTask().WaitAsync(TestTimeout);
         await server.WaitForConnectionCountAsync(1, TestTimeout);
 
+        // Keep the remote peer alive while ordinary host shutdown closes the accepted socket.
+        // Reacquire directly rather than through the retry coordinator so residual TCP state
+        // cannot be hidden by its AddressAlreadyInUse backoff.
         cts.Cancel();
-        var buffer = new byte[1];
-        var received = await client.Client.ReceiveAsync(buffer,
-                SocketFlags.None)
-            .WaitAsync(TestTimeout);
-        Assert.Equal(0, received);
         await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
     }
 
     [Fact]

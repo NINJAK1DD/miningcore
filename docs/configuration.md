@@ -86,10 +86,11 @@ its accept path, so miners cannot accumulate in a connection backlog while daemo
 or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
 `SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
 `Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
-Accepted sockets begin with abortive-close protection so an OOM kill, forced container stop or
-process crash normally cannot strand the exclusive endpoint. Clean peer EOF and bounded ordinary
-host shutdown disarm that protection and close gracefully so queued Stratum response bytes are not
-discarded. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
+Accepted sockets begin with abortive-close protection so an OOM kill, forced container stop,
+process crash or ordinary host shutdown normally cannot strand the exclusive endpoint. Only a
+genuine peer-initiated EOF disarms that protection and closes gracefully; bytes already written to
+the network may then drain with FIN, but Miningcore does not drain its application send queue during
+shutdown. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
 request-handler-failure and drain-timeout paths remain abortive. If an unclean stop still leaves a
 local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with bounded
 backoff for up to 90 seconds per endpoint. A genuinely occupied port therefore delays startup for

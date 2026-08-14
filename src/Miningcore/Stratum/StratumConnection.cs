@@ -86,9 +86,14 @@ public class StratumConnection
         LocalEndpoint = endpoint.IPEndPoint;
         RemoteEndpoint = remoteEndpoint;
         this.socket = socket;
-        // Keep hard process termination restart-safe by default. Clean EOF and bounded host
-        // shutdown explicitly disarm linger(0) before the owning stream is disposed.
+        // Keep hard process termination and server-initiated shutdown restart-safe by default.
+        // Only a clean peer EOF explicitly disarms linger(0) before stream disposal.
         StratumSocketCleanup.ConfigureAbortiveClose(socket);
+        // Host cancellation can race clean-EOF classification. Its synchronous callback and
+        // the post-classification recheck below guarantee that cancellation cannot leave a
+        // Miningcore-terminated accepted socket configured for graceful close.
+        using var hostShutdownRegistration = ct.Register(() =>
+            StratumSocketCleanup.ConfigureAbortiveClose(socket));
         // Mining fail-stop closes admission before it asks the host to stop. Register the
         // independent token directly so its synchronous cancellation callback establishes
         // abortive linger before connection tasks can unwind and dispose the owning stream.
@@ -181,11 +186,23 @@ public class StratumConnection
                 // Signal completion or error
                 if(error == null)
                 {
-                    // Host shutdown and peer EOF are graceful. The independent financial
-                    // fail-stop gate remains abortive even when cancellation is the only task
-                    // outcome; otherwise this branch would undo the gate's linger(0) callback.
-                    if(!failStopToken.IsCancellationRequested)
+                    // A peer-driven clean EOF may close gracefully. Host shutdown and the
+                    // independent financial fail-stop gate remain abortive so accepted sockets
+                    // cannot delay exclusive listener reacquisition.
+                    if(!ct.IsCancellationRequested &&
+                        !failStopToken.IsCancellationRequested)
+                    {
                         StratumSocketCleanup.ConfigureGracefulClose(socket);
+
+                        // Cancellation can arrive between the checks above and the linger
+                        // update. Re-arm abortive close if either server-owned token won.
+                        if(ct.IsCancellationRequested ||
+                            failStopToken.IsCancellationRequested)
+                        {
+                            StratumSocketCleanup.ConfigureAbortiveClose(socket);
+                        }
+                    }
+
                     onCompleted(this);
                     abortiveOnExceptionalExit = false;
                 }

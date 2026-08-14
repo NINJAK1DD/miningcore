@@ -31,8 +31,8 @@ internal static class StratumSocketCleanup
         try
         {
             // Accepted sockets begin abortive so a hard process termination does not strand an
-            // exclusive listener in TIME_WAIT. A clean EOF or bounded host shutdown deliberately
-            // disarms that default before disposal so queued response bytes can drain with FIN.
+            // exclusive listener in TIME_WAIT. Only a clean peer EOF deliberately disarms that
+            // default before disposal so bytes already written to the network can drain with FIN.
             socket.LingerState = new LingerOption(false, 0);
         }
         catch(Exception ex) when(ex is SocketException or
