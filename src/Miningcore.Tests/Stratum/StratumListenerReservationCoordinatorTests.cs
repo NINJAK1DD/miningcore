@@ -24,12 +24,49 @@ public class StratumListenerReservationCoordinatorTests
         try
         {
             Assert.True(reservation.Socket.IsBound);
+            Assert.Equal(0, (int) reservation.Socket.GetSocketOption(
+                SocketOptionLevel.Socket, SocketOptionName.ReuseAddress));
             Assert.Throws<InvalidOperationException>(() =>
                 reservation.Socket.Accept());
+
+            reservation.Activate();
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            client.Connect(reservation.Endpoint.IPEndPoint);
+            using var accepted = reservation.Socket.Accept();
         }
         finally
         {
             reservation.Dispose();
+        }
+    }
+
+    [Fact]
+    public void CompetingBoundReservation_FailsBeforeEitherSocketListens()
+    {
+        var pool = CreatePool("pool-a", 0, "127.0.0.1");
+        var coordinator = new StratumListenerReservationCoordinator();
+
+        using var firstSession = coordinator.ReserveAll(new[] { pool });
+        var firstReservation = Assert.Single(firstSession.Claim(pool.Id));
+
+        try
+        {
+            Assert.True(firstReservation.Socket.IsBound);
+            var boundPort = ((IPEndPoint)
+                firstReservation.Socket.LocalEndPoint).Port;
+            var competingPool = CreatePool(pool.Id, boundPort,
+                "127.0.0.1");
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                coordinator.ReserveAll(new[] { competingPool }));
+
+            Assert.Equal(pool.Id, error.PoolId);
+            Assert.Contains(SocketError.AddressAlreadyInUse.ToString(),
+                error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            firstReservation.Dispose();
         }
     }
 

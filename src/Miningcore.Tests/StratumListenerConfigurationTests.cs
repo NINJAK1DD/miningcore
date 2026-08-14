@@ -145,6 +145,38 @@ public class StratumListenerConfigurationTests
     }
 
     [Fact]
+    public void HostKnownDirectedBroadcast_IsRejectedWithoutRejectingSubnetHosts()
+    {
+        var subnet = new ListenerAddressUtils.IPv4InterfaceSubnet(
+            IPAddress.Parse("172.26.36.12"),
+            IPAddress.Parse("255.255.252.0"));
+
+        Assert.False(ListenerAddressUtils.IsSuitableForListener(
+            IPAddress.Parse("172.26.39.255"), new[] { subnet },
+            out var reason));
+        Assert.Contains("directed broadcast", reason,
+            StringComparison.Ordinal);
+
+        Assert.True(ListenerAddressUtils.IsSuitableForListener(
+            IPAddress.Parse("172.26.39.254"), new[] { subnet },
+            out reason), reason);
+    }
+
+    [Theory]
+    [InlineData("192.0.2.10", "255.255.255.254", "192.0.2.11")]
+    [InlineData("192.0.2.10", "255.255.255.255", "192.0.2.10")]
+    public void PointToPointAndHostRoutes_DoNotInventDirectedBroadcasts(
+        string interfaceAddress, string mask, string candidate)
+    {
+        var subnet = new ListenerAddressUtils.IPv4InterfaceSubnet(
+            IPAddress.Parse(interfaceAddress), IPAddress.Parse(mask));
+
+        Assert.True(ListenerAddressUtils.IsSuitableForListener(
+            IPAddress.Parse(candidate), new[] { subnet },
+            out var reason), reason);
+    }
+
+    [Fact]
     public void ConflictingListeners_ReportBothPoolAndEndpointIdentities()
     {
         var config = CreateCluster(

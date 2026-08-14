@@ -81,11 +81,18 @@ effective endpoint, socket classification and native error. Miningcore hands tho
 sockets to the Stratum accept loops; it does not probe, close and later rebind them. Reservation
 calls `Bind` but deliberately defers `Listen` until that pool has completed initialization and enters
 its accept path, so miners cannot accumulate in a connection backlog while daemon synchronization
-or first-job setup is still pending.
+or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
+`SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
+`Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
+Server-initiated connection cleanup uses an abortive close so a clean stop/start can immediately
+reacquire the exclusive listener instead of leaving the local endpoint in `TIME_WAIT`.
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
 whether a specific address can be used on this host is decided authoritatively by the retained bind.
+Miningcore also rejects subnet-directed broadcast identities positively identified from active local
+IPv4 interface addresses and masks. Interface enumeration is not used to reject ordinary unicast
+addresses, so containers, dynamic interfaces and failover addresses still rely on authoritative bind.
 For IPv6 link-local addresses, include the correct interface scope where the operating system
 requires it. A missing or incorrect scope fails startup safely rather than leaving a partial pool set.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the

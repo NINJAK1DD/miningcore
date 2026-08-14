@@ -16,10 +16,28 @@ internal sealed class StratumListenerReservation : IDisposable
     }
 
     private int disposed;
+    private int activated;
 
     internal string PoolId { get; }
     internal StratumEndpoint Endpoint { get; }
     internal Socket Socket { get; }
+    internal bool IsActivated => Volatile.Read(ref activated) != 0;
+
+    internal void Activate()
+    {
+        if(Interlocked.CompareExchange(ref activated, 1, 0) != 0)
+            return;
+
+        try
+        {
+            Socket.Listen();
+        }
+        catch
+        {
+            Volatile.Write(ref activated, 0);
+            throw;
+        }
+    }
 
     public void Dispose()
     {

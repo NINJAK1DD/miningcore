@@ -300,7 +300,18 @@ attempt. The failure identifies the pool, effective endpoint and operating-syste
 Broadcast and multicast listener addresses are rejected during configuration validation, while
 IPv4 loopback and link-local ranges remain eligible for the authoritative host bind. Existing valid
 listener configurations require no migration. Reserved sockets remain bound but do not call
-`Listen` until their pool finishes initialization and enters its Stratum accept path.
+`Listen` until their pool finishes initialization; activation must succeed before the pool announces
+`Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and forced connection
+cleanup avoids local `TIME_WAIT` blocking a clean immediate restart. Active-interface masks are used
+only to reject known subnet-directed IPv4 broadcast identities; ordinary addresses still use bind as
+the host-specific source of truth.
+
+This lifecycle intentionally changes the source-level extension surface: the protected
+`StratumServer.RunAsync(CancellationToken, StratumEndpoint[])` and `PoolBase.RunStratum` helpers are
+no longer available to out-of-tree subclasses. Custom pool implementations must use the base
+`PoolBase.RunAsync` lifecycle so they cannot bypass cluster-scoped reservation, activation-before-
+online ordering or retained-socket cleanup. Miningcore does not provide a compatibility helper that
+would silently restore the unsafe per-pool bind path.
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
 Stratum sockets. Recovery stream-rebuilds the top-level configuration from `logging`, `persistence`,

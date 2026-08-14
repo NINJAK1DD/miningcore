@@ -429,6 +429,12 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
             await SetupJobManager(ct);
             await InitStatsAsync(ct);
 
+            if(listeners != null)
+            {
+                foreach(var listener in listeners)
+                    listener.Activate();
+            }
+
             LogPoolInfo();
 
             messageBus.NotifyPoolStatus(this, PoolStatus.Online);

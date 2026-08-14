@@ -112,6 +112,27 @@ public class StratumServerTests
     }
 
     [Fact]
+    public async Task RunAsync_ShutdownWithConnectedMiner_AllowsImmediateExclusiveRestart()
+    {
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
     public async Task RunAsync_ShutdownDrainsInFlightRequestHandler()
     {
         var server = new TestStratumServer();
@@ -343,6 +364,7 @@ public class StratumServerTests
                 endpoint.IPEndPoint);
             var reservation = new StratumListenerReservation(poolConfig.Id,
                 endpoint, socket);
+            reservation.Activate();
             return RunAsync(ct, reservation);
         }
 
@@ -368,6 +390,15 @@ public class StratumServerTests
             using var timeoutCts = new CancellationTokenSource(timeout);
 
             while(!connections.IsEmpty)
+                await Task.Delay(10, timeoutCts.Token);
+        }
+
+        public async Task WaitForConnectionCountAsync(int count,
+            TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+
+            while(connections.Count != count)
                 await Task.Delay(10, timeoutCts.Token);
         }
 

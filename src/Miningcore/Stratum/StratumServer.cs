@@ -10,6 +10,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Autofac;
 using Microsoft.IO;
+using Microsoft.Win32.SafeHandles;
 using Miningcore.Blockchain;
 using Miningcore.Banning;
 using Miningcore.Configuration;
@@ -98,11 +99,9 @@ public abstract class StratumServer
 
         try
         {
-            // Reservation deliberately stops at Bind. Entering the accept path is the point at
-            // which miners may connect; listening earlier would leave them queued while pool
-            // initialization waits for daemon synchronization or its first job.
-            foreach(var listener in listeners)
-                listener.Socket.Listen();
+            if(listeners.Any(listener => !listener.IsActivated))
+                throw new InvalidOperationException(
+                    "Stratum listeners must be activated before the pool is announced online");
 
             logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
 
@@ -144,16 +143,57 @@ public abstract class StratumServer
 
         try
         {
+            // .NET enables SO_REUSEADDR for TCP listeners by default. A retained Bind is
+            // meaningful only when a second socket cannot bind the same endpoint while this
+            // pool initializes, so disable address reuse before claiming the endpoint.
             server.SetSocketOption(SocketOptionLevel.Socket,
-                SocketOptionName.ReuseAddress, true);
-            server.Bind(endpoint);
-            return server;
+                SocketOptionName.ReuseAddress, false);
+
+            if(OperatingSystem.IsWindows())
+            {
+                server.ExclusiveAddressUse = true;
+                server.Bind(endpoint);
+                return server;
+            }
+
+            return BindUnixSocketWithoutRuntimeAddressReuse(server, endpoint);
         }
         catch
         {
             server.Dispose();
             throw;
         }
+    }
+
+    private static Socket BindUnixSocketWithoutRuntimeAddressReuse(Socket server,
+        IPEndPoint endpoint)
+    {
+        var socketAddress = endpoint.Serialize();
+        var addressBytes = socketAddress.Buffer.Span[..socketAddress.Size]
+            .ToArray();
+        var handle = server.SafeHandle;
+
+        // Socket.Bind routes through the .NET Unix PAL, which enables SO_REUSEADDR for TCP
+        // before the native bind. That permits two bound-but-not-listening sockets to claim the
+        // same endpoint. Call the native bind directly, then reconstruct the managed wrapper so
+        // IsBound, LocalEndPoint and accepted-socket endpoint state are populated from the handle.
+        if(NativeMethods.Bind(handle, addressBytes,
+               (uint) addressBytes.Length) != 0)
+        {
+            throw new SocketException();
+        }
+
+        var result = new Socket(handle);
+        GC.KeepAlive(server);
+        return result;
+    }
+
+    private static class NativeMethods
+    {
+        [DllImport("libc", EntryPoint = "bind", SetLastError = true)]
+        internal static extern int Bind(SafeSocketHandle socket,
+            byte[] socketAddress,
+            uint socketAddressLength);
     }
 
     private async Task Listen(Socket server, StratumEndpoint port, CancellationToken ct)

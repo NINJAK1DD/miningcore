@@ -166,6 +166,55 @@ public class PoolBaseTests
     }
 
     [Fact]
+    public async Task RunAsync_ListenerActivationFailure_DoesNotAnnouncePoolOnline()
+    {
+        var messageBus = new MessageBus();
+        var online = false;
+        using var statusSubscription = messageBus.Listen<PoolStatusNotification>()
+            .Subscribe(x => online |= x.Status == PoolStatus.Online);
+        using var container = BuildContainer();
+        var httpClientFactory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        httpClientFactory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var pool = new TestPool(container, messageBus,
+            new NicehashService(httpClientFactory, cache));
+        var config = new PoolConfig
+        {
+            Id = "activation-failure",
+            Enabled = true,
+            EnableInternalStratum = true,
+            Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [0] = new()
+                {
+                    Difficulty = 1,
+                    ListenAddress = "127.0.0.1",
+                },
+            },
+            Template = new BitcoinTemplate { Symbol = "LTC" },
+        };
+        pool.Configure(config, new ClusterConfig
+        {
+            Logging = new ClusterLoggingConfig(),
+        });
+        var coordinator = new StratumListenerReservationCoordinator(endpoint =>
+        {
+            var socket = StratumServer.CreateBoundSocket(endpoint);
+            socket.Dispose();
+            return socket;
+        });
+        using var reservations = coordinator.ReserveAll(new[] { config });
+        pool.AttachStratumListenerReservations(reservations);
+
+        await Assert.ThrowsAnyAsync<ObjectDisposedException>(() =>
+            pool.RunAsync(CancellationToken.None));
+
+        Assert.True(pool.SetupCompleted.Task.IsCompletedSuccessfully);
+        Assert.False(online);
+    }
+
+    [Fact]
     public async Task WaitForShutdownAsync_CompletesPromptlyAfterCancellation()
     {
         using var cts = new CancellationTokenSource();
