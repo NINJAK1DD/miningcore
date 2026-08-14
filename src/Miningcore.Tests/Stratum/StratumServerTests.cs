@@ -115,7 +115,12 @@ public class StratumServerTests
     [Fact]
     public async Task RunAsync_ShutdownWithConnectedMiner_AllowsImmediateExclusiveRestart()
     {
-        var server = new TestStratumServer();
+        StratumConnection dispatchedConnection = null;
+        var server = new TestStratumServer
+        {
+            ConnectionInitializer = connection =>
+                dispatchedConnection = connection,
+        };
         using var cts = new CancellationTokenSource();
         var port = GetFreePort();
         var endpoint = new StratumEndpoint(
@@ -131,9 +136,44 @@ public class StratumServerTests
         // cannot be hidden by its AddressAlreadyInUse backoff.
         cts.Cancel();
         await runTask.WaitAsync(TestTimeout);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.HostShutdown,
+            dispatchedConnection.CompletionReason);
 
         using var restarted = StratumServer.CreateBoundSocket(
             endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_PeerEof_IsClassifiedAccurately()
+    {
+        StratumConnection dispatchedConnection = null;
+        var server = new TestStratumServer
+        {
+            ConnectionInitializer = connection =>
+                dispatchedConnection = connection,
+        };
+        using var host = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(host.Token, endpoint);
+
+        using(var client = new TcpClient(AddressFamily.InterNetwork))
+        {
+            await client.ConnectAsync(IPAddress.Loopback, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await server.WaitForConnectionCountAsync(1, TestTimeout);
+        }
+
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.PeerEof,
+            dispatchedConnection.CompletionReason);
+
+        host.Cancel();
+        await runTask.WaitAsync(TestTimeout);
     }
 
     [Fact]
@@ -141,10 +181,12 @@ public class StratumServerTests
     {
         var sendAttempted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        StratumConnection dispatchedConnection = null;
         var server = new TestStratumServer
         {
             ConnectionInitializer = connection =>
             {
+                dispatchedConnection = connection;
                 connection.SendMessageOverride = (_, _) =>
                 {
                     sendAttempted.TrySetResult();
@@ -174,6 +216,9 @@ public class StratumServerTests
         await server.WaitForNoConnectionsAsync(TestTimeout);
         await server.WaitForNoConnectionTasksAsync(TestTimeout);
         Assert.False(host.IsCancellationRequested);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.IndependentCancellation,
+            dispatchedConnection.CompletionReason);
 
         // Keep the remote peer alive and stop only the listener. The send-loop OCE must have
         // retained abortive cleanup, and this direct bind must not rely on retry backoff.
@@ -195,8 +240,13 @@ public class StratumServerTests
         var builder = new ContainerBuilder();
         builder.RegisterInstance(coordinator);
         using var container = builder.Build();
+        StratumConnection dispatchedConnection = null;
         var server = new TestStratumServer(container,
-            new MessageBus(coordinator));
+            new MessageBus(coordinator))
+        {
+            ConnectionInitializer = connection =>
+                dispatchedConnection = connection,
+        };
         using var host = new CancellationTokenSource();
         var port = GetFreePort();
         var endpoint = new StratumEndpoint(
@@ -214,6 +264,9 @@ public class StratumServerTests
         await server.WaitForNoConnectionsAsync(TestTimeout);
         await server.WaitForNoConnectionTasksAsync(TestTimeout);
         Assert.False(host.IsCancellationRequested);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.MiningFailStop,
+            dispatchedConnection.CompletionReason);
 
         // Keep the remote peer alive through listener shutdown and immediate reacquisition.
         host.Cancel();

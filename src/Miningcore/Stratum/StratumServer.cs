@@ -693,7 +693,19 @@ public abstract class StratumServer
 
     protected void OnConnectionComplete(StratumConnection connection)
     {
-        logger.Debug(() => $"[{connection.ConnectionId}] Received EOF");
+        var completion = connection.CompletionReason switch
+        {
+            StratumConnectionCompletionReason.PeerEof => "Received EOF",
+            StratumConnectionCompletionReason.HostShutdown =>
+                "Connection completed during host shutdown",
+            StratumConnectionCompletionReason.MiningFailStop =>
+                "Connection completed during mining fail-stop",
+            StratumConnectionCompletionReason.IndependentCancellation =>
+                "Connection completed after independent cancellation",
+            _ => "Connection completed",
+        };
+
+        logger.Debug(() => $"[{connection.ConnectionId}] {completion}");
 
         UnregisterConnection(connection);
     }

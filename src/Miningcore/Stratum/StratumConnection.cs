@@ -25,6 +25,15 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Stratum;
 
+internal enum StratumConnectionCompletionReason
+{
+    Unknown,
+    PeerEof,
+    HostShutdown,
+    MiningFailStop,
+    IndependentCancellation,
+}
+
 public class StratumConnection
 {
     public StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm,
@@ -216,6 +225,13 @@ public class StratumConnection
                         }
                     }
 
+                    CompletionReason = failStopToken.IsCancellationRequested
+                        ? StratumConnectionCompletionReason.MiningFailStop
+                        : ct.IsCancellationRequested
+                            ? StratumConnectionCompletionReason.HostShutdown
+                            : peerEof
+                                ? StratumConnectionCompletionReason.PeerEof
+                                : StratumConnectionCompletionReason.IndependentCancellation;
                     onCompleted(this);
                     abortiveOnExceptionalExit = false;
                 }
@@ -257,6 +273,7 @@ public class StratumConnection
     public bool IsAlive { get; set; }
     public IObservable<Unit> Terminated => terminated.AsObservable();
     public WorkerContextBase Context => context;
+    internal StratumConnectionCompletionReason CompletionReason { get; private set; }
 
     public void SetContext<T>(T value) where T : WorkerContextBase
     {
