@@ -14,6 +14,7 @@ using Autofac;
 using Microsoft.IO;
 using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain;
+using Miningcore.Banning;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.JsonRpc;
@@ -124,6 +125,56 @@ public class StratumServerTests
         await client.ConnectAsync(IPAddress.Loopback, port,
             CancellationToken.None).AsTask().WaitAsync(TestTimeout);
         await server.WaitForConnectionCountAsync(1, TestTimeout);
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_BannedClientRejection_AllowsImmediateExclusiveRestart()
+    {
+        var banManager = Substitute.For<IBanManager>();
+        banManager.IsBanned(Arg.Any<IPAddress>()).Returns(true);
+        var server = new TestStratumServer();
+        server.SetBanManager(banManager);
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await WaitForRejectedSocketAsync(client.Client);
+        banManager.Received().IsBanned(Arg.Any<IPAddress>());
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_PreDispatchFailure_AllowsImmediateExclusiveRestart()
+    {
+        var server = new TestStratumServer
+        {
+            ThrowOnConnect = true,
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await WaitForRejectedSocketAsync(client.Client);
+        await server.WaitForNoConnectionsAsync(TestTimeout);
 
         cts.Cancel();
         await runTask.WaitAsync(TestTimeout);
@@ -323,6 +374,25 @@ public class StratumServerTests
         return port;
     }
 
+    private static async Task WaitForRejectedSocketAsync(Socket socket)
+    {
+        var buffer = new byte[1];
+
+        try
+        {
+            var received = await socket.ReceiveAsync(buffer,
+                    SocketFlags.None)
+                .WaitAsync(TestTimeout);
+            Assert.Equal(0, received);
+        }
+        catch(SocketException ex)
+        {
+            Assert.True(ex.SocketErrorCode is SocketError.ConnectionReset or
+                SocketError.ConnectionAborted,
+                $"Unexpected rejection error {ex.SocketErrorCode}");
+        }
+    }
+
     private sealed class TestStratumServer : StratumServer
     {
         public TestStratumServer() : base(
@@ -352,6 +422,8 @@ public class StratumServerTests
         public Func<StratumConnection, Timestamped<JsonRpcRequest>,
             CancellationToken, Task> RequestHandler { get; set; }
 
+        public bool ThrowOnConnect { get; set; }
+
         public Task RunListenerAsync(CancellationToken ct)
         {
             return RunListenerAsync(ct, new StratumEndpoint(
@@ -371,6 +443,11 @@ public class StratumServerTests
         public void SetConnectionDrainTimeout(TimeSpan timeout)
         {
             ConnectionDrainTimeout = timeout;
+        }
+
+        public void SetBanManager(IBanManager manager)
+        {
+            banManager = manager;
         }
 
         public X509Certificate2 GetCachedCertificate(string path)
@@ -411,6 +488,9 @@ public class StratumServerTests
 
         protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)
         {
+            if(ThrowOnConnect)
+                throw new InvalidOperationException(
+                    "Injected pre-dispatch connection failure");
         }
     }
 }

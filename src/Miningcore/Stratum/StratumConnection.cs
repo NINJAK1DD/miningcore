@@ -87,7 +87,7 @@ public class StratumConnection
         RemoteEndpoint = remoteEndpoint;
         this.socket = socket;
         using var shutdownRegistration = ct.Register(() =>
-            ConfigureAbortiveClose(socket));
+            StratumSocketCleanup.ConfigureAbortiveClose(socket));
 
         expectingProxyHeader = endpoint.PoolEndpoint.TcpProxyProtocol?.Enable == true;
 
@@ -244,25 +244,9 @@ public class StratumConnection
         var activeSocket = socket;
 
         if(activeSocket != null)
-            ConfigureAbortiveClose(activeSocket);
+            StratumSocketCleanup.ConfigureAbortiveClose(activeSocket);
 
         networkStream?.Close();
-    }
-
-    private static void ConfigureAbortiveClose(Socket socket)
-    {
-        try
-        {
-            // Server-initiated disconnects are terminal. Abortive close prevents the local
-            // Stratum endpoint from being stranded in TIME_WAIT now that listener sockets
-            // are deliberately exclusive and do not use SO_REUSEADDR.
-            socket.LingerState = new LingerOption(true, 0);
-        }
-        catch(Exception ex) when(ex is SocketException or
-            ObjectDisposedException)
-        {
-            // The dispatch path may have completed between cancellation and this cleanup.
-        }
     }
 
     #endregion // API-Surface

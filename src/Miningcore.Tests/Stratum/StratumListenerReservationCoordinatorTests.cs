@@ -71,6 +71,40 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
+    public void BoundReservation_SurvivesForcedFinalizationAndRemainsExclusive()
+    {
+        var pool = CreatePool("pool-a", 0, "127.0.0.1");
+        var coordinator = new StratumListenerReservationCoordinator();
+
+        using var session = coordinator.ReserveAll(new[] { pool });
+        var reservation = Assert.Single(session.Claim(pool.Id));
+
+        try
+        {
+            var endpoint = (IPEndPoint) reservation.Socket.LocalEndPoint;
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            Assert.True(reservation.Socket.IsBound);
+            var competingPool = CreatePool("pool-b", endpoint.Port,
+                endpoint.Address.ToString());
+            var error = Assert.Throws<PoolStartupException>(() =>
+                coordinator.ReserveAll(new[] { competingPool }));
+            Assert.Contains(SocketError.AddressAlreadyInUse.ToString(),
+                error.Message, StringComparison.Ordinal);
+
+            reservation.Activate();
+            Assert.True(reservation.IsActivated);
+        }
+        finally
+        {
+            reservation.Dispose();
+        }
+    }
+
+    [Fact]
     public void DistinctSpecificAddresses_CanReserveOneNumericPort()
     {
         var port = GetFreePort(IPAddress.Loopback);

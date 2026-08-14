@@ -84,7 +84,8 @@ its accept path, so miners cannot accumulate in a connection backlog while daemo
 or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
 `SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
 `Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
-Server-initiated connection cleanup uses an abortive close so a clean stop/start can immediately
+Every server-initiated accepted-socket rejection or disconnect uses an abortive close, including
+fail-stop, banned-client and pre-dispatch failure paths. A clean stop/start can therefore immediately
 reacquire the exclusive listener instead of leaving the local endpoint in `TIME_WAIT`.
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses

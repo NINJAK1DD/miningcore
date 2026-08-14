@@ -183,9 +183,23 @@ public abstract class StratumServer
             throw new SocketException();
         }
 
-        var result = new Socket(handle);
+        // Socket(SafeSocketHandle) retains the supplied handle; it does not remove ownership
+        // from the original Socket. Give the descriptor a new owning handle and invalidate the
+        // temporary owner before it can be finalized, so exactly one managed object owns the fd.
+        var transferredHandle = new SafeSocketHandle(
+            handle.DangerousGetHandle(), true);
+        handle.SetHandleAsInvalid();
         GC.KeepAlive(server);
-        return result;
+
+        try
+        {
+            return new Socket(transferredHandle);
+        }
+        catch
+        {
+            transferredHandle.Dispose();
+            throw;
+        }
     }
 
     private static class NativeMethods
@@ -230,13 +244,17 @@ public abstract class StratumServer
 
     private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert, CancellationToken ct)
     {
+        StratumConnection connection = null;
+        var registered = false;
+        var dispatched = false;
+
         Guard(() =>
         {
             var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
 
             if(failStop?.IsFailStopRequested == true)
             {
-                socket.Close();
+                StratumSocketCleanup.CloseAbortively(socket);
                 return;
             }
 
@@ -244,7 +262,7 @@ public abstract class StratumServer
 
             if(remoteEndpoint == null)
             {
-                socket.Close();
+                StratumSocketCleanup.CloseAbortively(socket);
                 return;
             }
 
@@ -253,13 +271,14 @@ public abstract class StratumServer
                 return;
 
             // init connection
-            var connection = new StratumConnection(logger, rmsm, clock,
+            connection = new StratumConnection(logger, rmsm, clock,
                 CorrelationIdGenerator.GetNextId(),
                 clusterConfig.Logging.GPDRCompliant, failStop?.Token ?? default);
 
             logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging.GPDRCompliant)}:{remoteEndpoint.Port} ...");
 
             RegisterConnection(connection);
+            registered = true;
             OnConnect(connection, port.IPEndPoint);
 
             var dispatch = connection.DispatchAsync(socket, ct, port,
@@ -269,8 +288,20 @@ public abstract class StratumServer
                 throw new InvalidOperationException(
                     $"Connection task {connection.ConnectionId} is already tracked");
 
+            dispatched = true;
             _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch);
-        }, ex => logger.Error(ex));
+        }, ex =>
+        {
+            if(!dispatched)
+            {
+                StratumSocketCleanup.CloseAbortively(socket);
+
+                if(registered)
+                    UnregisterConnection(connection);
+            }
+
+            logger.Error(ex);
+        });
     }
 
     private async Task ObserveConnectionTaskAsync(string connectionId,
@@ -558,7 +589,7 @@ public abstract class StratumServer
         if(banManager.IsBanned(remoteEndpoint.Address))
         {
             logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address}");
-            socket.Close();
+            StratumSocketCleanup.CloseAbortively(socket);
 
             return true;
         }
