@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 
 namespace Miningcore.Blockchain.Bitcoin.MergedMining;
@@ -74,8 +75,7 @@ internal sealed class AuxiliaryTemplateStateMachine
         }
 
         pendingObservation = new AuxiliaryTemplateObservation(
-            AuxiliaryTemplateObservationKind.Cached, template, failure,
-            RequiresInstallationCommit: true);
+            AuxiliaryTemplateObservationKind.Cached, template, failure);
 
         // The startup template has not powered an installed job yet. Preserve why it
         // became fallback, but defer availability and the degraded episode until job
@@ -88,8 +88,7 @@ internal sealed class AuxiliaryTemplateStateMachine
     {
         ArgumentNullException.ThrowIfNull(template);
         pendingObservation = new AuxiliaryTemplateObservation(
-            AuxiliaryTemplateObservationKind.Fresh, template, null,
-            RequiresInstallationCommit: true);
+            AuxiliaryTemplateObservationKind.Fresh, template, null);
 
         if(firstJob && StartupTemplate != null &&
             ClassifyChange(StartupTemplate, template) == AuxiliaryTemplateChange.None)
@@ -115,7 +114,8 @@ internal sealed class AuxiliaryTemplateStateMachine
                 : TransitionTo(true, false, installedTemplate, null);
         }
 
-        if(observation.RequiresInstallationCommit && installedTemplate == null)
+        if(observation.Kind != AuxiliaryTemplateObservationKind.None &&
+            installedTemplate == null)
         {
             if(observation.Kind == AuxiliaryTemplateObservationKind.Fresh &&
                 StartupTemplate != null &&
@@ -143,8 +143,7 @@ internal sealed class AuxiliaryTemplateStateMachine
 
         if(observation.Kind == AuxiliaryTemplateObservationKind.Fresh)
             transition = TransitionTo(true, false, installedTemplate, null);
-        else if(observation.Kind == AuxiliaryTemplateObservationKind.Cached &&
-            observation.RequiresInstallationCommit)
+        else if(observation.Kind == AuxiliaryTemplateObservationKind.Cached)
         {
             transition = TransitionTo(true, true, installedTemplate,
                 observation.Failure);
@@ -201,7 +200,7 @@ internal sealed class AuxiliaryTemplateStateMachine
     {
         // A degraded state always describes the installed cached template that is
         // keeping merged mining operational.
-        System.Diagnostics.Debug.Assert(!degraded || template != null);
+        Debug.Assert(!degraded || template != null);
 
         var transition = new AuxiliaryTemplateStateTransition(
             ShouldPublish: true,
@@ -235,6 +234,5 @@ internal sealed class AuxiliaryTemplateStateMachine
     private readonly record struct AuxiliaryTemplateObservation(
         AuxiliaryTemplateObservationKind Kind,
         AuxBlockTemplate Template,
-        string Failure,
-        bool RequiresInstallationCommit);
+        string Failure);
 }
