@@ -314,7 +314,7 @@ public class Program : ProcessStatusBackgroundService
                                 pipeline.UseWebSockets();
                                 pipeline.MapWebSocketManager("/notifications",
                                     pipeline.ApplicationServices.GetService<WebSocketNotificationsRelay>());
-                                pipeline.UseMetricServer();
+                                pipeline.UseMetricServer(MetricsRoutePrefix);
                                 pipeline.UseMiddleware<ApiRequestMetricsMiddleware>();
                                 pipeline.UseMvc();
                             });

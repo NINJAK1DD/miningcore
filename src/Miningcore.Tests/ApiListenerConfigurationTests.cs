@@ -2181,7 +2181,7 @@ public class ApiListenerConfigurationTests
                         afterAccessControl: pipeline =>
                         {
                             pipeline.UseWebSockets();
-                            pipeline.UseMetricServer();
+                            pipeline.UseMetricServer(Program.MetricsRoutePrefix);
                             pipeline.Run(async context =>
                             {
                                 if(context.Request.Path == "/notifications" &&
