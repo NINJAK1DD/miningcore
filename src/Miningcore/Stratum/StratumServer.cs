@@ -96,16 +96,22 @@ public abstract class StratumServer
     {
         Contract.RequiresNonNull(listeners);
 
-        logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
-
-        using var registration = ct.Register(() =>
-        {
-            foreach(var listener in listeners)
-                listener.Dispose();
-        });
-
         try
         {
+            // Reservation deliberately stops at Bind. Entering the accept path is the point at
+            // which miners may connect; listening earlier would leave them queued while pool
+            // initialization waits for daemon synchronization or its first job.
+            foreach(var listener in listeners)
+                listener.Socket.Listen();
+
+            logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
+
+            using var registration = ct.Register(() =>
+            {
+                foreach(var listener in listeners)
+                    listener.Dispose();
+            });
+
             await Task.WhenAll(listeners.Select(x =>
                 Listen(x.Socket, x.Endpoint, ct)));
         }
@@ -132,7 +138,7 @@ public abstract class StratumServer
         return server;
     }
 
-    internal static Socket CreateBoundListenSocket(IPEndPoint endpoint)
+    internal static Socket CreateBoundSocket(IPEndPoint endpoint)
     {
         var server = CreateListenSocket(endpoint);
 
@@ -141,7 +147,6 @@ public abstract class StratumServer
             server.SetSocketOption(SocketOptionLevel.Socket,
                 SocketOptionName.ReuseAddress, true);
             server.Bind(endpoint);
-            server.Listen();
             return server;
         }
         catch

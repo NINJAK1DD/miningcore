@@ -299,7 +299,8 @@ startup before any pool is announced online and releases all sockets already acq
 attempt. The failure identifies the pool, effective endpoint and operating-system socket error.
 Broadcast and multicast listener addresses are rejected during configuration validation, while
 IPv4 loopback and link-local ranges remain eligible for the authoritative host bind. Existing valid
-listener configurations require no migration.
+listener configurations require no migration. Reserved sockets remain bound but do not call
+`Listen` until their pool finishes initialization and enters its Stratum accept path.
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
 Stratum sockets. Recovery stream-rebuilds the top-level configuration from `logging`, `persistence`,

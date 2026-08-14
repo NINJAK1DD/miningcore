@@ -339,7 +339,7 @@ public class StratumServerTests
 
         public Task RunListenerAsync(CancellationToken ct, StratumEndpoint endpoint)
         {
-            var socket = StratumServer.CreateBoundListenSocket(
+            var socket = StratumServer.CreateBoundSocket(
                 endpoint.IPEndPoint);
             var reservation = new StratumListenerReservation(poolConfig.Id,
                 endpoint, socket);

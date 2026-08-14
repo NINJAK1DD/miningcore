@@ -12,6 +12,28 @@ namespace Miningcore.Tests.Stratum;
 public class StratumListenerReservationCoordinatorTests
 {
     [Fact]
+    public void ReservedSocket_IsBoundButDoesNotListenDuringPoolInitialization()
+    {
+        var port = GetFreePort(IPAddress.Loopback);
+        var pool = CreatePool("pool-a", port, "127.0.0.1");
+        var coordinator = new StratumListenerReservationCoordinator();
+
+        using var session = coordinator.ReserveAll(new[] { pool });
+        var reservation = Assert.Single(session.Claim(pool.Id));
+
+        try
+        {
+            Assert.True(reservation.Socket.IsBound);
+            Assert.Throws<InvalidOperationException>(() =>
+                reservation.Socket.Accept());
+        }
+        finally
+        {
+            reservation.Dispose();
+        }
+    }
+
+    [Fact]
     public void DistinctSpecificAddresses_CanReserveOneNumericPort()
     {
         var port = GetFreePort(IPAddress.Loopback);
@@ -57,7 +79,7 @@ public class StratumListenerReservationCoordinatorTests
                     (int) SocketError.AddressAlreadyInUse);
             }
 
-            return StratumServer.CreateBoundListenSocket(endpoint);
+            return StratumServer.CreateBoundSocket(endpoint);
         });
         var pools = new[]
         {
@@ -78,7 +100,7 @@ public class StratumListenerReservationCoordinatorTests
         Assert.Contains("native error", error.Message,
             StringComparison.Ordinal);
 
-        using var reacquired = StratumServer.CreateBoundListenSocket(
+        using var reacquired = StratumServer.CreateBoundSocket(
             new IPEndPoint(IPAddress.Loopback, firstPort));
     }
 

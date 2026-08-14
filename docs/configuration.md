@@ -78,7 +78,10 @@ set has been reserved. If any endpoint is occupied, unavailable in the current h
 network namespace, or otherwise rejected by the operating system, Miningcore releases every socket
 acquired by that attempt and stops the complete cluster. The startup error identifies the pool,
 effective endpoint, socket classification and native error. Miningcore hands those same retained
-sockets to the Stratum accept loops; it does not probe, close and later rebind them.
+sockets to the Stratum accept loops; it does not probe, close and later rebind them. Reservation
+calls `Bind` but deliberately defers `Listen` until that pool has completed initialization and enters
+its accept path, so miners cannot accumulate in a connection backlog while daemon synchronization
+or first-job setup is still pending.
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;

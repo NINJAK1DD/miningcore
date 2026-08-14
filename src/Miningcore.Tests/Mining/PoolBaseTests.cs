@@ -161,7 +161,7 @@ public class PoolBaseTests
         cts.Cancel();
         await runTask.WaitAsync(TestTimeout);
 
-        using var reacquired = StratumServer.CreateBoundListenSocket(
+        using var reacquired = StratumServer.CreateBoundSocket(
             new IPEndPoint(IPAddress.Loopback, port));
     }
 

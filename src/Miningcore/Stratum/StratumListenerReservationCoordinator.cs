@@ -84,7 +84,7 @@ internal sealed class StratumListenerReservationSession : IDisposable
 internal sealed class StratumListenerReservationCoordinator
 {
     internal StratumListenerReservationCoordinator() :
-        this(StratumServer.CreateBoundListenSocket)
+        this(StratumServer.CreateBoundSocket)
     {
     }
 
