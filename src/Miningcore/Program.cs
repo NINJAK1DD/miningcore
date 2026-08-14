@@ -325,8 +325,8 @@ public class Program : ProcessStatusBackgroundService
                     var webSocketScheme = $"ws{(apiTlsEnable ? "s" : "")}";
                     var listenerHost = FormatListenerHost(address);
                     logger.Info(() => $"Public API listening on {httpScheme}://{listenerHost}:{endpointPorts.PublicPort}");
-                    logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}/api/admin");
-                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}/metrics");
+                    logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}{AdminApiAuthenticationMiddleware.AdminRoutePrefix}");
+                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}{MetricsRoutePrefix}");
                     logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{listenerHost}:{endpointPorts.PublicPort}/notifications");
 
                     switch(adminApiCredential.Status)
@@ -755,10 +755,10 @@ public class Program : ProcessStatusBackgroundService
         // proxy also appears as loopback and can make a shared protected route public.
 
         if(!api.AdminPort.HasValue)
-            warnings.Add("api.adminPort is omitted; /api/admin is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
+            warnings.Add($"api.adminPort is omitted; {AdminApiAuthenticationMiddleware.AdminRoutePrefix} is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
 
         if(!api.MetricsPort.HasValue)
-            warnings.Add("api.metricsPort is omitted; /metrics is served on the public listener. A public reverse proxy must deny this path unless exposing metrics is intentional");
+            warnings.Add($"api.metricsPort is omitted; {MetricsRoutePrefix} is served on the public listener. A public reverse proxy must deny this path unless exposing metrics is intentional");
 
         return warnings.ToArray();
     }

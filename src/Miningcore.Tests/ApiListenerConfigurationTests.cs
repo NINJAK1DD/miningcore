@@ -198,9 +198,12 @@ public class ApiListenerConfigurationTests
 
         Assert.Equal(expectedCount, warnings.Length);
         Assert.Equal(!adminPort.HasValue,
-            warnings.Any(message => message.Contains("/api/admin")));
+            warnings.Any(message => message.Contains(
+                AdminApiAuthenticationMiddleware.AdminRoutePrefix,
+                StringComparison.Ordinal)));
         Assert.Equal(!metricsPort.HasValue,
-            warnings.Any(message => message.Contains("/metrics")));
+            warnings.Any(message => message.Contains(
+                Program.MetricsRoutePrefix, StringComparison.Ordinal)));
     }
 
     [Theory]
