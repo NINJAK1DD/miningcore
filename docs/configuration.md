@@ -72,6 +72,8 @@ IPv4-mapped equivalents, and any pairing covered by an IPv4 or dual-stack wildca
 before pools start. Startup reports every overlapping pair in one validation pass and identifies
 both conflicting pools and their effective endpoints.
 
+### Stratum listener reservation
+
 Normal startup then creates, configures, binds and retains every enabled internal Stratum socket as
 one cluster-scoped reservation phase. No pool initialization can announce `Online` until the whole
 set has been reserved. If any endpoint is occupied, unavailable in the current host or container
@@ -84,10 +86,15 @@ its accept path, so miners cannot accumulate in a connection backlog while daemo
 or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
 `SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
 `Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
-Every server-initiated accepted-socket rejection or disconnect uses an abortive close, including
-fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake and request-handler failure
-paths. A clean stop/start can therefore immediately reacquire the exclusive listener instead of
-leaving the local endpoint in `TIME_WAIT`.
+Accepted sockets begin with abortive-close protection so an OOM kill, forced container stop or
+process crash normally cannot strand the exclusive endpoint. Clean peer EOF and bounded ordinary
+host shutdown disarm that protection and close gracefully so queued Stratum response bytes are not
+discarded. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
+request-handler-failure and drain-timeout paths remain abortive. If an unclean stop still leaves a
+local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with bounded
+backoff for up to 90 seconds per endpoint. A genuinely occupied port therefore delays startup for
+that bounded window and then fails with the complete pool and socket diagnostic; no partial cluster
+starts.
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
@@ -95,6 +102,9 @@ whether a specific address can be used on this host is decided authoritatively b
 Miningcore also rejects subnet-directed broadcast identities positively identified from active local
 IPv4 interface addresses and masks. Interface enumeration is not used to reject ordinary unicast
 addresses, so containers, dynamic interfaces and failover addresses still rely on authoritative bind.
+The active IPv4 subnet snapshot is captured once per validation or reservation pass and is used only
+for positive directed-broadcast rejection, so one pass cannot classify ports from different host
+interface snapshots.
 For IPv6 link-local addresses, include the correct interface scope where the operating system
 requires it. A missing or incorrect scope fails startup safely rather than leaving a partial pool set.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the

@@ -23,6 +23,25 @@ internal static class StratumSocketCleanup
         }
     }
 
+    internal static void ConfigureGracefulClose(Socket socket)
+    {
+        if(socket == null)
+            return;
+
+        try
+        {
+            // Accepted sockets begin abortive so a hard process termination does not strand an
+            // exclusive listener in TIME_WAIT. A clean EOF or bounded host shutdown deliberately
+            // disarms that default before disposal so queued response bytes can drain with FIN.
+            socket.LingerState = new LingerOption(false, 0);
+        }
+        catch(Exception ex) when(ex is SocketException or
+            ObjectDisposedException)
+        {
+            // The connection may have completed between classification and cleanup.
+        }
+    }
+
     internal static void CloseAbortively(Socket socket)
     {
         if(socket == null)

@@ -86,8 +86,9 @@ public class StratumConnection
         LocalEndpoint = endpoint.IPEndPoint;
         RemoteEndpoint = remoteEndpoint;
         this.socket = socket;
-        using var shutdownRegistration = ct.Register(() =>
-            StratumSocketCleanup.ConfigureAbortiveClose(socket));
+        // Keep hard process termination restart-safe by default. Clean EOF and bounded host
+        // shutdown explicitly disarm linger(0) before the owning stream is disposed.
+        StratumSocketCleanup.ConfigureAbortiveClose(socket);
         // Mining fail-stop closes admission before it asks the host to stop. Register the
         // independent token directly so its synchronous cancellation callback establishes
         // abortive linger before connection tasks can unwind and dispose the owning stream.
@@ -180,6 +181,11 @@ public class StratumConnection
                 // Signal completion or error
                 if(error == null)
                 {
+                    // Host shutdown and peer EOF are graceful. The independent financial
+                    // fail-stop gate remains abortive even when cancellation is the only task
+                    // outcome; otherwise this branch would undo the gate's linger(0) callback.
+                    if(!failStopToken.IsCancellationRequested)
+                        StratumSocketCleanup.ConfigureGracefulClose(socket);
                     onCompleted(this);
                     abortiveOnExceptionalExit = false;
                 }

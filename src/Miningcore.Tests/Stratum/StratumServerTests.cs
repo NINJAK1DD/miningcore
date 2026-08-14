@@ -113,7 +113,7 @@ public class StratumServerTests
     }
 
     [Fact]
-    public async Task RunAsync_ShutdownWithConnectedMiner_AllowsImmediateExclusiveRestart()
+    public async Task RunAsync_ShutdownWithConnectedMiner_ClosesGracefullyAfterDrain()
     {
         var server = new TestStratumServer();
         using var cts = new CancellationTokenSource();
@@ -127,10 +127,12 @@ public class StratumServerTests
         await server.WaitForConnectionCountAsync(1, TestTimeout);
 
         cts.Cancel();
+        var buffer = new byte[1];
+        var received = await client.Client.ReceiveAsync(buffer,
+                SocketFlags.None)
+            .WaitAsync(TestTimeout);
+        Assert.Equal(0, received);
         await runTask.WaitAsync(TestTimeout);
-
-        using var restarted = StratumServer.CreateBoundSocket(
-            endpoint.IPEndPoint);
     }
 
     [Fact]
@@ -218,6 +220,75 @@ public class StratumServerTests
 
         using var restarted = StratumServer.CreateBoundSocket(
             endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_DuplicateConnectionIdRejectsSecondWithoutClosingFirst()
+    {
+        var server = new TestStratumServer
+        {
+            ConnectionIdFactory = () => "duplicate-connection-id",
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var firstClient = new TcpClient(AddressFamily.InterNetwork);
+        await firstClient.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await server.WaitForConnectionTaskCountAsync(1, TestTimeout);
+
+        using var duplicateClient = new TcpClient(AddressFamily.InterNetwork);
+        await ConnectAndWaitForRejectionAsync(duplicateClient,
+            IPAddress.Loopback, port);
+
+        Assert.Equal(1, server.ConnectionCount);
+        Assert.Equal(1, server.TrackedConnectionTaskCount);
+        Assert.False(firstClient.Client.Poll(0, SelectMode.SelectRead));
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
+    public async Task RunAsync_StaleTrackedConnectionIdObservesAndRejectsNewDispatch()
+    {
+        const string connectionId = "stale-tracked-connection-id";
+        var allowTaskRemoval = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = new TestStratumServer
+        {
+            ConnectionIdFactory = () => connectionId,
+            BeforeConnectionTaskRemoval = _ => allowTaskRemoval.Task,
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+
+        using(var firstClient = new TcpClient(AddressFamily.InterNetwork))
+        {
+            await firstClient.ConnectAsync(IPAddress.Loopback, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await server.WaitForConnectionCountAsync(1, TestTimeout);
+        }
+
+        await server.WaitForConnectionCountAsync(0, TestTimeout);
+        Assert.Equal(1, server.TrackedConnectionTaskCount);
+
+        using var duplicateClient = new TcpClient(AddressFamily.InterNetwork);
+        await ConnectAndWaitForRejectionAsync(duplicateClient,
+            IPAddress.Loopback, port);
+        await server.WaitForConnectionCountAsync(0, TestTimeout);
+        Assert.Equal(1, server.TrackedConnectionTaskCount);
+
+        allowTaskRemoval.TrySetResult();
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
     }
 
     [Fact]
@@ -393,6 +464,9 @@ public class StratumServerTests
         Assert.Equal(ProcessExitCodes.GeneralFailure, processStatus.ExitCode);
         lifetime.Received(1).StopApplication();
         Assert.False(neverCompletes.Task.IsCompleted);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            new IPEndPoint(IPAddress.Loopback, port));
     }
 
     [Fact]
@@ -571,6 +645,8 @@ public class StratumServerTests
 
         public Func<StratumConnection, Timestamped<JsonRpcRequest>,
             CancellationToken, Task> RequestHandler { get; set; }
+
+        public int ConnectionCount => connections.Count;
 
         public bool ThrowOnConnect { get; set; }
 

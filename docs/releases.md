@@ -303,8 +303,11 @@ listener configurations require no migration. Reserved sockets remain bound but 
 `Listen` until their pool finishes initialization; activation must succeed before the pool announces
 `Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and all server-
 initiated accepted-socket rejections and exceptional disconnects—including malformed requests, TLS
-handshake failures and request-handler faults—use abortive cleanup so local `TIME_WAIT` cannot block
-a clean immediate restart. Active-interface masks are used
+handshake failures and request-handler faults—use abortive cleanup. Accepted sockets are protected
+against unclean process termination by default, while clean EOF and ordinary bounded shutdown switch
+to graceful close so queued response bytes are retained. Startup retries `AddressAlreadyInUse` with
+bounded backoff for up to 90 seconds per endpoint when residual `TIME_WAIT` survives an unclean stop.
+Active-interface masks are used
 only to reject known subnet-directed IPv4 broadcast identities; ordinary addresses still use bind as
 the host-specific source of truth.
 

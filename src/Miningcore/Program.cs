@@ -528,9 +528,10 @@ public class Program : ProcessStatusBackgroundService
         await Guard(async () =>
         {
             AssignPoolTemplates(enabledPools, coinTemplates);
-            var listenerCoordinator = new StratumListenerReservationCoordinator();
+            var listenerCoordinator = new StratumListenerReservationCoordinator(
+                logger);
             using var listenerReservations = listenerCoordinator.ReserveAll(
-                enabledPools);
+                enabledPools, ct);
 
             if(listenerReservations.Count > 0)
             {

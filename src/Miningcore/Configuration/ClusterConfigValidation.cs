@@ -186,7 +186,17 @@ public class VarDiffConfigValidator : AbstractValidator<VarDiffConfig>
 public class PoolConfigValidator : AbstractValidator<PoolConfig>
 {
     public PoolConfigValidator(bool recoveryMode = false)
+        : this(recoveryMode, null)
     {
+    }
+
+    internal PoolConfigValidator(bool recoveryMode,
+        IReadOnlyCollection<ListenerAddressUtils.IPv4InterfaceSubnet> activeIPv4Subnets)
+    {
+        activeIPv4Subnets ??= recoveryMode
+            ? Array.Empty<ListenerAddressUtils.IPv4InterfaceSubnet>()
+            : ListenerAddressUtils.CaptureActiveIPv4Subnets();
+
         bool ShouldValidateStratumListeners(PoolConfig pool) =>
             !recoveryMode && pool.Enabled &&
             pool.EnableInternalStratum == true;
@@ -243,7 +253,7 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                     }
 
                     if(!ListenerAddressUtils.IsSuitableForListener(
-                           resolvedAddress, out var reason))
+                           resolvedAddress, activeIPv4Subnets, out var reason))
                     {
                         context.AddFailure($"Ports[{port}].ListenAddress",
                             $"Pool '{pool.Id}' Stratum port {port}: listenAddress '{address}' is unsuitable: {reason}");
@@ -289,6 +299,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
     public ClusterConfigValidator(bool recoveryMode = false)
     {
+        var activeIPv4Subnets = recoveryMode
+            ? Array.Empty<ListenerAddressUtils.IPv4InterfaceSubnet>()
+            : ListenerAddressUtils.CaptureActiveIPv4Subnets();
+
         RuleFor(j => j.Logging)
             .SetValidator(new ClusterLoggingConfigValidator())
             .When(j => j.Logging != null);
@@ -368,7 +382,8 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleForEach(j => j.Pools)
             .Where(pool => pool != null)
-            .SetValidator(new PoolConfigValidator(recoveryMode));
+            .SetValidator(new PoolConfigValidator(recoveryMode,
+                activeIPv4Subnets));
     }
 
     internal static IReadOnlyList<StratumListenerConflict>

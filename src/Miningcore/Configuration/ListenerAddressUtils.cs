@@ -72,7 +72,7 @@ internal static class ListenerAddressUtils
     internal static bool IsSuitableForListener(IPAddress address,
         out string reason)
     {
-        return IsSuitableForListener(address, GetActiveIPv4Subnets(),
+        return IsSuitableForListener(address, CaptureActiveIPv4Subnets(),
             out reason);
     }
 
@@ -116,7 +116,7 @@ internal static class ListenerAddressUtils
         return true;
     }
 
-    private static IPv4InterfaceSubnet[] GetActiveIPv4Subnets()
+    internal static IPv4InterfaceSubnet[] CaptureActiveIPv4Subnets()
     {
         try
         {

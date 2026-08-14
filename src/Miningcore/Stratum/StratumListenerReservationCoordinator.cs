@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using Miningcore.Configuration;
 using Miningcore.Mining;
+using NLog;
 
 namespace Miningcore.Stratum;
 
@@ -101,34 +102,65 @@ internal sealed class StratumListenerReservationSession : IDisposable
 
 internal sealed class StratumListenerReservationCoordinator
 {
-    internal StratumListenerReservationCoordinator() :
-        this(StratumServer.CreateBoundSocket)
+    internal static readonly TimeSpan AddressInUseRetryWindow =
+        TimeSpan.FromSeconds(90);
+    internal static readonly TimeSpan InitialRetryDelay =
+        TimeSpan.FromMilliseconds(250);
+    internal static readonly TimeSpan MaximumRetryDelay =
+        TimeSpan.FromSeconds(5);
+
+    internal StratumListenerReservationCoordinator(ILogger logger = null) :
+        this(StratumServer.CreateBoundSocket, logger)
     {
     }
 
     internal StratumListenerReservationCoordinator(
-        Func<IPEndPoint, Socket> reserveSocket)
+        Func<IPEndPoint, Socket> reserveSocket, ILogger logger = null,
+        TimeSpan? addressInUseRetryWindow = null,
+        Action<TimeSpan, CancellationToken> retryWait = null)
     {
         this.reserveSocket = reserveSocket ??
             throw new ArgumentNullException(nameof(reserveSocket));
+        this.logger = logger;
+        this.addressInUseRetryWindow = addressInUseRetryWindow ??
+            AddressInUseRetryWindow;
+        if(this.addressInUseRetryWindow < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(addressInUseRetryWindow));
+
+        this.retryWait = retryWait ?? ((delay, ct) =>
+            Task.Delay(delay, ct).GetAwaiter().GetResult());
     }
 
     private readonly Func<IPEndPoint, Socket> reserveSocket;
+    private readonly ILogger logger;
+    private readonly TimeSpan addressInUseRetryWindow;
+    private readonly Action<TimeSpan, CancellationToken> retryWait;
 
     internal StratumListenerReservationSession ReserveAll(
-        IEnumerable<PoolConfig> pools)
+        IEnumerable<PoolConfig> pools, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(pools);
 
         var reservations = new Dictionary<string,
             StratumListenerReservation[]>(StringComparer.Ordinal);
         var acquired = new List<StratumListenerReservation>();
+        var activeIPv4Subnets = ListenerAddressUtils
+            .CaptureActiveIPv4Subnets();
 
         try
         {
             foreach(var pool in pools.Where(pool => pool?.Enabled == true &&
                         pool.EnableInternalStratum == true))
             {
+                ct.ThrowIfCancellationRequested();
+
+                if(reservations.ContainsKey(pool.Id))
+                {
+                    throw new PoolStartupException(
+                        $"Unable to reserve Stratum listeners: duplicate pool id '{pool.Id}'",
+                        pool.Id);
+                }
+
                 var poolReservations = new List<StratumListenerReservation>();
 
                 foreach(var (port, poolEndpoint) in pool.Ports ??
@@ -143,7 +175,7 @@ internal sealed class StratumListenerReservationCoordinator
                     }
 
                     if(!ListenerAddressUtils.IsSuitableForListener(address,
-                           out var reason))
+                           activeIPv4Subnets, out var reason))
                     {
                         throw new PoolStartupException(
                             $"Pool '{pool.Id}' Stratum endpoint {FormatEndpoint(address, port)} cannot be reserved: {reason}",
@@ -156,12 +188,28 @@ internal sealed class StratumListenerReservationCoordinator
 
                     try
                     {
-                        socket = reserveSocket(endpoint.IPEndPoint);
+                        socket = ReserveSocketWithAddressInUseRetry(
+                            pool.Id, endpoint.IPEndPoint, ct);
                     }
                     catch(SocketException ex)
                     {
+                        var retryDetail = ex.SocketErrorCode ==
+                            SocketError.AddressAlreadyInUse &&
+                            addressInUseRetryWindow > TimeSpan.Zero
+                                ? $" after retrying for {addressInUseRetryWindow.TotalSeconds:0.###} seconds"
+                                : string.Empty;
                         throw new PoolStartupException(
-                            $"Unable to reserve Stratum listener {FormatEndpoint(address, port)} for pool '{pool.Id}': socket error {ex.SocketErrorCode} (native error {ex.NativeErrorCode}): {ex.Message}",
+                            $"Unable to reserve Stratum listener {FormatEndpoint(address, port)} for pool '{pool.Id}'{retryDetail}: socket error {ex.SocketErrorCode} (native error {ex.NativeErrorCode}): {ex.Message}",
+                            pool.Id, ex);
+                    }
+                    catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch(Exception ex)
+                    {
+                        throw new PoolStartupException(
+                            $"Unable to reserve Stratum listener {FormatEndpoint(address, port)} for pool '{pool.Id}': {ex.GetType().Name}: {ex.Message}",
                             pool.Id, ex);
                     }
 
@@ -182,6 +230,36 @@ internal sealed class StratumListenerReservationCoordinator
                 listener.Dispose();
 
             throw;
+        }
+    }
+
+    private Socket ReserveSocketWithAddressInUseRetry(string poolId,
+        IPEndPoint endpoint, CancellationToken ct)
+    {
+        var remaining = addressInUseRetryWindow;
+        var delay = InitialRetryDelay;
+
+        while(true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                return reserveSocket(endpoint);
+            }
+            catch(SocketException ex) when(
+                ex.SocketErrorCode == SocketError.AddressAlreadyInUse &&
+                remaining > TimeSpan.Zero)
+            {
+                var wait = delay <= remaining ? delay : remaining;
+                logger?.Warn(() =>
+                    $"Stratum listener {FormatEndpoint(endpoint.Address, endpoint.Port)} for pool '{poolId}' is still in use; retrying in {wait.TotalSeconds:0.###} seconds for up to {remaining.TotalSeconds:0.###} more seconds");
+                retryWait(wait, ct);
+                remaining -= wait;
+                delay = TimeSpan.FromMilliseconds(Math.Min(
+                    delay.TotalMilliseconds * 2,
+                    MaximumRetryDelay.TotalMilliseconds));
+            }
         }
     }
 
