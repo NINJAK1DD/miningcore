@@ -85,8 +85,9 @@ or first-job setup is still pending. Reserved listeners are exclusive: Miningcor
 `SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
 `Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
 Every server-initiated accepted-socket rejection or disconnect uses an abortive close, including
-fail-stop, banned-client and pre-dispatch failure paths. A clean stop/start can therefore immediately
-reacquire the exclusive listener instead of leaving the local endpoint in `TIME_WAIT`.
+fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake and request-handler failure
+paths. A clean stop/start can therefore immediately reacquire the exclusive listener instead of
+leaving the local endpoint in `TIME_WAIT`.
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;

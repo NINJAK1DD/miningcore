@@ -104,6 +104,13 @@ public class StratumConnection
 
             using(var disposables = new CompositeDisposable(networkStream))
             {
+                var abortiveOnExceptionalExit = true;
+                using var abortiveCloseGuard = Disposable.Create(() =>
+                {
+                    if(abortiveOnExceptionalExit)
+                        StratumSocketCleanup.ConfigureAbortiveClose(socket);
+                });
+
                 var tls = endpoint.PoolEndpoint.Tls;
 
                 // auto-detect SSL
@@ -167,14 +174,26 @@ public class StratumConnection
 
                 // Signal completion or error
                 if(error == null)
+                {
                     onCompleted(this);
+                    abortiveOnExceptionalExit = false;
+                }
                 else
+                {
+                    // NetworkStream owns the accepted socket. Configure abortive linger while
+                    // it is still alive so malformed requests, TLS failures and handler errors
+                    // cannot leave an exclusive listener endpoint in local TIME_WAIT.
+                    StratumSocketCleanup.ConfigureAbortiveClose(socket);
                     onError(this, error);
+                }
             }
         }
 
         catch(Exception ex)
         {
+            // Errors before stream construction have no other socket owner. Errors after it
+            // are already configured abortive by the inner scope; this remains race-safe.
+            StratumSocketCleanup.CloseAbortively(socket);
             onError(this, ex);
         }
 

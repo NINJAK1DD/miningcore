@@ -184,6 +184,99 @@ public class StratumServerTests
     }
 
     [Fact]
+    public async Task RunAsync_MalformedJsonClient_AllowsImmediateExclusiveRestart()
+    {
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await using var stream = client.GetStream();
+        var malformedRequest = StratumConnection.Encoding.GetBytes(
+            "not-json\n");
+        await stream.WriteAsync(malformedRequest);
+        await stream.FlushAsync();
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+
+        // Keep the client object alive while stopping the listener. The server-side protocol
+        // rejection must already have made its accepted-socket close abortive.
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_InvalidTlsHandshake_AllowsImmediateExclusiveRestart()
+    {
+        // Windows Schannel on the validation host cannot acquire credentials for an ephemeral
+        // self-signed PFX. Linux CI exercises the TLS failure and exclusive-rebind contract.
+        if(OperatingSystem.IsWindows())
+            return;
+
+        const string pfxPassword = "miningcore-test-password";
+        var pfxFile = Path.Combine(Path.GetTempPath(),
+            $"miningcore-tls-rejection-{Guid.NewGuid():N}.pfx");
+        var endpointConfig = new PoolEndpoint
+        {
+            Difficulty = 1,
+            Tls = true,
+            TlsPfxFile = pfxFile,
+            TlsPfxPassword = pfxPassword,
+        };
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        Task runTask = null;
+
+        try
+        {
+            using var certificate = CreateServerCertificate();
+            await File.WriteAllBytesAsync(pfxFile,
+                certificate.Export(X509ContentType.Pfx, pfxPassword));
+
+            var port = GetFreePort();
+            var endpoint = new StratumEndpoint(
+                new IPEndPoint(IPAddress.Loopback, port), endpointConfig);
+            runTask = server.RunListenerAsync(cts.Token, endpoint);
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(IPAddress.Loopback, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await server.WaitForConnectionCountAsync(1, TestTimeout);
+            await using var stream = client.GetStream();
+            var invalidHandshake = StratumConnection.Encoding.GetBytes(
+                "not-a-tls-client\n");
+            await stream.WriteAsync(invalidHandshake);
+            await stream.FlushAsync();
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+
+            // Keep the peer alive until after the server has stopped so this proves the TLS
+            // failure path, rather than client disposal, permits immediate exclusive rebinding.
+            cts.Cancel();
+            await runTask.WaitAsync(TestTimeout);
+            runTask = null;
+
+            using var restarted = StratumServer.CreateBoundSocket(
+                endpoint.IPEndPoint);
+        }
+        finally
+        {
+            cts.Cancel();
+
+            if(runTask != null)
+                await runTask.WaitAsync(TestTimeout);
+
+            server.RemoveCachedCertificate(pfxFile)?.Dispose();
+            File.Delete(pfxFile);
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_ShutdownDrainsInFlightRequestHandler()
     {
         var server = new TestStratumServer();

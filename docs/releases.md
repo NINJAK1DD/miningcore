@@ -302,8 +302,9 @@ IPv4 loopback and link-local ranges remain eligible for the authoritative host b
 listener configurations require no migration. Reserved sockets remain bound but do not call
 `Listen` until their pool finishes initialization; activation must succeed before the pool announces
 `Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and all server-
-initiated accepted-socket rejections and disconnects use abortive cleanup so local `TIME_WAIT` cannot
-block a clean immediate restart. Active-interface masks are used
+initiated accepted-socket rejections and exceptional disconnects—including malformed requests, TLS
+handshake failures and request-handler faults—use abortive cleanup so local `TIME_WAIT` cannot block
+a clean immediate restart. Active-interface masks are used
 only to reject known subnet-directed IPv4 broadcast identities; ordinary addresses still use bind as
 the host-specific source of truth.
 
