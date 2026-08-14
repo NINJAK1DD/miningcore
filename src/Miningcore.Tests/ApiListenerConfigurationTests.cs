@@ -2078,6 +2078,9 @@ public class ApiListenerConfigurationTests
             $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
         Assert.Equal(HttpStatusCode.OK, scrapeResponse.StatusCode);
         Assert.Equal("text/plain", scrapeResponse.Content.Headers.ContentType?.MediaType);
+        var scrapeBody = await scrapeResponse.Content.ReadAsStringAsync();
+        Assert.Contains("miningcore_listener_test_scrapes_total", scrapeBody,
+            StringComparison.Ordinal);
 
         using var lookalikeRequest = CreatePreflightRequest(
             $"http://127.0.0.1:{host.Ports.PublicPort}/metrics-export");
@@ -2202,6 +2205,10 @@ public class ApiListenerConfigurationTests
         // parallel. Give this real exporter its own registry so unrelated
         // collectors cannot make an integration scrape intermittently fail.
         var registry = Metrics.NewCustomRegistry();
+        Metrics.WithCustomRegistry(registry)
+            .CreateCounter("miningcore_listener_test_scrapes_total",
+                "Metric exposed so the isolated route-test registry serializes a scrape body")
+            .Inc();
         var host = Host.CreateDefaultBuilder()
             .ConfigureLogging(logging => logging.ClearProviders())
             .ConfigureWebHostDefaults(builder => builder
@@ -2220,7 +2227,8 @@ public class ApiListenerConfigurationTests
                         {
                             pipeline.UseWebSockets();
                             pipeline.UseMetricServer(
-                                Program.MetricsRoutePrefix, registry);
+                                settings => settings.Registry = registry,
+                                Program.MetricsRoutePrefix);
                             pipeline.Run(async context =>
                             {
                                 if(context.Request.Path == "/notifications" &&
