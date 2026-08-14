@@ -245,7 +245,8 @@ Administrative routes remain subject to the public API rate limiter before the a
 and bearer token are evaluated. This preserves abuse control and bounds rejection-log amplification
 from unauthorized sources. Loopback is exempt by default; trusted remote automation that requires
 an exemption must add its narrowly scoped source address to `api.rateLimiting.ipWhitelist` as well
-as `api.adminIpWhitelist`.
+as `api.adminIpWhitelist`. The rate-limit IP whitelist bypasses API throttling globally, not only
+for administrative requests, so restrict its entries to trusted fixed addresses.
 
 ### Security hardening: metrics CORS isolation
 

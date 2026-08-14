@@ -120,7 +120,8 @@ the admin IP whitelist and bearer token. This limits rejection and log amplifica
 sources, especially when the admin route shares the public listener. Loopback is exempt by default.
 If trusted remote automation needs a rate-limit exemption, add only its narrowly scoped source
 address to `api.rateLimiting.ipWhitelist` as well as `api.adminIpWhitelist`; authentication and the
-admin whitelist remain mandatory.
+admin whitelist remain mandatory. The rate-limit IP whitelist bypasses API throttling globally,
+not only for administrative requests, so restrict its entries to trusted fixed addresses.
 
 Administrative routes intentionally emit no cross-origin resource sharing (CORS) headers. Public
 front ends must call only public routes. If users need to change miner settings, implement a trusted
