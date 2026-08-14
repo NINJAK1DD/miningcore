@@ -2198,6 +2198,10 @@ public class ApiListenerConfigurationTests
     {
         var adminCredential = AdminApiCredential.Create(
             configureAdminCredential ? TestAdminToken : null);
+        // The complete suite exercises process-global production metrics in
+        // parallel. Give this real exporter its own registry so unrelated
+        // collectors cannot make an integration scrape intermittently fail.
+        var registry = Metrics.NewCustomRegistry();
         var host = Host.CreateDefaultBuilder()
             .ConfigureLogging(logging => logging.ClearProviders())
             .ConfigureWebHostDefaults(builder => builder
@@ -2215,7 +2219,8 @@ public class ApiListenerConfigurationTests
                         afterAccessControl: pipeline =>
                         {
                             pipeline.UseWebSockets();
-                            pipeline.UseMetricServer(Program.MetricsRoutePrefix);
+                            pipeline.UseMetricServer(
+                                Program.MetricsRoutePrefix, registry);
                             pipeline.Run(async context =>
                             {
                                 if(context.Request.Path == "/notifications" &&
