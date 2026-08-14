@@ -150,14 +150,26 @@ public class StratumConnection
                     logger.Info(() => $"[{ConnectionId}] Connection from {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}:{RemoteEndpoint.Port} accepted on port {endpoint.IPEndPoint.Port}");
 
                 // Async I/O loop(s)
+                var receiveTask = FillReceivePipeAsync(cts.Token);
+                var processTask = ProcessReceivePipeAsync(cts.Token,
+                    endpoint.PoolEndpoint.TcpProxyProtocol, onRequestAsync);
+                var sendTask = ProcessSendQueueAsync(cts.Token);
                 var tasks = new[]
                 {
-                    FillReceivePipeAsync(cts.Token),
-                    ProcessReceivePipeAsync(cts.Token, endpoint.PoolEndpoint.TcpProxyProtocol, onRequestAsync),
-                    ProcessSendQueueAsync(cts.Token)
+                    receiveTask,
+                    processTask,
+                    sendTask
                 };
 
-                await Task.WhenAny(tasks);
+                var completedTask = await Task.WhenAny(tasks);
+                // Graceful close is permitted only when the network receive loop positively
+                // observed peer EOF while both server-owned cancellation sources remained
+                // healthy. An independent OCE from request handling or the send timeout is a
+                // server-side failure and must retain the default abortive close.
+                var peerEof = ReferenceEquals(completedTask, receiveTask) &&
+                    receiveTask.IsCompletedSuccessfully &&
+                    !ct.IsCancellationRequested &&
+                    !failStopToken.IsCancellationRequested;
 
                 // Stop network I/O, but do not declare the connection complete until an in-flight
                 // request handler has reached an admitted-or-rejected outcome. Handlers receive
@@ -189,7 +201,8 @@ public class StratumConnection
                     // A peer-driven clean EOF may close gracefully. Host shutdown and the
                     // independent financial fail-stop gate remain abortive so accepted sockets
                     // cannot delay exclusive listener reacquisition.
-                    if(!ct.IsCancellationRequested &&
+                    if(peerEof &&
+                        !ct.IsCancellationRequested &&
                         !failStopToken.IsCancellationRequested)
                     {
                         StratumSocketCleanup.ConfigureGracefulClose(socket);

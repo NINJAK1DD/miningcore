@@ -91,7 +91,8 @@ process crash or ordinary host shutdown normally cannot strand the exclusive end
 genuine peer-initiated EOF disarms that protection and closes gracefully; bytes already written to
 the network may then drain with FIN, but Miningcore does not drain its application send queue during
 shutdown. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
-request-handler-failure and drain-timeout paths remain abortive. If an unclean stop still leaves a
+request-handler-failure, send-timeout and other independent-cancellation paths remain abortive. If
+an unclean stop still leaves a
 local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with bounded
 backoff for up to 90 seconds per endpoint. A genuinely occupied port therefore delays startup for
 that bounded window and then fails with the complete pool and socket diagnostic; no partial cluster

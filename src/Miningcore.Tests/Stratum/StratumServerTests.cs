@@ -137,6 +137,54 @@ public class StratumServerTests
     }
 
     [Fact]
+    public async Task RunAsync_SendLoopCancellation_AllowsImmediateExclusiveRestart()
+    {
+        var sendAttempted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = new TestStratumServer
+        {
+            ConnectionInitializer = connection =>
+            {
+                connection.SendMessageOverride = (_, _) =>
+                {
+                    sendAttempted.TrySetResult();
+                    return Task.FromException(new OperationCanceledException(
+                        "Injected independent Stratum send failure"));
+                };
+            },
+            RequestHandler = (connection, request, _) =>
+                connection.RespondAsync(true, request.Value.Id),
+        };
+        using var host = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(host.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await using var stream = client.GetStream();
+        var request = StratumConnection.Encoding.GetBytes(
+            "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[]}\n");
+        await stream.WriteAsync(request);
+        await stream.FlushAsync();
+
+        await sendAttempted.Task.WaitAsync(TestTimeout);
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        Assert.False(host.IsCancellationRequested);
+
+        // Keep the remote peer alive and stop only the listener. The send-loop OCE must have
+        // retained abortive cleanup, and this direct bind must not rely on retry backoff.
+        host.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
     public async Task RunAsync_FailStopCancellationWithConnectedClient_AllowsImmediateExclusiveRestart()
     {
         using var failStop = new CancellationTokenSource();
@@ -647,6 +695,8 @@ public class StratumServerTests
         public Func<StratumConnection, Timestamped<JsonRpcRequest>,
             CancellationToken, Task> RequestHandler { get; set; }
 
+        public Action<StratumConnection> ConnectionInitializer { get; set; }
+
         public int ConnectionCount => connections.Count;
 
         public bool ThrowOnConnect { get; set; }
@@ -729,6 +779,8 @@ public class StratumServerTests
 
         protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)
         {
+            ConnectionInitializer?.Invoke(connection);
+
             if(ThrowOnConnect)
                 throw new InvalidOperationException(
                     "Injected pre-dispatch connection failure");

@@ -303,7 +303,8 @@ listener configurations require no migration. Reserved sockets remain bound but 
 `Listen` until their pool finishes initialization; activation must succeed before the pool announces
 `Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and all server-
 initiated accepted-socket closes—including ordinary host shutdown, malformed requests, TLS handshake
-failures and request-handler faults—use abortive cleanup. Accepted sockets are protected against
+failures, request-handler faults and independent send-timeout cancellation—use abortive cleanup.
+Accepted sockets are protected against
 unclean process termination by default, while only genuine peer-initiated EOF switches to graceful
 close. This permits bytes already written to the network to drain but does not drain Miningcore's
 application send queue during shutdown. Startup retries `AddressAlreadyInUse` with
