@@ -318,6 +318,7 @@ request cancellation within the bounded shutdown window.
 | Startup says another payout manager owns the database | Prove the old process/backend is dead and reconcile every affected wallet transaction | [Payout ownership recovery](database.md#recover-payout-manager-ownership-safely) |
 | `sendmany` returns `Insufficient funds` code `-6` | Verify no payout was persisted; inspect confirmed inputs, fee ownership and fallback mode; correct the cause, then allow the scheduler to retry—never manufacture a second payment | [Fee reserve and balance readiness](#fee-reserve-and-balance-readiness) |
 | `Auxiliary template update failed` | Confirm a recovery message, then inspect DOGE sync, host/storage load, RPC saturation and timeout/fallback metrics before changing the deadline | [Merged-mining template refresh](merged-mining-litecoin-dogecoin.md#template-refresh) |
+| Startup cannot reserve a Stratum listener | Keep the cluster offline; inspect the named pool, effective endpoint and socket/native error, then correct the address, scope or competing process before restarting | [Stratum listener reservation](configuration.md#api-listener-isolation) |
 | Log files consume unexpected space | Check native NLog archives and remove conflicting external `copytruncate` rules | [Log rotation](configuration.md#log-files-and-rotation) |
 | Relay receiver is unavailable | Restore the route and receiver; do not assume ordinary shares published during the outage will replay | [Share relays](share-relays.md#durability-boundary) |
 

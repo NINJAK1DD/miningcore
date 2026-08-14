@@ -95,6 +95,55 @@ public class StratumListenerConfigurationTests
             out _));
     }
 
+    [Theory]
+    [InlineData("255.255.255.255", "IPv4 broadcast")]
+    [InlineData("224.0.0.1", "IPv4 multicast")]
+    [InlineData("ff02::1", "IPv6 multicast")]
+    public void UnsuitableListenerAddress_IsRejectedWithPoolAndPort(
+        string listenAddress, string expectedReason)
+    {
+        var config = CreateCluster(
+            CreatePool("pool-a", 3032, listenAddress));
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName.EndsWith("ListenAddress",
+                StringComparison.Ordinal));
+        Assert.Contains("pool-a", error.ErrorMessage,
+            StringComparison.Ordinal);
+        Assert.Contains("3032", error.ErrorMessage,
+            StringComparison.Ordinal);
+        Assert.Contains(expectedReason, error.ErrorMessage,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.2")]
+    [InlineData("169.254.1.2")]
+    public void BindableSpecialUseAddress_RemainsStaticallyAcceptable(
+        string listenAddress)
+    {
+        Assert.True(ListenerAddressUtils.TryResolve(listenAddress,
+            out var address));
+
+        Assert.True(ListenerAddressUtils.IsSuitableForListener(address,
+            out var reason), reason);
+    }
+
+    [Fact]
+    public void RecoveryMode_SkipsUnsuitableListenerAddressValidation()
+    {
+        var config = CreateCluster(
+            CreatePool("pool-a", 3032, "239.255.0.1"));
+
+        var result = new ClusterConfigValidator(true).Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName.EndsWith("ListenAddress",
+                StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ConflictingListeners_ReportBothPoolAndEndpointIdentities()
     {

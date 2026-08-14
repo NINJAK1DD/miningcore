@@ -91,37 +91,29 @@ public abstract class StratumServer
     internal TimeSpan ConnectionDrainTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
 
-    protected async Task RunAsync(CancellationToken ct, params StratumEndpoint[] endpoints)
+    internal async Task RunAsync(CancellationToken ct,
+        params StratumListenerReservation[] listeners)
     {
-        Contract.RequiresNonNull(endpoints);
+        Contract.RequiresNonNull(listeners);
 
-        logger.Info(() => $"Stratum ports {string.Join(", ", endpoints.Select(x => $"{x.IPEndPoint.Address}:{x.IPEndPoint.Port}").ToArray())} online");
-
-        var servers = endpoints.Select(port =>
-        {
-            var server = CreateListenSocket(port.IPEndPoint);
-            server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            server.Bind(port.IPEndPoint);
-            server.Listen();
-
-            return (Server: server, Endpoint: port);
-        }).ToArray();
+        logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
 
         using var registration = ct.Register(() =>
         {
-            foreach(var item in servers)
-                item.Server.Dispose();
+            foreach(var listener in listeners)
+                listener.Dispose();
         });
 
         try
         {
-            await Task.WhenAll(servers.Select(x => Listen(x.Server, x.Endpoint, ct)));
+            await Task.WhenAll(listeners.Select(x =>
+                Listen(x.Socket, x.Endpoint, ct)));
         }
 
         finally
         {
-            foreach(var item in servers)
-                item.Server.Dispose();
+            foreach(var listener in listeners)
+                listener.Dispose();
 
             await DrainConnectionsAsync();
         }
@@ -138,6 +130,25 @@ public abstract class StratumServer
             server.DualMode = true;
 
         return server;
+    }
+
+    internal static Socket CreateBoundListenSocket(IPEndPoint endpoint)
+    {
+        var server = CreateListenSocket(endpoint);
+
+        try
+        {
+            server.SetSocketOption(SocketOptionLevel.Socket,
+                SocketOptionName.ReuseAddress, true);
+            server.Bind(endpoint);
+            server.Listen();
+            return server;
+        }
+        catch
+        {
+            server.Dispose();
+            throw;
+        }
     }
 
     private async Task Listen(Socket server, StratumEndpoint port, CancellationToken ct)
@@ -193,7 +204,7 @@ public abstract class StratumServer
             }
 
             // dispose of banned clients as early as possible
-            if (DisconnectIfBanned(socket, remoteEndpoint))
+            if(DisconnectIfBanned(socket, remoteEndpoint))
                 return;
 
             // init connection
@@ -214,7 +225,7 @@ public abstract class StratumServer
                     $"Connection task {connection.ConnectionId} is already tracked");
 
             _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch);
-        }, ex=> logger.Error(ex));
+        }, ex => logger.Error(ex));
     }
 
     private async Task ObserveConnectionTaskAsync(string connectionId,
@@ -477,7 +488,7 @@ public abstract class StratumServer
             {
                 if(!certs.TryGetValue(port.PoolEndpoint.TlsPfxFile, out var cert))
                 {
-                    cert = Guard(()=> X509CertificateLoader.LoadPkcs12FromFile(
+                    cert = Guard(() => X509CertificateLoader.LoadPkcs12FromFile(
                         port.PoolEndpoint.TlsPfxFile, port.PoolEndpoint.TlsPfxPassword), ex =>
                     {
                         logger.Info(() => $"Failed to load TLS certificate {port.PoolEndpoint.TlsPfxFile}: {ex.Message}");
@@ -499,7 +510,7 @@ public abstract class StratumServer
         if(remoteEndpoint == null || banManager == null)
             return false;
 
-        if (banManager.IsBanned(remoteEndpoint.Address))
+        if(banManager.IsBanned(remoteEndpoint.Address))
         {
             logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address}");
             socket.Close();

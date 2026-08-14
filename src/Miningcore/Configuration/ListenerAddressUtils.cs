@@ -65,6 +65,37 @@ internal static class ListenerAddressUtils
             : address.ToString();
     }
 
+    internal static bool IsSuitableForListener(IPAddress address,
+        out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        address = NormalizeListenerAddress(address);
+
+        if(address.Equals(IPAddress.Broadcast))
+        {
+            reason = "IPv4 broadcast addresses cannot host a TCP listener";
+            return false;
+        }
+
+        if(address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var firstOctet = address.GetAddressBytes()[0];
+            if(firstOctet is >= 224 and <= 239)
+            {
+                reason = "IPv4 multicast addresses cannot host a TCP listener";
+                return false;
+            }
+        }
+        else if(address.IsIPv6Multicast)
+        {
+            reason = "IPv6 multicast addresses cannot host a TCP listener";
+            return false;
+        }
+
+        reason = null;
+        return true;
+    }
+
     private static IPAddress NormalizeListenerAddress(IPAddress address)
     {
         if(address.IsIPv4MappedToIPv6)

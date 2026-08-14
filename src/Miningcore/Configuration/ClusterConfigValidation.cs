@@ -234,11 +234,20 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 foreach(var (port, endpoint) in ports)
                 {
                     var address = endpoint?.ListenAddress;
-                    if(ListenerAddressUtils.TryResolve(address, out _))
+                    if(!ListenerAddressUtils.TryResolve(address,
+                           out var resolvedAddress))
+                    {
+                        context.AddFailure($"Ports[{port}].ListenAddress",
+                            $"Pool '{pool.Id}' Stratum port {port}: listenAddress must be '*' or a valid IPv4/IPv6 address (received '{address}')");
                         continue;
+                    }
 
-                    context.AddFailure($"Ports[{port}].ListenAddress",
-                        $"Pool '{pool.Id}' Stratum port {port}: listenAddress must be '*' or a valid IPv4/IPv6 address (received '{address}')");
+                    if(!ListenerAddressUtils.IsSuitableForListener(
+                           resolvedAddress, out var reason))
+                    {
+                        context.AddFailure($"Ports[{port}].ListenAddress",
+                            $"Pool '{pool.Id}' Stratum port {port}: listenAddress '{address}' is unsuitable: {reason}");
+                    }
                 }
             })
             .When(ShouldValidateStratumListeners);
@@ -318,7 +327,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.InstanceId)
             .GreaterThan((byte) 0)
             .When(x => !recoveryMode && x.InstanceId.HasValue)
-            .WithMessage("instanceId must either be omitted or be non-zero");;
+            .WithMessage("instanceId must either be omitted or be non-zero"); ;
 
         RuleFor(j => j.Api)
             .SetValidator(new ApiConfigValidator())

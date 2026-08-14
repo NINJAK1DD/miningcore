@@ -293,6 +293,14 @@ IPv4-mapped equivalents fail startup with both pool and endpoint identities. All
 are reported together so operators can correct the complete configuration before restart. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
+Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
+startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
+startup before any pool is announced online and releases all sockets already acquired by that
+attempt. The failure identifies the pool, effective endpoint and operating-system socket error.
+Broadcast and multicast listener addresses are rejected during configuration validation, while
+IPv4 loopback and link-local ranges remain eligible for the authoritative host bind. Existing valid
+listener configurations require no migration.
+
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
 Stratum sockets. Recovery stream-rebuilds the top-level configuration from `logging`, `persistence`,
 `pools`, `shareRecoveryFile`, `shareRecoveryStateDirectory` and optional `coinTemplates`. Malformed

@@ -71,6 +71,20 @@ non-overlapping specific addresses. The default address is `127.0.0.1`; identica
 IPv4-mapped equivalents, and any pairing covered by an IPv4 or dual-stack wildcard are rejected
 before pools start. Startup reports every overlapping pair in one validation pass and identifies
 both conflicting pools and their effective endpoints.
+
+Normal startup then creates, configures, binds and retains every enabled internal Stratum socket as
+one cluster-scoped reservation phase. No pool initialization can announce `Online` until the whole
+set has been reserved. If any endpoint is occupied, unavailable in the current host or container
+network namespace, or otherwise rejected by the operating system, Miningcore releases every socket
+acquired by that attempt and stops the complete cluster. The startup error identifies the pool,
+effective endpoint, socket classification and native error. Miningcore hands those same retained
+sockets to the Stratum accept loops; it does not probe, close and later rebind them.
+
+IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
+throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
+whether a specific address can be used on this host is decided authoritatively by the retained bind.
+For IPv6 link-local addresses, include the correct interface scope where the operating system
+requires it. A missing or incorrect scope fails startup safely rather than leaving a partial pool set.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
 public API, so retain the admin/metrics IP whitelists and restrict the ports with the host or network
 firewall. Reverse proxies should publish only `api.port`; a local Prometheus service normally

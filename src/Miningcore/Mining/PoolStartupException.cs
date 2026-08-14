@@ -13,6 +13,12 @@ public class PoolStartupException : Exception
     {
     }
 
+    public PoolStartupException(string msg, string poolId,
+        Exception innerException) : base(msg, innerException)
+    {
+        PoolId = poolId;
+    }
+
     public PoolStartupException()
     {
     }

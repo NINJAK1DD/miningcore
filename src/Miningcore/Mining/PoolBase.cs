@@ -74,6 +74,7 @@ public abstract class PoolBase : StratumServer,
     protected static readonly TimeSpan loginFailureBanTimeout = TimeSpan.FromSeconds(10);
     protected static readonly Regex regexStaticDiff = new(@";?d=(\d*(\.\d+)?)", RegexOptions.Compiled);
     protected const string PasswordControlVarsSeparator = ";";
+    private StratumListenerReservationSession stratumListenerReservations;
 
     protected abstract Task SetupJobManager(CancellationToken ct);
     protected abstract WorkerContextBase CreateWorkerContext();
@@ -329,17 +330,15 @@ public abstract class PoolBase : StratumServer,
         }
     }
 
-    protected async Task RunStratum(CancellationToken ct)
+    private async Task RunStratum(CancellationToken ct,
+        StratumListenerReservation[] listeners)
     {
-        var ipEndpoints = poolConfig.Ports.Keys
-            .Select(port => PoolEndpoint2IPEndpoint(port, poolConfig.Ports[port]))
-            .ToArray();
-
-        var varDiffEnabled = ipEndpoints.Any(x => x.PoolEndpoint.VarDiff != null);
+        var varDiffEnabled = listeners.Any(x =>
+            x.Endpoint.PoolEndpoint.VarDiff != null);
 
         var tasks = new List<Task>
         {
-            base.RunAsync(ct, ipEndpoints)
+            base.RunAsync(ct, listeners)
         };
 
         if(varDiffEnabled)
@@ -354,17 +353,6 @@ public abstract class PoolBase : StratumServer,
             return await nicehashService.GetStaticDiff(coinName, algoName, CancellationToken.None);
 
         return null;
-    }
-
-    private StratumEndpoint PoolEndpoint2IPEndpoint(int port, PoolEndpoint pep)
-    {
-        if(!ListenerAddressUtils.TryResolve(pep.ListenAddress,
-            out var listenAddress))
-            throw new PoolStartupException(
-                $"Invalid Stratum listen address '{pep.ListenAddress}'",
-                poolConfig.Id);
-
-        return new StratumEndpoint(new IPEndPoint(listenAddress, port), pep);
     }
 
     private void LogPoolInfo()
@@ -404,6 +392,13 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
         clusterConfig = cc;
     }
 
+    internal void AttachStratumListenerReservations(
+        StratumListenerReservationSession reservations)
+    {
+        stratumListenerReservations = reservations ??
+            throw new ArgumentNullException(nameof(reservations));
+    }
+
     public abstract double HashrateFromShares(double shares, double interval);
     public virtual double ShareMultiplier => 1;
 
@@ -412,9 +407,23 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
         Contract.RequiresNonNull(poolConfig);
 
         logger.Info(() => "Starting Pool ...");
+        StratumListenerReservation[] listeners = null;
 
         try
         {
+            if(poolConfig.EnableInternalStratum == true)
+            {
+                if(stratumListenerReservations == null)
+                {
+                    throw new PoolStartupException(
+                        "Internal Stratum listeners were not reserved before pool startup",
+                        poolConfig.Id);
+                }
+
+                // Claim ownership before initialization can announce this pool online.
+                listeners = stratumListenerReservations.Claim(poolConfig.Id);
+            }
+
             SetupBanManagement();
 
             await SetupJobManager(ct);
@@ -425,7 +434,7 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
             messageBus.NotifyPoolStatus(this, PoolStatus.Online);
 
             if(poolConfig.EnableInternalStratum == true)
-                await RunStratum(ct);
+                await RunStratum(ct, listeners);
             else
                 await WaitForShutdownAsync(ct);
         }
@@ -450,6 +459,12 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
 
         finally
         {
+            if(listeners != null)
+            {
+                foreach(var listener in listeners)
+                    listener.Dispose();
+            }
+
             disposables.Dispose();
             logger.Info(() => "Pool Offline");
         }
