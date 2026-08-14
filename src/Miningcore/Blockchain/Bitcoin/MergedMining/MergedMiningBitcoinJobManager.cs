@@ -419,7 +419,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     // template is installed, or after proving that the active job
                     // already contains the identical template.
                     auxiliaryTemplateState.ObserveFreshTemplate(auxiliaryTemplate,
-                        previousJob?.AuxiliaryBlockTemplate != null);
+                        firstJob: previousJob == null);
                 }
             }
 

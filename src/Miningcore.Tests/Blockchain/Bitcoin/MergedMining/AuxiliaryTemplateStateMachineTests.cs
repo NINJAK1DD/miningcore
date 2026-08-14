@@ -27,17 +27,19 @@ public class AuxiliaryTemplateStateMachineTests
 
         var fallback = state.ObserveCachedTemplate(installed, true, "timeout");
         AssertTransition(fallback, true, true, true, false, installed, "timeout");
+        Assert.Equal(AuxiliaryTemplateObservationKind.None,
+            state.PendingObservationKind);
 
         var repeated = state.ObserveCachedTemplate(installed, true,
             "transport failure");
         AssertTransition(repeated, true, true, false, false, installed,
             "transport failure");
 
-        state.ObserveFreshTemplate(installed, true);
+        state.ObserveFreshTemplate(installed, false);
         var recovery = state.NoJobRequired(installed);
         AssertTransition(recovery, true, false, false, true, installed, null);
 
-        state.ObserveFreshTemplate(installed, true);
+        state.ObserveFreshTemplate(installed, false);
         var healthy = state.NoJobRequired(installed);
         AssertTransition(healthy, true, false, false, false, installed, null);
     }
@@ -70,7 +72,7 @@ public class AuxiliaryTemplateStateMachineTests
         var fresh = Template(221, 'c', 'a');
         state.CacheStartupTemplate(startup);
 
-        state.ObserveFreshTemplate(fresh, false);
+        state.ObserveFreshTemplate(fresh, true);
         var failed = state.JobInstallationFailed(null);
         AssertTransition(failed, false, false, false, false, null, null);
 
@@ -88,10 +90,10 @@ public class AuxiliaryTemplateStateMachineTests
         var superseding = Template(221, 'c', 'd');
         state.CacheStartupTemplate(startup);
 
-        state.ObserveFreshTemplate(superseding, false);
+        state.ObserveFreshTemplate(superseding, true);
         _ = state.JobInstallationFailed(null);
 
-        state.ObserveFreshTemplate(startup, false);
+        state.ObserveFreshTemplate(startup, true);
         var reconfirmedFailure = state.JobInstallationFailed(null);
         AssertTransition(reconfirmedFailure, false, false, false, false, null,
             null);
@@ -108,17 +110,17 @@ public class AuxiliaryTemplateStateMachineTests
         var installed = Template(220, 'a', 'b');
         var replacement = Template(221, 'c', 'a');
 
-        state.ObserveFreshTemplate(replacement, true);
+        state.ObserveFreshTemplate(replacement, false);
         var fallback = state.JobInstallationFailed(installed);
         AssertTransition(fallback, true, true, true, false, installed,
             "replacement job initialization failed");
 
-        state.ObserveFreshTemplate(replacement, true);
+        state.ObserveFreshTemplate(replacement, false);
         var repeated = state.JobInstallationFailed(installed);
         AssertTransition(repeated, true, true, false, false, installed,
             "replacement job initialization failed");
 
-        state.ObserveFreshTemplate(replacement, true);
+        state.ObserveFreshTemplate(replacement, false);
         var recovery = state.JobInstalled(replacement, false);
         AssertTransition(recovery, true, false, false, true, replacement, null);
     }
@@ -131,7 +133,7 @@ public class AuxiliaryTemplateStateMachineTests
         _ = state.ObserveCachedTemplate(installed, true, "timeout");
         var reconfirmed = Template(220, 'a', 'b');
 
-        state.ObserveFreshTemplate(reconfirmed, true);
+        state.ObserveFreshTemplate(reconfirmed, false);
         var recovery = state.JobInstallationFailed(installed);
 
         AssertTransition(recovery, true, false, false, true, installed, null);
@@ -145,7 +147,7 @@ public class AuxiliaryTemplateStateMachineTests
         var fresh = Template(221, 'c', 'a');
         _ = state.ObserveCachedTemplate(installed, true, "timeout");
 
-        state.ObserveFreshTemplate(fresh, true);
+        state.ObserveFreshTemplate(fresh, false);
         state.AbandonPendingObservation();
         var transition = state.JobInstallationFailed(installed);
 
@@ -165,7 +167,7 @@ public class AuxiliaryTemplateStateMachineTests
     {
         var state = new AuxiliaryTemplateStateMachine();
         var installed = Template(220, 'a', 'b');
-        state.ObserveFreshTemplate(installed, true);
+        state.ObserveFreshTemplate(installed, false);
 
         var first = Complete(terminal, state, installed);
         var duplicate = Complete(terminal, state, installed);

@@ -21,6 +21,10 @@ internal readonly record struct AuxiliaryTemplateStateTransition(
     public static AuxiliaryTemplateStateTransition None => default;
 }
 
+/// <summary>
+/// Tracks one serialized merged-mining update stream. This type is not thread-safe;
+/// the job manager's concatenated update pipeline must not invoke it concurrently.
+/// </summary>
 internal sealed class AuxiliaryTemplateStateMachine
 {
     private const string ReplacementFailure =
@@ -53,6 +57,9 @@ internal sealed class AuxiliaryTemplateStateMachine
 
     public void ObserveUnrefreshedTemplate()
     {
+        // Parent-only updates cannot establish auxiliary recovery. Clear any stale
+        // intent defensively; the manager's finally block remains the authoritative
+        // cleanup for cancellation and early-return paths.
         pendingObservation = default;
     }
 
@@ -60,12 +67,15 @@ internal sealed class AuxiliaryTemplateStateMachine
         AuxBlockTemplate template, bool hasInstalledJob, string failure)
     {
         ArgumentNullException.ThrowIfNull(template);
+        if(hasInstalledJob)
+        {
+            pendingObservation = default;
+            return TransitionTo(true, true, template, failure);
+        }
+
         pendingObservation = new AuxiliaryTemplateObservation(
             AuxiliaryTemplateObservationKind.Cached, template, failure,
-            RequiresInstallationCommit: !hasInstalledJob);
-
-        if(hasInstalledJob)
-            return TransitionTo(true, true, template, failure);
+            RequiresInstallationCommit: true);
 
         // The startup template has not powered an installed job yet. Preserve why it
         // became fallback, but defer availability and the degraded episode until job
@@ -74,15 +84,14 @@ internal sealed class AuxiliaryTemplateStateMachine
         return AuxiliaryTemplateStateTransition.None;
     }
 
-    public void ObserveFreshTemplate(AuxBlockTemplate template,
-        bool hasInstalledJob)
+    public void ObserveFreshTemplate(AuxBlockTemplate template, bool firstJob)
     {
         ArgumentNullException.ThrowIfNull(template);
         pendingObservation = new AuxiliaryTemplateObservation(
             AuxiliaryTemplateObservationKind.Fresh, template, null,
             RequiresInstallationCommit: true);
 
-        if(!hasInstalledJob && StartupTemplate != null &&
+        if(firstJob && StartupTemplate != null &&
             ClassifyChange(StartupTemplate, template) == AuxiliaryTemplateChange.None)
         {
             // A fresh response reconfirmed the startup identity. A later parent-only
@@ -157,11 +166,11 @@ internal sealed class AuxiliaryTemplateStateMachine
     }
 
     public AuxiliaryTemplateStateTransition NoJobRequired(
-        AuxBlockTemplate installedTemplate)
+        AuxBlockTemplate template)
     {
         var observation = TakePendingObservation();
         return observation.Kind == AuxiliaryTemplateObservationKind.Fresh
-            ? TransitionTo(true, false, installedTemplate, null)
+            ? TransitionTo(true, false, template, null)
             : AuxiliaryTemplateStateTransition.None;
     }
 
@@ -190,6 +199,10 @@ internal sealed class AuxiliaryTemplateStateMachine
     private AuxiliaryTemplateStateTransition TransitionTo(bool available,
         bool degraded, AuxBlockTemplate template, string failure)
     {
+        // A degraded state always describes the installed cached template that is
+        // keeping merged mining operational.
+        System.Diagnostics.Debug.Assert(!degraded || template != null);
+
         var transition = new AuxiliaryTemplateStateTransition(
             ShouldPublish: true,
             Available: available,
@@ -206,6 +219,8 @@ internal sealed class AuxiliaryTemplateStateMachine
 
     private AuxiliaryTemplateObservation TakePendingObservation()
     {
+        // Terminal operations are intentionally idempotent. Some observations publish
+        // immediately, and a repeated terminal must not publish the same edge twice.
         var result = pendingObservation;
         pendingObservation = default;
         return result;
