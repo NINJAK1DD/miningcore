@@ -84,6 +84,7 @@ namespace Miningcore;
 public class Program : ProcessStatusBackgroundService
 {
     internal const int DefaultApiPort = ApiConfig.DefaultPort;
+    internal const string MetricsRoutePrefix = "/metrics";
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -314,7 +315,7 @@ public class Program : ProcessStatusBackgroundService
                                 pipeline.UseWebSockets();
                                 pipeline.MapWebSocketManager("/notifications",
                                     pipeline.ApplicationServices.GetService<WebSocketNotificationsRelay>());
-                                pipeline.UseMetricServer();
+                                pipeline.UseMetricServer(MetricsRoutePrefix);
                                 pipeline.UseMiddleware<ApiRequestMetricsMiddleware>();
                                 pipeline.UseMvc();
                             });
@@ -324,8 +325,8 @@ public class Program : ProcessStatusBackgroundService
                     var webSocketScheme = $"ws{(apiTlsEnable ? "s" : "")}";
                     var listenerHost = FormatListenerHost(address);
                     logger.Info(() => $"Public API listening on {httpScheme}://{listenerHost}:{endpointPorts.PublicPort}");
-                    logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}/api/admin");
-                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}/metrics");
+                    logger.Info(() => $"Administrative API listening on {httpScheme}://{listenerHost}:{endpointPorts.AdminPort}{AdminApiAuthenticationMiddleware.AdminRoutePrefix}");
+                    logger.Info(() => $"Prometheus Metrics API listening on {httpScheme}://{listenerHost}:{endpointPorts.MetricsPort}{MetricsRoutePrefix}");
                     logger.Info(() => $"WebSocket Events streaming on {webSocketScheme}://{listenerHost}:{endpointPorts.PublicPort}/notifications");
 
                     switch(adminApiCredential.Status)
@@ -754,10 +755,10 @@ public class Program : ProcessStatusBackgroundService
         // proxy also appears as loopback and can make a shared protected route public.
 
         if(!api.AdminPort.HasValue)
-            warnings.Add("api.adminPort is omitted; /api/admin is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
+            warnings.Add($"api.adminPort is omitted; {AdminApiAuthenticationMiddleware.AdminRoutePrefix} is served on the public listener. A public reverse proxy must deny this path unless forwarding it is intentional");
 
         if(!api.MetricsPort.HasValue)
-            warnings.Add("api.metricsPort is omitted; /metrics is served on the public listener. A public reverse proxy must deny this path unless exposing metrics is intentional");
+            warnings.Add($"api.metricsPort is omitted; {MetricsRoutePrefix} is served on the public listener. A public reverse proxy must deny this path unless exposing metrics is intentional");
 
         return warnings.ToArray();
     }
@@ -782,16 +783,22 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(ports);
 
-        if(path.StartsWithSegments("/api/admin",
-            StringComparison.OrdinalIgnoreCase))
+        if(AdminApiAuthenticationMiddleware.IsAdminRequest(path))
             return localPort == ports.AdminPort;
 
-        if(path.StartsWithSegments("/metrics",
-            StringComparison.OrdinalIgnoreCase))
+        if(IsMetricsRequest(path))
             return localPort == ports.MetricsPort;
 
         return localPort == ports.PublicPort;
     }
+
+    internal static bool IsMetricsRequest(PathString path) =>
+        path.StartsWithSegments(MetricsRoutePrefix,
+            StringComparison.OrdinalIgnoreCase);
+
+    internal static bool ShouldApplyPublicCors(PathString path) =>
+        !AdminApiAuthenticationMiddleware.IsAdminRequest(path) &&
+        !IsMetricsRequest(path);
 
     internal static void ConfigureApiPipeline(IApplicationBuilder app,
         ApiEndpointPorts ports, string[] adminIpWhitelist,
@@ -826,19 +833,18 @@ public class Program : ProcessStatusBackgroundService
         if(options.EnableExceptionHandling)
             app.UseMiddleware<ApiExceptionHandlingMiddleware>();
 
-        UseIpWhiteList(app, true, new[] { "/api/admin" },
+        UseIpWhiteList(app, true,
+            new[] { AdminApiAuthenticationMiddleware.AdminRoutePrefix },
             adminIpWhitelist, gpdrCompliantLogging);
-        UseIpWhiteList(app, true, new[] { "/metrics" },
+        UseIpWhiteList(app, true, new[] { MetricsRoutePrefix },
             metricsIpWhitelist, gpdrCompliantLogging);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
             gpdrCompliantLogging);
 
-        // Public API clients retain the existing permissive policy. Administrative
-        // routes deliberately receive no CORS headers so browser applications cannot
-        // be taught to carry the operator bearer token.
-        app.UseWhen(context =>
-                !AdminApiAuthenticationMiddleware.IsAdminRequest(
-                    context.Request.Path),
+        // Public API clients retain the existing permissive policy. Administrative and
+        // metrics routes deliberately receive no CORS headers: browsers must not carry
+        // the operator token or gain cross-origin access to operational telemetry.
+        app.UseWhen(context => ShouldApplyPublicCors(context.Request.Path),
             publicApi => publicApi.UseCors(corsPolicyBuilder =>
                 corsPolicyBuilder.AllowAnyOrigin().AllowAnyMethod()
                     .AllowAnyHeader()));
@@ -2137,17 +2143,21 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
+    internal static List<string> CreateIpRateLimitEndpointWhitelist() =>
+        new()
+        {
+            "get:" + MetricsRoutePrefix,
+            "*:/notifications",
+        };
+
     private static void ConfigureIpRateLimitOptions(IpRateLimitOptions options)
     {
         options.EnableEndpointRateLimiting = false;
 
-        // exclude admin api and metrics from throtteling
-        options.EndpointWhitelist = new List<string>
-        {
-            "*:/api/admin",
-            "get:/metrics",
-            "*:/notifications",
-        };
+        // Exclude metrics scrapes and WebSocket notifications from public API
+        // throttling. Administrative routes remain throttled; trusted sources
+        // may opt out through the separate rate-limiting IP whitelist.
+        options.EndpointWhitelist = CreateIpRateLimitEndpointWhitelist();
 
         options.IpWhitelist = clusterConfig.Api?.RateLimiting?.IpWhitelist?.ToList();
 

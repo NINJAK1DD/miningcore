@@ -26,6 +26,11 @@ Keep the admin and metrics listeners private. If `adminIpWhitelist` or `metricsI
 the default is localhost. If a reverse proxy is used, test which client address Miningcore observes
 before changing a whitelist.
 
+Miningcore does not attach permissive CORS headers to `/api/admin` or `/metrics`, whether those
+routes use dedicated ports or the legacy shared listener. Prometheus, `curl` and other non-browser
+clients are unaffected. A custom browser dashboard must not scrape `/metrics` cross-origin; collect
+or proxy the required telemetry through a deliberately secured same-origin service instead.
+
 Every administrative request also requires `Authorization: Bearer TOKEN`, where `TOKEN` comes only
 from the `MININGCORE_ADMIN_API_TOKEN` process environment. Missing or invalid token configuration
 fails closed for `/api/admin` without stopping pools or the public API. Administrative responses do
@@ -200,6 +205,9 @@ When `metricsPort` is configured, Prometheus-compatible metrics are served from 
 listener. Administrative routes are under `/api/admin` on `adminPort`; they can change logging and
 payment-processing state. All read and write routes require the bearer token in addition to the IP
 whitelist. Never publish the admin port through the public reverse proxy.
+
+The metrics endpoint intentionally emits no permissive CORS headers. This does not affect normal
+Prometheus scraping because CORS is enforced by browsers, not server-side monitoring clients.
 
 For the example configuration, local checks and a Prometheus scrape target use:
 

@@ -11,6 +11,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using AspNetCoreRateLimit;
 using FluentValidation;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Builder;
@@ -27,6 +28,7 @@ using Miningcore.Stratum;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
+using Prometheus;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -196,9 +198,12 @@ public class ApiListenerConfigurationTests
 
         Assert.Equal(expectedCount, warnings.Length);
         Assert.Equal(!adminPort.HasValue,
-            warnings.Any(message => message.Contains("/api/admin")));
+            warnings.Any(message => message.Contains(
+                AdminApiAuthenticationMiddleware.AdminRoutePrefix,
+                StringComparison.Ordinal)));
         Assert.Equal(!metricsPort.HasValue,
-            warnings.Any(message => message.Contains("/metrics")));
+            warnings.Any(message => message.Contains(
+                Program.MetricsRoutePrefix, StringComparison.Ordinal)));
     }
 
     [Theory]
@@ -1699,6 +1704,60 @@ public class ApiListenerConfigurationTests
     }
 
     [Theory]
+    [InlineData("/api/pools", true)]
+    [InlineData("/notifications", true)]
+    [InlineData("/api/admin/status", false)]
+    [InlineData("/API/ADMIN/stats/gc", false)]
+    [InlineData("/metrics", false)]
+    [InlineData("/METRICS", false)]
+    [InlineData("/metrics/", false)]
+    [InlineData("/metrics/custom", false)]
+    [InlineData("/api/administrator", true)]
+    [InlineData("/metrics-export", true)]
+    public void PublicCorsMatching_IsCaseInsensitiveAndSegmentBounded(
+        string path, bool expected) =>
+        Assert.Equal(expected, Program.ShouldApplyPublicCors(path));
+
+    [Theory]
+    [InlineData("/metrics", true)]
+    [InlineData("/METRICS/custom", true)]
+    [InlineData("/metrics-export", false)]
+    [InlineData("/api/pools", false)]
+    public void MetricsMatching_IsCaseInsensitiveAndSegmentBounded(
+        string path, bool expected) =>
+        Assert.Equal(expected, Program.IsMetricsRequest(path));
+
+    [Theory]
+    [InlineData("GET", "/api/admin", false)]
+    [InlineData("POST", "/api/admin/stats/gc", false)]
+    [InlineData("PUT", "/API/ADMIN/payment/processing/disable", false)]
+    [InlineData("POST", "/api/administrator", false)]
+    [InlineData("POST", "/api/administer", false)]
+    [InlineData("GET", "/metrics", true)]
+    [InlineData("POST", "/metrics", false)]
+    [InlineData("GET", "/metrics/custom", false)]
+    [InlineData("GET", "/notifications", true)]
+    [InlineData("POST", "/notifications", true)]
+    [InlineData("GET", "/notifications/client", false)]
+    public void RateLimitWhitelist_ExemptsOnlyExplicitNonAdministrativeRoutes(
+        string method, string path, bool expected)
+    {
+        var processor = new TestRateLimitProcessor(new RateLimitOptions
+        {
+            EndpointWhitelist = Program.CreateIpRateLimitEndpointWhitelist(),
+        });
+
+        var actual = processor.IsWhitelisted(new ClientRequestIdentity
+        {
+            ClientIp = "203.0.113.10",
+            HttpVerb = method,
+            Path = path,
+        });
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
     [InlineData("/api/admin/status", "/api/admin", true)]
     [InlineData("/API/ADMIN/stats/gc", "/api/admin", true)]
     [InlineData("/Api/Admin/payment/processing/disable", "/api/admin", true)]
@@ -1975,10 +2034,13 @@ public class ApiListenerConfigurationTests
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
     }
 
-    [Fact]
-    public async Task Cors_IsAvailableForPublicRoutesButNotAdministrativeRoutes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cors_IsLimitedToPublicRoutesOnDedicatedAndSharedListeners(
+        bool shared)
     {
-        await using var host = await StartRouteTestHostWithRetryAsync();
+        await using var host = await StartRouteTestHostWithRetryAsync(shared);
         using var client = new HttpClient();
 
         using var publicRequest = CreatePreflightRequest(
@@ -1994,6 +2056,40 @@ public class ApiListenerConfigurationTests
         Assert.Equal(HttpStatusCode.Unauthorized, adminResponse.StatusCode);
         Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Origin"));
         Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Headers"));
+
+        using var metricsBrowserRequest = new HttpRequestMessage(HttpMethod.Get,
+            $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
+        metricsBrowserRequest.Headers.Add("Origin", "https://dashboard.example");
+        using var metricsBrowserResponse = await client.SendAsync(metricsBrowserRequest);
+        Assert.Equal(HttpStatusCode.OK, metricsBrowserResponse.StatusCode);
+        Assert.False(metricsBrowserResponse.Headers.Contains(
+            "Access-Control-Allow-Origin"));
+
+        using var metricsPreflightRequest = CreatePreflightRequest(
+            $"http://127.0.0.1:{host.Ports.MetricsPort}/METRICS");
+        using var metricsPreflightResponse = await client.SendAsync(
+            metricsPreflightRequest);
+        Assert.False(metricsPreflightResponse.Headers.Contains(
+            "Access-Control-Allow-Origin"));
+        Assert.False(metricsPreflightResponse.Headers.Contains(
+            "Access-Control-Allow-Headers"));
+
+        using var scrapeResponse = await client.GetAsync(
+            $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
+        Assert.Equal(HttpStatusCode.OK, scrapeResponse.StatusCode);
+        Assert.Equal("text/plain", scrapeResponse.Content.Headers.ContentType?.MediaType);
+        var scrapeBody = await scrapeResponse.Content.ReadAsStringAsync();
+        Assert.Contains(scrapeBody.Split('\n'), line =>
+            line.TrimEnd('\r').Equals(
+                "miningcore_listener_test_scrapes_total 1",
+                StringComparison.Ordinal));
+
+        using var lookalikeRequest = CreatePreflightRequest(
+            $"http://127.0.0.1:{host.Ports.PublicPort}/metrics-export");
+        using var lookalikeResponse = await client.SendAsync(lookalikeRequest);
+        Assert.Equal(HttpStatusCode.NoContent, lookalikeResponse.StatusCode);
+        Assert.Contains("*", lookalikeResponse.Headers.GetValues(
+            "Access-Control-Allow-Origin"));
     }
 
     private static string SerializeConfig(ClusterConfig config) =>
@@ -2107,6 +2203,14 @@ public class ApiListenerConfigurationTests
     {
         var adminCredential = AdminApiCredential.Create(
             configureAdminCredential ? TestAdminToken : null);
+        // The complete suite exercises process-global production metrics in
+        // parallel. Give this real exporter its own registry so unrelated
+        // collectors cannot make an integration scrape intermittently fail.
+        var registry = Metrics.NewCustomRegistry();
+        Metrics.WithCustomRegistry(registry)
+            .CreateCounter("miningcore_listener_test_scrapes_total",
+                "Metric exposed so the isolated route-test registry serializes a scrape body")
+            .Inc();
         var host = Host.CreateDefaultBuilder()
             .ConfigureLogging(logging => logging.ClearProviders())
             .ConfigureWebHostDefaults(builder => builder
@@ -2124,6 +2228,9 @@ public class ApiListenerConfigurationTests
                         afterAccessControl: pipeline =>
                         {
                             pipeline.UseWebSockets();
+                            pipeline.UseMetricServer(
+                                settings => settings.Registry = registry,
+                                Program.MetricsRoutePrefix);
                             pipeline.Run(async context =>
                             {
                                 if(context.Request.Path == "/notifications" &&
@@ -2140,8 +2247,7 @@ public class ApiListenerConfigurationTests
 
                                 if(context.Request.Path == "/api/pools" ||
                                     context.Request.Path == "/notifications" ||
-                                    context.Request.Path == "/api/admin/status" ||
-                                    context.Request.Path == "/metrics")
+                                    context.Request.Path == "/api/admin/status")
                                 {
                                     context.Response.StatusCode = StatusCodes.Status200OK;
                                     return;
@@ -2184,6 +2290,9 @@ public class ApiListenerConfigurationTests
     }
 
     private const int ListenerStartAttempts = 5;
+
+    private sealed class TestRateLimitProcessor(RateLimitOptions options) :
+        RateLimitProcessor(options);
 
     private sealed class RunningRouteTestHost(IHost host,
         Program.ApiEndpointPorts ports) : IAsyncDisposable

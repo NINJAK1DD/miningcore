@@ -128,9 +128,10 @@ public sealed class AdminApiAuthenticationMiddleware
         });
 
     public const string TokenEnvironmentVariable = "MININGCORE_ADMIN_API_TOKEN";
+    public const string AdminRoutePrefix = "/api/admin";
 
     public static bool IsAdminRequest(PathString path) => path.StartsWithSegments(
-        new PathString("/api/admin"), StringComparison.OrdinalIgnoreCase);
+        new PathString(AdminRoutePrefix), StringComparison.OrdinalIgnoreCase);
 
     public async Task Invoke(HttpContext context)
     {
