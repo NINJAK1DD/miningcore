@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Reactive;
@@ -78,12 +77,6 @@ public abstract class StratumServer
     // Lets lifecycle tests distinguish connection unregistration from completion of the
     // socket-owning dispatch task without widening the production subclass surface.
     internal int TrackedConnectionTaskCount => connectionTasks.Count;
-    internal Func<string> ConnectionIdFactory { get; set; } =
-        CorrelationIdGenerator.GetNextId;
-    // Test seam for the real completion window where OnConnectionComplete has removed the
-    // connection but its dispatch observer has not yet removed the task with the same id.
-    internal Func<string, Task> BeforeConnectionTaskRemoval { get; set; } =
-        _ => Task.CompletedTask;
     protected static readonly ConcurrentDictionary<string, X509Certificate2> certs = new();
     protected static readonly HashSet<int> ignoredSocketErrors;
 
@@ -174,6 +167,13 @@ public abstract class StratumServer
         }
     }
 
+    internal static string ProbeNativeBindLibraryCandidates() =>
+        NativeMethods.ProbeBindLibraryCandidates();
+
+    internal static string[] GetLinuxNativeBindLibraryCandidates(
+        Architecture architecture) =>
+        NativeMethods.GetLinuxNativeLibraryCandidates(architecture);
+
     private static Socket BindUnixSocketWithoutRuntimeAddressReuse(Socket server,
         IPEndPoint endpoint)
     {
@@ -192,8 +192,11 @@ public abstract class StratumServer
         if(NativeMethods.Bind(handle, addressBytes,
                (uint) addressBytes.Length) != 0)
         {
-            // Keep the parameterless constructor: on Unix it translates the last captured errno
-            // into SocketErrorCode. The integer overload expects a managed socket error value.
+            // Keep this throw immediately adjacent to Bind. SocketException() reads the
+            // thread-local errno captured by the most recent SetLastError native call; any
+            // intervening P/Invoke, including one reached through logging, can overwrite it and
+            // silently disable AddressAlreadyInUse retry classification. The integer constructor
+            // expects a managed socket error value rather than a native errno.
             throw new SocketException();
         }
 
@@ -225,7 +228,6 @@ public abstract class StratumServer
 
         private static readonly Lazy<BindDelegate> bind = new(LoadBind,
             LazyThreadSafetyMode.ExecutionAndPublication);
-        private static IntPtr nativeLibrary;
 
         internal static int Bind(SafeSocketHandle socket,
             byte[] socketAddress, uint socketAddressLength)
@@ -268,7 +270,9 @@ public abstract class StratumServer
                 if(NativeLibrary.TryGetExport(library, "bind",
                        out var bindAddress))
                 {
-                    nativeLibrary = library;
+                    // Do not call NativeLibrary.Free for the successful handle. The delegate
+                    // points into that library, so its native load reference must remain held
+                    // for the process lifetime.
                     return Marshal.GetDelegateForFunctionPointer<BindDelegate>(
                         bindAddress);
                 }
@@ -280,18 +284,51 @@ public abstract class StratumServer
                 $"Unable to load the native bind function required for exclusive Stratum listeners. Tried the process-global symbol scope and: {string.Join(", ", candidates)}");
         }
 
+        internal static string ProbeBindLibraryCandidates()
+        {
+            var candidates = GetNativeLibraryCandidates();
+
+            foreach(var candidate in candidates)
+            {
+                if(!NativeLibrary.TryLoad(candidate, out var library))
+                    continue;
+
+                try
+                {
+                    if(NativeLibrary.TryGetExport(library, "bind", out _))
+                        return candidate;
+                }
+                finally
+                {
+                    NativeLibrary.Free(library);
+                }
+            }
+
+            throw new DllNotFoundException(
+                $"Unable to resolve the native bind fallback from: {string.Join(", ", candidates)}");
+        }
+
         private static string[] GetNativeLibraryCandidates()
         {
             if(OperatingSystem.IsMacOS())
                 return new[] { "libSystem.B.dylib" };
 
+            if(OperatingSystem.IsFreeBSD())
+                return new[] { "libc.so.7", "libc.so" };
+
             if(!OperatingSystem.IsLinux())
             {
                 throw new PlatformNotSupportedException(
-                    "Exclusive native Stratum binding is supported only on Windows, Linux and macOS");
+                    "Exclusive native Stratum binding is supported only on Windows, Linux, macOS and FreeBSD");
             }
 
-            var architecture = RuntimeInformation.ProcessArchitecture;
+            return GetLinuxNativeLibraryCandidates(
+                RuntimeInformation.ProcessArchitecture);
+        }
+
+        internal static string[] GetLinuxNativeLibraryCandidates(
+            Architecture architecture)
+        {
             var muslArchitectures = architecture switch
             {
                 Architecture.X64 => new[] { "x86_64" },
@@ -380,7 +417,7 @@ public abstract class StratumServer
 
             // init connection
             connection = new StratumConnection(logger, rmsm, clock,
-                ConnectionIdFactory(),
+                CreateConnectionId(),
                 clusterConfig.Logging.GPDRCompliant, failStop?.Token ?? default);
 
             logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging.GPDRCompliant)}:{remoteEndpoint.Port} ...");
@@ -455,7 +492,7 @@ public abstract class StratumServer
         {
             try
             {
-                await BeforeConnectionTaskRemoval(connectionId);
+                await BeforeConnectionTaskRemovalAsync(connectionId);
             }
             catch(Exception ex)
             {
@@ -535,11 +572,22 @@ public abstract class StratumServer
 
     protected void UnregisterConnection(StratumConnection connection)
     {
-        var result = connections.TryRemove(connection.ConnectionId, out _);
-        Debug.Assert(result);
+        if(!connections.TryRemove(connection.ConnectionId, out _))
+        {
+            throw new InvalidOperationException(
+                $"Connection id {connection.ConnectionId} is not registered");
+        }
 
         PublishTelemetry(TelemetryCategory.Connections, TimeSpan.Zero, true, connections.Count);
     }
+
+    protected virtual string CreateConnectionId() =>
+        CorrelationIdGenerator.GetNextId();
+
+    // Test subclasses can widen the real completion window where connection removal precedes
+    // removal of its socket-owning dispatch task. Production subclasses use the completed task.
+    protected virtual Task BeforeConnectionTaskRemovalAsync(
+        string connectionId) => Task.CompletedTask;
 
     protected abstract void OnConnect(StratumConnection connection, IPEndPoint portItem1);
 

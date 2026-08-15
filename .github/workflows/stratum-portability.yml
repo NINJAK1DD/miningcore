@@ -40,7 +40,22 @@ jobs:
               --configuration Release \
               --framework net10.0 \
               --property:MiningcoreStratumListenerSmoke=true \
-              --filter "FullyQualifiedName=Miningcore.Tests.Stratum.StratumListenerPortabilityTests.NativeExclusiveReservation_BlocksCompetitorAndAllowsImmediateRebind"
+              --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests"
+
+            if dotnet publish src/Miningcore/Miningcore.csproj \
+              --no-restore \
+              --no-build \
+              --configuration Release \
+              --framework net10.0 \
+              --property:MiningcoreStratumListenerSmoke=true \
+              >/tmp/miningcore-listener-smoke-publish.log 2>&1; then
+              echo "The test-only listener smoke unexpectedly produced a publish."
+              exit 1
+            fi
+
+            grep -F \
+              "MiningcoreStratumListenerSmoke is a test-only managed build mode and cannot be used to publish Miningcore." \
+              /tmp/miningcore-listener-smoke-publish.log
           '
 
   macos:
@@ -65,4 +80,4 @@ jobs:
         --configuration Release
         --framework net10.0
         --property:MiningcoreStratumListenerSmoke=true
-        --filter "FullyQualifiedName=Miningcore.Tests.Stratum.StratumListenerPortabilityTests.NativeExclusiveReservation_BlocksCompetitorAndAllowsImmediateRebind"
+        --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests"

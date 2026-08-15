@@ -355,6 +355,22 @@ public class StratumServerTests
     }
 
     [Fact]
+    public void UnregisterConnection_WhenIdentityIsMissing_Throws()
+    {
+        var server = new TestStratumServer();
+        var connection = new StratumConnection(
+            LogManager.GetCurrentClassLogger(),
+            new RecyclableMemoryStreamManager(),
+            Substitute.For<IMasterClock>(), "missing-connection-id", false);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            server.UnregisterForTest(connection));
+
+        Assert.Contains("missing-connection-id is not registered",
+            error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsync_StaleTrackedConnectionIdObservesAndRejectsNewDispatch()
     {
         const string connectionId = "stale-tracked-connection-id";
@@ -750,6 +766,10 @@ public class StratumServerTests
 
         public Action<StratumConnection> ConnectionInitializer { get; set; }
 
+        public Func<string> ConnectionIdFactory { get; set; }
+
+        public Func<string, Task> BeforeConnectionTaskRemoval { get; set; }
+
         public int ConnectionCount => connections.Count;
 
         public bool ThrowOnConnect { get; set; }
@@ -778,6 +798,11 @@ public class StratumServerTests
         public void SetBanManager(IBanManager manager)
         {
             banManager = manager;
+        }
+
+        public void UnregisterForTest(StratumConnection connection)
+        {
+            UnregisterConnection(connection);
         }
 
         public X509Certificate2 GetCachedCertificate(string path)
@@ -829,6 +854,14 @@ public class StratumServerTests
             return RequestHandler?.Invoke(connection, request, ct) ??
                 Task.CompletedTask;
         }
+
+        protected override string CreateConnectionId() =>
+            ConnectionIdFactory?.Invoke() ?? base.CreateConnectionId();
+
+        protected override Task BeforeConnectionTaskRemovalAsync(
+            string connectionId) =>
+            BeforeConnectionTaskRemoval?.Invoke(connectionId) ??
+            Task.CompletedTask;
 
         protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)
         {

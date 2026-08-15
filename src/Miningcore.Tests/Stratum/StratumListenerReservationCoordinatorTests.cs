@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using Miningcore.Configuration;
 using Miningcore.Mining;
 using Miningcore.Stratum;
@@ -14,12 +15,12 @@ namespace Miningcore.Tests.Stratum;
 public class StratumListenerReservationCoordinatorTests
 {
     [Fact]
-    public void ReservedSocket_IsBoundButDoesNotListenDuringPoolInitialization()
+    public async Task ReservedSocket_IsBoundButDoesNotListenDuringPoolInitialization()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
         var coordinator = CreateCoordinatorWithoutRetry();
 
-        using var session = coordinator.ReserveAll(new[] { pool });
+        using var session = await coordinator.ReserveAllAsync(new[] { pool });
         var reservation = Assert.Single(session.Claim(pool.Id));
 
         try
@@ -42,12 +43,13 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void CompetingBoundReservation_FailsBeforeEitherSocketListens()
+    public async Task CompetingBoundReservation_FailsBeforeEitherSocketListens()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
         var coordinator = CreateCoordinatorWithoutRetry();
 
-        using var firstSession = coordinator.ReserveAll(new[] { pool });
+        using var firstSession = await coordinator.ReserveAllAsync(
+            new[] { pool });
         var firstReservation = Assert.Single(firstSession.Claim(pool.Id));
 
         try
@@ -58,8 +60,8 @@ public class StratumListenerReservationCoordinatorTests
             var competingPool = CreatePool(pool.Id, boundPort,
                 "127.0.0.1");
 
-            var error = Assert.Throws<PoolStartupException>(() =>
-                coordinator.ReserveAll(new[] { competingPool }));
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                coordinator.ReserveAllAsync(new[] { competingPool }));
 
             Assert.Equal(pool.Id, error.PoolId);
             Assert.Contains(SocketError.AddressAlreadyInUse.ToString(),
@@ -72,12 +74,12 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void BoundReservation_SurvivesForcedFinalizationAndRemainsExclusive()
+    public async Task BoundReservation_SurvivesForcedFinalizationAndRemainsExclusive()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
         var coordinator = CreateCoordinatorWithoutRetry();
 
-        using var session = coordinator.ReserveAll(new[] { pool });
+        using var session = await coordinator.ReserveAllAsync(new[] { pool });
         var reservation = Assert.Single(session.Claim(pool.Id));
 
         try
@@ -91,8 +93,8 @@ public class StratumListenerReservationCoordinatorTests
             Assert.True(reservation.Socket.IsBound);
             var competingPool = CreatePool("pool-b", endpoint.Port,
                 endpoint.Address.ToString());
-            var error = Assert.Throws<PoolStartupException>(() =>
-                coordinator.ReserveAll(new[] { competingPool }));
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                coordinator.ReserveAllAsync(new[] { competingPool }));
             Assert.Contains(SocketError.AddressAlreadyInUse.ToString(),
                 error.Message, StringComparison.Ordinal);
 
@@ -106,7 +108,7 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void DistinctSpecificAddresses_CanReserveOneNumericPort()
+    public async Task DistinctSpecificAddresses_CanReserveOneNumericPort()
     {
         var port = GetFreePort(IPAddress.Loopback);
         var pools = new[]
@@ -116,7 +118,7 @@ public class StratumListenerReservationCoordinatorTests
         };
         var coordinator = new StratumListenerReservationCoordinator();
 
-        using var session = coordinator.ReserveAll(pools);
+        using var session = await coordinator.ReserveAllAsync(pools);
         var first = Assert.Single(session.Claim("pool-a"));
         var second = Assert.Single(session.Claim("pool-b"));
 
@@ -137,10 +139,15 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void ReservationFailure_DisposesEverySocketAcquiredByAttempt()
+    public async Task ReservationFailure_DisposesEverySocketAcquiredByAttempt()
     {
         var firstPort = GetFreePort(IPAddress.Loopback);
-        var secondPort = GetFreePort(IPAddress.Loopback);
+        int secondPort;
+
+        do
+        {
+            secondPort = GetFreePort(IPAddress.Loopback);
+        } while(secondPort == firstPort);
         var calls = 0;
         var coordinator = new StratumListenerReservationCoordinator(endpoint =>
             {
@@ -159,8 +166,8 @@ public class StratumListenerReservationCoordinatorTests
             CreatePool("pool-b", secondPort, "127.0.0.1"),
         };
 
-        var error = Assert.Throws<PoolStartupException>(() =>
-            coordinator.ReserveAll(pools));
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(pools));
 
         Assert.Equal("pool-b", error.PoolId);
         Assert.Contains("127.0.0.1", error.Message,
@@ -176,8 +183,29 @@ public class StratumListenerReservationCoordinatorTests
             new IPEndPoint(IPAddress.Loopback, firstPort));
     }
 
+    [Fact]
+    public async Task DuplicatePoolId_FailsAndReleasesEarlierReservations()
+    {
+        var firstPort = GetFreePort(IPAddress.Loopback);
+        var pools = new[]
+        {
+            CreatePool("duplicate", firstPort, "127.0.0.1"),
+            CreatePool("duplicate", 0, "127.0.0.1"),
+        };
+        var coordinator = CreateCoordinatorWithoutRetry();
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(pools));
+
+        Assert.Equal("duplicate", error.PoolId);
+        Assert.Contains("duplicate pool id 'duplicate'", error.Message,
+            StringComparison.Ordinal);
+        using var reacquired = StratumServer.CreateBoundSocket(
+            new IPEndPoint(IPAddress.Loopback, firstPort));
+    }
+
     [LinuxFact]
-    public void EndpointOccupiedByAnotherProcess_FailsWithSocketClassification()
+    public async Task EndpointOccupiedByAnotherProcess_FailsWithSocketClassification()
     {
         var occupied = new TcpListener(IPAddress.Loopback, 0);
         occupied.Start();
@@ -188,8 +216,8 @@ public class StratumListenerReservationCoordinatorTests
             var pool = CreatePool("occupied", port, "127.0.0.1");
             var coordinator = CreateCoordinatorWithoutRetry();
 
-            var error = Assert.Throws<PoolStartupException>(() =>
-                coordinator.ReserveAll(new[] { pool }));
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                coordinator.ReserveAllAsync(new[] { pool }));
 
             Assert.Equal(pool.Id, error.PoolId);
             Assert.Contains($"127.0.0.1:{port}", error.Message,
@@ -204,13 +232,14 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void ClaimedListener_IsReleasedForImmediateRestart()
+    public async Task ClaimedListener_IsReleasedForImmediateRestart()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
         var coordinator = new StratumListenerReservationCoordinator();
         int port;
 
-        using(var firstSession = coordinator.ReserveAll(new[] { pool }))
+        using(var firstSession = await coordinator.ReserveAllAsync(
+                  new[] { pool }))
         {
             var first = Assert.Single(firstSession.Claim(pool.Id));
             port = ((IPEndPoint) first.Socket.LocalEndPoint).Port;
@@ -218,34 +247,36 @@ public class StratumListenerReservationCoordinatorTests
         }
 
         var restartedPool = CreatePool(pool.Id, port, "127.0.0.1");
-        using var restartedSession = coordinator.ReserveAll(
+        using var restartedSession = await coordinator.ReserveAllAsync(
             new[] { restartedPool });
         var restarted = Assert.Single(restartedSession.Claim(pool.Id));
         restarted.Dispose();
     }
 
     [Fact]
-    public void UnclaimedSessionDispose_ReleasesListenerForRetry()
+    public async Task UnclaimedSessionDispose_ReleasesListenerForRetry()
     {
         var port = GetFreePort(IPAddress.Loopback);
         var pool = CreatePool("pool-a", port, "127.0.0.1");
         var coordinator = new StratumListenerReservationCoordinator();
 
-        var failedStartupSession = coordinator.ReserveAll(new[] { pool });
+        var failedStartupSession = await coordinator.ReserveAllAsync(
+            new[] { pool });
         failedStartupSession.Dispose();
 
-        using var retrySession = coordinator.ReserveAll(new[] { pool });
+        using var retrySession = await coordinator.ReserveAllAsync(
+            new[] { pool });
         var retry = Assert.Single(retrySession.Claim(pool.Id));
         retry.Dispose();
     }
 
     [Fact]
-    public void ClaimingOnePoolTwice_FailsInsteadOfSharingSocketOwnership()
+    public async Task ClaimingOnePoolTwice_FailsInsteadOfSharingSocketOwnership()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
         var coordinator = new StratumListenerReservationCoordinator();
 
-        using var session = coordinator.ReserveAll(new[] { pool });
+        using var session = await coordinator.ReserveAllAsync(new[] { pool });
         var listener = Assert.Single(session.Claim(pool.Id));
 
         try
@@ -262,14 +293,14 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [LinuxFact]
-    public void NonLocalSpecificAddress_ReportsEndpointAndSocketClassification()
+    public async Task NonLocalSpecificAddress_ReportsEndpointAndSocketClassification()
     {
         const int port = 0;
         var pool = CreatePool("non-local", port, "192.0.2.1");
         var coordinator = new StratumListenerReservationCoordinator();
 
-        var error = Assert.Throws<PoolStartupException>(() =>
-            coordinator.ReserveAll(new[] { pool }));
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
 
         Assert.Equal(pool.Id, error.PoolId);
         Assert.Contains($"192.0.2.1:{port}", error.Message,
@@ -281,7 +312,7 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void AddressInUse_IsRetriedWithBoundedExponentialBackoff()
+    public async Task AddressInUse_IsRetriedWithBoundedExponentialBackoff()
     {
         var attempts = 0;
         var waits = new List<TimeSpan>();
@@ -296,10 +327,14 @@ public class StratumListenerReservationCoordinatorTests
 
                 return StratumServer.CreateBoundSocket(endpoint);
             }, addressInUseRetryWindow: TimeSpan.FromSeconds(1),
-            retryWait: (delay, _) => waits.Add(delay));
+            retryWait: (delay, _) =>
+            {
+                waits.Add(delay);
+                return Task.CompletedTask;
+            });
         var pool = CreatePool("time-wait", 0, "127.0.0.1");
 
-        using var session = coordinator.ReserveAll(new[] { pool });
+        using var session = await coordinator.ReserveAllAsync(new[] { pool });
         var reservation = Assert.Single(session.Claim(pool.Id));
 
         try
@@ -318,7 +353,7 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void AddressInUse_AfterRetryBudgetFailsWithPoolScopedDiagnostic()
+    public async Task AddressInUse_AfterRetryBudgetFailsWithPoolScopedDiagnostic()
     {
         var attempts = 0;
         var waits = new List<TimeSpan>();
@@ -328,31 +363,105 @@ public class StratumListenerReservationCoordinatorTests
                 throw new SocketException(
                     (int) SocketError.AddressAlreadyInUse);
             }, addressInUseRetryWindow: TimeSpan.FromMilliseconds(750),
-            retryWait: (delay, _) => waits.Add(delay));
+            retryWait: (delay, _) =>
+            {
+                waits.Add(delay);
+                return Task.CompletedTask;
+            });
         var pool = CreatePool("occupied", 3032, "127.0.0.1");
 
-        var error = Assert.Throws<PoolStartupException>(() =>
-            coordinator.ReserveAll(new[] { pool }));
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
 
         Assert.Equal(pool.Id, error.PoolId);
         Assert.Equal(3, attempts);
         Assert.Equal(TimeSpan.FromMilliseconds(750), waits.Aggregate(
             TimeSpan.Zero, (total, delay) => total + delay));
-        Assert.Contains("after retrying for 0.75 seconds", error.Message,
+        Assert.Contains(
+            "after exhausting the shared 0.75-second startup retry budget",
+            error.Message,
             StringComparison.Ordinal);
         Assert.Contains(SocketError.AddressAlreadyInUse.ToString(),
             error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void NativeBindingFailure_IsWrappedAsPoolStartupException()
+    public async Task AddressInUse_RetryBudgetIsSharedAcrossEveryEndpoint()
+    {
+        var firstPort = GetFreePort(IPAddress.Loopback);
+        int secondPort;
+
+        do
+        {
+            secondPort = GetFreePort(IPAddress.Loopback);
+        } while(secondPort == firstPort);
+        var attempts = new Dictionary<int, int>();
+        var waits = new List<TimeSpan>();
+        var coordinator = new StratumListenerReservationCoordinator(endpoint =>
+            {
+                attempts.TryGetValue(endpoint.Port, out var attempt);
+                attempts[endpoint.Port] = ++attempt;
+
+                if(endpoint.Port == firstPort && attempt >= 2)
+                    return StratumServer.CreateBoundSocket(endpoint);
+
+                throw new SocketException(
+                    (int) SocketError.AddressAlreadyInUse);
+            }, addressInUseRetryWindow: TimeSpan.FromMilliseconds(750),
+            retryWait: (delay, _) =>
+            {
+                waits.Add(delay);
+                return Task.CompletedTask;
+            });
+        var pool = new PoolConfig
+        {
+            Id = "shared-budget",
+            Enabled = true,
+            EnableInternalStratum = true,
+            Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [firstPort] = new()
+                {
+                    Difficulty = 1,
+                    ListenAddress = "127.0.0.1",
+                },
+                [secondPort] = new()
+                {
+                    Difficulty = 1,
+                    ListenAddress = "127.0.0.1",
+                },
+            },
+        };
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
+
+        Assert.Equal(new[]
+        {
+            TimeSpan.FromMilliseconds(250),
+            TimeSpan.FromMilliseconds(250),
+            TimeSpan.FromMilliseconds(250),
+        }, waits);
+        Assert.Equal(TimeSpan.FromMilliseconds(750), waits.Aggregate(
+            TimeSpan.Zero, (total, delay) => total + delay));
+        Assert.Equal(2, attempts[firstPort]);
+        Assert.Equal(3, attempts[secondPort]);
+        Assert.Contains(
+            "after exhausting the shared 0.75-second startup retry budget",
+            error.Message, StringComparison.Ordinal);
+        using var reacquired = StratumServer.CreateBoundSocket(
+            new IPEndPoint(IPAddress.Loopback, firstPort));
+    }
+
+    [Fact]
+    public async Task NativeBindingFailure_IsWrappedAsPoolStartupException()
     {
         var coordinator = new StratumListenerReservationCoordinator(_ =>
             throw new DllNotFoundException("injected libc resolution failure"));
         var pool = CreatePool("native-failure", 3032, "127.0.0.1");
 
-        var error = Assert.Throws<PoolStartupException>(() =>
-            coordinator.ReserveAll(new[] { pool }));
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
 
         Assert.Equal(pool.Id, error.PoolId);
         Assert.IsType<DllNotFoundException>(error.InnerException);
@@ -363,7 +472,7 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public void AddressInUse_RetryHonorsStartupCancellation()
+    public async Task AddressInUse_RetryHonorsStartupCancellation()
     {
         using var cts = new CancellationTokenSource();
         var attempts = 0;
@@ -386,6 +495,7 @@ public class StratumListenerReservationCoordinatorTests
             {
                 cts.Cancel();
                 ct.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
             });
         var pools = new[]
         {
@@ -393,8 +503,8 @@ public class StratumListenerReservationCoordinatorTests
             CreatePool("cancelled", 3032, "127.0.0.1"),
         };
 
-        Assert.Throws<OperationCanceledException>(() =>
-            coordinator.ReserveAll(pools, cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            coordinator.ReserveAllAsync(pools, cts.Token));
         Assert.Equal(2, attempts);
         Assert.NotNull(firstEndpoint);
         using var reacquired = StratumServer.CreateBoundSocket(firstEndpoint);

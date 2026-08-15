@@ -162,6 +162,8 @@
 
     <!-- Include library binaries in publish on Linux -->
     <Target Name="NativeLibsPublishIncludeLinux" BeforeTargets="PrepareForPublish" Condition="'$(IsLinux)' == 'true'">
+        <Error Condition="'$(MiningcoreStratumListenerSmoke)' == 'true'"
+               Text="MiningcoreStratumListenerSmoke is a test-only managed build mode and cannot be used to publish Miningcore." />
         <ItemGroup>
             <Libs Include="$(OutDir)*.so" />
             <ContentWithTargetPath Include="@(Libs->'%(FullPath)')" RelativePath="%(Libs.Identity)" TargetPath="%(Libs.Filename)%(Libs.Extension)" CopyToPublishDirectory="PreserveNewest" />

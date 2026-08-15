@@ -151,7 +151,8 @@ public class PoolBaseTests
             Logging = new ClusterLoggingConfig(),
         });
         var coordinator = new StratumListenerReservationCoordinator();
-        using var reservations = coordinator.ReserveAll(new[] { config });
+        using var reservations = await coordinator.ReserveAllAsync(
+            new[] { config });
         pool.AttachStratumListenerReservations(reservations);
         using var cts = new CancellationTokenSource();
 
@@ -204,7 +205,8 @@ public class PoolBaseTests
             socket.Dispose();
             return socket;
         });
-        using var reservations = coordinator.ReserveAll(new[] { config });
+        using var reservations = await coordinator.ReserveAllAsync(
+            new[] { config });
         pool.AttachStratumListenerReservations(reservations);
 
         await Assert.ThrowsAnyAsync<ObjectDisposedException>(() =>

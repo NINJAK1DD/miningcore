@@ -307,8 +307,9 @@ failures, request-handler faults and independent send-timeout cancellation—use
 Accepted sockets are protected against
 unclean process termination by default, while only genuine peer-initiated EOF switches to graceful
 close. This permits bytes already written to the network to drain but does not drain Miningcore's
-application send queue during shutdown. Startup retries `AddressAlreadyInUse` with
-bounded backoff for up to 90 seconds per endpoint when residual `TIME_WAIT` survives an unclean stop.
+application send queue during shutdown. Startup retries `AddressAlreadyInUse` with one cluster-wide
+bounded backoff budget of up to 90 seconds when residual `TIME_WAIT` survives an unclean stop; the
+budget does not multiply with the number of endpoints.
 Active-interface masks are used
 only to reject known subnet-directed IPv4 broadcast identities; ordinary addresses still use bind as
 the host-specific source of truth.

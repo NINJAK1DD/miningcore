@@ -93,10 +93,14 @@ the network may then drain with FIN, but Miningcore does not drain its applicati
 shutdown. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
 request-handler-failure, send-timeout and other independent-cancellation paths remain abortive. If
 an unclean stop still leaves a
-local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with bounded
-backoff for up to 90 seconds per endpoint. A genuinely occupied port therefore delays startup for
-that bounded window and then fails with the complete pool and socket diagnostic; no partial cluster
-starts.
+local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with one
+shared, bounded backoff budget of up to 90 seconds for the complete cluster reservation attempt.
+The budget does not multiply with the number of endpoints. Sockets acquired earlier in the attempt
+remain reserved but do not listen while a later endpoint consumes that budget; this preserves the
+all-or-nothing ownership boundary. A genuinely occupied port therefore delays startup for at most
+the shared window and then fails with the complete pool and socket diagnostic; no partial cluster
+starts. Configure the service manager's startup timeout to exceed this window plus ordinary pool
+initialization time so it cannot terminate Miningcore before the final diagnostic is emitted.
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
