@@ -326,9 +326,11 @@ startup when an enabled relay-only pool retains such an entry. API reads now pro
 into dedicated public endpoint DTOs rather than mapping or mutating the live configuration type. The
 public DTOs have no TLS credential fields or trusted PROXY-protocol peer allow-list, preventing those
 runtime-only values from entering the response even when legacy null serialization is enabled.
-Consequently, `ports[*].tlsPfxFile`, `ports[*].tlsPfxPassword` and
-`ports[*].tcpProxyProtocol.proxyAddresses` are now absent rather than `null`. REST clients must remove
-references to those private fields; the remaining endpoint keys retain their existing names and values.
+Consequently, `ports[*].tlsPfxFile` and `ports[*].tlsPfxPassword` change from `null` to absent.
+`ports[*].tcpProxyProtocol.proxyAddresses` was previously returned with the configured trusted-proxy
+allow-list and is now absent entirely. This is an intentional information-disclosure hardening change.
+REST clients must remove references to those private fields; the remaining endpoint keys retain their
+existing names and values.
 Consumers compiling directly against Miningcore response classes must also update the generic value
 type of `PoolInfo.Ports` from `PoolEndpoint` to `ApiPoolEndpoint`.
 

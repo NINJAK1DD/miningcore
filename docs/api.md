@@ -112,7 +112,7 @@ mode and PROXY-protocol mode information needed by clients. TLS certificate path
 the trusted PROXY-protocol peer allow-list, have no public DTO members and are never serialized. Null
 listener entries retained by disabled or relay-only configurations are omitted from the public map.
 Specifically, clients must not expect `ports[*].tlsPfxFile`, `ports[*].tlsPfxPassword` or
-`ports[*].tcpProxyProtocol.proxyAddresses`: those keys are absent rather than `null`, including when
+`ports[*].tcpProxyProtocol.proxyAddresses`: those keys are absent from responses, including when
 `legacyNullValueHandling` is enabled. All other endpoint property names and values remain unchanged.
 
 ## Public routes
