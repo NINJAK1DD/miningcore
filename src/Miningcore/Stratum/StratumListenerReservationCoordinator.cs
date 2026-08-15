@@ -112,15 +112,18 @@ internal sealed class StratumListenerReservationCoordinator
     internal static readonly TimeSpan MaximumRetryDelay =
         TimeSpan.FromSeconds(5);
 
-    internal StratumListenerReservationCoordinator(ILogger logger = null) :
-        this(StratumServer.CreateBoundSocket, logger)
+    internal StratumListenerReservationCoordinator(ILogger logger = null,
+        bool allowEphemeralTestPorts = false) :
+        this(StratumServer.CreateBoundSocket, logger,
+            allowEphemeralTestPorts: allowEphemeralTestPorts)
     {
     }
 
     internal StratumListenerReservationCoordinator(
         Func<IPEndPoint, Socket> reserveSocket, ILogger logger = null,
         TimeSpan? addressInUseRetryWindow = null,
-        Func<TimeSpan, CancellationToken, Task> retryWait = null)
+        Func<TimeSpan, CancellationToken, Task> retryWait = null,
+        bool allowEphemeralTestPorts = false)
     {
         this.reserveSocket = reserveSocket ??
             throw new ArgumentNullException(nameof(reserveSocket));
@@ -131,12 +134,14 @@ internal sealed class StratumListenerReservationCoordinator
             throw new ArgumentOutOfRangeException(nameof(addressInUseRetryWindow));
 
         this.retryWait = retryWait ?? Task.Delay;
+        this.allowEphemeralTestPorts = allowEphemeralTestPorts;
     }
 
     private readonly Func<IPEndPoint, Socket> reserveSocket;
     private readonly ILogger logger;
     private readonly TimeSpan addressInUseRetryWindow;
     private readonly Func<TimeSpan, CancellationToken, Task> retryWait;
+    private readonly bool allowEphemeralTestPorts;
 
     internal async Task<StratumListenerReservationSession> ReserveAllAsync(
         IEnumerable<PoolConfig> pools, CancellationToken ct = default)
@@ -148,7 +153,8 @@ internal sealed class StratumListenerReservationCoordinator
         var acquired = new List<StratumListenerReservation>();
         var activeIPv4Subnets = ListenerAddressUtils
             .CaptureActiveIPv4Subnets();
-        var plans = PreflightListeners(pools, activeIPv4Subnets, ct);
+        var plans = PreflightListeners(pools, activeIPv4Subnets,
+            allowEphemeralTestPorts, ct);
         var retryDelayBudget = new AddressInUseRetryDelayBudget(
             addressInUseRetryWindow);
 
@@ -236,6 +242,7 @@ internal sealed class StratumListenerReservationCoordinator
         IEnumerable<PoolConfig> pools,
         IReadOnlyCollection<ListenerAddressUtils.IPv4InterfaceSubnet>
             activeIPv4Subnets,
+        bool allowEphemeralTestPorts,
         CancellationToken ct)
     {
         var selected = pools.Where(pool => pool?.Enabled == true &&
@@ -245,15 +252,15 @@ internal sealed class StratumListenerReservationCoordinator
         var plans = new List<PoolListenerPlan>(selected.Length);
 
         // This lower-level boundary independently validates selected pool identity,
-        // endpoint objects, literal addresses and host suitability before invoking
-        // the reservation delegate. Full live configuration validation, including
-        // the non-zero port range, remains PoolConfigValidator's responsibility;
-        // port zero is intentionally useful to low-level socket tests.
+        // endpoint objects, port range, literal addresses and host suitability
+        // before invoking the reservation delegate. The explicit ephemeral-port
+        // exception exists only for low-level socket tests; production callers use
+        // the default fail-closed setting.
         foreach(var pool in selected)
         {
             ct.ThrowIfCancellationRequested();
 
-            if(string.IsNullOrEmpty(pool.Id))
+            if(string.IsNullOrWhiteSpace(pool.Id))
             {
                 throw new PoolStartupException(
                     "Unable to reserve Stratum listeners: pool id missing or empty",
@@ -273,6 +280,14 @@ internal sealed class StratumListenerReservationCoordinator
                 new Dictionary<int, PoolEndpoint>())
             {
                 ct.ThrowIfCancellationRequested();
+
+                if(port is < 1 or > ushort.MaxValue &&
+                    !(allowEphemeralTestPorts && port == 0))
+                {
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' Stratum port {port}: port number must be between 1 and {ushort.MaxValue}",
+                        pool.Id);
+                }
 
                 if(poolEndpoint == null)
                 {

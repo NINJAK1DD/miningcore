@@ -71,9 +71,9 @@ public static class MiningPoolExtensions
         // Deferred listener validation permits stale endpoint data on disabled
         // and relay-only pools. Enabled relay-only pools are still public API
         // resources, so omit unusable null entries instead of returning a 500.
-        // Build a new dictionary of new endpoint objects so a read-only API call
-        // cannot mutate the live cluster configuration even if an upstream map
-        // aliases identical source and destination types.
+        // Build a new dictionary of detached endpoint objects. The mapping profile
+        // also copies nested endpoint settings and redacts private listener data,
+        // so API serialization cannot expose or alias the live configuration.
         return ports.Where(x => x.Value != null)
             .ToDictionary(x => x.Key,
                 x => mapper.Map<PoolEndpoint>(x.Value));

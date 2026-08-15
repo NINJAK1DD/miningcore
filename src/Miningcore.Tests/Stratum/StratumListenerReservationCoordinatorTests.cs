@@ -211,6 +211,7 @@ public class StratumListenerReservationCoordinatorTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
+    [InlineData("   ")]
     public async Task MissingPoolId_FailsBeforeSocketReservation(string poolId)
     {
         var reservationAttempts = 0;
@@ -230,6 +231,31 @@ public class StratumListenerReservationCoordinatorTests
             "Unable to reserve Stratum listeners: pool id missing or empty",
             error.Message);
         Assert.Equal(0, reservationAttempts);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(65536)]
+    [InlineData(-1)]
+    public async Task InvalidPort_FailsBeforeSocketReservation(int port)
+    {
+        var reservationAttempts = 0;
+        var coordinator = new StratumListenerReservationCoordinator(_ =>
+        {
+            reservationAttempts++;
+            throw new InvalidOperationException(
+                "reservation delegate must not be called");
+        });
+        var pool = CreatePool("invalid-port", port, "127.0.0.1");
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
+
+        Assert.Equal(pool.Id, error.PoolId);
+        Assert.Equal(0, reservationAttempts);
+        Assert.Equal(
+            $"Pool 'invalid-port' Stratum port {port}: port number must be between 1 and 65535",
+            error.Message);
     }
 
     [LinuxFact]
@@ -263,7 +289,8 @@ public class StratumListenerReservationCoordinatorTests
     public async Task ClaimedListener_IsReleasedForImmediateRestart()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
-        var coordinator = new StratumListenerReservationCoordinator();
+        var coordinator = new StratumListenerReservationCoordinator(
+            allowEphemeralTestPorts: true);
         int port;
 
         using(var firstSession = await coordinator.ReserveAllAsync(
@@ -302,7 +329,8 @@ public class StratumListenerReservationCoordinatorTests
     public async Task ClaimingOnePoolTwice_FailsInsteadOfSharingSocketOwnership()
     {
         var pool = CreatePool("pool-a", 0, "127.0.0.1");
-        var coordinator = new StratumListenerReservationCoordinator();
+        var coordinator = new StratumListenerReservationCoordinator(
+            allowEphemeralTestPorts: true);
 
         using var session = await coordinator.ReserveAllAsync(new[] { pool });
         var listener = Assert.Single(session.Claim(pool.Id));
@@ -427,7 +455,7 @@ public class StratumListenerReservationCoordinatorTests
             {
                 waits.Add(delay);
                 return Task.CompletedTask;
-            });
+            }, allowEphemeralTestPorts: true);
         var pool = CreatePool("time-wait", 0, "127.0.0.1");
 
         using var session = await coordinator.ReserveAllAsync(new[] { pool });
@@ -621,7 +649,7 @@ public class StratumListenerReservationCoordinatorTests
                 cts.Cancel();
                 ct.ThrowIfCancellationRequested();
                 return Task.CompletedTask;
-            });
+            }, allowEphemeralTestPorts: true);
         var pools = new[]
         {
             CreatePool("already-reserved", 0, "127.0.0.1"),
@@ -638,7 +666,8 @@ public class StratumListenerReservationCoordinatorTests
     private static StratumListenerReservationCoordinator
         CreateCoordinatorWithoutRetry() => new(
             StratumServer.CreateBoundSocket,
-            addressInUseRetryWindow: TimeSpan.Zero);
+            addressInUseRetryWindow: TimeSpan.Zero,
+            allowEphemeralTestPorts: true);
 
     private static int GetFreePort(IPAddress address)
     {

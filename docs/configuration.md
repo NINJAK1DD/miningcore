@@ -46,6 +46,8 @@ use the `127.0.0.1` default, but the endpoint object itself must not be replaced
 an enabled internal Stratum listener. Listener validation remains deferred for disabled and relay-only
 pools. An enabled relay-only pool with a null entry logs a startup warning, and that unusable entry is
 omitted from the public pool API without modifying the retained runtime configuration.
+Public endpoint responses also omit TLS credential fields and the trusted PROXY-protocol peer
+allow-list; these remain available only to the running service.
 
 ## API listener isolation
 

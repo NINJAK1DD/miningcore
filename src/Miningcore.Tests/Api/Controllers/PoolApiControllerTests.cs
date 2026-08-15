@@ -13,13 +13,27 @@ namespace Miningcore.Tests.Api.Controllers;
 public class PoolApiControllerTests
 {
     [Fact]
-    public void ToPoolInfo_OmitsNullEndpointsAndStripsTlsSecrets()
+    public void ToPoolInfo_OmitsNullEndpointsAndRedactsPrivateListenerData()
     {
         var sourceEndpoint = new PoolEndpoint
         {
             ListenAddress = "127.0.0.1",
             Name = "public-endpoint",
             Difficulty = 42,
+            VarDiff = new VarDiffConfig
+            {
+                MinDiff = 1,
+                MaxDiff = 100,
+                TargetTime = 15,
+                RetargetTime = 90,
+                VariancePercent = 30,
+            },
+            TcpProxyProtocol = new TcpProxyProtocolConfig
+            {
+                Enable = true,
+                Mandatory = true,
+                ProxyAddresses = new[] { "10.0.0.5" },
+            },
             Tls = true,
             TlsPfxFile = "pool.pfx",
             TlsPfxPassword = "secret",
@@ -51,6 +65,14 @@ public class PoolApiControllerTests
         Assert.Equal(sourceEndpoint.ListenAddress, endpoint.ListenAddress);
         Assert.Equal(sourceEndpoint.Name, endpoint.Name);
         Assert.Equal(sourceEndpoint.Difficulty, endpoint.Difficulty);
+        Assert.NotSame(sourceEndpoint.VarDiff, endpoint.VarDiff);
+        Assert.Equal(sourceEndpoint.VarDiff.MinDiff, endpoint.VarDiff.MinDiff);
+        Assert.Equal(sourceEndpoint.VarDiff.MaxDiff, endpoint.VarDiff.MaxDiff);
+        Assert.NotSame(sourceEndpoint.TcpProxyProtocol,
+            endpoint.TcpProxyProtocol);
+        Assert.True(endpoint.TcpProxyProtocol.Enable);
+        Assert.True(endpoint.TcpProxyProtocol.Mandatory);
+        Assert.Null(endpoint.TcpProxyProtocol.ProxyAddresses);
         Assert.True(endpoint.Tls);
         Assert.Null(endpoint.TlsPfxFile);
         Assert.Null(endpoint.TlsPfxPassword);
@@ -59,6 +81,8 @@ public class PoolApiControllerTests
         Assert.Null(config.Ports[3032]);
         Assert.Equal("pool.pfx", sourceEndpoint.TlsPfxFile);
         Assert.Equal("secret", sourceEndpoint.TlsPfxPassword);
+        Assert.Equal(new[] { "10.0.0.5" },
+            sourceEndpoint.TcpProxyProtocol.ProxyAddresses);
     }
 
     [Fact]
