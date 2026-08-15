@@ -129,6 +129,19 @@ server-side service with its own user authentication and authorization; that ser
 authenticated admin `PUT` endpoint. Never place the Miningcore admin token in JavaScript or send it
 to a browser.
 
+Every administrative response produced by the API pipeline sends
+`Cross-Origin-Resource-Policy: same-origin`, including wrong-listener, rate-limit, whitelist,
+authentication and credential-unavailable rejections. Protected pipeline responses also send
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff` to discourage storage and MIME
+sniffing. These headers cannot cover protocol errors that Kestrel rejects before a request enters
+the API pipeline.
+
+The resource policy blocks eligible cross-origin no-CORS subresource use of the response. It does
+not generally prohibit cross-origin navigation or iframe embedding; use an appropriate framing
+policy such as CSP `frame-ancestors` if that is a deployment requirement. CORS and these response
+headers govern browser response use only: they do not prevent requests from being transmitted and
+never replace the dedicated listener, IP whitelist, bearer token, TLS or firewall boundary.
+
 ## Mutating routes
 
 State-changing requests use explicit non-GET verbs:

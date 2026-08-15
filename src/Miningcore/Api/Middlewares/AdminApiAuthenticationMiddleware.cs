@@ -128,10 +128,11 @@ public sealed class AdminApiAuthenticationMiddleware
         });
 
     public const string TokenEnvironmentVariable = "MININGCORE_ADMIN_API_TOKEN";
-    public const string AdminRoutePrefix = "/api/admin";
+    public const string AdminRoutePrefix =
+        ProtectedRouteClassifier.AdminRoutePrefix;
 
-    public static bool IsAdminRequest(PathString path) => path.StartsWithSegments(
-        new PathString(AdminRoutePrefix), StringComparison.OrdinalIgnoreCase);
+    public static bool IsAdminRequest(PathString path) =>
+        ProtectedRouteClassifier.IsAdminRequest(path);
 
     public async Task Invoke(HttpContext context)
     {
@@ -141,6 +142,9 @@ public sealed class AdminApiAuthenticationMiddleware
             return;
         }
 
+        // Keep the authentication boundary safe when this middleware is hosted
+        // independently. The standard API pipeline also applies and reasserts the
+        // complete protected-route response policy around this component.
         context.Response.Headers.CacheControl = "no-store";
 
         if(credential.Status != AdminApiCredentialStatus.Configured)

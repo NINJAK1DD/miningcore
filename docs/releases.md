@@ -248,6 +248,29 @@ an exemption must add its narrowly scoped source address to `api.rateLimiting.ip
 as `api.adminIpWhitelist`. The rate-limit IP whitelist bypasses API throttling globally, not only
 for administrative requests, so restrict its entries to trusted fixed addresses.
 
+### Security hardening: protected browser resources and metrics methods
+
+API-pipeline responses for the administrative and Prometheus route families now send
+`Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` and
+`X-Content-Type-Options: nosniff` on success and on wrong-listener, rate-limit, whitelist,
+authentication, credential-unavailable and method rejections. Protocol errors rejected by Kestrel
+before a request enters the pipeline cannot carry these application headers. The resource policy
+blocks eligible cross-origin no-CORS subresource use, but does not generally prohibit navigation or
+iframe embedding. These headers do not prevent requests from being sent and are not a replacement
+for listener isolation, IP whitelists, admin bearer authentication, TLS or firewall policy.
+
+After existing listener, rate-limit and IP-whitelist controls accept a request, the `/metrics` route
+family now accepts only the exact, case-sensitive `GET` and `HEAD` method tokens. `HEAD` returns the
+normal exposition headers without a body, but still performs the full registry collection and
+serialization server-side. It is not a cheaper high-frequency liveness probe. `OPTIONS`, `POST`,
+lowercase lookalikes such as `get`, and every other method return an empty `405 Method Not Allowed`
+response with `Allow: GET, HEAD` without invoking the exporter. Rejected listener and client
+identities keep their existing `404`, `429` or
+`403` response. Exact scrapes bypass the public API rate limiter, while rejected lowercase,
+mixed-case and unsupported method tokens remain throttled. Ordinary Prometheus scrapes and
+command-line `GET` clients require no change.
+Custom health checks that incorrectly use another method must switch to `GET` or `HEAD`.
+
 ### Security hardening: metrics CORS isolation
 
 The Prometheus `/metrics` route family no longer receives the public API's permissive CORS headers.

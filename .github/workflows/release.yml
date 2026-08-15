@@ -88,6 +88,7 @@ jobs:
           container=miningcore-api-smoke
           unconfigured_container=miningcore-api-unconfigured
           shared_container=miningcore-api-shared
+          rate_limit_container=miningcore-api-rate-limit
           proxy_container=miningcore-api-nginx
           admin_token="$(openssl rand -hex 32)"
 
@@ -96,6 +97,7 @@ jobs:
             docker rm -f "$unconfigured_container" >/dev/null 2>&1 || true
             docker rm -f "$proxy_container" >/dev/null 2>&1 || true
             docker rm -f "$shared_container" >/dev/null 2>&1 || true
+            docker rm -f "$rate_limit_container" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
@@ -132,15 +134,61 @@ jobs:
             exit 1
           fi
 
+          assert_response_header() {
+            local description=$1
+            local pattern=$2
+            shift 2
+            if ! curl --silent --dump-header - --output /dev/null "$@" |
+              tr -d '\r' |
+              grep --ignore-case --extended-regexp --line-regexp "$pattern" >/dev/null; then
+              echo "$description did not return the expected response header: $pattern"
+              return 1
+            fi
+          }
+
+          assert_protected_headers() {
+            local description=$1
+            shift
+            assert_response_header "$description resource policy" \
+              'Cross-Origin-Resource-Policy:[[:space:]]*same-origin' "$@"
+            assert_response_header "$description cache policy" \
+              'Cache-Control:[[:space:]]*no-store' "$@"
+            assert_response_header "$description content-type policy" \
+              'X-Content-Type-Options:[[:space:]]*nosniff' "$@"
+          }
+
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4001/api/admin/status)" = 401
 
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --request OPTIONS --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          test "$(curl --silent --request POST --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          curl --silent --request OPTIONS --dump-header - --output /dev/null \
+            http://127.0.0.1:4002/metrics |
+            tr -d '\r' |
+            grep --ignore-case --extended-regexp --line-regexp \
+              'Allow:[[:space:]]*GET,[[:space:]]*HEAD' >/dev/null
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4001/api/pools)" = 404
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4002/api/pools)" = 404
+
+          assert_protected_headers "Authenticated admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_protected_headers "Rejected admin response" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_protected_headers "Metrics scrape" \
+            http://127.0.0.1:4002/metrics
+          assert_protected_headers "Rejected metrics method" \
+            --request OPTIONS http://127.0.0.1:4002/metrics
 
           docker rm -f "$container" >/dev/null
 
@@ -170,12 +218,75 @@ jobs:
             exit 1
           fi
 
+          assert_protected_headers "Unavailable admin response" \
+            http://127.0.0.1:4001/api/admin/status
+
           docker rm -f "$unconfigured_container" >/dev/null
+
+          docker run --detach --name "$rate_limit_container" \
+            --network "$network" \
+            --ip 172.30.56.4 \
+            --publish 127.0.0.1:4010:4000 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-rate-limit-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          metrics_status=000
+          for attempt in {1..30}; do
+            metrics_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4010/metrics || true)"
+            if [[ "$metrics_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$metrics_status" != 200 ]]; then
+            docker logs "$rate_limit_container"
+            echo "Rate-limit smoke metrics request returned HTTP $metrics_status instead of 200"
+            exit 1
+          fi
+
+          # Exact scrape methods bypass throttling. Unsupported case variants
+          # consume the two-request budget and the next request must receive 429.
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
+          if ! lowercase_head_status="$(
+            curl --silent --max-time 10 --request head --output /dev/null \
+              --write-out '%{http_code}' http://127.0.0.1:4010/metrics
+          )"; then
+            echo "Lowercase HEAD metrics probe timed out or failed"
+            exit 1
+          fi
+          if [[ "$lowercase_head_status" != 405 ]]; then
+            echo "Lowercase HEAD metrics probe returned HTTP $lowercase_head_status instead of 405"
+            exit 1
+          fi
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 429
+          assert_protected_headers "Rate-limited metrics method" \
+            --request get http://127.0.0.1:4010/metrics
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+
+          docker rm -f "$rate_limit_container" >/dev/null
 
           docker run --detach --name "$shared_container" \
             --network "$network" \
             --ip 172.30.56.2 \
             --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
+            --publish 127.0.0.1:4000:4000 \
             --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
@@ -208,6 +319,37 @@ jobs:
             echo "nginx public lookalike request returned HTTP $proxy_status instead of 200"
             exit 1
           fi
+
+          untrusted_metrics="$(docker exec "$proxy_container" \
+            wget -S -O /dev/null \
+            http://172.30.56.2:4000/metrics 2>&1 || true)"
+          if ! grep --extended-regexp \
+            'HTTP/1\.[01][[:space:]]+403[[:space:]]+Forbidden' \
+            <<<"$untrusted_metrics" >/dev/null; then
+            echo "Shared-listener metrics request from an untrusted container was not denied"
+            printf '%s\n' "$untrusted_metrics"
+            exit 1
+          fi
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/api/pools)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4000/api/admin/status)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/metrics)" = 200
+          test "$(curl --silent --request POST --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4000/metrics)" = 405
+
+          assert_protected_headers "Shared-listener admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4000/api/admin/status
+          assert_protected_headers "Shared-listener metrics scrape" \
+            http://127.0.0.1:4000/metrics
+          assert_protected_headers "Shared-listener rejected metrics method" \
+            --request POST http://127.0.0.1:4000/metrics
 
           assert_status() {
             local expected=$1

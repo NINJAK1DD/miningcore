@@ -31,6 +31,20 @@ routes use dedicated ports or the legacy shared listener. Prometheus, `curl` and
 clients are unaffected. A custom browser dashboard must not scrape `/metrics` cross-origin; collect
 or proxy the required telemetry through a deliberately secured same-origin service instead.
 
+Every response the API pipeline produces for those two protected route families carries
+`Cross-Origin-Resource-Policy: same-origin`, including wrong-listener, rate-limit, whitelist,
+authentication, credential-unavailable and method rejections. Protected pipeline responses also
+send `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. Protocol errors that Kestrel
+rejects before a request enters the pipeline cannot carry these application headers.
+
+The resource policy blocks eligible cross-origin no-CORS subresource use of the response. It is not
+a general navigation or framing control: ordinary nested navigations can remain eligible when the
+embedding document does not require cross-origin isolation. Use an appropriate framing policy such
+as CSP `frame-ancestors` if a deployment must prohibit framing. CORS and these response headers
+restrict browser use of a response; they do not prevent a request from being sent and do not
+replace listener isolation, IP whitelists, bearer authentication, TLS or firewall controls. See the
+[Fetch Standard resource-policy algorithm](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).
+
 Every administrative request also requires `Authorization: Bearer TOKEN`, where `TOKEN` comes only
 from the `MININGCORE_ADMIN_API_TOKEN` process environment. Missing or invalid token configuration
 fails closed for `/api/admin` without stopping pools or the public API. Administrative responses do
@@ -208,6 +222,18 @@ whitelist. Never publish the admin port through the public reverse proxy.
 
 The metrics endpoint intentionally emits no permissive CORS headers. This does not affect normal
 Prometheus scraping because CORS is enforced by browsers, not server-side monitoring clients.
+After listener, rate-limit and IP-whitelist checks succeed, Miningcore accepts only `GET` and `HEAD`
+for the metrics route family. `HEAD` returns the same response headers without an exposition body.
+It still performs a full registry collection and serialization server-side, so it is not a cheaper
+high-frequency liveness probe than `GET`. Exact `GET` and `HEAD` scrapes bypass the public API rate
+limiter; rejected lowercase, mixed-case and unsupported method tokens remain subject to it.
+`OPTIONS`, `POST` and every other method return an empty `405 Method Not Allowed` response with
+`Allow: GET, HEAD`; they never invoke the metrics exporter. Rejected listener and client identities
+retain their earlier `404`, `429` or `403` result instead of disclosing the method contract. This
+follows the HTTP method contract in
+[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-method-definitions), while preserving the
+simple `GET` required by the
+[OpenMetrics specification](https://prometheus.io/docs/specs/om/open_metrics_spec/).
 
 For the example configuration, local checks and a Prometheus scrape target use:
 

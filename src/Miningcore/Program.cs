@@ -85,7 +85,8 @@ namespace Miningcore;
 public class Program : ProcessStatusBackgroundService
 {
     internal const int DefaultApiPort = ApiConfig.DefaultPort;
-    internal const string MetricsRoutePrefix = "/metrics";
+    internal const string MetricsRoutePrefix =
+        ProtectedRouteClassifier.MetricsRoutePrefix;
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -247,13 +248,7 @@ public class Program : ProcessStatusBackgroundService
                     {
                         // rate limiting
                         if(enableApiRateLimiting)
-                        {
-                            services.Configure<IpRateLimitOptions>(ConfigureIpRateLimitOptions);
-                            services.AddSingleton<IIpPolicyStore, MemoryCacheIpPolicyStore>();
-                            services.AddSingleton<IRateLimitCounterStore, MemoryCacheRateLimitCounterStore>();
-                            services.AddSingleton<IRateLimitConfiguration, RateLimitConfiguration>();
-                            services.AddSingleton<IProcessingStrategy, AsyncKeyLockProcessingStrategy>();
-                        }
+                            AddApiRateLimiting(services, apiConfig);
 
                         // Controllers
                         services.AddSingleton<PoolApiController, PoolApiController>();
@@ -796,7 +791,7 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(ports);
 
-        if(AdminApiAuthenticationMiddleware.IsAdminRequest(path))
+        if(ProtectedRouteClassifier.IsAdminRequest(path))
             return localPort == ports.AdminPort;
 
         if(IsMetricsRequest(path))
@@ -806,12 +801,10 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static bool IsMetricsRequest(PathString path) =>
-        path.StartsWithSegments(MetricsRoutePrefix,
-            StringComparison.OrdinalIgnoreCase);
+        ProtectedRouteClassifier.IsMetricsRequest(path);
 
     internal static bool ShouldApplyPublicCors(PathString path) =>
-        !AdminApiAuthenticationMiddleware.IsAdminRequest(path) &&
-        !IsMetricsRequest(path);
+        !ProtectedRouteClassifier.IsProtectedRequest(path);
 
     internal static void ConfigureApiPipeline(IApplicationBuilder app,
         ApiEndpointPorts ports, string[] adminIpWhitelist,
@@ -825,9 +818,13 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(adminCredential);
         options ??= new ApiPipelineOptions();
 
-        // Reject wrong-listener requests before rate limiting or routing. This
-        // deliberately returns a cheap 404 without invoking protected endpoint
-        // middleware, so the listener reveals no route-family details.
+        // Browser resource isolation belongs ahead of every terminal path so
+        // protected success and rejection responses share the same policy.
+        app.UseMiddleware<ProtectedRouteResourcePolicyMiddleware>();
+
+        // Reject wrong-listener requests before rate limiting or protected endpoint
+        // middleware. Preserve the generic 404 response without exposing endpoint
+        // status, authentication state, or route-specific response content.
         app.Use(async (context, next) =>
         {
             if(!IsApiRequestAllowed(context.Connection.LocalPort,
@@ -841,7 +838,14 @@ public class Program : ProcessStatusBackgroundService
         });
 
         if(options.EnableIpRateLimiting)
-            app.UseIpRateLimiting();
+        {
+            // AspNetCoreRateLimit normalizes method tokens before evaluating its
+            // endpoint whitelist. Decide the metrics exemption here from the raw
+            // case-sensitive token so rejected lookalikes remain throttled.
+            app.UseWhen(context => ShouldApplyIpRateLimiting(
+                    context.Request.Path, context.Request.Method),
+                rateLimited => rateLimited.UseIpRateLimiting());
+        }
 
         if(options.EnableExceptionHandling)
             app.UseMiddleware<ApiExceptionHandlingMiddleware>();
@@ -853,6 +857,10 @@ public class Program : ProcessStatusBackgroundService
             metricsIpWhitelist, gpdrCompliantLogging);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
             gpdrCompliantLogging);
+
+        // Preserve wrong-listener 404 and IP-whitelist 403 behavior by enforcing
+        // the metrics method contract only after those access-control boundaries.
+        app.UseMiddleware<MetricsMethodPolicyMiddleware>();
 
         // Public API clients retain the existing permissive policy. Administrative and
         // metrics routes deliberately receive no CORS headers: browsers must not carry
@@ -2171,20 +2179,57 @@ public class Program : ProcessStatusBackgroundService
     internal static List<string> CreateIpRateLimitEndpointWhitelist() =>
         new()
         {
-            "get:" + MetricsRoutePrefix,
             "*:/notifications",
         };
 
-    private static void ConfigureIpRateLimitOptions(IpRateLimitOptions options)
+    internal static bool ShouldApplyIpRateLimiting(PathString path,
+        string method)
     {
+        var value = path.Value;
+        var isScrapeEndpoint =
+            string.Equals(value, MetricsRoutePrefix,
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, MetricsRoutePrefix + "/",
+                StringComparison.OrdinalIgnoreCase);
+
+        return !isScrapeEndpoint ||
+            !MetricsMethodPolicyMiddleware.IsAllowedMethod(method);
+    }
+
+    internal static void AddApiRateLimiting(IServiceCollection services,
+        ApiConfig apiConfig)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(apiConfig);
+
+        services.AddMemoryCache();
+        services.Configure<IpRateLimitOptions>(options =>
+            ConfigureIpRateLimitOptions(options, apiConfig));
+        services.AddSingleton<IIpPolicyStore, MemoryCacheIpPolicyStore>();
+        services.AddSingleton<IRateLimitCounterStore,
+            MemoryCacheRateLimitCounterStore>();
+        services.AddSingleton<IRateLimitConfiguration,
+            RateLimitConfiguration>();
+        services.AddSingleton<IProcessingStrategy,
+            AsyncKeyLockProcessingStrategy>();
+    }
+
+    internal static void ConfigureIpRateLimitOptions(
+        IpRateLimitOptions options, ApiConfig apiConfig)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(apiConfig);
+
         options.EnableEndpointRateLimiting = false;
 
-        // Exclude metrics scrapes and WebSocket notifications from public API
-        // throttling. Administrative routes remain throttled; trusted sources
-        // may opt out through the separate rate-limiting IP whitelist.
+        // Exact metrics GET/HEAD requests bypass the middleware in
+        // ConfigureApiPipeline because this dependency cannot preserve the raw
+        // case-sensitive method token. WebSocket notifications remain exempt here.
+        // Administrative routes remain throttled; trusted sources may opt out
+        // through the separate rate-limiting IP whitelist.
         options.EndpointWhitelist = CreateIpRateLimitEndpointWhitelist();
 
-        options.IpWhitelist = clusterConfig.Api?.RateLimiting?.IpWhitelist?.ToList();
+        options.IpWhitelist = apiConfig.RateLimiting?.IpWhitelist?.ToList();
 
         // default to whitelist localhost if whitelist absent
         if(options.IpWhitelist == null || options.IpWhitelist.Count == 0)
@@ -2198,7 +2243,7 @@ public class Program : ProcessStatusBackgroundService
         }
 
         // limits
-        var rules = clusterConfig.Api?.RateLimiting?.Rules?.ToList();
+        var rules = apiConfig.RateLimiting?.Rules?.ToList();
 
         if(rules == null || rules.Count == 0)
         {
@@ -2215,7 +2260,7 @@ public class Program : ProcessStatusBackgroundService
 
         options.GeneralRules = rules;
 
-        logger.Info(() => $"API access limited to {(string.Join(", ", rules.Select(x => $"{x.Limit} requests per {x.Period}")))}, except from {string.Join(", ", options.IpWhitelist)}");
+        logger?.Info(() => $"API access limited to {(string.Join(", ", rules.Select(x => $"{x.Limit} requests per {x.Period}")))}, except from {string.Join(", ", options.IpWhitelist)}");
     }
 
     private static int GetDefaultConcurrency(int? value)

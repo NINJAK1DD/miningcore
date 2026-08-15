@@ -6,7 +6,15 @@
     "adminIpWhitelist": [ "172.30.56.1" ],
     "metricsIpWhitelist": [ "172.30.56.1" ],
     "rateLimiting": {
-      "disabled": true
+      "disabled": false,
+      "ipWhitelist": [ "192.0.2.1" ],
+      "rules": [
+        {
+          "endpoint": "*",
+          "period": "1m",
+          "limit": 2
+        }
+      ]
     }
   }
 }
