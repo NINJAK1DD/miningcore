@@ -66,7 +66,7 @@ public partial class PoolInfo
     public string Id { get; set; }
 
     public ApiCoinConfig Coin { get; set; }
-    public Dictionary<int, PoolEndpoint> Ports { get; set; }
+    public Dictionary<int, ApiPoolEndpoint> Ports { get; set; }
     public ApiPoolPaymentProcessingConfig PaymentProcessing { get; set; }
     public PoolShareBasedBanningConfig ShareBasedBanning { get; set; }
     public int ClientConnectionTimeout { get; set; }

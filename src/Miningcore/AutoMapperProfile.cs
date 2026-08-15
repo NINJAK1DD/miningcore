@@ -68,16 +68,14 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.Github, opt => opt.MapFrom(src => src.Github))
             .ForMember(dest => dest.Algorithm, opt => opt.MapFrom(src => src.GetAlgorithmName()));
 
-        // Pool endpoint objects and their nested settings may otherwise be reused
-        // by reference because the source and destination types are identical.
-        // Always create detached public copies and never publish TLS credential
-        // locations, passwords, or the trusted PROXY-protocol peer allow-list.
-        CreateMap<VarDiffConfig, VarDiffConfig>();
-        CreateMap<TcpProxyProtocolConfig, TcpProxyProtocolConfig>()
-            .ForMember(dest => dest.ProxyAddresses, opt => opt.Ignore());
-        CreateMap<PoolEndpoint, PoolEndpoint>()
-            .ForMember(dest => dest.TlsPfxFile, opt => opt.Ignore())
-            .ForMember(dest => dest.TlsPfxPassword, opt => opt.Ignore());
+        // Public endpoint DTOs form a one-way boundary from runtime
+        // configuration. Private TLS credentials and trusted PROXY-protocol peer
+        // addresses have no destination members and therefore cannot be exposed
+        // by this API projection or affect same-type internal mappings.
+        CreateMap<VarDiffConfig, Api.Responses.ApiVarDiffConfig>();
+        CreateMap<TcpProxyProtocolConfig,
+            Api.Responses.ApiTcpProxyProtocolConfig>();
+        CreateMap<PoolEndpoint, Api.Responses.ApiPoolEndpoint>();
 
         CreateMap<PoolConfig, Api.Responses.PoolInfo>()
             .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template))

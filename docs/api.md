@@ -106,6 +106,12 @@ curl http://127.0.0.1:4000/api/pools
 `/api/help` is the runtime route summary. Use it as the first check when a client written for another
 Miningcore fork expects a route that may have changed.
 
+The `ports` objects returned by `/api/pools` and `/api/pools/{id}` are dedicated public projections,
+not serialized `PoolEndpoint` runtime configuration. They expose connection, difficulty, VarDiff, TLS
+mode and PROXY-protocol mode information needed by clients. TLS certificate paths and passwords, plus
+the trusted PROXY-protocol peer allow-list, have no public DTO members and are never serialized. Null
+listener entries retained by disabled or relay-only configurations are omitted from the public map.
+
 ## Public routes
 
 The main GET routes are:

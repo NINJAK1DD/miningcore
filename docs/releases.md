@@ -322,9 +322,10 @@ an omitted loopback address. Disabled and relay-only pools retain deferred liste
 `-rs` recovery continues to discard listener settings because it opens no Stratum sockets. An enabled
 relay-only pool remains available through the public API, but unusable null endpoint entries are omitted
 from its public `ports` map instead of causing the complete pool response to fail. Miningcore warns at
-startup when an enabled relay-only pool retains such an entry, and API reads now construct redacted
-endpoint copies rather than mutating the live cluster configuration. Those copies also omit TLS
-credential fields and the trusted PROXY-protocol peer allow-list.
+startup when an enabled relay-only pool retains such an entry. API reads now project listener settings
+into dedicated public endpoint DTOs rather than mapping or mutating the live configuration type. The
+public DTOs have no TLS credential fields or trusted PROXY-protocol peer allow-list, preventing those
+runtime-only values from entering the response even when legacy null serialization is enabled.
 
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops

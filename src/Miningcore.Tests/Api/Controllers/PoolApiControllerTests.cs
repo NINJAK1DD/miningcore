@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Responses;
@@ -13,7 +14,7 @@ namespace Miningcore.Tests.Api.Controllers;
 public class PoolApiControllerTests
 {
     [Fact]
-    public void ToPoolInfo_OmitsNullEndpointsAndRedactsPrivateListenerData()
+    public void ToPoolInfo_UsesDedicatedEndpointDtosAndOmitsPrivateListenerData()
     {
         var sourceEndpoint = new PoolEndpoint
         {
@@ -24,6 +25,7 @@ public class PoolApiControllerTests
             {
                 MinDiff = 1,
                 MaxDiff = 100,
+                MaxDelta = 10,
                 TargetTime = 15,
                 RetargetTime = 90,
                 VariancePercent = 30,
@@ -35,6 +37,7 @@ public class PoolApiControllerTests
                 ProxyAddresses = new[] { "10.0.0.5" },
             },
             Tls = true,
+            TlsAuto = true,
             TlsPfxFile = "pool.pfx",
             TlsPfxPassword = "secret",
         };
@@ -58,8 +61,8 @@ public class PoolApiControllerTests
         var result = config.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
-        var endpoint = Assert.Single(result.Ports).Value;
-        Assert.NotNull(endpoint);
+        var endpoint = Assert.IsType<ApiPoolEndpoint>(
+            Assert.Single(result.Ports).Value);
         Assert.NotSame(config.Ports, result.Ports);
         Assert.NotSame(sourceEndpoint, endpoint);
         Assert.Equal(sourceEndpoint.ListenAddress, endpoint.ListenAddress);
@@ -68,14 +71,34 @@ public class PoolApiControllerTests
         Assert.NotSame(sourceEndpoint.VarDiff, endpoint.VarDiff);
         Assert.Equal(sourceEndpoint.VarDiff.MinDiff, endpoint.VarDiff.MinDiff);
         Assert.Equal(sourceEndpoint.VarDiff.MaxDiff, endpoint.VarDiff.MaxDiff);
+        Assert.Equal(sourceEndpoint.VarDiff.MaxDelta, endpoint.VarDiff.MaxDelta);
+        Assert.Equal(sourceEndpoint.VarDiff.TargetTime,
+            endpoint.VarDiff.TargetTime);
+        Assert.Equal(sourceEndpoint.VarDiff.RetargetTime,
+            endpoint.VarDiff.RetargetTime);
+        Assert.Equal(sourceEndpoint.VarDiff.VariancePercent,
+            endpoint.VarDiff.VariancePercent);
         Assert.NotSame(sourceEndpoint.TcpProxyProtocol,
             endpoint.TcpProxyProtocol);
         Assert.True(endpoint.TcpProxyProtocol.Enable);
         Assert.True(endpoint.TcpProxyProtocol.Mandatory);
-        Assert.Null(endpoint.TcpProxyProtocol.ProxyAddresses);
         Assert.True(endpoint.Tls);
-        Assert.Null(endpoint.TlsPfxFile);
-        Assert.Null(endpoint.TlsPfxPassword);
+        Assert.True(endpoint.TlsAuto);
+
+        var json = JsonSerializer.Serialize(endpoint,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            });
+        using var document = JsonDocument.Parse(json);
+        var publicEndpoint = document.RootElement;
+        Assert.False(publicEndpoint.TryGetProperty("tlsPfxFile", out _));
+        Assert.False(publicEndpoint.TryGetProperty("tlsPfxPassword", out _));
+        Assert.True(publicEndpoint.TryGetProperty("tcpProxyProtocol",
+            out var publicProxyProtocol));
+        Assert.False(publicProxyProtocol.TryGetProperty("proxyAddresses",
+            out _));
+
         Assert.False(result.Ports.ContainsKey(3032));
         Assert.Equal(2, config.Ports.Count);
         Assert.Null(config.Ports[3032]);
