@@ -8,15 +8,9 @@ namespace Miningcore.Api.Middlewares;
 
 public class IPAccessWhitelistMiddleware
 {
-    public IPAccessWhitelistMiddleware(RequestDelegate next, string[] locations, IPAddress[] whitelist, bool gpdrCompliantLogging)
-        : this(next, locations, whitelist, gpdrCompliantLogging,
-            TimeProvider.System)
-    {
-    }
-
     public IPAccessWhitelistMiddleware(RequestDelegate next, string[] locations,
         IPAddress[] whitelist, bool gpdrCompliantLogging,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider = null)
     {
         this.whitelist = whitelist;
         this.next = next;
@@ -43,13 +37,15 @@ public class IPAccessWhitelistMiddleware
                 whitelist.Any(address => address.IsEqual(remoteAddress));
             if(!authorized)
             {
+                // Consume the informational budget independently of the active NLog
+                // level so summaries remain coherent if logging is reconfigured. NLog
+                // evaluates the message delegate lazily when Info is disabled.
                 if(rejectionLogLimiter.TryAcquire(out var suppressed))
                     logger.Info(() => FormatRejection(context, suppressed));
+                // Formatting is lazy: normal Info-level operation does no IP
+                // censoring, message or delegate allocation for suppressed requests.
+                // Debug may be enabled deliberately when per-request forensics matter.
                 else if(logger.IsDebugEnabled)
-                    // Formatting is lazy: normal Info-level operation does no IP
-                    // censoring, message or delegate allocation for suppressed
-                    // requests. Debug may be enabled deliberately when per-request
-                    // forensics matter.
                     logger.Debug(() => FormatRejection(context, 0));
 
                 context.Response.StatusCode = (int) HttpStatusCode.Forbidden;

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Routing;
@@ -148,12 +149,34 @@ public class AdminApiSecurityTests
         var limiter = new MonotonicLogLimiter(TimeSpan.FromMinutes(1),
             timeProvider);
 
-        var results = await Task.WhenAll(Enumerable.Range(0, attempts)
-            .Select(_ => Task.Run(() =>
+        var readyCount = 0;
+        var allReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startGate = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = Enumerable.Range(0, attempts)
+            .Select(_ => Task.Run(async () =>
             {
+                if(Interlocked.Increment(ref readyCount) == attempts)
+                    allReady.TrySetResult();
+
+                await startGate.Task;
                 var acquired = limiter.TryAcquire(out var suppressed);
                 return (acquired, suppressed);
-            })));
+            })).ToArray();
+
+        try
+        {
+            await allReady.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            // Never strand worker tasks if readiness times out on a constrained
+            // runner; releasing the gate also makes the failure diagnosable.
+            startGate.TrySetResult();
+        }
+
+        var results = await Task.WhenAll(tasks);
 
         var winner = Assert.Single(results.Where(result => result.acquired));
         Assert.Equal(0L, winner.suppressed);

@@ -106,14 +106,8 @@ internal sealed class AdminApiCredentialProvider
 public sealed class AdminApiAuthenticationMiddleware
 {
     public AdminApiAuthenticationMiddleware(RequestDelegate next,
-        AdminApiCredential credential, bool gpdrCompliantLogging)
-        : this(next, credential, gpdrCompliantLogging, TimeProvider.System)
-    {
-    }
-
-    public AdminApiAuthenticationMiddleware(RequestDelegate next,
         AdminApiCredential credential, bool gpdrCompliantLogging,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider = null)
     {
         this.next = next;
         this.credential = credential;
@@ -172,8 +166,13 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(!authorized)
         {
+            // Consume the informational budget independently of the active NLog
+            // level so summaries remain coherent if logging is reconfigured. NLog
+            // evaluates the message delegate lazily when Info is disabled.
             if(rejectionLogLimiter.TryAcquire(out var suppressed))
                 logger.Info(() => FormatRejection(context, suppressed));
+            // Avoid formatting suppressed requests unless an operator deliberately
+            // enables per-request Debug diagnostics.
             else if(logger.IsDebugEnabled)
                 logger.Debug(() => FormatRejection(context, 0));
 

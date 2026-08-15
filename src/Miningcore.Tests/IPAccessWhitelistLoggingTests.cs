@@ -20,14 +20,32 @@ namespace Miningcore.Tests;
 public sealed class IPAccessWhitelistLoggingCollection
 {
     // These tests temporarily replace NLog's process-wide configuration. Scope
-    // properties isolate assertions, while collection serialization prevents the
-    // replacement itself from disturbing other logging-sensitive tests.
+    // properties isolate assertions from foreign records; keeping this collection
+    // out of xunit's parallel collection phase also limits configuration overlap.
     public const string Name = "IP access-whitelist logging";
 }
 
 [Collection(IPAccessWhitelistLoggingCollection.Name)]
 public class IPAccessWhitelistLoggingTests
 {
+    [Fact]
+    public void MiddlewareActivation_UsesOptionalTimeProviderWithoutDiRegistration()
+    {
+        using var provider = new ServiceCollection().BuildServiceProvider();
+        RequestDelegate next = _ => Task.CompletedTask;
+
+        Assert.Single(typeof(IPAccessWhitelistMiddleware).GetConstructors());
+        Assert.Single(typeof(AdminApiAuthenticationMiddleware).GetConstructors());
+
+        Assert.NotNull(ActivatorUtilities.CreateInstance<
+            IPAccessWhitelistMiddleware>(provider, next,
+            new[] { Program.MetricsRoutePrefix },
+            new[] { IPAddress.Loopback }, false));
+        Assert.NotNull(ActivatorUtilities.CreateInstance<
+            AdminApiAuthenticationMiddleware>(provider, next,
+            AdminApiCredential.Create(ValidAdminToken), false));
+    }
+
     [Fact]
     public async Task Rejections_AreBoundedAndSummarizedUsingMonotonicTime()
     {
@@ -68,7 +86,7 @@ public class IPAccessWhitelistLoggingTests
                 Assert.Contains("/metrics", first, StringComparison.Ordinal);
                 Assert.Contains("203.0.113.10", first,
                     StringComparison.Ordinal);
-                Assert.DoesNotContain("additional rejection", first,
+                Assert.DoesNotContain("other rejection(s)", first,
                     StringComparison.Ordinal);
             },
             summary =>
