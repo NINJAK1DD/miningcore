@@ -68,8 +68,18 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.Github, opt => opt.MapFrom(src => src.Github))
             .ForMember(dest => dest.Algorithm, opt => opt.MapFrom(src => src.GetAlgorithmName()));
 
+        // Public endpoint DTOs form a one-way boundary from runtime
+        // configuration. Private TLS credentials and trusted PROXY-protocol peer
+        // addresses have no destination members and therefore cannot be exposed
+        // by this API projection or affect same-type internal mappings.
+        CreateMap<VarDiffConfig, Api.Responses.ApiVarDiffConfig>();
+        CreateMap<TcpProxyProtocolConfig,
+            Api.Responses.ApiTcpProxyProtocolConfig>();
+        CreateMap<PoolEndpoint, Api.Responses.ApiPoolEndpoint>();
+
         CreateMap<PoolConfig, Api.Responses.PoolInfo>()
             .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template))
+            .ForMember(dest => dest.Ports, opt => opt.Ignore())
             .ForMember(dest => dest.ShareBasedBanning, opt => opt.MapFrom(src => src.Banning))
             .ForMember(dest => dest.PoolFeePercent, opt => opt.Ignore())
             .ForMember(dest => dest.AddressInfoLink, opt => opt.Ignore())

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Text.Json;
 using Miningcore.Api.Controllers;
+using Miningcore.Api.Extensions;
 using Miningcore.Api.Responses;
 using Miningcore.Configuration;
 using Miningcore.Mining;
@@ -10,6 +13,96 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class PoolApiControllerTests
 {
+    [Fact]
+    public void ToPoolInfo_UsesDedicatedEndpointDtosAndOmitsPrivateListenerData()
+    {
+        var sourceEndpoint = new PoolEndpoint
+        {
+            ListenAddress = "127.0.0.1",
+            Name = "public-endpoint",
+            Difficulty = 42,
+            VarDiff = new VarDiffConfig
+            {
+                MinDiff = 1,
+                MaxDiff = 100,
+                MaxDelta = 10,
+                TargetTime = 15,
+                RetargetTime = 90,
+                VariancePercent = 30,
+            },
+            TcpProxyProtocol = new TcpProxyProtocolConfig
+            {
+                Enable = true,
+                Mandatory = true,
+                ProxyAddresses = new[] { "10.0.0.5" },
+            },
+            Tls = true,
+            TlsAuto = true,
+            TlsPfxFile = "pool.pfx",
+            TlsPfxPassword = "secret",
+        };
+        var config = new PoolConfig
+        {
+            Template = new AlephiumCoinTemplate
+            {
+                Family = CoinFamily.Alephium,
+                Name = "Alephium",
+                Symbol = "ALPH",
+            },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+            Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [3031] = sourceEndpoint,
+                [3032] = null,
+            },
+        };
+        var mapper = AutoMapperFactory.CreateMapper();
+
+        var result = config.ToPoolInfo(mapper,
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+        var endpoint = Assert.IsType<ApiPoolEndpoint>(
+            Assert.Single(result.Ports).Value);
+        Assert.Equal(sourceEndpoint.ListenAddress, endpoint.ListenAddress);
+        Assert.Equal(sourceEndpoint.Name, endpoint.Name);
+        Assert.Equal(sourceEndpoint.Difficulty, endpoint.Difficulty);
+        Assert.Equal(sourceEndpoint.VarDiff.MinDiff, endpoint.VarDiff.MinDiff);
+        Assert.Equal(sourceEndpoint.VarDiff.MaxDiff, endpoint.VarDiff.MaxDiff);
+        Assert.Equal(sourceEndpoint.VarDiff.MaxDelta, endpoint.VarDiff.MaxDelta);
+        Assert.Equal(sourceEndpoint.VarDiff.TargetTime,
+            endpoint.VarDiff.TargetTime);
+        Assert.Equal(sourceEndpoint.VarDiff.RetargetTime,
+            endpoint.VarDiff.RetargetTime);
+        Assert.Equal(sourceEndpoint.VarDiff.VariancePercent,
+            endpoint.VarDiff.VariancePercent);
+        Assert.True(endpoint.TcpProxyProtocol.Enable);
+        Assert.True(endpoint.TcpProxyProtocol.Mandatory);
+        Assert.True(endpoint.Tls);
+        Assert.True(endpoint.TlsAuto);
+
+        var json = JsonSerializer.Serialize(endpoint,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            });
+        using var document = JsonDocument.Parse(json);
+        var publicEndpoint = document.RootElement;
+        Assert.False(publicEndpoint.TryGetProperty("tlsPfxFile", out _));
+        Assert.False(publicEndpoint.TryGetProperty("tlsPfxPassword", out _));
+        Assert.True(publicEndpoint.TryGetProperty("tcpProxyProtocol",
+            out var publicProxyProtocol));
+        Assert.False(publicProxyProtocol.TryGetProperty("proxyAddresses",
+            out _));
+
+        Assert.False(result.Ports.ContainsKey(3032));
+        Assert.Equal(2, config.Ports.Count);
+        Assert.Null(config.Ports[3032]);
+        Assert.Equal("pool.pfx", sourceEndpoint.TlsPfxFile);
+        Assert.Equal("secret", sourceEndpoint.TlsPfxPassword);
+        Assert.Equal(new[] { "10.0.0.5" },
+            sourceEndpoint.TcpProxyProtocol.ProxyAddresses);
+    }
+
     [Fact]
     public void ConfigurePayoutSchemeConfig_WithSoloAndNoSchemeConfig_IsNullSafe()
     {

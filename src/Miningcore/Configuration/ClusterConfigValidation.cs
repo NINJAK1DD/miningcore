@@ -243,7 +243,15 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 var pool = context.InstanceToValidate;
                 foreach(var (port, endpoint) in ports)
                 {
-                    var address = endpoint?.ListenAddress;
+                    if(endpoint == null)
+                    {
+                        context.AddFailure($"Ports[{port}]",
+                            ListenerAddressUtils.FormatNullEndpointError(
+                                pool.Id, port));
+                        continue;
+                    }
+
+                    var address = endpoint.ListenAddress;
                     if(!ListenerAddressUtils.TryResolve(address,
                            out var resolvedAddress))
                     {
@@ -398,15 +406,17 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
                 (Pool: pool, Port: entry.Key, Endpoint: entry.Value)))
             .Select(item =>
             {
-                if(!ListenerAddressUtils.TryResolve(
-                    item.Endpoint?.ListenAddress, out var address))
+                if(item.Endpoint == null ||
+                    !ListenerAddressUtils.TryResolve(
+                        item.Endpoint.ListenAddress, out var address))
                     return null;
 
                 return new StratumListenerBinding(item.Pool.Id,
                     item.Port, address);
             })
-            // Malformed addresses are reported by PoolConfigValidator. The
-            // conflict scan must never replace that diagnostic with an exception.
+            // Null endpoints and malformed addresses are reported by
+            // PoolConfigValidator. The conflict scan must never replace that
+            // diagnostic with an exception or invent a default listener.
             .Where(binding => binding != null)
             .ToArray();
         var conflicts = new List<StratumListenerConflict>();

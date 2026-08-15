@@ -58,16 +58,24 @@ public static class MiningPoolExtensions
             }
         }
 
-        if(poolInfo.Ports != null)
-        {
-            foreach(var port in poolInfo.Ports.Keys)
-            {
-                var portInfo = poolInfo.Ports[port];
-
-                portInfo.TlsPfxFile = null;
-                portInfo.TlsPfxPassword = null;
-            }
-        }
+        poolInfo.Ports = CreatePublicPoolEndpoints(poolConfig.Ports, mapper);
         return poolInfo;
+    }
+
+    private static Dictionary<int, ApiPoolEndpoint> CreatePublicPoolEndpoints(
+        Dictionary<int, PoolEndpoint> ports, IMapper mapper)
+    {
+        if(ports == null)
+            return null;
+
+        // Deferred listener validation permits stale endpoint data on disabled
+        // and relay-only pools. Enabled relay-only pools are still public API
+        // resources, so omit unusable null entries instead of returning a 500.
+        // Build a new dictionary of dedicated public DTOs. Their type boundary
+        // prevents API serialization from exposing or aliasing runtime-only
+        // listener configuration, even if PoolEndpoint gains new private members.
+        return ports.Where(x => x.Value != null)
+            .ToDictionary(x => x.Key,
+                x => mapper.Map<ApiPoolEndpoint>(x.Value));
     }
 }

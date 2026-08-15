@@ -102,6 +102,9 @@ internal sealed class StratumListenerReservationSession : IDisposable
 
 internal sealed class StratumListenerReservationCoordinator
 {
+    private sealed record PoolListenerPlan(string PoolId,
+        StratumEndpoint[] Endpoints);
+
     internal static readonly TimeSpan AddressInUseRetryWindow =
         TimeSpan.FromSeconds(90);
     internal static readonly TimeSpan InitialRetryDelay =
@@ -109,15 +112,18 @@ internal sealed class StratumListenerReservationCoordinator
     internal static readonly TimeSpan MaximumRetryDelay =
         TimeSpan.FromSeconds(5);
 
-    internal StratumListenerReservationCoordinator(ILogger logger = null) :
-        this(StratumServer.CreateBoundSocket, logger)
+    internal StratumListenerReservationCoordinator(ILogger logger = null,
+        bool allowEphemeralTestPorts = false) :
+        this(StratumServer.CreateBoundSocket, logger,
+            allowEphemeralTestPorts: allowEphemeralTestPorts)
     {
     }
 
     internal StratumListenerReservationCoordinator(
         Func<IPEndPoint, Socket> reserveSocket, ILogger logger = null,
         TimeSpan? addressInUseRetryWindow = null,
-        Func<TimeSpan, CancellationToken, Task> retryWait = null)
+        Func<TimeSpan, CancellationToken, Task> retryWait = null,
+        bool allowEphemeralTestPorts = false)
     {
         this.reserveSocket = reserveSocket ??
             throw new ArgumentNullException(nameof(reserveSocket));
@@ -128,12 +134,14 @@ internal sealed class StratumListenerReservationCoordinator
             throw new ArgumentOutOfRangeException(nameof(addressInUseRetryWindow));
 
         this.retryWait = retryWait ?? Task.Delay;
+        this.allowEphemeralTestPorts = allowEphemeralTestPorts;
     }
 
     private readonly Func<IPEndPoint, Socket> reserveSocket;
     private readonly ILogger logger;
     private readonly TimeSpan addressInUseRetryWindow;
     private readonly Func<TimeSpan, CancellationToken, Task> retryWait;
+    private readonly bool allowEphemeralTestPorts;
 
     internal async Task<StratumListenerReservationSession> ReserveAllAsync(
         IEnumerable<PoolConfig> pools, CancellationToken ct = default)
@@ -145,52 +153,27 @@ internal sealed class StratumListenerReservationCoordinator
         var acquired = new List<StratumListenerReservation>();
         var activeIPv4Subnets = ListenerAddressUtils
             .CaptureActiveIPv4Subnets();
+        var plans = PreflightListeners(pools, activeIPv4Subnets,
+            allowEphemeralTestPorts, ct);
         var retryDelayBudget = new AddressInUseRetryDelayBudget(
             addressInUseRetryWindow);
 
         try
         {
-            foreach(var pool in pools.Where(pool => pool?.Enabled == true &&
-                        pool.EnableInternalStratum == true))
+            foreach(var plan in plans)
             {
                 ct.ThrowIfCancellationRequested();
-
-                if(reservations.ContainsKey(pool.Id))
-                {
-                    throw new PoolStartupException(
-                        $"Unable to reserve Stratum listeners: duplicate pool id '{pool.Id}'",
-                        pool.Id);
-                }
-
                 var poolReservations = new List<StratumListenerReservation>();
 
-                foreach(var (port, poolEndpoint) in pool.Ports ??
-                    new Dictionary<int, PoolEndpoint>())
+                foreach(var endpoint in plan.Endpoints)
                 {
-                    if(!ListenerAddressUtils.TryResolve(
-                           poolEndpoint?.ListenAddress, out var address))
-                    {
-                        throw new PoolStartupException(
-                            $"Pool '{pool.Id}' Stratum port {port}: invalid listen address '{poolEndpoint?.ListenAddress}'",
-                            pool.Id);
-                    }
-
-                    if(!ListenerAddressUtils.IsSuitableForListener(address,
-                           activeIPv4Subnets, out var reason))
-                    {
-                        throw new PoolStartupException(
-                            $"Pool '{pool.Id}' Stratum endpoint {FormatEndpoint(address, port)} cannot be reserved: {reason}",
-                            pool.Id);
-                    }
-
-                    var endpoint = new StratumEndpoint(
-                        new IPEndPoint(address, port), poolEndpoint);
-                    Socket socket;
+                    Socket socket = null;
 
                     try
                     {
                         socket = await ReserveSocketWithAddressInUseRetryAsync(
-                            pool.Id, endpoint.IPEndPoint, retryDelayBudget, ct);
+                            plan.PoolId, endpoint.IPEndPoint,
+                            retryDelayBudget, ct);
                     }
                     catch(SocketException ex)
                     {
@@ -200,8 +183,8 @@ internal sealed class StratumListenerReservationCoordinator
                                 ? $" after exhausting the shared {addressInUseRetryWindow.TotalSeconds:0.###}-second startup retry-delay budget"
                                 : string.Empty;
                         throw new PoolStartupException(
-                            $"Unable to reserve Stratum listener {FormatEndpoint(address, port)} for pool '{pool.Id}'{retryDetail}: socket error {ex.SocketErrorCode} (native error {ex.NativeErrorCode}): {ex.Message}",
-                            pool.Id, ex);
+                            $"Unable to reserve Stratum listener {FormatEndpoint(endpoint.IPEndPoint.Address, endpoint.IPEndPoint.Port)} for pool '{plan.PoolId}'{retryDetail}: socket error {ex.SocketErrorCode} (native error {ex.NativeErrorCode}): {ex.Message}",
+                            plan.PoolId, ex);
                     }
                     catch(OperationCanceledException) when(ct.IsCancellationRequested)
                     {
@@ -210,17 +193,38 @@ internal sealed class StratumListenerReservationCoordinator
                     catch(Exception ex)
                     {
                         throw new PoolStartupException(
-                            $"Unable to reserve Stratum listener {FormatEndpoint(address, port)} for pool '{pool.Id}': {ex.GetType().Name}: {ex.Message}",
-                            pool.Id, ex);
+                            $"Unable to reserve Stratum listener {FormatEndpoint(endpoint.IPEndPoint.Address, endpoint.IPEndPoint.Port)} for pool '{plan.PoolId}': {ex.GetType().Name}: {ex.Message}",
+                            plan.PoolId, ex);
                     }
 
-                    var reservation = new StratumListenerReservation(
-                        pool.Id, endpoint, socket);
-                    poolReservations.Add(reservation);
-                    acquired.Add(reservation);
+                    StratumListenerReservation reservation = null;
+                    var acquiredOwnsReservation = false;
+
+                    try
+                    {
+                        reservation = new StratumListenerReservation(
+                            plan.PoolId, endpoint, socket);
+                        socket = null;
+
+                        // Register the owner used by the outer rollback before
+                        // exposing the reservation through the per-pool plan.
+                        acquired.Add(reservation);
+                        acquiredOwnsReservation = true;
+                        poolReservations.Add(reservation);
+                    }
+                    finally
+                    {
+                        // Preserve ownership across every exception boundary:
+                        // either the raw socket, the reservation, or acquired owns
+                        // the handle when this block exits.
+                        socket?.Dispose();
+                        if(!acquiredOwnsReservation)
+                            reservation?.Dispose();
+                    }
                 }
 
-                reservations.Add(pool.Id, poolReservations.ToArray());
+                reservations.Add(plan.PoolId,
+                    poolReservations.ToArray());
             }
 
             return new StratumListenerReservationSession(reservations);
@@ -232,6 +236,90 @@ internal sealed class StratumListenerReservationCoordinator
 
             throw;
         }
+    }
+
+    private static PoolListenerPlan[] PreflightListeners(
+        IEnumerable<PoolConfig> pools,
+        IReadOnlyCollection<ListenerAddressUtils.IPv4InterfaceSubnet>
+            activeIPv4Subnets,
+        bool allowEphemeralTestPorts,
+        CancellationToken ct)
+    {
+        var selected = pools.Where(pool => pool?.Enabled == true &&
+                pool.EnableInternalStratum == true)
+            .ToArray();
+        var poolIds = new HashSet<string>(StringComparer.Ordinal);
+        var plans = new List<PoolListenerPlan>(selected.Length);
+
+        // This lower-level boundary independently validates selected pool identity,
+        // endpoint objects, port range, literal addresses and host suitability
+        // before invoking the reservation delegate. The explicit ephemeral-port
+        // exception exists only for low-level socket tests; production callers use
+        // the default fail-closed setting.
+        foreach(var pool in selected)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if(string.IsNullOrWhiteSpace(pool.Id))
+            {
+                throw new PoolStartupException(
+                    "Unable to reserve Stratum listeners: pool id missing or empty",
+                    pool.Id);
+            }
+
+            if(!poolIds.Add(pool.Id))
+            {
+                throw new PoolStartupException(
+                    $"Unable to reserve Stratum listeners: duplicate pool id '{pool.Id}'",
+                    pool.Id);
+            }
+
+            var endpoints = new List<StratumEndpoint>();
+
+            foreach(var (port, poolEndpoint) in pool.Ports ??
+                new Dictionary<int, PoolEndpoint>())
+            {
+                ct.ThrowIfCancellationRequested();
+
+                if(port is < 1 or > ushort.MaxValue &&
+                    !(allowEphemeralTestPorts && port == 0))
+                {
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' Stratum port {port}: port number must be between 1 and {ushort.MaxValue}",
+                        pool.Id);
+                }
+
+                if(poolEndpoint == null)
+                {
+                    throw new PoolStartupException(
+                        ListenerAddressUtils.FormatNullEndpointError(
+                            pool.Id, port), pool.Id);
+                }
+
+                if(!ListenerAddressUtils.TryResolve(
+                       poolEndpoint.ListenAddress, out var address))
+                {
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' Stratum port {port}: invalid listen address '{poolEndpoint.ListenAddress}'",
+                        pool.Id);
+                }
+
+                if(!ListenerAddressUtils.IsSuitableForListener(address,
+                       activeIPv4Subnets, out var reason))
+                {
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' Stratum endpoint {FormatEndpoint(address, port)} cannot be reserved: {reason}",
+                        pool.Id);
+                }
+
+                endpoints.Add(new StratumEndpoint(
+                    new IPEndPoint(address, port), poolEndpoint));
+            }
+
+            plans.Add(new PoolListenerPlan(pool.Id, endpoints.ToArray()));
+        }
+
+        return plans.ToArray();
     }
 
     private async Task<Socket> ReserveSocketWithAddressInUseRetryAsync(

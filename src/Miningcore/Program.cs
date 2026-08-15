@@ -894,8 +894,8 @@ public class Program : ProcessStatusBackgroundService
         {
             foreach(var (port, endpoint) in pool.Ports)
             {
-                if(!apiPorts.Contains(port) ||
-                    !TryResolveListenAddress(endpoint?.ListenAddress,
+                if(endpoint == null || !apiPorts.Contains(port) ||
+                    !TryResolveListenAddress(endpoint.ListenAddress,
                         out var stratumAddress))
                     continue;
 
@@ -1211,15 +1211,39 @@ public class Program : ProcessStatusBackgroundService
             .ToArray() ?? Array.Empty<string>();
     }
 
+    internal static string[] GetEnabledRelayOnlyNullStratumEndpoints(
+        ClusterConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        return config.Pools?
+            .Where(pool => pool?.Enabled == true &&
+                pool.EnableInternalStratum == false)
+            .SelectMany(pool => pool.Ports?
+                    .Where(endpoint => endpoint.Value == null)
+                    .Select(endpoint =>
+                        $"{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}:{endpoint.Key}") ??
+                Array.Empty<string>())
+            .ToArray() ?? Array.Empty<string>();
+    }
+
     private static void LogSkippedStratumListenerValidation(
         ClusterConfig config)
     {
         var poolIds = GetPoolsWithSkippedStratumListenerValidation(config);
-        if(poolIds.Length == 0)
-            return;
+        if(poolIds.Length > 0)
+        {
+            logger.Info(() =>
+                $"Stratum listener validation skipped for disabled pool(s): {string.Join(", ", poolIds)}. Listener settings will be validated when the pool is enabled");
+        }
 
-        logger.Info(() =>
-            $"Stratum listener validation skipped for disabled pool(s): {string.Join(", ", poolIds)}. Listener settings will be validated when the pool is enabled");
+        var nullRelayEndpoints =
+            GetEnabledRelayOnlyNullStratumEndpoints(config);
+        if(nullRelayEndpoints.Length > 0)
+        {
+            logger.Warn(() =>
+                $"Enabled relay-only pool(s) contain unusable null Stratum endpoint entries: {string.Join(", ", nullRelayEndpoints)}. Internal Stratum is disabled and these entries will be omitted from the public API");
+        }
     }
 
     internal static JObject GenerateJsonConfigSchemaDocument()

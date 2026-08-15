@@ -120,6 +120,22 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
+    public void ConfigSchema_KeepsPoolEndpointNullable_ForDeferredValidation()
+    {
+        // Miningcore's generated structural schema does not encode the runtime
+        // listener predicate: disabled, relay-only and recovery pools deliberately
+        // defer endpoint validation. Enforce non-null endpoints in
+        // PoolConfigValidator only when a listener will be started.
+        var path = Path.Combine(AppContext.BaseDirectory,
+            "config.schema.json");
+        var committed = JObject.Parse(File.ReadAllText(path));
+
+        Assert.Equal(new[] { "object", "null" }, committed.SelectToken(
+                "definitions.PoolEndpoint.type")
+            ?.Values<string>());
+    }
+
+    [Fact]
     public void RecoveryLoader_MatchesStrictJsonParsingAfterApplyingAllowlist()
     {
         var exampleConfig = File.ReadAllText(Path.Combine(
@@ -603,6 +619,41 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
+    public void EnabledRelayOnlyNullEndpoints_AreReportedForStartupWarning()
+    {
+        var config = new ClusterConfig
+        {
+            Pools = new[]
+            {
+                new PoolConfig
+                {
+                    Id = "relay-only",
+                    Enabled = true,
+                    EnableInternalStratum = false,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [3031] = new(),
+                        [3032] = null,
+                    },
+                },
+                new PoolConfig
+                {
+                    Id = "internal",
+                    Enabled = true,
+                    EnableInternalStratum = true,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [4040] = null,
+                    },
+                },
+            },
+        };
+
+        Assert.Equal(new[] { "relay-only:3032" },
+            Program.GetEnabledRelayOnlyNullStratumEndpoints(config));
+    }
+
+    [Fact]
     public void ConflictScan_SkipsMalformedStratumAddressWithoutThrowing()
     {
         var config = CreateValidRecoveryConfig(new ApiConfig
@@ -623,6 +674,114 @@ public class ApiListenerConfigurationTests
         Assert.Null(Program.FindApiListenerStratumPortConflict(config, false));
         Assert.Throws<PoolStartupException>(() =>
             Program.ValidateConfig(config, false));
+    }
+
+    [Fact]
+    public void ConflictScan_SkipsNullStratumEndpointWithoutThrowing()
+    {
+        var config = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        config.Pools[0].EnableInternalStratum = true;
+        config.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [4000] = null,
+        };
+
+        Assert.Null(Program.FindApiListenerStratumPortConflict(config, false));
+        var validation = new ClusterConfigValidator().Validate(config);
+        Assert.Contains(validation.Errors, failure =>
+            failure.ErrorMessage ==
+            "Pool 'recovery-pool' Stratum port 4000: endpoint configuration must not be null");
+        Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateConfig(config, false));
+    }
+
+    [Fact]
+    public void NullStratumEndpoint_FailsNormalLoadButNotRecovery()
+    {
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        sourceConfig.Pools[0].EnableInternalStratum = true;
+        sourceConfig.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [3031] = new()
+            {
+                Difficulty = 1,
+                ListenAddress = "127.0.0.1",
+            },
+            [3032] = null,
+        };
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, SerializeConfig(sourceConfig));
+
+            var validation = new ClusterConfigValidator()
+                .Validate(sourceConfig);
+            Assert.Contains(validation.Errors, failure =>
+                failure.ErrorMessage ==
+                "Pool 'recovery-pool' Stratum port 3032: endpoint configuration must not be null");
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.Empty(recoveryConfig.Pools[0].Ports);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void NullStratumEndpoint_RemainsDeferredForInactiveListener(
+        bool enabled, bool internalStratum)
+    {
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        var inactivePool = sourceConfig.Pools[0];
+        inactivePool.Enabled = enabled;
+        inactivePool.EnableInternalStratum = internalStratum;
+        inactivePool.Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [3032] = null,
+        };
+
+        if(!enabled)
+        {
+            var activePool = CreateValidRecoveryConfig(new ApiConfig())
+                .Pools[0];
+            activePool.Id = "active-relay-pool";
+            sourceConfig.Pools = new[] { inactivePool, activePool };
+        }
+
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, SerializeConfig(sourceConfig));
+
+            var config = Program.ReadAndValidateConfig(configFile, false);
+
+            Assert.Null(config.Pools[0].Ports[3032]);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
     }
 
     [Theory]

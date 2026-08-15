@@ -204,7 +204,7 @@ public class PoolBaseTests
             var socket = StratumServer.CreateBoundSocket(endpoint);
             socket.Dispose();
             return socket;
-        });
+        }, allowEphemeralTestPorts: true);
         using var reservations = await coordinator.ReserveAllAsync(
             new[] { config });
         pool.AttachStratumListenerReservations(reservations);

@@ -6,6 +6,9 @@ namespace Miningcore.Configuration;
 
 internal static class ListenerAddressUtils
 {
+    internal static string FormatNullEndpointError(string poolId, int port) =>
+        $"Pool '{poolId}' Stratum port {port}: endpoint configuration must not be null";
+
     internal readonly record struct IPv4InterfaceSubnet(IPAddress Address,
         IPAddress Mask);
 
