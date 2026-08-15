@@ -704,7 +704,7 @@ public class StratumServerTests
         }
         catch(SocketException ex)
         {
-            Assert.True(IsAbortivePeerRejection(ex.SocketErrorCode),
+            Assert.True(IsAbortiveReceiveRejection(ex.SocketErrorCode),
                 $"Unexpected rejection error {ex.SocketErrorCode}");
         }
     }
@@ -723,18 +723,21 @@ public class StratumServerTests
             // A fast server-side rejection can race the completion of ConnectAsync on Linux.
             // Both observation points prove that the listener accepted and abortively rejected
             // this client; refusal, timeout and every other connect failure remain test failures.
-            Assert.True(IsAbortivePeerRejection(ex.SocketErrorCode),
+            Assert.True(IsFastAbortiveConnectRejection(ex.SocketErrorCode),
                 $"Unexpected rejection error {ex.SocketErrorCode}");
         }
     }
 
-    private static bool IsAbortivePeerRejection(SocketError error) =>
+    private static bool IsAbortiveReceiveRejection(SocketError error) =>
         error is SocketError.ConnectionReset or
-            SocketError.ConnectionAborted or
-            // Linux can surface an accepted socket that the peer immediately closes
-            // abortively as ESHUTDOWN. The client never shuts down its own socket in these
-            // tests, so this still proves server-side acceptance followed by rejection.
-            SocketError.Shutdown;
+            SocketError.ConnectionAborted;
+
+    private static bool IsFastAbortiveConnectRejection(SocketError error) =>
+        IsAbortiveReceiveRejection(error) ||
+        // An Ubuntu GitHub Actions run observed SocketError.Shutdown (EPIPE) from
+        // ConnectAsync when the server accepted and abortively rejected this client before
+        // connect completion. Keep that platform-specific race out of the ReceiveAsync path.
+        error == SocketError.Shutdown;
 
     private sealed class TestStratumServer : StratumServer
     {
