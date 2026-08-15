@@ -421,7 +421,8 @@ public class StratumListenerReservationCoordinatorTests
     {
         const int port = 0;
         var pool = CreatePool("non-local", port, "192.0.2.1");
-        var coordinator = new StratumListenerReservationCoordinator();
+        var coordinator = new StratumListenerReservationCoordinator(
+            allowEphemeralTestPorts: true);
 
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             coordinator.ReserveAllAsync(new[] { pool }));
