@@ -120,10 +120,10 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
-    public void AuthenticationRejectionLogLimiter_UsesMonotonicElapsedTimeAndSummarizesEntries()
+    public void MonotonicLogLimiter_UsesElapsedTimeAndSummarizesEntries()
     {
         var timeProvider = new ManualTimeProvider();
-        var limiter = new AdminApiAuthenticationLogLimiter(
+        var limiter = new MonotonicLogLimiter(
             TimeSpan.FromMinutes(1), timeProvider);
 
         Assert.True(limiter.TryAcquire(out var firstSuppressed));

@@ -58,5 +58,11 @@ assert_prose_contains "resource policy is not authentication" \
   'never[[:space:]]+replace[s]?[[:space:]]+the[[:space:]]+dedicated[[:space:]]+listener,[[:space:]]+IP[[:space:]]+whitelist,[[:space:]]+bearer[[:space:]]+token,[[:space:]]+TLS[[:space:]]+or[[:space:]]+firewall[[:space:]]+boundary'
 assert_prose_contains "resource policy is not a framing control" \
   'does[[:space:]]+not[[:space:]]+generally[[:space:]]+prohibit[[:space:]]+cross-origin[[:space:]]+navigation[[:space:]]+or[[:space:]]+iframe[[:space:]]+embedding'
+assert_prose_contains "fixed-size admin whitelist rejection limiter" \
+  'Admin[[:space:]]+IP-whitelist[[:space:]]+rejections[[:space:]]+have[[:space:]]+a[[:space:]]+separate[[:space:]]+fixed-size,[[:space:]]+monotonic[[:space:]]+log[[:space:]]+limiter'
+assert_prose_contains "independent metrics whitelist rejection limiter" \
+  'Metrics[[:space:]]+whitelist[[:space:]]+logging[[:space:]]+has[[:space:]]+an[[:space:]]+independent[[:space:]]+limiter'
+assert_prose_contains "whitelist rejection remains fail-closed" \
+  'All[[:space:]]+rejected[[:space:]]+requests[[:space:]]+continue[[:space:]]+to[[:space:]]+return[[:space:]]+`403[[:space:]]+Forbidden`'
 
 echo "Administrative API documentation invariants are present"

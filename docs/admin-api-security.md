@@ -123,6 +123,14 @@ address to `api.rateLimiting.ipWhitelist` as well as `api.adminIpWhitelist`; aut
 admin whitelist remain mandatory. The rate-limit IP whitelist bypasses API throttling globally,
 not only for administrative requests, so restrict its entries to trusted fixed addresses.
 
+Admin IP-whitelist rejections have a separate fixed-size, monotonic log limiter. The first
+rejection is written at `Info`; intervening entries are counted, and the next permitted
+informational entry (at most one per minute) includes the suppressed total. Metrics whitelist
+logging has an independent limiter, so a metrics flood cannot hide the first administrative
+rejection. All rejected requests continue to return `403 Forbidden`, including when API rate
+limiting is disabled. This protects normal logs from amplification but does not throttle requests;
+keep the dedicated listener, source whitelist and firewall boundary in place.
+
 Administrative routes intentionally emit no cross-origin resource sharing (CORS) headers. Public
 front ends must call only public routes. If users need to change miner settings, implement a trusted
 server-side service with its own user authentication and authorization; that service may call the

@@ -116,7 +116,7 @@ public sealed class AdminApiAuthenticationMiddleware
     private readonly RequestDelegate next;
     private readonly AdminApiCredential credential;
     private readonly bool gpdrCompliantLogging;
-    private static readonly AdminApiAuthenticationLogLimiter RejectionLogLimiter =
+    private static readonly MonotonicLogLimiter RejectionLogLimiter =
         new(TimeSpan.FromMinutes(1));
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private static readonly Counter AuthenticationCounter = Metrics.CreateCounter(
@@ -195,48 +195,5 @@ public sealed class AdminApiAuthenticationMiddleware
                 $"; {suppressed} additional rejection(s) occurred after the previous informational entry and were suppressed";
 
         return result;
-    }
-}
-
-internal sealed class AdminApiAuthenticationLogLimiter
-{
-    public AdminApiAuthenticationLogLimiter(TimeSpan interval,
-        TimeProvider timeProvider = null)
-    {
-        if(interval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(interval));
-
-        this.interval = interval;
-        this.timeProvider = timeProvider ?? TimeProvider.System;
-    }
-
-    private readonly object gate = new();
-    private readonly TimeSpan interval;
-    private readonly TimeProvider timeProvider;
-    private long previousInformationalTimestamp;
-    private long suppressed;
-    private bool hasInformationalEntry;
-
-    public bool TryAcquire(out long suppressedSinceLastEntry)
-    {
-        lock(gate)
-        {
-            var now = timeProvider.GetTimestamp();
-
-            if(!hasInformationalEntry ||
-                timeProvider.GetElapsedTime(previousInformationalTimestamp,
-                    now) >= interval)
-            {
-                suppressedSinceLastEntry = suppressed;
-                suppressed = 0;
-                previousInformationalTimestamp = now;
-                hasInformationalEntry = true;
-                return true;
-            }
-
-            suppressed++;
-            suppressedSinceLastEntry = 0;
-            return false;
-        }
     }
 }

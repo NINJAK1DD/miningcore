@@ -248,6 +248,21 @@ an exemption must add its narrowly scoped source address to `api.rateLimiting.ip
 as `api.adminIpWhitelist`. The rate-limit IP whitelist bypasses API throttling globally, not only
 for administrative requests, so restrict its entries to trusted fixed addresses.
 
+### Security hardening: bounded protected-route rejection logging
+
+Source-IP whitelist rejection logs for `/api/admin` and `/metrics` are now bounded against log
+amplification. Each route family owns an independent, fixed-size limiter: its first rejection is
+written at `Info`, intervening rejections are counted, and the next informational entry after the
+one-minute monotonic interval includes the suppressed count. Varying attacker addresses does not
+increase limiter state, and a metrics flood cannot suppress the first administrative rejection.
+Bearer-authentication rejection logging retains its separate limiter.
+
+Authorization behavior is unchanged. Every client outside the applicable whitelist still receives
+`403 Forbidden`, including when `api.rateLimiting.disabled` is `true`. Exact supported `/metrics`
+scrapes continue to bypass the public API rate limiter, but rejected scrapes can no longer flood
+normal informational logs. This is log-volume containment rather than request throttling; retain
+dedicated listeners, narrow source whitelists, TLS where required and host/network firewall rules.
+
 ### Security hardening: protected browser resources and metrics methods
 
 API-pipeline responses for the administrative and Prometheus route families now send
