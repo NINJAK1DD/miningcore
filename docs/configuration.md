@@ -41,6 +41,11 @@ The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff`
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
 
+Each `ports` entry must contain an endpoint object. The endpoint's `listenAddress` may be omitted to
+use the `127.0.0.1` default, but the endpoint object itself must not be replaced with JSON `null` for
+an enabled internal Stratum listener. Listener validation remains deferred for disabled and relay-only
+pools, and unusable null entries from an enabled relay-only pool are omitted from the public pool API.
+
 ## API listener isolation
 
 `api.port` serves the public REST API and WebSocket notifications and defaults to `4000` when

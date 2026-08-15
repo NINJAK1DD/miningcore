@@ -246,7 +246,8 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                     if(endpoint == null)
                     {
                         context.AddFailure($"Ports[{port}]",
-                            $"Pool '{pool.Id}' Stratum port {port}: endpoint configuration must not be null");
+                            ListenerAddressUtils.FormatNullEndpointError(
+                                pool.Id, port));
                         continue;
                     }
 

@@ -117,11 +117,19 @@ public class ApiListenerConfigurationTests
                 })
             Assert.Equal("string",
                 committed.SelectToken(itemTypePath)?.Value<string>());
+    }
 
-        // Schema validation cannot express Miningcore's live-only listener policy:
-        // disabled, relay-only and recovery pools deliberately defer endpoint
-        // validation. Keep the structural schema nullable and enforce non-null
-        // endpoints in PoolConfigValidator only when a listener will be started.
+    [Fact]
+    public void ConfigSchema_KeepsPoolEndpointNullable_ForDeferredValidation()
+    {
+        // Miningcore's generated structural schema does not encode the runtime
+        // listener predicate: disabled, relay-only and recovery pools deliberately
+        // defer endpoint validation. Enforce non-null endpoints in
+        // PoolConfigValidator only when a listener will be started.
+        var path = Path.Combine(AppContext.BaseDirectory,
+            "config.schema.json");
+        var committed = JObject.Parse(File.ReadAllText(path));
+
         Assert.Equal(new[] { "object", "null" }, committed.SelectToken(
                 "definitions.PoolEndpoint.type")
             ?.Values<string>());
@@ -648,6 +656,10 @@ public class ApiListenerConfigurationTests
         };
 
         Assert.Null(Program.FindApiListenerStratumPortConflict(config, false));
+        var validation = new ClusterConfigValidator().Validate(config);
+        Assert.Contains(validation.Errors, failure =>
+            failure.ErrorMessage ==
+            "Pool 'recovery-pool' Stratum port 4000: endpoint configuration must not be null");
         Assert.Throws<PoolStartupException>(() =>
             Program.ValidateConfig(config, false));
     }
@@ -676,6 +688,11 @@ public class ApiListenerConfigurationTests
         {
             File.WriteAllText(configFile, SerializeConfig(sourceConfig));
 
+            var validation = new ClusterConfigValidator()
+                .Validate(sourceConfig);
+            Assert.Contains(validation.Errors, failure =>
+                failure.ErrorMessage ==
+                "Pool 'recovery-pool' Stratum port 3032: endpoint configuration must not be null");
             Assert.Throws<PoolStartupException>(() =>
                 Program.ReadAndValidateConfig(configFile, false));
 

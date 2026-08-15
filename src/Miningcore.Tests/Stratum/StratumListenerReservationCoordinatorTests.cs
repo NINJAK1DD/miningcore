@@ -293,7 +293,7 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public async Task NullEndpoint_FailsBeforeSocketReservation()
+    public async Task LaterNullEndpointInSamePool_FailsBeforeSocketReservation()
     {
         var reservationAttempts = 0;
         var coordinator = new StratumListenerReservationCoordinator(endpoint =>
@@ -301,7 +301,7 @@ public class StratumListenerReservationCoordinatorTests
             reservationAttempts++;
             return StratumServer.CreateBoundSocket(endpoint);
         });
-        var pool = CreatePool("null-endpoint", 3032, "127.0.0.1");
+        var pool = CreatePool("null-endpoint", 3031, "127.0.0.1");
         pool.Ports[3032] = null;
 
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
@@ -312,6 +312,52 @@ public class StratumListenerReservationCoordinatorTests
         Assert.Equal(
             "Pool 'null-endpoint' Stratum port 3032: endpoint configuration must not be null",
             error.Message);
+    }
+
+    [Fact]
+    public async Task NullEndpointInLaterPool_FailsBeforeSocketReservation()
+    {
+        var reservationAttempts = 0;
+        var coordinator = new StratumListenerReservationCoordinator(endpoint =>
+        {
+            reservationAttempts++;
+            return StratumServer.CreateBoundSocket(endpoint);
+        });
+        var validPool = CreatePool("valid-pool", 3031, "127.0.0.1");
+        var nullPool = CreatePool("null-pool", 3032, "127.0.0.1");
+        nullPool.Ports[3032] = null;
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { validPool, nullPool }));
+
+        Assert.Equal(nullPool.Id, error.PoolId);
+        Assert.Equal(0, reservationAttempts);
+        Assert.Equal(
+            "Pool 'null-pool' Stratum port 3032: endpoint configuration must not be null",
+            error.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("239.255.0.1")]
+    public async Task InvalidEndpointInLaterPool_FailsBeforeSocketReservation(
+        string listenAddress)
+    {
+        var reservationAttempts = 0;
+        var coordinator = new StratumListenerReservationCoordinator(endpoint =>
+        {
+            reservationAttempts++;
+            return StratumServer.CreateBoundSocket(endpoint);
+        });
+        var validPool = CreatePool("valid-pool", 3031, "127.0.0.1");
+        var invalidPool = CreatePool("invalid-pool", 3032, listenAddress);
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { validPool, invalidPool }));
+
+        Assert.Equal(invalidPool.Id, error.PoolId);
+        Assert.Equal(0, reservationAttempts);
+        Assert.Contains("3032", error.Message, StringComparison.Ordinal);
     }
 
     [LinuxFact]
