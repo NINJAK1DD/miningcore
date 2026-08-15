@@ -190,7 +190,7 @@ public class StratumListenerReservationCoordinatorTests
         var pools = new[]
         {
             CreatePool("duplicate", 3031, "127.0.0.1"),
-            CreatePool("duplicate", 0, "127.0.0.1"),
+            CreatePool("duplicate", 3032, "127.0.0.1"),
         };
         var coordinator = new StratumListenerReservationCoordinator(_ =>
         {
