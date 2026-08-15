@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Miningcore.Api.Middlewares;
+using Miningcore.Configuration;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
@@ -18,6 +19,9 @@ namespace Miningcore.Tests;
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class IPAccessWhitelistLoggingCollection
 {
+    // These tests temporarily replace NLog's process-wide configuration. Scope
+    // properties isolate assertions, while collection serialization prevents the
+    // replacement itself from disturbing other logging-sensitive tests.
     public const string Name = "IP access-whitelist logging";
 }
 
@@ -54,6 +58,8 @@ public class IPAccessWhitelistLoggingTests
         LogManager.Flush();
         var informational = logs.Messages("Info",
             "Unauthorized request attempt");
+        var detailed = logs.Messages("Debug",
+            "Unauthorized request attempt");
 
         Assert.Equal(0, nextCalls);
         Assert.Collection(informational,
@@ -69,19 +75,34 @@ public class IPAccessWhitelistLoggingTests
             {
                 Assert.Contains("203.0.113.13", summary,
                     StringComparison.Ordinal);
-                Assert.Contains("2 additional rejection(s)", summary,
-                    StringComparison.Ordinal);
+                Assert.Contains("2 other rejection(s), possibly from other sources",
+                    summary, StringComparison.Ordinal);
             });
+        Assert.Equal(2, detailed.Length);
+        Assert.Contains(detailed, message => message.Contains(
+            "203.0.113.11", StringComparison.Ordinal));
+        Assert.Contains(detailed, message => message.Contains(
+            "203.0.113.12", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public async Task DisabledRateLimiting_BoundsCanonicalMetricsAndAdminIndependently()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RateLimitingModes_BoundCanonicalMetricsAndAdminIndependently(
+        bool enableRateLimiting)
     {
         using var logs = new LogCapture();
         var timeProvider = new ManualTimeProvider();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCors();
+        if(enableRateLimiting)
+        {
+            Program.AddApiRateLimiting(services, new ApiConfig
+            {
+                RateLimiting = new ApiRateLimitConfig(),
+            });
+        }
         using var provider = services.BuildServiceProvider();
         var app = new ApplicationBuilder(provider);
         var endpointCalls = 0;
@@ -96,7 +117,8 @@ public class IPAccessWhitelistLoggingTests
                 return Task.CompletedTask;
             }),
             options: new Program.ApiPipelineOptions(
-                WhitelistRejectionTimeProvider: timeProvider));
+                EnableIpRateLimiting: enableRateLimiting,
+                ProtectedRouteRejectionTimeProvider: timeProvider));
         var pipeline = app.Build();
 
         // Exact canonical scrapes intentionally bypass the public API limiter. The
@@ -106,17 +128,17 @@ public class IPAccessWhitelistLoggingTests
             var remote = IPAddress.Parse(
                 $"203.0.{index / 254}.{index % 254 + 1}");
             var response = await InvokePipelineAsync(pipeline, ports.MetricsPort,
-                HttpMethods.Get, "/metrics", remote);
+                HttpMethods.Get, "/metrics", remote, provider);
             Assert.Equal(StatusCodes.Status403Forbidden,
                 response.Response.StatusCode);
         }
 
         var firstAdmin = await InvokePipelineAsync(pipeline, ports.AdminPort,
             HttpMethods.Post, "/api/admin/stats/gc",
-            IPAddress.Parse("203.0.113.200"));
+            IPAddress.Parse("203.0.113.200"), provider);
         var suppressedAdmin = await InvokePipelineAsync(pipeline,
             ports.AdminPort, HttpMethods.Post, "/api/admin/stats/gc",
-            IPAddress.Parse("203.0.113.201"));
+            IPAddress.Parse("203.0.113.201"), provider);
         Assert.Equal(StatusCodes.Status403Forbidden,
             firstAdmin.Response.StatusCode);
         Assert.Equal(StatusCodes.Status403Forbidden,
@@ -125,10 +147,10 @@ public class IPAccessWhitelistLoggingTests
         timeProvider.AdvanceMonotonic(TimeSpan.FromMinutes(1));
         var metricsSummary = await InvokePipelineAsync(pipeline,
             ports.MetricsPort, HttpMethods.Get, "/metrics",
-            IPAddress.Parse("203.0.113.210"));
+            IPAddress.Parse("203.0.113.210"), provider);
         var adminSummary = await InvokePipelineAsync(pipeline, ports.AdminPort,
             HttpMethods.Post, "/api/admin/stats/gc",
-            IPAddress.Parse("203.0.113.211"));
+            IPAddress.Parse("203.0.113.211"), provider);
 
         Assert.Equal(StatusCodes.Status403Forbidden,
             metricsSummary.Response.StatusCode);
@@ -146,11 +168,77 @@ public class IPAccessWhitelistLoggingTests
                 StringComparison.Ordinal)).ToArray();
 
         Assert.Equal(2, metricsEntries.Length);
-        Assert.Contains("255 additional rejection(s)", metricsEntries[1],
+        Assert.Contains("255 other rejection(s), possibly from other sources",
+            metricsEntries[1],
             StringComparison.Ordinal);
         Assert.Equal(2, adminEntries.Length);
-        Assert.Contains("1 additional rejection(s)", adminEntries[1],
+        Assert.Contains("1 other rejection(s), possibly from other sources",
+            adminEntries[1],
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AuthenticationRejections_UsePerPipelineInjectedLimiter()
+    {
+        using var logs = new LogCapture();
+        var timeProvider = new ManualTimeProvider();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCors();
+        using var provider = services.BuildServiceProvider();
+        var ports = new Program.ApiEndpointPorts(4000, 4000, 4000);
+
+        RequestDelegate BuildPipeline()
+        {
+            var app = new ApplicationBuilder(provider);
+            Program.ConfigureApiPipeline(app, ports, null, null,
+                AdminApiCredential.Create(ValidAdminToken), false,
+                options: new Program.ApiPipelineOptions(
+                    ProtectedRouteRejectionTimeProvider: timeProvider),
+                afterAccessControl: pipeline => pipeline.Run(_ =>
+                    Task.CompletedTask));
+            return app.Build();
+        }
+
+        var firstPipeline = BuildPipeline();
+        var secondPipeline = BuildPipeline();
+
+        var first = await InvokePipelineAsync(firstPipeline, ports.AdminPort,
+            HttpMethods.Get, "/api/admin/status", IPAddress.Loopback,
+            provider);
+        var suppressed = await InvokePipelineAsync(firstPipeline,
+            ports.AdminPort, HttpMethods.Get, "/api/admin/status",
+            IPAddress.Loopback, provider);
+        var independent = await InvokePipelineAsync(secondPipeline,
+            ports.AdminPort, HttpMethods.Get, "/api/admin/status",
+            IPAddress.IPv6Loopback, provider);
+        timeProvider.AdvanceMonotonic(TimeSpan.FromMinutes(1));
+        var summary = await InvokePipelineAsync(firstPipeline, ports.AdminPort,
+            HttpMethods.Get, "/api/admin/status", IPAddress.Loopback,
+            provider);
+
+        Assert.Equal(StatusCodes.Status401Unauthorized,
+            first.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status401Unauthorized,
+            suppressed.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status401Unauthorized,
+            independent.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status401Unauthorized,
+            summary.Response.StatusCode);
+
+        LogManager.Flush();
+        var informational = logs.Messages("Info",
+            "Rejected administrative bearer authentication");
+        var detailed = logs.Messages("Debug",
+            "Rejected administrative bearer authentication");
+
+        Assert.Equal(3, informational.Length);
+        Assert.Contains(informational, message => message.Contains(
+            "from ::1", StringComparison.Ordinal));
+        Assert.Contains(informational, message => message.Contains(
+            "1 other rejection(s), possibly from other sources",
+            StringComparison.Ordinal));
+        Assert.Single(detailed);
     }
 
     [Fact]
@@ -216,13 +304,14 @@ public class IPAccessWhitelistLoggingTests
 
         var loopbackMetrics = await InvokePipelineAsync(pipeline,
             ports.MetricsPort, HttpMethods.Get, "/metrics",
-            IPAddress.Loopback);
+            IPAddress.Loopback, provider);
         var loopbackAdmin = await InvokePipelineAsync(pipeline,
             ports.AdminPort, HttpMethods.Get, "/api/admin/status",
-            IPAddress.IPv6Loopback, $"Bearer {ValidAdminToken}");
+            IPAddress.IPv6Loopback, provider,
+            $"Bearer {ValidAdminToken}");
         var remoteMetrics = await InvokePipelineAsync(pipeline,
             ports.MetricsPort, HttpMethods.Get, "/metrics",
-            IPAddress.Parse("203.0.113.10"));
+            IPAddress.Parse("203.0.113.10"), provider);
 
         Assert.Equal(StatusCodes.Status200OK,
             loopbackMetrics.Response.StatusCode);
@@ -249,9 +338,11 @@ public class IPAccessWhitelistLoggingTests
 
     private static async Task<DefaultHttpContext> InvokePipelineAsync(
         RequestDelegate pipeline, int localPort, string method, string path,
-        IPAddress remoteAddress, string authorization = null)
+        IPAddress remoteAddress, IServiceProvider requestServices = null,
+        string authorization = null)
     {
         var context = new DefaultHttpContext();
+        context.RequestServices = requestServices;
         context.Connection.LocalPort = localPort;
         context.Connection.RemoteIpAddress = remoteAddress;
         context.Request.Method = method;
@@ -265,44 +356,33 @@ public class IPAccessWhitelistLoggingTests
         return context;
     }
 
-    private sealed class ManualTimeProvider : TimeProvider
-    {
-        private long timestamp;
-        private DateTimeOffset utcNow = new(2026, 8, 15, 12, 0, 0,
-            TimeSpan.Zero);
-
-        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => timestamp;
-        public override DateTimeOffset GetUtcNow() => utcNow;
-
-        public void AdvanceMonotonic(TimeSpan elapsed) =>
-            timestamp += elapsed.Ticks;
-
-        public void MoveWallClock(TimeSpan change) =>
-            utcNow = utcNow.Add(change);
-    }
-
     private sealed class LogCapture : IDisposable
     {
         public LogCapture()
         {
+            captureId = Guid.NewGuid().ToString("N");
             previousConfiguration = LogManager.Configuration;
             Target = new MemoryTarget
             {
-                Layout = "${level}|${message}",
+                Layout =
+                    "${scopeproperty:item=WhitelistLogCaptureId}|${level}|${message}",
             };
             var configuration = new LoggingConfiguration();
             configuration.AddRuleForAllLevels(Target);
             LogManager.Configuration = configuration;
             LogManager.ReconfigExistingLoggers();
+            scope = ScopeContext.PushProperty("WhitelistLogCaptureId",
+                captureId);
         }
 
+        private readonly string captureId;
         private readonly LoggingConfiguration previousConfiguration;
+        private readonly IDisposable scope;
         public MemoryTarget Target { get; }
 
         public string[] Messages(string level, string text) =>
             Target.Logs.Where(message =>
-                    message.StartsWith($"{level}|",
+                    message.StartsWith($"{captureId}|{level}|",
                         StringComparison.OrdinalIgnoreCase) &&
                     message.Contains(text, StringComparison.Ordinal))
                 .ToArray();
@@ -310,6 +390,7 @@ public class IPAccessWhitelistLoggingTests
         public void Dispose()
         {
             LogManager.Flush();
+            scope.Dispose();
             LogManager.Configuration = previousConfiguration;
             LogManager.ReconfigExistingLoggers();
         }

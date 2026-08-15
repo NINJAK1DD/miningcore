@@ -43,12 +43,14 @@ public class IPAccessWhitelistMiddleware
                 whitelist.Any(address => address.IsEqual(remoteAddress));
             if(!authorized)
             {
-                var remoteDisplay = remoteAddress != null
-                    ? remoteAddress.CensorOrReturn(gpdrCompliantLogging).ToString()
-                    : "unknown";
                 if(rejectionLogLimiter.TryAcquire(out var suppressed))
-                    logger.Info(() => FormatRejection(context, remoteDisplay,
-                        suppressed));
+                    logger.Info(() => FormatRejection(context, suppressed));
+                else if(logger.IsDebugEnabled)
+                    // Formatting is lazy: normal Info-level operation does no IP
+                    // censoring, message or delegate allocation for suppressed
+                    // requests. Debug may be enabled deliberately when per-request
+                    // forensics matter.
+                    logger.Debug(() => FormatRejection(context, 0));
 
                 context.Response.StatusCode = (int) HttpStatusCode.Forbidden;
                 await context.Response.WriteAsync("You are not in my access list. Good Bye.\n");
@@ -59,15 +61,18 @@ public class IPAccessWhitelistMiddleware
         await next.Invoke(context);
     }
 
-    private static string FormatRejection(HttpContext context,
-        string remoteDisplay, long suppressed)
+    private string FormatRejection(HttpContext context, long suppressed)
     {
+        var remoteAddress = context.Connection.RemoteIpAddress;
+        var remoteDisplay = remoteAddress != null
+            ? remoteAddress.CensorOrReturn(gpdrCompliantLogging).ToString()
+            : "unknown";
         var result =
             $"Unauthorized request attempt to {context.Request.Path.Value} from {remoteDisplay}";
 
         if(suppressed > 0)
             result +=
-                $"; {suppressed} additional rejection(s) occurred after the previous informational entry and were suppressed";
+                $"; {suppressed} other rejection(s), possibly from other sources, were suppressed since the previous informational entry";
 
         return result;
     }

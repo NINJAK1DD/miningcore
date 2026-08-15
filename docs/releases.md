@@ -253,9 +253,13 @@ for administrative requests, so restrict its entries to trusted fixed addresses.
 Source-IP whitelist rejection logs for `/api/admin` and `/metrics` are now bounded against log
 amplification. Each route family owns an independent, fixed-size limiter: its first rejection is
 written at `Info`, intervening rejections are counted, and the next informational entry after the
-one-minute monotonic interval includes the suppressed count. Varying attacker addresses does not
-increase limiter state, and a metrics flood cannot suppress the first administrative rejection.
-Bearer-authentication rejection logging retains its separate limiter.
+one-minute monotonic interval includes the suppressed count. Per-request details remain available
+at `Debug`; enabling that level during hostile traffic can substantially increase log volume. A
+summary remains pending until another rejection arrives after the interval, and the source shown
+on it belongs to that current request rather than the potentially different suppressed sources.
+Varying attacker addresses does not increase limiter state, and a metrics flood cannot suppress
+the first administrative rejection. Bearer-authentication rejection logging retains its separate
+per-pipeline limiter.
 
 Authorization behavior is unchanged. Every client outside the applicable whitelist still receives
 `403 Forbidden`, including when `api.rateLimiting.disabled` is `true`. Exact supported `/metrics`

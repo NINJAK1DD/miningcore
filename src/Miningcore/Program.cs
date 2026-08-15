@@ -725,7 +725,7 @@ public class Program : ProcessStatusBackgroundService
     internal sealed record ApiPipelineOptions(
         bool EnableIpRateLimiting = false,
         bool EnableExceptionHandling = false,
-        TimeProvider WhitelistRejectionTimeProvider = null);
+        TimeProvider ProtectedRouteRejectionTimeProvider = null);
 
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
     {
@@ -854,12 +854,13 @@ public class Program : ProcessStatusBackgroundService
         UseIpWhiteList(app, true,
             new[] { AdminApiAuthenticationMiddleware.AdminRoutePrefix },
             adminIpWhitelist, gpdrCompliantLogging,
-            options.WhitelistRejectionTimeProvider);
+            options.ProtectedRouteRejectionTimeProvider);
         UseIpWhiteList(app, true, new[] { MetricsRoutePrefix },
             metricsIpWhitelist, gpdrCompliantLogging,
-            options.WhitelistRejectionTimeProvider);
+            options.ProtectedRouteRejectionTimeProvider);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
-            gpdrCompliantLogging);
+            gpdrCompliantLogging,
+            options.ProtectedRouteRejectionTimeProvider ?? TimeProvider.System);
 
         // Preserve wrong-listener 404 and IP-whitelist 403 behavior by enforcing
         // the metrics method contract only after those access-control boundaries.

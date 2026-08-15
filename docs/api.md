@@ -58,17 +58,22 @@ Prometheus exports `miningcore_admin_api_authentication_total` with `accepted`, 
 `unavailable` outcomes so operators can alert on authentication failures without relying on
 per-request log messages. Miningcore writes the first rejected bearer attempt and at most one
 suppression summary per minute at `Info`; intervening details remain available at `Debug`. This
-process-wide limit uses a monotonic elapsed-time clock and prevents unauthenticated clients from
-flooding normal operational logs even when the host wall clock is corrected.
+fixed-size limiter belongs to the authentication middleware instance, uses a monotonic elapsed-time
+clock and prevents unauthenticated clients from flooding normal operational logs even when the host
+wall clock is corrected.
 
 Source-IP whitelist rejections for `/api/admin` and `/metrics` are bounded independently. Each
 route family writes its first rejection and at most one suppression summary per minute at `Info`;
-the summary reports how many intervening rejections were omitted. The limiter uses fixed-size state
-and a monotonic elapsed-time clock, so changing source addresses or correcting the host wall clock
-cannot defeat it. Every rejected request still returns `403 Forbidden`. This protection also
-applies when API rate limiting is disabled and to exact `GET` or `HEAD` metrics scrapes, which
-intentionally bypass the public API rate limiter. Keep the listener private and retain firewall and
-IP-whitelist controls; bounded logging is not a request-rate control.
+intervening details remain available at `Debug`. The next rejection after the interval emits the
+summary, so a final count remains pending if no later rejection arrives and may be reported much
+later. Its source address describes that current request, not the suppressed requests, which may
+have come from other sources. The limiter uses fixed-size state and a monotonic elapsed-time clock,
+so changing source addresses or correcting the host wall clock cannot defeat it. Every rejected
+request still returns `403 Forbidden`. This protection also applies when API rate limiting is
+disabled and to exact `GET` or `HEAD` metrics scrapes, which intentionally bypass the public API
+rate limiter. Keep the listener private and retain firewall and IP-whitelist controls; bounded
+informational logging is not a request-rate control. Enabling `Debug` restores per-request detail
+and therefore can increase log volume substantially during hostile traffic.
 
 When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
 only that route family on it. Public REST and WebSocket routes remain on `port`; requests for

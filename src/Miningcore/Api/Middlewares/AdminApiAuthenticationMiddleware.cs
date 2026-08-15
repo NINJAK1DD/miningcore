@@ -107,17 +107,25 @@ public sealed class AdminApiAuthenticationMiddleware
 {
     public AdminApiAuthenticationMiddleware(RequestDelegate next,
         AdminApiCredential credential, bool gpdrCompliantLogging)
+        : this(next, credential, gpdrCompliantLogging, TimeProvider.System)
+    {
+    }
+
+    public AdminApiAuthenticationMiddleware(RequestDelegate next,
+        AdminApiCredential credential, bool gpdrCompliantLogging,
+        TimeProvider timeProvider)
     {
         this.next = next;
         this.credential = credential;
         this.gpdrCompliantLogging = gpdrCompliantLogging;
+        rejectionLogLimiter = new MonotonicLogLimiter(
+            TimeSpan.FromMinutes(1), timeProvider);
     }
 
     private readonly RequestDelegate next;
     private readonly AdminApiCredential credential;
     private readonly bool gpdrCompliantLogging;
-    private static readonly MonotonicLogLimiter RejectionLogLimiter =
-        new(TimeSpan.FromMinutes(1));
+    private readonly MonotonicLogLimiter rejectionLogLimiter;
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private static readonly Counter AuthenticationCounter = Metrics.CreateCounter(
         "miningcore_admin_api_authentication_total",
@@ -164,9 +172,9 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(!authorized)
         {
-            if(RejectionLogLimiter.TryAcquire(out var suppressed))
+            if(rejectionLogLimiter.TryAcquire(out var suppressed))
                 logger.Info(() => FormatRejection(context, suppressed));
-            else
+            else if(logger.IsDebugEnabled)
                 logger.Debug(() => FormatRejection(context, 0));
 
             AuthenticationCounter.WithLabels("rejected").Inc();
@@ -192,7 +200,7 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(suppressed > 0)
             result +=
-                $"; {suppressed} additional rejection(s) occurred after the previous informational entry and were suppressed";
+                $"; {suppressed} other rejection(s), possibly from other sources, were suppressed since the previous informational entry";
 
         return result;
     }

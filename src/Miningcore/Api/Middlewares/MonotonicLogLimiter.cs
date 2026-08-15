@@ -40,7 +40,8 @@ internal sealed class MonotonicLogLimiter
                 return true;
             }
 
-            // Keep the state fixed-size even under a sustained hostile request stream.
+            // Saturate rather than wrap. State remains fixed-size because it is never
+            // keyed by source address or any other attacker-controlled value.
             if(suppressed < long.MaxValue)
                 suppressed++;
 

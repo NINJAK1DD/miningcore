@@ -64,5 +64,9 @@ assert_prose_contains "independent metrics whitelist rejection limiter" \
   'Metrics[[:space:]]+whitelist[[:space:]]+logging[[:space:]]+has[[:space:]]+an[[:space:]]+independent[[:space:]]+limiter'
 assert_prose_contains "whitelist rejection remains fail-closed" \
   'All[[:space:]]+rejected[[:space:]]+requests[[:space:]]+continue[[:space:]]+to[[:space:]]+return[[:space:]]+`403[[:space:]]+Forbidden`'
+assert_prose_contains "debug rejection logging volume warning" \
+  'enabling[[:space:]]+that[[:space:]]+level[[:space:]]+during[[:space:]]+hostile[[:space:]]+traffic[[:space:]]+can[[:space:]]+substantially[[:space:]]+increase[[:space:]]+log[[:space:]]+volume'
+assert_prose_contains "suppression summaries require a later rejection" \
+  'A[[:space:]]+summary[[:space:]]+is[[:space:]]+emitted[[:space:]]+only[[:space:]]+when[[:space:]]+another[[:space:]]+rejection[[:space:]]+arrives[[:space:]]+after[[:space:]]+the[[:space:]]+interval'
 
 echo "Administrative API documentation invariants are present"

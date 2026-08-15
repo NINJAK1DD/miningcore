@@ -140,21 +140,26 @@ public class AdminApiSecurityTests
         Assert.False(limiter.TryAcquire(out _));
     }
 
-    private sealed class ManualTimeProvider : TimeProvider
+    [Fact]
+    public async Task MonotonicLogLimiter_ConcurrentBurstHasOneWinnerAndExactSummary()
     {
-        private long timestamp;
-        private DateTimeOffset utcNow = new(2026, 8, 7, 12, 0, 0,
-            TimeSpan.Zero);
+        const int attempts = 256;
+        var timeProvider = new ManualTimeProvider();
+        var limiter = new MonotonicLogLimiter(TimeSpan.FromMinutes(1),
+            timeProvider);
 
-        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => timestamp;
-        public override DateTimeOffset GetUtcNow() => utcNow;
+        var results = await Task.WhenAll(Enumerable.Range(0, attempts)
+            .Select(_ => Task.Run(() =>
+            {
+                var acquired = limiter.TryAcquire(out var suppressed);
+                return (acquired, suppressed);
+            })));
 
-        public void AdvanceMonotonic(TimeSpan elapsed) =>
-            timestamp += elapsed.Ticks;
-
-        public void MoveWallClock(TimeSpan change) =>
-            utcNow = utcNow.Add(change);
+        var winner = Assert.Single(results.Where(result => result.acquired));
+        Assert.Equal(0L, winner.suppressed);
+        timeProvider.AdvanceMonotonic(TimeSpan.FromMinutes(1));
+        Assert.True(limiter.TryAcquire(out var summarized));
+        Assert.Equal(attempts - 1, summarized);
     }
 
     [Theory]

@@ -127,9 +127,13 @@ Admin IP-whitelist rejections have a separate fixed-size, monotonic log limiter.
 rejection is written at `Info`; intervening entries are counted, and the next permitted
 informational entry (at most one per minute) includes the suppressed total. Metrics whitelist
 logging has an independent limiter, so a metrics flood cannot hide the first administrative
-rejection. All rejected requests continue to return `403 Forbidden`, including when API rate
-limiting is disabled. This protects normal logs from amplification but does not throttle requests;
-keep the dedicated listener, source whitelist and firewall boundary in place.
+rejection. Per-request details remain available at `Debug`, but enabling that level during hostile
+traffic can substantially increase log volume. A summary is emitted only when another rejection
+arrives after the interval; it can therefore be delayed, and the address on it belongs to the
+current request rather than the possibly different suppressed sources. All rejected requests
+continue to return `403 Forbidden`, including when API rate limiting is disabled. This protects
+normal logs from amplification but does not throttle requests; keep the dedicated listener, source
+whitelist and firewall boundary in place.
 
 Administrative routes intentionally emit no cross-origin resource sharing (CORS) headers. Public
 front ends must call only public routes. If users need to change miner settings, implement a trusted
