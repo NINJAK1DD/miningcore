@@ -53,6 +53,7 @@ using Miningcore.Persistence.Dummy;
 using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Stratum;
 using Miningcore.Util;
 using NBitcoin.Zcash;
 using Newtonsoft.Json;
@@ -527,9 +528,21 @@ public class Program : ProcessStatusBackgroundService
         await Guard(async () =>
         {
             AssignPoolTemplates(enabledPools, coinTemplates);
+            var listenerCoordinator = new StratumListenerReservationCoordinator(
+                logger);
+            using var listenerReservations = await listenerCoordinator.ReserveAllAsync(
+                enabledPools, ct);
+
+            if(listenerReservations.Count > 0)
+            {
+                logger.Info(() =>
+                    $"Reserved {listenerReservations.Count} Stratum listener socket(s) before pool startup");
+            }
+
             await SupervisePoolLifetimesAsync(enabledPools.Select(config =>
                     new KeyValuePair<string, Func<CancellationToken, Task>>(
-                        config.Id, poolCt => RunPool(config, poolCt))),
+                        config.Id, poolCt => RunPool(config,
+                            listenerReservations, poolCt))),
                 ct, ProcessStatus, hal.StopApplication);
         }, ex =>
         {
@@ -1002,7 +1015,9 @@ public class Program : ProcessStatusBackgroundService
                 $"Recovery coin templates are unavailable for pool(s): {string.Join(", ", missing)}");
     }
 
-    private async Task RunPool(PoolConfig poolConfig, CancellationToken ct)
+    private async Task RunPool(PoolConfig poolConfig,
+        StratumListenerReservationSession listenerReservations,
+        CancellationToken ct)
     {
         // resolve implementation
         var poolImpl = container.Resolve<IEnumerable<Meta<Lazy<IMiningPool, CoinFamilyAttribute>>>>()
@@ -1011,6 +1026,16 @@ public class Program : ProcessStatusBackgroundService
         // configure
         var pool = poolImpl.Value;
         pool.Configure(poolConfig, clusterConfig);
+
+        if(pool is PoolBase poolBase)
+            poolBase.AttachStratumListenerReservations(listenerReservations);
+        else if(poolConfig.EnableInternalStratum == true)
+        {
+            throw new PoolStartupException(
+                $"Pool '{poolConfig.Id}' does not support retained Stratum listener reservations",
+                poolConfig.Id);
+        }
+
         pools[poolConfig.Id] = pool;
 
         // go

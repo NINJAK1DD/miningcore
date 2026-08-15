@@ -71,6 +71,50 @@ non-overlapping specific addresses. The default address is `127.0.0.1`; identica
 IPv4-mapped equivalents, and any pairing covered by an IPv4 or dual-stack wildcard are rejected
 before pools start. Startup reports every overlapping pair in one validation pass and identifies
 both conflicting pools and their effective endpoints.
+
+### Stratum listener reservation
+
+Normal startup then creates, configures, binds and retains every enabled internal Stratum socket as
+one cluster-scoped reservation phase. No pool initialization can announce `Online` until the whole
+set has been reserved. If any endpoint is occupied, unavailable in the current host or container
+network namespace, or otherwise rejected by the operating system, Miningcore releases every socket
+acquired by that attempt and stops the complete cluster. The startup error identifies the pool,
+effective endpoint, socket classification and native error. Miningcore hands those same retained
+sockets to the Stratum accept loops; it does not probe, close and later rebind them. Reservation
+calls `Bind` but deliberately defers `Listen` until that pool has completed initialization and enters
+its accept path, so miners cannot accumulate in a connection backlog while daemon synchronization
+or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
+`SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
+`Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
+Accepted sockets begin with abortive-close protection so an OOM kill, forced container stop,
+process crash or ordinary host shutdown normally cannot strand the exclusive endpoint. Only a
+genuine peer-initiated EOF disarms that protection and closes gracefully; bytes already written to
+the network may then drain with FIN, but Miningcore does not drain its application send queue during
+shutdown. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
+request-handler-failure, send-timeout and other independent-cancellation paths remain abortive. If
+an unclean stop still leaves a
+local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with one
+shared, bounded retry-delay budget totalling up to 90 seconds for the complete cluster reservation
+attempt. Scheduled waits do not multiply with the number of endpoints. This is not a hard
+wall-clock deadline: bind-call duration and scheduler overshoot are additional and ordinarily
+negligible. Sockets acquired earlier in the attempt remain reserved but do not listen while a later
+endpoint consumes that budget; this preserves the all-or-nothing ownership boundary. A genuinely
+occupied port exhausts the shared delay allowance and then fails with the complete pool and socket
+diagnostic; no partial cluster starts. Configure the service manager's startup timeout to exceed
+the retry-delay budget, binding overhead and ordinary pool initialization time so it cannot
+terminate Miningcore before the final diagnostic is emitted.
+
+IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
+throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
+whether a specific address can be used on this host is decided authoritatively by the retained bind.
+Miningcore also rejects subnet-directed broadcast identities positively identified from active local
+IPv4 interface addresses and masks. Interface enumeration is not used to reject ordinary unicast
+addresses, so containers, dynamic interfaces and failover addresses still rely on authoritative bind.
+The active IPv4 subnet snapshot is captured once per validation or reservation pass and is used only
+for positive directed-broadcast rejection, so one pass cannot classify ports from different host
+interface snapshots.
+For IPv6 link-local addresses, include the correct interface scope where the operating system
+requires it. A missing or incorrect scope fails startup safely rather than leaving a partial pool set.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
 public API, so retain the admin/metrics IP whitelists and restrict the ports with the host or network
 firewall. Reverse proxies should publish only `api.port`; a local Prometheus service normally

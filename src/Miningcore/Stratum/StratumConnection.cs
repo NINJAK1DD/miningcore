@@ -25,6 +25,15 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Stratum;
 
+internal enum StratumConnectionCompletionReason
+{
+    Unknown,
+    PeerEof,
+    HostShutdown,
+    MiningFailStop,
+    IndependentCancellation,
+}
+
 public class StratumConnection
 {
     public StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm,
@@ -59,6 +68,7 @@ public class StratumConnection
     public static readonly Encoding Encoding = new UTF8Encoding(false);
 
     private Stream networkStream;
+    private Socket socket;
     private readonly Pipe receivePipe;
     private readonly BufferBlock<object> sendQueue;
     private WorkerContextBase context;
@@ -84,8 +94,24 @@ public class StratumConnection
     {
         LocalEndpoint = endpoint.IPEndPoint;
         RemoteEndpoint = remoteEndpoint;
+        this.socket = socket;
+        // Keep hard process termination and server-initiated shutdown restart-safe by default.
+        // Only a clean peer EOF explicitly disarms linger(0) before stream disposal.
+        StratumSocketCleanup.ConfigureAbortiveClose(socket);
+        // Host cancellation can race clean-EOF classification. Its synchronous callback and
+        // the post-classification recheck below guarantee that cancellation cannot leave a
+        // Miningcore-terminated accepted socket configured for graceful close.
+        using var hostShutdownRegistration = ct.Register(() =>
+            StratumSocketCleanup.ConfigureAbortiveClose(socket));
+        // Mining fail-stop closes admission before it asks the host to stop. Register the
+        // independent token directly so its synchronous cancellation callback establishes
+        // abortive linger before connection tasks can unwind and dispose the owning stream.
+        using var failStopRegistration = failStopToken.Register(() =>
+            StratumSocketCleanup.ConfigureAbortiveClose(socket));
 
         expectingProxyHeader = endpoint.PoolEndpoint.TcpProxyProtocol?.Enable == true;
+
+        var terminalCallbackSignalled = false;
 
         try
         {
@@ -100,6 +126,13 @@ public class StratumConnection
 
             using(var disposables = new CompositeDisposable(networkStream))
             {
+                var abortiveOnExceptionalExit = true;
+                using var abortiveCloseGuard = Disposable.Create(() =>
+                {
+                    if(abortiveOnExceptionalExit)
+                        StratumSocketCleanup.ConfigureAbortiveClose(socket);
+                });
+
                 var tls = endpoint.PoolEndpoint.Tls;
 
                 // auto-detect SSL
@@ -128,14 +161,26 @@ public class StratumConnection
                     logger.Info(() => $"[{ConnectionId}] Connection from {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}:{RemoteEndpoint.Port} accepted on port {endpoint.IPEndPoint.Port}");
 
                 // Async I/O loop(s)
+                var receiveTask = FillReceivePipeAsync(cts.Token);
+                var processTask = ProcessReceivePipeAsync(cts.Token,
+                    endpoint.PoolEndpoint.TcpProxyProtocol, onRequestAsync);
+                var sendTask = ProcessSendQueueAsync(cts.Token);
                 var tasks = new[]
                 {
-                    FillReceivePipeAsync(cts.Token),
-                    ProcessReceivePipeAsync(cts.Token, endpoint.PoolEndpoint.TcpProxyProtocol, onRequestAsync),
-                    ProcessSendQueueAsync(cts.Token)
+                    receiveTask,
+                    processTask,
+                    sendTask
                 };
 
-                await Task.WhenAny(tasks);
+                var completedTask = await Task.WhenAny(tasks);
+                // Graceful close is permitted only when the network receive loop positively
+                // observed peer EOF while both server-owned cancellation sources remained
+                // healthy. An independent OCE from request handling or the send timeout is a
+                // server-side failure and must retain the default abortive close.
+                var peerEof = ReferenceEquals(completedTask, receiveTask) &&
+                    receiveTask.IsCompletedSuccessfully &&
+                    !ct.IsCancellationRequested &&
+                    !failStopToken.IsCancellationRequested;
 
                 // Stop network I/O, but do not declare the connection complete until an in-flight
                 // request handler has reached an admitted-or-rejected outcome. Handlers receive
@@ -163,19 +208,76 @@ public class StratumConnection
 
                 // Signal completion or error
                 if(error == null)
+                {
+                    // A peer-driven clean EOF may close gracefully. Host shutdown and the
+                    // independent financial fail-stop gate remain abortive so accepted sockets
+                    // cannot delay exclusive listener reacquisition.
+                    if(peerEof &&
+                        !ct.IsCancellationRequested &&
+                        !failStopToken.IsCancellationRequested)
+                    {
+                        StratumSocketCleanup.ConfigureGracefulClose(socket);
+
+                        // Cancellation can arrive between the checks above and the linger
+                        // update. Re-arm abortive close if either server-owned token won.
+                        if(ct.IsCancellationRequested ||
+                            failStopToken.IsCancellationRequested)
+                        {
+                            StratumSocketCleanup.ConfigureAbortiveClose(socket);
+                        }
+                    }
+
+                    CompletionReason = failStopToken.IsCancellationRequested
+                        ? StratumConnectionCompletionReason.MiningFailStop
+                        : ct.IsCancellationRequested
+                            ? StratumConnectionCompletionReason.HostShutdown
+                            : peerEof
+                                ? StratumConnectionCompletionReason.PeerEof
+                                : StratumConnectionCompletionReason.IndependentCancellation;
+                    // Set this before invoking external callback code. If the callback or later
+                    // stream teardown throws, the outer catch must not signal this connection a
+                    // second time and mask the original failure with duplicate unregistration.
+                    terminalCallbackSignalled = true;
                     onCompleted(this);
+                    abortiveOnExceptionalExit = false;
+                }
                 else
+                {
+                    // NetworkStream owns the accepted socket. Configure abortive linger while
+                    // it is still alive so malformed requests, TLS failures and handler errors
+                    // cannot leave an exclusive listener endpoint in local TIME_WAIT.
+                    StratumSocketCleanup.ConfigureAbortiveClose(socket);
+                    terminalCallbackSignalled = true;
                     onError(this, error);
+                }
             }
         }
 
         catch(Exception ex)
         {
-            onError(this, ex);
+            // Errors before stream construction have no other socket owner. Errors after it
+            // are already configured abortive by the inner scope; this remains race-safe.
+            StratumSocketCleanup.CloseAbortively(socket);
+
+            if(!terminalCallbackSignalled)
+            {
+                terminalCallbackSignalled = true;
+                onError(this, ex);
+            }
+            else
+            {
+                // The terminal event has already been consumed. Log and absorb callback or
+                // teardown failures so DispatchAsync completes without issuing a second terminal
+                // event; a faulted task here would not restore the consumed lifecycle transition.
+                logger.Error(ex, () =>
+                    $"[{ConnectionId}] Terminal connection callback or subsequent teardown failed; refusing a second callback");
+            }
         }
 
         finally
         {
+            this.socket = null;
+
             // Release external observables
             IsAlive = false;
             terminated.OnNext(Unit.Default);
@@ -191,6 +293,7 @@ public class StratumConnection
     public bool IsAlive { get; set; }
     public IObservable<Unit> Terminated => terminated.AsObservable();
     public WorkerContextBase Context => context;
+    internal StratumConnectionCompletionReason CompletionReason { get; private set; }
 
     public void SetContext<T>(T value) where T : WorkerContextBase
     {
@@ -235,6 +338,11 @@ public class StratumConnection
 
     public void Disconnect()
     {
+        var activeSocket = socket;
+
+        if(activeSocket != null)
+            StratumSocketCleanup.ConfigureAbortiveClose(activeSocket);
+
         networkStream?.Close();
     }
 

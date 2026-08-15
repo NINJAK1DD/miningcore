@@ -18,6 +18,24 @@ internal sealed class LinuxFactAttribute : FactAttribute
     }
 }
 
+internal sealed class UnixFactAttribute : FactAttribute
+{
+    public UnixFactAttribute()
+    {
+        if(OperatingSystem.IsWindows())
+            Skip = "Requires a Unix native socket-binding path";
+    }
+}
+
+internal sealed class IPv6FactAttribute : FactAttribute
+{
+    public IPv6FactAttribute()
+    {
+        if(!Socket.OSSupportsIPv6)
+            Skip = "Requires operating-system IPv6 socket support";
+    }
+}
+
 public class StratumListenerConfigurationTests
 {
     [Theory]
@@ -93,6 +111,87 @@ public class StratumListenerConfigurationTests
 
         Assert.False(ListenerAddressUtils.TryResolve(string.Empty,
             out _));
+    }
+
+    [Theory]
+    [InlineData("255.255.255.255", "IPv4 broadcast")]
+    [InlineData("224.0.0.1", "IPv4 multicast")]
+    [InlineData("ff02::1", "IPv6 multicast")]
+    public void UnsuitableListenerAddress_IsRejectedWithPoolAndPort(
+        string listenAddress, string expectedReason)
+    {
+        var config = CreateCluster(
+            CreatePool("pool-a", 3032, listenAddress));
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName.EndsWith("ListenAddress",
+                StringComparison.Ordinal));
+        Assert.Contains("pool-a", error.ErrorMessage,
+            StringComparison.Ordinal);
+        Assert.Contains("3032", error.ErrorMessage,
+            StringComparison.Ordinal);
+        Assert.Contains(expectedReason, error.ErrorMessage,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.2")]
+    [InlineData("169.254.1.2")]
+    public void BindableSpecialUseAddress_RemainsStaticallyAcceptable(
+        string listenAddress)
+    {
+        Assert.True(ListenerAddressUtils.TryResolve(listenAddress,
+            out var address));
+
+        Assert.True(ListenerAddressUtils.IsSuitableForListener(address,
+            out var reason), reason);
+    }
+
+    [Fact]
+    public void RecoveryMode_SkipsUnsuitableListenerAddressValidation()
+    {
+        var config = CreateCluster(
+            CreatePool("pool-a", 3032, "239.255.0.1"));
+
+        var result = new ClusterConfigValidator(true).Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName.EndsWith("ListenAddress",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void HostKnownDirectedBroadcast_IsRejectedWithoutRejectingSubnetHosts()
+    {
+        var subnet = new ListenerAddressUtils.IPv4InterfaceSubnet(
+            IPAddress.Parse("172.26.36.12"),
+            IPAddress.Parse("255.255.252.0"));
+
+        Assert.False(ListenerAddressUtils.IsSuitableForListener(
+            IPAddress.Parse("172.26.39.255"), new[] { subnet },
+            out var reason));
+        Assert.Contains("directed broadcast", reason,
+            StringComparison.Ordinal);
+
+        Assert.True(ListenerAddressUtils.IsSuitableForListener(
+            IPAddress.Parse("172.26.39.254"), new[] { subnet },
+            out reason), reason);
+    }
+
+    [Theory]
+    [InlineData("192.0.2.10", "255.255.255.254", "192.0.2.11")]
+    [InlineData("192.0.2.10", "255.255.255.255", "192.0.2.10")]
+    public void PointToPointAndHostRoutes_DoNotInventDirectedBroadcasts(
+        string interfaceAddress, string mask, string candidate)
+    {
+        var subnet = new ListenerAddressUtils.IPv4InterfaceSubnet(
+            IPAddress.Parse(interfaceAddress), IPAddress.Parse(mask));
+
+        Assert.True(ListenerAddressUtils.IsSuitableForListener(
+            IPAddress.Parse(candidate), new[] { subnet },
+            out var reason), reason);
     }
 
     [Fact]

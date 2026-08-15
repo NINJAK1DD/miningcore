@@ -186,7 +186,17 @@ public class VarDiffConfigValidator : AbstractValidator<VarDiffConfig>
 public class PoolConfigValidator : AbstractValidator<PoolConfig>
 {
     public PoolConfigValidator(bool recoveryMode = false)
+        : this(recoveryMode, null)
     {
+    }
+
+    internal PoolConfigValidator(bool recoveryMode,
+        IReadOnlyCollection<ListenerAddressUtils.IPv4InterfaceSubnet> activeIPv4Subnets)
+    {
+        activeIPv4Subnets ??= recoveryMode
+            ? Array.Empty<ListenerAddressUtils.IPv4InterfaceSubnet>()
+            : ListenerAddressUtils.CaptureActiveIPv4Subnets();
+
         bool ShouldValidateStratumListeners(PoolConfig pool) =>
             !recoveryMode && pool.Enabled &&
             pool.EnableInternalStratum == true;
@@ -234,11 +244,20 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 foreach(var (port, endpoint) in ports)
                 {
                     var address = endpoint?.ListenAddress;
-                    if(ListenerAddressUtils.TryResolve(address, out _))
+                    if(!ListenerAddressUtils.TryResolve(address,
+                           out var resolvedAddress))
+                    {
+                        context.AddFailure($"Ports[{port}].ListenAddress",
+                            $"Pool '{pool.Id}' Stratum port {port}: listenAddress must be '*' or a valid IPv4/IPv6 address (received '{address}')");
                         continue;
+                    }
 
-                    context.AddFailure($"Ports[{port}].ListenAddress",
-                        $"Pool '{pool.Id}' Stratum port {port}: listenAddress must be '*' or a valid IPv4/IPv6 address (received '{address}')");
+                    if(!ListenerAddressUtils.IsSuitableForListener(
+                           resolvedAddress, activeIPv4Subnets, out var reason))
+                    {
+                        context.AddFailure($"Ports[{port}].ListenAddress",
+                            $"Pool '{pool.Id}' Stratum port {port}: listenAddress '{address}' is unsuitable: {reason}");
+                    }
                 }
             })
             .When(ShouldValidateStratumListeners);
@@ -280,6 +299,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
     public ClusterConfigValidator(bool recoveryMode = false)
     {
+        var activeIPv4Subnets = recoveryMode
+            ? Array.Empty<ListenerAddressUtils.IPv4InterfaceSubnet>()
+            : ListenerAddressUtils.CaptureActiveIPv4Subnets();
+
         RuleFor(j => j.Logging)
             .SetValidator(new ClusterLoggingConfigValidator())
             .When(j => j.Logging != null);
@@ -318,7 +341,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.InstanceId)
             .GreaterThan((byte) 0)
             .When(x => !recoveryMode && x.InstanceId.HasValue)
-            .WithMessage("instanceId must either be omitted or be non-zero");;
+            .WithMessage("instanceId must either be omitted or be non-zero");
 
         RuleFor(j => j.Api)
             .SetValidator(new ApiConfigValidator())
@@ -359,7 +382,8 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleForEach(j => j.Pools)
             .Where(pool => pool != null)
-            .SetValidator(new PoolConfigValidator(recoveryMode));
+            .SetValidator(new PoolConfigValidator(recoveryMode,
+                activeIPv4Subnets));
     }
 
     internal static IReadOnlyList<StratumListenerConflict>

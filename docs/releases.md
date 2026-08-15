@@ -293,6 +293,44 @@ IPv4-mapped equivalents fail startup with both pool and endpoint identities. All
 are reported together so operators can correct the complete configuration before restart. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
+Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
+startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
+startup before any pool is announced online and releases all sockets already acquired by that
+attempt. The failure identifies the pool, effective endpoint and operating-system socket error.
+Broadcast and multicast listener addresses are rejected during configuration validation, while
+IPv4 loopback and link-local ranges remain eligible for the authoritative host bind. Existing valid
+listener configurations require no migration. Reserved sockets remain bound but do not call
+`Listen` until their pool finishes initialization; activation must succeed before the pool announces
+`Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and all server-
+initiated accepted-socket closes—including ordinary host shutdown, malformed requests, TLS handshake
+failures, request-handler faults and independent send-timeout cancellation—use abortive cleanup.
+Accepted sockets are protected against
+unclean process termination by default, while only genuine peer-initiated EOF switches to graceful
+close. This permits bytes already written to the network to drain but does not drain Miningcore's
+application send queue during shutdown. Startup retries `AddressAlreadyInUse` with one cluster-wide
+bounded retry-delay budget totalling up to 90 seconds when residual `TIME_WAIT` survives an unclean
+stop; scheduled waits do not multiply with the number of endpoints. Bind-call duration and scheduler
+overshoot remain outside that delay budget, so it is not a hard wall-clock deadline.
+Active-interface masks are used
+only to reject known subnet-directed IPv4 broadcast identities; ordinary addresses still use bind as
+the host-specific source of truth.
+
+This lifecycle intentionally changes the source-level extension surface: the protected
+`StratumServer.RunAsync(CancellationToken, StratumEndpoint[])` and `PoolBase.RunStratum` helpers are
+no longer available to out-of-tree subclasses. Custom pool implementations must use the base
+`PoolBase.RunAsync` lifecycle so they cannot bypass cluster-scoped reservation, activation-before-
+online ordering or retained-socket cleanup. Miningcore does not provide a compatibility helper that
+would silently restore the unsafe per-pool bind path. The protected surface now also provides
+`CreateConnectionId` and `BeforeConnectionTaskRemovalAsync` lifecycle hooks, while
+`UnregisterConnection` fails fast when the identity is absent instead of relying on a Debug-only
+assertion. Out-of-tree subclasses must not call it defensively for an already-removed connection.
+After a terminal completion or error callback has been invoked, an exception from that callback or
+subsequent stream teardown is logged and absorbed: `DispatchAsync` completes without issuing a
+second terminal callback. Operators diagnosing lifecycle-callback programming errors must therefore
+inspect the connection error logs rather than expecting a faulted dispatch task.
+The native resolver contains an explicit FreeBSD libc fallback, but FreeBSD is not runtime-tested in
+CI and is not promoted to a first-class supported Miningcore deployment target by this change.
+
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
 Stratum sockets. Recovery stream-rebuilds the top-level configuration from `logging`, `persistence`,
 `pools`, `shareRecoveryFile`, `shareRecoveryStateDirectory` and optional `coinTemplates`. Malformed

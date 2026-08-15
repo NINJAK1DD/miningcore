@@ -219,12 +219,16 @@
       "rewardRecipients": [],
       // One pool may expose several ports with different initial/variable difficulties.
       // Different pools may reuse a port only on distinct, non-overlapping specific addresses.
+      // Miningcore reserves every enabled internal listener before any pool starts. One bind
+      // failure aborts startup and releases the complete reservation set; it never starts a
+      // partial cluster. Broadcast and multicast addresses are not valid listeners.
       "ports": {
         // JSON property name is the TCP port miners connect to.
         "3032": {
           // Human-readable port label shown through the API.
           "name": "LTC-DOGE-SOLO",
-          // "*" listens on every interface. Restrict this if a proxy is the only client.
+          // "*" listens on every IPv4 interface. A specific address must exist and be
+          // bindable inside the host/container network namespace at startup.
           "listenAddress": "*",
           // Initial fixed difficulty assigned when a miner connects.
           "difficulty": 65536,
