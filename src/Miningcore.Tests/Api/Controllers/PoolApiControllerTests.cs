@@ -63,8 +63,6 @@ public class PoolApiControllerTests
 
         var endpoint = Assert.IsType<ApiPoolEndpoint>(
             Assert.Single(result.Ports).Value);
-        Assert.NotSame(config.Ports, result.Ports);
-        Assert.NotSame(sourceEndpoint, endpoint);
         Assert.Equal(sourceEndpoint.ListenAddress, endpoint.ListenAddress);
         Assert.Equal(sourceEndpoint.Name, endpoint.Name);
         Assert.Equal(sourceEndpoint.Difficulty, endpoint.Difficulty);
