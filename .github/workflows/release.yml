@@ -88,6 +88,7 @@ jobs:
           container=miningcore-api-smoke
           unconfigured_container=miningcore-api-unconfigured
           shared_container=miningcore-api-shared
+          rate_limit_container=miningcore-api-rate-limit
           proxy_container=miningcore-api-nginx
           admin_token="$(openssl rand -hex 32)"
 
@@ -96,6 +97,7 @@ jobs:
             docker rm -f "$unconfigured_container" >/dev/null 2>&1 || true
             docker rm -f "$proxy_container" >/dev/null 2>&1 || true
             docker rm -f "$shared_container" >/dev/null 2>&1 || true
+            docker rm -f "$rate_limit_container" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
@@ -221,6 +223,55 @@ jobs:
 
           docker rm -f "$unconfigured_container" >/dev/null
 
+          docker run --detach --name "$rate_limit_container" \
+            --network "$network" \
+            --publish 127.0.0.1:4010:4000 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-rate-limit-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          metrics_status=000
+          for attempt in {1..30}; do
+            metrics_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4010/metrics || true)"
+            if [[ "$metrics_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$metrics_status" != 200 ]]; then
+            docker logs "$rate_limit_container"
+            echo "Rate-limit smoke metrics request returned HTTP $metrics_status instead of 200"
+            exit 1
+          fi
+
+          # Exact scrape methods bypass throttling. Unsupported case variants
+          # consume the two-request budget and the next request must receive 429.
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
+          test "$(curl --silent --request head --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 429
+          assert_protected_headers "Rate-limited metrics method" \
+            --request get http://127.0.0.1:4010/metrics
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+
+          docker rm -f "$rate_limit_container" >/dev/null
+
           docker run --detach --name "$shared_container" \
             --network "$network" \
             --ip 172.30.56.2 \
@@ -256,6 +307,17 @@ jobs:
             docker logs "$shared_container"
             docker logs "$proxy_container"
             echo "nginx public lookalike request returned HTTP $proxy_status instead of 200"
+            exit 1
+          fi
+
+          untrusted_metrics="$(docker exec "$proxy_container" \
+            wget -S -O /dev/null \
+            http://172.30.56.2:4000/metrics 2>&1 || true)"
+          if ! grep --extended-regexp \
+            'HTTP/1\.[01][[:space:]]+403[[:space:]]+Forbidden' \
+            <<<"$untrusted_metrics" >/dev/null; then
+            echo "Shared-listener metrics request from an untrusted container was not denied"
+            printf '%s\n' "$untrusted_metrics"
             exit 1
           fi
 

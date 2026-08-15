@@ -24,12 +24,11 @@ public sealed class ProtectedRouteResourcePolicyMiddleware
     {
         if(IsProtectedRequest(context.Request.Path))
         {
-            // Apply this before every other API middleware so terminal listener,
-            // whitelist, authentication and exception responses receive the same
-            // browser resource policy. OnStarting callbacks run in reverse order;
-            // registering this in the first middleware makes its callback run after
-            // downstream callbacks and restore the boundary immediately before the
-            // headers are committed.
+            // Apply the complete protected-response policy eagerly so downstream
+            // code can observe it before response start. OnStarting callbacks run
+            // in reverse order; registering this in the first middleware makes its
+            // callback run after downstream callbacks and restore every header if a
+            // later component attempts to weaken the policy before commit.
             ApplyHeaders(context.Response);
             context.Response.OnStarting(static state =>
             {

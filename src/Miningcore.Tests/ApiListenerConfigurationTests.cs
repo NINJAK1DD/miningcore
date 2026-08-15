@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Miningcore.Api;
 using Miningcore.Api.Middlewares;
 using Miningcore.Configuration;
 using Miningcore.Mining;
@@ -1786,14 +1787,16 @@ public class ApiListenerConfigurationTests
     [InlineData("PUT", "/API/ADMIN/payment/processing/disable", false)]
     [InlineData("POST", "/api/administrator", false)]
     [InlineData("POST", "/api/administer", false)]
-    [InlineData("GET", "/metrics", true)]
-    [InlineData("HEAD", "/metrics", true)]
+    [InlineData("GET", "/metrics", false)]
+    [InlineData("HEAD", "/metrics", false)]
+    [InlineData("get", "/metrics", false)]
+    [InlineData("head", "/metrics", false)]
     [InlineData("POST", "/metrics", false)]
     [InlineData("GET", "/metrics/custom", false)]
     [InlineData("GET", "/notifications", true)]
     [InlineData("POST", "/notifications", true)]
     [InlineData("GET", "/notifications/client", false)]
-    public void RateLimitWhitelist_ExemptsOnlyExplicitNonAdministrativeRoutes(
+    public void RateLimitDependencyWhitelist_ExemptsOnlyWebSocketNotifications(
         string method, string path, bool expected)
     {
         var processor = new TestRateLimitProcessor(new RateLimitOptions
@@ -1810,6 +1813,24 @@ public class ApiListenerConfigurationTests
 
         Assert.Equal(expected, actual);
     }
+
+    [Theory]
+    [InlineData("GET", "/metrics", false)]
+    [InlineData("HEAD", "/metrics", false)]
+    [InlineData("GET", "/METRICS", false)]
+    [InlineData("HEAD", "/metrics/", false)]
+    [InlineData("get", "/metrics", true)]
+    [InlineData("head", "/metrics", true)]
+    [InlineData("Get", "/metrics", true)]
+    [InlineData("HeAd", "/metrics", true)]
+    [InlineData("OPTIONS", "/metrics", true)]
+    [InlineData("POST", "/metrics", true)]
+    [InlineData("GET", "/metrics/custom", true)]
+    [InlineData("GET", "/api/pools", true)]
+    public void RateLimitPipeline_ExemptsOnlyExactSupportedMetricsScrapes(
+        string method, string path, bool expected) =>
+        Assert.Equal(expected,
+            Program.ShouldApplyIpRateLimiting(path, method));
 
     [Theory]
     [InlineData("/api/admin/status", "/api/admin", true)]
@@ -1995,6 +2016,77 @@ public class ApiListenerConfigurationTests
             context.Response.StatusCode);
         Assert.Equal("*", context.Response.Headers.AccessControlAllowOrigin);
         Assert.False(context.Response.Headers.ContainsKey("Content-Encoding"));
+    }
+
+    [Theory]
+    [InlineData("get")]
+    [InlineData("head")]
+    [InlineData("Get")]
+    [InlineData("HeAd")]
+    public async Task ApiPipeline_RateLimitsRejectedMetricsMethodLookalikes(
+        string method)
+    {
+        var rateLimiting = new ApiRateLimitConfig
+        {
+            // Do not exempt the loopback client used by this real Kestrel test.
+            IpWhitelist = new[] { "192.0.2.1" },
+            Rules = new[]
+            {
+                new RateLimitRule
+                {
+                    Endpoint = "*",
+                    Period = "1m",
+                    Limit = 1,
+                },
+            },
+        };
+        await using var host = await StartRouteTestHostWithRetryAsync(true,
+            rateLimiting: rateLimiting);
+        using var client = new HttpClient();
+        // Exact supported tokens bypass throttling even when repeated. The
+        // exporter accepts its canonical path with or without a trailing slash.
+        foreach(var metricsPath in new[] { "/metrics", "/metrics/", "/METRICS" })
+        {
+            var metricsUri =
+                $"http://127.0.0.1:{host.Ports.MetricsPort}{metricsPath}";
+            for(var attempt = 0; attempt < 2; attempt++)
+            {
+                using var getResponse = await client.GetAsync(metricsUri);
+                Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+
+                using var headRequest = new HttpRequestMessage(HttpMethod.Head,
+                    metricsUri);
+                using var headResponse = await client.SendAsync(headRequest);
+                Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+            }
+        }
+
+        var rejected = await SendRawHttpRequestAsync(
+            host.Ports.MetricsPort, method, "/metrics");
+        Assert.StartsWith("HTTP/1.1 405 Method Not Allowed\r\n", rejected);
+        AssertRawProtectedResponseHeaders(rejected);
+
+        var throttled = await SendRawHttpRequestAsync(
+            host.Ports.MetricsPort, method, "/metrics");
+        Assert.StartsWith("HTTP/1.1 429 Too Many Requests\r\n", throttled);
+        AssertRawProtectedResponseHeaders(throttled);
+    }
+
+    [Fact]
+    public async Task ApiPipeline_ExceptionResponseRetainsProtectedHeaders()
+    {
+        await using var host = await StartRouteTestHostWithRetryAsync(true,
+            enableExceptionHandling: true, throwApiException: true);
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", TestAdminToken);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        AssertProtectedResponseHeaders(response);
     }
 
     private static Program.ApiEndpointPorts CreateEndpointPorts()
@@ -2342,7 +2434,10 @@ public class ApiListenerConfigurationTests
     private static async Task<RunningRouteTestHost>
         StartRouteTestHostWithRetryAsync(bool shared = false,
             X509Certificate2 certificate = null,
-            bool configureAdminCredential = true)
+            bool configureAdminCredential = true,
+            ApiRateLimitConfig rateLimiting = null,
+            bool enableExceptionHandling = false,
+            bool throwApiException = false)
     {
         Exception lastError = null;
 
@@ -2358,7 +2453,8 @@ public class ApiListenerConfigurationTests
             try
             {
                 var host = await StartRouteTestHostAsync(ports, certificate,
-                    configureAdminCredential);
+                    configureAdminCredential, rateLimiting,
+                    enableExceptionHandling, throwApiException);
                 return new RunningRouteTestHost(host, ports);
             }
             catch(Exception ex) when(IsAddressInUse(ex))
@@ -2374,7 +2470,10 @@ public class ApiListenerConfigurationTests
 
     private static async Task<IHost> StartRouteTestHostAsync(
         Program.ApiEndpointPorts ports, X509Certificate2 certificate = null,
-        bool configureAdminCredential = true)
+        bool configureAdminCredential = true,
+        ApiRateLimitConfig rateLimiting = null,
+        bool enableExceptionHandling = false,
+        bool throwApiException = false)
     {
         var adminCredential = AdminApiCredential.Create(
             configureAdminCredential ? TestAdminToken : null);
@@ -2389,7 +2488,17 @@ public class ApiListenerConfigurationTests
         var host = Host.CreateDefaultBuilder()
             .ConfigureLogging(logging => logging.ClearProviders())
             .ConfigureWebHostDefaults(builder => builder
-                .ConfigureServices(services => services.AddCors())
+                .ConfigureServices(services =>
+                {
+                    services.AddCors();
+                    if(rateLimiting != null)
+                    {
+                        Program.AddApiRateLimiting(services, new ApiConfig
+                        {
+                            RateLimiting = rateLimiting,
+                        });
+                    }
+                })
                 .UseKestrel(options => Program.ConfigureApiListeners(options,
                     IPAddress.Loopback, ports, listenOptions =>
                     {
@@ -2400,6 +2509,9 @@ public class ApiListenerConfigurationTests
                 {
                     Program.ConfigureApiPipeline(app, ports, null, null,
                         adminCredential, false,
+                        new Program.ApiPipelineOptions(
+                            EnableIpRateLimiting: rateLimiting != null,
+                            EnableExceptionHandling: enableExceptionHandling),
                         afterAccessControl: pipeline =>
                         {
                             pipeline.UseWebSockets();
@@ -2408,6 +2520,10 @@ public class ApiListenerConfigurationTests
                                 Program.MetricsRoutePrefix);
                             pipeline.Run(async context =>
                             {
+                                if(throwApiException)
+                                    throw new ApiException("test exception",
+                                        HttpStatusCode.BadRequest);
+
                                 if(context.Request.Path == "/notifications" &&
                                     context.WebSockets.IsWebSocketRequest)
                                 {
@@ -2477,6 +2593,18 @@ public class ApiListenerConfigurationTests
         }
 
         return false;
+    }
+
+    private static void AssertRawProtectedResponseHeaders(string response)
+    {
+        Assert.Contains($"\r\n{ProtectedRouteResourcePolicyMiddleware.HeaderName}: " +
+            $"{ProtectedRouteResourcePolicyMiddleware.HeaderValue}\r\n",
+            response, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\r\nCache-Control: no-store\r\n", response,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"\r\n{ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderName}: " +
+            $"{ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderValue}\r\n",
+            response, StringComparison.OrdinalIgnoreCase);
     }
 
     private const int ListenerStartAttempts = 5;

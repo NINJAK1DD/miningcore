@@ -248,13 +248,7 @@ public class Program : ProcessStatusBackgroundService
                     {
                         // rate limiting
                         if(enableApiRateLimiting)
-                        {
-                            services.Configure<IpRateLimitOptions>(ConfigureIpRateLimitOptions);
-                            services.AddSingleton<IIpPolicyStore, MemoryCacheIpPolicyStore>();
-                            services.AddSingleton<IRateLimitCounterStore, MemoryCacheRateLimitCounterStore>();
-                            services.AddSingleton<IRateLimitConfiguration, RateLimitConfiguration>();
-                            services.AddSingleton<IProcessingStrategy, AsyncKeyLockProcessingStrategy>();
-                        }
+                            AddApiRateLimiting(services, apiConfig);
 
                         // Controllers
                         services.AddSingleton<PoolApiController, PoolApiController>();
@@ -844,7 +838,14 @@ public class Program : ProcessStatusBackgroundService
         });
 
         if(options.EnableIpRateLimiting)
-            app.UseIpRateLimiting();
+        {
+            // AspNetCoreRateLimit normalizes method tokens before evaluating its
+            // endpoint whitelist. Decide the metrics exemption here from the raw
+            // case-sensitive token so rejected lookalikes remain throttled.
+            app.UseWhen(context => ShouldApplyIpRateLimiting(
+                    context.Request.Path, context.Request.Method),
+                rateLimited => rateLimited.UseIpRateLimiting());
+        }
 
         if(options.EnableExceptionHandling)
             app.UseMiddleware<ApiExceptionHandlingMiddleware>();
@@ -2178,21 +2179,57 @@ public class Program : ProcessStatusBackgroundService
     internal static List<string> CreateIpRateLimitEndpointWhitelist() =>
         new()
         {
-            "get:" + MetricsRoutePrefix,
-            "head:" + MetricsRoutePrefix,
             "*:/notifications",
         };
 
-    private static void ConfigureIpRateLimitOptions(IpRateLimitOptions options)
+    internal static bool ShouldApplyIpRateLimiting(PathString path,
+        string method)
     {
+        var value = path.Value;
+        var isScrapeEndpoint =
+            string.Equals(value, MetricsRoutePrefix,
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, MetricsRoutePrefix + "/",
+                StringComparison.OrdinalIgnoreCase);
+
+        return !isScrapeEndpoint ||
+            !MetricsMethodPolicyMiddleware.IsAllowedMethod(method);
+    }
+
+    internal static void AddApiRateLimiting(IServiceCollection services,
+        ApiConfig apiConfig)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(apiConfig);
+
+        services.AddMemoryCache();
+        services.Configure<IpRateLimitOptions>(options =>
+            ConfigureIpRateLimitOptions(options, apiConfig));
+        services.AddSingleton<IIpPolicyStore, MemoryCacheIpPolicyStore>();
+        services.AddSingleton<IRateLimitCounterStore,
+            MemoryCacheRateLimitCounterStore>();
+        services.AddSingleton<IRateLimitConfiguration,
+            RateLimitConfiguration>();
+        services.AddSingleton<IProcessingStrategy,
+            AsyncKeyLockProcessingStrategy>();
+    }
+
+    internal static void ConfigureIpRateLimitOptions(
+        IpRateLimitOptions options, ApiConfig apiConfig)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(apiConfig);
+
         options.EnableEndpointRateLimiting = false;
 
-        // Exclude metrics scrapes and WebSocket notifications from public API
-        // throttling. Administrative routes remain throttled; trusted sources
-        // may opt out through the separate rate-limiting IP whitelist.
+        // Exact metrics GET/HEAD requests bypass the middleware in
+        // ConfigureApiPipeline because this dependency cannot preserve the raw
+        // case-sensitive method token. WebSocket notifications remain exempt here.
+        // Administrative routes remain throttled; trusted sources may opt out
+        // through the separate rate-limiting IP whitelist.
         options.EndpointWhitelist = CreateIpRateLimitEndpointWhitelist();
 
-        options.IpWhitelist = clusterConfig.Api?.RateLimiting?.IpWhitelist?.ToList();
+        options.IpWhitelist = apiConfig.RateLimiting?.IpWhitelist?.ToList();
 
         // default to whitelist localhost if whitelist absent
         if(options.IpWhitelist == null || options.IpWhitelist.Count == 0)
@@ -2206,7 +2243,7 @@ public class Program : ProcessStatusBackgroundService
         }
 
         // limits
-        var rules = clusterConfig.Api?.RateLimiting?.Rules?.ToList();
+        var rules = apiConfig.RateLimiting?.Rules?.ToList();
 
         if(rules == null || rules.Count == 0)
         {
@@ -2223,7 +2260,7 @@ public class Program : ProcessStatusBackgroundService
 
         options.GeneralRules = rules;
 
-        logger.Info(() => $"API access limited to {(string.Join(", ", rules.Select(x => $"{x.Limit} requests per {x.Period}")))}, except from {string.Join(", ", options.IpWhitelist)}");
+        logger?.Info(() => $"API access limited to {(string.Join(", ", rules.Select(x => $"{x.Limit} requests per {x.Period}")))}, except from {string.Join(", ", options.IpWhitelist)}");
     }
 
     private static int GetDefaultConcurrency(int? value)

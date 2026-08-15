@@ -142,6 +142,9 @@ public sealed class AdminApiAuthenticationMiddleware
             return;
         }
 
+        // Keep the authentication boundary safe when this middleware is hosted
+        // independently. The standard API pipeline also applies and reasserts the
+        // complete protected-route response policy around this component.
         context.Response.Headers.CacheControl = "no-store";
 
         if(credential.Status != AdminApiCredentialStatus.Configured)

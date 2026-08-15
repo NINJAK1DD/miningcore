@@ -261,10 +261,14 @@ for listener isolation, IP whitelists, admin bearer authentication, TLS or firew
 
 After existing listener, rate-limit and IP-whitelist controls accept a request, the `/metrics` route
 family now accepts only the exact, case-sensitive `GET` and `HEAD` method tokens. `HEAD` returns the
-normal exposition headers without a body. `OPTIONS`, `POST`, lowercase lookalikes such as `get`, and
-every other method return an empty `405 Method Not Allowed` response with `Allow: GET, HEAD` without
-invoking the exporter. Rejected listener and client identities keep their existing `404`, `429` or
-`403` response. Ordinary Prometheus scrapes and command-line `GET` clients require no change.
+normal exposition headers without a body, but still performs the full registry collection and
+serialization server-side. It is not a cheaper high-frequency liveness probe. `OPTIONS`, `POST`,
+lowercase lookalikes such as `get`, and every other method return an empty `405 Method Not Allowed`
+response with `Allow: GET, HEAD` without invoking the exporter. Rejected listener and client
+identities keep their existing `404`, `429` or
+`403` response. Exact scrapes bypass the public API rate limiter, while rejected lowercase,
+mixed-case and unsupported method tokens remain throttled. Ordinary Prometheus scrapes and
+command-line `GET` clients require no change.
 Custom health checks that incorrectly use another method must switch to `GET` or `HEAD`.
 
 ### Security hardening: metrics CORS isolation

@@ -134,7 +134,8 @@ embedding. CORS and these headers limit how a browser can use the response; they
 request or replace the listener, IP, authentication, TLS and firewall controls above. Once listener,
 rate-limit and IP checks pass, the metrics route accepts only the exact, case-sensitive `GET` and
 `HEAD` method tokens; unsupported methods return an empty `405 Method Not Allowed` with
-`Allow: GET, HEAD`.
+`Allow: GET, HEAD`. Exact scrapes bypass the public API rate limiter, while rejected lowercase,
+mixed-case and unsupported method tokens remain throttled.
 
 The admin IP whitelist is necessary but not sufficient. Every `/api/admin` request also requires the
 bearer token provided through `MININGCORE_ADMIN_API_TOKEN`; there is intentionally no JSON property

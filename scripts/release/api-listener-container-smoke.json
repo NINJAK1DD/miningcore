@@ -6,6 +6,9 @@
     "adminPort": 4001,
     "metricsPort": 4002,
     "adminIpWhitelist": [ "172.30.56.1" ],
-    "metricsIpWhitelist": [ "172.30.56.1" ]
+    "metricsIpWhitelist": [ "172.30.56.1" ],
+    "rateLimiting": {
+      "disabled": true
+    }
   }
 }

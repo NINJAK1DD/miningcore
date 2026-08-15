@@ -61,11 +61,17 @@ static async Task<int> RunApiListenerAsync(string[] args)
     var ports = MiningcoreProgram.ResolveApiEndpointPorts(api);
     var adminCredential = MiningcoreProgram
         .GetAdminApiCredential();
+    var enableApiRateLimiting = api.RateLimiting?.Disabled != true;
 
     using var host = Host.CreateDefaultBuilder()
         .ConfigureLogging(logging => logging.ClearProviders())
         .ConfigureWebHostDefaults(builder => builder
-            .ConfigureServices(services => services.AddCors())
+            .ConfigureServices(services =>
+            {
+                services.AddCors();
+                if(enableApiRateLimiting)
+                    MiningcoreProgram.AddApiRateLimiting(services, api);
+            })
             .UseKestrel(options => MiningcoreProgram.ConfigureApiListeners(options,
                 address, ports))
             .Configure(app =>
@@ -73,6 +79,8 @@ static async Task<int> RunApiListenerAsync(string[] args)
                 MiningcoreProgram.ConfigureApiPipeline(app, ports,
                     api.AdminIpWhitelist, api.MetricsIpWhitelist,
                     adminCredential, false,
+                    new MiningcoreProgram.ApiPipelineOptions(
+                        EnableIpRateLimiting: enableApiRateLimiting),
                     afterAccessControl: pipeline => pipeline.Run(context =>
                     {
                         context.Response.StatusCode = StatusCodes.Status200OK;

@@ -224,6 +224,9 @@ The metrics endpoint intentionally emits no permissive CORS headers. This does n
 Prometheus scraping because CORS is enforced by browsers, not server-side monitoring clients.
 After listener, rate-limit and IP-whitelist checks succeed, Miningcore accepts only `GET` and `HEAD`
 for the metrics route family. `HEAD` returns the same response headers without an exposition body.
+It still performs a full registry collection and serialization server-side, so it is not a cheaper
+high-frequency liveness probe than `GET`. Exact `GET` and `HEAD` scrapes bypass the public API rate
+limiter; rejected lowercase, mixed-case and unsupported method tokens remain subject to it.
 `OPTIONS`, `POST` and every other method return an empty `405 Method Not Allowed` response with
 `Allow: GET, HEAD`; they never invoke the metrics exporter. Rejected listener and client identities
 retain their earlier `404`, `429` or `403` result instead of disclosing the method contract. This
