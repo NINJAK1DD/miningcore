@@ -31,6 +31,14 @@ routes use dedicated ports or the legacy shared listener. Prometheus, `curl` and
 clients are unaffected. A custom browser dashboard must not scrape `/metrics` cross-origin; collect
 or proxy the required telemetry through a deliberately secured same-origin service instead.
 
+Every response for those two protected route families also carries
+`Cross-Origin-Resource-Policy: same-origin`, including wrong-listener, whitelist, authentication and
+method rejections. This tells a browser not to expose or embed the response outside the exact
+scheme, host and port that served it. CORS and this resource policy restrict browser use of a
+response; they do not prevent a request from being sent and do not replace listener isolation, IP
+whitelists, bearer authentication, TLS or firewall controls. See the
+[Fetch Standard resource-policy algorithm](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).
+
 Every administrative request also requires `Authorization: Bearer TOKEN`, where `TOKEN` comes only
 from the `MININGCORE_ADMIN_API_TOKEN` process environment. Missing or invalid token configuration
 fails closed for `/api/admin` without stopping pools or the public API. Administrative responses do
@@ -208,6 +216,15 @@ whitelist. Never publish the admin port through the public reverse proxy.
 
 The metrics endpoint intentionally emits no permissive CORS headers. This does not affect normal
 Prometheus scraping because CORS is enforced by browsers, not server-side monitoring clients.
+After listener, rate-limit and IP-whitelist checks succeed, Miningcore accepts only `GET` and `HEAD`
+for the metrics route family. `HEAD` returns the same response headers without an exposition body.
+`OPTIONS`, `POST` and every other method return an empty `405 Method Not Allowed` response with
+`Allow: GET, HEAD`; they never invoke the metrics exporter. Rejected listener and client identities
+retain their earlier `404`, `429` or `403` result instead of disclosing the method contract. This
+follows the HTTP method contract in
+[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-method-definitions), while preserving the
+simple `GET` required by the
+[OpenMetrics specification](https://prometheus.io/docs/specs/om/open_metrics_spec/).
 
 For the example configuration, local checks and a Prometheus scrape target use:
 

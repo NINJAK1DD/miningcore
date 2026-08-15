@@ -132,11 +132,42 @@ jobs:
             exit 1
           fi
 
+          assert_corp_header() {
+            local description=$1
+            shift
+            if ! curl --silent --dump-header - --output /dev/null "$@" |
+              tr -d '\r' |
+              grep --ignore-case --extended-regexp --line-regexp \
+                'Cross-Origin-Resource-Policy:[[:space:]]*same-origin' >/dev/null; then
+              echo "$description did not return the protected same-origin resource policy"
+              return 1
+            fi
+          }
+
+          assert_corp_header "Authenticated admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_corp_header "Rejected admin response" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_corp_header "Metrics scrape" \
+            http://127.0.0.1:4002/metrics
+
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4001/api/admin/status)" = 401
 
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --request OPTIONS --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          test "$(curl --silent --request POST --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          curl --silent --request OPTIONS --dump-header - --output /dev/null \
+            http://127.0.0.1:4002/metrics |
+            tr -d '\r' |
+            grep --ignore-case --extended-regexp --line-regexp \
+              'Allow:[[:space:]]*GET,[[:space:]]*HEAD' >/dev/null
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4001/api/pools)" = 404
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -169,6 +200,9 @@ jobs:
             echo "Unconfigured admin credential returned HTTP $unavailable_status instead of 503"
             exit 1
           fi
+
+          assert_corp_header "Unavailable admin response" \
+            http://127.0.0.1:4001/api/admin/status
 
           docker rm -f "$unconfigured_container" >/dev/null
 

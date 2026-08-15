@@ -46,5 +46,9 @@ assert_prose_contains "Docker recreation warning" \
   '`docker[[:space:]]+restart`[[:space:]]+is[[:space:]]+insufficient'
 assert_prose_contains "tombstone-route prohibition" \
   'No[[:space:]]+unauthenticated[[:space:]]+`410[[:space:]]+Gone`[[:space:]]+tombstone[[:space:]]+is[[:space:]]+registered[[:space:]]+by[[:space:]]+design'
+assert_prose_contains "protected response resource policy" \
+  'Every[[:space:]]+administrative[[:space:]]+response[[:space:]]+also[[:space:]]+sends[[:space:]]+`Cross-Origin-Resource-Policy:[[:space:]]+same-origin`'
+assert_prose_contains "resource policy is not authentication" \
+  'never[[:space:]]+replace[s]?[[:space:]]+the[[:space:]]+dedicated[[:space:]]+listener,[[:space:]]+IP[[:space:]]+whitelist,[[:space:]]+bearer[[:space:]]+token,[[:space:]]+TLS[[:space:]]+or[[:space:]]+firewall[[:space:]]+boundary'
 
 echo "Administrative API documentation invariants are present"

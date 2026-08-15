@@ -129,6 +129,12 @@ server-side service with its own user authentication and authorization; that ser
 authenticated admin `PUT` endpoint. Never place the Miningcore admin token in JavaScript or send it
 to a browser.
 
+Every administrative response also sends `Cross-Origin-Resource-Policy: same-origin`, including
+wrong-listener, whitelist and authentication rejections. This prevents a browser from exposing or
+embedding the response from a different scheme, host or port. CORS and this resource-policy header
+govern browser response use only: they do not prevent requests from being transmitted and never
+replace the dedicated listener, IP whitelist, bearer token, TLS or firewall boundary.
+
 ## Mutating routes
 
 State-changing requests use explicit non-GET verbs:

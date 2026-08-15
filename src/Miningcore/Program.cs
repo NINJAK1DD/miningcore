@@ -810,8 +810,7 @@ public class Program : ProcessStatusBackgroundService
             StringComparison.OrdinalIgnoreCase);
 
     internal static bool ShouldApplyPublicCors(PathString path) =>
-        !AdminApiAuthenticationMiddleware.IsAdminRequest(path) &&
-        !IsMetricsRequest(path);
+        !ProtectedRouteResourcePolicyMiddleware.IsProtectedRequest(path);
 
     internal static void ConfigureApiPipeline(IApplicationBuilder app,
         ApiEndpointPorts ports, string[] adminIpWhitelist,
@@ -824,6 +823,10 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(ports);
         ArgumentNullException.ThrowIfNull(adminCredential);
         options ??= new ApiPipelineOptions();
+
+        // Browser resource isolation belongs ahead of every terminal path so
+        // protected success and rejection responses share the same policy.
+        app.UseMiddleware<ProtectedRouteResourcePolicyMiddleware>();
 
         // Reject wrong-listener requests before rate limiting or routing. This
         // deliberately returns a cheap 404 without invoking protected endpoint
@@ -853,6 +856,10 @@ public class Program : ProcessStatusBackgroundService
             metricsIpWhitelist, gpdrCompliantLogging);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
             gpdrCompliantLogging);
+
+        // Preserve wrong-listener 404 and IP-whitelist 403 behavior by enforcing
+        // the metrics method contract only after those access-control boundaries.
+        app.UseMiddleware<MetricsMethodPolicyMiddleware>();
 
         // Public API clients retain the existing permissive policy. Administrative and
         // metrics routes deliberately receive no CORS headers: browsers must not carry

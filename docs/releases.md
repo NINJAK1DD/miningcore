@@ -248,6 +248,22 @@ an exemption must add its narrowly scoped source address to `api.rateLimiting.ip
 as `api.adminIpWhitelist`. The rate-limit IP whitelist bypasses API throttling globally, not only
 for administrative requests, so restrict its entries to trusted fixed addresses.
 
+### Security hardening: protected browser resources and metrics methods
+
+Administrative and Prometheus route families now send
+`Cross-Origin-Resource-Policy: same-origin` on successful responses and on wrong-listener,
+whitelist, authentication and method rejections. This prevents cross-origin browser embedding or
+consumption; it does not prevent requests from being sent and is not a replacement for listener
+isolation, IP whitelists, admin bearer authentication, TLS or firewall policy.
+
+After existing listener, rate-limit and IP-whitelist controls accept a request, the `/metrics` route
+family now accepts only `GET` and `HEAD`. `HEAD` returns the normal exposition headers without a
+body. `OPTIONS`, `POST` and every other method return an empty `405 Method Not Allowed` response
+with `Allow: GET, HEAD` without invoking the exporter. Rejected listener and client identities keep
+their existing `404`, `429` or `403` response. Ordinary Prometheus scrapes and command-line `GET`
+clients require no change. Custom health checks that incorrectly use another method must switch to
+`GET` or `HEAD`.
+
 ### Security hardening: metrics CORS isolation
 
 The Prometheus `/metrics` route family no longer receives the public API's permissive CORS headers.

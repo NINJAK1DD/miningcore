@@ -124,6 +124,12 @@ Permissive browser CORS remains enabled for public REST and WebSocket routes, bu
 `/api/admin` or `/metrics`. This applies on both dedicated and shared listeners and does not affect
 Prometheus or other non-browser scrapers. Browser dashboards that previously read `/metrics`
 directly across origins must use a deliberately secured same-origin telemetry service.
+Protected admin and metrics responses also send `Cross-Origin-Resource-Policy: same-origin`, on
+success and on listener, whitelist, authentication or method rejection. CORS and this header limit
+how a browser can use the response; they do not prevent the request or replace the listener, IP,
+authentication, TLS and firewall controls above. Once listener, rate-limit and IP checks pass, the
+metrics route accepts only `GET` and `HEAD`; unsupported methods return an empty `405 Method Not
+Allowed` with `Allow: GET, HEAD`.
 
 The admin IP whitelist is necessary but not sufficient. Every `/api/admin` request also requires the
 bearer token provided through `MININGCORE_ADMIN_API_TOKEN`; there is intentionally no JSON property

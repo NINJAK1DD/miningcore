@@ -1728,6 +1728,56 @@ public class ApiListenerConfigurationTests
         Assert.Equal(expected, Program.IsMetricsRequest(path));
 
     [Theory]
+    [InlineData("/api/admin/status", true)]
+    [InlineData("/API/ADMIN/stats/gc", true)]
+    [InlineData("/metrics", true)]
+    [InlineData("/METRICS/custom", true)]
+    [InlineData("/api/administrator", false)]
+    [InlineData("/metrics-export", false)]
+    [InlineData("/api/pools", false)]
+    public void ProtectedResourcePolicyMatching_IsCaseInsensitiveAndSegmentBounded(
+        string path, bool expected) =>
+        Assert.Equal(expected,
+            ProtectedRouteResourcePolicyMiddleware.IsProtectedRequest(path));
+
+    [Theory]
+    [InlineData("GET", true)]
+    [InlineData("get", true)]
+    [InlineData("HEAD", true)]
+    [InlineData("head", true)]
+    [InlineData("OPTIONS", false)]
+    [InlineData("POST", false)]
+    [InlineData("PUT", false)]
+    [InlineData("DELETE", false)]
+    public void MetricsMethodPolicy_AllowsOnlyGetAndHead(string method,
+        bool expected) =>
+        Assert.Equal(expected,
+            MetricsMethodPolicyMiddleware.IsAllowedMethod(method));
+
+    [Fact]
+    public async Task MetricsMethodPolicy_RejectsUnsupportedMethodBeforeExporter()
+    {
+        var nextCalled = false;
+        var middleware = new MetricsMethodPolicyMiddleware(_ =>
+        {
+            nextCalled = true;
+            return Task.CompletedTask;
+        });
+        var context = new DefaultHttpContext();
+        context.Request.Method = HttpMethods.Options;
+        context.Request.Path = "/metrics";
+
+        await middleware.Invoke(context);
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status405MethodNotAllowed,
+            context.Response.StatusCode);
+        Assert.Equal(MetricsMethodPolicyMiddleware.AllowedMethods,
+            context.Response.Headers.Allow);
+        Assert.Equal(0, context.Response.ContentLength);
+    }
+
+    [Theory]
     [InlineData("GET", "/api/admin", false)]
     [InlineData("POST", "/api/admin/stats/gc", false)]
     [InlineData("PUT", "/API/ADMIN/payment/processing/disable", false)]
@@ -1855,6 +1905,50 @@ public class ApiListenerConfigurationTests
             context.Response.StatusCode);
         Assert.False(context.Response.Headers.ContainsKey(
             "WWW-Authenticate"));
+        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.HeaderValue,
+            context.Response.Headers[
+                ProtectedRouteResourcePolicyMiddleware.HeaderName]);
+    }
+
+    [Fact]
+    public async Task ApiPipeline_RejectsNonWhitelistedMetricsClientBeforeMethodPolicy()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCors();
+        using var provider = services.BuildServiceProvider();
+        var app = new ApplicationBuilder(provider);
+        var nextCalled = false;
+        var ports = new Program.ApiEndpointPorts(4000, 4000, 4000);
+
+        Program.ConfigureApiPipeline(app, ports, null,
+            new[] { "198.51.100.10" },
+            AdminApiCredential.Create(TestAdminToken), false,
+            afterAccessControl: pipeline => pipeline.Run(_ =>
+            {
+                nextCalled = true;
+                return Task.CompletedTask;
+            }));
+
+        var context = new DefaultHttpContext
+        {
+            RequestServices = provider,
+        };
+        context.Connection.LocalPort = ports.MetricsPort;
+        context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+        context.Request.Method = HttpMethods.Options;
+        context.Request.Path = "/metrics";
+        context.Response.Body = new MemoryStream();
+
+        await app.Build()(context);
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status403Forbidden,
+            context.Response.StatusCode);
+        Assert.False(context.Response.Headers.ContainsKey("Allow"));
+        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.HeaderValue,
+            context.Response.Headers[
+                ProtectedRouteResourcePolicyMiddleware.HeaderName]);
     }
 
     [Fact]
@@ -1999,6 +2093,7 @@ public class ApiListenerConfigurationTests
 
         using var missing = await client.GetAsync(uri);
         Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
+        AssertProtectedResourcePolicy(missing);
         Assert.Equal("Bearer", missing.Headers.WwwAuthenticate.Single().Scheme);
         Assert.Equal("no-store", missing.Headers.CacheControl?.ToString());
 
@@ -2007,12 +2102,14 @@ public class ApiListenerConfigurationTests
             "Bearer", new string('b', 64));
         using var wrong = await client.SendAsync(wrongRequest);
         Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
+        AssertProtectedResourcePolicy(wrong);
 
         using var validRequest = new HttpRequestMessage(HttpMethod.Get, uri);
         validRequest.Headers.Authorization = new AuthenticationHeaderValue(
             "Bearer", TestAdminToken);
         using var valid = await client.SendAsync(validRequest);
         Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+        AssertProtectedResourcePolicy(valid);
     }
 
     [Theory]
@@ -2031,13 +2128,14 @@ public class ApiListenerConfigurationTests
         using var response = await client.GetAsync(
             $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        AssertProtectedResourcePolicy(response);
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Cors_IsLimitedToPublicRoutesOnDedicatedAndSharedListeners(
+    public async Task CorsAndProtectedResourcePolicies_WorkOnDedicatedAndSharedListeners(
         bool shared)
     {
         await using var host = await StartRouteTestHostWithRetryAsync(shared);
@@ -2050,10 +2148,19 @@ public class ApiListenerConfigurationTests
         Assert.Contains("*", publicResponse.Headers.GetValues(
             "Access-Control-Allow-Origin"));
 
+        using var adminSuccessRequest = new HttpRequestMessage(HttpMethod.Get,
+            $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
+        adminSuccessRequest.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", TestAdminToken);
+        using var adminSuccessResponse = await client.SendAsync(adminSuccessRequest);
+        Assert.Equal(HttpStatusCode.OK, adminSuccessResponse.StatusCode);
+        AssertProtectedResourcePolicy(adminSuccessResponse);
+
         using var adminRequest = CreatePreflightRequest(
             $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
         using var adminResponse = await client.SendAsync(adminRequest);
         Assert.Equal(HttpStatusCode.Unauthorized, adminResponse.StatusCode);
+        AssertProtectedResourcePolicy(adminResponse);
         Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Origin"));
         Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Headers"));
 
@@ -2062,6 +2169,7 @@ public class ApiListenerConfigurationTests
         metricsBrowserRequest.Headers.Add("Origin", "https://dashboard.example");
         using var metricsBrowserResponse = await client.SendAsync(metricsBrowserRequest);
         Assert.Equal(HttpStatusCode.OK, metricsBrowserResponse.StatusCode);
+        AssertProtectedResourcePolicy(metricsBrowserResponse);
         Assert.False(metricsBrowserResponse.Headers.Contains(
             "Access-Control-Allow-Origin"));
 
@@ -2069,6 +2177,12 @@ public class ApiListenerConfigurationTests
             $"http://127.0.0.1:{host.Ports.MetricsPort}/METRICS");
         using var metricsPreflightResponse = await client.SendAsync(
             metricsPreflightRequest);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed,
+            metricsPreflightResponse.StatusCode);
+        AssertProtectedResourcePolicy(metricsPreflightResponse);
+        Assert.Equal(new[] { "GET", "HEAD" },
+            GetAllowedMethods(metricsPreflightResponse));
+        Assert.Empty(await metricsPreflightResponse.Content.ReadAsByteArrayAsync());
         Assert.False(metricsPreflightResponse.Headers.Contains(
             "Access-Control-Allow-Origin"));
         Assert.False(metricsPreflightResponse.Headers.Contains(
@@ -2077,6 +2191,7 @@ public class ApiListenerConfigurationTests
         using var scrapeResponse = await client.GetAsync(
             $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
         Assert.Equal(HttpStatusCode.OK, scrapeResponse.StatusCode);
+        AssertProtectedResourcePolicy(scrapeResponse);
         Assert.Equal("text/plain", scrapeResponse.Content.Headers.ContentType?.MediaType);
         var scrapeBody = await scrapeResponse.Content.ReadAsStringAsync();
         Assert.Contains(scrapeBody.Split('\n'), line =>
@@ -2084,10 +2199,39 @@ public class ApiListenerConfigurationTests
                 "miningcore_listener_test_scrapes_total 1",
                 StringComparison.Ordinal));
 
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head,
+            $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
+        using var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        AssertProtectedResourcePolicy(headResponse);
+        Assert.Equal("text/plain", headResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Empty(await headResponse.Content.ReadAsByteArrayAsync());
+
+        using var unsupportedRequest = new HttpRequestMessage(HttpMethod.Post,
+            $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
+        using var unsupportedResponse = await client.SendAsync(unsupportedRequest);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed,
+            unsupportedResponse.StatusCode);
+        AssertProtectedResourcePolicy(unsupportedResponse);
+        Assert.Equal(new[] { "GET", "HEAD" },
+            GetAllowedMethods(unsupportedResponse));
+        Assert.Empty(await unsupportedResponse.Content.ReadAsByteArrayAsync());
+
+        if(!shared)
+        {
+            using var wrongListenerResponse = await client.GetAsync(
+                $"http://127.0.0.1:{host.Ports.PublicPort}/metrics");
+            Assert.Equal(HttpStatusCode.NotFound,
+                wrongListenerResponse.StatusCode);
+            AssertProtectedResourcePolicy(wrongListenerResponse);
+        }
+
         using var lookalikeRequest = CreatePreflightRequest(
             $"http://127.0.0.1:{host.Ports.PublicPort}/metrics-export");
         using var lookalikeResponse = await client.SendAsync(lookalikeRequest);
         Assert.Equal(HttpStatusCode.NoContent, lookalikeResponse.StatusCode);
+        Assert.False(lookalikeResponse.Headers.Contains(
+            ProtectedRouteResourcePolicyMiddleware.HeaderName));
         Assert.Contains("*", lookalikeResponse.Headers.GetValues(
             "Access-Control-Allow-Origin"));
     }
@@ -2249,6 +2393,16 @@ public class ApiListenerConfigurationTests
                                     context.Request.Path == "/notifications" ||
                                     context.Request.Path == "/api/admin/status")
                                 {
+                                    if(context.Request.Path == "/api/admin/status")
+                                    {
+                                        // Attempt to weaken the policy downstream. The
+                                        // first-in-pipeline OnStarting callback must
+                                        // restore same-origin on the wire response.
+                                        context.Response.Headers[
+                                            ProtectedRouteResourcePolicyMiddleware.HeaderName] =
+                                            "cross-origin";
+                                    }
+
                                     context.Response.StatusCode = StatusCodes.Status200OK;
                                     return;
                                 }
@@ -2322,6 +2476,24 @@ public class ApiListenerConfigurationTests
                 "Bearer", TestAdminToken);
         using var response = await client.SendAsync(request);
         Assert.Equal(expected, response.StatusCode);
+    }
+
+    private static void AssertProtectedResourcePolicy(
+        HttpResponseMessage response) =>
+        Assert.Equal(
+            new[] { ProtectedRouteResourcePolicyMiddleware.HeaderValue },
+            response.Headers.GetValues(
+                ProtectedRouteResourcePolicyMiddleware.HeaderName));
+
+    private static string[] GetAllowedMethods(HttpResponseMessage response)
+    {
+        if(!response.Headers.TryGetValues("Allow", out var values) &&
+            !response.Content.Headers.TryGetValues("Allow", out values))
+            return Array.Empty<string>();
+
+        return values.SelectMany(value => value.Split(','))
+            .Select(value => value.Trim())
+            .ToArray();
     }
 
     private static HttpRequestMessage CreatePreflightRequest(string uri)
