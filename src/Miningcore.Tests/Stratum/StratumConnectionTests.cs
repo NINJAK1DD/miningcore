@@ -76,7 +76,7 @@ public class StratumConnectionTests : TestBase
     }
 
     [Fact]
-    public async Task DispatchAsync_CompletionCallbackFailure_DoesNotSignalErrorTwice()
+    public async Task DispatchAsync_CompletionCallbackFailure_CompletesWithoutSignallingErrorAgain()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -112,7 +112,7 @@ public class StratumConnectionTests : TestBase
     }
 
     [Fact]
-    public async Task DispatchAsync_ErrorCallbackFailure_DoesNotSignalErrorTwice()
+    public async Task DispatchAsync_ErrorCallbackFailure_CompletesWithoutSignallingTerminalEventAgain()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();

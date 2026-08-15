@@ -324,6 +324,10 @@ would silently restore the unsafe per-pool bind path. The protected surface now 
 `CreateConnectionId` and `BeforeConnectionTaskRemovalAsync` lifecycle hooks, while
 `UnregisterConnection` fails fast when the identity is absent instead of relying on a Debug-only
 assertion. Out-of-tree subclasses must not call it defensively for an already-removed connection.
+After a terminal completion or error callback has been invoked, an exception from that callback or
+subsequent stream teardown is logged and absorbed: `DispatchAsync` completes without issuing a
+second terminal callback. Operators diagnosing lifecycle-callback programming errors must therefore
+inspect the connection error logs rather than expecting a faulted dispatch task.
 The native resolver contains an explicit FreeBSD libc fallback, but FreeBSD is not runtime-tested in
 CI and is not promoted to a first-class supported Miningcore deployment target by this change.
 

@@ -266,6 +266,9 @@ public class StratumConnection
             }
             else
             {
+                // The terminal event has already been consumed. Log and absorb callback or
+                // teardown failures so DispatchAsync completes without issuing a second terminal
+                // event; a faulted task here would not restore the consumed lifecycle transition.
                 logger.Error(ex, () =>
                     $"[{ConnectionId}] Terminal connection callback or subsequent teardown failed; refusing a second callback");
             }
