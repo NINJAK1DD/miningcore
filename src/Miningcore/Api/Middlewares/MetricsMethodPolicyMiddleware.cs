@@ -13,13 +13,15 @@ public sealed class MetricsMethodPolicyMiddleware
 
     public const string AllowedMethods = "GET, HEAD";
 
+    // Use ordinal comparisons rather than HttpMethods.IsGet/IsHead: RFC 9110
+    // method tokens are case-sensitive, while those helpers are not.
     public static bool IsAllowedMethod(string method) =>
         string.Equals(method, HttpMethods.Get, StringComparison.Ordinal) ||
         string.Equals(method, HttpMethods.Head, StringComparison.Ordinal);
 
     public async Task Invoke(HttpContext context)
     {
-        if(Program.IsMetricsRequest(context.Request.Path) &&
+        if(ProtectedRouteClassifier.IsMetricsRequest(context.Request.Path) &&
             !IsAllowedMethod(context.Request.Method))
         {
             context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;

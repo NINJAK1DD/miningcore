@@ -124,13 +124,16 @@ Permissive browser CORS remains enabled for public REST and WebSocket routes, bu
 `/api/admin` or `/metrics`. This applies on both dedicated and shared listeners and does not affect
 Prometheus or other non-browser scrapers. Browser dashboards that previously read `/metrics`
 directly across origins must use a deliberately secured same-origin telemetry service.
-Protected admin and metrics responses also send `Cross-Origin-Resource-Policy: same-origin`, on
-success and on listener, whitelist, authentication or method rejection. This blocks eligible
+Protected admin and metrics responses produced by the API pipeline send
+`Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` and
+`X-Content-Type-Options: nosniff` on success and on listener, rate-limit, whitelist, authentication,
+credential-unavailable or method rejection. Protocol errors rejected by Kestrel before the request
+enters the pipeline cannot carry these application headers. The resource policy blocks eligible
 cross-origin no-CORS subresource use, but does not generally prohibit navigation or iframe
-embedding. CORS and this header limit how a browser can use the response; they do not prevent the
-request or replace the listener, IP, authentication, TLS and firewall controls above. Once
-listener, rate-limit and IP checks pass, the metrics route accepts only the exact, case-sensitive
-`GET` and `HEAD` method tokens; unsupported methods return an empty `405 Method Not Allowed` with
+embedding. CORS and these headers limit how a browser can use the response; they do not prevent the
+request or replace the listener, IP, authentication, TLS and firewall controls above. Once listener,
+rate-limit and IP checks pass, the metrics route accepts only the exact, case-sensitive `GET` and
+`HEAD` method tokens; unsupported methods return an empty `405 Method Not Allowed` with
 `Allow: GET, HEAD`.
 
 The admin IP whitelist is necessary but not sufficient. Every `/api/admin` request also requires the

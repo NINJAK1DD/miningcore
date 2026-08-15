@@ -13,10 +13,12 @@ public sealed class ProtectedRouteResourcePolicyMiddleware
 
     public const string HeaderName = "Cross-Origin-Resource-Policy";
     public const string HeaderValue = "same-origin";
+    public const string CacheControlValue = "no-store";
+    public const string ContentTypeOptionsHeaderName = "X-Content-Type-Options";
+    public const string ContentTypeOptionsHeaderValue = "nosniff";
 
     public static bool IsProtectedRequest(PathString path) =>
-        AdminApiAuthenticationMiddleware.IsAdminRequest(path) ||
-        Program.IsMetricsRequest(path);
+        ProtectedRouteClassifier.IsProtectedRequest(path);
 
     public async Task Invoke(HttpContext context)
     {
@@ -28,15 +30,23 @@ public sealed class ProtectedRouteResourcePolicyMiddleware
             // registering this in the first middleware makes its callback run after
             // downstream callbacks and restore the boundary immediately before the
             // headers are committed.
-            context.Response.Headers[HeaderName] = HeaderValue;
+            ApplyHeaders(context.Response);
             context.Response.OnStarting(static state =>
             {
                 var response = (HttpResponse) state;
-                response.Headers[HeaderName] = HeaderValue;
+                ApplyHeaders(response);
                 return Task.CompletedTask;
             }, context.Response);
         }
 
         await next(context);
+    }
+
+    private static void ApplyHeaders(HttpResponse response)
+    {
+        response.Headers[HeaderName] = HeaderValue;
+        response.Headers.CacheControl = CacheControlValue;
+        response.Headers[ContentTypeOptionsHeaderName] =
+            ContentTypeOptionsHeaderValue;
     }
 }

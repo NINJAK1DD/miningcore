@@ -1729,9 +1729,11 @@ public class ApiListenerConfigurationTests
         Assert.Equal(expected, Program.IsMetricsRequest(path));
 
     [Theory]
+    [InlineData("/api/admin", true)]
     [InlineData("/api/admin/status", true)]
     [InlineData("/API/ADMIN/stats/gc", true)]
     [InlineData("/metrics", true)]
+    [InlineData("/metrics/", true)]
     [InlineData("/METRICS/custom", true)]
     [InlineData("/api/administrator", false)]
     [InlineData("/metrics-export", false)]
@@ -1785,6 +1787,7 @@ public class ApiListenerConfigurationTests
     [InlineData("POST", "/api/administrator", false)]
     [InlineData("POST", "/api/administer", false)]
     [InlineData("GET", "/metrics", true)]
+    [InlineData("HEAD", "/metrics", true)]
     [InlineData("POST", "/metrics", false)]
     [InlineData("GET", "/metrics/custom", false)]
     [InlineData("GET", "/notifications", true)]
@@ -1906,9 +1909,7 @@ public class ApiListenerConfigurationTests
             context.Response.StatusCode);
         Assert.False(context.Response.Headers.ContainsKey(
             "WWW-Authenticate"));
-        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.HeaderValue,
-            context.Response.Headers[
-                ProtectedRouteResourcePolicyMiddleware.HeaderName]);
+        AssertProtectedResponseHeaders(context.Response);
     }
 
     [Fact]
@@ -1947,9 +1948,7 @@ public class ApiListenerConfigurationTests
         Assert.Equal(StatusCodes.Status403Forbidden,
             context.Response.StatusCode);
         Assert.False(context.Response.Headers.ContainsKey("Allow"));
-        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.HeaderValue,
-            context.Response.Headers[
-                ProtectedRouteResourcePolicyMiddleware.HeaderName]);
+        AssertProtectedResponseHeaders(context.Response);
     }
 
     [Fact]
@@ -2094,7 +2093,7 @@ public class ApiListenerConfigurationTests
 
         using var missing = await client.GetAsync(uri);
         Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
-        AssertProtectedResourcePolicy(missing);
+        AssertProtectedResponseHeaders(missing);
         Assert.Equal("Bearer", missing.Headers.WwwAuthenticate.Single().Scheme);
         Assert.Equal("no-store", missing.Headers.CacheControl?.ToString());
 
@@ -2103,14 +2102,14 @@ public class ApiListenerConfigurationTests
             "Bearer", new string('b', 64));
         using var wrong = await client.SendAsync(wrongRequest);
         Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
-        AssertProtectedResourcePolicy(wrong);
+        AssertProtectedResponseHeaders(wrong);
 
         using var validRequest = new HttpRequestMessage(HttpMethod.Get, uri);
         validRequest.Headers.Authorization = new AuthenticationHeaderValue(
             "Bearer", TestAdminToken);
         using var valid = await client.SendAsync(validRequest);
         Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
-        AssertProtectedResourcePolicy(valid);
+        AssertProtectedResponseHeaders(valid);
     }
 
     [Theory]
@@ -2129,7 +2128,7 @@ public class ApiListenerConfigurationTests
         using var response = await client.GetAsync(
             $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        AssertProtectedResourcePolicy(response);
+        AssertProtectedResponseHeaders(response);
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
     }
 
@@ -2155,13 +2154,13 @@ public class ApiListenerConfigurationTests
             "Bearer", TestAdminToken);
         using var adminSuccessResponse = await client.SendAsync(adminSuccessRequest);
         Assert.Equal(HttpStatusCode.OK, adminSuccessResponse.StatusCode);
-        AssertProtectedResourcePolicy(adminSuccessResponse);
+        AssertProtectedResponseHeaders(adminSuccessResponse);
 
         using var adminRequest = CreatePreflightRequest(
             $"http://127.0.0.1:{host.Ports.AdminPort}/api/admin/status");
         using var adminResponse = await client.SendAsync(adminRequest);
         Assert.Equal(HttpStatusCode.Unauthorized, adminResponse.StatusCode);
-        AssertProtectedResourcePolicy(adminResponse);
+        AssertProtectedResponseHeaders(adminResponse);
         Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Origin"));
         Assert.False(adminResponse.Headers.Contains("Access-Control-Allow-Headers"));
 
@@ -2170,7 +2169,7 @@ public class ApiListenerConfigurationTests
         metricsBrowserRequest.Headers.Add("Origin", "https://dashboard.example");
         using var metricsBrowserResponse = await client.SendAsync(metricsBrowserRequest);
         Assert.Equal(HttpStatusCode.OK, metricsBrowserResponse.StatusCode);
-        AssertProtectedResourcePolicy(metricsBrowserResponse);
+        AssertProtectedResponseHeaders(metricsBrowserResponse);
         Assert.False(metricsBrowserResponse.Headers.Contains(
             "Access-Control-Allow-Origin"));
 
@@ -2180,7 +2179,7 @@ public class ApiListenerConfigurationTests
             metricsPreflightRequest);
         Assert.Equal(HttpStatusCode.MethodNotAllowed,
             metricsPreflightResponse.StatusCode);
-        AssertProtectedResourcePolicy(metricsPreflightResponse);
+        AssertProtectedResponseHeaders(metricsPreflightResponse);
         Assert.Equal(new[] { "GET", "HEAD" },
             GetAllowedMethods(metricsPreflightResponse));
         Assert.Empty(await metricsPreflightResponse.Content.ReadAsByteArrayAsync());
@@ -2192,7 +2191,7 @@ public class ApiListenerConfigurationTests
         using var scrapeResponse = await client.GetAsync(
             $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
         Assert.Equal(HttpStatusCode.OK, scrapeResponse.StatusCode);
-        AssertProtectedResourcePolicy(scrapeResponse);
+        AssertProtectedResponseHeaders(scrapeResponse);
         Assert.Equal("text/plain", scrapeResponse.Content.Headers.ContentType?.MediaType);
         var scrapeBody = await scrapeResponse.Content.ReadAsStringAsync();
         Assert.Contains(scrapeBody.Split('\n'), line =>
@@ -2204,7 +2203,7 @@ public class ApiListenerConfigurationTests
             $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
         using var headResponse = await client.SendAsync(headRequest);
         Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
-        AssertProtectedResourcePolicy(headResponse);
+        AssertProtectedResponseHeaders(headResponse);
         Assert.Equal("text/plain", headResponse.Content.Headers.ContentType?.MediaType);
         Assert.Empty(await headResponse.Content.ReadAsByteArrayAsync());
 
@@ -2213,7 +2212,7 @@ public class ApiListenerConfigurationTests
         using var unsupportedResponse = await client.SendAsync(unsupportedRequest);
         Assert.Equal(HttpStatusCode.MethodNotAllowed,
             unsupportedResponse.StatusCode);
-        AssertProtectedResourcePolicy(unsupportedResponse);
+        AssertProtectedResponseHeaders(unsupportedResponse);
         Assert.Equal(new[] { "GET", "HEAD" },
             GetAllowedMethods(unsupportedResponse));
         Assert.Empty(await unsupportedResponse.Content.ReadAsByteArrayAsync());
@@ -2237,6 +2236,11 @@ public class ApiListenerConfigurationTests
             Assert.Contains($"\r\n{ProtectedRouteResourcePolicyMiddleware.HeaderName}: " +
                 $"{ProtectedRouteResourcePolicyMiddleware.HeaderValue}\r\n",
                 lowerCaseResponse, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("\r\nCache-Control: no-store\r\n", lowerCaseResponse,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains($"\r\n{ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderName}: " +
+                $"{ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderValue}\r\n",
+                lowerCaseResponse, StringComparison.OrdinalIgnoreCase);
             Assert.True(bodyStart >= 0);
             Assert.Empty(lowerCaseResponse[(bodyStart + 4)..]);
         }
@@ -2247,7 +2251,7 @@ public class ApiListenerConfigurationTests
                 $"http://127.0.0.1:{host.Ports.PublicPort}/metrics");
             Assert.Equal(HttpStatusCode.NotFound,
                 wrongListenerResponse.StatusCode);
-            AssertProtectedResourcePolicy(wrongListenerResponse);
+            AssertProtectedResponseHeaders(wrongListenerResponse);
         }
 
         using var lookalikeRequest = CreatePreflightRequest(
@@ -2256,6 +2260,9 @@ public class ApiListenerConfigurationTests
         Assert.Equal(HttpStatusCode.NoContent, lookalikeResponse.StatusCode);
         Assert.False(lookalikeResponse.Headers.Contains(
             ProtectedRouteResourcePolicyMiddleware.HeaderName));
+        Assert.False(lookalikeResponse.Headers.Contains(
+            ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderName));
+        Assert.Null(lookalikeResponse.Headers.CacheControl);
         Assert.Contains("*", lookalikeResponse.Headers.GetValues(
             "Access-Control-Allow-Origin"));
     }
@@ -2425,6 +2432,11 @@ public class ApiListenerConfigurationTests
                                         context.Response.Headers[
                                             ProtectedRouteResourcePolicyMiddleware.HeaderName] =
                                             "cross-origin";
+                                        context.Response.Headers.CacheControl =
+                                            "public, max-age=3600";
+                                        context.Response.Headers[
+                                            ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderName] =
+                                            "off";
                                     }
 
                                     context.Response.StatusCode = StatusCodes.Status200OK;
@@ -2502,12 +2514,36 @@ public class ApiListenerConfigurationTests
         Assert.Equal(expected, response.StatusCode);
     }
 
-    private static void AssertProtectedResourcePolicy(
-        HttpResponseMessage response) =>
+    private static void AssertProtectedResponseHeaders(
+        HttpResponseMessage response)
+    {
         Assert.Equal(
             new[] { ProtectedRouteResourcePolicyMiddleware.HeaderValue },
             response.Headers.GetValues(
                 ProtectedRouteResourcePolicyMiddleware.HeaderName));
+        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.CacheControlValue,
+            response.Headers.CacheControl?.ToString());
+        Assert.Equal(
+            new[]
+            {
+                ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderValue,
+            },
+            response.Headers.GetValues(
+                ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderName));
+    }
+
+    private static void AssertProtectedResponseHeaders(HttpResponse response)
+    {
+        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.HeaderValue,
+            response.Headers[
+                ProtectedRouteResourcePolicyMiddleware.HeaderName]);
+        Assert.Equal(ProtectedRouteResourcePolicyMiddleware.CacheControlValue,
+            response.Headers.CacheControl);
+        Assert.Equal(
+            ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderValue,
+            response.Headers[
+                ProtectedRouteResourcePolicyMiddleware.ContentTypeOptionsHeaderName]);
+    }
 
     private static string[] GetAllowedMethods(HttpResponseMessage response)
     {

@@ -31,12 +31,16 @@ routes use dedicated ports or the legacy shared listener. Prometheus, `curl` and
 clients are unaffected. A custom browser dashboard must not scrape `/metrics` cross-origin; collect
 or proxy the required telemetry through a deliberately secured same-origin service instead.
 
-Every response for those two protected route families also carries
-`Cross-Origin-Resource-Policy: same-origin`, including wrong-listener, whitelist, authentication and
-method rejections. This blocks eligible cross-origin no-CORS subresource use of the response. It is
-not a general navigation or framing control: ordinary nested navigations can remain eligible when
-the embedding document does not require cross-origin isolation. Use an appropriate framing policy
-such as CSP `frame-ancestors` if a deployment must prohibit framing. CORS and this resource policy
+Every response the API pipeline produces for those two protected route families carries
+`Cross-Origin-Resource-Policy: same-origin`, including wrong-listener, rate-limit, whitelist,
+authentication, credential-unavailable and method rejections. Protected pipeline responses also
+send `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. Protocol errors that Kestrel
+rejects before a request enters the pipeline cannot carry these application headers.
+
+The resource policy blocks eligible cross-origin no-CORS subresource use of the response. It is not
+a general navigation or framing control: ordinary nested navigations can remain eligible when the
+embedding document does not require cross-origin isolation. Use an appropriate framing policy such
+as CSP `frame-ancestors` if a deployment must prohibit framing. CORS and these response headers
 restrict browser use of a response; they do not prevent a request from being sent and do not
 replace listener isolation, IP whitelists, bearer authentication, TLS or firewall controls. See the
 [Fetch Standard resource-policy algorithm](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).

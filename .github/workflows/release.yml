@@ -132,25 +132,28 @@ jobs:
             exit 1
           fi
 
-          assert_corp_header() {
+          assert_response_header() {
             local description=$1
-            shift
+            local pattern=$2
+            shift 2
             if ! curl --silent --dump-header - --output /dev/null "$@" |
               tr -d '\r' |
-              grep --ignore-case --extended-regexp --line-regexp \
-                'Cross-Origin-Resource-Policy:[[:space:]]*same-origin' >/dev/null; then
-              echo "$description did not return the protected same-origin resource policy"
+              grep --ignore-case --extended-regexp --line-regexp "$pattern" >/dev/null; then
+              echo "$description did not return the expected response header: $pattern"
               return 1
             fi
           }
 
-          assert_corp_header "Authenticated admin response" \
-            --header "Authorization: Bearer $admin_token" \
-            http://127.0.0.1:4001/api/admin/status
-          assert_corp_header "Rejected admin response" \
-            http://127.0.0.1:4001/api/admin/status
-          assert_corp_header "Metrics scrape" \
-            http://127.0.0.1:4002/metrics
+          assert_protected_headers() {
+            local description=$1
+            shift
+            assert_response_header "$description resource policy" \
+              'Cross-Origin-Resource-Policy:[[:space:]]*same-origin' "$@"
+            assert_response_header "$description cache policy" \
+              'Cache-Control:[[:space:]]*no-store' "$@"
+            assert_response_header "$description content-type policy" \
+              'X-Content-Type-Options:[[:space:]]*nosniff' "$@"
+          }
 
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4001/api/admin/status)" = 401
@@ -174,6 +177,16 @@ jobs:
             http://127.0.0.1:4001/api/pools)" = 404
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:4002/api/pools)" = 404
+
+          assert_protected_headers "Authenticated admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_protected_headers "Rejected admin response" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_protected_headers "Metrics scrape" \
+            http://127.0.0.1:4002/metrics
+          assert_protected_headers "Rejected metrics method" \
+            --request OPTIONS http://127.0.0.1:4002/metrics
 
           docker rm -f "$container" >/dev/null
 
@@ -203,7 +216,7 @@ jobs:
             exit 1
           fi
 
-          assert_corp_header "Unavailable admin response" \
+          assert_protected_headers "Unavailable admin response" \
             http://127.0.0.1:4001/api/admin/status
 
           docker rm -f "$unconfigured_container" >/dev/null
@@ -212,6 +225,7 @@ jobs:
             --network "$network" \
             --ip 172.30.56.2 \
             --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
+            --publish 127.0.0.1:4000:4000 \
             --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
@@ -244,6 +258,26 @@ jobs:
             echo "nginx public lookalike request returned HTTP $proxy_status instead of 200"
             exit 1
           fi
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/api/pools)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4000/api/admin/status)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/metrics)" = 200
+          test "$(curl --silent --request POST --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4000/metrics)" = 405
+
+          assert_protected_headers "Shared-listener admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4000/api/admin/status
+          assert_protected_headers "Shared-listener metrics scrape" \
+            http://127.0.0.1:4000/metrics
+          assert_protected_headers "Shared-listener rejected metrics method" \
+            --request POST http://127.0.0.1:4000/metrics
 
           assert_status() {
             local expected=$1

@@ -85,7 +85,8 @@ namespace Miningcore;
 public class Program : ProcessStatusBackgroundService
 {
     internal const int DefaultApiPort = ApiConfig.DefaultPort;
-    internal const string MetricsRoutePrefix = "/metrics";
+    internal const string MetricsRoutePrefix =
+        ProtectedRouteClassifier.MetricsRoutePrefix;
     private const string ReleaseVersionMetadataKey = "MiningcoreReleaseVersion";
     private const string SourceCommitMetadataKey = "MiningcoreSourceCommit";
     internal const long LogArchiveAboveSize = 512L * 1024L * 1024L;
@@ -796,7 +797,7 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(ports);
 
-        if(AdminApiAuthenticationMiddleware.IsAdminRequest(path))
+        if(ProtectedRouteClassifier.IsAdminRequest(path))
             return localPort == ports.AdminPort;
 
         if(IsMetricsRequest(path))
@@ -806,11 +807,10 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static bool IsMetricsRequest(PathString path) =>
-        path.StartsWithSegments(MetricsRoutePrefix,
-            StringComparison.OrdinalIgnoreCase);
+        ProtectedRouteClassifier.IsMetricsRequest(path);
 
     internal static bool ShouldApplyPublicCors(PathString path) =>
-        !ProtectedRouteResourcePolicyMiddleware.IsProtectedRequest(path);
+        !ProtectedRouteClassifier.IsProtectedRequest(path);
 
     internal static void ConfigureApiPipeline(IApplicationBuilder app,
         ApiEndpointPorts ports, string[] adminIpWhitelist,
@@ -2179,6 +2179,7 @@ public class Program : ProcessStatusBackgroundService
         new()
         {
             "get:" + MetricsRoutePrefix,
+            "head:" + MetricsRoutePrefix,
             "*:/notifications",
         };
 
