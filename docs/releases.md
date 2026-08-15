@@ -316,6 +316,11 @@ IPv4-mapped equivalents fail startup with both pool and endpoint identities. All
 are reported together so operators can correct the complete configuration before restart. See
 [API listener isolation](configuration.md#api-listener-isolation).
 
+Every enabled internal Stratum port must map to an endpoint object. A JSON `null` endpoint now
+stops normal startup with the affected pool and numeric port identified instead of being treated as
+an omitted loopback address. Disabled and relay-only pools retain deferred listener validation, and
+`-rs` recovery continues to discard listener settings because it opens no Stratum sockets.
+
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
 startup before any pool is announced online and releases all sockets already acquired by that

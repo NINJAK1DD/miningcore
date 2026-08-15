@@ -117,6 +117,14 @@ public class ApiListenerConfigurationTests
                 })
             Assert.Equal("string",
                 committed.SelectToken(itemTypePath)?.Value<string>());
+
+        // Schema validation cannot express Miningcore's live-only listener policy:
+        // disabled, relay-only and recovery pools deliberately defer endpoint
+        // validation. Keep the structural schema nullable and enforce non-null
+        // endpoints in PoolConfigValidator only when a listener will be started.
+        Assert.Equal(new[] { "object", "null" }, committed.SelectToken(
+                "definitions.PoolEndpoint.type")
+            ?.Values<string>());
     }
 
     [Fact]
@@ -623,6 +631,105 @@ public class ApiListenerConfigurationTests
         Assert.Null(Program.FindApiListenerStratumPortConflict(config, false));
         Assert.Throws<PoolStartupException>(() =>
             Program.ValidateConfig(config, false));
+    }
+
+    [Fact]
+    public void ConflictScan_SkipsNullStratumEndpointWithoutThrowing()
+    {
+        var config = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        config.Pools[0].EnableInternalStratum = true;
+        config.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [4000] = null,
+        };
+
+        Assert.Null(Program.FindApiListenerStratumPortConflict(config, false));
+        Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateConfig(config, false));
+    }
+
+    [Fact]
+    public void NullStratumEndpoint_FailsNormalLoadButNotRecovery()
+    {
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        sourceConfig.Pools[0].EnableInternalStratum = true;
+        sourceConfig.Pools[0].Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [3031] = new()
+            {
+                Difficulty = 1,
+                ListenAddress = "127.0.0.1",
+            },
+            [3032] = null,
+        };
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, SerializeConfig(sourceConfig));
+
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ReadAndValidateConfig(configFile, false));
+
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+            Assert.Empty(recoveryConfig.Pools[0].Ports);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void NullStratumEndpoint_RemainsDeferredForInactiveListener(
+        bool enabled, bool internalStratum)
+    {
+        var sourceConfig = CreateValidRecoveryConfig(new ApiConfig
+        {
+            Enabled = true,
+            Port = 4000,
+        });
+        var inactivePool = sourceConfig.Pools[0];
+        inactivePool.Enabled = enabled;
+        inactivePool.EnableInternalStratum = internalStratum;
+        inactivePool.Ports = new Dictionary<int, PoolEndpoint>
+        {
+            [3032] = null,
+        };
+
+        if(!enabled)
+        {
+            var activePool = CreateValidRecoveryConfig(new ApiConfig())
+                .Pools[0];
+            activePool.Id = "active-relay-pool";
+            sourceConfig.Pools = new[] { inactivePool, activePool };
+        }
+
+        var configFile = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(configFile, SerializeConfig(sourceConfig));
+
+            var config = Program.ReadAndValidateConfig(configFile, false);
+
+            Assert.Null(config.Pools[0].Ports[3032]);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
     }
 
     [Theory]

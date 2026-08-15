@@ -136,6 +136,51 @@ public class StratumListenerConfigurationTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void NullEndpoint_IsRejectedWithPoolAndPortInMixedConfiguration()
+    {
+        var pool = CreatePool("pool-a", 3031, "127.0.0.1");
+        pool.Ports[3032] = null;
+        var config = CreateCluster(pool,
+            CreatePool("pool-b", 3032, "127.0.0.1"));
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName.EndsWith("Ports[3032]",
+                StringComparison.Ordinal));
+        Assert.Equal(
+            "Pool 'pool-a' Stratum port 3032: endpoint configuration must not be null",
+            error.ErrorMessage);
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName.EndsWith("Ports[3031]",
+                StringComparison.Ordinal));
+        Assert.Empty(ClusterConfigValidator.FindStratumListenerConflicts(
+            config.Pools));
+    }
+
+    [Theory]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    public void InactiveListenerPolicy_DoesNotValidateNullEndpoint(
+        bool enabled, bool internalStratum, bool recoveryMode)
+    {
+        var pool = CreatePool("pool-a", 3032, "127.0.0.1");
+        pool.Enabled = enabled;
+        pool.EnableInternalStratum = internalStratum;
+        pool.Ports[3032] = null;
+        var config = CreateCluster(pool);
+
+        var result = new ClusterConfigValidator(recoveryMode)
+            .Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.ErrorMessage.Contains(
+                "endpoint configuration must not be null",
+                StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("127.0.0.2")]
     [InlineData("169.254.1.2")]

@@ -167,11 +167,18 @@ internal sealed class StratumListenerReservationCoordinator
                 foreach(var (port, poolEndpoint) in pool.Ports ??
                     new Dictionary<int, PoolEndpoint>())
                 {
-                    if(!ListenerAddressUtils.TryResolve(
-                           poolEndpoint?.ListenAddress, out var address))
+                    if(poolEndpoint == null)
                     {
                         throw new PoolStartupException(
-                            $"Pool '{pool.Id}' Stratum port {port}: invalid listen address '{poolEndpoint?.ListenAddress}'",
+                            $"Pool '{pool.Id}' Stratum port {port}: endpoint configuration must not be null",
+                            pool.Id);
+                    }
+
+                    if(!ListenerAddressUtils.TryResolve(
+                           poolEndpoint.ListenAddress, out var address))
+                    {
+                        throw new PoolStartupException(
+                            $"Pool '{pool.Id}' Stratum port {port}: invalid listen address '{poolEndpoint.ListenAddress}'",
                             pool.Id);
                     }
 

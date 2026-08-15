@@ -292,6 +292,28 @@ public class StratumListenerReservationCoordinatorTests
         }
     }
 
+    [Fact]
+    public async Task NullEndpoint_FailsBeforeSocketReservation()
+    {
+        var reservationAttempts = 0;
+        var coordinator = new StratumListenerReservationCoordinator(endpoint =>
+        {
+            reservationAttempts++;
+            return StratumServer.CreateBoundSocket(endpoint);
+        });
+        var pool = CreatePool("null-endpoint", 3032, "127.0.0.1");
+        pool.Ports[3032] = null;
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
+
+        Assert.Equal(pool.Id, error.PoolId);
+        Assert.Equal(0, reservationAttempts);
+        Assert.Equal(
+            "Pool 'null-endpoint' Stratum port 3032: endpoint configuration must not be null",
+            error.Message);
+    }
+
     [LinuxFact]
     public async Task NonLocalSpecificAddress_ReportsEndpointAndSocketClassification()
     {

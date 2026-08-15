@@ -894,8 +894,8 @@ public class Program : ProcessStatusBackgroundService
         {
             foreach(var (port, endpoint) in pool.Ports)
             {
-                if(!apiPorts.Contains(port) ||
-                    !TryResolveListenAddress(endpoint?.ListenAddress,
+                if(endpoint == null || !apiPorts.Contains(port) ||
+                    !TryResolveListenAddress(endpoint.ListenAddress,
                         out var stratumAddress))
                     continue;
 
