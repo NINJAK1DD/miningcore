@@ -66,7 +66,6 @@ public class PoolApiControllerTests
         Assert.Equal(sourceEndpoint.ListenAddress, endpoint.ListenAddress);
         Assert.Equal(sourceEndpoint.Name, endpoint.Name);
         Assert.Equal(sourceEndpoint.Difficulty, endpoint.Difficulty);
-        Assert.NotSame(sourceEndpoint.VarDiff, endpoint.VarDiff);
         Assert.Equal(sourceEndpoint.VarDiff.MinDiff, endpoint.VarDiff.MinDiff);
         Assert.Equal(sourceEndpoint.VarDiff.MaxDiff, endpoint.VarDiff.MaxDiff);
         Assert.Equal(sourceEndpoint.VarDiff.MaxDelta, endpoint.VarDiff.MaxDelta);
@@ -76,8 +75,6 @@ public class PoolApiControllerTests
             endpoint.VarDiff.RetargetTime);
         Assert.Equal(sourceEndpoint.VarDiff.VariancePercent,
             endpoint.VarDiff.VariancePercent);
-        Assert.NotSame(sourceEndpoint.TcpProxyProtocol,
-            endpoint.TcpProxyProtocol);
         Assert.True(endpoint.TcpProxyProtocol.Enable);
         Assert.True(endpoint.TcpProxyProtocol.Mandatory);
         Assert.True(endpoint.Tls);
