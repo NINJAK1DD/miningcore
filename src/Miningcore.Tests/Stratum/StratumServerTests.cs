@@ -438,14 +438,9 @@ public class StratumServerTests
             endpoint.IPEndPoint);
     }
 
-    [Fact]
+    [UnixFact]
     public async Task RunAsync_InvalidTlsHandshake_AllowsImmediateExclusiveRestart()
     {
-        // Windows Schannel on the validation host cannot acquire credentials for an ephemeral
-        // self-signed PFX. Linux CI exercises the TLS failure and exclusive-rebind contract.
-        if(OperatingSystem.IsWindows())
-            return;
-
         const string pfxPassword = "miningcore-test-password";
         var pfxFile = Path.Combine(Path.GetTempPath(),
             $"miningcore-tls-rejection-{Guid.NewGuid():N}.pfx");

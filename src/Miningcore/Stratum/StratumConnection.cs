@@ -111,6 +111,8 @@ public class StratumConnection
 
         expectingProxyHeader = endpoint.PoolEndpoint.TcpProxyProtocol?.Enable == true;
 
+        var terminalCallbackSignalled = false;
+
         try
         {
             // prepare socket
@@ -232,6 +234,10 @@ public class StratumConnection
                             : peerEof
                                 ? StratumConnectionCompletionReason.PeerEof
                                 : StratumConnectionCompletionReason.IndependentCancellation;
+                    // Set this before invoking external callback code. If the callback or later
+                    // stream teardown throws, the outer catch must not signal this connection a
+                    // second time and mask the original failure with duplicate unregistration.
+                    terminalCallbackSignalled = true;
                     onCompleted(this);
                     abortiveOnExceptionalExit = false;
                 }
@@ -241,6 +247,7 @@ public class StratumConnection
                     // it is still alive so malformed requests, TLS failures and handler errors
                     // cannot leave an exclusive listener endpoint in local TIME_WAIT.
                     StratumSocketCleanup.ConfigureAbortiveClose(socket);
+                    terminalCallbackSignalled = true;
                     onError(this, error);
                 }
             }
@@ -251,7 +258,17 @@ public class StratumConnection
             // Errors before stream construction have no other socket owner. Errors after it
             // are already configured abortive by the inner scope; this remains race-safe.
             StratumSocketCleanup.CloseAbortively(socket);
-            onError(this, ex);
+
+            if(!terminalCallbackSignalled)
+            {
+                terminalCallbackSignalled = true;
+                onError(this, ex);
+            }
+            else
+            {
+                logger.Error(ex, () =>
+                    $"[{ConnectionId}] Terminal connection callback or subsequent teardown failed; refusing a second callback");
+            }
         }
 
         finally

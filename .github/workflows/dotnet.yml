@@ -213,7 +213,7 @@ jobs:
         --no-restore
         --configuration Release
         --framework net10.0
-        --filter "(FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests|FullyQualifiedName~Miningcore.Tests.StratumListenerConfigurationTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumServerTests)&FullyQualifiedName!~Tls"
+        --filter "(FullyQualifiedName~Miningcore.Tests.Stratum.StratumConnectionTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests|FullyQualifiedName~Miningcore.Tests.StratumListenerConfigurationTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumServerTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests)&FullyQualifiedName!~RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake"
 
     - name: Smoke-test Windows SCCPow runtime
       run: >-

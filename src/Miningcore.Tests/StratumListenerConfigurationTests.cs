@@ -18,6 +18,24 @@ internal sealed class LinuxFactAttribute : FactAttribute
     }
 }
 
+internal sealed class UnixFactAttribute : FactAttribute
+{
+    public UnixFactAttribute()
+    {
+        if(OperatingSystem.IsWindows())
+            Skip = "Requires a Unix native socket-binding path";
+    }
+}
+
+internal sealed class IPv6FactAttribute : FactAttribute
+{
+    public IPv6FactAttribute()
+    {
+        if(!Socket.OSSupportsIPv6)
+            Skip = "Requires operating-system IPv6 socket support";
+    }
+}
+
 public class StratumListenerConfigurationTests
 {
     [Theory]

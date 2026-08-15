@@ -145,7 +145,7 @@ internal sealed class StratumListenerReservationCoordinator
         var acquired = new List<StratumListenerReservation>();
         var activeIPv4Subnets = ListenerAddressUtils
             .CaptureActiveIPv4Subnets();
-        var retryBudget = new AddressInUseRetryBudget(
+        var retryDelayBudget = new AddressInUseRetryDelayBudget(
             addressInUseRetryWindow);
 
         try
@@ -190,14 +190,14 @@ internal sealed class StratumListenerReservationCoordinator
                     try
                     {
                         socket = await ReserveSocketWithAddressInUseRetryAsync(
-                            pool.Id, endpoint.IPEndPoint, retryBudget, ct);
+                            pool.Id, endpoint.IPEndPoint, retryDelayBudget, ct);
                     }
                     catch(SocketException ex)
                     {
                         var retryDetail = ex.SocketErrorCode ==
                             SocketError.AddressAlreadyInUse &&
                             addressInUseRetryWindow > TimeSpan.Zero
-                                ? $" after exhausting the shared {addressInUseRetryWindow.TotalSeconds:0.###}-second startup retry budget"
+                                ? $" after exhausting the shared {addressInUseRetryWindow.TotalSeconds:0.###}-second startup retry-delay budget"
                                 : string.Empty;
                         throw new PoolStartupException(
                             $"Unable to reserve Stratum listener {FormatEndpoint(address, port)} for pool '{pool.Id}'{retryDetail}: socket error {ex.SocketErrorCode} (native error {ex.NativeErrorCode}): {ex.Message}",
@@ -236,8 +236,12 @@ internal sealed class StratumListenerReservationCoordinator
 
     private async Task<Socket> ReserveSocketWithAddressInUseRetryAsync(
         string poolId, IPEndPoint endpoint,
-        AddressInUseRetryBudget retryBudget, CancellationToken ct)
+        AddressInUseRetryDelayBudget retryDelayBudget,
+        CancellationToken ct)
     {
+        // A fresh endpoint gets a short first retry even when earlier endpoints consumed part of
+        // the shared delay budget. This keeps transient recovery responsive without multiplying
+        // the total scheduled wait allowance by the number of listeners.
         var delay = InitialRetryDelay;
 
         while(true)
@@ -248,14 +252,17 @@ internal sealed class StratumListenerReservationCoordinator
             {
                 return reserveSocket(endpoint);
             }
+            // On Windows, a live exclusive owner (including a dual-stack collision) may report
+            // AccessDenied and must fail fast. Residual TIME_WAIT reports AddressAlreadyInUse,
+            // which is the only transient ownership state this bounded retry is designed for.
             catch(SocketException ex) when(
                 ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
             {
-                if(!retryBudget.TryTake(delay, out var wait))
+                if(!retryDelayBudget.TryTake(delay, out var wait))
                     throw;
 
                 logger?.Warn(() =>
-                    $"Stratum listener {FormatEndpoint(endpoint.Address, endpoint.Port)} for pool '{poolId}' is still in use; retrying in {wait.TotalSeconds:0.###} seconds with {retryBudget.Remaining.TotalSeconds:0.###} seconds left in the shared startup retry budget");
+                    $"Stratum listener {FormatEndpoint(endpoint.Address, endpoint.Port)} for pool '{poolId}' is still in use; retrying in {wait.TotalSeconds:0.###} seconds with {retryDelayBudget.Remaining.TotalSeconds:0.###} seconds left in the shared startup retry-delay budget");
                 await retryWait(wait, ct);
                 delay = TimeSpan.FromMilliseconds(Math.Min(
                     delay.TotalMilliseconds * 2,
@@ -264,9 +271,11 @@ internal sealed class StratumListenerReservationCoordinator
         }
     }
 
-    private sealed class AddressInUseRetryBudget
+    // ReserveAllAsync consumes this mutable budget sequentially. Do not parallelize endpoint
+    // reservation or share this instance across tasks without adding synchronization.
+    private sealed class AddressInUseRetryDelayBudget
     {
-        internal AddressInUseRetryBudget(TimeSpan remaining)
+        internal AddressInUseRetryDelayBudget(TimeSpan remaining)
         {
             this.remaining = remaining;
         }

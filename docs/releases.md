@@ -308,8 +308,9 @@ Accepted sockets are protected against
 unclean process termination by default, while only genuine peer-initiated EOF switches to graceful
 close. This permits bytes already written to the network to drain but does not drain Miningcore's
 application send queue during shutdown. Startup retries `AddressAlreadyInUse` with one cluster-wide
-bounded backoff budget of up to 90 seconds when residual `TIME_WAIT` survives an unclean stop; the
-budget does not multiply with the number of endpoints.
+bounded retry-delay budget totalling up to 90 seconds when residual `TIME_WAIT` survives an unclean
+stop; scheduled waits do not multiply with the number of endpoints. Bind-call duration and scheduler
+overshoot remain outside that delay budget, so it is not a hard wall-clock deadline.
 Active-interface masks are used
 only to reject known subnet-directed IPv4 broadcast identities; ordinary addresses still use bind as
 the host-specific source of truth.
@@ -319,7 +320,12 @@ This lifecycle intentionally changes the source-level extension surface: the pro
 no longer available to out-of-tree subclasses. Custom pool implementations must use the base
 `PoolBase.RunAsync` lifecycle so they cannot bypass cluster-scoped reservation, activation-before-
 online ordering or retained-socket cleanup. Miningcore does not provide a compatibility helper that
-would silently restore the unsafe per-pool bind path.
+would silently restore the unsafe per-pool bind path. The protected surface now also provides
+`CreateConnectionId` and `BeforeConnectionTaskRemovalAsync` lifecycle hooks, while
+`UnregisterConnection` fails fast when the identity is absent instead of relying on a Debug-only
+assertion. Out-of-tree subclasses must not call it defensively for an already-removed connection.
+The native resolver contains an explicit FreeBSD libc fallback, but FreeBSD is not runtime-tested in
+CI and is not promoted to a first-class supported Miningcore deployment target by this change.
 
 Listener-only validation is skipped during `-rs` share recovery because that mode opens no API or
 Stratum sockets. Recovery stream-rebuilds the top-level configuration from `logging`, `persistence`,

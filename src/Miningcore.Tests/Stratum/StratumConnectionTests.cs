@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -7,6 +8,7 @@ using System.Threading.Tasks;
 using Autofac;
 using Microsoft.IO;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -71,6 +73,81 @@ public class StratumConnectionTests : TestBase
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             sendLoop.WaitAsync(TestTimeout));
         Assert.False(transmitted);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_CompletionCallbackFailure_DoesNotSignalErrorTwice()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = new StratumEndpoint(
+            (IPEndPoint) listener.LocalEndpoint, new PoolEndpoint());
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        var acceptTask = listener.AcceptSocketAsync();
+        await client.ConnectAsync(endpoint.IPEndPoint.Address,
+            endpoint.IPEndPoint.Port, CancellationToken.None);
+        using var accepted = await acceptTask;
+        var remoteEndpoint = (IPEndPoint) accepted.RemoteEndPoint;
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false);
+        var completionCalls = 0;
+        var errorCalls = 0;
+
+        var dispatch = connection.DispatchAsync(accepted,
+            CancellationToken.None, endpoint, remoteEndpoint, null,
+            (_, _, _) => Task.CompletedTask,
+            _ =>
+            {
+                completionCalls++;
+                throw new InvalidOperationException(
+                    "injected completion callback failure");
+            },
+            (_, _) => errorCalls++);
+
+        client.Dispose();
+        await dispatch.WaitAsync(TestTimeout);
+
+        Assert.Equal(1, completionCalls);
+        Assert.Equal(0, errorCalls);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ErrorCallbackFailure_DoesNotSignalErrorTwice()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = new StratumEndpoint(
+            (IPEndPoint) listener.LocalEndpoint, new PoolEndpoint());
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        var acceptTask = listener.AcceptSocketAsync();
+        await client.ConnectAsync(endpoint.IPEndPoint.Address,
+            endpoint.IPEndPoint.Port, CancellationToken.None);
+        using var accepted = await acceptTask;
+        var remoteEndpoint = (IPEndPoint) accepted.RemoteEndPoint;
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false);
+        var completionCalls = 0;
+        var errorCalls = 0;
+
+        var dispatch = connection.DispatchAsync(accepted,
+            CancellationToken.None, endpoint, remoteEndpoint, null,
+            (_, _, _) => Task.CompletedTask,
+            _ => completionCalls++,
+            (_, _) =>
+            {
+                errorCalls++;
+                throw new InvalidOperationException(
+                    "injected error callback failure");
+            });
+        await using var stream = client.GetStream();
+        await stream.WriteAsync(StratumConnection.Encoding.GetBytes(
+            "not-json\n"));
+        await stream.FlushAsync();
+
+        await dispatch.WaitAsync(TestTimeout);
+
+        Assert.Equal(0, completionCalls);
+        Assert.Equal(1, errorCalls);
     }
 
     [Fact]

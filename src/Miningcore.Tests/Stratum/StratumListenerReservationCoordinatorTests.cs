@@ -353,7 +353,7 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public async Task AddressInUse_AfterRetryBudgetFailsWithPoolScopedDiagnostic()
+    public async Task AddressInUse_AfterRetryDelayBudgetFailsWithPoolScopedDiagnostic()
     {
         var attempts = 0;
         var waits = new List<TimeSpan>();
@@ -378,7 +378,7 @@ public class StratumListenerReservationCoordinatorTests
         Assert.Equal(TimeSpan.FromMilliseconds(750), waits.Aggregate(
             TimeSpan.Zero, (total, delay) => total + delay));
         Assert.Contains(
-            "after exhausting the shared 0.75-second startup retry budget",
+            "after exhausting the shared 0.75-second startup retry-delay budget",
             error.Message,
             StringComparison.Ordinal);
         Assert.Contains(SocketError.AddressAlreadyInUse.ToString(),
@@ -386,7 +386,36 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public async Task AddressInUse_RetryBudgetIsSharedAcrossEveryEndpoint()
+    public async Task AccessDenied_FailsWithoutConsumingTransientRetryDelayBudget()
+    {
+        var attempts = 0;
+        var waits = 0;
+        var coordinator = new StratumListenerReservationCoordinator(_ =>
+            {
+                attempts++;
+                throw new SocketException((int) SocketError.AccessDenied);
+            }, addressInUseRetryWindow: TimeSpan.FromSeconds(90),
+            retryWait: (_, _) =>
+            {
+                waits++;
+                return Task.CompletedTask;
+            });
+        var pool = CreatePool("exclusive-owner", 3032, "127.0.0.1");
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
+
+        Assert.Equal(pool.Id, error.PoolId);
+        Assert.Equal(1, attempts);
+        Assert.Equal(0, waits);
+        Assert.Contains(SocketError.AccessDenied.ToString(), error.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("retry-delay budget", error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AddressInUse_RetryDelayBudgetIsSharedAcrossEveryEndpoint()
     {
         var firstPort = GetFreePort(IPAddress.Loopback);
         int secondPort;
@@ -447,7 +476,7 @@ public class StratumListenerReservationCoordinatorTests
         Assert.Equal(2, attempts[firstPort]);
         Assert.Equal(3, attempts[secondPort]);
         Assert.Contains(
-            "after exhausting the shared 0.75-second startup retry budget",
+            "after exhausting the shared 0.75-second startup retry-delay budget",
             error.Message, StringComparison.Ordinal);
         using var reacquired = StratumServer.CreateBoundSocket(
             new IPEndPoint(IPAddress.Loopback, firstPort));

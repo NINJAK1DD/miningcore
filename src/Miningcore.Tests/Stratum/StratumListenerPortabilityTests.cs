@@ -10,12 +10,9 @@ namespace Miningcore.Tests.Stratum;
 
 public class StratumListenerPortabilityTests
 {
-    [Fact]
+    [UnixFact]
     public void NativeBindFallbackCandidates_ResolveCurrentUnixPlatform()
     {
-        if(OperatingSystem.IsWindows())
-            return;
-
         var candidate = StratumServer.ProbeNativeBindLibraryCandidates();
 
         Assert.False(string.IsNullOrWhiteSpace(candidate));
@@ -70,7 +67,8 @@ public class StratumListenerPortabilityTests
                 using var competing = StratumServer.CreateBoundSocket(endpoint);
             });
 
-            AssertExclusiveConflict(error);
+            Assert.Equal(SocketError.AddressAlreadyInUse,
+                error.SocketErrorCode);
         }
         finally
         {
@@ -82,25 +80,11 @@ public class StratumListenerPortabilityTests
         Assert.Equal(endpoint, restarted.LocalEndPoint);
     }
 
-    [Fact]
+    [IPv6Fact]
     public void NativeDualStackReservation_BlocksIPv4CompetitorAndAllowsImmediateRebind()
     {
-        if(!Socket.OSSupportsIPv6)
-            return;
-
-        Socket first;
-
-        try
-        {
-            first = StratumServer.CreateBoundSocket(
-                new IPEndPoint(IPAddress.IPv6Any, 0));
-        }
-        catch(SocketException ex) when(ex.SocketErrorCode is
-                  SocketError.AddressFamilyNotSupported or
-                  SocketError.ProtocolFamilyNotSupported)
-        {
-            return;
-        }
+        var first = StratumServer.CreateBoundSocket(
+            new IPEndPoint(IPAddress.IPv6Any, 0));
 
         var endpoint = (IPEndPoint) first.LocalEndPoint;
 
@@ -112,7 +96,7 @@ public class StratumListenerPortabilityTests
                     new IPEndPoint(IPAddress.Loopback, endpoint.Port));
             });
 
-            AssertExclusiveConflict(error);
+            AssertDualStackExclusiveConflict(error);
         }
         finally
         {
@@ -124,7 +108,8 @@ public class StratumListenerPortabilityTests
         Assert.Equal(endpoint, restarted.LocalEndPoint);
     }
 
-    private static void AssertExclusiveConflict(SocketException error)
+    private static void AssertDualStackExclusiveConflict(
+        SocketException error)
     {
         if(OperatingSystem.IsWindows())
         {
