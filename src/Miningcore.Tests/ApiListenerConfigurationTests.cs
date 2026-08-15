@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AspNetCoreRateLimit;
@@ -1742,9 +1743,9 @@ public class ApiListenerConfigurationTests
 
     [Theory]
     [InlineData("GET", true)]
-    [InlineData("get", true)]
+    [InlineData("get", false)]
     [InlineData("HEAD", true)]
-    [InlineData("head", true)]
+    [InlineData("head", false)]
     [InlineData("OPTIONS", false)]
     [InlineData("POST", false)]
     [InlineData("PUT", false)]
@@ -2217,6 +2218,29 @@ public class ApiListenerConfigurationTests
             GetAllowedMethods(unsupportedResponse));
         Assert.Empty(await unsupportedResponse.Content.ReadAsByteArrayAsync());
 
+        foreach(var method in new[] { "get", "head" })
+        {
+            // HttpClient normalizes known method tokens to uppercase. Send the
+            // request over a raw connection so Kestrel receives the lowercase
+            // token that the RFC requires the application to distinguish.
+            var lowerCaseResponse = await SendRawHttpRequestAsync(
+                host.Ports.MetricsPort, method, "/metrics");
+            var bodyStart = lowerCaseResponse.IndexOf("\r\n\r\n",
+                StringComparison.Ordinal);
+
+            Assert.StartsWith("HTTP/1.1 405 Method Not Allowed\r\n",
+                lowerCaseResponse);
+            Assert.Contains("\r\nAllow: GET, HEAD\r\n", lowerCaseResponse,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("\r\nContent-Length: 0\r\n", lowerCaseResponse,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains($"\r\n{ProtectedRouteResourcePolicyMiddleware.HeaderName}: " +
+                $"{ProtectedRouteResourcePolicyMiddleware.HeaderValue}\r\n",
+                lowerCaseResponse, StringComparison.OrdinalIgnoreCase);
+            Assert.True(bodyStart >= 0);
+            Assert.Empty(lowerCaseResponse[(bodyStart + 4)..]);
+        }
+
         if(!shared)
         {
             using var wrongListenerResponse = await client.GetAsync(
@@ -2503,6 +2527,23 @@ public class ApiListenerConfigurationTests
         request.Headers.Add("Access-Control-Request-Method", "GET");
         request.Headers.Add("Access-Control-Request-Headers", "authorization");
         return request;
+    }
+
+    private static async Task<string> SendRawHttpRequestAsync(int port,
+        string method, string path)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port, timeout.Token);
+        await using var stream = client.GetStream();
+        var request = Encoding.ASCII.GetBytes(
+            $"{method} {path} HTTP/1.1\r\n" +
+            $"Host: 127.0.0.1:{port}\r\n" +
+            "Connection: close\r\n\r\n");
+        await stream.WriteAsync(request, timeout.Token);
+        await stream.FlushAsync(timeout.Token);
+        using var reader = new StreamReader(stream, Encoding.ASCII);
+        return await reader.ReadToEndAsync(timeout.Token);
     }
 
     private const string TestAdminToken =

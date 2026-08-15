@@ -163,6 +163,8 @@ jobs:
             --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
           test "$(curl --silent --request POST --output /dev/null \
             --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
           curl --silent --request OPTIONS --dump-header - --output /dev/null \
             http://127.0.0.1:4002/metrics |
             tr -d '\r' |

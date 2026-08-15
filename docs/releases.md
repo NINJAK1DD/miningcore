@@ -252,17 +252,18 @@ for administrative requests, so restrict its entries to trusted fixed addresses.
 
 Administrative and Prometheus route families now send
 `Cross-Origin-Resource-Policy: same-origin` on successful responses and on wrong-listener,
-whitelist, authentication and method rejections. This prevents cross-origin browser embedding or
-consumption; it does not prevent requests from being sent and is not a replacement for listener
-isolation, IP whitelists, admin bearer authentication, TLS or firewall policy.
+whitelist, authentication and method rejections. This blocks eligible cross-origin no-CORS
+subresource use, but does not generally prohibit navigation or iframe embedding. It does not
+prevent requests from being sent and is not a replacement for listener isolation, IP whitelists,
+admin bearer authentication, TLS or firewall policy.
 
 After existing listener, rate-limit and IP-whitelist controls accept a request, the `/metrics` route
-family now accepts only `GET` and `HEAD`. `HEAD` returns the normal exposition headers without a
-body. `OPTIONS`, `POST` and every other method return an empty `405 Method Not Allowed` response
-with `Allow: GET, HEAD` without invoking the exporter. Rejected listener and client identities keep
-their existing `404`, `429` or `403` response. Ordinary Prometheus scrapes and command-line `GET`
-clients require no change. Custom health checks that incorrectly use another method must switch to
-`GET` or `HEAD`.
+family now accepts only the exact, case-sensitive `GET` and `HEAD` method tokens. `HEAD` returns the
+normal exposition headers without a body. `OPTIONS`, `POST`, lowercase lookalikes such as `get`, and
+every other method return an empty `405 Method Not Allowed` response with `Allow: GET, HEAD` without
+invoking the exporter. Rejected listener and client identities keep their existing `404`, `429` or
+`403` response. Ordinary Prometheus scrapes and command-line `GET` clients require no change.
+Custom health checks that incorrectly use another method must switch to `GET` or `HEAD`.
 
 ### Security hardening: metrics CORS isolation
 

@@ -33,10 +33,12 @@ or proxy the required telemetry through a deliberately secured same-origin servi
 
 Every response for those two protected route families also carries
 `Cross-Origin-Resource-Policy: same-origin`, including wrong-listener, whitelist, authentication and
-method rejections. This tells a browser not to expose or embed the response outside the exact
-scheme, host and port that served it. CORS and this resource policy restrict browser use of a
-response; they do not prevent a request from being sent and do not replace listener isolation, IP
-whitelists, bearer authentication, TLS or firewall controls. See the
+method rejections. This blocks eligible cross-origin no-CORS subresource use of the response. It is
+not a general navigation or framing control: ordinary nested navigations can remain eligible when
+the embedding document does not require cross-origin isolation. Use an appropriate framing policy
+such as CSP `frame-ancestors` if a deployment must prohibit framing. CORS and this resource policy
+restrict browser use of a response; they do not prevent a request from being sent and do not
+replace listener isolation, IP whitelists, bearer authentication, TLS or firewall controls. See the
 [Fetch Standard resource-policy algorithm](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).
 
 Every administrative request also requires `Authorization: Bearer TOKEN`, where `TOKEN` comes only

@@ -50,5 +50,7 @@ assert_prose_contains "protected response resource policy" \
   'Every[[:space:]]+administrative[[:space:]]+response[[:space:]]+also[[:space:]]+sends[[:space:]]+`Cross-Origin-Resource-Policy:[[:space:]]+same-origin`'
 assert_prose_contains "resource policy is not authentication" \
   'never[[:space:]]+replace[s]?[[:space:]]+the[[:space:]]+dedicated[[:space:]]+listener,[[:space:]]+IP[[:space:]]+whitelist,[[:space:]]+bearer[[:space:]]+token,[[:space:]]+TLS[[:space:]]+or[[:space:]]+firewall[[:space:]]+boundary'
+assert_prose_contains "resource policy is not a framing control" \
+  'does[[:space:]]+not[[:space:]]+generally[[:space:]]+prohibit[[:space:]]+cross-origin[[:space:]]+navigation[[:space:]]+or[[:space:]]+iframe[[:space:]]+embedding'
 
 echo "Administrative API documentation invariants are present"

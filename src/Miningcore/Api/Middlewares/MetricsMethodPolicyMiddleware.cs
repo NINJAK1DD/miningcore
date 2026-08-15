@@ -14,7 +14,8 @@ public sealed class MetricsMethodPolicyMiddleware
     public const string AllowedMethods = "GET, HEAD";
 
     public static bool IsAllowedMethod(string method) =>
-        HttpMethods.IsGet(method) || HttpMethods.IsHead(method);
+        string.Equals(method, HttpMethods.Get, StringComparison.Ordinal) ||
+        string.Equals(method, HttpMethods.Head, StringComparison.Ordinal);
 
     public async Task Invoke(HttpContext context)
     {

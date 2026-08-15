@@ -130,10 +130,12 @@ authenticated admin `PUT` endpoint. Never place the Miningcore admin token in Ja
 to a browser.
 
 Every administrative response also sends `Cross-Origin-Resource-Policy: same-origin`, including
-wrong-listener, whitelist and authentication rejections. This prevents a browser from exposing or
-embedding the response from a different scheme, host or port. CORS and this resource-policy header
-govern browser response use only: they do not prevent requests from being transmitted and never
-replace the dedicated listener, IP whitelist, bearer token, TLS or firewall boundary.
+wrong-listener, whitelist and authentication rejections. This blocks eligible cross-origin
+no-CORS subresource use of the response. It does not generally prohibit cross-origin navigation or
+iframe embedding; use an appropriate framing policy such as CSP `frame-ancestors` if that is a
+deployment requirement. CORS and this resource-policy header govern browser response use only:
+they do not prevent requests from being transmitted and never replace the dedicated listener, IP
+whitelist, bearer token, TLS or firewall boundary.
 
 ## Mutating routes
 
