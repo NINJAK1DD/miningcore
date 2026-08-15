@@ -321,7 +321,9 @@ stops normal startup with the affected pool and numeric port identified instead 
 an omitted loopback address. Disabled and relay-only pools retain deferred listener validation, and
 `-rs` recovery continues to discard listener settings because it opens no Stratum sockets. An enabled
 relay-only pool remains available through the public API, but unusable null endpoint entries are omitted
-from its public `ports` map instead of causing the complete pool response to fail.
+from its public `ports` map instead of causing the complete pool response to fail. Miningcore warns at
+startup when an enabled relay-only pool retains such an entry, and API reads now construct redacted
+endpoint copies rather than mutating the live cluster configuration.
 
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops

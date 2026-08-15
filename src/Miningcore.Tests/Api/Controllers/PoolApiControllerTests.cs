@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using AutoMapper;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Responses;
@@ -16,36 +15,50 @@ public class PoolApiControllerTests
     [Fact]
     public void ToPoolInfo_OmitsNullEndpointsAndStripsTlsSecrets()
     {
-        var mapped = new PoolInfo
+        var sourceEndpoint = new PoolEndpoint
         {
-            Coin = new ApiCoinConfig(),
-            PaymentProcessing = new ApiPoolPaymentProcessingConfig(),
-            Ports = new Dictionary<int, PoolEndpoint>
-            {
-                [3031] = new()
-                {
-                    TlsPfxFile = "pool.pfx",
-                    TlsPfxPassword = "secret",
-                },
-                [3032] = null,
-            },
+            ListenAddress = "127.0.0.1",
+            Name = "public-endpoint",
+            Difficulty = 42,
+            Tls = true,
+            TlsPfxFile = "pool.pfx",
+            TlsPfxPassword = "secret",
         };
         var config = new PoolConfig
         {
-            Template = Substitute.For<CoinTemplate>(),
+            Template = new AlephiumCoinTemplate
+            {
+                Family = CoinFamily.Alephium,
+                Name = "Alephium",
+                Symbol = "ALPH",
+            },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+            Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [3031] = sourceEndpoint,
+                [3032] = null,
+            },
         };
-        var mapper = Substitute.For<IMapper>();
-        mapper.Map<PoolInfo>(config).Returns(mapped);
+        var mapper = AutoMapperFactory.CreateMapper();
 
         var result = config.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
-        Assert.Same(mapped, result);
         var endpoint = Assert.Single(result.Ports).Value;
         Assert.NotNull(endpoint);
+        Assert.NotSame(config.Ports, result.Ports);
+        Assert.NotSame(sourceEndpoint, endpoint);
+        Assert.Equal(sourceEndpoint.ListenAddress, endpoint.ListenAddress);
+        Assert.Equal(sourceEndpoint.Name, endpoint.Name);
+        Assert.Equal(sourceEndpoint.Difficulty, endpoint.Difficulty);
+        Assert.True(endpoint.Tls);
         Assert.Null(endpoint.TlsPfxFile);
         Assert.Null(endpoint.TlsPfxPassword);
         Assert.False(result.Ports.ContainsKey(3032));
+        Assert.Equal(2, config.Ports.Count);
+        Assert.Null(config.Ports[3032]);
+        Assert.Equal("pool.pfx", sourceEndpoint.TlsPfxFile);
+        Assert.Equal("secret", sourceEndpoint.TlsPfxPassword);
     }
 
     [Fact]

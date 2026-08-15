@@ -44,7 +44,8 @@ to adjust it toward a target share interval. A miner can request a supported sta
 Each `ports` entry must contain an endpoint object. The endpoint's `listenAddress` may be omitted to
 use the `127.0.0.1` default, but the endpoint object itself must not be replaced with JSON `null` for
 an enabled internal Stratum listener. Listener validation remains deferred for disabled and relay-only
-pools, and unusable null entries from an enabled relay-only pool are omitted from the public pool API.
+pools. An enabled relay-only pool with a null entry logs a startup warning, and that unusable entry is
+omitted from the public pool API without modifying the retained runtime configuration.
 
 ## API listener isolation
 

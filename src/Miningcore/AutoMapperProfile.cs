@@ -68,8 +68,16 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.Github, opt => opt.MapFrom(src => src.Github))
             .ForMember(dest => dest.Algorithm, opt => opt.MapFrom(src => src.GetAlgorithmName()));
 
+        // Pool endpoint objects may otherwise be reused by reference because the
+        // source and destination member types are identical. Always create a
+        // public copy and never map TLS credential locations or passwords.
+        CreateMap<PoolEndpoint, PoolEndpoint>()
+            .ForMember(dest => dest.TlsPfxFile, opt => opt.Ignore())
+            .ForMember(dest => dest.TlsPfxPassword, opt => opt.Ignore());
+
         CreateMap<PoolConfig, Api.Responses.PoolInfo>()
             .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template))
+            .ForMember(dest => dest.Ports, opt => opt.Ignore())
             .ForMember(dest => dest.ShareBasedBanning, opt => opt.MapFrom(src => src.Banning))
             .ForMember(dest => dest.PoolFeePercent, opt => opt.Ignore())
             .ForMember(dest => dest.AddressInfoLink, opt => opt.Ignore())

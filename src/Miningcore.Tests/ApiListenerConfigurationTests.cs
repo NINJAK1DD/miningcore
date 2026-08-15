@@ -619,6 +619,41 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
+    public void EnabledRelayOnlyNullEndpoints_AreReportedForStartupWarning()
+    {
+        var config = new ClusterConfig
+        {
+            Pools = new[]
+            {
+                new PoolConfig
+                {
+                    Id = "relay-only",
+                    Enabled = true,
+                    EnableInternalStratum = false,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [3031] = new(),
+                        [3032] = null,
+                    },
+                },
+                new PoolConfig
+                {
+                    Id = "internal",
+                    Enabled = true,
+                    EnableInternalStratum = true,
+                    Ports = new Dictionary<int, PoolEndpoint>
+                    {
+                        [4040] = null,
+                    },
+                },
+            },
+        };
+
+        Assert.Equal(new[] { "relay-only:3032" },
+            Program.GetEnabledRelayOnlyNullStratumEndpoints(config));
+    }
+
+    [Fact]
     public void ConflictScan_SkipsMalformedStratumAddressWithoutThrowing()
     {
         var config = CreateValidRecoveryConfig(new ApiConfig

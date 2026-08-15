@@ -184,15 +184,20 @@ public class StratumListenerReservationCoordinatorTests
     }
 
     [Fact]
-    public async Task DuplicatePoolId_FailsAndReleasesEarlierReservations()
+    public async Task DuplicatePoolId_FailsBeforeSocketReservation()
     {
-        var firstPort = GetFreePort(IPAddress.Loopback);
+        var reservationAttempts = 0;
         var pools = new[]
         {
-            CreatePool("duplicate", firstPort, "127.0.0.1"),
+            CreatePool("duplicate", 3031, "127.0.0.1"),
             CreatePool("duplicate", 0, "127.0.0.1"),
         };
-        var coordinator = CreateCoordinatorWithoutRetry();
+        var coordinator = new StratumListenerReservationCoordinator(_ =>
+        {
+            reservationAttempts++;
+            throw new InvalidOperationException(
+                "reservation delegate must not be called");
+        });
 
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             coordinator.ReserveAllAsync(pools));
@@ -200,8 +205,31 @@ public class StratumListenerReservationCoordinatorTests
         Assert.Equal("duplicate", error.PoolId);
         Assert.Contains("duplicate pool id 'duplicate'", error.Message,
             StringComparison.Ordinal);
-        using var reacquired = StratumServer.CreateBoundSocket(
-            new IPEndPoint(IPAddress.Loopback, firstPort));
+        Assert.Equal(0, reservationAttempts);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task MissingPoolId_FailsBeforeSocketReservation(string poolId)
+    {
+        var reservationAttempts = 0;
+        var coordinator = new StratumListenerReservationCoordinator(_ =>
+        {
+            reservationAttempts++;
+            throw new InvalidOperationException(
+                "reservation delegate must not be called");
+        });
+        var pool = CreatePool(poolId, 3031, "127.0.0.1");
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            coordinator.ReserveAllAsync(new[] { pool }));
+
+        Assert.Equal(poolId, error.PoolId);
+        Assert.Equal(
+            "Unable to reserve Stratum listeners: pool id missing or empty",
+            error.Message);
+        Assert.Equal(0, reservationAttempts);
     }
 
     [LinuxFact]

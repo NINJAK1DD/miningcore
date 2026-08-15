@@ -161,7 +161,7 @@ internal sealed class StratumListenerReservationCoordinator
 
                 foreach(var endpoint in plan.Endpoints)
                 {
-                    Socket socket;
+                    Socket socket = null;
 
                     try
                     {
@@ -191,10 +191,30 @@ internal sealed class StratumListenerReservationCoordinator
                             plan.PoolId, ex);
                     }
 
-                    var reservation = new StratumListenerReservation(
-                        plan.PoolId, endpoint, socket);
-                    poolReservations.Add(reservation);
-                    acquired.Add(reservation);
+                    StratumListenerReservation reservation = null;
+                    var acquiredOwnsReservation = false;
+
+                    try
+                    {
+                        reservation = new StratumListenerReservation(
+                            plan.PoolId, endpoint, socket);
+                        socket = null;
+
+                        // Register the owner used by the outer rollback before
+                        // exposing the reservation through the per-pool plan.
+                        acquired.Add(reservation);
+                        acquiredOwnsReservation = true;
+                        poolReservations.Add(reservation);
+                    }
+                    finally
+                    {
+                        // Preserve ownership across every exception boundary:
+                        // either the raw socket, the reservation, or acquired owns
+                        // the handle when this block exits.
+                        socket?.Dispose();
+                        if(!acquiredOwnsReservation)
+                            reservation?.Dispose();
+                    }
                 }
 
                 reservations.Add(plan.PoolId,
@@ -224,13 +244,21 @@ internal sealed class StratumListenerReservationCoordinator
         var poolIds = new HashSet<string>(StringComparer.Ordinal);
         var plans = new List<PoolListenerPlan>(selected.Length);
 
-        // Complete deterministic endpoint validation and duplicate pool-id
-        // detection before invoking the reservation delegate. This keeps custom
-        // delegates and native Bind free of partial side effects when normal
-        // validation was bypassed upstream.
+        // This lower-level boundary independently validates selected pool identity,
+        // endpoint objects, literal addresses and host suitability before invoking
+        // the reservation delegate. Full live configuration validation, including
+        // the non-zero port range, remains PoolConfigValidator's responsibility;
+        // port zero is intentionally useful to low-level socket tests.
         foreach(var pool in selected)
         {
             ct.ThrowIfCancellationRequested();
+
+            if(string.IsNullOrEmpty(pool.Id))
+            {
+                throw new PoolStartupException(
+                    "Unable to reserve Stratum listeners: pool id missing or empty",
+                    pool.Id);
+            }
 
             if(!poolIds.Add(pool.Id))
             {
