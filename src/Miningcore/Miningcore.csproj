@@ -143,8 +143,12 @@
       </Content>
     </ItemGroup>
 
-    <!-- Build library binaries from source on Linux -->
-    <Target Name="BuildNativeLibsLinux" AfterTargets="AfterBuild" Condition="'$(IsLinux)' == 'true'">
+    <!-- Build library binaries from source on Linux. The narrowly scoped listener-portability
+         smoke compiles only the managed Stratum socket path and deliberately skips unrelated
+         hashing libraries so it can run quickly on musl. Do not set that property for a
+         runnable Miningcore build or publish. -->
+    <Target Name="BuildNativeLibsLinux" AfterTargets="AfterBuild"
+            Condition="'$(IsLinux)' == 'true' and '$(MiningcoreStratumListenerSmoke)' != 'true'">
         <Exec Command="(cd $(ProjectDir) &amp;&amp; sh build-libs-linux.sh $(OutDir))" />
     </Target>
 

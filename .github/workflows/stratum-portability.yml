@@ -1,0 +1,68 @@
+name: Stratum listener portability
+
+on:
+  push:
+    branches: [ master, dev, ravencoin-rollback ]
+  pull_request:
+    branches: [ master, dev, ravencoin-rollback ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  alpine-musl:
+    name: Exclusive reservation (Alpine/musl)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Run real exclusive-reservation smoke on musl
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE:/workspace" \
+          --workdir /workspace \
+          --env DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+          --env DOTNET_NOLOGO=1 \
+          mcr.microsoft.com/dotnet/sdk:10.0-alpine \
+          sh -euc '
+            apk add --no-cache git
+            git config --global --add safe.directory /workspace
+            dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+              --configuration Release \
+              --framework net10.0 \
+              --property:MiningcoreStratumListenerSmoke=true \
+              --filter "FullyQualifiedName=Miningcore.Tests.Stratum.StratumListenerPortabilityTests.NativeExclusiveReservation_BlocksCompetitorAndAllowsImmediateRebind"
+          '
+
+  macos:
+    name: Exclusive reservation (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Run real exclusive-reservation smoke on macOS
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --configuration Release
+        --framework net10.0
+        --property:MiningcoreStratumListenerSmoke=true
+        --filter "FullyQualifiedName=Miningcore.Tests.Stratum.StratumListenerPortabilityTests.NativeExclusiveReservation_BlocksCompetitorAndAllowsImmediateRebind"
