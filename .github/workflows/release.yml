@@ -225,6 +225,7 @@ jobs:
 
           docker run --detach --name "$rate_limit_container" \
             --network "$network" \
+            --ip 172.30.56.4 \
             --publish 127.0.0.1:4010:4000 \
             --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-rate-limit-smoke.json:/test/config.json:ro" \
@@ -259,7 +260,7 @@ jobs:
             http://127.0.0.1:4010/metrics)" = 200
           test "$(curl --silent --request get --output /dev/null \
             --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
-          test "$(curl --silent --request head --output /dev/null \
+          test "$(curl --silent --max-time 10 --request head --output /dev/null \
             --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
           test "$(curl --silent --request get --output /dev/null \
             --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 429
