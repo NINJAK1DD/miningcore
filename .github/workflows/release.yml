@@ -260,8 +260,17 @@ jobs:
             http://127.0.0.1:4010/metrics)" = 200
           test "$(curl --silent --request get --output /dev/null \
             --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
-          test "$(curl --silent --max-time 10 --request head --output /dev/null \
-            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
+          if ! lowercase_head_status="$(
+            curl --silent --max-time 10 --request head --output /dev/null \
+              --write-out '%{http_code}' http://127.0.0.1:4010/metrics
+          )"; then
+            echo "Lowercase HEAD metrics probe timed out or failed"
+            exit 1
+          fi
+          if [[ "$lowercase_head_status" != 405 ]]; then
+            echo "Lowercase HEAD metrics probe returned HTTP $lowercase_head_status instead of 405"
+            exit 1
+          fi
           test "$(curl --silent --request get --output /dev/null \
             --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 429
           assert_protected_headers "Rate-limited metrics method" \
