@@ -828,9 +828,9 @@ public class Program : ProcessStatusBackgroundService
         // protected success and rejection responses share the same policy.
         app.UseMiddleware<ProtectedRouteResourcePolicyMiddleware>();
 
-        // Reject wrong-listener requests before rate limiting or routing. This
-        // deliberately returns a cheap 404 without invoking protected endpoint
-        // middleware, so the listener reveals no route-family details.
+        // Reject wrong-listener requests before rate limiting or protected endpoint
+        // middleware. Preserve the generic 404 response without exposing endpoint
+        // status, authentication state, or route-specific response content.
         app.Use(async (context, next) =>
         {
             if(!IsApiRequestAllowed(context.Connection.LocalPort,
