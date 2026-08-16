@@ -26,10 +26,13 @@ public static class MiningPoolExtensions
         // Build an explicit, family-aware public projection. Unknown runtime
         // fields and wallet credentials have no response DTO member and cannot
         // enter either pool endpoint by default.
-        poolInfo.PaymentProcessing.Extra =
-            PaymentProcessingExtraProjection.Create(
-                poolConfig.Template.Family,
-                poolConfig.PaymentProcessing.Extra);
+        if(poolInfo.PaymentProcessing != null)
+        {
+            poolInfo.PaymentProcessing.Extra =
+                PaymentProcessingExtraProjection.Create(
+                    poolConfig.Template.Family,
+                    poolConfig.PaymentProcessing?.Extra);
+        }
 
         poolInfo.Ports = CreatePublicPoolEndpoints(poolConfig.Ports, mapper);
         return poolInfo;

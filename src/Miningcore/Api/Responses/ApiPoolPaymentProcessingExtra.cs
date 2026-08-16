@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.Json;
 using Newtonsoft.Json.Linq;
 
@@ -16,6 +17,8 @@ public sealed class ApiPoolPaymentProcessingExtra
 {
     private readonly Dictionary<ApiPoolPaymentProcessingExtraField, string>
         propertyNames = new();
+    private readonly Dictionary<ApiPoolPaymentProcessingExtraField, JToken>
+        wireValues = new();
 
     public string WalletName { get; internal set; }
     public long? BlockRewardsLockTime { get; internal set; }
@@ -41,6 +44,39 @@ public sealed class ApiPoolPaymentProcessingExtra
 
     internal bool IsPresent(ApiPoolPaymentProcessingExtraField field) =>
         propertyNames.ContainsKey(field);
+
+    internal bool TryGetWireValue(ApiPoolPaymentProcessingExtraField field,
+        out JToken value) => wireValues.TryGetValue(field, out value);
+
+    internal static bool IsSupportedWireValue(JToken value) =>
+        value is JValue && value.Type is (JTokenType.Boolean or
+            JTokenType.Integer or JTokenType.Float or JTokenType.String or
+            JTokenType.Null);
+
+    internal void PreserveWireValue(string name, JToken value)
+    {
+        if(!ApiPoolPaymentProcessingExtraFieldNames.TryResolve(name,
+               out var field) || !propertyNames.TryGetValue(field,
+               out var registeredName) || !string.Equals(name,
+               registeredName, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Public payment property '{name}' is not registered");
+        }
+
+        // The response owns a detached scalar snapshot. Retaining the live
+        // configuration token would let later mutation change a response DTO;
+        // retaining objects or arrays would recreate an untyped public graph
+        // behind an approved scalar property name.
+        if(!IsSupportedWireValue(value))
+        {
+            throw new ArgumentException(
+                "A public payment property requires a scalar JSON value",
+                nameof(value));
+        }
+
+        wireValues[field] = value.DeepClone();
+    }
 
     internal void SetWalletName(string name, string value)
     {
@@ -198,19 +234,17 @@ internal enum ApiPoolPaymentProcessingExtraField
 
 internal static class ApiPoolPaymentProcessingExtraFieldNames
 {
+    private static readonly FrozenDictionary<string,
+        ApiPoolPaymentProcessingExtraField> Fields = Enum.GetValues<
+            ApiPoolPaymentProcessingExtraField>()
+        .ToFrozenDictionary(value => value.ToString(), value => value,
+            StringComparer.OrdinalIgnoreCase);
+
     public static bool TryResolve(string name,
         out ApiPoolPaymentProcessingExtraField field)
     {
-        foreach(var candidate in Enum.GetValues<
-                    ApiPoolPaymentProcessingExtraField>())
-        {
-            if(string.Equals(name, candidate.ToString(),
-                   StringComparison.OrdinalIgnoreCase))
-            {
-                field = candidate;
-                return true;
-            }
-        }
+        if(name != null && Fields.TryGetValue(name, out field))
+            return true;
 
         field = default;
         return false;
@@ -249,8 +283,9 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
                     $"Payment property '{property.Name}' is duplicated by case");
             }
 
-            SetFromSystemTextJson(result, field, property.Name,
-                property.Value, options);
+            var wireValue = JToken.Parse(property.Value.GetRawText());
+            SetFromSystemTextJson(result, field, property.Name, wireValue);
+            result.PreserveWireValue(property.Name, wireValue);
         }
 
         return result;
@@ -270,6 +305,14 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
         foreach(var property in value.PresentProperties)
         {
             writer.WritePropertyName(property.Value);
+
+            if(value.TryGetWireValue(property.Key, out var wireValue))
+            {
+                writer.WriteRawValue(wireValue.ToString(
+                    Newtonsoft.Json.Formatting.None));
+                continue;
+            }
+
             WriteSystemTextJsonValue(writer, value, property.Key, options);
         }
 
@@ -279,81 +322,81 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
     private static void SetFromSystemTextJson(
         ApiPoolPaymentProcessingExtra target,
         ApiPoolPaymentProcessingExtraField field, string name,
-        JsonElement value, JsonSerializerOptions options)
+        JToken value)
     {
         switch(field)
         {
             case ApiPoolPaymentProcessingExtraField.WalletName:
                 target.SetWalletName(name,
-                    value.Deserialize<string>(options));
+                    value.ToObject<string>());
                 break;
             case ApiPoolPaymentProcessingExtraField.BlockRewardsLockTime:
                 target.SetBlockRewardsLockTime(name,
-                    value.Deserialize<long?>(options));
+                    value.ToObject<long?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.KeepTransactionFees:
                 target.SetKeepTransactionFees(name,
-                    value.Deserialize<bool?>(options));
+                    value.ToObject<bool?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.MinersPayTxFees:
                 target.SetMinersPayTxFees(name,
-                    value.Deserialize<bool?>(options));
+                    value.ToObject<bool?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.MinimumPaymentToPaymentId:
                 target.SetMinimumPaymentToPaymentId(name,
-                    value.Deserialize<decimal?>(options));
+                    value.ToObject<decimal?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.
                 MaximumDestinationPerTransfer:
                 target.SetMaximumDestinationPerTransfer(name,
-                    value.Deserialize<int?>(options));
+                    value.ToObject<int?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.MinimumConfirmations:
                 target.SetMinimumConfirmations(name,
-                    value.Deserialize<int?>(options));
+                    value.ToObject<int?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.KeepUncles:
                 target.SetKeepUncles(name,
-                    value.Deserialize<bool?>(options));
+                    value.ToObject<bool?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.Gas:
-                target.SetGas(name, value.Deserialize<ulong?>(options));
+                target.SetGas(name, value.ToObject<ulong?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.MaxFeePerGas:
                 target.SetMaxFeePerGas(name,
-                    value.Deserialize<ulong?>(options));
+                    value.ToObject<ulong?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.BlockSearchOffset:
                 target.SetBlockSearchOffset(name,
-                    value.Deserialize<uint?>(options));
+                    value.ToObject<uint?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.WalletAccount:
                 target.SetWalletAccount(name,
-                    value.Deserialize<string>(options));
+                    value.ToObject<string>());
                 break;
             case ApiPoolPaymentProcessingExtraField.VersionEnablingMaxFee:
                 target.SetVersionEnablingMaxFee(name,
-                    value.Deserialize<string>(options));
+                    value.ToObject<string>());
                 break;
             case ApiPoolPaymentProcessingExtraField.MaxFee:
-                target.SetMaxFee(name, value.Deserialize<ulong?>(options));
+                target.SetMaxFee(name, value.ToObject<ulong?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.MaximumTransactionFees:
                 target.SetMaximumTransactionFees(name,
-                    value.Deserialize<decimal?>(options));
+                    value.ToObject<decimal?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.
                 MaxDegreeOfParallelPayouts:
                 target.SetMaxDegreeOfParallelPayouts(name,
-                    value.Deserialize<int?>(options));
+                    value.ToObject<int?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.RevealPoolAddress:
                 target.SetRevealPoolAddress(name,
-                    value.Deserialize<bool?>(options));
+                    value.ToObject<bool?>());
                 break;
             case ApiPoolPaymentProcessingExtraField.HideMinerAddress:
                 target.SetHideMinerAddress(name,
-                    value.Deserialize<bool?>(options));
+                    value.ToObject<bool?>());
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(field), field,
@@ -479,6 +522,7 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
 
             SetFromNewtonsoftJson(result, field, property.Name,
                 property.Value, serializer);
+            result.PreserveWireValue(property.Name, property.Value);
         }
 
         return result;
@@ -499,6 +543,13 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
         foreach(var property in value.PresentProperties)
         {
             writer.WritePropertyName(property.Value);
+
+            if(value.TryGetWireValue(property.Key, out var wireValue))
+            {
+                wireValue.WriteTo(writer);
+                continue;
+            }
+
             WriteNewtonsoftJsonValue(writer, value, property.Key, serializer);
         }
 

@@ -162,11 +162,18 @@ only these approved blockchain-specific fields:
 | Zano | `minimumPaymentToPaymentId`, `revealPoolAddress`, `hideMinerAddress`, `maximumDestinationPerTransfer`, `keepTransactionFees`, `maxFee` |
 
 Approved keys retain the spelling supplied by the configuration and remain nested under `extra`.
-Explicit null values and the existing normal/legacy null behavior are preserved. Unknown fields,
-malformed values, ambiguous case-variant duplicates and every wallet password or private key are
-omitted. Adding a runtime extension property does not make it public; it must be classified and
-projected deliberately. This is a response boundary only and does not mutate or replace the live
-payout configuration.
+Approved scalar values retain their configured JSON type and value, including coercible legacy
+representations such as a numeric setting written as a JSON string. The public DTO also exposes the
+normalized CLR value used to validate that representation; its serializers retain an internal,
+detached scalar snapshot for wire compatibility. Explicit null values and the existing
+normal/legacy null behavior are preserved. Unknown fields, malformed or non-scalar values,
+ambiguous case-variant duplicates and every wallet password or private key are omitted. Adding a
+runtime extension property does not make it public; it must be classified and projected
+deliberately. JSON object member order is not part of this contract.
+
+`ApiPoolPaymentProcessingExtra` is a flat typed union: all approved properties are optional on the
+.NET type, while the family table above defines which subset may be emitted for a pool. This is a
+response boundary only and does not mutate, alias or replace the live payout configuration.
 
 Miningcore's System.Text.Json REST contract remains nested. External consumers that compile against
 Miningcore must update `ApiPoolPaymentProcessingConfig.Extra` from
