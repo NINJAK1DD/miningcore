@@ -365,6 +365,15 @@ rebuild. The JSON contract on `/api/pools` and `/api/pools/{id}` is unchanged: `
 `minerEffortPercent` and `minerEffortTime` retain their names, values and existing null behavior.
 The separation is preventative API-contract hardening rather than remediation of a known leak.
 
+Public pool-response redaction now removes every case-insensitive duplicate of known blockchain
+wallet-password and wallet-private-key settings from the untyped `paymentProcessing` extension-data
+bag. Earlier builds could return one live credential through `/api/pools` and `/api/pools/{id}` when
+the configuration contained the same sensitive setting more than once with case-variant names, such
+as both `WalletPassword` and `walletPassword`. Operators who used such a configuration should upgrade,
+remove the duplicate entries and rotate every wallet password or private key that may have appeared
+in a public response. Treat reverse-proxy, client and monitoring logs containing those responses as
+sensitive until their retention period has expired or they have been securely removed.
+
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
 startup before any pool is announced online and releases all sockets already acquired by that

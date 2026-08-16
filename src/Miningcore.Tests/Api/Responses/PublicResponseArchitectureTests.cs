@@ -99,8 +99,11 @@ public class PublicResponseArchitectureTests
 
         Assert.Equal(new[]
         {
+            $"{typeof(UntypedMemberTypes).FullName}.Array",
             $"{typeof(UntypedMemberTypes).FullName}.Document",
+            $"{typeof(UntypedMemberTypes).FullName}.Items",
             $"{typeof(UntypedMemberTypes).FullName}.Metadata",
+            $"{typeof(UntypedMemberTypes).FullName}.Nested",
             $"{typeof(UntypedMemberTypes).FullName}.Payload",
             $"{typeof(UntypedMemberTypes).FullName}.Tokens",
         }, members);
@@ -228,15 +231,8 @@ public class PublicResponseArchitectureTests
             .Any(attribute => attribute.AttributeType.FullName is
                 "System.Text.Json.Serialization.JsonExtensionDataAttribute" or
                 "Newtonsoft.Json.JsonExtensionDataAttribute");
-        var canCarryUntypedValues = IsUntypedValueType(memberType) ||
-            memberType.GetInterfaces().Concat(new[] { memberType })
-                .Any(candidate => candidate.IsGenericType &&
-                    (candidate.GetGenericTypeDefinition() ==
-                         typeof(IDictionary<,>) ||
-                     candidate.GetGenericTypeDefinition() ==
-                         typeof(IReadOnlyDictionary<,>)) &&
-                    IsUntypedValueType(
-                        candidate.GetGenericArguments()[1]));
+        var canCarryUntypedValues = CanCarryUntypedValues(memberType,
+            new HashSet<Type>());
 
         if(isExtensionData || canCarryUntypedValues)
         {
@@ -250,6 +246,48 @@ public class PublicResponseArchitectureTests
         type == typeof(System.Text.Json.JsonElement) ||
         type == typeof(System.Text.Json.JsonDocument) ||
         typeof(System.Text.Json.Nodes.JsonNode).IsAssignableFrom(type);
+
+    private static bool CanCarryUntypedValues(Type type, ISet<Type> visited)
+    {
+        if(type == null || type.IsGenericParameter)
+            return false;
+
+        if(IsUntypedValueType(type))
+            return true;
+
+        var nullable = Nullable.GetUnderlyingType(type);
+        if(nullable != null)
+            return CanCarryUntypedValues(nullable, visited);
+
+        if(type.HasElementType)
+            return CanCarryUntypedValues(type.GetElementType(), visited);
+
+        if(!visited.Add(type))
+            return false;
+
+        foreach(var candidate in type.GetInterfaces().Prepend(type))
+        {
+            if(!candidate.IsGenericType)
+                continue;
+
+            var definition = candidate.GetGenericTypeDefinition();
+            var arguments = candidate.GetGenericArguments();
+
+            if(definition == typeof(IDictionary<,>) ||
+                definition == typeof(IReadOnlyDictionary<,>))
+            {
+                if(CanCarryUntypedValues(arguments[1], visited))
+                    return true;
+            }
+            else if(definition == typeof(IEnumerable<>) &&
+                CanCarryUntypedValues(arguments[0], visited))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static Type[] GetPublicResponseRoots()
     {
@@ -322,8 +360,11 @@ public class PublicResponseArchitectureTests
 
     private sealed class UntypedMemberTypes
     {
+        public object[] Array { get; set; }
         public Newtonsoft.Json.Linq.JToken Document { get; set; }
+        public List<Newtonsoft.Json.Linq.JToken> Items { get; set; }
         public IDictionary<string, object> Metadata { get; set; }
+        public Dictionary<string, List<object>> Nested { get; set; }
         public object Payload = null;
         public IReadOnlyDictionary<string, Newtonsoft.Json.Linq.JToken>
             Tokens { get; set; }
