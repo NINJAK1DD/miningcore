@@ -1,8 +1,6 @@
 using System.Text.Json.Serialization;
 using Miningcore.Blockchain;
-using Miningcore.Configuration;
 using Miningcore.Mining;
-using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Api.Responses;
 
@@ -56,6 +54,12 @@ public class ApiPoolPaymentProcessingConfig
     public string PayoutScheme { get; set; }
     public ApiPoolPayoutSchemeConfig PayoutSchemeConfig { get; set; }
 
+    // Retain this attribute for external Newtonsoft consumers until issue #80
+    // replaces the untyped bag. Such consumers flatten these entries when
+    // re-serializing this DTO. Miningcore MVC uses System.Text.Json and ignores
+    // the attribute, so its REST API deliberately preserves the nested "extra"
+    // object. PoolResponses_PreserveNestedPaymentProcessingExtraContract pins
+    // that shape and the verbatim extension-key casing.
     [Newtonsoft.Json.JsonExtensionData]
     public IDictionary<string, object> Extra { get; set; }
 }
@@ -68,7 +72,7 @@ public partial class PoolInfo
     public ApiCoinConfig Coin { get; set; }
     public Dictionary<int, ApiPoolEndpoint> Ports { get; set; }
     public ApiPoolPaymentProcessingConfig PaymentProcessing { get; set; }
-    public PoolShareBasedBanningConfig ShareBasedBanning { get; set; }
+    public ApiPoolShareBasedBanningConfig ShareBasedBanning { get; set; }
     public int ClientConnectionTimeout { get; set; }
     public int JobRebroadcastTimeout { get; set; }
     public int BlockRefreshInterval { get; set; }

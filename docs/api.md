@@ -133,6 +133,24 @@ Specifically, clients must not expect `ports[*].tlsPfxFile`, `ports[*].tlsPfxPas
 `ports[*].tcpProxyProtocol.proxyAddresses`: those keys are absent from responses, including when
 `legacyNullValueHandling` is enabled. All other endpoint property names and values remain unchanged.
 
+The `shareBasedBanning` object returned by `/api/pools` and `/api/pools/{id}` is likewise a
+dedicated public projection rather than serialized `PoolShareBasedBanningConfig` runtime
+configuration. Its wire contract remains `enabled`, `checkThreshold`, `invalidPercent`, `time`,
+`minerEffortPercent` and `minerEffortTime`. The two miner-effort fields remain nullable: they are
+omitted under the normal null policy and emitted as `null` when `legacyNullValueHandling` is
+enabled. This boundary is defence in depth against future internal configuration additions; it
+does not correct a known disclosure in the six existing fields.
+
+The nested `paymentProcessing.extra` object currently passes blockchain-specific extension keys
+through as configured; those keys are not flattened directly into `paymentProcessing`. Before
+serialization, Miningcore removes the known Alephium, Bitcoin, Ergo, Handshake and Kaspa wallet
+passwords and the Warthog wallet private key from `extra`, including simultaneous key names that
+differ only by case. This opt-out redaction is not a substitute for keeping secrets out of
+unrecognized settings or restricting API access. Treat any wallet credential observed in a pool
+response as exposed, upgrade, rotate it and review downstream proxy, client and monitoring logs. A
+future typed-projection replacement for this remaining dynamic response boundary is tracked by
+[issue #80](https://github.com/NINJAK1DD/miningcore/issues/80).
+
 ## Public routes
 
 The main GET routes are:

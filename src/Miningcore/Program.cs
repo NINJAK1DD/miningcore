@@ -264,10 +264,9 @@ public class Program : ProcessStatusBackgroundService
                         .AddControllersAsServices()
                         .AddJsonOptions(options =>
                         {
-                            options.JsonSerializerOptions.WriteIndented = true;
-
-                            if(!apiConfig.LegacyNullValueHandling)
-                                options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+                            ConfigureApiJsonSerializerOptions(
+                                options.JsonSerializerOptions,
+                                apiConfig.LegacyNullValueHandling);
                         });
 
                         // NSwag
@@ -1216,6 +1215,18 @@ public class Program : ProcessStatusBackgroundService
                 ? "<unnamed>"
                 : pool.Id)
             .ToArray() ?? Array.Empty<string>();
+    }
+
+    internal static void ConfigureApiJsonSerializerOptions(
+        System.Text.Json.JsonSerializerOptions options,
+        bool legacyNullValueHandling)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        options.WriteIndented = true;
+        options.DefaultIgnoreCondition = legacyNullValueHandling
+            ? JsonIgnoreCondition.Never
+            : JsonIgnoreCondition.WhenWritingNull;
     }
 
     internal static string[] GetEnabledRelayOnlyNullStratumEndpoints(

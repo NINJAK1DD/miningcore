@@ -1,6 +1,3 @@
-using System.Diagnostics;
-using System.Globalization;
-
 namespace Miningcore.Extensions
 {
     public static class DictionaryExtensions
@@ -10,15 +7,19 @@ namespace Miningcore.Extensions
             if(dict == null)
                 return;
 
-            key = key.ToLower(CultureInfo.InvariantCulture);
+            // Extension-data dictionaries are case-sensitive, while Miningcore
+            // configuration member matching is not. Remove every equivalent key
+            // so case-variant duplicates cannot leave a credential in a public
+            // projection. Ordinal comparison is deliberate: these are ASCII
+            // configuration identifiers, not culture- or compatibility-folded
+            // display strings, so Unicode lookalikes are not equivalent keys.
+            var matchingKeys = dict.Keys
+                .Where(candidate => string.Equals(candidate, key,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
 
-            var keyActual = dict.Keys.FirstOrDefault(x => x.ToLower(CultureInfo.InvariantCulture) == key);
-
-            if(keyActual != null)
-            {
-                var result = dict.Remove(keyActual);
-                Debug.Assert(result);
-            }
+            foreach(var matchingKey in matchingKeys)
+                dict.Remove(matchingKey);
         }
     }
 }
