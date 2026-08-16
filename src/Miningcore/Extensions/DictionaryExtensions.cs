@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 
 namespace Miningcore.Extensions
 {
@@ -10,13 +9,18 @@ namespace Miningcore.Extensions
             if(dict == null)
                 return;
 
-            key = key.ToLower(CultureInfo.InvariantCulture);
+            // Extension-data dictionaries are case-sensitive, while Miningcore
+            // configuration member matching is not. Remove every equivalent key
+            // so case-variant duplicates cannot leave a credential in a public
+            // projection.
+            var matchingKeys = dict.Keys
+                .Where(candidate => string.Equals(candidate, key,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
 
-            var keyActual = dict.Keys.FirstOrDefault(x => x.ToLower(CultureInfo.InvariantCulture) == key);
-
-            if(keyActual != null)
+            foreach(var matchingKey in matchingKeys)
             {
-                var result = dict.Remove(keyActual);
+                var result = dict.Remove(matchingKey);
                 Debug.Assert(result);
             }
         }

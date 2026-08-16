@@ -253,27 +253,26 @@ public class PoolApiControllerTests
         {
             sensitiveProperty,
             JsonNamingPolicy.CamelCase.ConvertName(sensitiveProperty),
-        };
+        }.Distinct(StringComparer.Ordinal).ToArray();
+        var config = CreateMinimalPoolConfig(family);
+        config.PaymentProcessing.Extra = spellings.ToDictionary(
+            spelling => spelling, _ => (object) "secret-value",
+            StringComparer.Ordinal);
+        config.PaymentProcessing.Extra[retainedProperty] = "public-value";
+        var mapper = AutoMapperFactory.CreateMapper();
 
-        foreach(var serializedSensitiveProperty in spellings.Distinct(
-                    StringComparer.Ordinal))
+        var result = config.ToPoolInfo(mapper,
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+        Assert.DoesNotContain(result.PaymentProcessing.Extra.Keys,
+            key => string.Equals(key, sensitiveProperty,
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("public-value",
+            result.PaymentProcessing.Extra[retainedProperty]);
+        foreach(var spelling in spellings)
         {
-            var config = CreateMinimalPoolConfig(family);
-            config.PaymentProcessing.Extra = new Dictionary<string, object>
-            {
-                [serializedSensitiveProperty] = "secret-value",
-                [retainedProperty] = "public-value",
-            };
-
-            var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
-                new global::Miningcore.Persistence.Model.PoolStats(), null);
-
-            Assert.False(result.PaymentProcessing.Extra.ContainsKey(
-                serializedSensitiveProperty));
-            Assert.Equal("public-value",
-                result.PaymentProcessing.Extra[retainedProperty]);
             Assert.Equal("secret-value",
-                config.PaymentProcessing.Extra[serializedSensitiveProperty]);
+                config.PaymentProcessing.Extra[spelling]);
         }
     }
 

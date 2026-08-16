@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Miningcore.Api.Responses;
+using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Xunit;
 
@@ -26,15 +27,21 @@ public class PublicResponseArchitectureTests
     }
 
     [Fact]
-    public void PublicResponseGraph_AllowsOnlyReviewedUntypedExtraBag()
+    public void PublicResponseGraph_AllowsOnlyReviewedUntypedMembers()
     {
         var roots = GetPublicResponseRoots();
-        var untypedExtraMembers = FindUntypedExtraMembers(roots);
-
-        Assert.Equal(new[]
+        var untypedMembers = FindUntypedMembers(roots);
+        var reviewedMembers = new[]
         {
             $"{typeof(ApiPoolPaymentProcessingConfig).FullName}.Extra",
-        }, untypedExtraMembers);
+        };
+
+        Assert.True(reviewedMembers.SequenceEqual(untypedMembers,
+                StringComparer.Ordinal),
+            "Public API response types may expose untyped members only after " +
+            "an explicit review and corresponding value-level redaction " +
+            $"coverage. Reviewed: {string.Join(", ", reviewedMembers)}. " +
+            $"Discovered: {string.Join(", ", untypedMembers)}");
     }
 
     [Fact]
@@ -85,15 +92,17 @@ public class PublicResponseArchitectureTests
     }
 
     [Fact]
-    public void UntypedTraversal_DoesNotDependOnMemberNames()
+    public void UntypedTraversal_FindsMembersRegardlessOfNameOrJsonValueType()
     {
-        var members = FindUntypedExtraMembers(
+        var members = FindUntypedMembers(
             new[] { typeof(UntypedMemberTypes) });
 
         Assert.Equal(new[]
         {
+            $"{typeof(UntypedMemberTypes).FullName}.Document",
             $"{typeof(UntypedMemberTypes).FullName}.Metadata",
             $"{typeof(UntypedMemberTypes).FullName}.Payload",
+            $"{typeof(UntypedMemberTypes).FullName}.Tokens",
         }, members);
     }
 
@@ -111,7 +120,7 @@ public class PublicResponseArchitectureTests
         return violations.OrderBy(value => value).ToArray();
     }
 
-    private static string[] FindUntypedExtraMembers(IEnumerable<Type> roots)
+    private static string[] FindUntypedMembers(IEnumerable<Type> roots)
     {
         var members = new HashSet<string>(StringComparer.Ordinal);
 
@@ -126,7 +135,7 @@ public class PublicResponseArchitectureTests
 
     private static void InspectType(Type type, string path,
         ISet<Type> visited, ISet<string> violations, bool isRoot = false,
-        ISet<string> untypedExtraMembers = null)
+        ISet<string> untypedMembers = null)
     {
         if(type == null || type.IsGenericParameter)
             return;
@@ -136,14 +145,14 @@ public class PublicResponseArchitectureTests
         {
             InspectType(nullable,
                 $"{path}<{nullable.Name}>", visited, violations, false,
-                untypedExtraMembers);
+                untypedMembers);
             return;
         }
 
         if(type.HasElementType)
         {
             InspectType(type.GetElementType(), $"{path}[]", visited,
-                violations, false, untypedExtraMembers);
+                violations, false, untypedMembers);
             return;
         }
 
@@ -153,7 +162,7 @@ public class PublicResponseArchitectureTests
             {
                 InspectType(argument,
                     $"{path}<{argument.Name}>", visited, violations, false,
-                    untypedExtraMembers);
+                    untypedMembers);
             }
         }
 
@@ -173,7 +182,7 @@ public class PublicResponseArchitectureTests
         {
             InspectType(type.BaseType,
                 $"{path}.Base<{type.BaseType.Name}>", visited, violations,
-                false, untypedExtraMembers);
+                false, untypedMembers);
         }
 
         var inheritedInterfaces = type.BaseType?.GetInterfaces() ??
@@ -184,7 +193,7 @@ public class PublicResponseArchitectureTests
         {
             InspectType(interfaceType,
                 $"{path}.Interface<{interfaceType.Name}>", visited,
-                violations, false, untypedExtraMembers);
+                violations, false, untypedMembers);
         }
 
         foreach(var property in type.GetProperties(BindingFlags.Instance |
@@ -192,24 +201,24 @@ public class PublicResponseArchitectureTests
                     .Where(property =>
                     property.GetIndexParameters().Length == 0))
         {
-            RecordUntypedExtraMember(type, property, property.PropertyType,
-                untypedExtraMembers);
+            RecordUntypedMember(type, property, property.PropertyType,
+                untypedMembers);
             InspectType(property.PropertyType,
                 $"{path}.{property.Name}", visited, violations, false,
-                untypedExtraMembers);
+                untypedMembers);
         }
 
         foreach(var field in type.GetFields(BindingFlags.Instance |
                     BindingFlags.Public | BindingFlags.DeclaredOnly))
         {
-            RecordUntypedExtraMember(type, field, field.FieldType,
-                untypedExtraMembers);
+            RecordUntypedMember(type, field, field.FieldType,
+                untypedMembers);
             InspectType(field.FieldType, $"{path}.{field.Name}", visited,
-                violations, false, untypedExtraMembers);
+                violations, false, untypedMembers);
         }
     }
 
-    private static void RecordUntypedExtraMember(Type declaringType,
+    private static void RecordUntypedMember(Type declaringType,
         MemberInfo member, Type memberType, ISet<string> members)
     {
         if(members == null)
@@ -219,18 +228,28 @@ public class PublicResponseArchitectureTests
             .Any(attribute => attribute.AttributeType.FullName is
                 "System.Text.Json.Serialization.JsonExtensionDataAttribute" or
                 "Newtonsoft.Json.JsonExtensionDataAttribute");
-        var canCarryUntypedValues = memberType == typeof(object) ||
+        var canCarryUntypedValues = IsUntypedValueType(memberType) ||
             memberType.GetInterfaces().Concat(new[] { memberType })
                 .Any(candidate => candidate.IsGenericType &&
-                    candidate.GetGenericTypeDefinition() ==
-                    typeof(IDictionary<,>) &&
-                    candidate.GetGenericArguments()[1] == typeof(object));
+                    (candidate.GetGenericTypeDefinition() ==
+                         typeof(IDictionary<,>) ||
+                     candidate.GetGenericTypeDefinition() ==
+                         typeof(IReadOnlyDictionary<,>)) &&
+                    IsUntypedValueType(
+                        candidate.GetGenericArguments()[1]));
 
         if(isExtensionData || canCarryUntypedValues)
         {
             members.Add($"{declaringType.FullName}.{member.Name}");
         }
     }
+
+    private static bool IsUntypedValueType(Type type) =>
+        type == typeof(object) ||
+        typeof(Newtonsoft.Json.Linq.JToken).IsAssignableFrom(type) ||
+        type == typeof(System.Text.Json.JsonElement) ||
+        type == typeof(System.Text.Json.JsonDocument) ||
+        typeof(System.Text.Json.Nodes.JsonNode).IsAssignableFrom(type);
 
     private static Type[] GetPublicResponseRoots()
     {
@@ -257,7 +276,7 @@ public class PublicResponseArchitectureTests
              StringComparison.Ordinal) ||
          type.Namespace.StartsWith(typeof(PoolConfig).Namespace + ".",
              StringComparison.Ordinal) ||
-         (type.Namespace.StartsWith("Miningcore.Blockchain.",
+         (type.Namespace.StartsWith(typeof(BlockchainStats).Namespace + ".",
               StringComparison.Ordinal) &&
           (type.Namespace.EndsWith(".Configuration",
                StringComparison.Ordinal) ||
@@ -303,7 +322,10 @@ public class PublicResponseArchitectureTests
 
     private sealed class UntypedMemberTypes
     {
+        public Newtonsoft.Json.Linq.JToken Document { get; set; }
         public IDictionary<string, object> Metadata { get; set; }
         public object Payload = null;
+        public IReadOnlyDictionary<string, Newtonsoft.Json.Linq.JToken>
+            Tokens { get; set; }
     }
 }
