@@ -575,6 +575,7 @@ public class RecoveryConfigurationTests
     {
         var config = CreateRecoveryConfig();
         config.PaymentProcessing = null;
+        config.Pools[0].PaymentProcessing = null;
         config.Pools[0].Address = null;
         config.Pools[0].Daemons = null;
 
@@ -584,6 +585,10 @@ public class RecoveryConfigurationTests
         Assert.Contains(result.Errors, error =>
             error.PropertyName == nameof(ClusterConfig.PaymentProcessing));
         Assert.Contains(result.Errors, error =>
+            error.PropertyName == "Pools[0].PaymentProcessing" &&
+            error.ErrorMessage ==
+            "Pool 'recovery-pool': paymentProcessing configuration missing");
+        Assert.Contains(result.Errors, error =>
             error.ErrorMessage == "Pool: Wallet address missing or empty");
         Assert.Contains(result.Errors, error =>
             error.ErrorMessage == "Pool: Daemons missing or empty");
@@ -592,6 +597,74 @@ public class RecoveryConfigurationTests
         var error = Assert.Throws<PoolStartupException>(() =>
             Program.ValidateConfig(config, false));
         Assert.Equal("No pools are enabled.", error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NormalStartup_MissingPoolPaymentProcessingIdentifiesPool(
+        bool explicitNull)
+    {
+        var document = CreateRecoveryDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+
+        if(explicitNull)
+            pool["paymentProcessing"] = JValue.CreateNull();
+        else
+            pool.Property("paymentProcessing")?.Remove();
+
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var config = Program.ReadConfig(configFile, false);
+            var result = new ClusterConfigValidator().Validate(config);
+            var error = Assert.Single(result.Errors, failure =>
+                failure.PropertyName == "Pools[0].PaymentProcessing");
+
+            Assert.Equal(
+                "Pool 'recovery-pool': paymentProcessing configuration missing",
+                error.ErrorMessage);
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ValidateConfig(config, false));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NormalStartup_RequiresPaymentProcessingForEveryConfiguredPool(
+        bool enabled)
+    {
+        var config = CreateRecoveryConfig();
+        config.Pools[0].Enabled = enabled;
+        config.Pools[0].PaymentProcessing = null;
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName == "Pools[0].PaymentProcessing");
+        Assert.Equal(
+            "Pool 'recovery-pool': paymentProcessing configuration missing",
+            error.ErrorMessage);
+    }
+
+    [Fact]
+    public void RecoveryMode_DoesNotConsumePoolPaymentProcessing()
+    {
+        var config = CreateRecoveryConfig();
+        config.Pools[0].PaymentProcessing = null;
+
+        var result = new ClusterConfigValidator(true).Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName.EndsWith("PaymentProcessing",
+                StringComparison.Ordinal));
+        Assert.True(result.IsValid);
     }
 
     [Fact]

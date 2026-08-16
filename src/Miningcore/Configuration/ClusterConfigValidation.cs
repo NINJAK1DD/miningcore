@@ -290,6 +290,15 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
         RuleForEach(j => j.Daemons)
             .SetValidator(new AuthenticatedNetworkEndpointConfigValidator<DaemonEndpointConfig>())
             .When(_ => !recoveryMode);
+
+        // Live pool, payout and administrative paths treat this object as a
+        // required per-pool contract. Keep recovery deliberately narrower: it
+        // neither starts those services nor consumes payout configuration.
+        RuleFor(j => j.PaymentProcessing)
+            .NotNull()
+            .When(_ => !recoveryMode)
+            .WithMessage(pool =>
+                $"Pool '{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}': paymentProcessing configuration missing");
     }
 }
 

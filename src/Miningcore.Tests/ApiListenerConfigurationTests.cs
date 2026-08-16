@@ -493,6 +493,10 @@ public class ApiListenerConfigurationTests
                     Port = 8332,
                 },
             },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = false,
+            },
         });
 
         Assert.Contains(result.Errors, error =>
@@ -530,6 +534,10 @@ public class ApiListenerConfigurationTests
                     Host = "127.0.0.1",
                     Port = 8332,
                 },
+            },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = false,
             },
         });
 
@@ -2291,6 +2299,11 @@ public class ApiListenerConfigurationTests
                     EnableInternalStratum = false,
                     Address = "recovery-wallet",
                     Ports = new Dictionary<int, PoolEndpoint>(),
+                    PaymentProcessing = new PoolPaymentProcessingConfig
+                    {
+                        Enabled = false,
+                        PayoutScheme = PayoutScheme.SOLO,
+                    },
                     Daemons = new[]
                     {
                         new DaemonEndpointConfig
@@ -2522,6 +2535,10 @@ public class ApiListenerConfigurationTests
         JsonConvert.SerializeObject(config, new JsonSerializerSettings
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
+            Converters =
+            {
+                new Newtonsoft.Json.Converters.StringEnumConverter(),
+            },
         });
 
     private static int GetFreeTcpPort()

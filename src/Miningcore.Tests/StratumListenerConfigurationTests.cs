@@ -361,6 +361,10 @@ public class StratumListenerConfigurationTests
         Enabled = true,
         EnableInternalStratum = true,
         Address = $"{id}-wallet",
+        PaymentProcessing = new PoolPaymentProcessingConfig
+        {
+            Enabled = false,
+        },
         Daemons = new[]
         {
             new DaemonEndpointConfig

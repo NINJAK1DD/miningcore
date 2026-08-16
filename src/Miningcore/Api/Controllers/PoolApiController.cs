@@ -185,12 +185,20 @@ public class PoolApiController : ApiControllerBase
 
     internal static void ConfigurePayoutSchemeConfig(PoolInfo poolInfo, PoolPaymentProcessingConfig payoutConfig)
     {
-        poolInfo.PaymentProcessing ??= new ApiPoolPaymentProcessingConfig();
+        // Normal startup requires the runtime configuration. At this defensive
+        // API boundary, omit an invalid programmatic configuration instead of
+        // fabricating disabled payments, zero thresholds or payout defaults.
+        if(poolInfo.PaymentProcessing == null || payoutConfig == null)
+        {
+            poolInfo.PaymentProcessing = null;
+            return;
+        }
+
         poolInfo.PaymentProcessing.PayoutSchemeConfig =
-            payoutConfig?.PayoutSchemeConfig?.ToObject<ApiPoolPayoutSchemeConfig>() ?? new ApiPoolPayoutSchemeConfig();
+            payoutConfig.PayoutSchemeConfig?.ToObject<ApiPoolPayoutSchemeConfig>() ?? new ApiPoolPayoutSchemeConfig();
 
         // display block finder percentage only if PPLNSBF is activated
-        if(payoutConfig?.PayoutScheme != PayoutScheme.PPLNSBF)
+        if(payoutConfig.PayoutScheme != PayoutScheme.PPLNSBF)
             poolInfo.PaymentProcessing.PayoutSchemeConfig.BlockFinderPercentage = null;
     }
 

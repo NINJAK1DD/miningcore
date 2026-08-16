@@ -930,6 +930,35 @@ public class PoolApiControllerTests
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
         Assert.Null(result.PaymentProcessing);
+        Assert.Null(config.PaymentProcessing);
+        Assert.Equal(typeof(ApiPoolPaymentProcessingConfig),
+            typeof(PoolInfo).GetProperty(nameof(PoolInfo.PaymentProcessing))?
+                .PropertyType);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PoolResponses_WithMissingPaymentProcessingOmitContract(
+        bool legacyNulls)
+    {
+        var config = CreateMinimalPoolConfig();
+        config.PaymentProcessing = null;
+        var poolInfo = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+        PoolApiController.ConfigurePayoutSchemeConfig(poolInfo,
+            config.PaymentProcessing);
+
+        Assert.Null(poolInfo.PaymentProcessing);
+        foreach(var payload in SerializePoolResponsePayloads(poolInfo,
+                    CreateApiJsonOptions(legacyNulls)))
+        {
+            Assert.False(payload.TryGetProperty("paymentProcessing", out _));
+            Assert.DoesNotContain(payload.EnumerateObject(), property =>
+                property.Name.Equals("extra",
+                    StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     [Fact]
@@ -1039,9 +1068,55 @@ public class PoolApiControllerTests
 
         PoolApiController.ConfigurePayoutSchemeConfig(poolInfo, null);
 
-        Assert.NotNull(poolInfo.PaymentProcessing);
-        Assert.NotNull(poolInfo.PaymentProcessing.PayoutSchemeConfig);
-        Assert.Null(poolInfo.PaymentProcessing.PayoutSchemeConfig.BlockFinderPercentage);
+        Assert.Null(poolInfo.PaymentProcessing);
+    }
+
+    [Theory]
+    [InlineData(true, PayoutScheme.SOLO)]
+    [InlineData(false, PayoutScheme.PPLNSBF)]
+    public void PoolResponses_PreservePresentPaymentProcessing(
+        bool enabled, PayoutScheme payoutScheme)
+    {
+        var config = CreateMinimalPoolConfig();
+        config.PaymentProcessing = new PoolPaymentProcessingConfig
+        {
+            Enabled = enabled,
+            MinimumPayment = 1.25m,
+            PayoutScheme = payoutScheme,
+            PayoutSchemeConfig = new JObject
+            {
+                ["factor"] = 3.5m,
+                ["blockFinderPercentage"] = 7.5m,
+            },
+        };
+        var poolInfo = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+        PoolApiController.ConfigurePayoutSchemeConfig(poolInfo,
+            config.PaymentProcessing);
+
+        foreach(var payload in SerializePoolResponsePayloads(poolInfo,
+                    CreateApiJsonOptions(false)))
+        {
+            var payment = payload.GetProperty("paymentProcessing");
+            Assert.Equal(enabled,
+                payment.GetProperty("enabled").GetBoolean());
+            Assert.Equal(1.25m,
+                payment.GetProperty("minimumPayment").GetDecimal());
+            Assert.Equal(payoutScheme.ToString(),
+                payment.GetProperty("payoutScheme").GetString());
+            var scheme = payment.GetProperty("payoutSchemeConfig");
+            Assert.Equal(3.5m, scheme.GetProperty("factor").GetDecimal());
+
+            if(payoutScheme == PayoutScheme.PPLNSBF)
+            {
+                Assert.Equal(7.5m, scheme
+                    .GetProperty("blockFinderPercentage").GetDecimal());
+            }
+            else
+                Assert.False(scheme.TryGetProperty(
+                    "blockFinderPercentage", out _));
+        }
     }
 
     [Fact]

@@ -63,6 +63,8 @@ public partial class PoolInfo
 
     public ApiCoinConfig Coin { get; set; }
     public Dictionary<int, ApiPoolEndpoint> Ports { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ApiPoolPaymentProcessingConfig PaymentProcessing { get; set; }
     public ApiPoolShareBasedBanningConfig ShareBasedBanning { get; set; }
     public int ClientConnectionTimeout { get; set; }
