@@ -27,22 +27,13 @@ public class PublicResponseArchitectureTests
     }
 
     [Fact]
-    public void PublicResponseGraph_AllowsOnlyReviewedUntypedMembers()
+    public void PublicResponseGraph_DoesNotExposeUntypedMembers()
     {
         var roots = GetPublicResponseRoots();
         var untypedMembers = FindUntypedMembers(roots);
-        var reviewedMembers = new[]
-        {
-            // Tracked by #80: replace this final untyped exception with
-            // fail-closed public payment-processing projections.
-            $"{typeof(ApiPoolPaymentProcessingConfig).FullName}.Extra",
-        };
 
-        Assert.True(reviewedMembers.SequenceEqual(untypedMembers,
-                StringComparer.Ordinal),
-            "Public API response types may expose untyped members only after " +
-            "an explicit review and corresponding value-level redaction " +
-            $"coverage. Reviewed: {string.Join(", ", reviewedMembers)}. " +
+        Assert.True(untypedMembers.Length == 0,
+            "Public API response types must not expose untyped members. " +
             $"Discovered: {string.Join(", ", untypedMembers)}");
     }
 

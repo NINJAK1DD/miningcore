@@ -124,6 +124,8 @@ curl http://127.0.0.1:4000/api/pools
 `/api/help` is the runtime route summary. Use it as the first check when a client written for another
 Miningcore fork expects a route that may have changed.
 
+### Pool response contracts
+
 The `ports` objects returned by `/api/pools` and `/api/pools/{id}` are dedicated public projections,
 not serialized `PoolEndpoint` runtime configuration. They expose connection, difficulty, VarDiff, TLS
 mode and PROXY-protocol mode information needed by clients. TLS certificate paths and passwords, plus
@@ -141,15 +143,38 @@ omitted under the normal null policy and emitted as `null` when `legacyNullValue
 enabled. This boundary is defence in depth against future internal configuration additions; it
 does not correct a known disclosure in the six existing fields.
 
-The nested `paymentProcessing.extra` object currently passes blockchain-specific extension keys
-through as configured; those keys are not flattened directly into `paymentProcessing`. Before
-serialization, Miningcore removes the known Alephium, Bitcoin, Ergo, Handshake and Kaspa wallet
-passwords and the Warthog wallet private key from `extra`, including simultaneous key names that
-differ only by case. This opt-out redaction is not a substitute for keeping secrets out of
-unrecognized settings or restricting API access. Treat any wallet credential observed in a pool
-response as exposed, upgrade, rotate it and review downstream proxy, client and monitoring logs. A
-future typed-projection replacement for this remaining dynamic response boundary is tracked by
-[issue #80](https://github.com/NINJAK1DD/miningcore/issues/80).
+The nested `paymentProcessing.extra` object is an explicit typed public projection. Miningcore emits
+only these approved blockchain-specific fields:
+
+| Coin family | Public `extra` fields |
+| --- | --- |
+| Alephium | `walletName`, `blockRewardsLockTime`, `keepTransactionFees` |
+| Bitcoin, Equihash, Nexa, ProgPoW, SatoshiCash | `minersPayTxFees` |
+| Beam | none |
+| Conceal | `minimumPaymentToPaymentId` |
+| Cryptonote | `minimumPaymentToPaymentId`, `maximumDestinationPerTransfer` |
+| Ergo | `minimumConfirmations` |
+| Ethereum | `keepTransactionFees`, `keepUncles`, `gas`, `maxFeePerGas`, `blockSearchOffset` |
+| Handshake | `walletName`, `walletAccount`, `minersPayTxFees` |
+| Kaspa | `minimumConfirmations`, `versionEnablingMaxFee`, `maxFee` |
+| Warthog | `maximumTransactionFees`, `keepTransactionFees`, `minimumConfirmations`, `maxDegreeOfParallelPayouts` |
+| Xelis | `minimumConfirmations`, `maximumDestinationPerTransfer`, `keepTransactionFees` |
+| Zano | `minimumPaymentToPaymentId`, `revealPoolAddress`, `hideMinerAddress`, `maximumDestinationPerTransfer`, `keepTransactionFees`, `maxFee` |
+
+Approved keys retain the spelling supplied by the configuration and remain nested under `extra`.
+Explicit null values and the existing normal/legacy null behavior are preserved. Unknown fields,
+malformed values, ambiguous case-variant duplicates and every wallet password or private key are
+omitted. Adding a runtime extension property does not make it public; it must be classified and
+projected deliberately. This is a response boundary only and does not mutate or replace the live
+payout configuration.
+
+Miningcore's System.Text.Json REST contract remains nested. External consumers that compile against
+Miningcore must update `ApiPoolPaymentProcessingConfig.Extra` from
+`IDictionary<string, object>` to `ApiPoolPaymentProcessingExtra` and rebuild. Newtonsoft
+re-serialization no longer flattens extension entries: it emits the typed `Extra` property as a
+nested object using the consumer's contract resolver (`extra` with a camel-case resolver).
+Treat any wallet credential observed in a pool response as exposed, upgrade, rotate it and review
+downstream proxy, client and monitoring logs.
 
 ## Public routes
 

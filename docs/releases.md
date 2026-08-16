@@ -379,6 +379,24 @@ remove the duplicate entries and rotate every wallet password or private key tha
 in a public response. Treat reverse-proxy, client and monitoring logs containing those responses as
 sensitive until their retention period has expired or they have been securely removed.
 
+`paymentProcessing.extra` is now a typed, family-aware public projection instead of an untyped
+copy-and-redact dictionary. The REST response remains nested and preserves the configured spelling,
+value and explicit-null presence of approved fields, while unknown settings, malformed values,
+case-ambiguous duplicates and wallet credentials fail closed. This also closes a pre-existing
+disclosure path for Bitcoin wallet-password settings reused by Equihash, Nexa, ProgPoW and
+SatoshiCash, whose family names were outside the former redaction switch. Operators using those
+families should inspect trusted local copies of prior `/api/pools` or `/api/pools/{id}` responses
+and related proxy, client or monitoring logs for any key matching `walletPassword` without regard
+to case; if found, rotate that wallet password and handle retained responses as sensitive data.
+
+The REST names and normal/legacy null behavior of approved non-sensitive fields are unchanged.
+Unknown extension fields are intentionally no longer returned. Direct .NET consumers must change
+`ApiPoolPaymentProcessingConfig.Extra` from `IDictionary<string, object>` to
+`ApiPoolPaymentProcessingExtra` and rebuild. External Newtonsoft re-serialization no longer
+flattens entries; it emits the typed `Extra` property as a nested object using the consumer's
+contract resolver (`extra` with a camel-case resolver). See
+[the public API contract](api.md#pool-response-contracts) for the complete allow-list.
+
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
 startup before any pool is announced online and releases all sockets already acquired by that
