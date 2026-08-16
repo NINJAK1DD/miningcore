@@ -662,7 +662,6 @@ public class PoolApiControllerTests
         // including Json.NET's ISO-string-to-DateTime parsing behavior.
         var expectedWire = JsonSerializer.SerializeToElement(sourceValue,
             options);
-        var sourceToken = ToWireToken(sourceValue);
         var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
