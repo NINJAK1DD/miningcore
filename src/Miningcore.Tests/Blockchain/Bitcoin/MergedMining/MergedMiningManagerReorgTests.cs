@@ -1097,7 +1097,10 @@ public class MergedMiningManagerReorgTests
         var (parent, _, cluster) = CreateConfig();
         manager.Configure(parent, cluster);
 
-        using var validationStarted = new ManualResetEventSlim();
+        using var coordinationDeadline = new CancellationTokenSource(
+            TimeSpan.FromSeconds(30));
+        var validationStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseValidation = new ManualResetEventSlim();
         var candidateSubmissionStarted = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1116,8 +1119,8 @@ public class MergedMiningManagerReorgTests
 
         manager.ProcessMergedShareHandler = () =>
         {
-            validationStarted.Set();
-            releaseValidation.Wait();
+            validationStarted.TrySetResult(true);
+            releaseValidation.Wait(coordinationDeadline.Token);
             return new MergedMiningShareResult
             {
                 Share = candidateShare,
@@ -1154,30 +1157,65 @@ public class MergedMiningManagerReorgTests
         worker.SetContext(context);
         using var hostShutdown = new CancellationTokenSource();
 
-        var submitTask = Task.Run(async () => await manager.SubmitShareAsync(worker,
-            new object[] { "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000" },
-            hostShutdown.Token));
-        Assert.True(validationStarted.Wait(TimeSpan.FromSeconds(2)));
+        // Validation deliberately blocks synchronously. Give it a dedicated worker so a
+        // saturated shared thread pool cannot prevent the test from reaching its first signal.
+        var submitTask = Task.Factory.StartNew(
+                () => manager.SubmitShareAsync(worker,
+                    new object[]
+                    {
+                        "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000",
+                    }, hostShutdown.Token).AsTask(),
+                CancellationToken.None, TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
 
-        hostShutdown.Cancel();
-        var shutdownDrain = manager.DrainCandidateOperationsAsync();
-        Assert.False(shutdownDrain.IsCompleted);
+        try
+        {
+            await validationStarted.Task.WaitAsync(coordinationDeadline.Token);
 
-        releaseValidation.Set();
-        await candidateSubmissionStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.False(shutdownDrain.IsCompleted);
-        Assert.False(persisted.Task.IsCompleted);
+            hostShutdown.Cancel();
+            var shutdownDrain = manager.DrainCandidateOperationsAsync();
+            Assert.False(shutdownDrain.IsCompleted);
 
-        releasePersistence.TrySetResult(true);
-        await persisted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await shutdownDrain.WaitAsync(TimeSpan.FromSeconds(2));
-        var returnedShare = await submitTask.WaitAsync(TimeSpan.FromSeconds(2));
+            releaseValidation.Set();
+            await candidateSubmissionStarted.Task.WaitAsync(coordinationDeadline.Token);
+            Assert.False(shutdownDrain.IsCompleted);
+            Assert.False(persisted.Task.IsCompleted);
 
-        Assert.Same(candidateShare, returnedShare);
-        await recorder.Received(1).PersistBlockCandidateAsync(
-            Arg.Is<Share>(x => x.BlockOnly && x.BlockHash == candidateShare.BlockHash));
-        Assert.Throws<OperationCanceledException>(() =>
-            manager.BeginCandidatePreparation());
+            releasePersistence.TrySetResult(true);
+            await persisted.Task.WaitAsync(coordinationDeadline.Token);
+            await shutdownDrain.WaitAsync(coordinationDeadline.Token);
+            var returnedShare = await submitTask.WaitAsync(coordinationDeadline.Token);
+
+            Assert.Same(candidateShare, returnedShare);
+            await recorder.Received(1).PersistBlockCandidateAsync(
+                Arg.Is<Share>(x => x.BlockOnly &&
+                    x.BlockHash == candidateShare.BlockHash));
+            Assert.Throws<OperationCanceledException>(() =>
+                manager.BeginCandidatePreparation());
+        }
+        finally
+        {
+            releaseValidation.Set();
+            releasePersistence.TrySetResult(true);
+            hostShutdown.Cancel();
+
+            if(!submitTask.IsCompleted)
+            {
+                try
+                {
+                    await submitTask.WaitAsync(coordinationDeadline.Token);
+                }
+                catch(OperationCanceledException) when(coordinationDeadline.IsCancellationRequested)
+                {
+                    // The shared deadline bounds cleanup after a failed coordination assertion.
+                }
+                catch
+                {
+                    // Preserve the primary test failure; the normal path observes submitTask.
+                }
+            }
+        }
     }
 
     [Fact]
