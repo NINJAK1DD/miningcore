@@ -56,9 +56,8 @@ public class ApiPoolPaymentProcessingConfig
 
     // Retain this attribute for external Newtonsoft consumers until issue #80
     // replaces the untyped bag. Such consumers flatten these entries when
-    // re-serializing this DTO. Miningcore MVC uses System.Text.Json and
-    // ignores the attribute, so its REST API deliberately preserves the
-    // nested "extra"
+    // re-serializing this DTO. Miningcore MVC uses System.Text.Json and ignores
+    // the attribute, so its REST API deliberately preserves the nested "extra"
     // object. PoolResponses_PreserveNestedPaymentProcessingExtraContract pins
     // that shape and the verbatim extension-key casing.
     [Newtonsoft.Json.JsonExtensionData]
