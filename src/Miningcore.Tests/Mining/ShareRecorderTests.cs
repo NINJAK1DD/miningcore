@@ -696,14 +696,7 @@ public class ShareRecorderTests
         finally
         {
             releaseDatabase.TrySetResult();
-            try
-            {
-                await recorder.StopAsync(CancellationToken.None)
-                    .WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch
-            {
-            }
+            await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
             ownership.Release();
             ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
@@ -819,6 +812,7 @@ public class ShareRecorderTests
         {
             ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(50),
         };
+        Task stopping = null;
 
         try
         {
@@ -852,8 +846,8 @@ public class ShareRecorderTests
                 .Invoke(unresolved, new[] { (object) long.MaxValue, queued })!;
             Assert.True(added);
 
-            await recorder.StopAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(10));
+            stopping = recorder.StopAsync(CancellationToken.None);
+            await stopping.WaitAsync(TimeSpan.FromSeconds(10));
 
             await share.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(1));
             Assert.True(share.PersistenceAdmission.IsCompletedSuccessfully);
@@ -862,13 +856,8 @@ public class ShareRecorderTests
         }
         finally
         {
-            try
-            {
-                await recorder.StopAsync(CancellationToken.None);
-            }
-            catch
-            {
-            }
+            stopping ??= recorder.StopAsync(CancellationToken.None);
+            await AwaitRecorderStopBeforeFixtureCleanupAsync(stopping);
 
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
@@ -1330,6 +1319,7 @@ public class ShareRecorderTests
             ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(50),
         };
         var candidate = CreateDurableCandidate("block-insert-stall");
+        Task stopping = null;
 
         try
         {
@@ -1337,8 +1327,8 @@ public class ShareRecorderTests
             bus.SendMessage(candidate);
             await blockInsertEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            await recorder.StopAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(5));
+            stopping = recorder.StopAsync(CancellationToken.None);
+            await stopping.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Contains("block-insert-stall",
                 await File.ReadAllTextAsync(recoveryFilename));
@@ -1346,6 +1336,8 @@ public class ShareRecorderTests
         }
         finally
         {
+            stopping ??= recorder.StopAsync(CancellationToken.None);
+            await AwaitRecorderStopBeforeFixtureCleanupAsync(stopping);
             ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
             Directory.Delete(directory, true);
         }
@@ -1419,14 +1411,7 @@ public class ShareRecorderTests
         finally
         {
             releaseCommit.Set();
-            try
-            {
-                await recorder.StopAsync(CancellationToken.None)
-                    .WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch
-            {
-            }
+            await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
             commitEntered.Dispose();
             releaseCommit.Dispose();
@@ -1596,6 +1581,11 @@ public class ShareRecorderTests
                 await releaseJournal.Task;
                 throw new IOException("injected emergency journal failure");
             },
+            // This fixture validates fail-stop capture, not production shutdown
+            // timing. Keep its internal terminal boundaries well inside the outer
+            // cleanup guard so Windows never sees a live owner during deletion.
+            ShutdownPersistenceDrainTimeout = TimeSpan.FromMilliseconds(250),
+            ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(1),
         };
 
         try
@@ -1656,15 +1646,7 @@ public class ShareRecorderTests
         {
             releaseJournal.TrySetResult();
             releaseDatabase.TrySetResult();
-            try
-            {
-                await recorder.StopAsync(CancellationToken.None)
-                    .WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch
-            {
-                // Both injected durability targets deliberately fail.
-            }
+            await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
@@ -7865,6 +7847,27 @@ public class ShareRecorderTests
 
         while(!condition())
             await Task.Delay(10, deadline.Token);
+    }
+
+    private static Task StopRecorderBeforeFixtureCleanupAsync(
+        ShareRecorder recorder) =>
+        AwaitRecorderStopBeforeFixtureCleanupAsync(
+            recorder.StopAsync(CancellationToken.None));
+
+    private static async Task AwaitRecorderStopBeforeFixtureCleanupAsync(
+        Task stopping)
+    {
+        try
+        {
+            await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        catch(Exception) when(stopping.IsCompleted)
+        {
+            // These fixtures deliberately fault persistence and recovery targets.
+            // Swallow only a terminal service failure. If the outer wait expires
+            // while StopAsync is still running, let that timeout escape so callers
+            // cannot delete a directory beneath a live recovery owner or worker.
+        }
     }
 
     private static bool FatalStateIsComplete(string filename)
