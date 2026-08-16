@@ -298,7 +298,9 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
             .NotNull()
             .When(_ => !recoveryMode)
             .WithMessage(pool =>
-                $"Pool '{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}': paymentProcessing configuration missing");
+                $"Pool '{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}': " +
+                "paymentProcessing configuration missing; keep the object and " +
+                "set enabled=false to disable payouts");
     }
 }
 
@@ -326,7 +328,8 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleFor(j => j.PaymentProcessing)
             .NotNull()
-            .When(_ => !recoveryMode);
+            .When(_ => !recoveryMode)
+            .WithMessage("Cluster paymentProcessing configuration missing");
 
         RuleFor(j => j.Persistence)
             .NotNull()

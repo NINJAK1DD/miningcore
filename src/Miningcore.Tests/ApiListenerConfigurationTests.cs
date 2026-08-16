@@ -136,6 +136,44 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
+    public void ConfigSchema_KeepsPoolPaymentProcessingOptional_ForRecovery()
+    {
+        // Normal startup enforces this live-service contract through the
+        // mode-aware validator. Keeping it out of the structural schema lets
+        // recovery sanitize damaged payout settings before binding.
+        var path = Path.Combine(AppContext.BaseDirectory,
+            "config.schema.json");
+        var committed = JObject.Parse(File.ReadAllText(path));
+        var required = committed.SelectToken(
+                "definitions.PoolConfig.required")?
+            .Values<string>()
+            .ToArray();
+
+        Assert.NotNull(committed.SelectToken(
+            "definitions.PoolConfig.properties.paymentProcessing"));
+        Assert.DoesNotContain("paymentProcessing",
+            required ?? Array.Empty<string>());
+        Assert.Equal(new[] { "object", "null" }, committed.SelectToken(
+                "definitions.PoolPaymentProcessingConfig.type")?
+            .Values<string>());
+    }
+
+    [Fact]
+    public void ShippedExampleConfig_PassesNormalStartupValidation()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory,
+            "config.example.json");
+        var config = Program.ReadConfig(path, false);
+        var result = new ClusterConfigValidator().Validate(config);
+
+        Assert.True(result.IsValid, string.Join(Environment.NewLine,
+            result.Errors.Select(error =>
+                $"{error.PropertyName}: {error.ErrorMessage}")));
+        Assert.All(config.Pools,
+            pool => Assert.NotNull(pool.PaymentProcessing));
+    }
+
+    [Fact]
     public void RecoveryLoader_MatchesStrictJsonParsingAfterApplyingAllowlist()
     {
         var exampleConfig = File.ReadAllText(Path.Combine(

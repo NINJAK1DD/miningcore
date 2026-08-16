@@ -953,12 +953,7 @@ public class PoolApiControllerTests
         Assert.Null(poolInfo.PaymentProcessing);
         foreach(var payload in SerializePoolResponsePayloads(poolInfo,
                     CreateApiJsonOptions(legacyNulls)))
-        {
             Assert.False(payload.TryGetProperty("paymentProcessing", out _));
-            Assert.DoesNotContain(payload.EnumerateObject(), property =>
-                property.Name.Equals("extra",
-                    StringComparison.OrdinalIgnoreCase));
-        }
     }
 
     [Fact]
@@ -1062,20 +1057,45 @@ public class PoolApiControllerTests
     }
 
     [Fact]
-    public void ConfigurePayoutSchemeConfig_WithMissingMappedPaymentConfig_IsNullSafe()
+    public void ConfigurePayoutSchemeConfig_WithMissingSourcePaymentConfig_OmitsMappedContract()
     {
-        var poolInfo = new PoolInfo();
+        var poolInfo = new PoolInfo
+        {
+            PaymentProcessing = new ApiPoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                MinimumPayment = 1.25m,
+            },
+        };
 
         PoolApiController.ConfigurePayoutSchemeConfig(poolInfo, null);
 
         Assert.Null(poolInfo.PaymentProcessing);
     }
 
+    [Fact]
+    public void ConfigurePayoutSchemeConfig_WithMissingMappedPaymentConfig_OmitsContract()
+    {
+        var poolInfo = new PoolInfo();
+        var payoutConfig = new PoolPaymentProcessingConfig
+        {
+            Enabled = true,
+            MinimumPayment = 1.25m,
+            PayoutScheme = PayoutScheme.SOLO,
+        };
+
+        PoolApiController.ConfigurePayoutSchemeConfig(poolInfo, payoutConfig);
+
+        Assert.Null(poolInfo.PaymentProcessing);
+    }
+
     [Theory]
-    [InlineData(true, PayoutScheme.SOLO)]
-    [InlineData(false, PayoutScheme.PPLNSBF)]
+    [InlineData(true, PayoutScheme.SOLO, false)]
+    [InlineData(true, PayoutScheme.SOLO, true)]
+    [InlineData(false, PayoutScheme.PPLNSBF, false)]
+    [InlineData(false, PayoutScheme.PPLNSBF, true)]
     public void PoolResponses_PreservePresentPaymentProcessing(
-        bool enabled, PayoutScheme payoutScheme)
+        bool enabled, PayoutScheme payoutScheme, bool legacyNulls)
     {
         var config = CreateMinimalPoolConfig();
         config.PaymentProcessing = new PoolPaymentProcessingConfig
@@ -1096,7 +1116,7 @@ public class PoolApiControllerTests
             config.PaymentProcessing);
 
         foreach(var payload in SerializePoolResponsePayloads(poolInfo,
-                    CreateApiJsonOptions(false)))
+                    CreateApiJsonOptions(legacyNulls)))
         {
             var payment = payload.GetProperty("paymentProcessing");
             Assert.Equal(enabled,

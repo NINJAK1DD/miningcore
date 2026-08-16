@@ -583,11 +583,14 @@ public class RecoveryConfigurationTests
 
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, error =>
-            error.PropertyName == nameof(ClusterConfig.PaymentProcessing));
+            error.PropertyName == nameof(ClusterConfig.PaymentProcessing) &&
+            error.ErrorMessage ==
+            "Cluster paymentProcessing configuration missing");
         Assert.Contains(result.Errors, error =>
             error.PropertyName == "Pools[0].PaymentProcessing" &&
             error.ErrorMessage ==
-            "Pool 'recovery-pool': paymentProcessing configuration missing");
+                "Pool 'recovery-pool': paymentProcessing configuration missing; " +
+                "keep the object and set enabled=false to disable payouts");
         Assert.Contains(result.Errors, error =>
             error.ErrorMessage == "Pool: Wallet address missing or empty");
         Assert.Contains(result.Errors, error =>
@@ -623,7 +626,8 @@ public class RecoveryConfigurationTests
                 failure.PropertyName == "Pools[0].PaymentProcessing");
 
             Assert.Equal(
-                "Pool 'recovery-pool': paymentProcessing configuration missing",
+                "Pool 'recovery-pool': paymentProcessing configuration missing; " +
+                "keep the object and set enabled=false to disable payouts",
                 error.ErrorMessage);
             Assert.Throws<PoolStartupException>(() =>
                 Program.ValidateConfig(config, false));
@@ -649,7 +653,8 @@ public class RecoveryConfigurationTests
         var error = Assert.Single(result.Errors, failure =>
             failure.PropertyName == "Pools[0].PaymentProcessing");
         Assert.Equal(
-            "Pool 'recovery-pool': paymentProcessing configuration missing",
+            "Pool 'recovery-pool': paymentProcessing configuration missing; " +
+            "keep the object and set enabled=false to disable payouts",
             error.ErrorMessage);
     }
 
@@ -737,6 +742,11 @@ public class RecoveryConfigurationTests
                 EnableInternalStratum = false,
                 Address = "recovery-wallet",
                 Ports = new Dictionary<int, PoolEndpoint>(),
+                PaymentProcessing = new PoolPaymentProcessingConfig
+                {
+                    Enabled = false,
+                    PayoutScheme = PayoutScheme.SOLO,
+                },
                 Daemons = new[]
                 {
                     new DaemonEndpointConfig
@@ -754,6 +764,10 @@ public class RecoveryConfigurationTests
             new JsonSerializerSettings
             {
                 ContractResolver = new CamelCasePropertyNamesContractResolver(),
+                Converters =
+                {
+                    new Newtonsoft.Json.Converters.StringEnumConverter(),
+                },
             }));
 
     private static string WriteTemporaryConfig(JObject document)
