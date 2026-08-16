@@ -195,6 +195,9 @@ internal static class PaymentProcessingExtraProjection
                 break;
 
             default:
+                // An unknown enum member is a developer classification error,
+                // not malformed operator data. Fail startup/tests loudly so a
+                // new family cannot acquire a public contract by accident.
                 throw new ArgumentOutOfRangeException(nameof(family), family,
                     "Payment-processing response fields require an explicit family classification");
         }
@@ -204,7 +207,7 @@ internal static class PaymentProcessingExtraProjection
 
     private static void Project<T>(ApiPoolPaymentProcessingExtra result,
         IDictionary<string, object> source, string configuredName,
-        Action<string, T> setter)
+        Action<string, T, JToken> setter)
     {
         var matches = source.Keys
             .Where(key => string.Equals(key, configuredName,
@@ -222,11 +225,13 @@ internal static class PaymentProcessingExtraProjection
                out var wireValue))
             return;
 
-        setter(matches[0], value);
-        result.PreserveWireValue(matches[0], wireValue);
+        // The typed value, exact configured name and detached wire scalar are
+        // registered together by the field-specific setter. No configured
+        // name is reinterpreted as an enum identity at this boundary.
+        setter(matches[0], value, wireValue);
     }
 
-    internal static bool TryConvert<T>(object source, out T value,
+    private static bool TryConvert<T>(object source, out T value,
         out JToken wireValue)
     {
         try

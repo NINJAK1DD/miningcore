@@ -399,6 +399,11 @@ flattens entries; it emits the typed `Extra` property as a nested object using t
 contract resolver (`extra` with a camel-case resolver). See
 [the public API contract](api.md#pool-response-contracts) for the complete allow-list.
 
+REST consumers must continue accepting runtime-coercible legacy scalar representations rather than
+inferring the JSON type from the new .NET property type. This includes ISO-looking configured
+strings that Json.NET represents internally as dates: approved string fields remain JSON strings on
+the REST wire. Miningcore's configured System.Text.Json encoder remains effective for those strings.
+
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
 startup before any pool is announced online and releases all sockets already acquired by that

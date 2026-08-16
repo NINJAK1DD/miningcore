@@ -171,6 +171,13 @@ ambiguous case-variant duplicates and every wallet password or private key are o
 runtime extension property does not make it public; it must be classified and projected
 deliberately. JSON object member order is not part of this contract.
 
+REST clients must therefore accept either the canonical JSON type or a runtime-coercible legacy
+representation for an approved `extra` field; they must not infer the REST value's JSON type from
+the corresponding public .NET property type. Json.NET can parse an ISO-looking configured string as
+a date internally. Miningcore still emits that approved value as a JSON string using the same API
+serializer semantics as the former untyped response. The compatibility contract preserves JSON
+type and value, not the original lexical spelling of equivalent numbers or dates.
+
 `ApiPoolPaymentProcessingExtra` is a flat typed union: all approved properties are optional on the
 .NET type, while the family table above defines which subset may be emitted for a pool. This is a
 response boundary only and does not mutate, alias or replace the live payout configuration.
