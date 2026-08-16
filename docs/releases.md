@@ -373,12 +373,11 @@ as both `WalletPassword` and `walletPassword`. The affected redaction paths are 
 Ergo, Handshake and Kaspa wallet passwords plus Warthog wallet private keys. Operators can assess
 exposure by inspecting their configuration locally for duplicate sensitive names after ignoring case.
 If checking `/api/pools`, use a trusted local connection, avoid saving or sharing the response and
-treat any returned key matching `walletPassword` or `walletPrivateKey` without regard to letter
-case as exposed. Operators who used such a configuration should upgrade, remove the duplicate
-entries and rotate every wallet password or
-private key that may have appeared in a public response. Treat reverse-proxy, client and monitoring
-logs containing those responses as sensitive until their retention period has expired or they have
-been securely removed.
+treat any key under `paymentProcessing.extra` matching `walletPassword` or `walletPrivateKey`
+without regard to letter case as exposed. Operators who used such a configuration should upgrade,
+remove the duplicate entries and rotate every wallet password or private key that may have appeared
+in a public response. Treat reverse-proxy, client and monitoring logs containing those responses as
+sensitive until their retention period has expired or they have been securely removed.
 
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
