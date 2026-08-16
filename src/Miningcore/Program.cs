@@ -724,7 +724,9 @@ public class Program : ProcessStatusBackgroundService
 
     internal sealed record ApiPipelineOptions(
         bool EnableIpRateLimiting = false,
-        bool EnableExceptionHandling = false);
+        bool EnableExceptionHandling = false,
+        TimeProvider ProtectedRouteRejectionTimeProvider = null,
+        CollectorRegistry WhitelistRejectionMetricsRegistry = null);
 
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
     {
@@ -852,11 +854,16 @@ public class Program : ProcessStatusBackgroundService
 
         UseIpWhiteList(app, true,
             new[] { AdminApiAuthenticationMiddleware.AdminRoutePrefix },
-            adminIpWhitelist, gpdrCompliantLogging);
+            adminIpWhitelist, gpdrCompliantLogging,
+            options.ProtectedRouteRejectionTimeProvider,
+            options.WhitelistRejectionMetricsRegistry);
         UseIpWhiteList(app, true, new[] { MetricsRoutePrefix },
-            metricsIpWhitelist, gpdrCompliantLogging);
+            metricsIpWhitelist, gpdrCompliantLogging,
+            options.ProtectedRouteRejectionTimeProvider,
+            options.WhitelistRejectionMetricsRegistry);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
-            gpdrCompliantLogging);
+            gpdrCompliantLogging,
+            options.ProtectedRouteRejectionTimeProvider ?? TimeProvider.System);
 
         // Preserve wrong-listener 404 and IP-whitelist 403 behavior by enforcing
         // the metrics method contract only after those access-control boundaries.
@@ -2174,7 +2181,8 @@ public class Program : ProcessStatusBackgroundService
 
     private static void UseIpWhiteList(IApplicationBuilder app,
         bool defaultToLoopback, string[] locations, string[] whitelist,
-        bool gpdrCompliantLogging)
+        bool gpdrCompliantLogging, TimeProvider timeProvider = null,
+        CollectorRegistry rejectionMetricsRegistry = null)
     {
         var ipList = whitelist?.Select(IPAddress.Parse).ToList();
         if(defaultToLoopback && (ipList == null || ipList.Count == 0))
@@ -2195,8 +2203,12 @@ public class Program : ProcessStatusBackgroundService
 
             logger?.Info(() => $"API Access to {string.Join(",", locations)} restricted to {string.Join(",", ipList.Select(x => x.ToString()))}");
 
+            // UseMiddleware cannot match an explicitly supplied null argument to
+            // a constructor parameter, so always pass a concrete registry.
             app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
-                ipList.ToArray(), gpdrCompliantLogging);
+                ipList.ToArray(), gpdrCompliantLogging,
+                timeProvider ?? TimeProvider.System,
+                rejectionMetricsRegistry ?? Metrics.DefaultRegistry);
         }
     }
 

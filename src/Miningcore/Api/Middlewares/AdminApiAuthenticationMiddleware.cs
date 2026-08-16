@@ -106,18 +106,20 @@ internal sealed class AdminApiCredentialProvider
 public sealed class AdminApiAuthenticationMiddleware
 {
     public AdminApiAuthenticationMiddleware(RequestDelegate next,
-        AdminApiCredential credential, bool gpdrCompliantLogging)
+        AdminApiCredential credential, bool gpdrCompliantLogging,
+        TimeProvider timeProvider = null)
     {
         this.next = next;
         this.credential = credential;
         this.gpdrCompliantLogging = gpdrCompliantLogging;
+        rejectionLogLimiter = new MonotonicLogLimiter(
+            TimeSpan.FromMinutes(1), timeProvider);
     }
 
     private readonly RequestDelegate next;
     private readonly AdminApiCredential credential;
     private readonly bool gpdrCompliantLogging;
-    private static readonly AdminApiAuthenticationLogLimiter RejectionLogLimiter =
-        new(TimeSpan.FromMinutes(1));
+    private readonly MonotonicLogLimiter rejectionLogLimiter;
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private static readonly Counter AuthenticationCounter = Metrics.CreateCounter(
         "miningcore_admin_api_authentication_total",
@@ -164,9 +166,14 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(!authorized)
         {
-            if(RejectionLogLimiter.TryAcquire(out var suppressed))
+            // Consume the informational budget independently of the active NLog
+            // level so summaries remain coherent if logging is reconfigured. NLog
+            // evaluates the message delegate lazily when Info is disabled.
+            if(rejectionLogLimiter.TryAcquire(out var suppressed))
                 logger.Info(() => FormatRejection(context, suppressed));
-            else
+            // Avoid formatting suppressed requests unless an operator deliberately
+            // enables per-request Debug diagnostics.
+            else if(logger.IsDebugEnabled)
                 logger.Debug(() => FormatRejection(context, 0));
 
             AuthenticationCounter.WithLabels("rejected").Inc();
@@ -192,51 +199,8 @@ public sealed class AdminApiAuthenticationMiddleware
 
         if(suppressed > 0)
             result +=
-                $"; {suppressed} additional rejection(s) occurred after the previous informational entry and were suppressed";
+                $"; {suppressed} other rejection(s), possibly from other sources, were suppressed since the previous informational entry";
 
         return result;
-    }
-}
-
-internal sealed class AdminApiAuthenticationLogLimiter
-{
-    public AdminApiAuthenticationLogLimiter(TimeSpan interval,
-        TimeProvider timeProvider = null)
-    {
-        if(interval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(interval));
-
-        this.interval = interval;
-        this.timeProvider = timeProvider ?? TimeProvider.System;
-    }
-
-    private readonly object gate = new();
-    private readonly TimeSpan interval;
-    private readonly TimeProvider timeProvider;
-    private long previousInformationalTimestamp;
-    private long suppressed;
-    private bool hasInformationalEntry;
-
-    public bool TryAcquire(out long suppressedSinceLastEntry)
-    {
-        lock(gate)
-        {
-            var now = timeProvider.GetTimestamp();
-
-            if(!hasInformationalEntry ||
-                timeProvider.GetElapsedTime(previousInformationalTimestamp,
-                    now) >= interval)
-            {
-                suppressedSinceLastEntry = suppressed;
-                suppressed = 0;
-                previousInformationalTimestamp = now;
-                hasInformationalEntry = true;
-                return true;
-            }
-
-            suppressed++;
-            suppressedSinceLastEntry = 0;
-            return false;
-        }
     }
 }

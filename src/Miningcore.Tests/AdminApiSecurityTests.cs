@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Routing;
@@ -120,10 +121,10 @@ public class AdminApiSecurityTests
     }
 
     [Fact]
-    public void AuthenticationRejectionLogLimiter_UsesMonotonicElapsedTimeAndSummarizesEntries()
+    public void MonotonicLogLimiter_UsesElapsedTimeAndSummarizesEntries()
     {
         var timeProvider = new ManualTimeProvider();
-        var limiter = new AdminApiAuthenticationLogLimiter(
+        var limiter = new MonotonicLogLimiter(
             TimeSpan.FromMinutes(1), timeProvider);
 
         Assert.True(limiter.TryAcquire(out var firstSuppressed));
@@ -140,21 +141,48 @@ public class AdminApiSecurityTests
         Assert.False(limiter.TryAcquire(out _));
     }
 
-    private sealed class ManualTimeProvider : TimeProvider
+    [Fact]
+    public async Task MonotonicLogLimiter_ConcurrentBurstHasOneWinnerAndExactSummary()
     {
-        private long timestamp;
-        private DateTimeOffset utcNow = new(2026, 8, 7, 12, 0, 0,
-            TimeSpan.Zero);
+        const int attempts = 256;
+        var timeProvider = new ManualTimeProvider();
+        var limiter = new MonotonicLogLimiter(TimeSpan.FromMinutes(1),
+            timeProvider);
 
-        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => timestamp;
-        public override DateTimeOffset GetUtcNow() => utcNow;
+        var readyCount = 0;
+        var allReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startGate = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = Enumerable.Range(0, attempts)
+            .Select(_ => Task.Run(async () =>
+            {
+                if(Interlocked.Increment(ref readyCount) == attempts)
+                    allReady.TrySetResult();
 
-        public void AdvanceMonotonic(TimeSpan elapsed) =>
-            timestamp += elapsed.Ticks;
+                await startGate.Task;
+                var acquired = limiter.TryAcquire(out var suppressed);
+                return (acquired, suppressed);
+            })).ToArray();
 
-        public void MoveWallClock(TimeSpan change) =>
-            utcNow = utcNow.Add(change);
+        try
+        {
+            await allReady.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            // Never strand worker tasks if readiness times out on a constrained
+            // runner; releasing the gate also makes the failure diagnosable.
+            startGate.TrySetResult();
+        }
+
+        var results = await Task.WhenAll(tasks);
+
+        var winner = Assert.Single(results.Where(result => result.acquired));
+        Assert.Equal(0L, winner.suppressed);
+        timeProvider.AdvanceMonotonic(TimeSpan.FromMinutes(1));
+        Assert.True(limiter.TryAcquire(out var summarized));
+        Assert.Equal(attempts - 1, summarized);
     }
 
     [Theory]

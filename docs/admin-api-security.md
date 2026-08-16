@@ -123,6 +123,33 @@ address to `api.rateLimiting.ipWhitelist` as well as `api.adminIpWhitelist`; aut
 admin whitelist remain mandatory. The rate-limit IP whitelist bypasses API throttling globally,
 not only for administrative requests, so restrict its entries to trusted fixed addresses.
 
+Admin IP-whitelist rejections have a separate fixed-size, monotonic log limiter. The first
+rejection is written at `Info`; intervening entries are counted, and the next permitted
+informational entry (at most one per minute) includes the suppressed total. Metrics whitelist
+logging has an independent limiter, so a metrics flood cannot hide the first administrative
+rejection. Per-request details remain available at `Debug`, but enabling that level during hostile
+traffic can substantially increase log volume. A summary is emitted only when another rejection
+arrives after the interval; it can therefore be delayed, and the address on it belongs to the
+current request rather than the possibly different suppressed sources. All rejected requests
+continue to return `403 Forbidden`, including when API rate limiting is disabled. This protects
+normal logs from amplification but does not throttle requests; keep the dedicated listener, source
+whitelist and firewall boundary in place.
+
+Prometheus counter `miningcore_api_ip_whitelist_rejections_total` increments for every source-IP
+whitelist rejection even when its informational log entry is suppressed. Alert on its
+`route_family` label to distinguish `admin` and `metrics` boundaries. The label is deliberately
+limited to the fixed values `admin`, `metrics` or `other`; it never includes a client address or
+request path, so hostile traffic cannot create attacker-controlled metric cardinality.
+
+Use the increase over an operationally appropriate window as an alert input, then choose a
+threshold that excludes expected maintenance probes:
+
+```promql
+sum by (route_family) (
+  increase(miningcore_api_ip_whitelist_rejections_total[5m])
+)
+```
+
 Administrative routes intentionally emit no cross-origin resource sharing (CORS) headers. Public
 front ends must call only public routes. If users need to change miner settings, implement a trusted
 server-side service with its own user authentication and authorization; that service may call the
