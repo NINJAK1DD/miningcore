@@ -11,7 +11,8 @@ public class IPAccessWhitelistMiddleware
 {
     public IPAccessWhitelistMiddleware(RequestDelegate next, string[] locations,
         IPAddress[] whitelist, bool gpdrCompliantLogging,
-        TimeProvider timeProvider = null)
+        TimeProvider timeProvider = null,
+        CollectorRegistry rejectionMetricsRegistry = null)
     {
         this.whitelist = whitelist;
         this.next = next;
@@ -19,7 +20,11 @@ public class IPAccessWhitelistMiddleware
         this.gpdrCompliantLogging = gpdrCompliantLogging;
         rejectionLogLimiter = new MonotonicLogLimiter(
             TimeSpan.FromMinutes(1), timeProvider);
-        rejectionCounter = RejectionCounter.WithLabels(
+        var counterFamily = rejectionMetricsRegistry == null
+            ? RejectionCounterFamily
+            : CreateRejectionCounter(
+                Metrics.WithCustomRegistry(rejectionMetricsRegistry));
+        rejectionCounter = counterFamily.WithLabels(
             ProtectedRouteClassifier.ClassifyWhitelistLocations(locations));
     }
 
@@ -30,15 +35,19 @@ public class IPAccessWhitelistMiddleware
     private readonly bool gpdrCompliantLogging;
     private readonly MonotonicLogLimiter rejectionLogLimiter;
     private readonly ICounter rejectionCounter;
-    private static readonly Counter RejectionCounter = Metrics.CreateCounter(
-        "miningcore_api_ip_whitelist_rejections_total",
-        "Requests rejected by an API source-IP whitelist",
-        new CounterConfiguration
-        {
-            // Fixed values only: admin, metrics or other. Never add a source IP,
-            // request path or any other attacker-controlled label here.
-            LabelNames = new[] { "route_family" },
-        });
+    private static readonly Counter RejectionCounterFamily =
+        CreateRejectionCounter(Metrics.DefaultFactory);
+
+    private static Counter CreateRejectionCounter(IMetricFactory metricFactory) =>
+        metricFactory.CreateCounter(
+            "miningcore_api_ip_whitelist_rejections_total",
+            "Requests rejected by an API source-IP whitelist",
+            new CounterConfiguration
+            {
+                // Fixed values only: admin, metrics or other. Never add a source IP,
+                // request path or any other attacker-controlled label here.
+                LabelNames = new[] { "route_family" },
+            });
 
     public async Task Invoke(HttpContext context)
     {

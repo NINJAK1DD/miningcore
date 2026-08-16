@@ -725,7 +725,8 @@ public class Program : ProcessStatusBackgroundService
     internal sealed record ApiPipelineOptions(
         bool EnableIpRateLimiting = false,
         bool EnableExceptionHandling = false,
-        TimeProvider ProtectedRouteRejectionTimeProvider = null);
+        TimeProvider ProtectedRouteRejectionTimeProvider = null,
+        CollectorRegistry WhitelistRejectionMetricsRegistry = null);
 
     internal static ApiEndpointPorts ResolveApiEndpointPorts(ApiConfig api)
     {
@@ -854,10 +855,12 @@ public class Program : ProcessStatusBackgroundService
         UseIpWhiteList(app, true,
             new[] { AdminApiAuthenticationMiddleware.AdminRoutePrefix },
             adminIpWhitelist, gpdrCompliantLogging,
-            options.ProtectedRouteRejectionTimeProvider);
+            options.ProtectedRouteRejectionTimeProvider,
+            options.WhitelistRejectionMetricsRegistry);
         UseIpWhiteList(app, true, new[] { MetricsRoutePrefix },
             metricsIpWhitelist, gpdrCompliantLogging,
-            options.ProtectedRouteRejectionTimeProvider);
+            options.ProtectedRouteRejectionTimeProvider,
+            options.WhitelistRejectionMetricsRegistry);
         app.UseMiddleware<AdminApiAuthenticationMiddleware>(adminCredential,
             gpdrCompliantLogging,
             options.ProtectedRouteRejectionTimeProvider ?? TimeProvider.System);
@@ -2178,7 +2181,8 @@ public class Program : ProcessStatusBackgroundService
 
     private static void UseIpWhiteList(IApplicationBuilder app,
         bool defaultToLoopback, string[] locations, string[] whitelist,
-        bool gpdrCompliantLogging, TimeProvider timeProvider = null)
+        bool gpdrCompliantLogging, TimeProvider timeProvider = null,
+        CollectorRegistry rejectionMetricsRegistry = null)
     {
         var ipList = whitelist?.Select(IPAddress.Parse).ToList();
         if(defaultToLoopback && (ipList == null || ipList.Count == 0))
@@ -2199,9 +2203,19 @@ public class Program : ProcessStatusBackgroundService
 
             logger?.Info(() => $"API Access to {string.Join(",", locations)} restricted to {string.Join(",", ipList.Select(x => x.ToString()))}");
 
-            app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
-                ipList.ToArray(), gpdrCompliantLogging,
-                timeProvider ?? TimeProvider.System);
+            if(rejectionMetricsRegistry == null)
+            {
+                app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
+                    ipList.ToArray(), gpdrCompliantLogging,
+                    timeProvider ?? TimeProvider.System);
+            }
+            else
+            {
+                app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
+                    ipList.ToArray(), gpdrCompliantLogging,
+                    timeProvider ?? TimeProvider.System,
+                    rejectionMetricsRegistry);
+            }
         }
     }
 

@@ -29,7 +29,7 @@ internal static class ProtectedRouteClassifier
 
         foreach(var location in locations ?? Array.Empty<string>())
         {
-            if(string.IsNullOrEmpty(location))
+            if(string.IsNullOrEmpty(location) || location[0] != '/')
             {
                 hasOther = true;
                 continue;

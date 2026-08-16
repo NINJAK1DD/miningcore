@@ -70,6 +70,14 @@ public class IPAccessWhitelistLoggingTests
         Assert.Equal(ProtectedRouteClassifier.OtherRouteFamily,
             ProtectedRouteClassifier.ClassifyWhitelistLocations(
                 new[] { "/api/admin", "/metrics" }));
+        Assert.Equal(ProtectedRouteClassifier.OtherRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(null));
+        Assert.Equal(ProtectedRouteClassifier.OtherRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                new[] { string.Empty }));
+        Assert.Equal(ProtectedRouteClassifier.OtherRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                new[] { "metrics-without-leading-slash" }));
     }
 
     [Fact]
@@ -151,6 +159,7 @@ public class IPAccessWhitelistLoggingTests
         var app = new ApplicationBuilder(provider);
         var endpointCalls = 0;
         var ports = new Program.ApiEndpointPorts(4000, 4000, 4000);
+        var rejectionMetricsRegistry = Metrics.NewCustomRegistry();
 
         Program.ConfigureApiPipeline(app, ports,
             new[] { "198.51.100.10" }, new[] { "198.51.100.10" },
@@ -162,11 +171,15 @@ public class IPAccessWhitelistLoggingTests
             }),
             options: new Program.ApiPipelineOptions(
                 EnableIpRateLimiting: enableRateLimiting,
-                ProtectedRouteRejectionTimeProvider: timeProvider));
+                ProtectedRouteRejectionTimeProvider: timeProvider,
+                WhitelistRejectionMetricsRegistry:
+                    rejectionMetricsRegistry));
         var pipeline = app.Build();
         var metricsBefore = await ReadWhitelistRejectionCountAsync(
+            rejectionMetricsRegistry,
             ProtectedRouteClassifier.MetricsRouteFamily);
         var adminBefore = await ReadWhitelistRejectionCountAsync(
+            rejectionMetricsRegistry,
             ProtectedRouteClassifier.AdminRouteFamily);
 
         // Exact canonical scrapes intentionally bypass the public API limiter. The
@@ -225,9 +238,11 @@ public class IPAccessWhitelistLoggingTests
             StringComparison.Ordinal);
         Assert.Equal(257d,
             await ReadWhitelistRejectionCountAsync(
+                rejectionMetricsRegistry,
                 ProtectedRouteClassifier.MetricsRouteFamily) - metricsBefore);
         Assert.Equal(3d,
             await ReadWhitelistRejectionCountAsync(
+                rejectionMetricsRegistry,
                 ProtectedRouteClassifier.AdminRouteFamily) - adminBefore);
     }
 
@@ -411,10 +426,10 @@ public class IPAccessWhitelistLoggingTests
     }
 
     private static async Task<double> ReadWhitelistRejectionCountAsync(
-        string routeFamily)
+        CollectorRegistry registry, string routeFamily)
     {
         await using var stream = new MemoryStream();
-        await Metrics.DefaultRegistry.CollectAndExportAsTextAsync(stream);
+        await registry.CollectAndExportAsTextAsync(stream);
         var text = Encoding.UTF8.GetString(stream.ToArray());
         var prefix =
             $"miningcore_api_ip_whitelist_rejections_total{{route_family=\"{routeFamily}\"}} ";
