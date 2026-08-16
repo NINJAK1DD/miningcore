@@ -110,7 +110,9 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.TransactionInfoLink, opt => opt.Ignore());
 
         CreateMap<BalanceChange, Api.Responses.BalanceChange>();
-        CreateMap<PoolPaymentProcessingConfig, Api.Responses.ApiPoolPaymentProcessingConfig>();
+        CreateMap<PoolPaymentProcessingConfig,
+                Api.Responses.ApiPoolPaymentProcessingConfig>()
+            .ForMember(dest => dest.Extra, opt => opt.Ignore());
 
         CreateMap<MinerStats, Api.Responses.MinerStats>()
             .ForMember(dest => dest.LastPayment, opt => opt.Ignore())

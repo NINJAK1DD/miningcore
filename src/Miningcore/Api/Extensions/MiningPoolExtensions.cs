@@ -1,14 +1,7 @@
 using AutoMapper;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain;
-using Miningcore.Blockchain.Alephium.Configuration;
-using Miningcore.Blockchain.Bitcoin.Configuration;
-using Miningcore.Blockchain.Ergo.Configuration;
-using Miningcore.Blockchain.Handshake.Configuration;
-using Miningcore.Blockchain.Kaspa.Configuration;
-using Miningcore.Blockchain.Warthog.Configuration;
 using Miningcore.Configuration;
-using Miningcore.Extensions;
 using Miningcore.Mining;
 
 namespace Miningcore.Api.Extensions;
@@ -30,32 +23,15 @@ public static class MiningPoolExtensions
         // pool fees
         poolInfo.PoolFeePercent = poolConfig.RewardRecipients != null ? (float) poolConfig.RewardRecipients.Sum(x => x.Percentage) : 0;
 
-        // strip security critical stuff
-        if(poolInfo.PaymentProcessing.Extra != null)
+        // Build an explicit, family-aware public projection. Unknown runtime
+        // fields and wallet credentials have no response DTO member and cannot
+        // enter either pool endpoint by default.
+        if(poolInfo.PaymentProcessing != null)
         {
-            var extra = poolInfo.PaymentProcessing.Extra;
-            
-            switch(poolInfo.Coin.Family)
-            {
-                case "alephium":
-                    extra.StripValue(nameof(AlephiumPaymentProcessingConfigExtra.WalletPassword));
-                    break;
-                case "bitcoin":
-                    extra.StripValue(nameof(BitcoinPoolPaymentProcessingConfigExtra.WalletPassword));
-                    break;
-                case "ergo":
-                    extra.StripValue(nameof(ErgoPaymentProcessingConfigExtra.WalletPassword));
-                    break;
-                case "handshake":
-                    extra.StripValue(nameof(HandshakePoolPaymentProcessingConfigExtra.WalletPassword));
-                    break;
-                case "kaspa":
-                    extra.StripValue(nameof(KaspaPaymentProcessingConfigExtra.WalletPassword));
-                    break;
-                case "warthog":
-                    extra.StripValue(nameof(WarthogPaymentProcessingConfigExtra.WalletPrivateKey));
-                    break;
-            }
+            poolInfo.PaymentProcessing.Extra =
+                PaymentProcessingExtraProjection.Create(
+                    poolConfig.Template.Family,
+                    poolConfig.PaymentProcessing?.Extra);
         }
 
         poolInfo.Ports = CreatePublicPoolEndpoints(poolConfig.Ports, mapper);

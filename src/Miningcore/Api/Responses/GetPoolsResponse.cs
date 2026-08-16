@@ -53,15 +53,7 @@ public class ApiPoolPaymentProcessingConfig
     public decimal MinimumPayment { get; set; } // in pool-base-currency (ie. Bitcoin, not Satoshis)
     public string PayoutScheme { get; set; }
     public ApiPoolPayoutSchemeConfig PayoutSchemeConfig { get; set; }
-
-    // Retain this attribute for external Newtonsoft consumers until issue #80
-    // replaces the untyped bag. Such consumers flatten these entries when
-    // re-serializing this DTO. Miningcore MVC uses System.Text.Json and ignores
-    // the attribute, so its REST API deliberately preserves the nested "extra"
-    // object. PoolResponses_PreserveNestedPaymentProcessingExtraContract pins
-    // that shape and the verbatim extension-key casing.
-    [Newtonsoft.Json.JsonExtensionData]
-    public IDictionary<string, object> Extra { get; set; }
+    public ApiPoolPaymentProcessingExtra Extra { get; set; }
 }
 
 public partial class PoolInfo

@@ -31,7 +31,7 @@ public class HostedServiceStartupTests
         var notifications = new Subject<PoolStatusNotification>();
         var messageBus = Substitute.For<IMessageBus>();
         messageBus.Listen<PoolStatusNotification>().Returns(notifications);
-        var recorder = new StatsRecorder(
+        using var recorder = new StatsRecorder(
             Substitute.For<IComponentContext>(),
             new MockMasterClock { CurrentTime = DateTime.UtcNow },
             Substitute.For<IConnectionFactory>(),
@@ -42,9 +42,14 @@ public class HostedServiceStartupTests
             Substitute.For<IStatsRepository>());
         var pool = Substitute.For<IMiningPool>();
         pool.Config.Returns(new PoolConfig { Id = "immediate-pool" });
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(30));
 
-        await recorder.StartAsync(stop.Token);
+        // StartAsync may consume its token while completing readiness work.
+        // Keep the test deadline separate so a busy runner cannot cancel
+        // startup before the readiness assertions execute.
+        await recorder.StartAsync(CancellationToken.None)
+            .WaitAsync(timeout.Token);
         Assert.True(notifications.HasObservers);
 
         notifications.OnNext(new PoolStatusNotification
@@ -54,8 +59,8 @@ public class HostedServiceStartupTests
         });
 
         await WaitUntilAsync(() => recorder.AttachedPoolCount == 1,
-            stop.Token);
-        await recorder.StopAsync(stop.Token);
+            timeout.Token);
+        await recorder.StopAsync(timeout.Token);
 
         Assert.False(notifications.HasObservers);
     }
@@ -72,10 +77,12 @@ public class HostedServiceStartupTests
         messageBus.Listen<HashrateNotification>().Returns(hashrates);
         messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
         messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
-        var publisher = new MetricsPublisher(messageBus);
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var publisher = new MetricsPublisher(messageBus);
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(30));
 
-        await publisher.StartAsync(stop.Token);
+        await publisher.StartAsync(CancellationToken.None)
+            .WaitAsync(timeout.Token);
 
         Assert.True(telemetry.HasObservers);
         Assert.True(hashrates.HasObservers);
@@ -85,7 +92,7 @@ public class HostedServiceStartupTests
             TimeSpan.Zero, true));
         hashrates.OnNext(new HashrateNotification { PoolId = "pool", Hashrate = 1 });
 
-        await publisher.StopAsync(stop.Token);
+        await publisher.StopAsync(timeout.Token);
 
         Assert.False(telemetry.HasObservers);
         Assert.False(hashrates.HasObservers);
@@ -106,11 +113,13 @@ public class HostedServiceStartupTests
         messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
         messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
         var registry = Metrics.NewCustomRegistry();
-        var publisher = new MetricsPublisher(messageBus, null,
+        using var publisher = new MetricsPublisher(messageBus, null,
             Metrics.WithCustomRegistry(registry), registry);
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(30));
 
-        await publisher.StartAsync(stop.Token);
+        await publisher.StartAsync(CancellationToken.None)
+            .WaitAsync(timeout.Token);
 
         auxiliaryRpc.OnNext(new AuxiliaryTemplateRpcTelemetryEvent("ltc-a", "doge-solo",
             AuxiliaryTemplateRpcPhase.Refresh, AuxiliaryTemplateRpcOutcome.Timeout,
@@ -134,7 +143,7 @@ public class HostedServiceStartupTests
             text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-b\",aux_pool=\"doge-solo\"} 0") &&
             text.Contains("miningcore_auxiliary_template_rpc_duration_seconds_count{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"refresh\",outcome=\"timeout\"} 1") &&
             text.Contains("miningcore_auxiliary_template_rpc_duration_seconds_count{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"startup\",outcome=\"cancellation\"} 1"),
-            stop.Token);
+            timeout.Token);
 
         Assert.Contains(
             "miningcore_auxiliary_template_rpc_duration_seconds_sum{pool=\"ltc-a\",aux_pool=\"doge-solo\",phase=\"refresh\",outcome=\"timeout\"} 1",
@@ -155,12 +164,12 @@ public class HostedServiceStartupTests
         var recovered = await WaitForMetricsAsync(registry, text =>
             text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 0") &&
             text.Contains("miningcore_auxiliary_template_degraded{pool=\"ltc-b\",aux_pool=\"doge-solo\"} 0"),
-            stop.Token);
+            timeout.Token);
 
         Assert.Contains(
             "miningcore_auxiliary_template_fallback_total{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 1",
             recovered);
-        await publisher.StopAsync(stop.Token);
+        await publisher.StopAsync(timeout.Token);
     }
 
     [Fact]
@@ -337,7 +346,7 @@ public class HostedServiceStartupTests
         messageBus.Listen<AdminNotification>().Returns(admin);
         messageBus.Listen<BlockFoundNotification>().Returns(blocks);
         messageBus.Listen<PaymentNotification>().Returns(payments);
-        var service = new NotificationService(new ClusterConfig
+        using var service = new NotificationService(new ClusterConfig
         {
             Pools = Array.Empty<PoolConfig>(),
             Notifications = new NotificationsConfig
@@ -347,16 +356,18 @@ public class HostedServiceStartupTests
                 Pushover = new PushoverConfig(),
             },
         }, null, messageBus);
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(30));
 
-        await service.StartAsync(stop.Token);
+        await service.StartAsync(CancellationToken.None)
+            .WaitAsync(timeout.Token);
 
         Assert.True(admin.HasObservers);
         Assert.True(blocks.HasObservers);
         Assert.True(payments.HasObservers);
         admin.OnNext(new AdminNotification("startup", "immediate"));
 
-        await service.StopAsync(stop.Token);
+        await service.StopAsync(timeout.Token);
 
         Assert.False(admin.HasObservers);
         Assert.False(blocks.HasObservers);
