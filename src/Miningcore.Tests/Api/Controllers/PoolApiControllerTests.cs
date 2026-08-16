@@ -249,24 +249,32 @@ public class PoolApiControllerTests
         const string retainedProperty = "publicSetting";
         Assert.NotNull(extraType.GetProperty(sensitiveProperty));
 
-        var config = CreateMinimalPoolConfig(family);
-        var serializedSensitiveProperty =
-            JsonNamingPolicy.CamelCase.ConvertName(sensitiveProperty);
-        config.PaymentProcessing.Extra = new Dictionary<string, object>
+        var spellings = new[]
         {
-            [serializedSensitiveProperty] = "secret-value",
-            [retainedProperty] = "public-value",
+            sensitiveProperty,
+            JsonNamingPolicy.CamelCase.ConvertName(sensitiveProperty),
         };
 
-        var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
-            new global::Miningcore.Persistence.Model.PoolStats(), null);
+        foreach(var serializedSensitiveProperty in spellings.Distinct(
+                    StringComparer.Ordinal))
+        {
+            var config = CreateMinimalPoolConfig(family);
+            config.PaymentProcessing.Extra = new Dictionary<string, object>
+            {
+                [serializedSensitiveProperty] = "secret-value",
+                [retainedProperty] = "public-value",
+            };
 
-        Assert.False(result.PaymentProcessing.Extra.ContainsKey(
-            serializedSensitiveProperty));
-        Assert.Equal("public-value",
-            result.PaymentProcessing.Extra[retainedProperty]);
-        Assert.Equal("secret-value",
-            config.PaymentProcessing.Extra[serializedSensitiveProperty]);
+            var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
+                new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+            Assert.False(result.PaymentProcessing.Extra.ContainsKey(
+                serializedSensitiveProperty));
+            Assert.Equal("public-value",
+                result.PaymentProcessing.Extra[retainedProperty]);
+            Assert.Equal("secret-value",
+                config.PaymentProcessing.Extra[serializedSensitiveProperty]);
+        }
     }
 
     [Fact]
@@ -404,25 +412,18 @@ public class PoolApiControllerTests
     private static PoolConfig CreateMinimalPoolConfig(
         CoinFamily family = CoinFamily.Alephium)
     {
-        CoinTemplate template = family switch
-        {
-            CoinFamily.Alephium => new AlephiumCoinTemplate(),
-            CoinFamily.Bitcoin or CoinFamily.Handshake =>
-                new BitcoinTemplate(),
-            CoinFamily.Ergo => new ErgoCoinTemplate(),
-            CoinFamily.Kaspa => new KaspaCoinTemplate(),
-            CoinFamily.Warthog => new WarthogCoinTemplate(),
-            _ => throw new ArgumentOutOfRangeException(nameof(family), family,
-                "No API-test coin template is defined for this family"),
-        };
-
-        template.Family = family;
-        template.Name = family.ToString();
-        template.Symbol = family.ToString().ToUpperInvariant();
-
         return new PoolConfig
         {
-            Template = template,
+            // Alephium's algorithm name is constant, so this test fixture does
+            // not need a configured hasher graph. ToPoolInfo derives the public
+            // family from Family rather than the template CLR type, allowing
+            // this safe template to exercise every redaction branch.
+            Template = new AlephiumCoinTemplate
+            {
+                Family = family,
+                Name = family.ToString(),
+                Symbol = family.ToString().ToUpperInvariant(),
+            },
             PaymentProcessing = new PoolPaymentProcessingConfig(),
         };
     }
@@ -434,6 +435,10 @@ public class PoolApiControllerTests
         return options;
     }
 
+    // This inventory intentionally targets configuration types that can feed
+    // PaymentProcessing.Extra. If a future unrelated type matches these naming
+    // heuristics, narrow this type predicate; do not suppress its credential
+    // properties through the reviewed benign-property allow-list.
     private static bool IsPaymentConfigurationType(Type type) =>
         type.Namespace?.StartsWith("Miningcore.Blockchain.",
             StringComparison.Ordinal) == true &&

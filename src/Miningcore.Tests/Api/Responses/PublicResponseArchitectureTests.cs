@@ -72,6 +72,31 @@ public class PublicResponseArchitectureTests
         }, violations);
     }
 
+    [Fact]
+    public void ConfigurationTraversal_RejectsBlockchainConfigurationTypes()
+    {
+        var violations = FindConfigurationReferences(
+            new[] { typeof(BlockchainConfigurationType) });
+
+        Assert.Equal(new[]
+        {
+            $"BlockchainConfigurationType.Leaked -> {typeof(global::Miningcore.Blockchain.Alephium.Configuration.AlephiumPaymentProcessingConfigExtra).FullName}",
+        }, violations);
+    }
+
+    [Fact]
+    public void UntypedTraversal_DoesNotDependOnMemberNames()
+    {
+        var members = FindUntypedExtraMembers(
+            new[] { typeof(UntypedMemberTypes) });
+
+        Assert.Equal(new[]
+        {
+            $"{typeof(UntypedMemberTypes).FullName}.Metadata",
+            $"{typeof(UntypedMemberTypes).FullName}.Payload",
+        }, members);
+    }
+
     private static string[] FindConfigurationReferences(
         IEnumerable<Type> roots)
     {
@@ -201,9 +226,7 @@ public class PublicResponseArchitectureTests
                     typeof(IDictionary<,>) &&
                     candidate.GetGenericArguments()[1] == typeof(object));
 
-        if(isExtensionData ||
-            (member.Name.Equals("Extra", StringComparison.OrdinalIgnoreCase) &&
-                canCarryUntypedValues))
+        if(isExtensionData || canCarryUntypedValues)
         {
             members.Add($"{declaringType.FullName}.{member.Name}");
         }
@@ -222,17 +245,24 @@ public class PublicResponseArchitectureTests
             .ToArray();
     }
 
-    // This intentionally includes configuration enums. Public responses should
-    // own even benign enum contracts so later runtime changes cannot alter the
-    // wire representation implicitly. Untyped object/extension-data values
-    // cannot be proven safe by reflection and require separate value-level
-    // redaction tests.
+    // This intentionally includes configuration enums and blockchain-specific
+    // configuration namespaces. Public responses should own even benign
+    // configuration contracts so later runtime changes cannot alter the wire
+    // representation implicitly. Untyped object/extension-data values cannot
+    // be proven safe by reflection and require separate value-level redaction
+    // tests.
     private static bool IsRuntimeConfigurationType(Type type) =>
         type.Namespace != null &&
         (type.Namespace.Equals(typeof(PoolConfig).Namespace,
              StringComparison.Ordinal) ||
          type.Namespace.StartsWith(typeof(PoolConfig).Namespace + ".",
-             StringComparison.Ordinal));
+             StringComparison.Ordinal) ||
+         (type.Namespace.StartsWith("Miningcore.Blockchain.",
+              StringComparison.Ordinal) &&
+          (type.Namespace.EndsWith(".Configuration",
+               StringComparison.Ordinal) ||
+           type.Namespace.Contains(".Configuration.",
+               StringComparison.Ordinal))));
 
     private sealed class WrappedConfigurationTypes
     {
@@ -263,5 +293,17 @@ public class PublicResponseArchitectureTests
     private sealed class FieldConfigurationType
     {
         public PoolConfig Leaked = null;
+    }
+
+    private sealed class BlockchainConfigurationType
+    {
+        public global::Miningcore.Blockchain.Alephium.Configuration.
+            AlephiumPaymentProcessingConfigExtra Leaked { get; set; }
+    }
+
+    private sealed class UntypedMemberTypes
+    {
+        public IDictionary<string, object> Metadata { get; set; }
+        public object Payload = null;
     }
 }
