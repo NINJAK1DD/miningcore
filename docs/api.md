@@ -141,14 +141,14 @@ omitted under the normal null policy and emitted as `null` when `legacyNullValue
 enabled. This boundary is defence in depth against future internal configuration additions; it
 does not correct a known disclosure in the six existing fields.
 
-The `paymentProcessing` object retains known non-sensitive blockchain-specific extension fields for
-wire compatibility. Miningcore removes the known Alephium, Bitcoin, Ergo, Handshake and Kaspa wallet
-passwords and the Warthog wallet private key before serialization, including simultaneous key names
-that differ only by case. Other extension-data keys currently pass through as configured, so this
-redaction is not a substitute for keeping secrets out of unrecognized settings or restricting API
-access. Treat any wallet credential observed in a pool response as exposed, upgrade, rotate it and
-review downstream proxy, client and monitoring logs. A future typed-projection replacement for this
-remaining dynamic response boundary is tracked by
+The nested `paymentProcessing.extra` object currently passes blockchain-specific extension keys
+through as configured; those keys are not flattened directly into `paymentProcessing`. Before
+serialization, Miningcore removes the known Alephium, Bitcoin, Ergo, Handshake and Kaspa wallet
+passwords and the Warthog wallet private key from `extra`, including simultaneous key names that
+differ only by case. This opt-out redaction is not a substitute for keeping secrets out of
+unrecognized settings or restricting API access. Treat any wallet credential observed in a pool
+response as exposed, upgrade, rotate it and review downstream proxy, client and monitoring logs. A
+future typed-projection replacement for this remaining dynamic response boundary is tracked by
 [issue #80](https://github.com/NINJAK1DD/miningcore/issues/80).
 
 ## Public routes

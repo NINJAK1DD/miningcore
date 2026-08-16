@@ -120,6 +120,48 @@ public class PoolApiControllerTests
             pool.GetProperty("pool").GetProperty("shareBasedBanning"));
     }
 
+    [Fact]
+    public void PoolResponses_PreserveNestedPaymentProcessingExtraContract()
+    {
+        const string retainedProperty = "publicSetting";
+        var paymentProcessing = new ApiPoolPaymentProcessingConfig
+        {
+            Enabled = true,
+            Extra = new Dictionary<string, object>
+            {
+                [retainedProperty] = "public-value",
+            },
+        };
+        var options = CreateApiJsonOptions(false);
+        var payloads = new[]
+        {
+            JsonSerializer.SerializeToElement(new GetPoolsResponse
+            {
+                Pools = new[]
+                {
+                    new PoolInfo { PaymentProcessing = paymentProcessing },
+                },
+            }, options).GetProperty("pools")[0],
+            JsonSerializer.SerializeToElement(new GetPoolResponse
+            {
+                Pool = new PoolInfo { PaymentProcessing = paymentProcessing },
+            }, options).GetProperty("pool"),
+        };
+
+        foreach(var payload in payloads)
+        {
+            var publicPaymentProcessing =
+                payload.GetProperty("paymentProcessing");
+
+            Assert.False(publicPaymentProcessing.TryGetProperty(
+                retainedProperty, out _));
+            Assert.Equal("public-value", publicPaymentProcessing
+                .GetProperty("extra")
+                .GetProperty(retainedProperty)
+                .GetString());
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
