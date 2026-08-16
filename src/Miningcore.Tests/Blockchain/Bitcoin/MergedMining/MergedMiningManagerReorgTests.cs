@@ -1098,7 +1098,7 @@ public class MergedMiningManagerReorgTests
         manager.Configure(parent, cluster);
 
         using var coordinationDeadline = new CancellationTokenSource(
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(10));
         var validationStarted = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseValidation = new ManualResetEventSlim();
@@ -1120,7 +1120,7 @@ public class MergedMiningManagerReorgTests
         manager.ProcessMergedShareHandler = () =>
         {
             validationStarted.TrySetResult(true);
-            releaseValidation.Wait(coordinationDeadline.Token);
+            releaseValidation.Wait();
             return new MergedMiningShareResult
             {
                 Share = candidateShare,
@@ -1171,21 +1171,29 @@ public class MergedMiningManagerReorgTests
 
         try
         {
-            await validationStarted.Task.WaitAsync(coordinationDeadline.Token);
+            await WaitForPhaseOrSubmissionAsync(validationStarted.Task,
+                "merged-share validation to start", submitTask,
+                coordinationDeadline.Token);
 
             hostShutdown.Cancel();
             var shutdownDrain = manager.DrainCandidateOperationsAsync();
             Assert.False(shutdownDrain.IsCompleted);
 
             releaseValidation.Set();
-            await candidateSubmissionStarted.Task.WaitAsync(coordinationDeadline.Token);
+            await WaitForPhaseOrSubmissionAsync(candidateSubmissionStarted.Task,
+                "candidate submission to start", submitTask,
+                coordinationDeadline.Token);
             Assert.False(shutdownDrain.IsCompleted);
             Assert.False(persisted.Task.IsCompleted);
 
             releasePersistence.TrySetResult(true);
-            await persisted.Task.WaitAsync(coordinationDeadline.Token);
-            await shutdownDrain.WaitAsync(coordinationDeadline.Token);
-            var returnedShare = await submitTask.WaitAsync(coordinationDeadline.Token);
+            await WaitForPhaseOrSubmissionAsync(persisted.Task,
+                "candidate persistence to complete", submitTask,
+                coordinationDeadline.Token);
+            await WaitForCoordinationPhaseAsync(shutdownDrain,
+                "candidate-operation drain to complete", coordinationDeadline.Token);
+            var returnedShare = await WaitForCoordinationPhaseAsync(submitTask,
+                "share submission to complete", coordinationDeadline.Token);
 
             Assert.Same(candidateShare, returnedShare);
             await recorder.Received(1).PersistBlockCandidateAsync(
@@ -1200,20 +1208,21 @@ public class MergedMiningManagerReorgTests
             releasePersistence.TrySetResult(true);
             hostShutdown.Cancel();
 
-            if(!submitTask.IsCompleted)
+            using var cleanupDeadline = new CancellationTokenSource(
+                TimeSpan.FromSeconds(5));
+
+            try
             {
-                try
-                {
-                    await submitTask.WaitAsync(coordinationDeadline.Token);
-                }
-                catch(OperationCanceledException) when(coordinationDeadline.IsCancellationRequested)
-                {
-                    // The shared deadline bounds cleanup after a failed coordination assertion.
-                }
-                catch
-                {
-                    // Preserve the primary test failure; the normal path observes submitTask.
-                }
+                await submitTask.WaitAsync(cleanupDeadline.Token);
+            }
+            catch(OperationCanceledException) when(cleanupDeadline.IsCancellationRequested &&
+                !submitTask.IsCompleted)
+            {
+                // Bound cleanup after releasing both artificial gates.
+            }
+            catch
+            {
+                // Observe a secondary submission fault without replacing the primary failure.
             }
         }
     }
@@ -1275,6 +1284,40 @@ public class MergedMiningManagerReorgTests
         Assert.True((bool) parameters[^1]);
         Assert.Equal(parent.Id, heightNotification?.PoolId);
         Assert.Equal((ulong) 101, heightNotification?.BlockHeight);
+    }
+
+    private static async Task WaitForPhaseOrSubmissionAsync(Task phaseTask,
+        string phase, Task<Share> submitTask, CancellationToken deadline)
+    {
+        var completedTask = await WaitForCoordinationPhaseAsync(
+            Task.WhenAny(phaseTask, submitTask), phase, deadline);
+
+        if(ReferenceEquals(completedTask, submitTask))
+        {
+            await submitTask;
+            throw new InvalidOperationException(
+                $"Share submission completed before {phase}");
+        }
+
+        await WaitForCoordinationPhaseAsync(phaseTask, phase, deadline);
+    }
+
+    private static async Task WaitForCoordinationPhaseAsync(Task task,
+        string phase, CancellationToken deadline)
+    {
+        var deadlineTask = Task.Delay(Timeout.InfiniteTimeSpan, deadline);
+
+        if(!ReferenceEquals(await Task.WhenAny(task, deadlineTask), task))
+            throw new TimeoutException($"Timed out waiting for {phase}");
+
+        await task;
+    }
+
+    private static async Task<T> WaitForCoordinationPhaseAsync<T>(Task<T> task,
+        string phase, CancellationToken deadline)
+    {
+        await WaitForCoordinationPhaseAsync((Task) task, phase, deadline);
+        return await task;
     }
 
     private static BlockTemplate CreateParentTemplate() => new()
