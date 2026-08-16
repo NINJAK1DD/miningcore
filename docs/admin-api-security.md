@@ -135,6 +135,21 @@ continue to return `403 Forbidden`, including when API rate limiting is disabled
 normal logs from amplification but does not throttle requests; keep the dedicated listener, source
 whitelist and firewall boundary in place.
 
+Prometheus counter `miningcore_api_ip_whitelist_rejections_total` increments for every source-IP
+whitelist rejection even when its informational log entry is suppressed. Alert on its
+`route_family` label to distinguish `admin` and `metrics` boundaries. The label is deliberately
+limited to the fixed values `admin`, `metrics` or `other`; it never includes a client address or
+request path, so hostile traffic cannot create attacker-controlled metric cardinality.
+
+Use the increase over an operationally appropriate window as an alert input, then choose a
+threshold that excludes expected maintenance probes:
+
+```promql
+sum by (route_family) (
+  increase(miningcore_api_ip_whitelist_rejections_total[5m])
+)
+```
+
 Administrative routes intentionally emit no cross-origin resource sharing (CORS) headers. Public
 front ends must call only public routes. If users need to change miner settings, implement a trusted
 server-side service with its own user authentication and authorization; that service may call the

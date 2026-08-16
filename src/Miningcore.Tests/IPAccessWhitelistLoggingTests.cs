@@ -1,17 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Miningcore.Api;
 using Miningcore.Api.Middlewares;
 using Miningcore.Configuration;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
+using Prometheus;
 using Xunit;
 
 namespace Miningcore.Tests;
@@ -37,13 +41,35 @@ public class IPAccessWhitelistLoggingTests
         Assert.Single(typeof(IPAccessWhitelistMiddleware).GetConstructors());
         Assert.Single(typeof(AdminApiAuthenticationMiddleware).GetConstructors());
 
-        Assert.NotNull(ActivatorUtilities.CreateInstance<
-            IPAccessWhitelistMiddleware>(provider, next,
-            new[] { Program.MetricsRoutePrefix },
-            new[] { IPAddress.Loopback }, false));
-        Assert.NotNull(ActivatorUtilities.CreateInstance<
-            AdminApiAuthenticationMiddleware>(provider, next,
-            AdminApiCredential.Create(ValidAdminToken), false));
+        var exception = Record.Exception(() =>
+        {
+            _ = ActivatorUtilities.CreateInstance<
+                IPAccessWhitelistMiddleware>(provider, next,
+                new[] { Program.MetricsRoutePrefix },
+                new[] { IPAddress.Loopback }, false);
+            _ = ActivatorUtilities.CreateInstance<
+                AdminApiAuthenticationMiddleware>(provider, next,
+                AdminApiCredential.Create(ValidAdminToken), false);
+        });
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void WhitelistMetricRouteFamilies_AreFixedAndNotPathDerived()
+    {
+        Assert.Equal(ProtectedRouteClassifier.AdminRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                new[] { "/API/ADMIN/custom" }));
+        Assert.Equal(ProtectedRouteClassifier.MetricsRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                new[] { "/METRICS/custom" }));
+        Assert.Equal(ProtectedRouteClassifier.OtherRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                new[] { "/custom/attacker-controlled-path" }));
+        Assert.Equal(ProtectedRouteClassifier.OtherRouteFamily,
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                new[] { "/api/admin", "/metrics" }));
     }
 
     [Fact]
@@ -138,6 +164,10 @@ public class IPAccessWhitelistLoggingTests
                 EnableIpRateLimiting: enableRateLimiting,
                 ProtectedRouteRejectionTimeProvider: timeProvider));
         var pipeline = app.Build();
+        var metricsBefore = await ReadWhitelistRejectionCountAsync(
+            ProtectedRouteClassifier.MetricsRouteFamily);
+        var adminBefore = await ReadWhitelistRejectionCountAsync(
+            ProtectedRouteClassifier.AdminRouteFamily);
 
         // Exact canonical scrapes intentionally bypass the public API limiter. The
         // whitelist's own fixed-size limiter must still bound a many-address flood.
@@ -193,6 +223,12 @@ public class IPAccessWhitelistLoggingTests
         Assert.Contains("1 other rejection(s), possibly from other sources",
             adminEntries[1],
             StringComparison.Ordinal);
+        Assert.Equal(257d,
+            await ReadWhitelistRejectionCountAsync(
+                ProtectedRouteClassifier.MetricsRouteFamily) - metricsBefore);
+        Assert.Equal(3d,
+            await ReadWhitelistRejectionCountAsync(
+                ProtectedRouteClassifier.AdminRouteFamily) - adminBefore);
     }
 
     [Fact]
@@ -372,6 +408,23 @@ public class IPAccessWhitelistLoggingTests
 
         await pipeline(context);
         return context;
+    }
+
+    private static async Task<double> ReadWhitelistRejectionCountAsync(
+        string routeFamily)
+    {
+        await using var stream = new MemoryStream();
+        await Metrics.DefaultRegistry.CollectAndExportAsTextAsync(stream);
+        var text = Encoding.UTF8.GetString(stream.ToArray());
+        var prefix =
+            $"miningcore_api_ip_whitelist_rejections_total{{route_family=\"{routeFamily}\"}} ";
+        var sample = text.Split('\n').SingleOrDefault(line =>
+            line.StartsWith(prefix, StringComparison.Ordinal));
+
+        return sample == null
+            ? 0d
+            : double.Parse(sample.AsSpan(prefix.Length),
+                NumberStyles.Float, CultureInfo.InvariantCulture);
     }
 
     private sealed class LogCapture : IDisposable

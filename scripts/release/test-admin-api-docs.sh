@@ -68,5 +68,9 @@ assert_prose_contains "debug rejection logging volume warning" \
   'enabling[[:space:]]+that[[:space:]]+level[[:space:]]+during[[:space:]]+hostile[[:space:]]+traffic[[:space:]]+can[[:space:]]+substantially[[:space:]]+increase[[:space:]]+log[[:space:]]+volume'
 assert_prose_contains "suppression summaries require a later rejection" \
   'A[[:space:]]+summary[[:space:]]+is[[:space:]]+emitted[[:space:]]+only[[:space:]]+when[[:space:]]+another[[:space:]]+rejection[[:space:]]+arrives[[:space:]]+after[[:space:]]+the[[:space:]]+interval'
+assert_prose_contains "whitelist rejection counter" \
+  '`miningcore_api_ip_whitelist_rejections_total`[[:space:]]+increments[[:space:]]+for[[:space:]]+every[[:space:]]+source-IP[[:space:]]+whitelist[[:space:]]+rejection'
+assert_prose_contains "fixed whitelist metric cardinality" \
+  'fixed[[:space:]]+values[[:space:]]+`admin`,[[:space:]]+`metrics`[[:space:]]+or[[:space:]]+`other`;[[:space:]]+it[[:space:]]+never[[:space:]]+includes[[:space:]]+a[[:space:]]+client[[:space:]]+address[[:space:]]+or[[:space:]]+request[[:space:]]+path'
 
 echo "Administrative API documentation invariants are present"

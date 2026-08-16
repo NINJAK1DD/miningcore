@@ -3,6 +3,7 @@ using NLog;
 using System.Net;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
+using Prometheus;
 
 namespace Miningcore.Api.Middlewares;
 
@@ -18,6 +19,8 @@ public class IPAccessWhitelistMiddleware
         this.gpdrCompliantLogging = gpdrCompliantLogging;
         rejectionLogLimiter = new MonotonicLogLimiter(
             TimeSpan.FromMinutes(1), timeProvider);
+        rejectionCounter = RejectionCounter.WithLabels(
+            ProtectedRouteClassifier.ClassifyWhitelistLocations(locations));
     }
 
     private readonly RequestDelegate next;
@@ -26,6 +29,16 @@ public class IPAccessWhitelistMiddleware
     private readonly string[] locations;
     private readonly bool gpdrCompliantLogging;
     private readonly MonotonicLogLimiter rejectionLogLimiter;
+    private readonly ICounter rejectionCounter;
+    private static readonly Counter RejectionCounter = Metrics.CreateCounter(
+        "miningcore_api_ip_whitelist_rejections_total",
+        "Requests rejected by an API source-IP whitelist",
+        new CounterConfiguration
+        {
+            // Fixed values only: admin, metrics or other. Never add a source IP,
+            // request path or any other attacker-controlled label here.
+            LabelNames = new[] { "route_family" },
+        });
 
     public async Task Invoke(HttpContext context)
     {
@@ -37,6 +50,10 @@ public class IPAccessWhitelistMiddleware
                 whitelist.Any(address => address.IsEqual(remoteAddress));
             if(!authorized)
             {
+                // Preserve an alertable aggregate for every rejection even when its
+                // informational log entry is suppressed.
+                rejectionCounter.Inc();
+
                 // Consume the informational budget independently of the active NLog
                 // level so summaries remain coherent if logging is reconfigured. NLog
                 // evaluates the message delegate lazily when Info is disabled.

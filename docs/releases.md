@@ -259,7 +259,10 @@ summary remains pending until another rejection arrives after the interval, and 
 on it belongs to that current request rather than the potentially different suppressed sources.
 Varying attacker addresses does not increase limiter state, and a metrics flood cannot suppress
 the first administrative rejection. Bearer-authentication rejection logging retains its separate
-per-pipeline limiter.
+per-pipeline limiter. New Prometheus counter `miningcore_api_ip_whitelist_rejections_total`
+increments for every whitelist rejection regardless of log suppression. Its `route_family` label
+is restricted to the fixed values `admin`, `metrics` or `other` and never contains a source address
+or request path, preserving bounded metric cardinality under hostile traffic.
 
 Authorization behavior is unchanged. Every client outside the applicable whitelist still receives
 `403 Forbidden`, including when `api.rateLimiting.disabled` is `true`. Exact supported `/metrics`
