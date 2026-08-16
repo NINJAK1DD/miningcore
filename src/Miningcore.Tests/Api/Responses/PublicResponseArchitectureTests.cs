@@ -13,15 +13,7 @@ public class PublicResponseArchitectureTests
     [Fact]
     public void PublicResponseGraph_DoesNotReachRuntimeConfigurationTypes()
     {
-        var responseNamespace = typeof(PoolInfo).Namespace;
-        var roots = typeof(PoolInfo).Assembly.GetExportedTypes()
-            .Where(type => type.Namespace != null &&
-                (type.Namespace.Equals(responseNamespace,
-                     StringComparison.Ordinal) ||
-                 type.Namespace.StartsWith(responseNamespace + ".",
-                     StringComparison.Ordinal)))
-            .OrderBy(type => type.FullName)
-            .ToArray();
+        var roots = GetPublicResponseRoots();
 
         Assert.NotEmpty(roots);
         var violations = FindConfigurationReferences(roots);
@@ -31,6 +23,18 @@ public class PublicResponseArchitectureTests
             "types through statically typed public instance members or " +
             "inheritance. Add a dedicated response DTO and one-way mapping for: " +
             string.Join(", ", violations));
+    }
+
+    [Fact]
+    public void PublicResponseGraph_AllowsOnlyReviewedUntypedExtraBag()
+    {
+        var roots = GetPublicResponseRoots();
+        var untypedExtraMembers = FindUntypedExtraMembers(roots);
+
+        Assert.Equal(new[]
+        {
+            $"{typeof(ApiPoolPaymentProcessingConfig).FullName}.Extra",
+        }, untypedExtraMembers);
     }
 
     [Fact]
@@ -44,23 +48,13 @@ public class PublicResponseArchitectureTests
             typeof(FieldConfigurationType),
         });
 
-        Assert.Contains(violations, value =>
-            value.Contains("ConfigurationList.Base", StringComparison.Ordinal) &&
-            value.EndsWith(typeof(PoolConfig).FullName,
-                StringComparison.Ordinal));
-        Assert.Contains(violations, value =>
-            value.Contains("ConfigurationEnumerable.Interface",
-                StringComparison.Ordinal) &&
-            value.EndsWith(typeof(PoolConfig).FullName,
-                StringComparison.Ordinal));
-        Assert.Contains(violations, value =>
-            value.Contains("DerivedConfigurationType.Base",
-                StringComparison.Ordinal) &&
-            value.EndsWith(typeof(PoolShareBasedBanningConfig).FullName,
-                StringComparison.Ordinal));
-        Assert.Contains(
+        Assert.Equal(new[]
+        {
+            $"ConfigurationEnumerable.Interface<IEnumerable`1><PoolConfig> -> {typeof(PoolConfig).FullName}",
+            $"ConfigurationList.Base<List`1><PoolConfig> -> {typeof(PoolConfig).FullName}",
+            $"DerivedConfigurationType.Base<PoolShareBasedBanningConfig> -> {typeof(PoolShareBasedBanningConfig).FullName}",
             $"FieldConfigurationType.Leaked -> {typeof(PoolConfig).FullName}",
-            violations);
+        }, violations);
     }
 
     [Fact]
@@ -92,8 +86,22 @@ public class PublicResponseArchitectureTests
         return violations.OrderBy(value => value).ToArray();
     }
 
+    private static string[] FindUntypedExtraMembers(IEnumerable<Type> roots)
+    {
+        var members = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach(var root in roots)
+        {
+            InspectType(root, root.Name, new HashSet<Type>(),
+                new HashSet<string>(StringComparer.Ordinal), true, members);
+        }
+
+        return members.OrderBy(value => value).ToArray();
+    }
+
     private static void InspectType(Type type, string path,
-        ISet<Type> visited, ISet<string> violations, bool isRoot = false)
+        ISet<Type> visited, ISet<string> violations, bool isRoot = false,
+        ISet<string> untypedExtraMembers = null)
     {
         if(type == null || type.IsGenericParameter)
             return;
@@ -102,14 +110,15 @@ public class PublicResponseArchitectureTests
         if(nullable != null)
         {
             InspectType(nullable,
-                $"{path}<{nullable.Name}>", visited, violations);
+                $"{path}<{nullable.Name}>", visited, violations, false,
+                untypedExtraMembers);
             return;
         }
 
         if(type.HasElementType)
         {
             InspectType(type.GetElementType(), $"{path}[]", visited,
-                violations);
+                violations, false, untypedExtraMembers);
             return;
         }
 
@@ -118,7 +127,8 @@ public class PublicResponseArchitectureTests
             foreach(var argument in type.GetGenericArguments())
             {
                 InspectType(argument,
-                    $"{path}<{argument.Name}>", visited, violations);
+                    $"{path}<{argument.Name}>", visited, violations, false,
+                    untypedExtraMembers);
             }
         }
 
@@ -137,7 +147,8 @@ public class PublicResponseArchitectureTests
         if(type.BaseType != null && type.BaseType != typeof(object))
         {
             InspectType(type.BaseType,
-                $"{path}.Base<{type.BaseType.Name}>", visited, violations);
+                $"{path}.Base<{type.BaseType.Name}>", visited, violations,
+                false, untypedExtraMembers);
         }
 
         var inheritedInterfaces = type.BaseType?.GetInterfaces() ??
@@ -148,7 +159,7 @@ public class PublicResponseArchitectureTests
         {
             InspectType(interfaceType,
                 $"{path}.Interface<{interfaceType.Name}>", visited,
-                violations);
+                violations, false, untypedExtraMembers);
         }
 
         foreach(var property in type.GetProperties(BindingFlags.Instance |
@@ -156,16 +167,59 @@ public class PublicResponseArchitectureTests
                     .Where(property =>
                     property.GetIndexParameters().Length == 0))
         {
+            RecordUntypedExtraMember(type, property, property.PropertyType,
+                untypedExtraMembers);
             InspectType(property.PropertyType,
-                $"{path}.{property.Name}", visited, violations);
+                $"{path}.{property.Name}", visited, violations, false,
+                untypedExtraMembers);
         }
 
         foreach(var field in type.GetFields(BindingFlags.Instance |
                     BindingFlags.Public | BindingFlags.DeclaredOnly))
         {
+            RecordUntypedExtraMember(type, field, field.FieldType,
+                untypedExtraMembers);
             InspectType(field.FieldType, $"{path}.{field.Name}", visited,
-                violations);
+                violations, false, untypedExtraMembers);
         }
+    }
+
+    private static void RecordUntypedExtraMember(Type declaringType,
+        MemberInfo member, Type memberType, ISet<string> members)
+    {
+        if(members == null)
+            return;
+
+        var isExtensionData = member.GetCustomAttributesData()
+            .Any(attribute => attribute.AttributeType.FullName is
+                "System.Text.Json.Serialization.JsonExtensionDataAttribute" or
+                "Newtonsoft.Json.JsonExtensionDataAttribute");
+        var canCarryUntypedValues = memberType == typeof(object) ||
+            memberType.GetInterfaces().Concat(new[] { memberType })
+                .Any(candidate => candidate.IsGenericType &&
+                    candidate.GetGenericTypeDefinition() ==
+                    typeof(IDictionary<,>) &&
+                    candidate.GetGenericArguments()[1] == typeof(object));
+
+        if(isExtensionData ||
+            (member.Name.Equals("Extra", StringComparison.OrdinalIgnoreCase) &&
+                canCarryUntypedValues))
+        {
+            members.Add($"{declaringType.FullName}.{member.Name}");
+        }
+    }
+
+    private static Type[] GetPublicResponseRoots()
+    {
+        var responseNamespace = typeof(PoolInfo).Namespace;
+        return typeof(PoolInfo).Assembly.GetExportedTypes()
+            .Where(type => type.Namespace != null &&
+                (type.Namespace.Equals(responseNamespace,
+                     StringComparison.Ordinal) ||
+                 type.Namespace.StartsWith(responseNamespace + ".",
+                     StringComparison.Ordinal)))
+            .OrderBy(type => type.FullName)
+            .ToArray();
     }
 
     // This intentionally includes configuration enums. Public responses should

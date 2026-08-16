@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Responses;
@@ -21,6 +20,13 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class PoolApiControllerTests
 {
+    // A sensitive-looking payment setting that is intentionally public belongs
+    // here by fully-qualified member name. Keeping this separate from the
+    // credential inventory makes a future TokenId-style false positive an
+    // explicit reviewed decision instead of encouraging weakened detection.
+    private static readonly HashSet<string>
+        KnownBenignSensitivePaymentPropertyNames = new(StringComparer.Ordinal);
+
     [Fact]
     public void ToPoolInfo_UsesDedicatedBanningDtoWithoutAliasingConfiguration()
     {
@@ -218,16 +224,21 @@ public class PoolApiControllerTests
             .Select(values => $"{((Type) values[1]).FullName}.{values[2]}")
             .OrderBy(value => value)
             .ToArray();
-        var actual = typeof(PoolConfig).Assembly.GetTypes()
-            .Where(type => type.Name.EndsWith("PaymentProcessingConfigExtra",
-                StringComparison.Ordinal))
+        var candidates = typeof(PoolConfig).Assembly.GetExportedTypes()
+            .Where(IsPaymentConfigurationType)
             .SelectMany(type => type.GetProperties()
                 .Where(property => IsSensitivePropertyName(property.Name))
                 .Select(property => $"{type.FullName}.{property.Name}"))
             .OrderBy(value => value)
             .ToArray();
+        var actual = candidates
+            .Except(KnownBenignSensitivePaymentPropertyNames,
+                StringComparer.Ordinal)
+            .ToArray();
 
         Assert.Equal(expected, actual);
+        Assert.All(KnownBenignSensitivePaymentPropertyNames,
+            member => Assert.Contains(member, candidates));
     }
 
     [Theory]
@@ -238,11 +249,12 @@ public class PoolApiControllerTests
         const string retainedProperty = "publicSetting";
         Assert.NotNull(extraType.GetProperty(sensitiveProperty));
 
-        var config = CreateMinimalPoolConfig();
-        config.Template.Family = family;
+        var config = CreateMinimalPoolConfig(family);
+        var serializedSensitiveProperty =
+            JsonNamingPolicy.CamelCase.ConvertName(sensitiveProperty);
         config.PaymentProcessing.Extra = new Dictionary<string, object>
         {
-            [sensitiveProperty] = "secret-value",
+            [serializedSensitiveProperty] = "secret-value",
             [retainedProperty] = "public-value",
         };
 
@@ -250,11 +262,11 @@ public class PoolApiControllerTests
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
         Assert.False(result.PaymentProcessing.Extra.ContainsKey(
-            sensitiveProperty));
+            serializedSensitiveProperty));
         Assert.Equal("public-value",
             result.PaymentProcessing.Extra[retainedProperty]);
         Assert.Equal("secret-value",
-            config.PaymentProcessing.Extra[sensitiveProperty]);
+            config.PaymentProcessing.Extra[serializedSensitiveProperty]);
     }
 
     [Fact]
@@ -389,16 +401,31 @@ public class PoolApiControllerTests
             Substitute.For<IMiningPool>()));
     }
 
-    private static PoolConfig CreateMinimalPoolConfig() => new()
+    private static PoolConfig CreateMinimalPoolConfig(
+        CoinFamily family = CoinFamily.Alephium)
     {
-        Template = new AlephiumCoinTemplate
+        CoinTemplate template = family switch
         {
-            Family = CoinFamily.Alephium,
-            Name = "Alephium",
-            Symbol = "ALPH",
-        },
-        PaymentProcessing = new PoolPaymentProcessingConfig(),
-    };
+            CoinFamily.Alephium => new AlephiumCoinTemplate(),
+            CoinFamily.Bitcoin or CoinFamily.Handshake =>
+                new BitcoinTemplate(),
+            CoinFamily.Ergo => new ErgoCoinTemplate(),
+            CoinFamily.Kaspa => new KaspaCoinTemplate(),
+            CoinFamily.Warthog => new WarthogCoinTemplate(),
+            _ => throw new ArgumentOutOfRangeException(nameof(family), family,
+                "No API-test coin template is defined for this family"),
+        };
+
+        template.Family = family;
+        template.Name = family.ToString();
+        template.Symbol = family.ToString().ToUpperInvariant();
+
+        return new PoolConfig
+        {
+            Template = template,
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        };
+    }
 
     private static JsonSerializerOptions CreateApiJsonOptions(bool legacyNulls)
     {
@@ -407,11 +434,22 @@ public class PoolApiControllerTests
         return options;
     }
 
+    private static bool IsPaymentConfigurationType(Type type) =>
+        type.Namespace?.StartsWith("Miningcore.Blockchain.",
+            StringComparison.Ordinal) == true &&
+        type.Name.Contains("Payment", StringComparison.OrdinalIgnoreCase) &&
+        type.Name.Contains("Config", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsSensitivePropertyName(string name) =>
         name.Contains("Password", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("PrivateKey", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Passphrase", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Mnemonic", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Seed", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Credential", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("Secret", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Token", StringComparison.OrdinalIgnoreCase);
+        name.Contains("Token", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith("Key", StringComparison.OrdinalIgnoreCase);
 
     private static void AssertBanningContract(JsonElement banning)
     {
