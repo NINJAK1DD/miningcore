@@ -33,6 +33,8 @@ public class PublicResponseArchitectureTests
         var untypedMembers = FindUntypedMembers(roots);
         var reviewedMembers = new[]
         {
+            // Tracked by #80: replace this final untyped exception with
+            // fail-closed public payment-processing projections.
             $"{typeof(ApiPoolPaymentProcessingConfig).FullName}.Extra",
         };
 
