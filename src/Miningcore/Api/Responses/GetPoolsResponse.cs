@@ -54,6 +54,9 @@ public class ApiPoolPaymentProcessingConfig
     public string PayoutScheme { get; set; }
     public ApiPoolPayoutSchemeConfig PayoutSchemeConfig { get; set; }
 
+    // System.Text.Json ignores this Newtonsoft attribute. The public API intentionally
+    // nests these keys under "extra"; PoolResponses_PreserveNestedPaymentProcessingExtraContract
+    // pins that shape.
     [Newtonsoft.Json.JsonExtensionData]
     public IDictionary<string, object> Extra { get; set; }
 }
