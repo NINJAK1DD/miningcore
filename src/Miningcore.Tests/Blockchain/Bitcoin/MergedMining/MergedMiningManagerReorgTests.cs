@@ -1180,12 +1180,15 @@ public class MergedMiningManagerReorgTests
             Assert.False(shutdownDrain.IsCompleted);
 
             releaseValidation.Set();
-            await WaitForCoordinationPhaseAsync(candidateSubmissionStarted.Task,
-                "candidate submission to start", coordinationDeadline.Token);
+            await WaitForPhaseOrSubmissionAsync(candidateSubmissionStarted.Task,
+                "candidate submission to start", submitTask,
+                coordinationDeadline.Token);
             Assert.False(shutdownDrain.IsCompleted);
             Assert.False(persisted.Task.IsCompleted);
 
             releasePersistence.TrySetResult(true);
+            // Manager-owned persistence may outlive the initiating submission task, so
+            // unlike the two synchronous startup phases this phase must not race submitTask.
             await WaitForCoordinationPhaseAsync(persisted.Task,
                 "candidate persistence to complete", coordinationDeadline.Token);
             await WaitForCoordinationPhaseAsync(shutdownDrain,
