@@ -21,6 +21,10 @@ namespace Miningcore.Tests;
 
 public class RecoveryConfigurationTests
 {
+    private const string MissingPoolPaymentProcessingMessage =
+        "Pool 'recovery-pool': paymentProcessing configuration missing; " +
+        "keep the object and set enabled=false to disable payouts";
+
     [Theory]
     [InlineData("statistics", "\"stale\"")]
     [InlineData("nicehash", "[]")]
@@ -588,9 +592,7 @@ public class RecoveryConfigurationTests
             "Cluster paymentProcessing configuration missing");
         Assert.Contains(result.Errors, error =>
             error.PropertyName == "Pools[0].PaymentProcessing" &&
-            error.ErrorMessage ==
-                "Pool 'recovery-pool': paymentProcessing configuration missing; " +
-                "keep the object and set enabled=false to disable payouts");
+            error.ErrorMessage == MissingPoolPaymentProcessingMessage);
         Assert.Contains(result.Errors, error =>
             error.ErrorMessage == "Pool: Wallet address missing or empty");
         Assert.Contains(result.Errors, error =>
@@ -625,9 +627,7 @@ public class RecoveryConfigurationTests
             var error = Assert.Single(result.Errors, failure =>
                 failure.PropertyName == "Pools[0].PaymentProcessing");
 
-            Assert.Equal(
-                "Pool 'recovery-pool': paymentProcessing configuration missing; " +
-                "keep the object and set enabled=false to disable payouts",
+            Assert.Equal(MissingPoolPaymentProcessingMessage,
                 error.ErrorMessage);
             Assert.Throws<PoolStartupException>(() =>
                 Program.ValidateConfig(config, false));
@@ -652,9 +652,7 @@ public class RecoveryConfigurationTests
 
         var error = Assert.Single(result.Errors, failure =>
             failure.PropertyName == "Pools[0].PaymentProcessing");
-        Assert.Equal(
-            "Pool 'recovery-pool': paymentProcessing configuration missing; " +
-            "keep the object and set enabled=false to disable payouts",
+        Assert.Equal(MissingPoolPaymentProcessingMessage,
             error.ErrorMessage);
     }
 

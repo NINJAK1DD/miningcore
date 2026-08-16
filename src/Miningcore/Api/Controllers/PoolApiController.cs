@@ -196,6 +196,7 @@ public class PoolApiController : ApiControllerBase
             return;
         }
 
+        // The mapper produced no public contract, so there is nothing to enrich.
         if(poolInfo.PaymentProcessing == null)
             return;
 
