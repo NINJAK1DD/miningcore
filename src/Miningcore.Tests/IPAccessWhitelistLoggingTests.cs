@@ -80,6 +80,53 @@ public class IPAccessWhitelistLoggingTests
                 new[] { "metrics-without-leading-slash" }));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("metrics-without-leading-slash")]
+    public void MiddlewareConstruction_RejectsInvalidProtectedLocation(
+        string location)
+    {
+        RequestDelegate next = _ => Task.CompletedTask;
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new IPAccessWhitelistMiddleware(next, new[] { location },
+                new[] { IPAddress.Loopback }, false));
+
+        Assert.Equal("locations", exception.ParamName);
+        Assert.Contains("index 0", exception.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("begin with '/'", exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MiddlewareConstruction_RejectsNullProtectedLocations()
+    {
+        RequestDelegate next = _ => Task.CompletedTask;
+
+        var exception = Assert.Throws<ArgumentNullException>(() =>
+            new IPAccessWhitelistMiddleware(next, null,
+                new[] { IPAddress.Loopback }, false));
+
+        Assert.Equal("locations", exception.ParamName);
+    }
+
+    [Fact]
+    public void MiddlewareConstruction_NamesLaterInvalidProtectedLocation()
+    {
+        RequestDelegate next = _ => Task.CompletedTask;
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new IPAccessWhitelistMiddleware(next,
+                new[] { "/metrics", "invalid-second-location" },
+                new[] { IPAddress.Loopback }, false));
+
+        Assert.Equal("locations", exception.ParamName);
+        Assert.Contains("index 1", exception.Message,
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Rejections_AreBoundedAndSummarizedUsingMonotonicTime()
     {
@@ -175,12 +222,6 @@ public class IPAccessWhitelistLoggingTests
                 WhitelistRejectionMetricsRegistry:
                     rejectionMetricsRegistry));
         var pipeline = app.Build();
-        var metricsBefore = await ReadWhitelistRejectionCountAsync(
-            rejectionMetricsRegistry,
-            ProtectedRouteClassifier.MetricsRouteFamily);
-        var adminBefore = await ReadWhitelistRejectionCountAsync(
-            rejectionMetricsRegistry,
-            ProtectedRouteClassifier.AdminRouteFamily);
 
         // Exact canonical scrapes intentionally bypass the public API limiter. The
         // whitelist's own fixed-size limiter must still bound a many-address flood.
@@ -239,11 +280,11 @@ public class IPAccessWhitelistLoggingTests
         Assert.Equal(257d,
             await ReadWhitelistRejectionCountAsync(
                 rejectionMetricsRegistry,
-                ProtectedRouteClassifier.MetricsRouteFamily) - metricsBefore);
+                ProtectedRouteClassifier.MetricsRouteFamily));
         Assert.Equal(3d,
             await ReadWhitelistRejectionCountAsync(
                 rejectionMetricsRegistry,
-                ProtectedRouteClassifier.AdminRouteFamily) - adminBefore);
+                ProtectedRouteClassifier.AdminRouteFamily));
     }
 
     [Fact]

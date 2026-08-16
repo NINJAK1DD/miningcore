@@ -2203,19 +2203,12 @@ public class Program : ProcessStatusBackgroundService
 
             logger?.Info(() => $"API Access to {string.Join(",", locations)} restricted to {string.Join(",", ipList.Select(x => x.ToString()))}");
 
-            if(rejectionMetricsRegistry == null)
-            {
-                app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
-                    ipList.ToArray(), gpdrCompliantLogging,
-                    timeProvider ?? TimeProvider.System);
-            }
-            else
-            {
-                app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
-                    ipList.ToArray(), gpdrCompliantLogging,
-                    timeProvider ?? TimeProvider.System,
-                    rejectionMetricsRegistry);
-            }
+            // UseMiddleware cannot match an explicitly supplied null argument to
+            // a constructor parameter, so always pass a concrete registry.
+            app.UseMiddleware<IPAccessWhitelistMiddleware>(locations,
+                ipList.ToArray(), gpdrCompliantLogging,
+                timeProvider ?? TimeProvider.System,
+                rejectionMetricsRegistry ?? Metrics.DefaultRegistry);
         }
     }
 

@@ -16,27 +16,23 @@ public class IPAccessWhitelistMiddleware
     {
         this.whitelist = whitelist;
         this.next = next;
-        this.locations = locations;
+        this.locations = ParseLocations(locations);
         this.gpdrCompliantLogging = gpdrCompliantLogging;
         rejectionLogLimiter = new MonotonicLogLimiter(
             TimeSpan.FromMinutes(1), timeProvider);
-        var counterFamily = rejectionMetricsRegistry == null
-            ? RejectionCounterFamily
-            : CreateRejectionCounter(
-                Metrics.WithCustomRegistry(rejectionMetricsRegistry));
-        rejectionCounter = counterFamily.WithLabels(
-            ProtectedRouteClassifier.ClassifyWhitelistLocations(locations));
+        rejectionCounter = CreateRejectionCounter(Metrics.WithCustomRegistry(
+                rejectionMetricsRegistry ?? Metrics.DefaultRegistry))
+            .WithLabels(ProtectedRouteClassifier.ClassifyWhitelistLocations(
+                locations));
     }
 
     private readonly RequestDelegate next;
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IPAddress[] whitelist;
-    private readonly string[] locations;
+    private readonly PathString[] locations;
     private readonly bool gpdrCompliantLogging;
     private readonly MonotonicLogLimiter rejectionLogLimiter;
     private readonly ICounter rejectionCounter;
-    private static readonly Counter RejectionCounterFamily =
-        CreateRejectionCounter(Metrics.DefaultFactory);
 
     private static Counter CreateRejectionCounter(IMetricFactory metricFactory) =>
         metricFactory.CreateCounter(
@@ -49,10 +45,33 @@ public class IPAccessWhitelistMiddleware
                 LabelNames = new[] { "route_family" },
             });
 
+    private static PathString[] ParseLocations(string[] locations)
+    {
+        ArgumentNullException.ThrowIfNull(locations);
+
+        var result = new PathString[locations.Length];
+
+        for(var index = 0; index < locations.Length; index++)
+        {
+            var location = locations[index];
+
+            if(string.IsNullOrEmpty(location) || location[0] != '/')
+            {
+                throw new ArgumentException(
+                    $"Protected route location at index {index} must be non-empty and begin with '/'",
+                    nameof(locations));
+            }
+
+            result[index] = new PathString(location);
+        }
+
+        return result;
+    }
+
     public async Task Invoke(HttpContext context)
     {
         if(locations.Any(location => context.Request.Path.StartsWithSegments(
-               new PathString(location), StringComparison.OrdinalIgnoreCase)))
+               location, StringComparison.OrdinalIgnoreCase)))
         {
             var remoteAddress = context.Connection.RemoteIpAddress;
             var authorized = remoteAddress != null &&
