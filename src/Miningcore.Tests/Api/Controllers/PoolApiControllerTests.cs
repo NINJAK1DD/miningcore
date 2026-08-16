@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Responses;
@@ -13,6 +15,147 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class PoolApiControllerTests
 {
+    [Fact]
+    public void ToPoolInfo_UsesDedicatedBanningDtoWithoutAliasingConfiguration()
+    {
+        var source = new PoolShareBasedBanningConfig
+        {
+            Enabled = true,
+            CheckThreshold = 25,
+            InvalidPercent = 12.5,
+            Time = 600,
+            MinerEffortPercent = 250.25,
+            MinerEffortTime = 900,
+        };
+        var config = CreateMinimalPoolConfig();
+        config.Banning = source;
+        var mapper = AutoMapperFactory.CreateMapper();
+
+        mapper.ConfigurationProvider.AssertConfigurationIsValid();
+        var result = config.ToPoolInfo(mapper,
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+        var banning = Assert.IsType<ApiPoolShareBasedBanningConfig>(
+            result.ShareBasedBanning);
+        Assert.NotSame(source, banning);
+        Assert.True(banning.Enabled);
+        Assert.Equal(25, banning.CheckThreshold);
+        Assert.Equal(12.5, banning.InvalidPercent);
+        Assert.Equal(600, banning.Time);
+        Assert.Equal(250.25, banning.MinerEffortPercent);
+        Assert.Equal(900, banning.MinerEffortTime);
+
+        source.Enabled = false;
+        source.CheckThreshold = 1;
+        source.InvalidPercent = 2;
+        source.Time = 3;
+        source.MinerEffortPercent = null;
+        source.MinerEffortTime = null;
+
+        Assert.True(banning.Enabled);
+        Assert.Equal(25, banning.CheckThreshold);
+        Assert.Equal(12.5, banning.InvalidPercent);
+        Assert.Equal(600, banning.Time);
+        Assert.Equal(250.25, banning.MinerEffortPercent);
+        Assert.Equal(900, banning.MinerEffortTime);
+    }
+
+    [Fact]
+    public void BanningDto_ExposesExactlyTheExistingSixFieldContract()
+    {
+        var properties = typeof(ApiPoolShareBasedBanningConfig)
+            .GetProperties()
+            .OrderBy(property => property.Name)
+            .Select(property => (property.Name, property.PropertyType))
+            .ToArray();
+
+        Assert.Equal(new[]
+        {
+            ("CheckThreshold", typeof(int)),
+            ("Enabled", typeof(bool)),
+            ("InvalidPercent", typeof(double)),
+            ("MinerEffortPercent", typeof(double?)),
+            ("MinerEffortTime", typeof(int?)),
+            ("Time", typeof(int)),
+        }, properties);
+    }
+
+    [Fact]
+    public void PoolResponses_PreserveBanningPropertyNamesAndValues()
+    {
+        var banning = new ApiPoolShareBasedBanningConfig
+        {
+            Enabled = true,
+            CheckThreshold = 25,
+            InvalidPercent = 12.5,
+            Time = 600,
+            MinerEffortPercent = 250.25,
+            MinerEffortTime = 900,
+        };
+        var options = CreateApiJsonOptions(false);
+
+        var pools = JsonSerializer.SerializeToElement(new GetPoolsResponse
+        {
+            Pools = new[] { new PoolInfo { ShareBasedBanning = banning } },
+        }, options);
+        var pool = JsonSerializer.SerializeToElement(new GetPoolResponse
+        {
+            Pool = new PoolInfo { ShareBasedBanning = banning },
+        }, options);
+
+        AssertBanningContract(
+            pools.GetProperty("pools")[0].GetProperty("shareBasedBanning"));
+        AssertBanningContract(
+            pool.GetProperty("pool").GetProperty("shareBasedBanning"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PoolResponses_PreserveNullableBanningFields(bool legacyNulls)
+    {
+        var banning = new ApiPoolShareBasedBanningConfig
+        {
+            Enabled = true,
+            CheckThreshold = 25,
+            InvalidPercent = 12.5,
+            Time = 600,
+        };
+        var options = CreateApiJsonOptions(legacyNulls);
+        var payloads = new[]
+        {
+            JsonSerializer.SerializeToElement(new GetPoolsResponse
+            {
+                Pools = new[]
+                {
+                    new PoolInfo { ShareBasedBanning = banning },
+                },
+            }, options).GetProperty("pools")[0],
+            JsonSerializer.SerializeToElement(new GetPoolResponse
+            {
+                Pool = new PoolInfo { ShareBasedBanning = banning },
+            }, options).GetProperty("pool"),
+        };
+
+        foreach(var payload in payloads)
+        {
+            var publicBanning = payload.GetProperty("shareBasedBanning");
+
+            Assert.Equal(legacyNulls,
+                publicBanning.TryGetProperty("minerEffortPercent",
+                    out var effortPercent));
+            Assert.Equal(legacyNulls,
+                publicBanning.TryGetProperty("minerEffortTime",
+                    out var effortTime));
+
+            if(legacyNulls)
+            {
+                Assert.Equal(JsonValueKind.Null, effortPercent.ValueKind);
+                Assert.Equal(JsonValueKind.Null, effortTime.ValueKind);
+            }
+        }
+    }
+
     [Fact]
     public void ToPoolInfo_UsesDedicatedEndpointDtosAndOmitsPrivateListenerData()
     {
@@ -152,5 +295,50 @@ public class PoolApiControllerTests
     {
         Assert.True(PoolApiController.ShouldCalculatePoolEffort(DateTime.UtcNow,
             Substitute.For<IMiningPool>()));
+    }
+
+    private static PoolConfig CreateMinimalPoolConfig() => new()
+    {
+        Template = new AlephiumCoinTemplate
+        {
+            Family = CoinFamily.Alephium,
+            Name = "Alephium",
+            Symbol = "ALPH",
+        },
+        PaymentProcessing = new PoolPaymentProcessingConfig(),
+    };
+
+    private static JsonSerializerOptions CreateApiJsonOptions(
+        bool legacyNulls) => new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = legacyNulls
+            ? JsonIgnoreCondition.Never
+            : JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static void AssertBanningContract(JsonElement banning)
+    {
+        Assert.Equal(new[]
+        {
+            "checkThreshold",
+            "enabled",
+            "invalidPercent",
+            "minerEffortPercent",
+            "minerEffortTime",
+            "time",
+        }, banning.EnumerateObject()
+            .Select(property => property.Name)
+            .OrderBy(name => name)
+            .ToArray());
+        Assert.True(banning.GetProperty("enabled").GetBoolean());
+        Assert.Equal(25, banning.GetProperty("checkThreshold").GetInt32());
+        Assert.Equal(12.5,
+            banning.GetProperty("invalidPercent").GetDouble());
+        Assert.Equal(600, banning.GetProperty("time").GetInt32());
+        Assert.Equal(250.25,
+            banning.GetProperty("minerEffortPercent").GetDouble());
+        Assert.Equal(900,
+            banning.GetProperty("minerEffortTime").GetInt32());
     }
 }

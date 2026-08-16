@@ -76,6 +76,8 @@ public class AutoMapperProfile : Profile
         CreateMap<TcpProxyProtocolConfig,
             Api.Responses.ApiTcpProxyProtocolConfig>();
         CreateMap<PoolEndpoint, Api.Responses.ApiPoolEndpoint>();
+        CreateMap<PoolShareBasedBanningConfig,
+            Api.Responses.ApiPoolShareBasedBanningConfig>();
 
         CreateMap<PoolConfig, Api.Responses.PoolInfo>()
             .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template))

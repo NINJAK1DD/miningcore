@@ -133,6 +133,14 @@ Specifically, clients must not expect `ports[*].tlsPfxFile`, `ports[*].tlsPfxPas
 `ports[*].tcpProxyProtocol.proxyAddresses`: those keys are absent from responses, including when
 `legacyNullValueHandling` is enabled. All other endpoint property names and values remain unchanged.
 
+The `shareBasedBanning` object returned by `/api/pools` and `/api/pools/{id}` is likewise a
+dedicated public projection rather than serialized `PoolShareBasedBanningConfig` runtime
+configuration. Its wire contract remains `enabled`, `checkThreshold`, `invalidPercent`, `time`,
+`minerEffortPercent` and `minerEffortTime`. The two miner-effort fields remain nullable: they are
+omitted under the normal null policy and emitted as `null` when `legacyNullValueHandling` is
+enabled. This boundary is defence in depth against future internal configuration additions; it
+does not correct a known disclosure in the six existing fields.
+
 ## Public routes
 
 The main GET routes are:

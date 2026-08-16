@@ -356,6 +356,14 @@ existing names and values.
 Consumers compiling directly against Miningcore response classes must also update the generic value
 type of `PoolInfo.Ports` from `PoolEndpoint` to `ApiPoolEndpoint`.
 
+`PoolInfo.ShareBasedBanning` now uses the dedicated
+`ApiPoolShareBasedBanningConfig` response type instead of exposing
+`PoolShareBasedBanningConfig` directly. This is a source-level type change for consumers that
+compile against Miningcore assemblies, but the JSON contract on `/api/pools` and
+`/api/pools/{id}` is unchanged: `enabled`, `checkThreshold`, `invalidPercent`, `time`,
+`minerEffortPercent` and `minerEffortTime` retain their names, values and existing null behavior.
+The separation is preventative API-contract hardening rather than remediation of a known leak.
+
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops
 startup before any pool is announced online and releases all sockets already acquired by that

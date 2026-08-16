@@ -1,6 +1,5 @@
 using System.Text.Json.Serialization;
 using Miningcore.Blockchain;
-using Miningcore.Configuration;
 using Miningcore.Mining;
 using Newtonsoft.Json.Linq;
 
@@ -68,7 +67,7 @@ public partial class PoolInfo
     public ApiCoinConfig Coin { get; set; }
     public Dictionary<int, ApiPoolEndpoint> Ports { get; set; }
     public ApiPoolPaymentProcessingConfig PaymentProcessing { get; set; }
-    public PoolShareBasedBanningConfig ShareBasedBanning { get; set; }
+    public ApiPoolShareBasedBanningConfig ShareBasedBanning { get; set; }
     public int ClientConnectionTimeout { get; set; }
     public int JobRebroadcastTimeout { get; set; }
     public int BlockRefreshInterval { get; set; }
