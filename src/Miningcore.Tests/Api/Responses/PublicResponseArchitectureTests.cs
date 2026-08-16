@@ -28,8 +28,39 @@ public class PublicResponseArchitectureTests
 
         Assert.True(violations.Length == 0,
             "Public API response types must not expose runtime configuration " +
-            "types. Add a dedicated response DTO and one-way mapping for: " +
+            "types through statically typed public instance members or " +
+            "inheritance. Add a dedicated response DTO and one-way mapping for: " +
             string.Join(", ", violations));
+    }
+
+    [Fact]
+    public void ConfigurationTraversal_FollowsInheritanceInterfacesAndFields()
+    {
+        var violations = FindConfigurationReferences(new[]
+        {
+            typeof(ConfigurationList),
+            typeof(ConfigurationEnumerable),
+            typeof(DerivedConfigurationType),
+            typeof(FieldConfigurationType),
+        });
+
+        Assert.Contains(violations, value =>
+            value.Contains("ConfigurationList.Base", StringComparison.Ordinal) &&
+            value.EndsWith(typeof(PoolConfig).FullName,
+                StringComparison.Ordinal));
+        Assert.Contains(violations, value =>
+            value.Contains("ConfigurationEnumerable.Interface",
+                StringComparison.Ordinal) &&
+            value.EndsWith(typeof(PoolConfig).FullName,
+                StringComparison.Ordinal));
+        Assert.Contains(violations, value =>
+            value.Contains("DerivedConfigurationType.Base",
+                StringComparison.Ordinal) &&
+            value.EndsWith(typeof(PoolShareBasedBanningConfig).FullName,
+                StringComparison.Ordinal));
+        Assert.Contains(
+            $"FieldConfigurationType.Leaked -> {typeof(PoolConfig).FullName}",
+            violations);
     }
 
     [Fact]
@@ -103,15 +134,45 @@ public class PublicResponseArchitectureTests
         if(!visited.Add(type))
             return;
 
+        if(type.BaseType != null && type.BaseType != typeof(object))
+        {
+            InspectType(type.BaseType,
+                $"{path}.Base<{type.BaseType.Name}>", visited, violations);
+        }
+
+        var inheritedInterfaces = type.BaseType?.GetInterfaces() ??
+            Type.EmptyTypes;
+        foreach(var interfaceType in type.GetInterfaces()
+                    .Except(inheritedInterfaces)
+                    .OrderBy(candidate => candidate.FullName))
+        {
+            InspectType(interfaceType,
+                $"{path}.Interface<{interfaceType.Name}>", visited,
+                violations);
+        }
+
         foreach(var property in type.GetProperties(BindingFlags.Instance |
-                    BindingFlags.Public).Where(property =>
+                    BindingFlags.Public | BindingFlags.DeclaredOnly)
+                    .Where(property =>
                     property.GetIndexParameters().Length == 0))
         {
             InspectType(property.PropertyType,
                 $"{path}.{property.Name}", visited, violations);
         }
+
+        foreach(var field in type.GetFields(BindingFlags.Instance |
+                    BindingFlags.Public | BindingFlags.DeclaredOnly))
+        {
+            InspectType(field.FieldType, $"{path}.{field.Name}", visited,
+                violations);
+        }
     }
 
+    // This intentionally includes configuration enums. Public responses should
+    // own even benign enum contracts so later runtime changes cannot alter the
+    // wire representation implicitly. Untyped object/extension-data values
+    // cannot be proven safe by reflection and require separate value-level
+    // redaction tests.
     private static bool IsRuntimeConfigurationType(Type type) =>
         type.Namespace != null &&
         (type.Namespace.Equals(typeof(PoolConfig).Namespace,
@@ -125,5 +186,28 @@ public class PublicResponseArchitectureTests
         public PoolConfig[] Array { get; set; }
         public List<PoolConfig> Collection { get; set; }
         public Dictionary<string, PoolConfig> Dictionary { get; set; }
+    }
+
+    private sealed class ConfigurationList : List<PoolConfig>
+    {
+    }
+
+    private sealed class ConfigurationEnumerable : IEnumerable<PoolConfig>
+    {
+        public IEnumerator<PoolConfig> GetEnumerator() =>
+            Enumerable.Empty<PoolConfig>().GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable
+            .GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class DerivedConfigurationType :
+        PoolShareBasedBanningConfig
+    {
+    }
+
+    private sealed class FieldConfigurationType
+    {
+        public PoolConfig Leaked = null;
     }
 }

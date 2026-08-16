@@ -358,9 +358,10 @@ type of `PoolInfo.Ports` from `PoolEndpoint` to `ApiPoolEndpoint`.
 
 `PoolInfo.ShareBasedBanning` now uses the dedicated
 `ApiPoolShareBasedBanningConfig` response type instead of exposing
-`PoolShareBasedBanningConfig` directly. This is a source-level type change for consumers that
-compile against Miningcore assemblies, but the JSON contract on `/api/pools` and
-`/api/pools/{id}` is unchanged: `enabled`, `checkThreshold`, `invalidPercent`, `time`,
+`PoolShareBasedBanningConfig` directly. This is a source- and binary-level .NET API type change for
+consumers that reference Miningcore assemblies; those consumers must update the property type and
+rebuild. The JSON contract on `/api/pools` and `/api/pools/{id}` is unchanged: `enabled`,
+`checkThreshold`, `invalidPercent`, `time`,
 `minerEffortPercent` and `minerEffortTime` retain their names, values and existing null behavior.
 The separation is preventative API-contract hardening rather than remediation of a known leak.
 

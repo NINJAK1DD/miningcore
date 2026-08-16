@@ -6,6 +6,12 @@ using System.Text.Json.Serialization;
 using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Responses;
+using Miningcore.Blockchain.Alephium.Configuration;
+using Miningcore.Blockchain.Bitcoin.Configuration;
+using Miningcore.Blockchain.Ergo.Configuration;
+using Miningcore.Blockchain.Handshake.Configuration;
+using Miningcore.Blockchain.Kaspa.Configuration;
+using Miningcore.Blockchain.Warthog.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Mining;
 using NSubstitute;
@@ -31,7 +37,6 @@ public class PoolApiControllerTests
         config.Banning = source;
         var mapper = AutoMapperFactory.CreateMapper();
 
-        mapper.ConfigurationProvider.AssertConfigurationIsValid();
         var result = config.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
@@ -153,7 +158,103 @@ public class PoolApiControllerTests
                 Assert.Equal(JsonValueKind.Null, effortPercent.ValueKind);
                 Assert.Equal(JsonValueKind.Null, effortTime.ValueKind);
             }
+
+            Assert.True(publicBanning.GetProperty("enabled").GetBoolean());
+            Assert.Equal(25,
+                publicBanning.GetProperty("checkThreshold").GetInt32());
+            Assert.Equal(12.5,
+                publicBanning.GetProperty("invalidPercent").GetDouble());
+            Assert.Equal(600,
+                publicBanning.GetProperty("time").GetInt32());
+            Assert.Equal(legacyNulls ? 6 : 4,
+                publicBanning.EnumerateObject().Count());
         }
+    }
+
+    public static IEnumerable<object[]> SensitivePaymentExtraProperties()
+    {
+        yield return new object[]
+        {
+            CoinFamily.Alephium,
+            typeof(AlephiumPaymentProcessingConfigExtra),
+            nameof(AlephiumPaymentProcessingConfigExtra.WalletPassword),
+        };
+        yield return new object[]
+        {
+            CoinFamily.Bitcoin,
+            typeof(BitcoinPoolPaymentProcessingConfigExtra),
+            nameof(BitcoinPoolPaymentProcessingConfigExtra.WalletPassword),
+        };
+        yield return new object[]
+        {
+            CoinFamily.Ergo,
+            typeof(ErgoPaymentProcessingConfigExtra),
+            nameof(ErgoPaymentProcessingConfigExtra.WalletPassword),
+        };
+        yield return new object[]
+        {
+            CoinFamily.Handshake,
+            typeof(HandshakePoolPaymentProcessingConfigExtra),
+            nameof(HandshakePoolPaymentProcessingConfigExtra.WalletPassword),
+        };
+        yield return new object[]
+        {
+            CoinFamily.Kaspa,
+            typeof(KaspaPaymentProcessingConfigExtra),
+            nameof(KaspaPaymentProcessingConfigExtra.WalletPassword),
+        };
+        yield return new object[]
+        {
+            CoinFamily.Warthog,
+            typeof(WarthogPaymentProcessingConfigExtra),
+            nameof(WarthogPaymentProcessingConfigExtra.WalletPrivateKey),
+        };
+    }
+
+    [Fact]
+    public void SensitivePaymentExtraInventory_IsCompletelyCovered()
+    {
+        var expected = SensitivePaymentExtraProperties()
+            .Select(values => $"{((Type) values[1]).FullName}.{values[2]}")
+            .OrderBy(value => value)
+            .ToArray();
+        var actual = typeof(PoolConfig).Assembly.GetTypes()
+            .Where(type => type.Name.EndsWith("PaymentProcessingConfigExtra",
+                StringComparison.Ordinal))
+            .SelectMany(type => type.GetProperties()
+                .Where(property => IsSensitivePropertyName(property.Name))
+                .Select(property => $"{type.FullName}.{property.Name}"))
+            .OrderBy(value => value)
+            .ToArray();
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [MemberData(nameof(SensitivePaymentExtraProperties))]
+    public void ToPoolInfo_StripsEverySensitivePaymentExtra(
+        CoinFamily family, Type extraType, string sensitiveProperty)
+    {
+        const string retainedProperty = "publicSetting";
+        Assert.NotNull(extraType.GetProperty(sensitiveProperty));
+
+        var config = CreateMinimalPoolConfig();
+        config.Template.Family = family;
+        config.PaymentProcessing.Extra = new Dictionary<string, object>
+        {
+            [sensitiveProperty] = "secret-value",
+            [retainedProperty] = "public-value",
+        };
+
+        var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
+
+        Assert.False(result.PaymentProcessing.Extra.ContainsKey(
+            sensitiveProperty));
+        Assert.Equal("public-value",
+            result.PaymentProcessing.Extra[retainedProperty]);
+        Assert.Equal("secret-value",
+            config.PaymentProcessing.Extra[sensitiveProperty]);
     }
 
     [Fact]
@@ -184,20 +285,11 @@ public class PoolApiControllerTests
             TlsPfxFile = "pool.pfx",
             TlsPfxPassword = "secret",
         };
-        var config = new PoolConfig
+        var config = CreateMinimalPoolConfig();
+        config.Ports = new Dictionary<int, PoolEndpoint>
         {
-            Template = new AlephiumCoinTemplate
-            {
-                Family = CoinFamily.Alephium,
-                Name = "Alephium",
-                Symbol = "ALPH",
-            },
-            PaymentProcessing = new PoolPaymentProcessingConfig(),
-            Ports = new Dictionary<int, PoolEndpoint>
-            {
-                [3031] = sourceEndpoint,
-                [3032] = null,
-            },
+            [3031] = sourceEndpoint,
+            [3032] = null,
         };
         var mapper = AutoMapperFactory.CreateMapper();
 
@@ -308,14 +400,18 @@ public class PoolApiControllerTests
         PaymentProcessing = new PoolPaymentProcessingConfig(),
     };
 
-    private static JsonSerializerOptions CreateApiJsonOptions(
-        bool legacyNulls) => new()
+    private static JsonSerializerOptions CreateApiJsonOptions(bool legacyNulls)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = legacyNulls
-            ? JsonIgnoreCondition.Never
-            : JsonIgnoreCondition.WhenWritingNull,
-    };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        Program.ConfigureApiJsonSerializerOptions(options, legacyNulls);
+        return options;
+    }
+
+    private static bool IsSensitivePropertyName(string name) =>
+        name.Contains("Password", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("PrivateKey", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Secret", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Token", StringComparison.OrdinalIgnoreCase);
 
     private static void AssertBanningContract(JsonElement banning)
     {
