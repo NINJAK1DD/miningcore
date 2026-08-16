@@ -113,6 +113,18 @@ public class IPAccessWhitelistLoggingTests
     }
 
     [Fact]
+    public void MiddlewareConstruction_RejectsNullWhitelist()
+    {
+        RequestDelegate next = _ => Task.CompletedTask;
+
+        var exception = Assert.Throws<ArgumentNullException>(() =>
+            new IPAccessWhitelistMiddleware(next,
+                new[] { Program.MetricsRoutePrefix }, null, false));
+
+        Assert.Equal("whitelist", exception.ParamName);
+    }
+
+    [Fact]
     public void MiddlewareConstruction_NamesLaterInvalidProtectedLocation()
     {
         RequestDelegate next = _ => Task.CompletedTask;

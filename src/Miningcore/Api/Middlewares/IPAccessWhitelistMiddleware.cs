@@ -14,9 +14,10 @@ public class IPAccessWhitelistMiddleware
         TimeProvider timeProvider = null,
         CollectorRegistry rejectionMetricsRegistry = null)
     {
-        this.whitelist = whitelist;
         this.next = next;
         this.locations = ParseLocations(locations);
+        ArgumentNullException.ThrowIfNull(whitelist);
+        this.whitelist = whitelist;
         this.gpdrCompliantLogging = gpdrCompliantLogging;
         rejectionLogLimiter = new MonotonicLogLimiter(
             TimeSpan.FromMinutes(1), timeProvider);
@@ -70,12 +71,35 @@ public class IPAccessWhitelistMiddleware
 
     public async Task Invoke(HttpContext context)
     {
-        if(locations.Any(location => context.Request.Path.StartsWithSegments(
-               location, StringComparison.OrdinalIgnoreCase)))
+        var protectedRoute = false;
+
+        foreach(var location in locations)
+        {
+            if(!context.Request.Path.StartsWithSegments(location,
+                   StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            protectedRoute = true;
+            break;
+        }
+
+        if(protectedRoute)
         {
             var remoteAddress = context.Connection.RemoteIpAddress;
-            var authorized = remoteAddress != null &&
-                whitelist.Any(address => address.IsEqual(remoteAddress));
+            var authorized = false;
+
+            if(remoteAddress != null)
+            {
+                foreach(var address in whitelist)
+                {
+                    if(!address.IsEqual(remoteAddress))
+                        continue;
+
+                    authorized = true;
+                    break;
+                }
+            }
+
             if(!authorized)
             {
                 // Preserve an alertable aggregate for every rejection even when its
