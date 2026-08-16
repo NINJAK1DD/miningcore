@@ -2058,12 +2058,6 @@ public class Program : ProcessStatusBackgroundService
 
     internal static void ValidateMergedMiningDeployment(ClusterConfig config)
     {
-        var enabledMergedMining = config?.Pools?
-            .Where(pool => pool.Enabled)
-            .Select(MergedMiningConfigLoader.GetNormalizedConfig)
-            .Where(x => x?.Enabled == true)
-            .ToArray() ?? Array.Empty<MergedMiningConfig>();
-
         if(!RequiresMergedMiningPersistence(config))
             return;
 
