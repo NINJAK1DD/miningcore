@@ -602,22 +602,31 @@ public class PoolApiControllerTests
         var cases = new[]
         {
             new CoerciblePaymentExtraCase(CoinFamily.Ethereum,
-                "gas", new JValue("21000")),
+                "gas", new JValue("21000"), 21000UL),
             new CoerciblePaymentExtraCase(CoinFamily.Ethereum,
-                "keepUncles", new JValue(1)),
+                "keepUncles", new JValue(1), true),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
-                "walletName", new JValue(123)),
+                "walletName", new JValue(123), "123"),
             new CoerciblePaymentExtraCase(CoinFamily.Kaspa,
-                "minimumConfirmations", new JValue("120")),
+                "minimumConfirmations", new JValue("120"), 120),
             new CoerciblePaymentExtraCase(CoinFamily.Kaspa,
-                "minimumConfirmations", new JValue(12.7)),
+                "minimumConfirmations", new JValue(12.7), 13),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
-                "walletName", new JValue("2026-08-16T15:30:00Z"), true),
+                "walletName", new JValue("2026-08-16T15:30:00Z"),
+                "08/16/2026 15:30:00", true),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
-                "walletAccount", new JValue("2026-08-16T15:31:00Z"), true),
+                "walletAccount", new JValue("2026-08-16T15:31:00Z"),
+                "08/16/2026 15:31:00", true),
             new CoerciblePaymentExtraCase(CoinFamily.Kaspa,
                 "versionEnablingMaxFee",
-                new JValue("2026-08-16T15:32:00Z"), true),
+                new JValue("2026-08-16T15:32:00Z"),
+                "08/16/2026 15:32:00", true),
+            new CoerciblePaymentExtraCase(CoinFamily.Handshake,
+                "walletName", new JValue("2025-01-01"),
+                "2025-01-01"),
+            new CoerciblePaymentExtraCase(CoinFamily.Handshake,
+                "walletAccount", new JValue("2025-01-01T00:00:00"),
+                "01/01/2025 00:00:00", true),
         };
 
         foreach(var testCase in cases)
@@ -657,33 +666,20 @@ public class PoolApiControllerTests
         var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
-        switch(testCase.Name)
+        object actualClrValue = testCase.Name switch
         {
-            case "gas":
-                Assert.Equal(sourceToken.ToObject<ulong?>(),
-                    result.PaymentProcessing.Extra.Gas);
-                break;
-            case "keepUncles":
-                Assert.Equal(sourceToken.ToObject<bool?>(),
-                    result.PaymentProcessing.Extra.KeepUncles);
-                break;
-            case "walletName":
-                Assert.Equal(sourceToken.ToObject<string>(),
-                    result.PaymentProcessing.Extra.WalletName);
-                break;
-            case "walletAccount":
-                Assert.Equal(sourceToken.ToObject<string>(),
-                    result.PaymentProcessing.Extra.WalletAccount);
-                break;
-            case "minimumConfirmations":
-                Assert.Equal(sourceToken.ToObject<int?>(),
-                    result.PaymentProcessing.Extra.MinimumConfirmations);
-                break;
-            case "versionEnablingMaxFee":
-                Assert.Equal(sourceToken.ToObject<string>(),
-                    result.PaymentProcessing.Extra.VersionEnablingMaxFee);
-                break;
-        }
+            "gas" => result.PaymentProcessing.Extra.Gas,
+            "keepUncles" => result.PaymentProcessing.Extra.KeepUncles,
+            "walletName" => result.PaymentProcessing.Extra.WalletName,
+            "walletAccount" => result.PaymentProcessing.Extra.WalletAccount,
+            "minimumConfirmations" => result.PaymentProcessing.Extra.
+                MinimumConfirmations,
+            "versionEnablingMaxFee" => result.PaymentProcessing.Extra.
+                VersionEnablingMaxFee,
+            _ => throw new ArgumentOutOfRangeException(nameof(testCase)),
+        };
+
+        Assert.Equal(testCase.ExpectedClrValue, actualClrValue);
 
         config.PaymentProcessing.Extra[testCase.Name] =
             "mutated-after-projection";
@@ -1188,7 +1184,8 @@ public class PoolApiControllerTests
     }
 
     public sealed record CoerciblePaymentExtraCase(CoinFamily Family,
-        string Name, JValue WireValue, bool ExpectsDateParsing = false);
+        string Name, JValue WireValue, object ExpectedClrValue,
+        bool ExpectsDateParsing = false);
 
     public enum PaymentExtraSourceKind
     {

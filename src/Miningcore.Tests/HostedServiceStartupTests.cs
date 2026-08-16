@@ -45,9 +45,9 @@ public class HostedServiceStartupTests
         using var timeout = new CancellationTokenSource(
             TimeSpan.FromSeconds(30));
 
-        // The StartAsync token is linked to the background-service lifetime.
-        // Keep the test deadline separate so a busy runner cannot tear down
-        // subscriptions before the readiness assertions execute.
+        // StartAsync may consume its token while completing readiness work.
+        // Keep the test deadline separate so a busy runner cannot cancel
+        // startup before the readiness assertions execute.
         await recorder.StartAsync(CancellationToken.None)
             .WaitAsync(timeout.Token);
         Assert.True(notifications.HasObservers);
