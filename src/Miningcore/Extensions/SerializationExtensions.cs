@@ -6,13 +6,38 @@ namespace Miningcore.Extensions;
 
 public static class SerializationExtensions
 {
+    private static readonly DefaultContractResolver extensionDataContractResolver = new()
+    {
+        NamingStrategy = new CamelCaseNamingStrategy()
+    };
+
     private static readonly JsonSerializer serializer = new()
     {
-        ContractResolver = new DefaultContractResolver
-        {
-            NamingStrategy = new CamelCaseNamingStrategy()
-        }
+        ContractResolver = extensionDataContractResolver
     };
+
+    internal static IReadOnlyList<ExtensionDataPropertyContract>
+        GetExtensionDataPropertyContracts(Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+
+        if(extensionDataContractResolver.ResolveContract(type) is not
+           JsonObjectContract contract)
+        {
+            throw new ArgumentException(
+                $"Type '{type.FullName}' does not use a JSON object contract",
+                nameof(type));
+        }
+
+        return contract.Properties
+            .Where(property => !property.Ignored && property.Writable &&
+                !string.IsNullOrEmpty(property.UnderlyingName) &&
+                !string.IsNullOrEmpty(property.PropertyName))
+            .Select(property => new ExtensionDataPropertyContract(
+                property.UnderlyingName, property.PropertyName))
+            .OrderBy(property => property.JsonName, StringComparer.Ordinal)
+            .ToArray();
+    }
 
     public static T SafeExtensionDataAs<T>(this IDictionary<string, object> extra, params string[] wrappers)
     {
@@ -46,3 +71,6 @@ public static class SerializationExtensions
         return default;
     }
 }
+
+internal sealed record ExtensionDataPropertyContract(string ClrName,
+    string JsonName);

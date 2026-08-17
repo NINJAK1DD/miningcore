@@ -18,6 +18,7 @@ using Miningcore.Blockchain.Warthog.Configuration;
 using Miningcore.Blockchain.Xelis.Configuration;
 using Miningcore.Blockchain.Zano.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Extensions;
 using Miningcore.Mining;
 using NSubstitute;
 using Newtonsoft.Json.Linq;
@@ -381,9 +382,24 @@ public class PoolApiControllerTests
             PaymentExtraContracts.Select(contract => contract.Family)
                 .OrderBy(value => value));
         Assert.All(PaymentExtraContracts, contract =>
+        {
             Assert.Equal(contract.RuntimeType,
                 PaymentProcessingExtraProjection.GetRuntimeContractType(
-                    contract.Family)));
+                    contract.Family));
+
+            var expectedRuntimeOnlyNames = contract.RuntimeType == null ?
+                Array.Empty<string>() : SerializationExtensions.
+                    GetExtensionDataPropertyContracts(contract.RuntimeType)
+                    .Where(property => !contract.PublicValues.ContainsKey(
+                        property.ClrName))
+                    .Select(property => property.JsonName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(name => name, StringComparer.Ordinal)
+                    .ToArray();
+            Assert.Equal(expectedRuntimeOnlyNames,
+                PaymentProcessingExtraProjection.GetRuntimeOnlyContractNames(
+                    contract.Family));
+        });
 
         foreach(var runtimeType in discoveredTypes)
         {

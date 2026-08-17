@@ -9,7 +9,7 @@ internal static class PaymentProcessingExtraSensitivityPolicy
     internal const string RedactedDiagnosticKey =
         "<redacted-sensitive-key>";
     internal const string EmptyDiagnosticKey = "<empty-key>";
-    internal const int MaximumDiagnosticKeyCharacters = 80;
+    internal const int MaximumDiagnosticLabelCharacters = 80;
 
     // A sensitive-looking public setting must be reviewed and recorded by
     // fully-qualified member name. The set is intentionally empty today.
@@ -59,9 +59,9 @@ internal static class PaymentProcessingExtraSensitivityPolicy
                 (hasMoreCharacters ? 1 : 0);
 
             if(result.Length + requiredLength >
-               MaximumDiagnosticKeyCharacters)
+               MaximumDiagnosticLabelCharacters)
             {
-                if(result.Length < MaximumDiagnosticKeyCharacters)
+                if(result.Length < MaximumDiagnosticLabelCharacters)
                     result.Append('…');
 
                 break;

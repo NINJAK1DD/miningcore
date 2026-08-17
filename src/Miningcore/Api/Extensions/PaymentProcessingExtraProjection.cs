@@ -1,5 +1,4 @@
 using System.Collections.Frozen;
-using System.Reflection;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain.Alephium.Configuration;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -13,6 +12,7 @@ using Miningcore.Blockchain.Warthog.Configuration;
 using Miningcore.Blockchain.Xelis.Configuration;
 using Miningcore.Blockchain.Zano.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Extensions;
 using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Api.Extensions;
@@ -48,7 +48,10 @@ internal static class PaymentProcessingExtraProjection
             new List<PaymentProcessingExtraOmission>() : null;
 
         foreach(var field in contract.PublicFields)
-            field.Project(result, source, classifiedKeys, omissions);
+        {
+            field.Projection.Project(result, source, field.JsonName,
+                classifiedKeys, omissions);
+        }
 
         if(collectOmissions)
         {
@@ -95,6 +98,9 @@ internal static class PaymentProcessingExtraProjection
 
     internal static Type GetRuntimeContractType(CoinFamily family) =>
         GetContract(family).RuntimeType;
+
+    internal static IReadOnlyList<string> GetRuntimeOnlyContractNames(
+        CoinFamily family) => GetContract(family).RuntimeOnlyNames;
 
     private static PaymentProcessingExtraContract GetContract(
         CoinFamily family)
@@ -291,10 +297,11 @@ internal static class PaymentProcessingExtraProjection
 
     private interface IPaymentProcessingExtraFieldProjection
     {
-        string Name { get; }
+        string ClrName { get; }
 
         void Project(ApiPoolPaymentProcessingExtra result,
             IDictionary<string, object> source,
+            string jsonName,
             ISet<string> classifiedKeys,
             ICollection<PaymentProcessingExtraOmission> omissions);
     }
@@ -303,14 +310,15 @@ internal static class PaymentProcessingExtraProjection
         Action<ApiPoolPaymentProcessingExtra, string, T, JToken> setter) :
         IPaymentProcessingExtraFieldProjection
     {
-        public string Name => name;
+        public string ClrName => name;
 
         public void Project(ApiPoolPaymentProcessingExtra result,
             IDictionary<string, object> source,
+            string jsonName,
             ISet<string> classifiedKeys,
             ICollection<PaymentProcessingExtraOmission> omissions)
         {
-            var matches = FindMatches(source, name);
+            var matches = FindMatches(source, jsonName);
 
             foreach(var match in matches)
                 classifiedKeys?.Add(match);
@@ -324,7 +332,7 @@ internal static class PaymentProcessingExtraProjection
             // insertion order.
             if(matches.Length > 1)
             {
-                omissions?.Add(PaymentProcessingExtraOmission.Create(name,
+                omissions?.Add(PaymentProcessingExtraOmission.Create(jsonName,
                     PaymentProcessingExtraProjectionOutcome.
                         AmbiguousCaseVariant,
                     matches.Length));
@@ -350,11 +358,14 @@ internal static class PaymentProcessingExtraProjection
     }
 
     private static string[] FindMatches(IDictionary<string, object> source,
-        string name) => source.Keys
-        .Where(key => string.Equals(key, name,
-            StringComparison.OrdinalIgnoreCase))
-        .OrderBy(key => key, StringComparer.Ordinal)
-        .ToArray();
+        string name)
+    {
+        // Consumers observe only zero, one exact value, or an ambiguity count.
+        // Avoid sorting this per-field lookup on the public API path.
+        return source.Keys.Where(key => string.Equals(key, name,
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
 
     private sealed class PaymentProcessingExtraContract
     {
@@ -362,25 +373,56 @@ internal static class PaymentProcessingExtraProjection
             IPaymentProcessingExtraFieldProjection[] publicFields)
         {
             RuntimeType = runtimeType;
-            PublicFields = publicFields;
 
-            var publicNames = publicFields.Select(field => field.Name)
-                .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-            RuntimeOnlyNames = runtimeType == null ? Array.Empty<string>() :
-                runtimeType.GetProperties(BindingFlags.Instance |
-                        BindingFlags.Public)
-                    .Where(property => property.CanWrite &&
-                        property.GetIndexParameters().Length == 0 &&
-                        !publicNames.Contains(property.Name))
-                    .Select(property => property.Name)
-                    .OrderBy(name => name, StringComparer.Ordinal)
-                    .ToArray();
+            if(runtimeType == null)
+            {
+                if(publicFields.Length != 0)
+                {
+                    throw new ArgumentException(
+                        "Public fields require a runtime configuration type",
+                        nameof(publicFields));
+                }
+
+                PublicFields = Array.Empty<PaymentProcessingExtraPublicField>();
+                RuntimeOnlyNames = Array.Empty<string>();
+                return;
+            }
+
+            var runtimeProperties = SerializationExtensions.
+                GetExtensionDataPropertyContracts(runtimeType);
+            PublicFields = publicFields.Select(field =>
+            {
+                var runtimeProperty = runtimeProperties.SingleOrDefault(
+                    property => string.Equals(property.ClrName, field.ClrName,
+                        StringComparison.Ordinal));
+                if(runtimeProperty == null)
+                {
+                    throw new InvalidOperationException(
+                        $"Payment-processing field '{field.ClrName}' is not " +
+                        $"writable through the {runtimeType.FullName} JSON contract");
+                }
+
+                return new PaymentProcessingExtraPublicField(field,
+                    runtimeProperty.JsonName);
+            }).ToArray();
+
+            var publicClrNames = publicFields.Select(field => field.ClrName)
+                .ToFrozenSet(StringComparer.Ordinal);
+            RuntimeOnlyNames = runtimeProperties
+                .Where(property => !publicClrNames.Contains(property.ClrName))
+                .Select(property => property.JsonName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
         }
 
         public Type RuntimeType { get; }
-        public IPaymentProcessingExtraFieldProjection[] PublicFields { get; }
+        public PaymentProcessingExtraPublicField[] PublicFields { get; }
         public string[] RuntimeOnlyNames { get; }
     }
+
+    private sealed record PaymentProcessingExtraPublicField(
+        IPaymentProcessingExtraFieldProjection Projection, string JsonName);
 
     private static PaymentProcessingExtraProjectionOutcome TryConvert<T>(
         object source, out T value, out JToken wireValue)

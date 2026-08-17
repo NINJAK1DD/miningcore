@@ -133,7 +133,9 @@ public class PaymentProcessingExtraDiagnosticsTests
     public void ShippedCredentialExamples_ProduceNoOmissionWarnings(
         string filename, CoinFamily family)
     {
-        var path = FindRepositoryFile(Path.Combine("examples", filename));
+        var path = Path.Combine(AppContext.BaseDirectory, "examples", filename);
+        Assert.True(File.Exists(path),
+            $"Copied payment-processing example fixture was not found: {path}");
         var document = JObject.Parse(File.ReadAllText(path));
         var paymentProcessing = document.SelectToken(
                 "pools[0].paymentProcessing")?
@@ -181,6 +183,31 @@ public class PaymentProcessingExtraDiagnosticsTests
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(firstSecret, message, StringComparison.Ordinal);
         Assert.DoesNotContain(secondSecret, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MistypedCredential_WarnsWithSafeRuntimeFieldHint()
+    {
+        const string mistypedName = "walletPrivatekeyTypo";
+        const string secretValue = "mistyped-runtime-secret";
+        var pool = Pool("runtime-typo", CoinFamily.Warthog,
+            new Dictionary<string, object>
+            {
+                [mistypedName] = secretValue,
+            });
+        using var capture = new LogCapture();
+
+        PaymentProcessingExtraDiagnostics.Log(new[] { pool }, capture.Logger);
+        capture.Flush();
+
+        var message = Assert.Single(capture.Messages);
+        Assert.Contains(PaymentProcessingExtraSensitivityPolicy.
+            RedactedDiagnosticKey, message, StringComparison.Ordinal);
+        Assert.Contains("recognised private field(s): 'walletPrivateKey'",
+            message, StringComparison.Ordinal);
+        Assert.DoesNotContain(mistypedName, message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(secretValue, message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -344,11 +371,11 @@ public class PaymentProcessingExtraDiagnosticsTests
         Assert.EndsWith("…", ordinary, StringComparison.Ordinal);
         Assert.True(ordinary.Length <=
             PaymentProcessingExtraSensitivityPolicy.
-                MaximumDiagnosticKeyCharacters);
+                MaximumDiagnosticLabelCharacters);
         Assert.False(escapeHeavyRedacted);
         Assert.True(escapeHeavy.Length <=
             PaymentProcessingExtraSensitivityPolicy.
-                MaximumDiagnosticKeyCharacters);
+                MaximumDiagnosticLabelCharacters);
         Assert.Contains("\\u000A", escapeHeavy, StringComparison.Ordinal);
         Assert.DoesNotContain("\n", escapeHeavy, StringComparison.Ordinal);
         Assert.False(escapedRedacted);
@@ -390,20 +417,6 @@ public class PaymentProcessingExtraDiagnosticsTests
                 Extra = extra,
             },
         };
-
-    private static string FindRepositoryFile(string relativePath)
-    {
-        for(var directory = new DirectoryInfo(AppContext.BaseDirectory);
-            directory != null; directory = directory.Parent)
-        {
-            var candidate = Path.Combine(directory.FullName, relativePath);
-            if(File.Exists(candidate))
-                return candidate;
-        }
-
-        throw new FileNotFoundException(
-            $"Unable to locate repository fixture '{relativePath}'");
-    }
 
     private static CoinTemplate Template(CoinFamily family) =>
         new AlephiumCoinTemplate

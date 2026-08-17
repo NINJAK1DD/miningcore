@@ -185,10 +185,11 @@ wallet credentials are intentionally absent from the public response and do not 
 An unrecognised or malformed public entry produces a warning that identifies the pool, a safe key
 label and one of four reasons: unknown key, ambiguous case variant, unsupported public scalar or
 conversion failure. Miningcore logs no extension values. A key whose name looks
-credential-sensitive is shown only as `<redacted-sensitive-key>`, and unsafe characters in other
-key names are escaped within a fixed output-length bound. Each pool emits at most ten key-level
-warnings followed by one reason-grouped count for any remainder. Requests to `/api/pools` and
-`/api/pools/{id}` do not emit these warnings again.
+credential-sensitive is shown only as `<redacted-sensitive-key>`; an unknown-key warning can list
+the family's recognised private field names as safe spelling hints without echoing the supplied
+name. Unsafe characters in other key names are escaped within a fixed output-length bound. Each
+pool emits at most ten key-level warnings followed by one reason-grouped count for any remainder.
+Requests to `/api/pools` and `/api/pools/{id}` do not emit these warnings again.
 
 Public API omission does not by itself prove that Miningcore ignored the runtime setting. Unknown
 or private entries remain in the pool's runtime extension dictionary and are active only when the

@@ -50,6 +50,44 @@ public class SerializationExtensionsTests : TestBase
         public int Baz { get; set; }
     }
 
+    class Aliased
+    {
+        [JsonProperty("api_key")]
+        public string ApiKey { get; set; }
+
+        [JsonIgnore]
+        public string Ignored { get; set; }
+
+        public string ReadOnly => "not-bindable";
+    }
+
+    [Fact]
+    public void ExtensionDataContract_UsesTheRuntimeBinderNames()
+    {
+        var properties = SerializationExtensions.
+            GetExtensionDataPropertyContracts(typeof(Aliased));
+        var property = Assert.Single(properties);
+
+        Assert.Equal(nameof(Aliased.ApiKey), property.ClrName);
+        Assert.Equal("api_key", property.JsonName);
+
+        var bound = new Dictionary<string, object>
+        {
+            ["api_key"] = "accepted-alias",
+        }.SafeExtensionDataAs<Aliased>();
+
+        Assert.NotNull(bound);
+        Assert.Equal("accepted-alias", bound.ApiKey);
+
+        var unaliased = new Dictionary<string, object>
+        {
+            [nameof(Aliased.ApiKey)] = "clr-name-is-not-the-contract-name",
+        }.SafeExtensionDataAs<Aliased>();
+
+        Assert.NotNull(unaliased);
+        Assert.Null(unaliased.ApiKey);
+    }
+
     [Fact]
     public void SafeExtensionData_Wrapped()
     {
