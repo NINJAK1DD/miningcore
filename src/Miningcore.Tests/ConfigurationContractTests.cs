@@ -149,11 +149,11 @@ public class ConfigurationContractTests
         var pool = internalPools[0];
 
         Assert.NotNull(pool.Ports);
-        Assert.True(pool.Ports.Any(x => x.Value != null),
+        var endpoint = pool.Ports.FirstOrDefault(x => x.Value != null);
+
+        Assert.True(endpoint.Value != null,
             $"The diagnostic fixture requires pool '{pool.Id}' to expose " +
             "at least one non-null Stratum endpoint.");
-
-        var endpoint = pool.Ports.First(x => x.Value != null);
 
         pool.EnableInternalStratum = null;
         endpoint.Value.ListenAddress = "stratum.example.com";
