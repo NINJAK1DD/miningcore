@@ -27,13 +27,6 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class PoolApiControllerTests
 {
-    // A sensitive-looking payment setting that is intentionally public belongs
-    // here by fully-qualified member name. Keeping this separate from the
-    // credential inventory makes a future TokenId-style false positive an
-    // explicit reviewed decision instead of encouraging weakened detection.
-    private static readonly HashSet<string>
-        KnownBenignSensitivePaymentPropertyNames = new(StringComparer.Ordinal);
-
     private static readonly PaymentExtraContract[] PaymentExtraContracts =
     {
         Contract(CoinFamily.Alephium,
@@ -409,12 +402,14 @@ public class PoolApiControllerTests
 
         var sensitiveMembers = discoveredTypes
             .SelectMany(type => type.GetProperties()
-                .Where(property => IsSensitivePropertyName(property.Name))
+                .Where(property => PaymentProcessingExtraSensitivityPolicy.
+                    IsSensitivePropertyName(property.Name))
                 .Select(property => $"{type.FullName}.{property.Name}"))
             .OrderBy(value => value)
             .ToArray();
         var unreviewedSensitiveMembers = sensitiveMembers
-            .Except(KnownBenignSensitivePaymentPropertyNames,
+            .Except(PaymentProcessingExtraSensitivityPolicy.
+                KnownBenignSensitivePaymentProperties,
                 StringComparer.Ordinal)
             .ToArray();
         var classifiedSensitiveMembers = PaymentExtraContracts
@@ -422,14 +417,16 @@ public class PoolApiControllerTests
             .SelectMany(contract => contract.SensitiveProperties.Select(
                 property => $"{contract.RuntimeType.FullName}.{property}"))
             .Distinct(StringComparer.Ordinal)
-            .Except(KnownBenignSensitivePaymentPropertyNames,
+            .Except(PaymentProcessingExtraSensitivityPolicy.
+                KnownBenignSensitivePaymentProperties,
                 StringComparer.Ordinal)
             .OrderBy(value => value)
             .ToArray();
 
         Assert.Equal(unreviewedSensitiveMembers,
             classifiedSensitiveMembers);
-        Assert.All(KnownBenignSensitivePaymentPropertyNames,
+        Assert.All(PaymentProcessingExtraSensitivityPolicy.
+                KnownBenignSensitivePaymentProperties,
             member => Assert.Contains(member, sensitiveMembers));
     }
 
@@ -1336,17 +1333,6 @@ public class PoolApiControllerTests
         null => JValue.CreateNull(),
         _ => JToken.FromObject(value),
     };
-
-    private static bool IsSensitivePropertyName(string name) =>
-        name.Contains("Password", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("PrivateKey", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Passphrase", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Mnemonic", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Seed", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Credential", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Secret", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Token", StringComparison.OrdinalIgnoreCase) ||
-        name.EndsWith("Key", StringComparison.OrdinalIgnoreCase);
 
     // This inventory deliberately uses broader naming heuristics than the
     // current *PaymentProcessingConfigExtra convention. A newly introduced
