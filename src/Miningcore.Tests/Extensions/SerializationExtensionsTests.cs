@@ -88,6 +88,44 @@ public class SerializationExtensionsTests : TestBase
         public string Second { get; set; }
     }
 
+    class DuplicateAliasContract
+    {
+        [JsonProperty("duplicate")]
+        public string First { get; set; }
+
+        [JsonProperty("duplicate")]
+        public string Second { get; set; }
+    }
+
+    class ConstructorBoundContract
+    {
+        [JsonConstructor]
+        public ConstructorBoundContract(string walletPassword)
+        {
+            WalletPassword = walletPassword;
+        }
+
+        public string WalletPassword { get; }
+    }
+
+    class PropertyConvertedContract
+    {
+        [JsonConverter(typeof(UnsupportedContractConverter))]
+        public string Value { get; set; }
+    }
+
+    [JsonObject(MemberSerialization.Fields)]
+    class FieldSerializedContract
+    {
+        public string Value = string.Empty;
+    }
+
+    class GetterOnlyArrayContract
+    {
+        public int[] Values { get; } = Array.Empty<int>();
+        public string Writable { get; set; }
+    }
+
     [Fact]
     public void ExtensionDataContract_UsesTheRuntimeBinderNames()
     {
@@ -118,12 +156,11 @@ public class SerializationExtensionsTests : TestBase
     [Fact]
     public void ExtensionDataContract_RejectsNonObjectContractsStrictly()
     {
-        var exception = Assert.Throws<ArgumentException>(() =>
+        var exception = Assert.Throws<InvalidOperationException>(() =>
             SerializationExtensions.GetExtensionDataPropertyContracts(
                 typeof(string)));
 
-        Assert.Equal("type", exception.ParamName);
-        Assert.Contains("does not use a JSON object contract",
+        Assert.Contains("non-object JSON contract",
             exception.Message, StringComparison.Ordinal);
     }
 
@@ -134,6 +171,12 @@ public class SerializationExtensionsTests : TestBase
         "getter-only collection property")]
     [InlineData(typeof(CollidingAliasContract),
         "case-insensitive JSON property collision")]
+    [InlineData(typeof(ConstructorBoundContract),
+        "constructor-based JSON deserialization")]
+    [InlineData(typeof(PropertyConvertedContract),
+        "property-level JSON converter")]
+    [InlineData(typeof(FieldSerializedContract),
+        "field-based JSON member serialization")]
     public void ExtensionDataContract_RejectsUnsupportedAdvancedContracts(
         Type type, string expectedMessage)
     {
@@ -142,6 +185,31 @@ public class SerializationExtensionsTests : TestBase
 
         Assert.Contains(expectedMessage, exception.Message,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExtensionDataContract_WrapsResolverFailuresWithTypeContext()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SerializationExtensions.GetExtensionDataPropertyContracts(
+                typeof(DuplicateAliasContract)));
+
+        Assert.Contains(typeof(DuplicateAliasContract).FullName,
+            exception.Message, StringComparison.Ordinal);
+        Assert.Contains("unambiguous JSON contract", exception.Message,
+            StringComparison.Ordinal);
+        Assert.IsType<JsonSerializationException>(exception.InnerException);
+    }
+
+    [Fact]
+    public void ExtensionDataContract_DoesNotRejectGetterOnlyArrays()
+    {
+        var property = Assert.Single(SerializationExtensions.
+            GetExtensionDataPropertyContracts(
+                typeof(GetterOnlyArrayContract)));
+
+        Assert.Equal(nameof(GetterOnlyArrayContract.Writable),
+            property.ClrName);
     }
 
     class UnsupportedContractConverter : JsonConverter

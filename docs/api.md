@@ -191,7 +191,9 @@ name. Unsafe characters in other key names are escaped within a fixed output-len
 pool emits at most ten key-level warnings followed by one reason-grouped count for any remainder.
 Requests to `/api/pools` and `/api/pools/{id}` do not emit these warnings again.
 The warnings use the `PaymentExtraDiagnostics` NLog category so operators can route or filter them
-without suppressing unrelated `Core` startup warnings.
+without suppressing unrelated `Core` startup warnings. The standard console and main-file rules
+include this category. Per-pool files remain limited to their pool-id logger, so use the main log
+when investigating these startup diagnostics.
 
 Public API omission does not by itself prove that Miningcore ignored the runtime setting. Unknown
 or private entries remain in the pool's runtime extension dictionary and are active only when the

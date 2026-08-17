@@ -1704,6 +1704,16 @@ public class Program : ProcessStatusBackgroundService
         // accepted import configuration or constructs it outside the JSON sanitization path.
         var config = clusterConfig.Logging ??
             (isShareRecoveryMode ? new ClusterLoggingConfig() : null);
+        LogManager.Configuration = CreateLoggingConfiguration(config,
+            isShareRecoveryMode, clusterConfig.Pools);
+
+        logger = LogManager.GetLogger("Core");
+    }
+
+    internal static LoggingConfiguration CreateLoggingConfiguration(
+        ClusterLoggingConfig config, bool recoveryMode,
+        IEnumerable<PoolConfig> pools)
+    {
         var loggingConfig = new LoggingConfiguration();
 
         if(config != null)
@@ -1726,7 +1736,7 @@ public class Program : ProcessStatusBackgroundService
             loggingConfig.AddRule(level, NLog.LogLevel.Fatal, nullTarget, "Microsoft.Extensions.Hosting.Internal.*", true);
 
             // Api Log
-            if(!string.IsNullOrEmpty(config.ApiLogFile) && !isShareRecoveryMode)
+            if(!string.IsNullOrEmpty(config.ApiLogFile) && !recoveryMode)
             {
                 var target = CreateFileTarget("api-file", GetLogPath(config, config.ApiLogFile), layout);
 
@@ -1734,7 +1744,7 @@ public class Program : ProcessStatusBackgroundService
                 loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target, "Microsoft.AspNetCore.*", true);
             }
 
-            if(config.EnableConsoleLog || isShareRecoveryMode)
+            if(config.EnableConsoleLog || recoveryMode)
             {
                 if(config.EnableConsoleColors)
                 {
@@ -1768,6 +1778,8 @@ public class Program : ProcessStatusBackgroundService
                     ConsoleOutputColor.DarkRed, ConsoleOutputColor.White));
 
                     loggingConfig.AddTarget(target);
+                    // This wildcard route must continue to include dedicated
+                    // startup categories such as PaymentExtraDiagnostics.
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
                 }
 
@@ -1779,21 +1791,25 @@ public class Program : ProcessStatusBackgroundService
                     };
 
                     loggingConfig.AddTarget(target);
+                    // This wildcard route must continue to include dedicated
+                    // startup categories such as PaymentExtraDiagnostics.
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
                 }
             }
 
-            if(!string.IsNullOrEmpty(config.LogFile) && !isShareRecoveryMode)
+            if(!string.IsNullOrEmpty(config.LogFile) && !recoveryMode)
             {
                 var target = CreateFileTarget("main-file", GetLogPath(config, config.LogFile), layout);
 
                 loggingConfig.AddTarget(target);
+                // This wildcard route must continue to include dedicated
+                // startup categories such as PaymentExtraDiagnostics.
                 loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
             }
 
-            if(config.PerPoolLogFile && !isShareRecoveryMode)
+            if(config.PerPoolLogFile && !recoveryMode)
             {
-                foreach(var poolConfig in clusterConfig.Pools)
+                foreach(var poolConfig in pools ?? Array.Empty<PoolConfig>())
                 {
                     var target = CreateFileTarget($"pool-{poolConfig.Id}-file",
                         GetLogPath(config, poolConfig.Id + ".log"), layout);
@@ -1804,9 +1820,7 @@ public class Program : ProcessStatusBackgroundService
             }
         }
 
-        LogManager.Configuration = loggingConfig;
-
-        logger = LogManager.GetLogger("Core");
+        return loggingConfig;
     }
 
     internal static FileTarget CreateFileTarget(string targetName, Layout fileName, string layout)

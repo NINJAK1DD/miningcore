@@ -42,9 +42,8 @@ public static class SerializationExtensions
 
         if(resolvedContract is not JsonObjectContract contract)
         {
-            throw new ArgumentException(
-                $"Type '{type.FullName}' does not use a JSON object contract",
-                nameof(type));
+            throw UnsupportedExtensionDataContract(type,
+                "a non-object JSON contract");
         }
 
         ValidateExtensionDataContract(type, contract);
@@ -75,9 +74,30 @@ public static class SerializationExtensions
                 "JSON extension-data capture");
         }
 
+        if(contract.CreatorParameters.Count != 0)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                "constructor-based JSON deserialization");
+        }
+
+        if(contract.MemberSerialization == MemberSerialization.Fields)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                "field-based JSON member serialization");
+        }
+
         var activeProperties = contract.Properties
             .Where(property => !property.Ignored)
             .ToArray();
+        var convertedProperty = activeProperties.FirstOrDefault(property =>
+            property.Converter != null || property.ItemConverter != null);
+        if(convertedProperty != null)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                $"property-level JSON converter on " +
+                $"'{convertedProperty.PropertyName}'");
+        }
+
         var populatedGetter = activeProperties.FirstOrDefault(property =>
             property.Readable && !property.Writable &&
             IsPotentiallyPopulatedCollection(property.PropertyType));
@@ -103,7 +123,7 @@ public static class SerializationExtensions
     }
 
     private static bool IsPotentiallyPopulatedCollection(Type type) =>
-        type != null && type != typeof(string) &&
+        type != null && type != typeof(string) && !type.IsArray &&
         typeof(System.Collections.IEnumerable).IsAssignableFrom(type);
 
     private static InvalidOperationException UnsupportedExtensionDataContract(

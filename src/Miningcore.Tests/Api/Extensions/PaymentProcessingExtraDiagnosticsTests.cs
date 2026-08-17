@@ -63,6 +63,31 @@ public class PaymentProcessingExtraDiagnosticsTests
         Assert.NotEqual("Core", logger.Name);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LoggerCategory_IsRoutedToConsoleAndMainLog(
+        bool enableConsoleColors)
+    {
+        var loggingConfig = Program.CreateLoggingConfiguration(
+            new ClusterLoggingConfig
+            {
+                Level = "Info",
+                EnableConsoleLog = true,
+                EnableConsoleColors = enableConsoleColors,
+                LogFile = "main.log",
+            }, false, Array.Empty<PoolConfig>());
+
+        foreach(var targetName in new[] { "console", "main-file" })
+        {
+            var rule = Assert.Single(loggingConfig.LoggingRules.Where(x =>
+                x.Targets.Any(target => target.Name == targetName)));
+
+            Assert.Equal("*", rule.LoggerNamePattern);
+            Assert.True(rule.IsLoggingEnabledForLevel(LogLevel.Warn));
+        }
+    }
+
     [Fact]
     public void Analyze_DistinguishesOmissionsAndSanitizesDiagnosticKeys()
     {

@@ -422,7 +422,8 @@ bound and emit at most ten key warnings per pool plus one reason-grouped remaind
 redacted unknown-key warning can list the family's recognised private field names as safe spelling
 hints without echoing the supplied name. Disabled pools, share recovery and API requests do not emit
 these warnings. They use the dedicated `PaymentExtraDiagnostics` NLog category for independent
-routing or filtering. A private entry can still be active runtime configuration when the coin
+routing or filtering through the standard console and main log. Per-pool files remain limited to
+their pool-id logger. A private entry can still be active runtime configuration when the coin
 family's binder accepts it; operators should correct or remove a warning-producing setting only
 after checking that family-specific contract.
 
