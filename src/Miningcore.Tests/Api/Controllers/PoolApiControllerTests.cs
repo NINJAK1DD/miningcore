@@ -831,6 +831,30 @@ public class PoolApiControllerTests
     }
 
     [Fact]
+    public void PaymentExtraRegistration_ExplainsPreParsedDateTokens()
+    {
+        const string configuredName = "walletName";
+        var extra = new ApiPoolPaymentProcessingExtra();
+        var date = new JValue(new DateTime(2026, 8, 16, 15, 30, 0,
+            DateTimeKind.Utc));
+
+        Assert.Equal(JTokenType.Date, date.Type);
+
+        var error = Assert.Throws<ArgumentException>(() =>
+            extra.SetWalletName(configuredName, "unreachable", date));
+
+        Assert.Equal("wireValue", error.ParamName);
+        Assert.Contains("Payment property 'walletName' was parsed as a Date",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("DateParseHandling.None", error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("cannot be recovered", error.Message,
+            StringComparison.Ordinal);
+        Assert.Null(extra.WalletName);
+        Assert.Empty(extra.PresentProperties);
+    }
+
+    [Fact]
     public void PaymentExtraSystemTextJsonWriter_UsesConfiguredEncoderForStrings()
     {
         const string configuredValue = "</script>&é+'";

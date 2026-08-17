@@ -49,6 +49,12 @@ public sealed class ApiPoolPaymentProcessingExtra
             JTokenType.Integer or JTokenType.Float or JTokenType.String or
             JTokenType.Null);
 
+    internal static string GetPreParsedDateError(string name) =>
+        $"Payment property '{name}' was parsed as a Date before reaching " +
+        "the public DTO. Deserialize from JSON text or materialize the " +
+        "token with DateParseHandling.None; the original date-looking " +
+        "string cannot be recovered.";
+
     internal void SetWalletName(string name, string value, JToken wireValue)
     {
         Register(ApiPoolPaymentProcessingExtraField.WalletName, name,
@@ -198,6 +204,12 @@ public sealed class ApiPoolPaymentProcessingExtra
         // Configuration and DTO readers preserve JSON strings without
         // manufacturing Date tokens. Objects, arrays, Date values and other
         // non-JSON scalar tokens are never retained behind an approved name.
+        if(wireValue?.Type == JTokenType.Date)
+        {
+            throw new ArgumentException(GetPreParsedDateError(name),
+                nameof(wireValue));
+        }
+
         if(!IsSupportedWireValue(wireValue))
         {
             throw new ArgumentException(
@@ -532,10 +544,8 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
                 // recoverable. Reject it rather than silently fabricating a
                 // different public value.
                 throw new Newtonsoft.Json.JsonSerializationException(
-                    $"Payment property '{property.Name}' was parsed as a Date " +
-                    "before DTO deserialization. Deserialize from JSON text " +
-                    "or materialize the token with DateParseHandling.None; " +
-                    "the original date-looking string cannot be recovered.");
+                    ApiPoolPaymentProcessingExtra.GetPreParsedDateError(
+                        property.Name));
             }
 
             if(result.IsPresent(field))
