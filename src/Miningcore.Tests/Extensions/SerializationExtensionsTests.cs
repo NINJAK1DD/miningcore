@@ -62,6 +62,32 @@ public class SerializationExtensionsTests : TestBase
         public string ReadOnly => "not-bindable";
     }
 
+    [JsonConverter(typeof(UnsupportedContractConverter))]
+    class ConvertedContract
+    {
+        public string Value { get; set; }
+    }
+
+    class ExtensionDataContract
+    {
+        [JsonExtensionData]
+        public IDictionary<string, object> Extra { get; set; }
+    }
+
+    class PopulatedGetterContract
+    {
+        public IList<string> Values { get; } = new List<string>();
+    }
+
+    class CollidingAliasContract
+    {
+        [JsonProperty("api_key")]
+        public string First { get; set; }
+
+        [JsonProperty("API_KEY")]
+        public string Second { get; set; }
+    }
+
     [Fact]
     public void ExtensionDataContract_UsesTheRuntimeBinderNames()
     {
@@ -99,6 +125,35 @@ public class SerializationExtensionsTests : TestBase
         Assert.Equal("type", exception.ParamName);
         Assert.Contains("does not use a JSON object contract",
             exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(typeof(ConvertedContract), "type-level JSON converter")]
+    [InlineData(typeof(ExtensionDataContract), "extension-data capture")]
+    [InlineData(typeof(PopulatedGetterContract),
+        "getter-only collection property")]
+    [InlineData(typeof(CollidingAliasContract),
+        "case-insensitive JSON property collision")]
+    public void ExtensionDataContract_RejectsUnsupportedAdvancedContracts(
+        Type type, string expectedMessage)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            SerializationExtensions.GetExtensionDataPropertyContracts(type));
+
+        Assert.Contains(expectedMessage, exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    class UnsupportedContractConverter : JsonConverter
+    {
+        public override bool CanConvert(Type objectType) => true;
+
+        public override object ReadJson(JsonReader reader, Type objectType,
+            object existingValue, JsonSerializer serializer) =>
+            throw new NotSupportedException();
+
+        public override void WriteJson(JsonWriter writer, object value,
+            JsonSerializer serializer) => throw new NotSupportedException();
     }
 
     [Fact]

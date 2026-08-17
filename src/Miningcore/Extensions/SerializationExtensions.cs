@@ -25,13 +25,29 @@ public static class SerializationExtensions
         // optional extension must not fail a payout. Contract discovery is
         // strict because callers use it to define the public/private response
         // boundary and must never silently classify a non-object contract.
-        if(extensionDataContractResolver.ResolveContract(type) is not
-           JsonObjectContract contract)
+        JsonContract resolvedContract;
+
+        try
+        {
+            resolvedContract = extensionDataContractResolver.ResolveContract(
+                type);
+        }
+        catch(JsonSerializationException ex)
+        {
+            throw new InvalidOperationException(
+                $"Type '{type.FullName}' does not expose an unambiguous " +
+                "JSON contract supported by payment extension discovery",
+                ex);
+        }
+
+        if(resolvedContract is not JsonObjectContract contract)
         {
             throw new ArgumentException(
                 $"Type '{type.FullName}' does not use a JSON object contract",
                 nameof(type));
         }
+
+        ValidateExtensionDataContract(type, contract);
 
         return contract.Properties
             .Where(property => !property.Ignored && property.Writable &&
@@ -42,6 +58,58 @@ public static class SerializationExtensions
             .OrderBy(property => property.JsonName, StringComparer.Ordinal)
             .ToArray();
     }
+
+    private static void ValidateExtensionDataContract(Type type,
+        JsonObjectContract contract)
+    {
+        if(contract.Converter != null)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                "a type-level JSON converter");
+        }
+
+        if(contract.ExtensionDataGetter != null ||
+           contract.ExtensionDataSetter != null)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                "JSON extension-data capture");
+        }
+
+        var activeProperties = contract.Properties
+            .Where(property => !property.Ignored)
+            .ToArray();
+        var populatedGetter = activeProperties.FirstOrDefault(property =>
+            property.Readable && !property.Writable &&
+            IsPotentiallyPopulatedCollection(property.PropertyType));
+        if(populatedGetter != null)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                $"getter-only collection property " +
+                $"'{populatedGetter.PropertyName}'");
+        }
+
+        var collision = activeProperties
+            .Where(property => property.Writable &&
+                !string.IsNullOrEmpty(property.PropertyName))
+            .GroupBy(property => property.PropertyName,
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if(collision != null)
+        {
+            throw UnsupportedExtensionDataContract(type,
+                $"case-insensitive JSON property collision " +
+                $"'{collision.Key}'");
+        }
+    }
+
+    private static bool IsPotentiallyPopulatedCollection(Type type) =>
+        type != null && type != typeof(string) &&
+        typeof(System.Collections.IEnumerable).IsAssignableFrom(type);
+
+    private static InvalidOperationException UnsupportedExtensionDataContract(
+        Type type, string feature) => new(
+        $"Type '{type.FullName}' uses {feature}, which payment extension " +
+        "contract discovery does not support");
 
     public static T SafeExtensionDataAs<T>(this IDictionary<string, object> extra, params string[] wrappers)
     {

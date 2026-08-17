@@ -523,7 +523,8 @@ public class Program : ProcessStatusBackgroundService
         await Guard(async () =>
         {
             AssignPoolTemplatesAndLogPaymentExtraOmissions(enabledPools,
-                coinTemplates, logger);
+                coinTemplates, PaymentProcessingExtraDiagnostics.
+                    CreateLogger());
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(

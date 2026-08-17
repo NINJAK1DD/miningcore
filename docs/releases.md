@@ -421,9 +421,10 @@ never log values, replace every sensitive-looking omitted key name with
 bound and emit at most ten key warnings per pool plus one reason-grouped remainder summary. A
 redacted unknown-key warning can list the family's recognised private field names as safe spelling
 hints without echoing the supplied name. Disabled pools, share recovery and API requests do not emit
-these warnings. A private entry can still be active runtime configuration when the coin family's
-binder accepts it; operators should correct or remove a warning-producing setting only after
-checking that family-specific contract.
+these warnings. They use the dedicated `PaymentExtraDiagnostics` NLog category for independent
+routing or filtering. A private entry can still be active runtime configuration when the coin
+family's binder accepts it; operators should correct or remove a warning-producing setting only
+after checking that family-specific contract.
 
 Cluster and coin-template configuration loading no longer allows Json.NET to interpret full
 ISO-looking date-time strings as dates. UTC, offset and unsuffixed date-time values now survive

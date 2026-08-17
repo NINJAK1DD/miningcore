@@ -54,6 +54,16 @@ public class PaymentProcessingExtraDiagnosticsTests
     }
 
     [Fact]
+    public void LoggerCategory_IsDedicatedAndStable()
+    {
+        var logger = PaymentProcessingExtraDiagnostics.CreateLogger();
+
+        Assert.Equal(PaymentProcessingExtraDiagnostics.LoggerName,
+            logger.Name);
+        Assert.NotEqual("Core", logger.Name);
+    }
+
+    [Fact]
     public void Analyze_DistinguishesOmissionsAndSanitizesDiagnosticKeys()
     {
         const string secretValue = "never-log-this-value";

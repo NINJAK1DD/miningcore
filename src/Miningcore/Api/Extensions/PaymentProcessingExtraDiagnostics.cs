@@ -6,8 +6,11 @@ namespace Miningcore.Api.Extensions;
 
 internal static class PaymentProcessingExtraDiagnostics
 {
+    internal const string LoggerName = "PaymentExtraDiagnostics";
     internal const int MaximumKeyDiagnosticsPerPool = 10;
     private const int MaximumRuntimeFieldHints = 5;
+
+    internal static Logger CreateLogger() => LogManager.GetLogger(LoggerName);
 
     internal static void Log(IEnumerable<PoolConfig> pools, ILogger logger)
     {
