@@ -627,6 +627,9 @@ public class PoolApiControllerTests
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletAccount", new JValue("2025-01-01T00:00:00"),
                 "2025-01-01T00:00:00"),
+            new CoerciblePaymentExtraCase(CoinFamily.Handshake,
+                "walletName", new JValue("2026-08-16T15:30:00+01:00"),
+                "2026-08-16T15:30:00+01:00"),
         };
 
         foreach(var testCase in cases)
@@ -650,11 +653,7 @@ public class PoolApiControllerTests
         config.PaymentProcessing = Newtonsoft.Json.JsonConvert.
             DeserializeObject<PoolPaymentProcessingConfig>(
                 runtimeJson.ToString(Newtonsoft.Json.Formatting.None),
-                new Newtonsoft.Json.JsonSerializerSettings
-                {
-                    DateParseHandling =
-                        Newtonsoft.Json.DateParseHandling.None,
-                });
+                ConfigurationJson.CreateSerializerSettings());
 
         var sourceValue = config.PaymentProcessing.Extra[testCase.Name];
         Assert.False(sourceValue is JToken);
@@ -673,18 +672,8 @@ public class PoolApiControllerTests
         var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
-        object actualClrValue = testCase.Name switch
-        {
-            "gas" => result.PaymentProcessing.Extra.Gas,
-            "keepUncles" => result.PaymentProcessing.Extra.KeepUncles,
-            "walletName" => result.PaymentProcessing.Extra.WalletName,
-            "walletAccount" => result.PaymentProcessing.Extra.WalletAccount,
-            "minimumConfirmations" => result.PaymentProcessing.Extra.
-                MinimumConfirmations,
-            "versionEnablingMaxFee" => result.PaymentProcessing.Extra.
-                VersionEnablingMaxFee,
-            _ => throw new ArgumentOutOfRangeException(nameof(testCase)),
-        };
+        var actualClrValue = GetPaymentExtraClrValue(
+            result.PaymentProcessing.Extra, testCase.Name);
 
         Assert.Equal(testCase.ExpectedClrValue, actualClrValue);
 
@@ -699,6 +688,11 @@ public class PoolApiControllerTests
             result.PaymentProcessing.Extra);
         var newtonsoftRoundTrip = Newtonsoft.Json.JsonConvert.
             DeserializeObject<ApiPoolPaymentProcessingExtra>(newtonsoftJson);
+
+        Assert.Equal(testCase.ExpectedClrValue, GetPaymentExtraClrValue(
+            systemTextRoundTrip, testCase.Name));
+        Assert.Equal(testCase.ExpectedClrValue, GetPaymentExtraClrValue(
+            newtonsoftRoundTrip, testCase.Name));
 
         foreach(var json in new[]
                 {
@@ -786,19 +780,30 @@ public class PoolApiControllerTests
                 ["BlockSearchOffset"] = new JArray(1, 2),
                 ["KeepUncles"] = true,
             };
+        var dateConfig = CreateMinimalPoolConfig(CoinFamily.Handshake);
+        dateConfig.PaymentProcessing.Extra = new Dictionary<string, object>
+        {
+            ["WalletName"] = new DateTime(2026, 8, 16, 15, 30, 0,
+                DateTimeKind.Utc),
+        };
         var mapper = AutoMapperFactory.CreateMapper();
 
         var duplicate = duplicateConfig.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
         var malformed = malformedConfig.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
+        var date = dateConfig.ToPoolInfo(mapper,
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
         var options = CreateApiJsonOptions(false);
         var duplicateExtra = JsonSerializer.SerializeToElement(
             duplicate.PaymentProcessing.Extra, options);
         var malformedExtra = JsonSerializer.SerializeToElement(
             malformed.PaymentProcessing.Extra, options);
+        var dateExtra = JsonSerializer.SerializeToElement(
+            date.PaymentProcessing.Extra, options);
 
         Assert.Empty(duplicateExtra.EnumerateObject());
+        Assert.Empty(dateExtra.EnumerateObject());
         Assert.Equal(new[] { "KeepUncles" }, malformedExtra
             .EnumerateObject().Select(property => property.Name).ToArray());
         Assert.True(malformedExtra.GetProperty("KeepUncles").GetBoolean());
@@ -862,6 +867,28 @@ public class PoolApiControllerTests
         Assert.Throws<Newtonsoft.Json.JsonSerializationException>(() =>
             Newtonsoft.Json.JsonConvert.DeserializeObject<
                 ApiPoolPaymentProcessingExtra>(malformed));
+    }
+
+    [Fact]
+    public void PaymentExtraNewtonsoftReader_RestoresCallerDatePolicy()
+    {
+        const string configuredValue = "2026-08-16T15:30:00Z";
+        var json = $$"""
+            {
+                "extra": {
+                    "walletName": "{{configuredValue}}"
+                },
+                "following": "{{configuredValue}}"
+            }
+            """;
+
+        var result = Newtonsoft.Json.JsonConvert.DeserializeObject<
+            PaymentExtraNewtonsoftEnvelope>(json);
+
+        Assert.Equal(configuredValue, result.Extra.WalletName);
+        Assert.Equal(JTokenType.String, Assert.Single(
+            result.Extra.PresentProperties).Value.WireValue.Type);
+        Assert.Equal(JTokenType.Date, result.Following.Type);
     }
 
     [Fact]
@@ -1287,6 +1314,24 @@ public class PoolApiControllerTests
 
     public sealed record CoerciblePaymentExtraCase(CoinFamily Family,
         string Name, JValue WireValue, object ExpectedClrValue);
+
+    public sealed class PaymentExtraNewtonsoftEnvelope
+    {
+        public ApiPoolPaymentProcessingExtra Extra { get; set; }
+        public JToken Following { get; set; }
+    }
+
+    private static object GetPaymentExtraClrValue(
+        ApiPoolPaymentProcessingExtra extra, string name) => name switch
+        {
+            "gas" => extra.Gas,
+            "keepUncles" => extra.KeepUncles,
+            "walletName" => extra.WalletName,
+            "walletAccount" => extra.WalletAccount,
+            "minimumConfirmations" => extra.MinimumConfirmations,
+            "versionEnablingMaxFee" => extra.VersionEnablingMaxFee,
+            _ => throw new ArgumentOutOfRangeException(nameof(name)),
+        };
 
     public enum PaymentExtraSourceKind
     {

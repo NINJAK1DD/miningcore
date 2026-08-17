@@ -7,7 +7,6 @@ using Miningcore.Blockchain.Handshake.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Mining;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 using Xunit.Sdk;
@@ -152,6 +151,8 @@ public class ConfigurationContractTests
         var poolDocument = (JObject)((JArray) document["pools"])[0];
         var paymentDocument = (JObject) poolDocument["paymentProcessing"];
         paymentDocument["walletName"] = configuredValue;
+        poolDocument["coin"] = configuredValue;
+        document["coinTemplates"] = new JArray(configuredValue);
         var configFile = WriteTemporaryConfig(document);
 
         try
@@ -160,6 +161,8 @@ public class ConfigurationContractTests
             var pool = config.Pools[0];
             var sourceValue = pool.PaymentProcessing.Extra["walletName"];
 
+            Assert.Equal(configuredValue, pool.Coin);
+            Assert.Equal(configuredValue, Assert.Single(config.CoinTemplates));
             Assert.Equal(configuredValue, Assert.IsType<string>(sourceValue));
             Assert.Equal(configuredValue,
                 pool.PaymentProcessing.Extra.SafeExtensionDataAs<
@@ -251,10 +254,7 @@ public class ConfigurationContractTests
         var path = Path.Combine(AppContext.BaseDirectory,
             "config.example.json");
         using var stream = File.OpenText(path);
-        using var reader = new JsonTextReader(stream)
-        {
-            DateParseHandling = DateParseHandling.None,
-        };
+        using var reader = ConfigurationJson.CreateReader(stream);
 
         return JObject.Load(reader, new JsonLoadSettings
         {
@@ -266,10 +266,7 @@ public class ConfigurationContractTests
     private static JObject ParseConfigurationDocument(string json)
     {
         using var stream = new StringReader(json);
-        using var reader = new JsonTextReader(stream)
-        {
-            DateParseHandling = DateParseHandling.None,
-        };
+        using var reader = ConfigurationJson.CreateReader(stream);
 
         return JObject.Load(reader);
     }

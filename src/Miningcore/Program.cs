@@ -1322,23 +1322,14 @@ public class Program : ProcessStatusBackgroundService
                     "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");
 
-            var serializer = JsonSerializer.Create(new JsonSerializerSettings
-            {
-                ContractResolver = new CamelCasePropertyNamesContractResolver(),
-                // Configuration extension data frequently carries identifiers and version
-                // switches whose spelling happens to resemble an ISO date. Preserve the JSON
-                // string token exactly instead of allowing Json.NET to coerce it to DateTime.
-                DateParseHandling = DateParseHandling.None,
-            });
+            var serializer = JsonSerializer.Create(
+                ConfigurationJson.CreateSerializerSettings());
 
             using(var reader = new StreamReader(file, Encoding.UTF8))
             {
-                using(var jsonReader = new JsonTextReader(reader)
-                {
-                    // This reader materializes the JObject before schema validation and CLR
-                    // binding, so it is the authoritative boundary for preserving strings.
-                    DateParseHandling = DateParseHandling.None,
-                })
+                // This reader materializes the JObject before schema validation and CLR
+                // binding, so it is the authoritative boundary for preserving strings.
+                using(var jsonReader = ConfigurationJson.CreateReader(reader))
                 {
                     var document = LoadConfigurationDocument(jsonReader,
                         skipApiListenerSettings);

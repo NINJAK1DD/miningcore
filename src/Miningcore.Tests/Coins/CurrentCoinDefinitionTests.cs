@@ -4,6 +4,7 @@ using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Extensions;
 using Miningcore.Mining;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Miningcore.Tests.Coins;
@@ -152,6 +153,51 @@ public class CurrentCoinDefinitionTests : TestBase
         {
             File.Delete(firstPath);
             File.Delete(secondPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("2025-01-01")]
+    [InlineData("2026-08-16T15:30:00Z")]
+    [InlineData("2026-08-16T15:30:00+01:00")]
+    [InlineData("2026-08-16T15:30:00")]
+    public void Loader_PreservesDateLookingExtensionStrings(
+        string configuredValue)
+    {
+        var path = Path.GetTempFileName();
+        var document = new JObject
+        {
+            ["date-test"] = new JObject
+            {
+                ["name"] = "Date Test",
+                ["symbol"] = "DATE",
+                ["family"] = "bitcoin",
+                ["extensionValue"] = configuredValue,
+                ["networks"] = new JObject
+                {
+                    ["main"] = new JObject
+                    {
+                        ["networkExtensionValue"] = configuredValue,
+                    },
+                },
+            },
+        };
+
+        try
+        {
+            File.WriteAllText(path, document.ToString());
+
+            var template = Assert.IsType<BitcoinTemplate>(
+                CoinTemplateLoader.Load(container, new[] { path })["date-test"]);
+
+            Assert.Equal(configuredValue,
+                Assert.IsType<string>(template.Extra["extensionValue"]));
+            Assert.Equal(configuredValue, Assert.IsType<string>(
+                template.Networks["main"].Extra["networkExtensionValue"]));
+        }
+        finally
+        {
+            File.Delete(path);
         }
     }
 }

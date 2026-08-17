@@ -180,11 +180,13 @@ deliberately. JSON object member order is not part of this contract.
 
 REST clients must therefore accept either the canonical JSON type or a runtime-coercible legacy
 representation for an approved `extra` field; they must not infer the REST value's JSON type from
-the corresponding public .NET property type. Configuration loading preserves every JSON string as
-a string without interpreting date-looking content. Date-only, UTC, offset and unsuffixed ISO-like
-values therefore retain their exact configured text in runtime extension data, typed string
-projections, parsed-configuration output and the approved REST response. This configuration-reader
-policy does not change RPC, Stratum or recovery-journal JSON parsing.
+the corresponding public .NET property type. Cluster and coin-template configuration loading
+preserves every JSON string as a string without interpreting date-looking content. Date-only, UTC,
+offset and unsuffixed ISO-like values therefore retain their exact configured text in runtime
+extension data, typed string projections, parsed-configuration output and the approved REST
+response. Both System.Text.Json and Newtonsoft deserialization of the public DTO retain the same
+typed string value. This configuration-reader policy does not change RPC, Stratum or
+recovery-journal JSON parsing.
 
 The compatibility contract preserves the configured JSON type and value. It does not promise the
 original lexical spelling of equivalent JSON numbers, such as exponent or insignificant-zero

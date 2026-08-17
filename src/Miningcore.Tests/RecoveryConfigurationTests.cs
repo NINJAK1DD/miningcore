@@ -34,6 +34,8 @@ public class RecoveryConfigurationTests
     {
         var document = CreateRecoveryDocument();
         document["coinTemplates"] = new JArray(configuredValue);
+        ((JObject)((JArray) document["pools"])[0])["coin"] =
+            configuredValue;
         var configFile = WriteTemporaryConfig(document);
 
         try
@@ -42,6 +44,7 @@ public class RecoveryConfigurationTests
 
             Assert.Equal(configuredValue,
                 Assert.Single(config.CoinTemplates));
+            Assert.Equal(configuredValue, Assert.Single(config.Pools).Coin);
         }
         finally
         {
