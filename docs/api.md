@@ -184,9 +184,11 @@ the corresponding public .NET property type. Cluster and coin-template configura
 preserves every JSON string as a string without interpreting date-looking content. Date-only, UTC,
 offset and unsuffixed ISO-like values therefore retain their exact configured text in runtime
 extension data, typed string projections, parsed-configuration output and the approved REST
-response. Both System.Text.Json and Newtonsoft deserialization of the public DTO retain the same
-typed string value. This configuration-reader policy does not change RPC, Stratum or
-recovery-journal JSON parsing.
+response. Both System.Text.Json and Newtonsoft deserialization from JSON text retain the same typed
+string value. A Newtonsoft client that first materializes a `JObject` must do so with
+`DateParseHandling.None`; a pre-coerced `JTokenType.Date` has already lost its exact lexical value
+and the public DTO rejects it with an actionable serialization error. This configuration-reader
+policy does not change RPC, Stratum or recovery-journal JSON parsing.
 
 The compatibility contract preserves the configured JSON type and value. It does not promise the
 original lexical spelling of equivalent JSON numbers, such as exponent or insignificant-zero

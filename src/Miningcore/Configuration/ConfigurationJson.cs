@@ -17,10 +17,12 @@ internal static class ConfigurationJson
             DateParseHandling = DateParseHandling.None,
         };
 
-    internal static JsonSerializerSettings CreateSerializerSettings() =>
+    internal static JsonSerializerSettings CreateSerializerSettings(
+        Formatting formatting = Formatting.None) =>
         new()
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
             DateParseHandling = DateParseHandling.None,
+            Formatting = formatting,
         };
 }

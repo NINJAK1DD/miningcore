@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using Miningcore.Api.Controllers;
@@ -889,6 +890,60 @@ public class PoolApiControllerTests
         Assert.Equal(JTokenType.String, Assert.Single(
             result.Extra.PresentProperties).Value.WireValue.Type);
         Assert.Equal(JTokenType.Date, result.Following.Type);
+    }
+
+    [Fact]
+    public void PaymentConfigNewtonsoftReader_ExplainsPreParsedDateTokens()
+    {
+        const string configuredValue = "2026-08-16T15:30:00+01:00";
+        var source = JObject.Parse($$"""
+            {
+                "extra": {
+                    "walletName": "{{configuredValue}}"
+                }
+            }
+            """);
+
+        Assert.Equal(JTokenType.Date,
+            source["extra"]?["walletName"]?.Type);
+
+        var error = Assert.Throws<Newtonsoft.Json.JsonSerializationException>(
+            () => source.ToObject<ApiPoolPaymentProcessingConfig>());
+
+        Assert.Contains("Payment property 'walletName' was parsed as a Date",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("DateParseHandling.None", error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("cannot be recovered", error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PaymentConfigNewtonsoftReader_AcceptsPolicySafePreParsedStrings()
+    {
+        const string configuredValue = "2026-08-16T15:30:00+01:00";
+        var json = $$"""
+            {
+                "extra": {
+                    "walletName": "{{configuredValue}}"
+                }
+            }
+            """;
+        using var textReader = new StringReader(json);
+        using var jsonReader = new Newtonsoft.Json.JsonTextReader(textReader)
+        {
+            DateParseHandling = Newtonsoft.Json.DateParseHandling.None,
+        };
+        var source = JObject.Load(jsonReader);
+
+        Assert.Equal(JTokenType.String,
+            source["extra"]?["walletName"]?.Type);
+
+        var result = source.ToObject<ApiPoolPaymentProcessingConfig>();
+
+        Assert.Equal(configuredValue, result.Extra.WalletName);
+        Assert.Equal(JTokenType.String,
+            Assert.Single(result.Extra.PresentProperties).Value.WireValue.Type);
     }
 
     [Fact]

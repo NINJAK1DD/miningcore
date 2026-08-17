@@ -1179,11 +1179,8 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static string SerializeParsedConfig(ClusterConfig config) =>
-        JsonConvert.SerializeObject(config, new JsonSerializerSettings
-        {
-            ContractResolver = new CamelCasePropertyNamesContractResolver(),
-            Formatting = Formatting.Indented
-        });
+        JsonConvert.SerializeObject(config,
+            ConfigurationJson.CreateSerializerSettings(Formatting.Indented));
 
     private static void GenerateJsonConfigSchema()
     {

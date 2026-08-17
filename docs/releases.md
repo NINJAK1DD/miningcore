@@ -420,10 +420,12 @@ replace configured text with a normalized, culture-dependent date representation
 extension values such as Handshake `walletName` or `walletAccount`, Kaspa
 `versionEnablingMaxFee`, custom
 coin-template extension values, and any other configured string that resembles a full date-time.
-System.Text.Json and Newtonsoft deserialization of the public payment DTO now preserve the same
-typed string value. Operators or API clients that relied on the normalized value must instead
-configure the literal they require and update that dependency before upgrading. RPC, Stratum,
-recovery-journal and schema-file readers retain their existing parsing behavior.
+System.Text.Json and Newtonsoft deserialization of the public payment DTO from JSON text now
+preserve the same typed string value. Newtonsoft clients that first materialize a `JObject` must use
+`DateParseHandling.None`; the DTO rejects an already-coerced `JTokenType.Date` because its exact
+lexical value can no longer be recovered. Operators or API clients that relied on the normalized
+value must instead configure the literal they require and update that dependency before upgrading.
+RPC, Stratum, recovery-journal and schema-file readers retain their existing parsing behavior.
 
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops

@@ -371,6 +371,8 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
 
     private static JToken ReadSystemTextJsonWireValue(JsonElement value)
     {
+        // GetRawText returns exactly one JsonElement value. JToken.ReadFrom
+        // would require an explicit exhaustion check for arbitrary input text.
         using var textReader = new StringReader(value.GetRawText());
         using var jsonReader = new Newtonsoft.Json.JsonTextReader(textReader)
         {
@@ -520,6 +522,20 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
                    property.Name, out var field))
             {
                 continue;
+            }
+
+            if(property.Value.Type == JTokenType.Date)
+            {
+                // A JTokenReader replays an already-materialized Date token
+                // without consulting DateParseHandling. Its original lexical
+                // string, especially an explicit offset, is no longer
+                // recoverable. Reject it rather than silently fabricating a
+                // different public value.
+                throw new Newtonsoft.Json.JsonSerializationException(
+                    $"Payment property '{property.Name}' was parsed as a Date " +
+                    "before DTO deserialization. Deserialize from JSON text " +
+                    "or materialize the token with DateParseHandling.None; " +
+                    "the original date-looking string cannot be recovered.");
             }
 
             if(result.IsPresent(field))
