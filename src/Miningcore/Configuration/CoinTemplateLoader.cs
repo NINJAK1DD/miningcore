@@ -12,7 +12,8 @@ public static class CoinTemplateLoader
 
     private static IEnumerable<KeyValuePair<string, CoinTemplate>> LoadTemplates(string filename, IComponentContext ctx)
     {
-        using var jreader = new JsonTextReader(File.OpenText(filename));
+        using var textReader = File.OpenText(filename);
+        using var jreader = ConfigurationJson.CreateReader(textReader);
 
         JObject jo;
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using Miningcore.Api.Controllers;
@@ -613,20 +614,23 @@ public class PoolApiControllerTests
                 "minimumConfirmations", new JValue(12.7), 13),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletName", new JValue("2026-08-16T15:30:00Z"),
-                "08/16/2026 15:30:00", true),
+                "2026-08-16T15:30:00Z"),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletAccount", new JValue("2026-08-16T15:31:00Z"),
-                "08/16/2026 15:31:00", true),
+                "2026-08-16T15:31:00Z"),
             new CoerciblePaymentExtraCase(CoinFamily.Kaspa,
                 "versionEnablingMaxFee",
                 new JValue("2026-08-16T15:32:00Z"),
-                "08/16/2026 15:32:00", true),
+                "2026-08-16T15:32:00Z"),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletName", new JValue("2025-01-01"),
                 "2025-01-01"),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletAccount", new JValue("2025-01-01T00:00:00"),
-                "01/01/2025 00:00:00", true),
+                "2025-01-01T00:00:00"),
+            new CoerciblePaymentExtraCase(CoinFamily.Handshake,
+                "walletName", new JValue("2026-08-16T15:30:00+01:00"),
+                "2026-08-16T15:30:00+01:00"),
         };
 
         foreach(var testCase in cases)
@@ -649,34 +653,28 @@ public class PoolApiControllerTests
         };
         config.PaymentProcessing = Newtonsoft.Json.JsonConvert.
             DeserializeObject<PoolPaymentProcessingConfig>(
-                runtimeJson.ToString(Newtonsoft.Json.Formatting.None));
+                runtimeJson.ToString(Newtonsoft.Json.Formatting.None),
+                ConfigurationJson.CreateSerializerSettings());
 
         var sourceValue = config.PaymentProcessing.Extra[testCase.Name];
         Assert.False(sourceValue is JToken);
 
-        if(testCase.ExpectsDateParsing)
-            Assert.IsType<DateTime>(sourceValue);
+        if(testCase.WireValue.Type == JTokenType.String)
+        {
+            Assert.Equal(testCase.WireValue.Value<string>(),
+                Assert.IsType<string>(sourceValue));
+        }
 
         // This is the value the former object-valued response dictionary gave
         // System.Text.Json. Comparing against it pins before/after REST parity,
-        // including Json.NET's ISO-string-to-DateTime parsing behavior.
+        // including date-looking configuration strings remaining strings.
         var expectedWire = JsonSerializer.SerializeToElement(sourceValue,
             options);
         var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
             new global::Miningcore.Persistence.Model.PoolStats(), null);
 
-        object actualClrValue = testCase.Name switch
-        {
-            "gas" => result.PaymentProcessing.Extra.Gas,
-            "keepUncles" => result.PaymentProcessing.Extra.KeepUncles,
-            "walletName" => result.PaymentProcessing.Extra.WalletName,
-            "walletAccount" => result.PaymentProcessing.Extra.WalletAccount,
-            "minimumConfirmations" => result.PaymentProcessing.Extra.
-                MinimumConfirmations,
-            "versionEnablingMaxFee" => result.PaymentProcessing.Extra.
-                VersionEnablingMaxFee,
-            _ => throw new ArgumentOutOfRangeException(nameof(testCase)),
-        };
+        var actualClrValue = GetPaymentExtraClrValue(
+            result.PaymentProcessing.Extra, testCase.Name);
 
         Assert.Equal(testCase.ExpectedClrValue, actualClrValue);
 
@@ -691,6 +689,11 @@ public class PoolApiControllerTests
             result.PaymentProcessing.Extra);
         var newtonsoftRoundTrip = Newtonsoft.Json.JsonConvert.
             DeserializeObject<ApiPoolPaymentProcessingExtra>(newtonsoftJson);
+
+        Assert.Equal(testCase.ExpectedClrValue, GetPaymentExtraClrValue(
+            systemTextRoundTrip, testCase.Name));
+        Assert.Equal(testCase.ExpectedClrValue, GetPaymentExtraClrValue(
+            newtonsoftRoundTrip, testCase.Name));
 
         foreach(var json in new[]
                 {
@@ -778,19 +781,30 @@ public class PoolApiControllerTests
                 ["BlockSearchOffset"] = new JArray(1, 2),
                 ["KeepUncles"] = true,
             };
+        var dateConfig = CreateMinimalPoolConfig(CoinFamily.Handshake);
+        dateConfig.PaymentProcessing.Extra = new Dictionary<string, object>
+        {
+            ["WalletName"] = new DateTime(2026, 8, 16, 15, 30, 0,
+                DateTimeKind.Utc),
+        };
         var mapper = AutoMapperFactory.CreateMapper();
 
         var duplicate = duplicateConfig.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
         var malformed = malformedConfig.ToPoolInfo(mapper,
             new global::Miningcore.Persistence.Model.PoolStats(), null);
+        var date = dateConfig.ToPoolInfo(mapper,
+            new global::Miningcore.Persistence.Model.PoolStats(), null);
         var options = CreateApiJsonOptions(false);
         var duplicateExtra = JsonSerializer.SerializeToElement(
             duplicate.PaymentProcessing.Extra, options);
         var malformedExtra = JsonSerializer.SerializeToElement(
             malformed.PaymentProcessing.Extra, options);
+        var dateExtra = JsonSerializer.SerializeToElement(
+            date.PaymentProcessing.Extra, options);
 
         Assert.Empty(duplicateExtra.EnumerateObject());
+        Assert.Empty(dateExtra.EnumerateObject());
         Assert.Equal(new[] { "KeepUncles" }, malformedExtra
             .EnumerateObject().Select(property => property.Name).ToArray());
         Assert.True(malformedExtra.GetProperty("KeepUncles").GetBoolean());
@@ -814,6 +828,30 @@ public class PoolApiControllerTests
         Assert.Equal(configuredName, property.Name);
         Assert.Equal(JsonValueKind.String, property.Value.ValueKind);
         Assert.Equal("120", property.Value.GetString());
+    }
+
+    [Fact]
+    public void PaymentExtraRegistration_ExplainsPreParsedDateTokens()
+    {
+        const string configuredName = "walletName";
+        var extra = new ApiPoolPaymentProcessingExtra();
+        var date = new JValue(new DateTime(2026, 8, 16, 15, 30, 0,
+            DateTimeKind.Utc));
+
+        Assert.Equal(JTokenType.Date, date.Type);
+
+        var error = Assert.Throws<ArgumentException>(() =>
+            extra.SetWalletName(configuredName, "unreachable", date));
+
+        Assert.Equal("wireValue", error.ParamName);
+        Assert.Contains("Payment property 'walletName' was parsed as a Date",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("DateParseHandling.None", error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("cannot be recovered", error.Message,
+            StringComparison.Ordinal);
+        Assert.Null(extra.WalletName);
+        Assert.Empty(extra.PresentProperties);
     }
 
     [Fact]
@@ -854,6 +892,82 @@ public class PoolApiControllerTests
         Assert.Throws<Newtonsoft.Json.JsonSerializationException>(() =>
             Newtonsoft.Json.JsonConvert.DeserializeObject<
                 ApiPoolPaymentProcessingExtra>(malformed));
+    }
+
+    [Fact]
+    public void PaymentExtraNewtonsoftReader_RestoresCallerDatePolicy()
+    {
+        const string configuredValue = "2026-08-16T15:30:00Z";
+        var json = $$"""
+            {
+                "extra": {
+                    "walletName": "{{configuredValue}}"
+                },
+                "following": "{{configuredValue}}"
+            }
+            """;
+
+        var result = Newtonsoft.Json.JsonConvert.DeserializeObject<
+            PaymentExtraNewtonsoftEnvelope>(json);
+
+        Assert.Equal(configuredValue, result.Extra.WalletName);
+        Assert.Equal(JTokenType.String, Assert.Single(
+            result.Extra.PresentProperties).Value.WireValue.Type);
+        Assert.Equal(JTokenType.Date, result.Following.Type);
+    }
+
+    [Fact]
+    public void PaymentConfigNewtonsoftReader_ExplainsPreParsedDateTokens()
+    {
+        const string configuredValue = "2026-08-16T15:30:00+01:00";
+        var source = JObject.Parse($$"""
+            {
+                "extra": {
+                    "walletName": "{{configuredValue}}"
+                }
+            }
+            """);
+
+        Assert.Equal(JTokenType.Date,
+            source["extra"]?["walletName"]?.Type);
+
+        var error = Assert.Throws<Newtonsoft.Json.JsonSerializationException>(
+            () => source.ToObject<ApiPoolPaymentProcessingConfig>());
+
+        Assert.Contains("Payment property 'walletName' was parsed as a Date",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("DateParseHandling.None", error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("cannot be recovered", error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PaymentConfigNewtonsoftReader_AcceptsPolicySafePreParsedStrings()
+    {
+        const string configuredValue = "2026-08-16T15:30:00+01:00";
+        var json = $$"""
+            {
+                "extra": {
+                    "walletName": "{{configuredValue}}"
+                }
+            }
+            """;
+        using var textReader = new StringReader(json);
+        using var jsonReader = new Newtonsoft.Json.JsonTextReader(textReader)
+        {
+            DateParseHandling = Newtonsoft.Json.DateParseHandling.None,
+        };
+        var source = JObject.Load(jsonReader);
+
+        Assert.Equal(JTokenType.String,
+            source["extra"]?["walletName"]?.Type);
+
+        var result = source.ToObject<ApiPoolPaymentProcessingConfig>();
+
+        Assert.Equal(configuredValue, result.Extra.WalletName);
+        Assert.Equal(JTokenType.String,
+            Assert.Single(result.Extra.PresentProperties).Value.WireValue.Type);
     }
 
     [Fact]
@@ -1278,8 +1392,25 @@ public class PoolApiControllerTests
     }
 
     public sealed record CoerciblePaymentExtraCase(CoinFamily Family,
-        string Name, JValue WireValue, object ExpectedClrValue,
-        bool ExpectsDateParsing = false);
+        string Name, JValue WireValue, object ExpectedClrValue);
+
+    public sealed class PaymentExtraNewtonsoftEnvelope
+    {
+        public ApiPoolPaymentProcessingExtra Extra { get; set; }
+        public JToken Following { get; set; }
+    }
+
+    private static object GetPaymentExtraClrValue(
+        ApiPoolPaymentProcessingExtra extra, string name) => name switch
+        {
+            "gas" => extra.Gas,
+            "keepUncles" => extra.KeepUncles,
+            "walletName" => extra.WalletName,
+            "walletAccount" => extra.WalletAccount,
+            "minimumConfirmations" => extra.MinimumConfirmations,
+            "versionEnablingMaxFee" => extra.VersionEnablingMaxFee,
+            _ => throw new ArgumentOutOfRangeException(nameof(name)),
+        };
 
     public enum PaymentExtraSourceKind
     {

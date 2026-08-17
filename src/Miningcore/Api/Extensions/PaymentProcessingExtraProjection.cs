@@ -243,6 +243,10 @@ internal static class PaymentProcessingExtraProjection
             // arbitrary object or array behind a typed public property.
             if(!ApiPoolPaymentProcessingExtra.IsSupportedWireValue(token))
             {
+                // Runtime projection omits one malformed field so it cannot
+                // fail the complete pool response. DTO deserialization has a
+                // different boundary: it rejects an already-lossy Date token
+                // with guidance because the caller can correct its reader.
                 value = default;
                 wireValue = null;
                 return false;

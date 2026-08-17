@@ -47,7 +47,13 @@ public sealed class ApiPoolPaymentProcessingExtra
     internal static bool IsSupportedWireValue(JToken value) =>
         value is JValue && value.Type is (JTokenType.Boolean or
             JTokenType.Integer or JTokenType.Float or JTokenType.String or
-            JTokenType.Null or JTokenType.Date);
+            JTokenType.Null);
+
+    internal static string GetPreParsedDateError(string name) =>
+        $"Payment property '{name}' was parsed as a Date before reaching " +
+        "the public DTO. Deserialize from JSON text or materialize the " +
+        "token with DateParseHandling.None; the original date-looking " +
+        "string cannot be recovered.";
 
     internal void SetWalletName(string name, string value, JToken wireValue)
     {
@@ -195,10 +201,15 @@ public sealed class ApiPoolPaymentProcessingExtra
             throw new ArgumentException("A public payment property requires a name",
                 nameof(name));
 
-        // Json.NET represents ISO-looking JSON strings internally as Date
-        // values. They remain strings on the public wire. Objects, arrays and
-        // other non-JSON scalar tokens are never retained behind an approved
-        // property name.
+        // Configuration and DTO readers preserve JSON strings without
+        // manufacturing Date tokens. Objects, arrays, Date values and other
+        // non-JSON scalar tokens are never retained behind an approved name.
+        if(wireValue?.Type == JTokenType.Date)
+        {
+            throw new ArgumentException(GetPreParsedDateError(name),
+                nameof(wireValue));
+        }
+
         if(!IsSupportedWireValue(wireValue))
         {
             throw new ArgumentException(
@@ -314,7 +325,7 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
             // Use Json.NET conversion deliberately so external response DTO
             // consumers accept the same coercible scalar representations as
             // Miningcore's runtime payment configuration.
-            var wireValue = JToken.Parse(property.Value.GetRawText());
+            var wireValue = ReadSystemTextJsonWireValue(property.Value);
             SetFromSystemTextJson(result, field, property.Name, wireValue);
         }
 
@@ -357,13 +368,6 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
                 // JavaScriptEncoder remains in force.
                 writer.WriteStringValue(wireValue.Value<string>());
                 break;
-            case JTokenType.Date when wireValue.Value<object>() is
-                DateTimeOffset dateTimeOffset:
-                writer.WriteStringValue(dateTimeOffset);
-                break;
-            case JTokenType.Date:
-                writer.WriteStringValue(wireValue.Value<DateTime>());
-                break;
             case JTokenType.Integer:
             case JTokenType.Float:
                 // Raw numeric text preserves Int64/BigInteger/double/decimal
@@ -375,6 +379,19 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
                 throw new System.Text.Json.JsonException(
                     $"Unsupported payment wire value '{wireValue.Type}'");
         }
+    }
+
+    private static JToken ReadSystemTextJsonWireValue(JsonElement value)
+    {
+        // GetRawText returns exactly one JsonElement value. JToken.ReadFrom
+        // would require an explicit exhaustion check for arbitrary input text.
+        using var textReader = new StringReader(value.GetRawText());
+        using var jsonReader = new Newtonsoft.Json.JsonTextReader(textReader)
+        {
+            DateParseHandling = Newtonsoft.Json.DateParseHandling.None,
+        };
+
+        return JToken.ReadFrom(jsonReader);
     }
 
     private static void SetFromSystemTextJson(
@@ -494,7 +511,21 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
         if(reader.TokenType == Newtonsoft.Json.JsonToken.Null)
             return null;
 
-        var source = JObject.Load(reader);
+        var originalDateParseHandling = reader.DateParseHandling;
+        JObject source;
+
+        try
+        {
+            // The converter owns only this object. Preserve date-looking JSON
+            // strings while restoring the caller's policy before returning.
+            reader.DateParseHandling = Newtonsoft.Json.DateParseHandling.None;
+            source = JObject.Load(reader);
+        }
+        finally
+        {
+            reader.DateParseHandling = originalDateParseHandling;
+        }
+
         var result = new ApiPoolPaymentProcessingExtra();
 
         foreach(var property in source.Properties())
@@ -503,6 +534,18 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
                    property.Name, out var field))
             {
                 continue;
+            }
+
+            if(property.Value.Type == JTokenType.Date)
+            {
+                // A JTokenReader replays an already-materialized Date token
+                // without consulting DateParseHandling. Its original lexical
+                // string, especially an explicit offset, is no longer
+                // recoverable. Reject it rather than silently fabricating a
+                // different public value.
+                throw new Newtonsoft.Json.JsonSerializationException(
+                    ApiPoolPaymentProcessingExtra.GetPreParsedDateError(
+                        property.Name));
             }
 
             if(result.IsPresent(field))

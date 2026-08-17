@@ -409,9 +409,23 @@ contract resolver (`extra` with a camel-case resolver). See
 [the public API contract](api.md#pool-response-contracts) for the complete allow-list.
 
 REST consumers must continue accepting runtime-coercible legacy scalar representations rather than
-inferring the JSON type from the new .NET property type. This includes ISO-looking configured
-strings that Json.NET represents internally as dates: approved string fields remain JSON strings on
-the REST wire. Miningcore's configured System.Text.Json encoder remains effective for those strings.
+inferring the JSON type from the new .NET property type.
+
+Cluster and coin-template configuration loading no longer allows Json.NET to interpret full
+ISO-looking date-time strings as dates. UTC, offset and unsuffixed date-time values now survive
+normal startup, recovery-mode configuration loading, typed payment-extension projection,
+parsed-configuration output and approved REST responses. Date-only strings were already preserved
+and remain covered by regression tests. This intentionally corrects earlier builds that could
+replace configured text with a normalized, culture-dependent date representation. It affects
+extension values such as Handshake `walletName` or `walletAccount`, Kaspa
+`versionEnablingMaxFee`, custom
+coin-template extension values, and any other configured string that resembles a full date-time.
+System.Text.Json and Newtonsoft deserialization of the public payment DTO from JSON text now
+preserve the same typed string value. Newtonsoft clients that first materialize a `JObject` must use
+`DateParseHandling.None`; the DTO rejects an already-coerced `JTokenType.Date` because its exact
+lexical value can no longer be recovered. Operators or API clients that relied on the normalized
+value must instead configure the literal they require and update that dependency before upgrading.
+RPC, Stratum, recovery-journal and schema-file readers retain their existing parsing behavior.
 
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops

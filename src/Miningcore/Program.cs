@@ -1175,13 +1175,12 @@ public class Program : ProcessStatusBackgroundService
     private static void DumpParsedConfig(ClusterConfig config)
     {
         Console.WriteLine("\nCurrent configuration as parsed from config file:");
-
-        Console.WriteLine(JsonConvert.SerializeObject(config, new JsonSerializerSettings
-        {
-            ContractResolver = new CamelCasePropertyNamesContractResolver(),
-            Formatting = Formatting.Indented
-        }));
+        Console.WriteLine(SerializeParsedConfig(config));
     }
+
+    internal static string SerializeParsedConfig(ClusterConfig config) =>
+        JsonConvert.SerializeObject(config,
+            ConfigurationJson.CreateSerializerSettings(Formatting.Indented));
 
     private static void GenerateJsonConfigSchema()
     {
@@ -1320,14 +1319,14 @@ public class Program : ProcessStatusBackgroundService
                     "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");
 
-            var serializer = JsonSerializer.Create(new JsonSerializerSettings
-            {
-                ContractResolver = new CamelCasePropertyNamesContractResolver()
-            });
+            var serializer = JsonSerializer.Create(
+                ConfigurationJson.CreateSerializerSettings());
 
             using(var reader = new StreamReader(file, Encoding.UTF8))
             {
-                using(var jsonReader = new JsonTextReader(reader))
+                // This reader materializes the JObject before schema validation and CLR
+                // binding, so it is the authoritative boundary for preserving strings.
+                using(var jsonReader = ConfigurationJson.CreateReader(reader))
                 {
                     var document = LoadConfigurationDocument(jsonReader,
                         skipApiListenerSettings);

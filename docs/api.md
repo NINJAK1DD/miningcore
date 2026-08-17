@@ -180,12 +180,19 @@ deliberately. JSON object member order is not part of this contract.
 
 REST clients must therefore accept either the canonical JSON type or a runtime-coercible legacy
 representation for an approved `extra` field; they must not infer the REST value's JSON type from
-the corresponding public .NET property type. Json.NET can parse an ISO-looking configured string as
-a date internally. In that case, the normalized .NET string property and the preserved REST value
-can differ in both representation and value; clients must treat the REST payload as authoritative.
-Miningcore still emits that approved value as a JSON string using the same API serializer semantics
-as the former untyped response. The compatibility contract preserves JSON type and value, not the
-original lexical spelling of equivalent numbers or dates.
+the corresponding public .NET property type. Cluster and coin-template configuration loading
+preserves every JSON string as a string without interpreting date-looking content. Date-only, UTC,
+offset and unsuffixed ISO-like values therefore retain their exact configured text in runtime
+extension data, typed string projections, parsed-configuration output and the approved REST
+response. Both System.Text.Json and Newtonsoft deserialization from JSON text retain the same typed
+string value. A Newtonsoft client that first materializes a `JObject` must do so with
+`DateParseHandling.None`; a pre-coerced `JTokenType.Date` has already lost its exact lexical value
+and the public DTO rejects it with an actionable serialization error. This configuration-reader
+policy does not change RPC, Stratum or recovery-journal JSON parsing.
+
+The compatibility contract preserves the configured JSON type and value. It does not promise the
+original lexical spelling of equivalent JSON numbers, such as exponent or insignificant-zero
+formatting.
 
 `ApiPoolPaymentProcessingExtra` is a flat typed union: all approved properties are optional on the
 .NET type, while the family table above defines which subset may be emitted for a pool. This is a

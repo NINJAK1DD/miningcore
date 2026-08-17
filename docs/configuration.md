@@ -4,6 +4,12 @@ Miningcore reads JSON with comments. Start with [`config.example.json`](../confi
 it to `config.json`, and replace every `CHANGE_ME` placeholder. Strict JSON editors may complain about
 comments even though Miningcore accepts them.
 
+Miningcore preserves JSON string values in both the cluster configuration and bundled or
+operator-supplied coin-template files. Content that resembles an ISO date remains the exact string
+the operator configured; it is not silently converted to a date or rewritten for the host's locale
+or time zone. This policy applies to configuration files, not daemon RPC, Stratum or
+recovery-journal JSON readers.
+
 The exhaustive machine-readable reference is [`config.schema.json`](../src/Miningcore/config.schema.json).
 Coin-family extensions are intentionally flexible and may also be documented beside their implementation.
 
