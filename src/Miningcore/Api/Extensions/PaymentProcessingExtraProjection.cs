@@ -19,9 +19,11 @@ namespace Miningcore.Api.Extensions;
 
 internal static class PaymentProcessingExtraProjection
 {
-    private static readonly FrozenDictionary<CoinFamily,
-        PaymentProcessingExtraContract> Contracts =
-        CreateContracts();
+    // Lazy<T> preserves the original developer-contract exception rather than
+    // wrapping it in TypeInitializationException on first projection use.
+    private static readonly Lazy<FrozenDictionary<CoinFamily,
+        PaymentProcessingExtraContract>> contracts = new(CreateContracts,
+        LazyThreadSafetyMode.ExecutionAndPublication);
 
     public static ApiPoolPaymentProcessingExtra Create(CoinFamily family,
         IDictionary<string, object> source) =>
@@ -105,7 +107,7 @@ internal static class PaymentProcessingExtraProjection
     private static PaymentProcessingExtraContract GetContract(
         CoinFamily family)
     {
-        if(Contracts.TryGetValue(family, out var contract))
+        if(contracts.Value.TryGetValue(family, out var contract))
             return contract;
 
         // An unknown enum member is a developer classification error, not

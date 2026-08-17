@@ -72,20 +72,25 @@ internal static class PaymentProcessingExtraDiagnostics
         {
             PaymentProcessingExtraProjectionOutcome.UnknownKey =>
                 new("unknown-key",
-                    "not recognised by this coin family's runtime or public contract",
+                    static _ => "not recognised by this coin family's " +
+                        "runtime or public contract",
                     "check the spelling and family-specific runtime contract, " +
                     "then correct or remove the setting"),
             PaymentProcessingExtraProjectionOutcome.AmbiguousCaseVariant =>
                 new("ambiguous-case",
-                    "{0} case variants match one recognised key",
+                    static variantCount =>
+                        $"{variantCount.ToString(CultureInfo.InvariantCulture)} " +
+                        "case variants match one recognised key",
                     "retain exactly one spelling of the setting"),
             PaymentProcessingExtraProjectionOutcome.NonScalarValue =>
                 new("non-scalar",
-                    "the approved key requires a boolean, number, string or null JSON value",
+                    static _ => "the approved key requires a boolean, number, " +
+                        "string or null JSON value",
                     "replace the value with a supported scalar representation"),
             PaymentProcessingExtraProjectionOutcome.ConversionFailure =>
                 new("conversion-failure",
-                    "the scalar cannot convert to the approved runtime type",
+                    static _ =>
+                        "the scalar cannot convert to the approved runtime type",
                     "correct the value for the family-specific public contract"),
             _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome,
                 "Only omitted payment-processing outcomes can be logged"),
@@ -114,9 +119,9 @@ internal static class PaymentProcessingExtraDiagnostics
     }
 
     private sealed record PaymentProcessingExtraReason(string Code,
-        string DescriptionFormat, string Remediation)
+        Func<int, string> DescriptionFactory, string Remediation)
     {
-        public string Describe(int variantCount) => string.Format(
-            CultureInfo.InvariantCulture, DescriptionFormat, variantCount);
+        public string Describe(int variantCount) =>
+            DescriptionFactory(variantCount);
     }
 }

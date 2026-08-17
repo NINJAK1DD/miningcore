@@ -211,6 +211,29 @@ public class PaymentProcessingExtraDiagnosticsTests
     }
 
     [Fact]
+    public void NonSensitiveUnknownKey_DoesNotSuggestPrivateFields()
+    {
+        const string mistypedName = "walletPasword";
+        var pool = Pool("ordinary-typo", CoinFamily.Kaspa,
+            new Dictionary<string, object>
+            {
+                [mistypedName] = "not-logged",
+            });
+        using var capture = new LogCapture();
+
+        PaymentProcessingExtraDiagnostics.Log(new[] { pool }, capture.Logger);
+        capture.Flush();
+
+        var message = Assert.Single(capture.Messages);
+        Assert.Contains($"'{mistypedName}'", message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("recognised private field", message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("not-logged", message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void StartupDiagnostics_AreBoundedCredentialSafeAndApiLogSilent()
     {
         const string firstSecret = "first-secret-value";

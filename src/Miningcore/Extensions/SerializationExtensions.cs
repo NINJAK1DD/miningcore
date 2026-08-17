@@ -21,6 +21,10 @@ public static class SerializationExtensions
     {
         ArgumentNullException.ThrowIfNull(type);
 
+        // Runtime binding is deliberately best-effort because a malformed
+        // optional extension must not fail a payout. Contract discovery is
+        // strict because callers use it to define the public/private response
+        // boundary and must never silently classify a non-object contract.
         if(extensionDataContractResolver.ResolveContract(type) is not
            JsonObjectContract contract)
         {

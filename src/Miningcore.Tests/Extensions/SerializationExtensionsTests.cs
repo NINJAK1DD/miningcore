@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Extensions;
@@ -86,6 +87,18 @@ public class SerializationExtensionsTests : TestBase
 
         Assert.NotNull(unaliased);
         Assert.Null(unaliased.ApiKey);
+    }
+
+    [Fact]
+    public void ExtensionDataContract_RejectsNonObjectContractsStrictly()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            SerializationExtensions.GetExtensionDataPropertyContracts(
+                typeof(string)));
+
+        Assert.Equal("type", exception.ParamName);
+        Assert.Contains("does not use a JSON object contract",
+            exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
