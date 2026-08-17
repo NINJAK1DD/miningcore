@@ -35,10 +35,11 @@ public class ConfigurationContractTests
             // the deliberately empty CLI-facing PoolStartupException message.
             var result = new ClusterConfigValidator().Validate(config);
             var diagnostic = result.IsValid
-                ? "Full startup validation failed without a diagnostic after applying live defaults."
+                ? "Full startup validation failed without a diagnostic " +
+                  "after applying live defaults."
                 : FormatValidationErrors(result.Errors);
 
-            throw new XunitException(diagnostic);
+            throw new XunitException(diagnostic, error);
         }
     }
 
@@ -134,8 +135,22 @@ public class ConfigurationContractTests
         var path = Path.Combine(AppContext.BaseDirectory,
             "config.example.json");
         var config = Program.ReadConfig(path, false);
-        var pool = config.Pools.First(x => x.EnableInternalStratum == true);
-        var endpoint = pool.Ports.First();
+        var internalPools = config.Pools
+            .Where(x => x.EnableInternalStratum == true)
+            .ToArray();
+
+        Assert.True(internalPools.Length == 1,
+            "The diagnostic fixture requires exactly one example pool with " +
+            "internal Stratum explicitly enabled.");
+
+        var pool = internalPools[0];
+
+        Assert.NotNull(pool.Ports);
+        Assert.True(pool.Ports.Count == 1,
+            $"The diagnostic fixture requires pool '{pool.Id}' to expose " +
+            "exactly one Stratum endpoint.");
+
+        var endpoint = pool.Ports.Single();
 
         pool.EnableInternalStratum = null;
         endpoint.Value.ListenAddress = "stratum.example.com";
@@ -149,5 +164,6 @@ public class ConfigurationContractTests
             "(received 'stratum.example.com')",
             error.Message,
             StringComparison.Ordinal);
+        Assert.IsType<PoolStartupException>(error.InnerException);
     }
 }
