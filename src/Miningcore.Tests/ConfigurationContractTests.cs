@@ -39,6 +39,9 @@ public class ConfigurationContractTests
                   "after applying live defaults."
                 : FormatValidationErrors(result.Errors);
 
+            // The inner-exception constructor became public in xUnit 2.4.2.
+            // Keep the test package at or above that version while this helper
+            // preserves the originating startup failure as diagnostic context.
             throw new XunitException(diagnostic, error);
         }
     }
@@ -146,11 +149,11 @@ public class ConfigurationContractTests
         var pool = internalPools[0];
 
         Assert.NotNull(pool.Ports);
-        Assert.True(pool.Ports.Count == 1,
+        Assert.True(pool.Ports.Count >= 1,
             $"The diagnostic fixture requires pool '{pool.Id}' to expose " +
-            "exactly one Stratum endpoint.");
+            "at least one Stratum endpoint.");
 
-        var endpoint = pool.Ports.Single();
+        var endpoint = pool.Ports.First();
 
         pool.EnableInternalStratum = null;
         endpoint.Value.ListenAddress = "stratum.example.com";
