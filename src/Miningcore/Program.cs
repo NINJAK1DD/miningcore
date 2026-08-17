@@ -25,6 +25,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.IO;
 using Miningcore.Api;
 using Miningcore.Api.Controllers;
+using Miningcore.Api.Extensions;
 using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -522,6 +523,7 @@ public class Program : ProcessStatusBackgroundService
         await Guard(async () =>
         {
             AssignPoolTemplates(enabledPools, coinTemplates);
+            LogPaymentProcessingExtraOmissions(enabledPools, logger);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(
@@ -1001,6 +1003,10 @@ public class Program : ProcessStatusBackgroundService
             poolConfig.Template = template;
         }
     }
+
+    internal static void LogPaymentProcessingExtraOmissions(
+        IEnumerable<PoolConfig> poolConfigs, ILogger diagnosticLogger) =>
+        PaymentProcessingExtraDiagnostics.Log(poolConfigs, diagnosticLogger);
 
     internal static void AssignRecoveryPoolTemplates(ClusterConfig config,
         IReadOnlyDictionary<string, CoinTemplate> coinTemplates)
