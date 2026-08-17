@@ -411,14 +411,17 @@ contract resolver (`extra` with a camel-case resolver). See
 REST consumers must continue accepting runtime-coercible legacy scalar representations rather than
 inferring the JSON type from the new .NET property type.
 
-Normal startup now reports why configured `paymentProcessing.extra` entries are absent from the
-typed public response. The one-time, family-aware diagnostics distinguish unknown keys, ambiguous
-case variants, non-scalar values and conversion failures. They never log values, replace every
-sensitive-looking key name with `<redacted-sensitive-key>`, escape control characters in ordinary
-names and emit at most ten key warnings per pool plus one reason-grouped remainder summary. API
-requests remain log-silent. An omitted public entry can still be active runtime configuration when
-the coin family's private binder accepts it; operators should correct or remove a warning-producing
-setting only after checking that family-specific contract.
+Normal startup now reports unrecognised or malformed `paymentProcessing.extra` entries for enabled
+pools that are omitted from the typed public response. The one-time, family-aware diagnostics use
+the same public projection and runtime-binder contract, so recognised runtime-only wallet
+credentials remain silent rather than being mislabelled as unknown. Actionable warnings distinguish
+unknown keys, ambiguous case variants, unsupported public scalars and conversion failures. They
+never log values, replace every sensitive-looking unknown key name with
+`<redacted-sensitive-key>`, escape unsafe characters in ordinary names within a fixed output-length
+bound and emit at most ten key warnings per pool plus one reason-grouped remainder summary. Disabled
+pools, share recovery and API requests do not emit these warnings. A private entry can still be
+active runtime configuration when the coin family's binder accepts it; operators should correct or
+remove a warning-producing setting only after checking that family-specific contract.
 
 Cluster and coin-template configuration loading no longer allows Json.NET to interpret full
 ISO-looking date-time strings as dates. UTC, offset and unsuffixed date-time values now survive

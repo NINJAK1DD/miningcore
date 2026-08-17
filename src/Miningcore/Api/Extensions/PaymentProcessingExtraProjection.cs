@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Reflection;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain.Alephium.Configuration;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -19,7 +20,7 @@ namespace Miningcore.Api.Extensions;
 internal static class PaymentProcessingExtraProjection
 {
     private static readonly FrozenDictionary<CoinFamily,
-        IPaymentProcessingExtraFieldProjection[]> Contracts =
+        PaymentProcessingExtraContract> Contracts =
         CreateContracts();
 
     public static ApiPoolPaymentProcessingExtra Create(CoinFamily family,
@@ -34,18 +35,11 @@ internal static class PaymentProcessingExtraProjection
         CoinFamily family, IDictionary<string, object> source,
         bool collectOmissions)
     {
+        var contract = GetContract(family);
+
         if(source == null)
             return new PaymentProcessingExtraProjectionResult(null,
                 Array.Empty<PaymentProcessingExtraOmission>());
-
-        if(!Contracts.TryGetValue(family, out var contract))
-        {
-            // An unknown enum member is a developer classification error, not
-            // malformed operator data. Fail API projection loudly so a new
-            // family cannot acquire a public contract by accident.
-            throw new ArgumentOutOfRangeException(nameof(family), family,
-                "Payment-processing response fields require an explicit family classification");
-        }
 
         var result = new ApiPoolPaymentProcessingExtra();
         var classifiedKeys = collectOmissions ?
@@ -53,16 +47,41 @@ internal static class PaymentProcessingExtraProjection
         var omissions = collectOmissions ?
             new List<PaymentProcessingExtraOmission>() : null;
 
-        foreach(var field in contract)
+        foreach(var field in contract.PublicFields)
             field.Project(result, source, classifiedKeys, omissions);
 
         if(collectOmissions)
         {
+            foreach(var runtimeOnlyName in contract.RuntimeOnlyNames)
+            {
+                var matches = FindMatches(source, runtimeOnlyName);
+                foreach(var match in matches)
+                    classifiedKeys.Add(match);
+
+                if(matches.Length == 1)
+                {
+                    omissions.Add(PaymentProcessingExtraOmission.Create(
+                        runtimeOnlyName,
+                        PaymentProcessingExtraProjectionOutcome.RuntimeOnlyKey));
+                }
+                else if(matches.Length > 1)
+                {
+                    omissions.Add(PaymentProcessingExtraOmission.Create(
+                        runtimeOnlyName,
+                        PaymentProcessingExtraProjectionOutcome.
+                            AmbiguousCaseVariant,
+                        matches.Length));
+                }
+            }
+
             // This startup-only traversal runs after the family contract has
-            // classified every approved name. Subtraction is the single source
-            // of unknown-key decisions and cannot drift from the projection.
+            // classified every public and runtime-only name. Subtraction is the
+            // single source of unknown-key decisions and cannot drift from the
+            // projection or the family's actual runtime binder.
             foreach(var key in source.Keys.Where(key =>
-                        !classifiedKeys.Contains(key)))
+                         !classifiedKeys.Contains(key))
+                        .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(key => key, StringComparer.Ordinal))
             {
                 omissions.Add(PaymentProcessingExtraOmission.Create(key,
                     PaymentProcessingExtraProjectionOutcome.UnknownKey));
@@ -74,19 +93,36 @@ internal static class PaymentProcessingExtraProjection
                 Array.Empty<PaymentProcessingExtraOmission>());
     }
 
-    private static FrozenDictionary<CoinFamily,
-        IPaymentProcessingExtraFieldProjection[]> CreateContracts()
+    internal static Type GetRuntimeContractType(CoinFamily family) =>
+        GetContract(family).RuntimeType;
+
+    private static PaymentProcessingExtraContract GetContract(
+        CoinFamily family)
     {
-        var bitcoin = Fields(
+        if(Contracts.TryGetValue(family, out var contract))
+            return contract;
+
+        // An unknown enum member is a developer classification error, not
+        // malformed operator data. Fail startup and API projection loudly so a
+        // new family cannot acquire a public contract by accident.
+        throw new ArgumentOutOfRangeException(nameof(family), family,
+            "Payment-processing response fields require an explicit family classification");
+    }
+
+    private static FrozenDictionary<CoinFamily,
+        PaymentProcessingExtraContract> CreateContracts()
+    {
+        var bitcoin = Contract<BitcoinPoolPaymentProcessingConfigExtra>(
             Field<bool?>(nameof(BitcoinPoolPaymentProcessingConfigExtra.
                     MinersPayTxFees),
                 static (result, name, value, wireValue) =>
                     result.SetMinersPayTxFees(name, value, wireValue)));
 
         return new Dictionary<CoinFamily,
-            IPaymentProcessingExtraFieldProjection[]>
+            PaymentProcessingExtraContract>
         {
-            [CoinFamily.Alephium] = Fields(
+            [CoinFamily.Alephium] =
+                Contract<AlephiumPaymentProcessingConfigExtra>(
                 Field<string>(nameof(AlephiumPaymentProcessingConfigExtra.
                         WalletName),
                     static (result, name, value, wireValue) =>
@@ -99,15 +135,17 @@ internal static class PaymentProcessingExtraProjection
                         KeepTransactionFees),
                     static (result, name, value, wireValue) =>
                         result.SetKeepTransactionFees(name, value, wireValue))),
-            [CoinFamily.Beam] = Fields(),
+            [CoinFamily.Beam] = Contract(),
             [CoinFamily.Bitcoin] = bitcoin,
-            [CoinFamily.Conceal] = Fields(
+            [CoinFamily.Conceal] =
+                Contract<ConcealPoolPaymentProcessingConfigExtra>(
                 Field<decimal?>(nameof(ConcealPoolPaymentProcessingConfigExtra.
                         MinimumPaymentToPaymentId),
                     static (result, name, value, wireValue) =>
                         result.SetMinimumPaymentToPaymentId(name, value,
                             wireValue))),
-            [CoinFamily.Cryptonote] = Fields(
+            [CoinFamily.Cryptonote] =
+                Contract<CryptonotePoolPaymentProcessingConfigExtra>(
                 Field<decimal?>(nameof(CryptonotePoolPaymentProcessingConfigExtra.
                         MinimumPaymentToPaymentId),
                     static (result, name, value, wireValue) =>
@@ -119,13 +157,14 @@ internal static class PaymentProcessingExtraProjection
                         result.SetMaximumDestinationPerTransfer(name, value,
                             wireValue))),
             [CoinFamily.Equihash] = bitcoin,
-            [CoinFamily.Ergo] = Fields(
+            [CoinFamily.Ergo] = Contract<ErgoPaymentProcessingConfigExtra>(
                 Field<int?>(nameof(ErgoPaymentProcessingConfigExtra.
                         MinimumConfirmations),
                     static (result, name, value, wireValue) =>
                         result.SetMinimumConfirmations(name, value,
                             wireValue))),
-            [CoinFamily.Ethereum] = Fields(
+            [CoinFamily.Ethereum] =
+                Contract<EthereumPoolPaymentProcessingConfigExtra>(
                 Field<bool?>(nameof(EthereumPoolPaymentProcessingConfigExtra.
                         KeepTransactionFees),
                     static (result, name, value, wireValue) =>
@@ -145,7 +184,8 @@ internal static class PaymentProcessingExtraProjection
                         BlockSearchOffset),
                     static (result, name, value, wireValue) =>
                         result.SetBlockSearchOffset(name, value, wireValue))),
-            [CoinFamily.Handshake] = Fields(
+            [CoinFamily.Handshake] =
+                Contract<HandshakePoolPaymentProcessingConfigExtra>(
                 Field<string>(nameof(HandshakePoolPaymentProcessingConfigExtra.
                         WalletName),
                     static (result, name, value, wireValue) =>
@@ -158,7 +198,7 @@ internal static class PaymentProcessingExtraProjection
                         MinersPayTxFees),
                     static (result, name, value, wireValue) =>
                         result.SetMinersPayTxFees(name, value, wireValue))),
-            [CoinFamily.Kaspa] = Fields(
+            [CoinFamily.Kaspa] = Contract<KaspaPaymentProcessingConfigExtra>(
                 Field<int?>(nameof(KaspaPaymentProcessingConfigExtra.
                         MinimumConfirmations),
                     static (result, name, value, wireValue) =>
@@ -173,7 +213,8 @@ internal static class PaymentProcessingExtraProjection
             [CoinFamily.Nexa] = bitcoin,
             [CoinFamily.Progpow] = bitcoin,
             [CoinFamily.Satoshicash] = bitcoin,
-            [CoinFamily.Warthog] = Fields(
+            [CoinFamily.Warthog] =
+                Contract<WarthogPaymentProcessingConfigExtra>(
                 Field<decimal?>(nameof(WarthogPaymentProcessingConfigExtra.
                         MaximumTransactionFees),
                     static (result, name, value, wireValue) =>
@@ -192,7 +233,7 @@ internal static class PaymentProcessingExtraProjection
                     static (result, name, value, wireValue) =>
                         result.SetMaxDegreeOfParallelPayouts(name, value,
                             wireValue))),
-            [CoinFamily.Xelis] = Fields(
+            [CoinFamily.Xelis] = Contract<XelisPaymentProcessingConfigExtra>(
                 Field<int?>(nameof(XelisPaymentProcessingConfigExtra.
                         MinimumConfirmations),
                     static (result, name, value, wireValue) =>
@@ -206,7 +247,8 @@ internal static class PaymentProcessingExtraProjection
                         KeepTransactionFees),
                     static (result, name, value, wireValue) =>
                         result.SetKeepTransactionFees(name, value, wireValue))),
-            [CoinFamily.Zano] = Fields(
+            [CoinFamily.Zano] =
+                Contract<ZanoPoolPaymentProcessingConfigExtra>(
                 Field<decimal?>(nameof(ZanoPoolPaymentProcessingConfigExtra.
                         MinimumPaymentToPaymentId),
                     static (result, name, value, wireValue) =>
@@ -235,8 +277,13 @@ internal static class PaymentProcessingExtraProjection
         }.ToFrozenDictionary();
     }
 
-    private static IPaymentProcessingExtraFieldProjection[] Fields(
-        params IPaymentProcessingExtraFieldProjection[] fields) => fields;
+    private static PaymentProcessingExtraContract Contract(
+        params IPaymentProcessingExtraFieldProjection[] publicFields) =>
+        new(null, publicFields);
+
+    private static PaymentProcessingExtraContract Contract<TRuntime>(
+        params IPaymentProcessingExtraFieldProjection[] publicFields) =>
+        new(typeof(TRuntime), publicFields);
 
     private static IPaymentProcessingExtraFieldProjection Field<T>(string name,
         Action<ApiPoolPaymentProcessingExtra, string, T, JToken> setter) =>
@@ -244,6 +291,8 @@ internal static class PaymentProcessingExtraProjection
 
     private interface IPaymentProcessingExtraFieldProjection
     {
+        string Name { get; }
+
         void Project(ApiPoolPaymentProcessingExtra result,
             IDictionary<string, object> source,
             ISet<string> classifiedKeys,
@@ -254,15 +303,14 @@ internal static class PaymentProcessingExtraProjection
         Action<ApiPoolPaymentProcessingExtra, string, T, JToken> setter) :
         IPaymentProcessingExtraFieldProjection
     {
+        public string Name => name;
+
         public void Project(ApiPoolPaymentProcessingExtra result,
             IDictionary<string, object> source,
             ISet<string> classifiedKeys,
             ICollection<PaymentProcessingExtraOmission> omissions)
         {
-            var matches = source.Keys
-                .Where(key => string.Equals(key, name,
-                    StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+            var matches = FindMatches(source, name);
 
             foreach(var match in matches)
                 classifiedKeys?.Add(match);
@@ -272,15 +320,14 @@ internal static class PaymentProcessingExtraProjection
 
             // Normal configuration loading rejects case-variant duplicates.
             // If an unvalidated/programmatic dictionary bypasses that boundary,
-            // report every conflicting key and choose none by insertion order.
+            // report one defect for the approved field and choose none by
+            // insertion order.
             if(matches.Length > 1)
             {
-                foreach(var match in matches)
-                {
-                    omissions?.Add(PaymentProcessingExtraOmission.Create(
-                        match, PaymentProcessingExtraProjectionOutcome.
-                            AmbiguousCaseVariant));
-                }
+                omissions?.Add(PaymentProcessingExtraOmission.Create(name,
+                    PaymentProcessingExtraProjectionOutcome.
+                        AmbiguousCaseVariant,
+                    matches.Length));
 
                 return;
             }
@@ -300,6 +347,39 @@ internal static class PaymentProcessingExtraProjection
             // identity at this boundary.
             setter(result, matches[0], value, wireValue);
         }
+    }
+
+    private static string[] FindMatches(IDictionary<string, object> source,
+        string name) => source.Keys
+        .Where(key => string.Equals(key, name,
+            StringComparison.OrdinalIgnoreCase))
+        .OrderBy(key => key, StringComparer.Ordinal)
+        .ToArray();
+
+    private sealed class PaymentProcessingExtraContract
+    {
+        public PaymentProcessingExtraContract(Type runtimeType,
+            IPaymentProcessingExtraFieldProjection[] publicFields)
+        {
+            RuntimeType = runtimeType;
+            PublicFields = publicFields;
+
+            var publicNames = publicFields.Select(field => field.Name)
+                .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+            RuntimeOnlyNames = runtimeType == null ? Array.Empty<string>() :
+                runtimeType.GetProperties(BindingFlags.Instance |
+                        BindingFlags.Public)
+                    .Where(property => property.CanWrite &&
+                        property.GetIndexParameters().Length == 0 &&
+                        !publicNames.Contains(property.Name))
+                    .Select(property => property.Name)
+                    .OrderBy(name => name, StringComparer.Ordinal)
+                    .ToArray();
+        }
+
+        public Type RuntimeType { get; }
+        public IPaymentProcessingExtraFieldProjection[] PublicFields { get; }
+        public string[] RuntimeOnlyNames { get; }
     }
 
     private static PaymentProcessingExtraProjectionOutcome TryConvert<T>(
@@ -355,21 +435,27 @@ internal sealed record PaymentProcessingExtraProjectionResult(
     IReadOnlyList<PaymentProcessingExtraOmission> Omissions);
 
 internal sealed record PaymentProcessingExtraOmission(string DiagnosticKey,
-    bool KeyWasRedacted, PaymentProcessingExtraProjectionOutcome Outcome)
+    bool KeyWasRedacted, PaymentProcessingExtraProjectionOutcome Outcome,
+    int VariantCount)
 {
     public static PaymentProcessingExtraOmission Create(string key,
-        PaymentProcessingExtraProjectionOutcome outcome)
+        PaymentProcessingExtraProjectionOutcome outcome,
+        int variantCount = 1)
     {
+        if(variantCount < 1)
+            throw new ArgumentOutOfRangeException(nameof(variantCount));
+
         var diagnosticKey = PaymentProcessingExtraSensitivityPolicy.
             CreateDiagnosticKey(key, out var redacted);
         return new PaymentProcessingExtraOmission(diagnosticKey, redacted,
-            outcome);
+            outcome, variantCount);
     }
 }
 
 internal enum PaymentProcessingExtraProjectionOutcome
 {
     Projected,
+    RuntimeOnlyKey,
     UnknownKey,
     AmbiguousCaseVariant,
     NonScalarValue,

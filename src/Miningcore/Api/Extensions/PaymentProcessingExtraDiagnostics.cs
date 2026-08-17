@@ -14,38 +14,30 @@ internal static class PaymentProcessingExtraDiagnostics
 
         foreach(var pool in pools)
         {
-            PaymentProcessingExtraProjectionResult analysis;
+            ArgumentNullException.ThrowIfNull(pool);
+            ArgumentNullException.ThrowIfNull(pool.Template);
 
-            try
-            {
-                analysis = PaymentProcessingExtraProjection.Analyze(
-                    pool.Template.Family, pool.PaymentProcessing?.Extra);
-            }
-            catch(Exception)
-            {
-                // Diagnostics are advisory. Never fail pool startup or log an
-                // exception whose text could contain a rejected value.
-                logger.Warn(() =>
-                    $"Pool '{pool.Id}' payment-processing response omissions " +
-                    "could not be classified safely; the public API remains " +
-                    "fail-closed and no extension values were logged");
+            var analysis = PaymentProcessingExtraProjection.Analyze(
+                pool.Template.Family, pool.PaymentProcessing?.Extra);
+            var omissions = analysis.Omissions.Where(omission =>
+                    omission.Outcome != PaymentProcessingExtraProjectionOutcome.
+                        RuntimeOnlyKey)
+                .ToArray();
+            if(omissions.Length == 0)
                 continue;
-            }
 
-            var omissions = analysis.Omissions;
-            if(omissions.Count == 0)
-                continue;
+            var poolId = PaymentProcessingExtraSensitivityPolicy.
+                CreateDiagnosticLabel(pool.Id, "<empty-pool-id>");
 
             foreach(var omission in omissions.Take(
                         MaximumKeyDiagnosticsPerPool))
             {
-                var reason = GetReason(omission.Outcome);
+                var reason = GetReason(omission);
                 logger.Warn(() =>
-                    $"Pool '{pool.Id}' payment-processing extension key " +
+                    $"Pool '{poolId}' payment-processing extension key " +
                     $"'{omission.DiagnosticKey}' is omitted from the public " +
                     $"API (reason={reason.Code}: {reason.Description}). " +
-                    "No value was logged; correct or remove the setting after " +
-                    "checking its family-specific runtime contract");
+                    $"No value was logged; {reason.Remediation}");
             }
 
             var remainder = omissions.Skip(MaximumKeyDiagnosticsPerPool)
@@ -56,10 +48,11 @@ internal static class PaymentProcessingExtraDiagnostics
             var counts = string.Join(", ", remainder
                 .GroupBy(omission => omission.Outcome)
                 .OrderBy(group => group.Key)
-                .Select(group => $"{GetReason(group.Key).Code}={group.Count()}"));
+                .Select(group =>
+                    $"{GetReasonCode(group.Key)}={group.Count()}"));
 
             logger.Warn(() =>
-                $"Pool '{pool.Id}' has {remainder.Length} additional " +
+                $"Pool '{poolId}' has {remainder.Length} additional " +
                 "payment-processing extension key omission(s) beyond the " +
                 $"{MaximumKeyDiagnosticsPerPool}-entry diagnostic limit " +
                 $"({counts}). Sensitive-looking keys are included in these " +
@@ -67,19 +60,44 @@ internal static class PaymentProcessingExtraDiagnostics
         }
     }
 
-    private static (string Code, string Description) GetReason(
+    private static (string Code, string Description, string Remediation)
+        GetReason(PaymentProcessingExtraOmission omission) =>
+        omission.Outcome switch
+        {
+            PaymentProcessingExtraProjectionOutcome.UnknownKey =>
+                ("unknown-key",
+                    "not recognised by this coin family's runtime or public contract",
+                    "check the spelling and family-specific runtime contract, " +
+                    "then correct or remove the setting"),
+            PaymentProcessingExtraProjectionOutcome.AmbiguousCaseVariant =>
+                ("ambiguous-case",
+                    $"{omission.VariantCount} case variants match one recognised key",
+                    "retain exactly one spelling of the setting"),
+            PaymentProcessingExtraProjectionOutcome.NonScalarValue =>
+                ("non-scalar",
+                    "the approved key requires a boolean, number, string or null JSON value",
+                    "replace the value with a supported scalar representation"),
+            PaymentProcessingExtraProjectionOutcome.ConversionFailure =>
+                ("conversion-failure",
+                    "the scalar cannot convert to the approved runtime type",
+                    "correct the value for the family-specific public contract"),
+            _ => throw new ArgumentOutOfRangeException(nameof(omission),
+                omission.Outcome,
+                "Only omitted payment-processing outcomes can be logged"),
+        };
+
+    private static string GetReasonCode(
         PaymentProcessingExtraProjectionOutcome outcome) => outcome switch
         {
             PaymentProcessingExtraProjectionOutcome.UnknownKey =>
-                ("unknown-key", "not approved for this coin family"),
+                "unknown-key",
             PaymentProcessingExtraProjectionOutcome.AmbiguousCaseVariant =>
-                ("ambiguous-case", "multiple case variants match one approved key"),
+                "ambiguous-case",
             PaymentProcessingExtraProjectionOutcome.NonScalarValue =>
-                ("non-scalar", "the approved key requires a scalar JSON value"),
+                "non-scalar",
             PaymentProcessingExtraProjectionOutcome.ConversionFailure =>
-                ("conversion-failure",
-                    "the scalar cannot convert to the approved runtime type"),
+                "conversion-failure",
             _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome,
-                "Only omitted payment-processing outcomes can be logged"),
+                "Only actionable payment-processing outcomes can be summarized"),
         };
 }

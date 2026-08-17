@@ -30,16 +30,6 @@ internal static class PaymentProcessingExtraSensitivityPolicy
         name?.Contains("Token", StringComparison.OrdinalIgnoreCase) == true ||
         name?.EndsWith("Key", StringComparison.OrdinalIgnoreCase) == true;
 
-    internal static bool IsSensitivePaymentProperty(Type declaringType,
-        string name)
-    {
-        if(!IsSensitivePropertyName(name))
-            return false;
-
-        var identity = $"{declaringType.FullName}.{name}";
-        return !KnownBenignSensitivePaymentProperties.Contains(identity);
-    }
-
     internal static string CreateDiagnosticKey(string name,
         out bool redacted)
     {
@@ -50,33 +40,49 @@ internal static class PaymentProcessingExtraSensitivityPolicy
         }
 
         redacted = false;
-        if(string.IsNullOrEmpty(name))
-            return EmptyDiagnosticKey;
+        return CreateDiagnosticLabel(name, EmptyDiagnosticKey);
+    }
+
+    internal static string CreateDiagnosticLabel(string value,
+        string emptyMarker)
+    {
+        if(string.IsNullOrEmpty(value))
+            return emptyMarker;
 
         var result = new StringBuilder();
-        var characters = 0;
 
-        foreach(var character in name)
+        for(var index = 0; index < value.Length; index++)
         {
-            if(characters == MaximumDiagnosticKeyCharacters)
+            var representation = Escape(value[index]);
+            var hasMoreCharacters = index + 1 < value.Length;
+            var requiredLength = representation.Length +
+                (hasMoreCharacters ? 1 : 0);
+
+            if(result.Length + requiredLength >
+               MaximumDiagnosticKeyCharacters)
             {
-                result.Append('…');
+                if(result.Length < MaximumDiagnosticKeyCharacters)
+                    result.Append('…');
+
                 break;
             }
 
-            characters++;
-            var category = CharUnicodeInfo.GetUnicodeCategory(character);
-            if(char.IsControl(character) ||
-               category is UnicodeCategory.Format or
-                   UnicodeCategory.LineSeparator or
-                   UnicodeCategory.ParagraphSeparator or
-                   UnicodeCategory.Surrogate ||
-               character is '\\' or '\'')
-                result.Append($"\\u{(int) character:X4}");
-            else
-                result.Append(character);
+            result.Append(representation);
         }
 
         return result.ToString();
+    }
+
+    private static string Escape(char character)
+    {
+        var category = CharUnicodeInfo.GetUnicodeCategory(character);
+        return char.IsControl(character) ||
+            category is UnicodeCategory.Format or
+                UnicodeCategory.LineSeparator or
+                UnicodeCategory.ParagraphSeparator or
+                UnicodeCategory.Surrogate ||
+            character is '\\' or '\'' or '"' or '<' or '>'
+                ? $"\\u{(int) character:X4}"
+                : character.ToString();
     }
 }

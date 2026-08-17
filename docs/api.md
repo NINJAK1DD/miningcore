@@ -178,20 +178,23 @@ ambiguous case-variant duplicates and every wallet password or private key are o
 runtime extension property does not make it public; it must be classified and projected
 deliberately. JSON object member order is not part of this contract.
 
-After coin templates are resolved, normal startup classifies configured `paymentProcessing.extra`
-entries once using that same family-aware projection contract. An omitted entry produces a warning
-that identifies the pool, a safe key label and one of four reasons: unknown key, ambiguous case
-variant, non-scalar value or conversion failure. Miningcore logs no extension values. A key whose
-name looks credential-sensitive is shown only as `<redacted-sensitive-key>`, and control characters
-in other key names are escaped. Each pool emits at most ten key-level warnings followed by one
-reason-grouped count for any remainder. Requests to `/api/pools` and `/api/pools/{id}` do not emit
-these warnings again.
+After coin templates are resolved, normal startup classifies `paymentProcessing.extra` entries for
+enabled pools once using the same family-aware public projection and runtime-binder contract. This
+step is not run for disabled pools or during share recovery. Recognised runtime-only fields such as
+wallet credentials are intentionally absent from the public response and do not produce warnings.
+An unrecognised or malformed public entry produces a warning that identifies the pool, a safe key
+label and one of four reasons: unknown key, ambiguous case variant, unsupported public scalar or
+conversion failure. Miningcore logs no extension values. A key whose name looks
+credential-sensitive is shown only as `<redacted-sensitive-key>`, and unsafe characters in other
+key names are escaped within a fixed output-length bound. Each pool emits at most ten key-level
+warnings followed by one reason-grouped count for any remainder. Requests to `/api/pools` and
+`/api/pools/{id}` do not emit these warnings again.
 
 Public API omission does not by itself prove that Miningcore ignored the runtime setting. Unknown
 or private entries remain in the pool's runtime extension dictionary and are active only when the
 relevant family-specific binder accepts and consumes them. Check the spelling and the deployed coin
-family's configuration contract before removing a setting. Credential fields are intentionally
-runtime-only and their redacted omission warning does not indicate that the credential was rejected.
+family's configuration contract before removing a setting. Recognised credential fields are
+intentionally runtime-only and do not generate omission warnings.
 
 REST clients must therefore accept either the canonical JSON type or a runtime-coercible legacy
 representation for an approved `extra` field; they must not infer the REST value's JSON type from

@@ -522,8 +522,8 @@ public class Program : ProcessStatusBackgroundService
 
         await Guard(async () =>
         {
-            AssignPoolTemplates(enabledPools, coinTemplates);
-            LogPaymentProcessingExtraOmissions(enabledPools, logger);
+            AssignPoolTemplatesAndLogPaymentExtraOmissions(enabledPools,
+                coinTemplates, logger);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(
@@ -1004,9 +1004,19 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    internal static void LogPaymentProcessingExtraOmissions(
-        IEnumerable<PoolConfig> poolConfigs, ILogger diagnosticLogger) =>
-        PaymentProcessingExtraDiagnostics.Log(poolConfigs, diagnosticLogger);
+    internal static void AssignPoolTemplatesAndLogPaymentExtraOmissions(
+        IEnumerable<PoolConfig> poolConfigs,
+        IReadOnlyDictionary<string, CoinTemplate> coinTemplates,
+        ILogger diagnosticLogger)
+    {
+        ArgumentNullException.ThrowIfNull(poolConfigs);
+        ArgumentNullException.ThrowIfNull(coinTemplates);
+        ArgumentNullException.ThrowIfNull(diagnosticLogger);
+
+        var pools = poolConfigs as PoolConfig[] ?? poolConfigs.ToArray();
+        AssignPoolTemplates(pools, coinTemplates);
+        PaymentProcessingExtraDiagnostics.Log(pools, diagnosticLogger);
+    }
 
     internal static void AssignRecoveryPoolTemplates(ClusterConfig config,
         IReadOnlyDictionary<string, CoinTemplate> coinTemplates)

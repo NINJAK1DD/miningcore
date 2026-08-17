@@ -380,6 +380,10 @@ public class PoolApiControllerTests
         Assert.Equal(Enum.GetValues<CoinFamily>().OrderBy(value => value),
             PaymentExtraContracts.Select(contract => contract.Family)
                 .OrderBy(value => value));
+        Assert.All(PaymentExtraContracts, contract =>
+            Assert.Equal(contract.RuntimeType,
+                PaymentProcessingExtraProjection.GetRuntimeContractType(
+                    contract.Family)));
 
         foreach(var runtimeType in discoveredTypes)
         {

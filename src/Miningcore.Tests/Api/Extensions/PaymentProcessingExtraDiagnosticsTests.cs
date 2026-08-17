@@ -1,9 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Miningcore.Api.Extensions;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Alephium.Configuration;
+using Miningcore.Blockchain.Bitcoin.Configuration;
+using Miningcore.Blockchain.Ergo.Configuration;
+using Miningcore.Blockchain.Handshake.Configuration;
+using Miningcore.Blockchain.Kaspa.Configuration;
+using Miningcore.Blockchain.Warthog.Configuration;
 using Miningcore.Configuration;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -15,6 +21,38 @@ namespace Miningcore.Tests.Api.Extensions;
 
 public class PaymentProcessingExtraDiagnosticsTests
 {
+    public static IEnumerable<object[]> RuntimeOnlyCredentialCases()
+    {
+        yield return new object[] { CoinFamily.Alephium,
+            typeof(AlephiumPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Bitcoin,
+            typeof(BitcoinPoolPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Equihash,
+            typeof(BitcoinPoolPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Ergo,
+            typeof(ErgoPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Handshake,
+            typeof(HandshakePoolPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Kaspa,
+            typeof(KaspaPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Nexa,
+            typeof(BitcoinPoolPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Progpow,
+            typeof(BitcoinPoolPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Satoshicash,
+            typeof(BitcoinPoolPaymentProcessingConfigExtra), "walletPassword" };
+        yield return new object[] { CoinFamily.Warthog,
+            typeof(WarthogPaymentProcessingConfigExtra), "walletPrivateKey" };
+    }
+
+    public static IEnumerable<object[]> CredentialExampleCases()
+    {
+        yield return new object[] { "alephium_pool.json",
+            CoinFamily.Alephium };
+        yield return new object[] { "kaspa_pool.json", CoinFamily.Kaspa };
+        yield return new object[] { "warthog_pool.json", CoinFamily.Warthog };
+    }
+
     [Fact]
     public void Analyze_DistinguishesOmissionsAndSanitizesDiagnosticKeys()
     {
@@ -33,9 +71,11 @@ public class PaymentProcessingExtraDiagnosticsTests
         var analysis = PaymentProcessingExtraProjection.Analyze(
             CoinFamily.Ethereum, source);
 
-        Assert.Equal(7, analysis.Omissions.Count);
-        Assert.Equal(2, analysis.Omissions.Count(x => x.Outcome ==
-            PaymentProcessingExtraProjectionOutcome.AmbiguousCaseVariant));
+        Assert.Equal(6, analysis.Omissions.Count);
+        var ambiguity = Assert.Single(analysis.Omissions.Where(x =>
+            x.Outcome == PaymentProcessingExtraProjectionOutcome.
+                AmbiguousCaseVariant));
+        Assert.Equal(2, ambiguity.VariantCount);
         Assert.Single(analysis.Omissions.Where(x => x.Outcome ==
             PaymentProcessingExtraProjectionOutcome.NonScalarValue));
         Assert.Single(analysis.Omissions.Where(x => x.Outcome ==
@@ -57,6 +97,90 @@ public class PaymentProcessingExtraDiagnosticsTests
         Assert.DoesNotContain(secretValue, diagnosticText,
             StringComparison.Ordinal);
         Assert.Empty(analysis.Projection.PresentProperties);
+    }
+
+    [Theory]
+    [MemberData(nameof(RuntimeOnlyCredentialCases))]
+    public void RuntimeOnlyCredentials_AreRecognizedAndNeverWarned(
+        CoinFamily family, Type runtimeType, string configuredName)
+    {
+        const string secretValue = "runtime-credential-secret";
+        var source = new Dictionary<string, object>
+        {
+            [configuredName] = secretValue,
+        };
+        var pool = Pool("runtime-only", family, source);
+        using var capture = new LogCapture();
+
+        var analysis = PaymentProcessingExtraProjection.Analyze(family,
+            source);
+        PaymentProcessingExtraDiagnostics.Log(new[] { pool }, capture.Logger);
+        capture.Flush();
+
+        Assert.Equal(runtimeType,
+            PaymentProcessingExtraProjection.GetRuntimeContractType(family));
+        var omission = Assert.Single(analysis.Omissions);
+        Assert.Equal(PaymentProcessingExtraProjectionOutcome.RuntimeOnlyKey,
+            omission.Outcome);
+        Assert.True(omission.KeyWasRedacted);
+        Assert.Equal(PaymentProcessingExtraSensitivityPolicy.
+            RedactedDiagnosticKey, omission.DiagnosticKey);
+        Assert.Empty(capture.Messages);
+    }
+
+    [Theory]
+    [MemberData(nameof(CredentialExampleCases))]
+    public void ShippedCredentialExamples_ProduceNoOmissionWarnings(
+        string filename, CoinFamily family)
+    {
+        var path = FindRepositoryFile(Path.Combine("examples", filename));
+        var document = JObject.Parse(File.ReadAllText(path));
+        var paymentProcessing = document.SelectToken(
+                "pools[0].paymentProcessing")?
+            .ToObject<PoolPaymentProcessingConfig>();
+        var pool = Pool($"example-{family}", family,
+            paymentProcessing?.Extra ?? new Dictionary<string, object>());
+        using var capture = new LogCapture();
+
+        PaymentProcessingExtraDiagnostics.Log(new[] { pool }, capture.Logger);
+        capture.Flush();
+
+        Assert.NotNull(paymentProcessing?.Extra);
+        Assert.Empty(capture.Messages);
+    }
+
+    [Fact]
+    public void RuntimeOnlyCredentialAmbiguity_ProducesOneRedactedWarning()
+    {
+        const string firstSecret = "first-runtime-secret";
+        const string secondSecret = "second-runtime-secret";
+        var source = new Dictionary<string, object>
+        {
+            ["WalletPassword"] = firstSecret,
+            ["walletpassword"] = secondSecret,
+        };
+        var pool = Pool("runtime-ambiguity", CoinFamily.Kaspa, source);
+        using var capture = new LogCapture();
+
+        var analysis = PaymentProcessingExtraProjection.Analyze(
+            CoinFamily.Kaspa, source);
+        PaymentProcessingExtraDiagnostics.Log(new[] { pool }, capture.Logger);
+        capture.Flush();
+
+        var omission = Assert.Single(analysis.Omissions);
+        Assert.Equal(PaymentProcessingExtraProjectionOutcome.
+            AmbiguousCaseVariant, omission.Outcome);
+        Assert.Equal(2, omission.VariantCount);
+        Assert.True(omission.KeyWasRedacted);
+        var message = Assert.Single(capture.Messages);
+        Assert.Contains("reason=ambiguous-case: 2 case variants", message,
+            StringComparison.Ordinal);
+        Assert.Contains(PaymentProcessingExtraSensitivityPolicy.
+            RedactedDiagnosticKey, message, StringComparison.Ordinal);
+        Assert.DoesNotContain("WalletPassword", message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(firstSecret, message, StringComparison.Ordinal);
+        Assert.DoesNotContain(secondSecret, message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -98,14 +222,13 @@ public class PaymentProcessingExtraDiagnosticsTests
         second.Template = null;
 
         using var capture = new LogCapture();
-        Program.AssignPoolTemplates(new[] { first, second },
+        Program.AssignPoolTemplatesAndLogPaymentExtraOmissions(
+            new[] { first, second },
             new Dictionary<string, CoinTemplate>
             {
                 [first.Coin] = Template(CoinFamily.Bitcoin),
                 [second.Coin] = Template(CoinFamily.Ethereum),
-            });
-        Program.LogPaymentProcessingExtraOmissions(new[] { first, second },
-            capture.Logger);
+            }, capture.Logger);
         var startupLogCount = capture.Messages.Count;
 
         var mapper = AutoMapperFactory.CreateMapper();
@@ -125,22 +248,23 @@ public class PaymentProcessingExtraDiagnosticsTests
         var secondMessages = capture.Messages.Where(x =>
             x.Contains("second-pool", StringComparison.Ordinal)).ToArray();
         Assert.Equal(11, firstMessages.Length);
-        Assert.Equal(5, secondMessages.Length);
+        Assert.Equal(4, secondMessages.Length);
         Assert.Equal(10, firstMessages.Count(x => x.Contains(
             "is omitted from the public API", StringComparison.Ordinal)));
         Assert.Single(firstMessages.Where(x => x.Contains(
             "additional", StringComparison.Ordinal)));
         Assert.Contains(firstMessages, x => x.Contains(
-            "unknown-key=3", StringComparison.Ordinal));
+            "unknown-key=2", StringComparison.Ordinal));
         Assert.Contains(firstMessages, x => x.Contains(
             "minimumConfirmation", StringComparison.Ordinal));
         Assert.Contains(capture.Messages, x => x.Contains(
-            "reason=ambiguous-case", StringComparison.Ordinal));
+            "reason=ambiguous-case: 2 case variants",
+            StringComparison.Ordinal));
         Assert.Contains(capture.Messages, x => x.Contains(
             "reason=non-scalar", StringComparison.Ordinal));
         Assert.Contains(capture.Messages, x => x.Contains(
             "reason=conversion-failure", StringComparison.Ordinal));
-        Assert.Equal(2, capture.Messages.Count(x => x.Contains(
+        Assert.Single(capture.Messages.Where(x => x.Contains(
             PaymentProcessingExtraSensitivityPolicy.RedactedDiagnosticKey,
             StringComparison.Ordinal)));
 
@@ -158,28 +282,38 @@ public class PaymentProcessingExtraDiagnosticsTests
     }
 
     [Fact]
-    public void StartupDiagnostics_ClassificationFailureDoesNotStopStartup()
+    public void StartupDiagnostics_UnclassifiedFamilyFailsBeforePoolStartup()
     {
-        const string secretValue = "must-not-enter-the-exception-log";
         var pool = Pool("future-family", (CoinFamily) int.MaxValue,
             new Dictionary<string, object>
             {
-                ["walletPassword"] = secretValue,
+                ["futureSetting"] = true,
             });
         using var capture = new LogCapture();
 
-        var exception = Record.Exception(() =>
-            Program.LogPaymentProcessingExtraOmissions(new[] { pool },
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            PaymentProcessingExtraDiagnostics.Log(new[] { pool },
                 capture.Logger));
 
-        Assert.Null(exception);
-        var message = Assert.Single(capture.Messages);
-        Assert.Contains("could not be classified safely", message,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain("walletPassword", message,
-            StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(secretValue, message,
-            StringComparison.Ordinal);
+        Assert.Equal("family", exception.ParamName);
+        Assert.Empty(capture.Messages);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            PaymentProcessingExtraProjection.Analyze(
+                (CoinFamily) int.MaxValue, null));
+    }
+
+    [Fact]
+    public void StartupDiagnostics_RequiresResolvedTemplate()
+    {
+        var pool = Pool("missing-template", CoinFamily.Bitcoin,
+            new Dictionary<string, object>());
+        pool.Template = null;
+        using var capture = new LogCapture();
+
+        Assert.Throws<ArgumentNullException>(() =>
+            PaymentProcessingExtraDiagnostics.Log(new[] { pool },
+                capture.Logger));
+        Assert.Empty(capture.Messages);
     }
 
     [Fact]
@@ -192,9 +326,16 @@ public class PaymentProcessingExtraDiagnosticsTests
         var ordinary = PaymentProcessingExtraSensitivityPolicy.
             CreateDiagnosticKey(new string('x', 100) + "\nTail",
                 out var ordinaryRedacted);
+        var escapeHeavy = PaymentProcessingExtraSensitivityPolicy.
+            CreateDiagnosticKey(new string('\n', 80),
+                out var escapeHeavyRedacted);
         var escaped = PaymentProcessingExtraSensitivityPolicy.
             CreateDiagnosticKey("safe\u2028\u202E'\\tail",
                 out var escapedRedacted);
+        var spoofedMarker = PaymentProcessingExtraSensitivityPolicy.
+            CreateDiagnosticKey(PaymentProcessingExtraSensitivityPolicy.
+                    RedactedDiagnosticKey,
+                out var spoofedMarkerRedacted);
 
         Assert.True(redacted);
         Assert.Equal(PaymentProcessingExtraSensitivityPolicy.
@@ -203,13 +344,43 @@ public class PaymentProcessingExtraDiagnosticsTests
         Assert.EndsWith("…", ordinary, StringComparison.Ordinal);
         Assert.True(ordinary.Length <=
             PaymentProcessingExtraSensitivityPolicy.
-                MaximumDiagnosticKeyCharacters + 1);
+                MaximumDiagnosticKeyCharacters);
+        Assert.False(escapeHeavyRedacted);
+        Assert.True(escapeHeavy.Length <=
+            PaymentProcessingExtraSensitivityPolicy.
+                MaximumDiagnosticKeyCharacters);
+        Assert.Contains("\\u000A", escapeHeavy, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n", escapeHeavy, StringComparison.Ordinal);
         Assert.False(escapedRedacted);
         Assert.Equal("safe\\u2028\\u202E\\u0027\\u005Ctail", escaped);
+        Assert.False(spoofedMarkerRedacted);
+        Assert.NotEqual(PaymentProcessingExtraSensitivityPolicy.
+            RedactedDiagnosticKey, spoofedMarker);
+        Assert.StartsWith("\\u003C", spoofedMarker,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StartupDiagnostics_SanitizesPoolIdentifier()
+    {
+        var pool = Pool("pool\n'id", CoinFamily.Bitcoin,
+            new Dictionary<string, object>
+            {
+                ["unknown"] = true,
+            });
+        using var capture = new LogCapture();
+
+        PaymentProcessingExtraDiagnostics.Log(new[] { pool }, capture.Logger);
+        capture.Flush();
+
+        var message = Assert.Single(capture.Messages);
+        Assert.Contains("pool\\u000A\\u0027id", message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("pool\n", message, StringComparison.Ordinal);
     }
 
     private static PoolConfig Pool(string id, CoinFamily family,
-        Dictionary<string, object> extra) => new()
+        IDictionary<string, object> extra) => new()
         {
             Id = id,
             Enabled = true,
@@ -219,6 +390,20 @@ public class PaymentProcessingExtraDiagnosticsTests
                 Extra = extra,
             },
         };
+
+    private static string FindRepositoryFile(string relativePath)
+    {
+        for(var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            directory != null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine(directory.FullName, relativePath);
+            if(File.Exists(candidate))
+                return candidate;
+        }
+
+        throw new FileNotFoundException(
+            $"Unable to locate repository fixture '{relativePath}'");
+    }
 
     private static CoinTemplate Template(CoinFamily family) =>
         new AlephiumCoinTemplate
