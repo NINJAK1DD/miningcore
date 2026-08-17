@@ -411,6 +411,22 @@ contract resolver (`extra` with a camel-case resolver). See
 REST consumers must continue accepting runtime-coercible legacy scalar representations rather than
 inferring the JSON type from the new .NET property type.
 
+Normal startup now reports unrecognised or malformed `paymentProcessing.extra` entries for enabled
+pools that are omitted from the typed public response. The one-time, family-aware diagnostics use
+the same public projection and runtime-binder contract, so recognised runtime-only wallet
+credentials remain silent rather than being mislabelled as unknown. Actionable warnings distinguish
+unknown keys, ambiguous case variants, unsupported public scalars and conversion failures. They
+never log values, replace every sensitive-looking omitted key name with
+`<redacted-sensitive-key>`, escape unsafe characters in ordinary names within a fixed output-length
+bound and emit at most ten key warnings per pool plus one reason-grouped remainder summary. A
+redacted unknown-key warning can list the family's recognised private field names as safe spelling
+hints without echoing the supplied name. Disabled pools, share recovery and API requests do not emit
+these warnings. They use the dedicated `PaymentExtraDiagnostics` NLog category for independent
+routing or filtering through the standard console and main log. Per-pool files remain limited to
+their pool-id logger. A private entry can still be active runtime configuration when the coin
+family's binder accepts it; operators should correct or remove a warning-producing setting only
+after checking that family-specific contract.
+
 Cluster and coin-template configuration loading no longer allows Json.NET to interpret full
 ISO-looking date-time strings as dates. UTC, offset and unsuffixed date-time values now survive
 normal startup, recovery-mode configuration loading, typed payment-extension projection,
