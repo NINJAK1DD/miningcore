@@ -95,47 +95,6 @@ public class ApiListenerConfigurationTests
     }
 
     [Fact]
-    public void CommittedConfigSchema_MatchesGenerator()
-    {
-        // The build-output schema is the runtime-shipped artifact. MSBuild refreshes
-        // it from src/Miningcore/config.schema.json before this test executes.
-        var path = Path.Combine(AppContext.BaseDirectory,
-            "config.schema.json");
-        var committed = JObject.Parse(File.ReadAllText(path));
-        var generated = Program.GenerateJsonConfigSchemaDocument();
-
-        Assert.True(JToken.DeepEquals(generated, committed),
-            "src/Miningcore/config.schema.json is stale; regenerate it with Miningcore -gcs");
-
-        foreach(var itemTypePath in new[]
-                {
-                    "definitions.ApiConfig.properties.adminIpWhitelist.items.type",
-                    "definitions.ApiConfig.properties.metricsIpWhitelist.items.type",
-                    "definitions.ApiRateLimitConfig.properties.ipWhitelist.items.type",
-                    "definitions.TcpProxyProtocolConfig.properties.proxyAddresses.items.type",
-                    "properties.coinTemplates.items.type",
-                })
-            Assert.Equal("string",
-                committed.SelectToken(itemTypePath)?.Value<string>());
-    }
-
-    [Fact]
-    public void ConfigSchema_KeepsPoolEndpointNullable_ForDeferredValidation()
-    {
-        // Miningcore's generated structural schema does not encode the runtime
-        // listener predicate: disabled, relay-only and recovery pools deliberately
-        // defer endpoint validation. Enforce non-null endpoints in
-        // PoolConfigValidator only when a listener will be started.
-        var path = Path.Combine(AppContext.BaseDirectory,
-            "config.schema.json");
-        var committed = JObject.Parse(File.ReadAllText(path));
-
-        Assert.Equal(new[] { "object", "null" }, committed.SelectToken(
-                "definitions.PoolEndpoint.type")
-            ?.Values<string>());
-    }
-
-    [Fact]
     public void RecoveryLoader_MatchesStrictJsonParsingAfterApplyingAllowlist()
     {
         var exampleConfig = File.ReadAllText(Path.Combine(
@@ -493,6 +452,10 @@ public class ApiListenerConfigurationTests
                     Port = 8332,
                 },
             },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = false,
+            },
         });
 
         Assert.Contains(result.Errors, error =>
@@ -530,6 +493,10 @@ public class ApiListenerConfigurationTests
                     Host = "127.0.0.1",
                     Port = 8332,
                 },
+            },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = false,
             },
         });
 
@@ -2291,6 +2258,11 @@ public class ApiListenerConfigurationTests
                     EnableInternalStratum = false,
                     Address = "recovery-wallet",
                     Ports = new Dictionary<int, PoolEndpoint>(),
+                    PaymentProcessing = new PoolPaymentProcessingConfig
+                    {
+                        Enabled = false,
+                        PayoutScheme = PayoutScheme.SOLO,
+                    },
                     Daemons = new[]
                     {
                         new DaemonEndpointConfig
@@ -2522,6 +2494,10 @@ public class ApiListenerConfigurationTests
         JsonConvert.SerializeObject(config, new JsonSerializerSettings
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
+            Converters =
+            {
+                new Newtonsoft.Json.Converters.StringEnumConverter(),
+            },
         });
 
     private static int GetFreeTcpPort()

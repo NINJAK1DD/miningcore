@@ -356,6 +356,15 @@ existing names and values.
 Consumers compiling directly against Miningcore response classes must also update the generic value
 type of `PoolInfo.Ports` from `PoolEndpoint` to `ApiPoolEndpoint`.
 
+Normal startup now requires a non-null `paymentProcessing` object in every configured pool entry,
+including disabled pools. Keep the object and set its `enabled` value to `false` when payouts must
+remain disabled. An omitted object or explicit JSON `null` now stops startup with the affected pool
+identified, rather than allowing a later API or payout path to fail with a null reference. The
+`-rs` share-recovery command continues to discard this live-service setting and can import durable
+shares from a damaged configuration. As a defensive response boundary, an invalid programmatic
+pool with no payment configuration omits `paymentProcessing` from `/api/pools` and
+`/api/pools/{id}` instead of fabricating disabled or zero-valued payout defaults.
+
 `PoolInfo.ShareBasedBanning` now uses the dedicated
 `ApiPoolShareBasedBanningConfig` response type instead of exposing
 `PoolShareBasedBanningConfig` directly. This is a source- and binary-level .NET API type change for

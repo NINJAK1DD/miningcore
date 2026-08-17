@@ -143,6 +143,13 @@ omitted under the normal null policy and emitted as `null` when `legacyNullValue
 enabled. This boundary is defence in depth against future internal configuration additions; it
 does not correct a known disclosure in the six existing fields.
 
+Normal startup requires a per-pool `paymentProcessing` object, so validated pool responses retain
+that contract even when its `enabled` value is `false`. As defence in depth, an unvalidated or
+programmatically constructed pool with no payment configuration omits `paymentProcessing` from
+both pool endpoints, including under `legacyNullValueHandling`. Miningcore does not invent a
+disabled state, a zero payment threshold or default payout-scheme values for an object that does
+not exist.
+
 The nested `paymentProcessing.extra` object is an explicit typed public projection. Miningcore emits
 only these approved blockchain-specific fields:
 

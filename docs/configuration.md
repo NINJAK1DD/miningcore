@@ -34,8 +34,18 @@ use the dedicated [share-relay guide](share-relays.md) rather than copying an ol
 ## Pool basics
 
 Every enabled pool needs a unique `id`, a matching entry from `coins.json`, a pool wallet `address`,
-one or more daemon RPC endpoints, at least one Stratum port in `ports`, and an appropriate
-`paymentProcessing` section.
+one or more daemon RPC endpoints and at least one Stratum port in `ports`.
+
+Every configured pool entry, including a disabled pool, must retain a non-null per-pool
+`paymentProcessing` object. Set that object's `enabled` value to `false` when the pool must not
+submit payouts; do not remove the object or replace it with JSON `null`. Normal startup rejects a
+missing object before pool, API or payout services start. The `-rs` share-recovery command does not
+consume or validate this live-service setting.
+
+The generated JSON schema deliberately leaves the per-pool object structurally optional because
+the same schema is used after recovery has discarded unused live-service settings. Normal startup's
+mode-aware configuration validator is the authoritative requirement; do not add the property to the
+schema's required list, because that would prevent `-rs` from loading its sanitized configuration.
 
 The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff` block allows the pool
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with

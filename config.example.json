@@ -291,6 +291,8 @@
         "time": 600
       },
       // Parent-chain block reconciliation and miner payouts.
+      // This object is required even when the pool is disabled; set enabled=false
+      // instead of removing it or replacing it with null.
       "paymentProcessing": {
         // Must be true for this merged-mining SOLO parent pool.
         // When this pool pays transaction fees, fund this exact wallet with a confirmed
@@ -370,6 +372,8 @@
         "time": 600
       },
       // Auxiliary block reconciliation and DOGE SOLO payouts.
+      // This object is required even when the pool is disabled; set enabled=false
+      // instead of removing it or replacing it with null.
       "paymentProcessing": {
         // Must remain enabled so AuxPoW blocks mature, credit and pay normally.
         // When this pool pays transaction fees, fund this exact wallet with a confirmed

@@ -21,6 +21,10 @@ namespace Miningcore.Tests;
 
 public class RecoveryConfigurationTests
 {
+    private const string MissingPoolPaymentProcessingMessage =
+        "Pool 'recovery-pool': paymentProcessing configuration missing; " +
+        "keep the object and set enabled=false to disable payouts";
+
     [Theory]
     [InlineData("statistics", "\"stale\"")]
     [InlineData("nicehash", "[]")]
@@ -575,6 +579,7 @@ public class RecoveryConfigurationTests
     {
         var config = CreateRecoveryConfig();
         config.PaymentProcessing = null;
+        config.Pools[0].PaymentProcessing = null;
         config.Pools[0].Address = null;
         config.Pools[0].Daemons = null;
 
@@ -582,7 +587,12 @@ public class RecoveryConfigurationTests
 
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, error =>
-            error.PropertyName == nameof(ClusterConfig.PaymentProcessing));
+            error.PropertyName == nameof(ClusterConfig.PaymentProcessing) &&
+            error.ErrorMessage ==
+            "Cluster paymentProcessing configuration missing");
+        Assert.Contains(result.Errors, error =>
+            error.PropertyName == "Pools[0].PaymentProcessing" &&
+            error.ErrorMessage == MissingPoolPaymentProcessingMessage);
         Assert.Contains(result.Errors, error =>
             error.ErrorMessage == "Pool: Wallet address missing or empty");
         Assert.Contains(result.Errors, error =>
@@ -592,6 +602,72 @@ public class RecoveryConfigurationTests
         var error = Assert.Throws<PoolStartupException>(() =>
             Program.ValidateConfig(config, false));
         Assert.Equal("No pools are enabled.", error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NormalStartup_MissingPoolPaymentProcessingIdentifiesPool(
+        bool explicitNull)
+    {
+        var document = CreateRecoveryDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+
+        if(explicitNull)
+            pool["paymentProcessing"] = JValue.CreateNull();
+        else
+            pool.Property("paymentProcessing")?.Remove();
+
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var config = Program.ReadConfig(configFile, false);
+            var result = new ClusterConfigValidator().Validate(config);
+            var error = Assert.Single(result.Errors, failure =>
+                failure.PropertyName == "Pools[0].PaymentProcessing");
+
+            Assert.Equal(MissingPoolPaymentProcessingMessage,
+                error.ErrorMessage);
+            Assert.Throws<PoolStartupException>(() =>
+                Program.ValidateConfig(config, false));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NormalStartup_RequiresPaymentProcessingForEveryConfiguredPool(
+        bool enabled)
+    {
+        var config = CreateRecoveryConfig();
+        config.Pools[0].Enabled = enabled;
+        config.Pools[0].PaymentProcessing = null;
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName == "Pools[0].PaymentProcessing");
+        Assert.Equal(MissingPoolPaymentProcessingMessage,
+            error.ErrorMessage);
+    }
+
+    [Fact]
+    public void RecoveryMode_DoesNotConsumePoolPaymentProcessing()
+    {
+        var config = CreateRecoveryConfig();
+        config.Pools[0].PaymentProcessing = null;
+
+        var result = new ClusterConfigValidator(true).Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName.EndsWith("PaymentProcessing",
+                StringComparison.Ordinal));
+        Assert.True(result.IsValid);
     }
 
     [Fact]
@@ -664,6 +740,11 @@ public class RecoveryConfigurationTests
                 EnableInternalStratum = false,
                 Address = "recovery-wallet",
                 Ports = new Dictionary<int, PoolEndpoint>(),
+                PaymentProcessing = new PoolPaymentProcessingConfig
+                {
+                    Enabled = false,
+                    PayoutScheme = PayoutScheme.SOLO,
+                },
                 Daemons = new[]
                 {
                     new DaemonEndpointConfig
@@ -681,6 +762,10 @@ public class RecoveryConfigurationTests
             new JsonSerializerSettings
             {
                 ContractResolver = new CamelCasePropertyNamesContractResolver(),
+                Converters =
+                {
+                    new Newtonsoft.Json.Converters.StringEnumConverter(),
+                },
             }));
 
     private static string WriteTemporaryConfig(JObject document)
