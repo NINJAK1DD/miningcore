@@ -26,6 +26,30 @@ public class RecoveryConfigurationTests
         "keep the object and set enabled=false to disable payouts";
 
     [Theory]
+    [MemberData(nameof(ConfigurationContractTests.
+        DateLookingConfigurationStrings),
+        MemberType = typeof(ConfigurationContractTests))]
+    public void RecoveryMode_PreservesDateLookingConsumedStringValues(
+        string configuredValue)
+    {
+        var document = CreateRecoveryDocument();
+        document["coinTemplates"] = new JArray(configuredValue);
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var config = Program.ReadAndValidateConfig(configFile, true);
+
+            Assert.Equal(configuredValue,
+                Assert.Single(config.CoinTemplates));
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Theory]
     [InlineData("statistics", "\"stale\"")]
     [InlineData("nicehash", "[]")]
     [InlineData("banning", "\"stale\"")]

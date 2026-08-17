@@ -1175,13 +1175,15 @@ public class Program : ProcessStatusBackgroundService
     private static void DumpParsedConfig(ClusterConfig config)
     {
         Console.WriteLine("\nCurrent configuration as parsed from config file:");
+        Console.WriteLine(SerializeParsedConfig(config));
+    }
 
-        Console.WriteLine(JsonConvert.SerializeObject(config, new JsonSerializerSettings
+    internal static string SerializeParsedConfig(ClusterConfig config) =>
+        JsonConvert.SerializeObject(config, new JsonSerializerSettings
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
             Formatting = Formatting.Indented
-        }));
-    }
+        });
 
     private static void GenerateJsonConfigSchema()
     {
@@ -1322,12 +1324,21 @@ public class Program : ProcessStatusBackgroundService
 
             var serializer = JsonSerializer.Create(new JsonSerializerSettings
             {
-                ContractResolver = new CamelCasePropertyNamesContractResolver()
+                ContractResolver = new CamelCasePropertyNamesContractResolver(),
+                // Configuration extension data frequently carries identifiers and version
+                // switches whose spelling happens to resemble an ISO date. Preserve the JSON
+                // string token exactly instead of allowing Json.NET to coerce it to DateTime.
+                DateParseHandling = DateParseHandling.None,
             });
 
             using(var reader = new StreamReader(file, Encoding.UTF8))
             {
-                using(var jsonReader = new JsonTextReader(reader))
+                using(var jsonReader = new JsonTextReader(reader)
+                {
+                    // This reader materializes the JObject before schema validation and CLR
+                    // binding, so it is the authoritative boundary for preserving strings.
+                    DateParseHandling = DateParseHandling.None,
+                })
                 {
                     var document = LoadConfigurationDocument(jsonReader,
                         skipApiListenerSettings);

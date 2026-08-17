@@ -613,20 +613,20 @@ public class PoolApiControllerTests
                 "minimumConfirmations", new JValue(12.7), 13),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletName", new JValue("2026-08-16T15:30:00Z"),
-                "08/16/2026 15:30:00", true),
+                "2026-08-16T15:30:00Z"),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletAccount", new JValue("2026-08-16T15:31:00Z"),
-                "08/16/2026 15:31:00", true),
+                "2026-08-16T15:31:00Z"),
             new CoerciblePaymentExtraCase(CoinFamily.Kaspa,
                 "versionEnablingMaxFee",
                 new JValue("2026-08-16T15:32:00Z"),
-                "08/16/2026 15:32:00", true),
+                "2026-08-16T15:32:00Z"),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletName", new JValue("2025-01-01"),
                 "2025-01-01"),
             new CoerciblePaymentExtraCase(CoinFamily.Handshake,
                 "walletAccount", new JValue("2025-01-01T00:00:00"),
-                "01/01/2025 00:00:00", true),
+                "2025-01-01T00:00:00"),
         };
 
         foreach(var testCase in cases)
@@ -649,17 +649,25 @@ public class PoolApiControllerTests
         };
         config.PaymentProcessing = Newtonsoft.Json.JsonConvert.
             DeserializeObject<PoolPaymentProcessingConfig>(
-                runtimeJson.ToString(Newtonsoft.Json.Formatting.None));
+                runtimeJson.ToString(Newtonsoft.Json.Formatting.None),
+                new Newtonsoft.Json.JsonSerializerSettings
+                {
+                    DateParseHandling =
+                        Newtonsoft.Json.DateParseHandling.None,
+                });
 
         var sourceValue = config.PaymentProcessing.Extra[testCase.Name];
         Assert.False(sourceValue is JToken);
 
-        if(testCase.ExpectsDateParsing)
-            Assert.IsType<DateTime>(sourceValue);
+        if(testCase.WireValue.Type == JTokenType.String)
+        {
+            Assert.Equal(testCase.WireValue.Value<string>(),
+                Assert.IsType<string>(sourceValue));
+        }
 
         // This is the value the former object-valued response dictionary gave
         // System.Text.Json. Comparing against it pins before/after REST parity,
-        // including Json.NET's ISO-string-to-DateTime parsing behavior.
+        // including date-looking configuration strings remaining strings.
         var expectedWire = JsonSerializer.SerializeToElement(sourceValue,
             options);
         var result = config.ToPoolInfo(AutoMapperFactory.CreateMapper(),
@@ -1278,8 +1286,7 @@ public class PoolApiControllerTests
     }
 
     public sealed record CoerciblePaymentExtraCase(CoinFamily Family,
-        string Name, JValue WireValue, object ExpectedClrValue,
-        bool ExpectsDateParsing = false);
+        string Name, JValue WireValue, object ExpectedClrValue);
 
     public enum PaymentExtraSourceKind
     {

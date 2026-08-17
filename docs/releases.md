@@ -409,9 +409,17 @@ contract resolver (`extra` with a camel-case resolver). See
 [the public API contract](api.md#pool-response-contracts) for the complete allow-list.
 
 REST consumers must continue accepting runtime-coercible legacy scalar representations rather than
-inferring the JSON type from the new .NET property type. This includes ISO-looking configured
-strings that Json.NET represents internally as dates: approved string fields remain JSON strings on
-the REST wire. Miningcore's configured System.Text.Json encoder remains effective for those strings.
+inferring the JSON type from the new .NET property type.
+
+Configuration loading no longer allows Json.NET to interpret ISO-looking strings as dates. Exact
+date-only, UTC, offset and unsuffixed string values now survive normal startup, recovery-mode
+configuration loading, typed payment-extension projection, parsed-configuration output and approved
+REST responses. This intentionally corrects earlier builds that could replace configured text with
+a normalized, culture-dependent date representation. It affects extension values such as Handshake
+`walletName` or `walletAccount`, Kaspa `versionEnablingMaxFee`, and any other configured string that
+resembles a date. Operators or API clients that relied on the normalized value must instead
+configure the literal they require and update that dependency before upgrading. RPC, Stratum,
+recovery-journal and schema readers retain their existing parsing behavior.
 
 Enabled internal Stratum sockets are now pre-bound and retained as one all-or-nothing cluster
 startup phase. A non-local address, occupied endpoint, invalid IPv6 scope or other bind failure stops

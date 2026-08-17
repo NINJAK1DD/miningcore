@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using FluentValidation.Results;
+using Miningcore.Blockchain.Handshake.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Extensions;
 using Miningcore.Mining;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 using Xunit.Sdk;
@@ -13,6 +16,14 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    public static IEnumerable<object[]> DateLookingConfigurationStrings()
+    {
+        yield return new object[] { "2025-01-01" };
+        yield return new object[] { "2026-08-16T15:30:00Z" };
+        yield return new object[] { "2026-08-16T15:30:00+01:00" };
+        yield return new object[] { "2026-08-16T15:30:00" };
+    }
+
     private static string FormatValidationErrors(
         IEnumerable<ValidationFailure> errors) =>
         string.Join(Environment.NewLine, errors.Select(error =>
@@ -132,6 +143,71 @@ public class ConfigurationContractTests
         ValidateNormalStartupWithDiagnostics(config);
     }
 
+    [Theory]
+    [MemberData(nameof(DateLookingConfigurationStrings))]
+    public void NormalStartupAndParsedConfigDump_PreserveDateLookingStrings(
+        string configuredValue)
+    {
+        var document = ReadExampleConfigDocument();
+        var poolDocument = (JObject)((JArray) document["pools"])[0];
+        var paymentDocument = (JObject) poolDocument["paymentProcessing"];
+        paymentDocument["walletName"] = configuredValue;
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var config = Program.ReadAndValidateConfig(configFile, false);
+            var pool = config.Pools[0];
+            var sourceValue = pool.PaymentProcessing.Extra["walletName"];
+
+            Assert.Equal(configuredValue, Assert.IsType<string>(sourceValue));
+            Assert.Equal(configuredValue,
+                pool.PaymentProcessing.Extra.SafeExtensionDataAs<
+                    HandshakePoolPaymentProcessingConfigExtra>()?.WalletName);
+            Assert.Equal(document["paymentProcessing"]?["interval"]?.Value<int>(),
+                config.PaymentProcessing.Interval);
+            Assert.Equal(paymentDocument["minimumPayment"]?.Value<decimal>(),
+                pool.PaymentProcessing.MinimumPayment);
+
+            var dumped = ParseConfigurationDocument(
+                Program.SerializeParsedConfig(config));
+            var dumpedValue = dumped.SelectToken(
+                "pools[0].paymentProcessing.walletName");
+
+            Assert.Equal(JTokenType.String, dumpedValue?.Type);
+            Assert.Equal(configuredValue, dumpedValue?.Value<string>());
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void ReadConfig_TypedSchemaFailureRetainsPathAndLocation()
+    {
+        var document = ReadExampleConfigDocument();
+        document["paymentProcessing"]["interval"] = "not-an-integer";
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, false));
+
+            Assert.Contains("paymentProcessing.interval", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("line", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("position", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
     [Fact]
     public void LiveStartupValidationFailureAfterDefaults_RetainsDiagnostic()
     {
@@ -168,5 +244,40 @@ public class ConfigurationContractTests
             error.Message,
             StringComparison.Ordinal);
         Assert.IsType<PoolStartupException>(error.InnerException);
+    }
+
+    private static JObject ReadExampleConfigDocument()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory,
+            "config.example.json");
+        using var stream = File.OpenText(path);
+        using var reader = new JsonTextReader(stream)
+        {
+            DateParseHandling = DateParseHandling.None,
+        };
+
+        return JObject.Load(reader, new JsonLoadSettings
+        {
+            DuplicatePropertyNameHandling =
+                DuplicatePropertyNameHandling.Error,
+        });
+    }
+
+    private static JObject ParseConfigurationDocument(string json)
+    {
+        using var stream = new StringReader(json);
+        using var reader = new JsonTextReader(stream)
+        {
+            DateParseHandling = DateParseHandling.None,
+        };
+
+        return JObject.Load(reader);
+    }
+
+    private static string WriteTemporaryConfig(JObject document)
+    {
+        var filename = Path.GetTempFileName();
+        File.WriteAllText(filename, document.ToString());
+        return filename;
     }
 }
