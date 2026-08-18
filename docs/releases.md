@@ -33,10 +33,10 @@ download these two files:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz`
 - `SHA256SUMS`
 
-The examples below use the current `v0.1.0-rc.8`. Substitute the version you selected.
+The examples below use the current `v0.1.0-rc.9`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.8
+export MININGCORE_VERSION=v0.1.0-rc.9
 curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz"
 curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
 sha256sum --check SHA256SUMS
@@ -171,7 +171,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.8  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.1.0-rc.9  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -789,7 +789,7 @@ merged-mining support before it can be offered as a Miningcore template.
 
 ## Maintainer release procedure
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.9` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.10` or
 `v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
 runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
 checks that the binary reports the release version and source commit, packages the result,
@@ -803,7 +803,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0-rc.9  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.1.0-rc.10  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
