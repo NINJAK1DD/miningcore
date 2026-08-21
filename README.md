@@ -47,7 +47,7 @@ To build from source instead:
 git clone https://github.com/NINJAK1DD/miningcore.git
 cd miningcore
 git checkout dev
-./build-ubuntu-22.04.sh
+./build-ubuntu-26.04.sh
 cp config.example.json build/config.json
 ```
 
@@ -152,7 +152,8 @@ the native build dependencies and .NET SDK, then publishes Miningcore into `buil
 | Operating system | Command | Guidance |
 | --- | --- | --- |
 | Debian 12 | `./build-debian-12.sh` | **Recommended script path** |
-| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | **Recommended Ubuntu script path** |
+| Ubuntu 26.04 LTS | `./build-ubuntu-26.04.sh` | **Recommended Ubuntu script path** |
+| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | Recommended Ubuntu script path |
 | Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Recommended Ubuntu script path |
 
 For example:
@@ -163,7 +164,9 @@ chmod +x build-debian-12.sh
 ls build/Miningcore
 ```
 
-These scripts install the .NET 10 SDK and publish the `net10.0` application. GitHub Actions
+These scripts install the .NET 10 SDK and publish the `net10.0` application. Ubuntu 24.04 and 26.04
+use Canonical's native .NET 10 packages without Microsoft's APT feed or the Ubuntu 22.04
+`dotnet/backports` PPA. GitHub Actions
 ([workflow source](.github/workflows/dotnet.yml)) is the authoritative automated build-and-test path.
 
 ### Windows development

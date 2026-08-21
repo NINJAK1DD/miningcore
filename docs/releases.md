@@ -6,6 +6,11 @@ image built from that same archive. The archive saves compilation time, but it s
 distributions are not represented as binary-compatible by this package; use the source-build guide
 in the root README for those environments.
 
+Ubuntu 26.04 LTS is supported as a source-build target through `build-ubuntu-26.04.sh`. That script
+uses Canonical's native .NET 10 packages and does not add Microsoft's APT feed or the Ubuntu 22.04
+`dotnet/backports` PPA. This does not extend the Ubuntu 22.04 prebuilt archive's tested binary target
+to Ubuntu 26.04.
+
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
 
@@ -206,6 +211,21 @@ from the container network.
 
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
+
+### Ubuntu 26.04 source-build support
+
+The repository now includes `build-ubuntu-26.04.sh` and a dedicated Ubuntu 26.04 source-build CI
+lane. The native sources build with GCC 15 and Boost 1.90: the CryptoNight interfaces use explicit
+byte-output conversions and POSIX declarations, the CryptoNote library uses C++14 with its direct
+Boost MPL dependency, and obsolete Boost.System linkage has been removed from CryptoNote and
+ZanoNote. ZanoNote also uses the current Boost.Asio `io_context` and Boost.UUID initialization
+forms.
+
+The Linux native build driver now stops at the first failed component instead of continuing to a
+misleading later MSBuild error. The Ubuntu 26.04 validation publishes all expected native shared
+libraries, checks their architecture and dynamic dependencies, exercises version/help/schema paths,
+and reaches a controlled startup safety boundary. Official prebuilt release archives remain built
+and tested on Ubuntu 22.04 x64.
 
 ### Security: administrative API bearer authentication and safe verbs
 

@@ -18,10 +18,10 @@ framework-dependent build will not start until the .NET 10 ASP.NET Core runtime 
 
 ## Supported starting point
 
-The tested prebuilt archive targets **Ubuntu 22.04 x64**. Ubuntu 24.04, Debian 12 and Windows
-development use the source-build instructions in the root README. Other distributions, CPU
-architectures, custom containers, self-contained publications and orchestration systems need an
-equivalent operator-owned procedure.
+The tested prebuilt archive targets **Ubuntu 22.04 x64**. Ubuntu 24.04, Ubuntu 26.04, Debian 12 and
+Windows development use the source-build instructions in the root README. Other distributions,
+CPU architectures, custom containers, self-contained publications and orchestration systems need
+an equivalent operator-owned procedure.
 
 Do not combine an operating-system upgrade, database-server upgrade and Miningcore runtime upgrade
 in one irreversible change. If the host operating system is unsupported, prefer preparing a new
@@ -120,6 +120,21 @@ feed or combine it with Ubuntu .NET packages:
 sudo apt-get update
 sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
 ```
+
+### Ubuntu 26.04
+
+.NET 10 is available from Ubuntu's Canonical-maintained package feed. Do not add Microsoft's Ubuntu
+feed, the Ubuntu 22.04 `dotnet/backports` PPA, or combine those sources with Ubuntu .NET packages:
+
+```console
+sudo apt-get update
+sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
+```
+
+Use `build-ubuntu-26.04.sh` when compiling Miningcore on this platform. It installs the Canonical
+`dotnet-sdk-10.0` package and the complete native compiler toolchain from Ubuntu's repositories.
+This source-build support does not make the Ubuntu 22.04 prebuilt archive a validated Ubuntu 26.04
+binary package.
 
 Only source-build hosts need `dotnet-sdk-10.0` and the full compiler/native toolchain. A host running
 the framework-dependent release archive needs the ASP.NET Core runtime, not the SDK.
