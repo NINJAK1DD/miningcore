@@ -19,6 +19,7 @@ set -eu
 printf 'sudo %s\n' "$*" >> "$MININGCORE_HELPER_TEST_TRACE"
 counter_file="$MININGCORE_HELPER_TEST_STATE/sudo"
 counter=0
+resolved_command=
 
 if [ -f "$counter_file" ]; then
   counter=$(cat "$counter_file")
@@ -31,6 +32,17 @@ if [ "${MININGCORE_HELPER_FAIL_TOOL:-}" = sudo ] &&
     [ "${MININGCORE_HELPER_FAIL_CALL:-0}" -eq "$counter" ]; then
   exit 42
 fi
+
+resolved_command=$(command -v "$1" 2>/dev/null || true)
+
+case "$resolved_command" in
+  "$MININGCORE_HELPER_TEST_BIN"/*) ;;
+  *)
+    printf 'unstubbed-privileged %s\n' "$1" >> "$MININGCORE_HELPER_TEST_TRACE"
+    echo "Un-stubbed privileged command in helper test: $1" >&2
+    exit 90
+    ;;
+esac
 
 "$@"
 SH
@@ -120,6 +132,27 @@ SH
 
 chmod +x "$work_dir/bin/"*
 
+unstubbed_trace="$work_dir/unstubbed-trace"
+unstubbed_state="$work_dir/unstubbed-state"
+mkdir -p "$unstubbed_state"
+
+set +e
+PATH="$work_dir/bin:$PATH" \
+  MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
+  MININGCORE_HELPER_TEST_STATE="$unstubbed_state" \
+  MININGCORE_HELPER_TEST_TRACE="$unstubbed_trace" \
+  sudo miningcore-unexpected-privileged-command > /dev/null 2>&1
+unstubbed_status=$?
+set -e
+
+if [[ "$unstubbed_status" -ne 90 ]]; then
+  echo "Un-stubbed privileged command did not fail with the fixture boundary status" >&2
+  exit 1
+fi
+
+grep -Fxq 'unstubbed-privileged miningcore-unexpected-privileged-command' \
+  "$unstubbed_trace"
+
 helpers=(
   build-debian-12.sh
   build-ubuntu-22.04.sh
@@ -146,6 +179,7 @@ assert_fail_closed() {
     PATH="$work_dir/bin:$PATH" \
       MININGCORE_HELPER_FAIL_TOOL="$fail_tool" \
       MININGCORE_HELPER_FAIL_CALL="$fail_call" \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
       MININGCORE_HELPER_TEST_STATE="$state" \
       MININGCORE_HELPER_TEST_TRACE="$trace" \
       bash "$helper" "$publish_dir"
@@ -156,6 +190,12 @@ assert_fail_closed() {
   if [[ "$status" -eq 0 ]]; then
     echo "$helper reported success after $fail_tool call $fail_call failed" >&2
     cat "$output" >&2
+    exit 1
+  fi
+
+  if grep -Fq 'unstubbed-privileged ' "$trace"; then
+    echo "$helper reached an un-stubbed privileged command" >&2
+    cat "$trace" >&2
     exit 1
   fi
 
@@ -183,18 +223,29 @@ for helper in "${helpers[@]}"; do
   (
     cd "$sandbox"
     PATH="$work_dir/bin:$PATH" \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
       MININGCORE_HELPER_TEST_STATE="$state" \
       MININGCORE_HELPER_TEST_TRACE="$trace" \
       bash "$helper" "$publish_dir"
   ) > "$output" 2>&1
 
   grep -Fq "dotnet publish -c Release --framework net10.0 -o $publish_dir" "$trace"
-  sudo_count=$(grep -c '^sudo ' "$trace")
+  if grep -Fq 'unstubbed-privileged ' "$trace"; then
+    echo "$helper reached an un-stubbed privileged command" >&2
+    cat "$trace" >&2
+    exit 1
+  fi
 
-  for ((fail_call = 1; fail_call <= sudo_count; fail_call++)); do
-    assert_fail_closed "$helper" "$sandbox" "$publish_dir" "$trace" "$state" \
-      "$output" sudo "$fail_call"
-  done
+  sudo_count=$(grep -c '^sudo ' "$trace" || true)
+
+  if ((sudo_count == 0)); then
+    echo "$helper contains no privileged commands to failure-test"
+  else
+    for ((fail_call = 1; fail_call <= sudo_count; fail_call++)); do
+      assert_fail_closed "$helper" "$sandbox" "$publish_dir" "$trace" "$state" \
+        "$output" sudo "$fail_call"
+    done
+  fi
 
   if [[ "$helper" == build-debian-12.sh ]]; then
     assert_fail_closed "$helper" "$sandbox" "$publish_dir" "$trace" "$state" \
