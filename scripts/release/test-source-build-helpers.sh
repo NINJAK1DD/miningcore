@@ -220,6 +220,7 @@ for helper in "${helpers[@]}"; do
 
   bash -n "$sandbox/$helper"
 
+  set +e
   (
     cd "$sandbox"
     PATH="$work_dir/bin:$PATH" \
@@ -228,8 +229,22 @@ for helper in "${helpers[@]}"; do
       MININGCORE_HELPER_TEST_TRACE="$trace" \
       bash "$helper" "$publish_dir"
   ) > "$output" 2>&1
+  status=$?
+  set -e
 
-  grep -Fq "dotnet publish -c Release --framework net10.0 -o $publish_dir" "$trace"
+  if [[ "$status" -ne 0 ]]; then
+    echo "$helper failed during its hermetic success run with status $status" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq "dotnet publish -c Release --framework net10.0 -o $publish_dir" \
+      "$trace"; then
+    echo "$helper did not reach the expected dotnet publish boundary" >&2
+    cat "$trace" >&2
+    exit 1
+  fi
+
   if grep -Fq 'unstubbed-privileged ' "$trace"; then
     echo "$helper reached an un-stubbed privileged command" >&2
     cat "$trace" >&2
