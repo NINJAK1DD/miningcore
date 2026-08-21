@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -9,6 +10,15 @@ using Miningcore.Tests.Util;
 using Xunit;
 
 namespace Miningcore.Tests.Crypto;
+
+internal sealed class LinuxNativeFactAttribute : FactAttribute
+{
+    public LinuxNativeFactAttribute()
+    {
+        if(!OperatingSystem.IsLinux())
+            Skip = "Requires Linux native libraries built from the current source tree";
+    }
+}
 
 public class HashingTests : TestBase
 {
@@ -128,6 +138,92 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("75d08b4c639645f3f1e15c7c412160867821441d365a7bbe3edf2c6b852ccb59", result);
+    }
+
+    [LinuxNativeFact]
+    public void Yescrypt_Hash()
+    {
+        var hasher = new Yescrypt();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("bac679e3dddaee9bb52f433fd4aff04cbfd3325c91188ec819b0ba1066e5a764",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR8_Hash()
+    {
+        var hasher = new YescryptR8();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("bac679e3dddaee9bb52f433fd4aff04cbfd3325c91188ec819b0ba1066e5a764",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR16_Hash()
+    {
+        var hasher = new YescryptR16();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("33a2ac510a4df3ad40388f9ab2795941378637c7044e5375bab4e6f5cd51742f",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR32_Hash()
+    {
+        var hasher = new YescryptR32();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("fd6c95c8f0213ded55762c62fe80bf88ab21014577e0fbfa1de029b2808b0831",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Flex_Hash_MatchesKnownVector()
+    {
+        var hasher = new Flex();
+        var first = new byte[32];
+        var second = new byte[32];
+
+        hasher.Digest(testValue2, first);
+        hasher.Digest(testValue2, second);
+
+        Assert.Equal(first, second);
+        Assert.Equal("06c6d3f15e7ca2cd11a528fec7c3aefd6511c88051f7ce2ec8a83ca3898d1c3d",
+            first.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Zanonote_LoadsReviewedNativeEntryPoints()
+    {
+        var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,
+            DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.SafeDirectories);
+
+        try
+        {
+            foreach(var export in new[]
+                    {
+                        "convert_blob_export",
+                        "convert_block_export",
+                        "get_blob_id_export",
+                        "get_block_id_export",
+                    })
+            {
+                Assert.True(NativeLibrary.TryGetExport(handle, export, out _),
+                    $"libzanonote.so does not export required entry point: {export}");
+            }
+        }
+
+        finally
+        {
+            NativeLibrary.Free(handle);
+        }
     }
 
     [Fact]

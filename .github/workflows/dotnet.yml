@@ -44,6 +44,14 @@ jobs:
       shell: bash
       run: python3 scripts/release/test-doc-links.py
 
+    - name: Test Linux native build failure propagation
+      shell: bash
+      run: bash scripts/release/test-linux-native-build-fail-fast.sh
+
+    - name: Test source-build helper fail-closed behavior
+      shell: bash
+      run: bash scripts/release/test-source-build-helpers.sh
+
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
       # libzmq5 package provides libzmq.so.5, while libzmq3-dev also provides the
@@ -156,6 +164,36 @@ jobs:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
+
+  build-ubuntu-2604:
+    name: Build Ubuntu 26.04 source
+    # This hosted image is currently a public preview. The lane validates the supported
+    # source-build path; it does not change the Ubuntu 22.04 prebuilt archive target.
+    # Keep it required deliberately: a regression in a claimed supported target must be visible.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Build with Canonical packages
+      shell: bash
+      run: ./build-ubuntu-26.04.sh "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+
+    - name: Validate published native libraries and runtime paths
+      shell: bash
+      run: >-
+        bash scripts/release/test-ubuntu-2604-source-build.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+
+    - name: Run GCC 15 native known-answer tests
+      shell: bash
+      run: >-
+        bash scripts/release/test-ubuntu-2604-native-vectors.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
 
   build-windows:
     name: Build Windows x64

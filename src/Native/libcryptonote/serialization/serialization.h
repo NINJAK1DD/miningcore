@@ -11,6 +11,7 @@
 #include <string>
 #include <boost/type_traits/is_integral.hpp>
 #include <boost/type_traits/integral_constant.hpp>
+#include <boost/mpl/bool.hpp>
 
 template <class T>
 struct is_blob_type { typedef boost::false_type type; };
