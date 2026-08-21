@@ -41,7 +41,7 @@ For Ubuntu 22.04 x64, the quickest tested route is the
 database scripts, documentation, checksum, provenance, and a systemd unit. A matching non-root
 container image is published to `ghcr.io/ninjak1dd/miningcore`.
 
-To build from source instead:
+To build from source on Ubuntu 26.04 x64 instead:
 
 ```console
 git clone https://github.com/NINJAK1DD/miningcore.git
@@ -152,9 +152,9 @@ the native build dependencies and .NET SDK, then publishes Miningcore into `buil
 | Operating system | Command | Guidance |
 | --- | --- | --- |
 | Debian 12 | `./build-debian-12.sh` | **Recommended script path** |
-| Ubuntu 26.04 LTS | `./build-ubuntu-26.04.sh` | **Recommended Ubuntu script path** |
-| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | Recommended Ubuntu script path |
-| Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Recommended Ubuntu script path |
+| Ubuntu 26.04 LTS x64 | `./build-ubuntu-26.04.sh` | **Recommended Ubuntu source-build path** |
+| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | Supported source-build path |
+| Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Supported source build and prebuilt archive target |
 
 For example:
 

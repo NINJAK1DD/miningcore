@@ -44,6 +44,10 @@ jobs:
       shell: bash
       run: python3 scripts/release/test-doc-links.py
 
+    - name: Test Linux native build failure propagation
+      shell: bash
+      run: bash scripts/release/test-linux-native-build-fail-fast.sh
+
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
       # libzmq5 package provides libzmq.so.5, while libzmq3-dev also provides the
@@ -162,7 +166,7 @@ jobs:
     # This hosted image is currently a public preview. The lane validates the supported
     # source-build path; it does not change the Ubuntu 22.04 prebuilt archive target.
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
     - name: Checkout
@@ -178,6 +182,12 @@ jobs:
       shell: bash
       run: >-
         bash scripts/release/test-ubuntu-2604-source-build.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+
+    - name: Run GCC 15 native known-answer tests
+      shell: bash
+      run: >-
+        bash scripts/release/test-ubuntu-2604-native-vectors.sh
         "$GITHUB_WORKSPACE/build/ubuntu-26.04"
 
   build-windows:

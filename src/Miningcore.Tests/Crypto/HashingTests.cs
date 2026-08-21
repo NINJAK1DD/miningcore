@@ -10,6 +10,15 @@ using Xunit;
 
 namespace Miningcore.Tests.Crypto;
 
+internal sealed class LinuxNativeFactAttribute : FactAttribute
+{
+    public LinuxNativeFactAttribute()
+    {
+        if(!OperatingSystem.IsLinux())
+            Skip = "Requires Linux native libraries built from the current source tree";
+    }
+}
+
 public class HashingTests : TestBase
 {
     private static readonly byte[] testValue = Enumerable.Repeat((byte) 0x80, 32).ToArray();
@@ -128,6 +137,64 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("75d08b4c639645f3f1e15c7c412160867821441d365a7bbe3edf2c6b852ccb59", result);
+    }
+
+    [LinuxNativeFact]
+    public void Yescrypt_Hash()
+    {
+        var hasher = new Yescrypt();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("bac679e3dddaee9bb52f433fd4aff04cbfd3325c91188ec819b0ba1066e5a764",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR8_Hash()
+    {
+        var hasher = new YescryptR8();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("bac679e3dddaee9bb52f433fd4aff04cbfd3325c91188ec819b0ba1066e5a764",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR16_Hash()
+    {
+        var hasher = new YescryptR16();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("33a2ac510a4df3ad40388f9ab2795941378637c7044e5375bab4e6f5cd51742f",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR32_Hash()
+    {
+        var hasher = new YescryptR32();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("fd6c95c8f0213ded55762c62fe80bf88ab21014577e0fbfa1de029b2808b0831",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Flex_Hash_ExecutesAffectedNativePathDeterministically()
+    {
+        var hasher = new Flex();
+        var first = new byte[32];
+        var second = new byte[32];
+
+        hasher.Digest(testValue2, first);
+        hasher.Digest(testValue2, second);
+
+        Assert.Equal(first, second);
+        Assert.Contains(first, value => value != 0);
     }
 
     [Fact]

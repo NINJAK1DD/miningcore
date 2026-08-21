@@ -22,10 +22,7 @@ if [[ ! -x "$publish_dir/Miningcore" ]]; then
     exit 1
 fi
 
-if ! compgen -G "$publish_dir/*.so" > /dev/null; then
-    echo "No published Linux native libraries were found in $publish_dir" >&2
-    exit 1
-fi
+bash "$repository_root/scripts/release/test-linux-native-inventory.sh" "$publish_dir"
 
 source_commit="${SOURCE_COMMIT:-$(git -C "$repository_root" rev-parse HEAD)}"
 

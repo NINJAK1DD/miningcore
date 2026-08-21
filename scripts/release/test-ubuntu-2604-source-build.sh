@@ -11,45 +11,12 @@ if [ ! -x "$app" ]; then
   exit 1
 fi
 
-expected_libraries=(
-  libbeamhash.so
-  libcortexcuckoocycle.so
-  libcryptonight.so
-  libcryptonote.so
-  libdero.so
-  libetchash.so
-  libethhash.so
-  libethhashb3.so
-  libfiropow.so
-  libkawpow.so
-  libmeowpow.so
-  libmerakipow.so
-  libmultihash.so
-  libnexapow.so
-  libpanthera.so
-  libphihash.so
-  libprogpowz.so
-  librandomarq.so
-  librandomx.so
-  librandomxscash.so
-  libsccpow.so
-  libubqhash.so
-  libverushash.so
-  libzanonote.so
-)
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+bash "$script_dir/test-linux-native-inventory.sh" "$publish_dir"
 
 mapfile -t actual_libraries < <(
   find "$publish_dir" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort
 )
-
-mapfile -t expected_libraries < <(printf '%s\n' "${expected_libraries[@]}" | sort)
-
-if ! diff -u \
-    <(printf '%s\n' "${expected_libraries[@]}") \
-    <(printf '%s\n' "${actual_libraries[@]}"); then
-  echo "Published native-library inventory does not match the expected x64 set" >&2
-  exit 1
-fi
 
 missing_dependencies=0
 
@@ -62,7 +29,11 @@ for library_name in "${actual_libraries[@]}"; do
     exit 1
   fi
 
-  dependencies=$(ldd "$library")
+  if ! dependencies=$(ldd "$library" 2>&1); then
+    echo "$library_name could not be inspected with ldd:" >&2
+    printf '%s\n' "$dependencies" >&2
+    exit 1
+  fi
 
   if grep -Fq 'not found' <<<"$dependencies"; then
     echo "$library_name has unresolved native dependencies:" >&2
@@ -74,6 +45,41 @@ done
 if [ "$missing_dependencies" -ne 0 ]; then
   exit 1
 fi
+
+# These two compatibility changes remove obsolete Boost.System linkage. Resolve every
+# relocation now so a missing symbol cannot remain hidden until the first native call.
+for library_name in libcryptonote.so libzanonote.so; do
+  library="$publish_dir/$library_name"
+
+  if ! relocations=$(ldd -r "$library" 2>&1); then
+    echo "$library_name failed relocation validation:" >&2
+    printf '%s\n' "$relocations" >&2
+    exit 1
+  fi
+
+  if grep -Eq 'not found|undefined symbol' <<<"$relocations"; then
+    echo "$library_name contains an unresolved relocation:" >&2
+    printf '%s\n' "$relocations" >&2
+    exit 1
+  fi
+done
+
+if ! zanonote_symbols=$(nm -D --defined-only "$publish_dir/libzanonote.so" | \
+    awk '{ print $3 }'); then
+  echo "Unable to inspect exported symbols in libzanonote.so" >&2
+  exit 1
+fi
+
+for symbol in \
+    convert_blob_export \
+    convert_block_export \
+    get_blob_id_export \
+    get_block_id_export; do
+  if ! grep -Fxq "$symbol" <<<"$zanonote_symbols"; then
+    echo "libzanonote.so does not export required entry point: $symbol" >&2
+    exit 1
+  fi
+done
 
 run_miningcore() {
   LD_LIBRARY_PATH="$publish_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
@@ -177,7 +183,7 @@ if [ "$smoke_status" -ne 1 ]; then
   exit 1
 fi
 
-grep -F "Certificate file $missing_pfx does not exist!" <<<"$smoke_output"
-grep -F 'Cluster cannot start. Good Bye!' <<<"$smoke_output"
+grep -F "Certificate file $missing_pfx does not exist!" <<<"$smoke_output" > /dev/null
+grep -F 'Cluster cannot start. Good Bye!' <<<"$smoke_output" > /dev/null
 
 echo "Ubuntu 26.04 source-build artifact validation passed"
