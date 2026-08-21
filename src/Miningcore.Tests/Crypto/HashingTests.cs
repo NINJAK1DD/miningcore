@@ -195,13 +195,15 @@ public class HashingTests : TestBase
         hasher.Digest(testValue2, second);
 
         Assert.Equal(first, second);
-        Assert.Contains(first, value => value != 0);
+        Assert.Equal("06c6d3f15e7ca2cd11a528fec7c3aefd6511c88051f7ce2ec8a83ca3898d1c3d",
+            first.ToHexString());
     }
 
     [LinuxNativeFact]
     public void Zanonote_LoadsReviewedNativeEntryPoints()
     {
-        var handle = NativeLibrary.Load("libzanonote.so");
+        var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,
+            DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.SafeDirectories);
 
         try
         {

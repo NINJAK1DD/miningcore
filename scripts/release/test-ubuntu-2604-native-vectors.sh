@@ -30,4 +30,5 @@ LD_LIBRARY_PATH="$publish_dir:$test_output${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     --no-restore \
     --configuration Release \
     --framework net10.0 \
+    -p:MiningcoreStratumListenerSmoke=true \
     --filter "$filter"

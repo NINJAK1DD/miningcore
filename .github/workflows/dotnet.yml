@@ -165,6 +165,7 @@ jobs:
     name: Build Ubuntu 26.04 source
     # This hosted image is currently a public preview. The lane validates the supported
     # source-build path; it does not change the Ubuntu 22.04 prebuilt archive target.
+    # Keep it required deliberately: a regression in a claimed supported target must be visible.
     runs-on: ubuntu-26.04
     timeout-minutes: 45
 

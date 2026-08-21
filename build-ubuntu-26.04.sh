@@ -40,6 +40,13 @@ if ! dpkg-query -W -f='${Status}\n' dotnet-sdk-10.0 | grep -Fxq 'install ok inst
   exit 1
 fi
 
+dotnet_sdk_maintainer=$(dpkg-query -W -f='${Maintainer}\n' dotnet-sdk-10.0)
+
+if ! grep -Fiq 'ubuntu.com' <<<"$dotnet_sdk_maintainer"; then
+  echo "dotnet-sdk-10.0 is not maintained by Ubuntu: $dotnet_sdk_maintainer" >&2
+  exit 1
+fi
+
 if ! dotnet --list-sdks | grep -Eq '^10\.[^ ]+ \[/usr/lib/dotnet/sdk\]$'; then
   echo "A Canonical-layout .NET 10 SDK was not found under /usr/lib/dotnet/sdk" >&2
   dotnet --list-sdks >&2

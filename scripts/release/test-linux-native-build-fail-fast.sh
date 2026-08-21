@@ -40,6 +40,18 @@ touch "lib$(basename "$PWD" | sed 's/^lib//').so"
 SH
 chmod +x "$work_dir/bin/make"
 
+for tool in git cmake ninja; do
+  cat > "$work_dir/bin/$tool" <<'SH'
+#!/usr/bin/env sh
+set -eu
+
+printf 'unexpected-tool %s\n' "$(basename "$0")" >> "$MININGCORE_NATIVE_TEST_TRACE"
+echo "Unexpected external build-tool invocation: $(basename "$0")" >&2
+exit 97
+SH
+  chmod +x "$work_dir/bin/$tool"
+done
+
 set +e
 (
   cd "$work_dir/src/Miningcore"
@@ -58,6 +70,12 @@ fi
 
 if grep -Fq 'libbeamhash' "$work_dir/trace"; then
   echo "Native build driver attempted a later component after the injected failure" >&2
+  cat "$work_dir/trace" >&2
+  exit 1
+fi
+
+if grep -Fq 'unexpected-tool ' "$work_dir/trace"; then
+  echo "Native build regression test unexpectedly reached an external build tool" >&2
   cat "$work_dir/trace" >&2
   exit 1
 fi
