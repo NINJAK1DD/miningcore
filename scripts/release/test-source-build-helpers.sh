@@ -150,8 +150,12 @@ if [[ "$unstubbed_status" -ne 90 ]]; then
   exit 1
 fi
 
-grep -Fxq 'unstubbed-privileged miningcore-unexpected-privileged-command' \
-  "$unstubbed_trace"
+if ! grep -Fxq 'unstubbed-privileged miningcore-unexpected-privileged-command' \
+    "$unstubbed_trace"; then
+  echo "Un-stubbed privileged command did not emit the expected boundary trace" >&2
+  cat "$unstubbed_trace" >&2
+  exit 1
+fi
 
 helpers=(
   build-debian-12.sh

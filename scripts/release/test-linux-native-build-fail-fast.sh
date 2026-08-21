@@ -80,5 +80,10 @@ if grep -Fq 'unexpected-tool ' "$work_dir/trace"; then
   exit 1
 fi
 
-grep -Fq 'Building native component: libmultihash' "$work_dir/output"
+if ! grep -Fq 'Building native component: libmultihash' "$work_dir/output"; then
+  echo "Native build driver did not reach the injected first component" >&2
+  cat "$work_dir/output" >&2
+  exit 1
+fi
+
 echo "Native build driver stopped at the injected first-component failure"

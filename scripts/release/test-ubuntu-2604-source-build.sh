@@ -169,7 +169,14 @@ if [ "$smoke_status" -ne 1 ]; then
   exit 1
 fi
 
-grep -F "Certificate file $missing_pfx does not exist!" <<<"$smoke_output" > /dev/null
-grep -F 'Cluster cannot start. Good Bye!' <<<"$smoke_output" > /dev/null
+if ! grep -Fq "Certificate file $missing_pfx does not exist!" <<<"$smoke_output"; then
+  echo "Runtime preflight did not report the expected missing-certificate boundary" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'Cluster cannot start. Good Bye!' <<<"$smoke_output"; then
+  echo "Runtime preflight did not reach the expected controlled shutdown boundary" >&2
+  exit 1
+fi
 
 echo "Ubuntu 26.04 source-build artifact validation passed"
