@@ -17,6 +17,7 @@ mkdir -p \
   "$work_dir/src/Native/libbeamhash" \
   "$work_dir/bin" \
   "$work_dir/out"
+: > "$work_dir/trace"
 
 cp "$driver" "$work_dir/src/Miningcore/build-libs-linux.sh"
 
