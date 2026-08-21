@@ -22,6 +22,7 @@ cp "$publish_dir"/*.so "$test_output/"
 filter='FullyQualifiedName~Miningcore.Tests.Crypto.CrytonoteTests'
 filter+='|FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.Yescrypt'
 filter+='|FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.Flex_'
+filter+='|FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.Zanonote_'
 
 LD_LIBRARY_PATH="$publish_dir:$test_output${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   dotnet test "$test_project" \

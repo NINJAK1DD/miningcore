@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -195,6 +196,32 @@ public class HashingTests : TestBase
 
         Assert.Equal(first, second);
         Assert.Contains(first, value => value != 0);
+    }
+
+    [LinuxNativeFact]
+    public void Zanonote_LoadsReviewedNativeEntryPoints()
+    {
+        var handle = NativeLibrary.Load("libzanonote.so");
+
+        try
+        {
+            foreach(var export in new[]
+                    {
+                        "convert_blob_export",
+                        "convert_block_export",
+                        "get_blob_id_export",
+                        "get_block_id_export",
+                    })
+            {
+                Assert.True(NativeLibrary.TryGetExport(handle, export, out _),
+                    $"libzanonote.so does not export required entry point: {export}");
+            }
+        }
+
+        finally
+        {
+            NativeLibrary.Free(handle);
+        }
     }
 
     [Fact]

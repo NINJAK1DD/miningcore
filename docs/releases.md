@@ -224,9 +224,10 @@ forms.
 The Linux native build driver now propagates each component failure explicitly and stops before a
 later component can hide an incomplete build. The Ubuntu 26.04 validation publishes the shared
 24-library inventory also required by release packaging, checks x86-64 architecture, dependencies
-and the affected CryptoNote/ZanoNote relocations, and runs targeted CryptoNote, Flex and yescrypt
-native tests. It also exercises version/help/schema paths and reaches a controlled startup safety
-boundary. Official prebuilt release archives remain built and tested on Ubuntu 22.04 x64.
+and required ZanoNote exports, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote load tests
+against the freshly built libraries. It also exercises version/help/schema paths and reaches a
+controlled startup safety boundary. Official prebuilt release archives remain built and tested on
+Ubuntu 22.04 x64.
 
 ### Security: administrative API bearer authentication and safe verbs
 

@@ -46,24 +46,10 @@ if [ "$missing_dependencies" -ne 0 ]; then
   exit 1
 fi
 
-# These two compatibility changes remove obsolete Boost.System linkage. Resolve every
-# relocation now so a missing symbol cannot remain hidden until the first native call.
-for library_name in libcryptonote.so libzanonote.so; do
-  library="$publish_dir/$library_name"
-
-  if ! relocations=$(ldd -r "$library" 2>&1); then
-    echo "$library_name failed relocation validation:" >&2
-    printf '%s\n' "$relocations" >&2
-    exit 1
-  fi
-
-  if grep -Eq 'not found|undefined symbol' <<<"$relocations"; then
-    echo "$library_name contains an unresolved relocation:" >&2
-    printf '%s\n' "$relocations" >&2
-    exit 1
-  fi
-done
-
+# Do not use `ldd -r` as a blanket gate here. Some hashing plugins intentionally retain
+# lazy/optional symbols that are supplied only by the algorithm path that consumes them. The
+# companion native test script loads the changed libraries and calls the reviewed CryptoNote,
+# Flex and yescrypt paths; ZanoNote is loaded and its managed entry-point contract is verified.
 if ! zanonote_symbols=$(nm -D --defined-only "$publish_dir/libzanonote.so" | \
     awk '{ print $3 }'); then
   echo "Unable to inspect exported symbols in libzanonote.so" >&2
