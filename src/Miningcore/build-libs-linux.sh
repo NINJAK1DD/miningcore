@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 OutDir=$1
 
 export UNAME_S=$(uname -s)
