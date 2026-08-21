@@ -185,7 +185,7 @@ public class HashingTests : TestBase
     }
 
     [LinuxNativeFact]
-    public void Flex_Hash_ExecutesAffectedNativePathDeterministically()
+    public void Flex_Hash_MatchesKnownVector()
     {
         var hasher = new Flex();
         var first = new byte[32];

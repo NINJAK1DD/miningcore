@@ -29,9 +29,18 @@ if [[ "$dotnet_path" != /usr/lib/dotnet/dotnet ]]; then
   exit 1
 fi
 
-if ! dpkg-query -S "$dotnet_path" | \
-    grep -Eq '^dotnet-host(-[0-9.]+)?(:[^:]+)?:'; then
+dotnet_host_owner=$(dpkg-query -S "$dotnet_path")
+
+if [[ ! "$dotnet_host_owner" =~ ^(dotnet-host(-[0-9.]+)?(:[^:]+)?): ]]; then
   echo "The resolved dotnet host is not owned by an Ubuntu dotnet-host package" >&2
+  exit 1
+fi
+
+dotnet_host_package=${BASH_REMATCH[1]}
+dotnet_host_maintainer=$(dpkg-query -W -f='${Maintainer}\n' "$dotnet_host_package")
+
+if ! grep -Fiq 'ubuntu.com' <<<"$dotnet_host_maintainer"; then
+  echo "$dotnet_host_package is not maintained by Ubuntu: $dotnet_host_maintainer" >&2
   exit 1
 fi
 
