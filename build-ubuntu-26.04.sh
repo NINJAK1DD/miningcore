@@ -29,7 +29,10 @@ if [[ "$dotnet_path" != /usr/lib/dotnet/dotnet ]]; then
   exit 1
 fi
 
-dotnet_host_owner=$(dpkg-query -S "$dotnet_path")
+if ! dotnet_host_owner=$(dpkg-query -S "$dotnet_path" 2>&1); then
+  echo "The resolved dotnet host is not owned by any dpkg package: $dotnet_host_owner" >&2
+  exit 1
+fi
 
 if [[ ! "$dotnet_host_owner" =~ ^(dotnet-host(-[0-9.]+)?(:[^:]+)?): ]]; then
   echo "The resolved dotnet host is not owned by an Ubuntu dotnet-host package" >&2
