@@ -34,13 +34,23 @@ if [[ "$status" -eq 69 ]]; then
     expected_image_tags+=("${expected_image%@*}")
   done
 
+  # Open inside a temporary stderr-suppressed group so Bash cannot disclose the private mktemp path
+  # in its own redirection diagnostic. The descriptor remains open in this shell after the group.
+  if ! { exec {checker_result_fd}<"$checker_result"; } 2>/dev/null; then
+    echo 'Unable to read private image-pin result file' >&2
+    exit 70
+  fi
+
   # Read no more than one line beyond the complete configured set. The extra line proves an
   # overlong result without loading an arbitrarily long multi-line file into memory.
   if ! mapfile -t -n "$(( ${#expected_image_tags[@]} + 1 ))" \
-      unresolved_image_tags <"$checker_result"; then
-    echo "Unable to read image-pin result file: $checker_result" >&2
+      unresolved_image_tags <&"$checker_result_fd"; then
+    exec {checker_result_fd}<&-
+    echo 'Unable to read private image-pin result file' >&2
     exit 70
   fi
+
+  exec {checker_result_fd}<&-
 
   if (( ${#unresolved_image_tags[@]} == 0 )); then
     echo 'Image-pin checker returned transient status without a non-empty' \

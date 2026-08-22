@@ -55,9 +55,22 @@ is_transient_registry_failure() {
   return 1
 }
 
+write_checker_message() {
+  local message=$1
+
+  # Actions consumes stdout and stderr independently. Keep a diagnostic's safe header, guarded
+  # evidence and any later workflow warning on stdout so their human-readable order is stable.
+  if [[ ${GITHUB_ACTIONS:-} = true ]]; then
+    printf '%s\n' "$message"
+  else
+    printf '%s\n' "$message" >&2
+  fi
+}
+
 write_registry_diagnostic() {
   local diagnostic=$1
   local command_token
+  local encoded_diagnostic
 
   if [[ ${GITHUB_ACTIONS:-} != true ]]; then
     printf '%s\n' "$diagnostic" >&2
@@ -68,14 +81,14 @@ write_registry_diagnostic() {
   # diagnostic beginning with "::" cannot create an annotation or mutate runner state.
   if ! command_token=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') ||
       [[ ! "$command_token" =~ ^[0-9a-f]{32}$ ]]; then
-    echo 'Registry diagnostic neutralized because its workflow-command guard could not be created' \
-      >&2
-
-    # Preserve the evidence while ensuring that no diagnostic line begins with the workflow-command
-    # sentinel. This branch is fail-safe even when the random-token dependency is unavailable.
-    while IFS= read -r diagnostic_line || [[ -n "$diagnostic_line" ]]; do
-      printf '  %s\n' "$diagnostic_line" >&2
-    done <<<"$diagnostic"
+    # Bash %q produces one physical line and escapes CR/LF. Its ANSI-C form can retain the runner's
+    # command sentinels, so rewrite those exact byte sequences as well. The fixed non-whitespace
+    # prefix then remains safe under V2 TrimStart(), while no legacy "##[" substring survives.
+    printf -v encoded_diagnostic '%q' "$diagnostic"
+    encoded_diagnostic=${encoded_diagnostic//'::'/:<colon>}
+    encoded_diagnostic=${encoded_diagnostic//'##['/'##<left-bracket>'}
+    printf 'Registry diagnostic (encoded; command guard unavailable): %s\n' \
+      "$encoded_diagnostic"
 
     return
   fi
@@ -101,11 +114,12 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   if ! inspection=$(docker buildx imagetools inspect "$image_tag" 2>&1); then
     if is_transient_registry_failure "$inspection"; then
-      echo "Transient registry failure while resolving $image_tag" >&2
+      write_checker_message "Transient registry failure while resolving $image_tag"
       saw_transient_failure=true
       transient_image_tags+=("$image_tag")
     else
-      echo "Unable to resolve $image_tag; the failure was not recognisably transient" >&2
+      write_checker_message \
+        "Unable to resolve $image_tag; the failure was not recognisably transient"
       saw_structural_failure=true
     fi
 
@@ -116,7 +130,7 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   current_digest=$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspection")
 
   if [[ ! "$current_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo "Unable to resolve a manifest-list digest for $image_tag" >&2
+    write_checker_message "Unable to resolve a manifest-list digest for $image_tag"
     write_registry_diagnostic "$inspection"
     saw_structural_failure=true
     continue

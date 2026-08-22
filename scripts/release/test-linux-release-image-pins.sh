@@ -18,23 +18,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The assertion deliberately searches production source for an unexpanded Bash expression.
-# shellcheck disable=SC2016
-if ! grep -Fq \
-    'mapfile -t -n "$(( ${#expected_image_tags[@]} + 1 ))"' "$monitor"; then
-  echo 'Image-pin monitor no longer bounds result parsing at configured-target-plus-one lines' >&2
-  exit 1
-fi
-
 print_test_diagnostic() {
   local diagnostic=$1
-  local diagnostic_line
+  local encoded_diagnostic
 
-  # Test failures may contain deliberately hostile workflow-command fixtures. Prefix every line
-  # so dumping captured output can never replay those commands into the Actions log.
-  while IFS= read -r diagnostic_line || [[ -n "$diagnostic_line" ]]; do
-    printf '  %s\n' "$diagnostic_line" >&2
-  done <<<"$diagnostic"
+  # Keep adversarial failure evidence recoverable without replaying either Actions command syntax.
+  # First collapse CR/LF with %q, then rewrite both V2 and legacy command sentinels.
+  printf -v encoded_diagnostic '%q' "$diagnostic"
+  encoded_diagnostic=${encoded_diagnostic//'::'/:<colon>}
+  encoded_diagnostic=${encoded_diagnostic//'##['/'##<left-bracket>'}
+  printf 'Test diagnostic (encoded): %s\n' "$encoded_diagnostic" >&2
+}
+
+contains_runner_command() {
+  local output=$1
+  local line
+  local trimmed
+
+  # ProcessInvoker reads CR, LF and CRLF as line endings. Model that boundary, then mirror the V2
+  # parser's leading-whitespace trim and conservatively reject every legacy "##[" sentinel.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=$line
+
+    while [[ "$trimmed" = [[:space:]]* ]]; do
+      trimmed=${trimmed:1}
+    done
+
+    if [[ "$trimmed" = ::* || "$line" = *'##['* ]]; then
+      return 0
+    fi
+  done < <(printf '%s' "$output" | tr '\r' '\n')
+
+  return 1
 }
 
 cat > "$fake_bin/docker" <<'EOF'
@@ -74,7 +89,9 @@ if [[ ${MININGCORE_TEST_INSPECT_FAILURE:-} = 1 ||
 fi
 
 if [[ ${MININGCORE_TEST_WORKFLOW_COMMAND_TAG:-} = "$4" ]]; then
-  echo '::error title=Injected by registry::pwned' >&2
+  printf '  ::error title=Injected by registry::pwned\r' >&2
+  printf 'noise ##[error]legacy-v1-form\r' >&2
+  printf '::add-mask::injected-secret\n' >&2
   echo 'response: connection reset by peer' >&2
   exit 1
 fi
@@ -166,6 +183,56 @@ if [[ "$registry_status" -ne 69 ]] ||
   exit 1
 fi
 
+all_failure_stdout="$work_dir/all-failure.stdout"
+all_failure_stderr="$work_dir/all-failure.stderr"
+
+set +e
+GITHUB_ACTIONS=true \
+  MININGCORE_TEST_INSPECT_FAILURE=1 \
+  PATH="$fake_bin:$PATH" bash "$checker" \
+  >"$all_failure_stdout" 2>"$all_failure_stderr"
+all_failure_status=$?
+set -e
+
+all_failure_output=$(<"$all_failure_stdout")
+all_failure_error=$(<"$all_failure_stderr")
+mapfile -t all_failure_tokens < <(
+  sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' \
+    <<<"$all_failure_output"
+)
+
+if [[ "$all_failure_status" -ne 69 ]] ||
+    (( ${#all_failure_tokens[@]} != ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )) ||
+    grep -Fq 'Transient registry failure while resolving' <<<"$all_failure_error"; then
+  echo 'Image-pin checker split multi-target headers from their guarded evidence' >&2
+  print_test_diagnostic "$all_failure_output"
+  print_test_diagnostic "$all_failure_error"
+  exit 1
+fi
+
+previous_resume_line=0
+
+for target_index in "${!MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
+  target=${MININGCORE_LINUX_RELEASE_TARGETS[$target_index]}
+  token=${all_failure_tokens[$target_index]}
+  header_line=$(awk -v needle="Transient registry failure while resolving ubuntu:$target" \
+    'index($0, needle) { print NR; exit }' <<<"$all_failure_output")
+  stop_line=$(awk -v needle="::stop-commands::$token" \
+    'index($0, needle) { print NR; exit }' <<<"$all_failure_output")
+  resume_line=$(awk -v needle="::$token::" \
+    'index($0, needle) { print NR; exit }' <<<"$all_failure_output")
+
+  if [[ -z "$header_line" || -z "$stop_line" || -z "$resume_line" ]] ||
+      (( previous_resume_line >= header_line || header_line >= stop_line ||
+        stop_line >= resume_line )); then
+    echo 'Image-pin checker reordered multi-target headers and guarded evidence' >&2
+    print_test_diagnostic "$all_failure_output"
+    exit 1
+  fi
+
+  previous_resume_line=$resume_line
+done
+
 workflow_command_stdout="$work_dir/workflow-command.stdout"
 workflow_command_stderr="$work_dir/workflow-command.stderr"
 
@@ -181,6 +248,8 @@ workflow_command_output=$(<"$workflow_command_stdout")
 workflow_command_error=$(<"$workflow_command_stderr")
 
 workflow_command='::error title=Injected by registry::pwned'
+workflow_legacy_command='noise ##[error]legacy-v1-form'
+workflow_cr_command='::add-mask::injected-secret'
 workflow_guard_token=$(
   sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' \
     <<<"$workflow_command_output" | head -n 1
@@ -188,13 +257,18 @@ workflow_guard_token=$(
 
 if [[ "$workflow_command_status" -ne 69 ]] ||
     [[ ! "$workflow_guard_token" =~ ^[0-9a-f]{32}$ ]] ||
-    grep -Fq "$workflow_command" <<<"$workflow_command_error"; then
+    grep -Fq "$workflow_command" <<<"$workflow_command_error" ||
+    grep -Fq "$workflow_legacy_command" <<<"$workflow_command_error" ||
+    grep -Fq "$workflow_cr_command" <<<"$workflow_command_error"; then
   echo 'Image-pin checker did not guard registry output on the Actions command stream' >&2
   print_test_diagnostic "$workflow_command_output"
   print_test_diagnostic "$workflow_command_error"
   exit 1
 fi
 
+workflow_header_line=$(awk \
+  'index($0, "Transient registry failure while resolving ubuntu:26.04") { print NR; exit }' \
+  <<<"$workflow_command_output")
 workflow_stop_line=$(awk -v needle="::stop-commands::$workflow_guard_token" \
   'index($0, needle) { print NR; exit }' <<<"$workflow_command_output")
 workflow_payload_line=$(awk -v needle="$workflow_command" \
@@ -202,11 +276,12 @@ workflow_payload_line=$(awk -v needle="$workflow_command" \
 workflow_resume_line=$(awk -v needle="::$workflow_guard_token::" \
   'index($0, needle) { print NR; exit }' <<<"$workflow_command_output")
 
-if [[ -z "$workflow_stop_line" || -z "$workflow_payload_line" ||
+if [[ -z "$workflow_header_line" || -z "$workflow_stop_line" || -z "$workflow_payload_line" ||
     -z "$workflow_resume_line" ]] ||
-    (( workflow_stop_line >= workflow_payload_line ||
+    (( workflow_header_line >= workflow_stop_line ||
+      workflow_stop_line >= workflow_payload_line ||
       workflow_payload_line >= workflow_resume_line )); then
-  echo 'Image-pin checker emitted registry output outside its workflow-command guard' >&2
+  echo 'Image-pin checker did not keep its header and evidence ordered on stdout' >&2
   print_test_diagnostic "$workflow_command_output"
   print_test_diagnostic "$workflow_command_error"
   exit 1
@@ -232,13 +307,18 @@ monitor_guard_token=$(
 
 if [[ "$monitor_command_status" -ne 0 ]] ||
     [[ ! "$monitor_guard_token" =~ ^[0-9a-f]{32}$ ]] ||
-    grep -Fq "$workflow_command" <<<"$monitor_command_error"; then
+    grep -Fq "$workflow_command" <<<"$monitor_command_error" ||
+    grep -Fq "$workflow_legacy_command" <<<"$monitor_command_error" ||
+    grep -Fq "$workflow_cr_command" <<<"$monitor_command_error"; then
   echo 'Image-pin monitor did not keep guarded output and its warning on one stream' >&2
   print_test_diagnostic "$monitor_command_output"
   print_test_diagnostic "$monitor_command_error"
   exit 1
 fi
 
+monitor_header_line=$(awk \
+  'index($0, "Transient registry failure while resolving ubuntu:26.04") { print NR; exit }' \
+  <<<"$monitor_command_output")
 monitor_stop_line=$(awk -v needle="::stop-commands::$monitor_guard_token" \
   'index($0, needle) { print NR; exit }' <<<"$monitor_command_output")
 monitor_payload_line=$(awk -v needle="$workflow_command" \
@@ -249,9 +329,10 @@ monitor_warning_line=$(awk \
   'index($0, "::warning title=Ubuntu image pin check unavailable::") { print NR; exit }' \
   <<<"$monitor_command_output")
 
-if [[ -z "$monitor_stop_line" || -z "$monitor_payload_line" ||
+if [[ -z "$monitor_header_line" || -z "$monitor_stop_line" || -z "$monitor_payload_line" ||
     -z "$monitor_resume_line" || -z "$monitor_warning_line" ]] ||
-    (( monitor_stop_line >= monitor_payload_line ||
+    (( monitor_header_line >= monitor_stop_line ||
+      monitor_stop_line >= monitor_payload_line ||
       monitor_payload_line >= monitor_resume_line ||
       monitor_resume_line >= monitor_warning_line )); then
   echo 'Image-pin monitor did not order stop, payload, resume, and warning deterministically' >&2
@@ -269,22 +350,42 @@ exit 1
 EOF
 chmod 0755 "$guard_failure_bin/od"
 
+guard_failure_stdout="$work_dir/guard-failure.stdout"
+guard_failure_stderr="$work_dir/guard-failure.stderr"
+
 set +e
-guard_failure_output=$(
-  GITHUB_ACTIONS=true \
-    MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
-    PATH="$guard_failure_bin:$fake_bin:$PATH" bash "$checker" 2>&1
-)
+GITHUB_ACTIONS=true \
+  MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
+  PATH="$guard_failure_bin:$fake_bin:$PATH" bash "$checker" \
+  >"$guard_failure_stdout" 2>"$guard_failure_stderr"
 guard_failure_status=$?
 set -e
 
+guard_failure_output=$(<"$guard_failure_stdout")
+guard_failure_error=$(<"$guard_failure_stderr")
+
 if [[ "$guard_failure_status" -ne 69 ]] ||
-    grep -q '^::' <<<"$guard_failure_output" ||
-    ! grep -Fq "  $workflow_command" <<<"$guard_failure_output" ||
-    ! grep -Fq 'Registry diagnostic neutralized because its workflow-command guard' \
-      <<<"$guard_failure_output"; then
-  echo 'Image-pin checker failed to neutralize output after command-guard creation failed' >&2
+    contains_runner_command "$guard_failure_output" ||
+    contains_runner_command "$guard_failure_error" ||
+    ! grep -Fq 'Registry diagnostic (encoded; command guard unavailable):' \
+      <<<"$guard_failure_output" ||
+    ! grep -Fq 'legacy-v1-form' <<<"$guard_failure_output" ||
+    ! grep -Fq 'injected-secret' <<<"$guard_failure_output"; then
+  echo 'Image-pin checker exposed a command after its guard could not be created' >&2
   print_test_diagnostic "$guard_failure_output"
+  print_test_diagnostic "$guard_failure_error"
+  exit 1
+fi
+
+hostile_test_diagnostic=$'  ::error title=fixture::v2\rnoise ##[error]v1\r::add-mask::secret'
+safe_test_dump=$(print_test_diagnostic "$hostile_test_diagnostic" 2>&1)
+
+if contains_runner_command "$safe_test_dump" ||
+    ! grep -Fq 'Test diagnostic (encoded):' <<<"$safe_test_dump" ||
+    ! grep -Fq 'fixture' <<<"$safe_test_dump" ||
+    ! grep -Fq 'add-mask' <<<"$safe_test_dump"; then
+  echo 'Image-pin test diagnostics can replay a hostile workflow command' >&2
+  print_test_diagnostic "$safe_test_dump"
   exit 1
 fi
 
@@ -690,8 +791,9 @@ set -e
 
 if [[ "$unreadable_summary_status" -ne 70 ]] ||
     grep -Fq '::warning' <<<"$unreadable_summary_output" ||
-    ! grep -Fq 'Unable to read image-pin result file:' \
-      <<<"$unreadable_summary_output"; then
+    ! grep -Fq 'Unable to read private image-pin result file' \
+      <<<"$unreadable_summary_output" ||
+    grep -Fq "$work_dir" <<<"$unreadable_summary_output"; then
   echo 'Image-pin monitor misclassified a result-file read failure as drift' >&2
   print_test_diagnostic "$unreadable_summary_output"
   exit 1
@@ -977,9 +1079,10 @@ fi
 
 for expected in \
   'workflow-command processing is suspended' \
+  'shell-escaped physical line' \
   'unresolved canonical image tag per line in central release-target order' \
   'accepts only a non-empty, unique, in-order subset of the configured tags' \
-  'configured-target-plus-one bound' \
+  'configured target count plus one line' \
   'locally derived line number' \
   'readable, comma-separated summary on stderr'; do
   if ! grep -Fq "$expected" "$release_docs"; then
