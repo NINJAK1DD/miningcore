@@ -12,15 +12,24 @@ complete_dir="$work_dir/complete"
 version=v1.2.3-rc.4
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
+resolute_digest=sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
+jammy_digest=sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
+resolute_image="ubuntu:26.04@$resolute_digest"
+jammy_image="ubuntu:22.04@$jammy_digest"
 expected_matrix='{"include":['
-expected_matrix+='{"ubuntu":"26.04","role":"primary","runner":"ubuntu-26.04"},'
-expected_matrix+='{"ubuntu":"22.04","role":"compatibility","runner":"ubuntu-24.04"}]}'
+expected_matrix+='{"ubuntu":"26.04","role":"primary","runner":"ubuntu-24.04",'
+expected_matrix+="\"image\":\"$resolute_image\"},"
+expected_matrix+='{"ubuntu":"22.04","role":"compatibility","runner":"ubuntu-24.04",'
+expected_matrix+="\"image\":\"$jammy_image\"}]}"
 actual_matrix=$(miningcore_linux_release_matrix_json)
 
 if [[ "$actual_matrix" != "$expected_matrix" ]]; then
   echo "Linux release target matrix is unexpected: $actual_matrix" >&2
   exit 1
 fi
+
+# Sourcing the shared contract through two helper paths must remain harmless.
+source "$repository_root/scripts/release/linux-release-targets.sh"
 
 cleanup() {
   rm -rf -- "$work_dir"
@@ -84,6 +93,9 @@ repack_fixture() {
     replace-commit)
       sed -i "s/^Source commit: .*/Source commit: $replacement/" "$build_info"
       ;;
+    replace-build-image)
+      sed -i "s|^Build image: .*|Build image: $replacement|" "$build_info"
+      ;;
     *)
       echo "Unsupported fixture operation: $operation" >&2
       exit 1
@@ -111,11 +123,13 @@ SOURCE_COMMIT=$(git -C "$repository_root" rev-parse HEAD)
 SOURCE_DATE_EPOCH=$(git -C "$repository_root" show -s --format=%ct "$SOURCE_COMMIT")
 export SOURCE_COMMIT SOURCE_DATE_EPOCH
 
-for ubuntu_version in 22.04 26.04; do
+for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   rm -rf -- "$output_dir"
   mkdir -p "$output_dir"
+  build_image=$(miningcore_linux_release_target_image "$ubuntu_version")
 
-  bash "$package_script" "$version" "$ubuntu_version" "$publish_dir" "$output_dir"
+  bash "$package_script" "$version" "$ubuntu_version" "$publish_dir" \
+    "$output_dir" "$build_image"
 
   archive="miningcore-${version}-linux-x64-ubuntu-${ubuntu_version}.tar.gz"
   package_root="miningcore-${version}-linux-x64-ubuntu-${ubuntu_version}"
@@ -127,6 +141,13 @@ for ubuntu_version in 22.04 26.04; do
     sed -n 's/^Target: //p')
   if [[ "$target" != "Ubuntu $ubuntu_version x64" ]]; then
     echo "$archive records an unexpected target: $target" >&2
+    exit 1
+  fi
+
+  recorded_build_image=$(tar -xOf "$output_dir/$archive" "$package_root/BUILD-INFO" |
+    sed -n 's/^Build image: //p')
+  if [[ "$recorded_build_image" != "$build_image" ]]; then
+    echo "$archive records an unexpected build image: $recorded_build_image" >&2
     exit 1
   fi
 
@@ -156,12 +177,35 @@ if [[ "$comparison_status" -eq 0 ]]; then
   exit 1
 fi
 
+fixture=$(new_fixture historical-single-archive-release)
+cp "$complete_dir"/*ubuntu-22.04.tar.gz "$fixture/"
+(
+  cd "$fixture"
+  sha256sum ./*.tar.gz > SHA256SUMS
+)
+
+set +e
+historical_output=$(
+  bash "$repository_root/scripts/release/verify-existing-release-assets.sh" \
+    "$complete_dir" "$fixture" 2>&1
+)
+historical_status=$?
+set -e
+
+if [[ "$historical_status" -eq 0 ]] ||
+    ! grep -Fq 'may predate the dual-archive format' <<<"$historical_output"; then
+  echo "Historical release validation did not require a human decision" >&2
+  printf '%s\n' "$historical_output" >&2
+  exit 1
+fi
+
 fixture=$(new_fixture mismatched-commit)
 cp "$complete_dir"/*ubuntu-22.04.tar.gz "$fixture/"
 rm -rf -- "$output_dir"
 mkdir -p "$output_dir"
 SOURCE_COMMIT=1111111111111111111111111111111111111111 \
-  bash "$package_script" "$version" 26.04 "$publish_dir" "$output_dir"
+  bash "$package_script" "$version" 26.04 "$publish_dir" "$output_dir" \
+  "$(miningcore_linux_release_target_image 26.04)"
 cp "$output_dir"/*ubuntu-26.04.tar.gz "$fixture/"
 expect_collection_failure "archives built from different commits" "$fixture" \
   "records source commit 1111111111111111111111111111111111111111; expected"
@@ -198,6 +242,14 @@ repack_fixture "$fixture/$(basename "$complete_dir"/*ubuntu-26.04.tar.gz)" \
 expect_collection_failure "filename and BUILD-INFO target disagreement" "$fixture" \
   'records an unexpected target: Ubuntu 22.04 x64'
 
+fixture=$(new_fixture build-image-mismatch)
+cp "$complete_dir"/*.tar.gz "$fixture/"
+repack_fixture "$fixture/$(basename "$complete_dir"/*ubuntu-26.04.tar.gz)" \
+  replace-build-image \
+  'ubuntu:26.04@sha256:1111111111111111111111111111111111111111111111111111111111111111'
+expect_collection_failure "an unreviewed build-image identity" "$fixture" \
+  'records an unexpected build image'
+
 fixture=$(new_fixture missing-build-info)
 cp "$complete_dir"/*.tar.gz "$fixture/"
 repack_fixture "$fixture/$(basename "$complete_dir"/*ubuntu-22.04.tar.gz)" \
@@ -215,18 +267,37 @@ fixture=$(new_fixture version-mismatch)
 cp "$complete_dir"/*ubuntu-22.04.tar.gz "$fixture/"
 rm -rf -- "$output_dir"
 mkdir -p "$output_dir"
-bash "$package_script" v1.2.4 26.04 "$publish_dir" "$output_dir"
+bash "$package_script" v1.2.4 26.04 "$publish_dir" "$output_dir" \
+  "$(miningcore_linux_release_target_image 26.04)"
 cp "$output_dir"/*ubuntu-26.04.tar.gz "$fixture/"
 expect_collection_failure "archives from different releases" "$fixture" \
   'records release v1.2.4; expected v1.2.3-rc.4'
 
 set +e
-invalid_output=$(bash "$package_script" v1.2.3 24.04 "$publish_dir" "$output_dir" 2>&1)
+invalid_output=$(
+  bash "$package_script" v1.2.3 24.04 "$publish_dir" "$output_dir" \
+    unsupported 2>&1
+)
 invalid_status=$?
 set -e
 
 if [[ "$invalid_status" -ne 64 ]]; then
   echo "Unsupported archive target returned $invalid_status instead of 64" >&2
+  exit 1
+fi
+
+set +e
+unpinned_output=$(
+  bash "$package_script" "$version" 26.04 "$publish_dir" "$output_dir" \
+    ubuntu:26.04 2>&1
+)
+unpinned_status=$?
+set -e
+
+if [[ "$unpinned_status" -ne 64 ]] ||
+    ! grep -Fq 'Expected pinned image:' <<<"$unpinned_output"; then
+  echo "Package assembly did not reject an unpinned build image" >&2
+  printf '%s\n' "$unpinned_output" >&2
   exit 1
 fi
 

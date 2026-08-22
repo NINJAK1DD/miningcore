@@ -100,6 +100,8 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   recorded_version=$(sed -n 's/^Version: //p' <<<"$build_info")
   recorded_commit=$(sed -n 's/^Source commit: //p' <<<"$build_info")
   recorded_target=$(sed -n 's/^Target: //p' <<<"$build_info")
+  recorded_build_image=$(sed -n 's/^Build image: //p' <<<"$build_info")
+  expected_build_image=$(miningcore_linux_release_target_image "$ubuntu_version")
 
   if [[ "$recorded_version" != "$expected_version" ]]; then
     echo "$archive records an unexpected version: $recorded_version" >&2
@@ -108,6 +110,12 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   if [[ "$recorded_target" != "Ubuntu $ubuntu_version x64" ]]; then
     echo "$archive records an unexpected target: $recorded_target" >&2
+    exit 1
+  fi
+
+  if [[ "$recorded_build_image" != "$expected_build_image" ]]; then
+    echo "$archive records an unexpected build image: $recorded_build_image" >&2
+    echo "Expected pinned image: $expected_build_image" >&2
     exit 1
   fi
 

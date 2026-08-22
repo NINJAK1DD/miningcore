@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-    echo "Usage: $0 <version> <ubuntu-version> <publish-directory> <output-directory>" >&2
+if [[ $# -ne 5 ]]; then
+    echo "Usage: $0 <version> <ubuntu-version> <publish-directory>" >&2
+    echo "  <output-directory> <build-image>" >&2
     exit 64
 fi
 
@@ -11,6 +12,7 @@ version="$1"
 ubuntu_version="$2"
 publish_dir="$(realpath "$3")"
 output_dir="$(realpath -m "$4")"
+build_image="$5"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
@@ -22,6 +24,13 @@ fi
 if ! miningcore_linux_release_target_supported "$ubuntu_version"; then
     echo "Unsupported Ubuntu release archive target: $ubuntu_version" >&2
     echo "Supported targets: $(miningcore_linux_release_target_list)" >&2
+    exit 64
+fi
+
+expected_build_image=$(miningcore_linux_release_target_image "$ubuntu_version")
+if [[ "$build_image" != "$expected_build_image" ]]; then
+    echo "Unexpected Ubuntu $ubuntu_version build image: $build_image" >&2
+    echo "Expected pinned image: $expected_build_image" >&2
     exit 64
 fi
 
@@ -64,6 +73,7 @@ cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version
 Source commit: $source_commit
 Target: Ubuntu $ubuntu_version x64
+Build image: $build_image
 Framework: net10.0 framework-dependent
 Build epoch: $source_date_epoch
 EOF

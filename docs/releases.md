@@ -50,6 +50,8 @@ The examples below use the current `v0.1.0-rc.9`. Substitute the version you sel
 ```console
 export MININGCORE_VERSION=v0.1.0-rc.9
 MININGCORE_UBUNTU=
+MININGCORE_RELEASE_READY=
+archive=
 if [ -r /etc/os-release ]; then
   MININGCORE_HOST_RELEASE="$(
     (. /etc/os-release; printf '%s:%s' "$ID" "$VERSION_ID")
@@ -71,11 +73,20 @@ else
 fi
 if [ -n "$MININGCORE_UBUNTU" ]; then
   archive="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
-  curl -fLO \
-    "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/${archive}"
-  curl -fLO \
-    "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
-  sha256sum --ignore-missing --check --strict SHA256SUMS
+  rm -f -- "$archive" SHA256SUMS
+  if curl --fail --location --remote-name --remove-on-error \
+      "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/${archive}" &&
+    curl --fail --location --remote-name --remove-on-error \
+      "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS" &&
+    sha256sum --ignore-missing --check --strict SHA256SUMS; then
+    export MININGCORE_RELEASE_READY=1
+    echo "READY: $archive is verified and ready to install"
+  else
+    echo "STOP: release download or checksum verification failed" >&2
+    rm -f -- "$archive" SHA256SUMS
+    MININGCORE_UBUNTU=
+    archive=
+  fi
 fi
 ```
 
@@ -90,7 +101,11 @@ GitHub also publishes build provenance for each archive. If the
 [GitHub CLI](https://cli.github.com/) is installed, verify it with:
 
 ```console
-gh attestation verify "$archive" --repo NINJAK1DD/miningcore
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  gh attestation verify "$archive" --repo NINJAK1DD/miningcore
+else
+  echo "STOP: no release archive passed the download and checksum gate" >&2
+fi
 ```
 
 ## Install runtime dependencies
@@ -862,7 +877,9 @@ The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1
 `v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
-not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Each lane runs
+not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
+stable hosted runner and an immutable, digest-pinned Docker Official Image. The exact build-image
+reference is recorded in each archive's `BUILD-INFO` and verified during collection. Each lane runs
 the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links, and checks
 that the binary reports the release version and source commit. The workflow then verifies the
 two-archive set, creates one checksum manifest, smoke-tests the 26.04 packaged image, and publishes
@@ -873,6 +890,11 @@ branches intentionally retain GitVersion's prerelease calculation; the runtime c
 exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
+
+> **Release retry rule:** if any Release workflow job fails, select **Re-run all jobs**.
+> Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the
+> collector may be rerun without a successful sibling archive from the earlier attempt and will
+> correctly reject the incomplete set.
 
 ```console
 git switch dev
@@ -885,3 +907,7 @@ git push origin "$NEXT_VERSION"
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight
 tag. After the first GHCR publication, confirm the package is public and inherits access from this
 repository. Do not move or reuse a published version tag; publish a new version instead.
+GitHub Release creation and GHCR publication are separate services and cannot be transactional. If
+GHCR publication succeeds but GitHub Release creation fails, leave the tag unchanged, inspect the
+failed run and registry state, then use **Re-run all jobs**. Never move the tag or manually replace
+assets to force the two publication surfaces to agree.

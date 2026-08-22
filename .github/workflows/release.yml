@@ -41,7 +41,7 @@ jobs:
       - name: Checkout release contract
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Resolve one release identity and target matrix
         id: release
@@ -53,8 +53,9 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             version="$GITHUB_REF_NAME"
           else
-            # A failed-job rerun reuses this successful job's output instead of
-            # independently changing one matrix leg to the new run attempt.
+            # One resolver prevents independently versioned matrix legs. Release
+            # failures must be recovered with "Re-run all jobs" because Actions
+            # artifact downloads are scoped to the latest run attempt.
             version="v0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           fi
 
@@ -425,7 +426,7 @@ jobs:
     needs: resolve-release
     runs-on: ${{ matrix.runner }}
     container:
-      image: ubuntu:${{ matrix.ubuntu }}
+      image: ${{ matrix.image }}
     defaults:
       run:
         shell: bash
@@ -442,8 +443,6 @@ jobs:
           POSTGRES_USER: miningcore
           POSTGRES_PASSWORD: miningcore-test
           POSTGRES_DB: miningcore_tests
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U miningcore -d miningcore_tests"
           --health-interval 10s
@@ -460,6 +459,9 @@ jobs:
             build-essential libssl-dev pkg-config libboost-all-dev \
             libsodium-dev libzmq3-dev libgmp-dev \
             libicu-dev libgssapi-krb5-2 zlib1g file passwd util-linux
+          # Checkout writes the bind-mounted worktree as the host runner user,
+          # while later job-container steps run as root. Trust only this path.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -470,9 +472,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The host checkout action writes the bind-mounted worktree as the
-          # runner user, while container steps execute as root.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . /etc/os-release
           test "$ID" = ubuntu
           test "$VERSION_ID" = "${{ matrix.ubuntu }}"
@@ -628,6 +627,7 @@ jobs:
           "${{ matrix.ubuntu }}"
           "$GITHUB_WORKSPACE/publish"
           "$GITHUB_WORKSPACE/dist"
+          "${{ matrix.image }}"
 
       - name: Inspect release archive
         shell: bash

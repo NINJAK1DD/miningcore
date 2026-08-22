@@ -30,9 +30,19 @@ mapfile -t existing_archives < <(
     -printf '%f\n' | sort
 )
 
-if [[ ${#candidate_archives[@]} -ne ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} ]] ||
-    [[ ${#existing_archives[@]} -ne ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} ]]; then
-  echo "Existing-release comparison requires the complete Ubuntu archive set" >&2
+expected_count=${#MININGCORE_LINUX_RELEASE_TARGETS[@]}
+
+if [[ ${#candidate_archives[@]} -ne $expected_count ]]; then
+  printf 'Candidate release requires %d Ubuntu archives, found %d\n' \
+    "$expected_count" "${#candidate_archives[@]}" >&2
+  exit 1
+fi
+
+if [[ ${#existing_archives[@]} -ne $expected_count ]]; then
+  printf 'Existing release contains %d Ubuntu archive(s); the current format requires %d.\n' \
+    "${#existing_archives[@]}" "$expected_count" >&2
+  echo "The release may predate the dual-archive format; stop and review it manually." >&2
+  echo "Do not overwrite or retry publication for an existing version tag." >&2
   exit 1
 fi
 
