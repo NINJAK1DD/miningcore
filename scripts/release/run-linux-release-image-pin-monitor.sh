@@ -43,12 +43,13 @@ if [[ "$status" -eq 69 ]]; then
 
   IFS=',' read -r -a unresolved_image_tags <<<"$unresolved_targets"
   expected_index=0
+  canonical_targets=''
 
   for reported_index in "${!unresolved_image_tags[@]}"; do
     reported_tag=${unresolved_image_tags[$reported_index]}
 
     if (( reported_index > 0 )); then
-      if [[ "$reported_tag" != ' '* ]]; then
+      if [[ "$reported_tag" != ' '* || "$reported_tag" == '  '* ]]; then
         echo 'Image-pin checker returned a non-canonical unresolved-target list' >&2
         exit 70
       fi
@@ -66,18 +67,25 @@ if [[ "$status" -eq 69 ]]; then
 
       if [[ "$reported_tag" == "$expected_tag" ]]; then
         matched=true
+        canonical_targets+="${canonical_targets:+, }$expected_tag"
         break
       fi
     done
 
     if [[ "$matched" != true ]]; then
-      echo "Image-pin checker returned an unknown, duplicate, or out-of-order target: " \
+      printf '%s: %s\n' \
+        'Image-pin checker returned an unknown, duplicate, or out-of-order target' \
         "$reported_tag" >&2
       exit 70
     fi
   done
 
-  warning="No drift decision for $unresolved_targets; all configured targets were evaluated."
+  if [[ "$unresolved_targets" != "$canonical_targets" ]]; then
+    echo 'Image-pin checker returned a non-canonical unresolved-target list' >&2
+    exit 70
+  fi
+
+  warning="No drift decision for $canonical_targets; all configured targets were evaluated."
   printf '::warning title=Ubuntu image pin check unavailable::%s\n' "$warning"
   exit 0
 fi

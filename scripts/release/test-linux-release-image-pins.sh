@@ -526,9 +526,33 @@ for invalid_targets in \
   if [[ "$invalid_targets_status" -ne 70 ]] ||
       grep -Fq '::warning' <<<"$invalid_targets_output" ||
       ! grep -Fq 'unknown, duplicate, or out-of-order target' \
-        <<<"$invalid_targets_output"; then
+        <<<"$invalid_targets_output" ||
+      grep -Fq 'out-of-order target:  ' <<<"$invalid_targets_output"; then
     echo "Image-pin monitor accepted invalid unresolved targets: $invalid_targets" >&2
     printf '%s\n' "$invalid_targets_output" >&2
+    exit 1
+  fi
+done
+
+for noncanonical_targets in \
+  'ubuntu:26.04,ubuntu:22.04' \
+  'ubuntu:26.04,  ubuntu:22.04' \
+  'ubuntu:26.04,' \
+  'ubuntu:26.04, ubuntu:22.04,'; do
+  set +e
+  noncanonical_output=$(
+    MININGCORE_TEST_HANDOFF_TARGETS="$noncanonical_targets" \
+      bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+  )
+  noncanonical_status=$?
+  set -e
+
+  if [[ "$noncanonical_status" -ne 70 ]] ||
+      grep -Fq '::warning' <<<"$noncanonical_output" ||
+      ! grep -Fq 'non-canonical unresolved-target list' \
+        <<<"$noncanonical_output"; then
+    echo "Image-pin monitor accepted a non-canonical target list: $noncanonical_targets" >&2
+    printf '%s\n' "$noncanonical_output" >&2
     exit 1
   fi
 done
