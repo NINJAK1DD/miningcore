@@ -940,8 +940,10 @@ confirms the selected Ubuntu release. Each lane runs the complete PostgreSQL-bac
 suite, validates native runtime links, and checks
 that the binary reports the release version and source commit. The workflow then verifies the
 two-archive set, creates one checksum manifest, smoke-tests the 26.04 packaged image, and publishes
-both archives and the container with provenance. A rerun first compares any existing GitHub Release
-assets and stops before attestations or GHCR mutation when the release already exists.
+both archives and the container with provenance. Publication uses an explicit, recoverable sequence:
+an unpublished draft receives and verifies the archive set, a version-scoped staging tag records the
+container digest, the draft records that digest in `CONTAINER-IMAGE.json`, and only a verified,
+published GitHub Release permits the public version tags and mutable aliases to move.
 The published container intentionally follows the serviced .NET Resolute runtime tag so rebuilt
 images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
 the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
@@ -984,7 +986,132 @@ git push origin "$NEXT_VERSION"
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight
 tag. After the first GHCR publication, confirm the package is public and inherits access from this
 repository. Do not move or reuse a published version tag; publish a new version instead.
-GitHub Release creation and GHCR publication are separate services and cannot be transactional. If
-GHCR publication succeeds but GitHub Release creation fails, leave the tag unchanged, inspect the
-failed run and registry state, then use **Re-run all jobs**. Never move the tag or manually replace
-assets to force the two publication surfaces to agree.
+
+### Recover an interrupted publication
+
+GitHub Releases and GHCR are separate services and do not provide a shared transaction. The workflow
+therefore treats publication as four observable states:
+
+| State | Durable evidence | Automatic next action |
+| --- | --- | --- |
+| No publication | No release and no version-scoped staging tag | Create an unpublished draft and upload the tested archives. |
+| Staged container | Draft release plus `publication-staging-vX.Y.Z` and, once recorded, `CONTAINER-IMAGE.json` | Reuse the staged digest; never rebuild over it. |
+| Durable release | Published release whose archives and container record were cryptographically verified | Create or verify the immutable full-version tags. |
+| Promoted version | `vX.Y.Z` and `X.Y.Z` match the recorded digest; an eligible newest stable release also owns `X.Y`, GHCR `latest` and GitHub's latest-release pointer | Publication is complete. |
+
+The staging tag is deliberately retained as audit and retry evidence. Before the release becomes
+durable, the workflow does not create either full-version container tag and does not move `X.Y` or
+`latest`. Every draft is created with GitHub latest disabled. The repository-wide publication job
+queues up to 100 release tags, processes one at a time and never cancels an active publication. This
+keeps release freshness inspection and mutation inside one serialized boundary. A 60-minute job
+timeout bounds head-of-line blocking while preserving all durable state for a full rerun.
+
+Before uploading anything to an existing draft, the workflow requires its exact generated title and
+a deterministic collision marker containing the repository, release tag and source commit. This
+detects a stale or unrelated same-tag draft that this workflow did not create; it is not an
+authorization control because a maintainer with release-write access can reproduce the marker. A
+mismatch stops for human review before trusted assets are uploaded. This check applies only while
+the release is a draft.
+
+GitHub's release list may briefly lag a successful draft creation, asset upload or publication.
+The workflow retries those visibility checks for a bounded period, always pins the retained numeric
+release ID during asset work, and fails closed when authoritative state does not converge. Archive
+uploads are streamed, use bounded connection, retry and total-time budgets, do not follow redirects,
+and preserve GitHub's bounded error response in the failed-job log.
+
+When a stable draft is published, the workflow compares it with every other published stable
+release and explicitly chooses whether GitHub may mark it latest. After publication, each GHCR
+destination is created from the recorded digest and inspected again. An older rerun leaves `X.Y`
+unchanged when a higher patch exists in that line and leaves both GHCR and GitHub `latest` unchanged
+when any higher stable version exists. A pre-existing immutable version tag with another digest, a
+release asset with different bytes, missing recorded state, duplicate or unexpected assets, and any
+non-authoritative GitHub or registry response stop with `HUMAN ACTION REQUIRED`; the workflow does
+not overwrite the conflict. Registry absence is accepted only from an explicit manifest/name-unknown
+or reference-bound not-found response. Authentication and permission errors deliberately fail closed.
+
+For an interrupted tag, inspect both services without changing them. Replace the example values but
+do not move the Git tag:
+
+```console
+export REPOSITORY=NINJAK1DD/miningcore
+export TAG=v0.1.0-rc.10
+export IMAGE=ghcr.io/ninjak1dd/miningcore
+export STAGING_TAG="publication-staging-$TAG"
+
+release_pages=$(mktemp)
+release_json=$(mktemp)
+trap 'rm -f -- "$release_pages" "$release_json"' EXIT
+
+gh api --paginate --slurp \
+  "repos/$REPOSITORY/releases?per_page=100" > "$release_pages"
+jq -e --arg tag "$TAG" \
+  '[.[][] | select(.tag_name == $tag)] |
+   if length == 1 then .[0]
+   else error("expected exactly one matching draft or published release") end' \
+  "$release_pages" > "$release_json"
+jq '{id,tag_name,draft,prerelease,assets:[.assets[].name]}' "$release_json"
+docker buildx imagetools inspect "$IMAGE:$STAGING_TAG"
+docker buildx imagetools inspect "$IMAGE:$TAG"
+docker buildx imagetools inspect "$IMAGE:${TAG#v}"
+```
+
+For a stable release, also inspect `${TAG#v}` with its final `.patch` component removed and inspect
+`$IMAGE:latest`. Continue in the same shell. To inspect the recorded digest without relying on
+`gh release download` draft handling, download the asset through its authenticated API identifier:
+
+```console
+container_record=$(mktemp)
+trap 'rm -f -- "$release_pages" "$release_json" "$container_record"' EXIT
+
+asset_id=$(jq -er \
+  '[.assets[] | select(.name == "CONTAINER-IMAGE.json")] |
+   if length == 1 then .[0].id else error("container record is absent or ambiguous") end' \
+  "$release_json")
+gh api -H 'Accept: application/octet-stream' \
+  "repos/$REPOSITORY/releases/assets/$asset_id" > "$container_record"
+jq . "$container_record"
+docker buildx imagetools inspect \
+  "$(jq -r '.image' "$container_record")@$(jq -r '.digest' "$container_record")"
+```
+
+The tag endpoint is not a draft inspection command: GitHub documents it as returning a published
+release. The authenticated, paginated list above includes drafts for callers with push access and
+the exact-one check prevents an ambiguous tag from being selected. Publication requires GitHub CLI
+2.51 or newer because draft discovery uses `gh api --slurp`. Once the list establishes a numeric
+release ID, repeated checks within that command use the authenticated ID endpoint instead of
+sweeping every release again. Release title and notes may be edited after publication; recovery
+identity then comes from the tag, release ID, state and immutable asset/container evidence.
+
+Do not manually edit the generated title or remove the collision marker while publication remains a
+draft. If the workflow stops on either check, first compare the draft ID, author and audit history
+with the failed workflow run and confirm that the Git tag still resolves to the recorded source
+commit. When that evidence proves the draft belongs to this workflow and only its presentation was
+edited, restore the exact generated title (for example, `Miningcore vX.Y.Z`) and original marker
+before using **Re-run all jobs**. If ownership cannot be established, preserve the draft, assets and
+run logs for review; only after confirming that it is unrelated should a maintainer delete the
+draft. If a staging tag remains, complete the orphan-tag evidence and cleanup procedure below before
+rerunning all jobs to create fresh workflow-owned state. Never make an unrelated draft pass by
+copying the public marker.
+
+If a retention policy prunes the staging tag after publication has completed, a rerun remains safe
+when the release record and at least one immutable GHCR version tag still matches the recorded
+digest. Any other immutable tag that is present must also match; conflicts fail closed. The
+matching tag proves the digest remains live, and promotion safely recreates a missing sibling from
+that digest. A missing staging tag while the release is still a draft remains a hard stop because no
+durable promoted tag can prove the recorded content.
+
+An orphaned staging tag with no matching draft or published release is also a hard stop. Preserve
+its digest, registry metadata and failed-run logs first. After establishing that no release record or
+public version tag ever referenced it, a maintainer may delete only that orphaned staging tag and use
+**Re-run all jobs** to restart publication. Never delete a staging tag merely to bypass a digest or
+asset conflict.
+
+If the evidence is internally consistent, open the failed Release workflow run and select
+**Re-run all jobs**. Do not use **Re-run failed jobs**, because the tested archives belong to one run
+attempt. The rerun verifies existing assets, reuses the exact staged digest, and continues from the
+first incomplete state. GitHub's server-computed SHA-256 and size avoid repeated
+archive downloads when available; older records fall back to download-and-compare verification. If
+a command above fails for a reason other than an
+authoritative not-found response, or any digest/asset differs, stop: preserve the tag, draft, assets,
+container tags and failed-run logs for review. Never delete, move, rebuild over, or manually replace
+publication evidence to force the services to agree.

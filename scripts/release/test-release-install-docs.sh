@@ -57,12 +57,57 @@ assert_contains 'the all-jobs release retry rule' \
   'select **Re-run all jobs**'
 assert_contains 'the failed-jobs retry prohibition' \
   'Do not use **Re-run failed jobs**'
+assert_contains 'the staged-publication state model' \
+  'No publication | No release and no version-scoped staging tag'
+assert_contains 'the durable-release promotion boundary' \
+  'published GitHub Release permits the public version tags'
+assert_contains 'the publication conflict stop' \
+  'HUMAN ACTION REQUIRED'
+assert_contains 'the non-transactional publication boundary' \
+  'do not provide a shared transaction'
+assert_contains 'the authenticated draft-discovery command' \
+  'gh api --paginate --slurp'
+assert_contains 'the exact-one release selection guard' \
+  'expected exactly one matching draft or published release'
+assert_contains 'the bounded release-list visibility policy' \
+  'retries those visibility checks for a bounded period'
+assert_contains 'the repository-wide publication queue' \
+  'queues up to 100 release tags'
+assert_contains 'the publication queue timeout' \
+  '60-minute job'
+assert_contains 'the draft ownership boundary' \
+  'deterministic collision marker containing the repository'
+assert_contains 'the draft marker authorization limitation' \
+  'authorization control because a maintainer'
+assert_contains 'the draft edit recovery procedure' \
+  'Do not manually edit the generated title'
+assert_contains 'the deleted-draft staging cleanup boundary' \
+  'complete the orphan-tag evidence and cleanup procedure'
+assert_contains 'the foreign draft adoption prohibition' \
+  'Never make an unrelated draft pass'
+assert_contains 'the streamed bounded upload policy' \
+  'uploads are streamed'
+assert_contains 'the pruned-stage recovery rule' \
+  'at least one immutable GHCR version tag still matches the recorded'
+assert_contains 'the GitHub CLI publication floor' \
+  'Publication requires GitHub CLI'
+assert_contains 'the orphan-stage recovery warning' \
+  'Never delete a staging tag merely to bypass a digest or'
 assert_contains 'the declared build-image contract' \
   'workflow-declared'
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
+
+recovery_section=$(awk '
+  /^### Recover an interrupted publication$/ { capture = 1 }
+  capture { print }
+' "$document")
+if grep -Fq 'releases/tags/$TAG' <<<"$recovery_section"; then
+  echo 'Release recovery documentation still uses the published-only tag endpoint' >&2
+  exit 1
+fi
 
 if grep -Eq '(^|[[:space:]])exit([[:space:]]|$)' <<<"$selection_block"; then
   echo "The copy-paste release selection block must not exit an interactive shell" >&2
