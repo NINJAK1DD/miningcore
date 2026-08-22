@@ -37,6 +37,8 @@ if [[ ${#archives[@]} -ne ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} ]]; then
   printf 'Expected exactly %d Ubuntu archives, found %d:\n' \
     "${#MININGCORE_LINUX_RELEASE_TARGETS[@]}" "${#archives[@]}" >&2
   printf '  %s\n' "${archives[@]}" >&2
+  echo 'GitHub Actions artifacts are attempt-scoped;' \
+    'use Re-run all jobs, not Re-run failed jobs.' >&2
   exit 1
 fi
 

@@ -1,0 +1,23 @@
+name: Release image pin freshness
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify reviewed Ubuntu image pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compare current tags with reviewed manifest-list digests
+        shell: bash
+        run: bash scripts/release/check-linux-release-image-pins.sh

@@ -9,8 +9,9 @@ on:
 jobs:
   build:
 
-    # Ubuntu 26.04 is the primary Linux development and release platform. Compatibility
-    # remains independently exercised on Ubuntu 24.04 and 22.04 below/in release.yml.
+    # This uncontainerized job intentionally exercises the primary development host itself.
+    # Ubuntu 24.04 source compatibility and the independently built Ubuntu 22.04 archive
+    # remain covered by dedicated lanes below/in release.yml.
     runs-on: ubuntu-26.04
 
     services:
@@ -61,6 +62,10 @@ jobs:
     - name: Test Linux release package target contract
       shell: bash
       run: bash scripts/release/test-linux-package-targets.sh
+
+    - name: Test Linux release image-pin freshness checks
+      shell: bash
+      run: bash scripts/release/test-linux-release-image-pins.sh
 
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only

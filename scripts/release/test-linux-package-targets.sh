@@ -221,6 +221,8 @@ fixture=$(new_fixture missing-archive)
 cp "$complete_dir"/*ubuntu-26.04.tar.gz "$fixture/"
 expect_collection_failure "a missing compatibility archive" "$fixture" \
   'Expected exactly 2 Ubuntu archives, found 1'
+expect_collection_failure "an attempt-scoped partial rerun" "$fixture" \
+  'use Re-run all jobs, not Re-run failed jobs'
 
 fixture=$(new_fixture extra-archive)
 cp "$complete_dir"/*.tar.gz "$fixture/"

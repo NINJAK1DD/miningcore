@@ -482,6 +482,9 @@ jobs:
       - name: Test administrative API systemd permissions
         run: bash scripts/release/test-admin-api-systemd-permissions.sh
 
+      - name: Validate release installation documentation on target userspace
+        run: bash scripts/release/test-release-install-docs.sh
+
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -839,6 +842,10 @@ jobs:
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          # Retain serviced runtime-base tags while recording resolved build
+          # materials in registry-attached provenance and an SBOM.
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha,scope=release-container
           cache-to: type=gha,mode=max,scope=release-container
 

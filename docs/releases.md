@@ -51,6 +51,7 @@ The examples below use the current `v0.1.0-rc.9`. Substitute the version you sel
 export MININGCORE_VERSION=v0.1.0-rc.9
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
+MININGCORE_DOWNLOAD_DIR=
 archive=
 if [ -r /etc/os-release ]; then
   MININGCORE_HOST_RELEASE="$(
@@ -72,27 +73,45 @@ else
   esac
 fi
 if [ -n "$MININGCORE_UBUNTU" ]; then
-  archive="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
-  rm -f -- "$archive" SHA256SUMS
-  if curl --fail --location --remote-name --remove-on-error \
-      "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/${archive}" &&
-    curl --fail --location --remote-name --remove-on-error \
-      "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS" &&
-    sha256sum --ignore-missing --check --strict SHA256SUMS; then
-    export MININGCORE_RELEASE_READY=1
-    echo "READY: $archive is verified and ready to install"
+  archive_name="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
+  if MININGCORE_DOWNLOAD_DIR="$(
+    mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX"
+  )"; then
+    archive="$MININGCORE_DOWNLOAD_DIR/$archive_name"
+    archive_part="${archive}.part"
+    checksum_file="$MININGCORE_DOWNLOAD_DIR/SHA256SUMS"
+    checksum_part="${checksum_file}.part"
+    release_url="https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}"
+    if curl --fail --location --output "$archive_part" "$release_url/$archive_name" &&
+      curl --fail --location --output "$checksum_part" "$release_url/SHA256SUMS" &&
+      mv -- "$archive_part" "$archive" &&
+      mv -- "$checksum_part" "$checksum_file" &&
+      (cd "$MININGCORE_DOWNLOAD_DIR" &&
+        sha256sum --ignore-missing --check --strict SHA256SUMS); then
+      export MININGCORE_RELEASE_READY=1
+      echo "READY: $archive is verified and ready to install"
+    else
+      echo "STOP: release download or checksum verification failed" >&2
+      rm -f -- "$archive" "$archive_part" "$checksum_file" "$checksum_part"
+      rmdir -- "$MININGCORE_DOWNLOAD_DIR"
+      MININGCORE_DOWNLOAD_DIR=
+      MININGCORE_UBUNTU=
+      archive=
+    fi
   else
-    echo "STOP: release download or checksum verification failed" >&2
-    rm -f -- "$archive" SHA256SUMS
+    echo "STOP: unable to create private release download directory" >&2
+    MININGCORE_DOWNLOAD_DIR=
     MININGCORE_UBUNTU=
     archive=
   fi
 fi
 ```
 
-The host-release check prevents accidental cross-distribution installation. `SHA256SUMS` covers both
-archives; `--ignore-missing` limits verification to the selected archive, while `--strict` rejects a
-malformed checksum line.
+The host-release check prevents accidental cross-distribution installation. Downloads use unique,
+private temporary storage and are renamed from `.part` files only after curl succeeds. This avoids
+overwriting unrelated files in the operator's current directory and remains compatible with the
+curl version supplied by Ubuntu 22.04. `SHA256SUMS` covers both archives; `--ignore-missing` limits
+verification to the selected archive, while `--strict` rejects a malformed checksum line.
 Do not continue to the runtime and installation steps unless the block selected an archive and its
 checksum verification succeeded. The block deliberately returns to an interactive shell after a
 `STOP` message instead of closing an SSH session.
@@ -133,19 +152,37 @@ Create a dedicated service account, unpack the versioned directory, and point a 
 it:
 
 ```console
-id -u miningcore >/dev/null 2>&1 || \
-  sudo useradd --system --home /var/lib/miningcore --shell /usr/sbin/nologin miningcore
-sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
-sudo tar -xzf "$archive" -C /opt
-release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-sudo ln -sfn "$release_dir" /opt/miningcore
-sudo cp /opt/miningcore/config.example.json /etc/miningcore/config.json
-sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
-sudo chown root:miningcore /etc/miningcore
-sudo chown root:miningcore /etc/miningcore/config.json
-sudo chmod 0750 /etc/miningcore
-sudo chmod 0640 /etc/miningcore/config.json
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  if (
+    set -e
+    id -u miningcore >/dev/null 2>&1 || \
+      sudo useradd --system --home /var/lib/miningcore --shell /usr/sbin/nologin miningcore
+    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
+    sudo tar -xzf "$archive" -C /opt
+    test -d "$release_dir"
+    if [ ! -e /etc/miningcore/config.json ]; then
+      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json
+    fi
+    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
+    sudo chown root:miningcore /etc/miningcore
+    sudo chown root:miningcore /etc/miningcore/config.json
+    sudo chmod 0750 /etc/miningcore
+    sudo chmod 0640 /etc/miningcore/config.json
+    sudo ln -sfnT "$release_dir" /opt/miningcore
+  ); then
+    echo "READY: installed $release_dir and updated /opt/miningcore"
+  else
+    echo "STOP: installation failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no release archive passed the download and checksum gate" >&2
+fi
 ```
+
+The stable symlink is changed only after extraction and filesystem setup succeed. On upgrades, the
+existing `/etc/miningcore/config.json` is retained; compare it with the new example and apply changes
+deliberately.
 
 Compare the extracted metadata with the binary before changing the live service:
 
@@ -878,13 +915,20 @@ The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
-stable hosted runner and an immutable, digest-pinned Docker Official Image. The exact build-image
-reference is recorded in each archive's `BUILD-INFO` and verified during collection. Each lane runs
-the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links, and checks
+stable hosted runner and an immutable, digest-pinned Docker Official Image. The workflow-declared
+build-image reference is recorded in each archive's `BUILD-INFO` and checked against the shared
+release-target contract during collection; the in-container `VERSION_ID` check independently
+confirms the selected Ubuntu release. Each lane runs the complete PostgreSQL-backed and ZeroMQ test
+suite, validates native runtime links, and checks
 that the binary reports the release version and source commit. The workflow then verifies the
 two-archive set, creates one checksum manifest, smoke-tests the 26.04 packaged image, and publishes
 both archives and the container with provenance. A rerun first compares any existing GitHub Release
 assets and stops before attestations or GHCR mutation when the release already exists.
+The published container intentionally follows the serviced .NET Resolute runtime tag so rebuilt
+images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
+the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
+compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
+pin needs review; updating a pin still requires the complete release validation.
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
