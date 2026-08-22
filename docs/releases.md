@@ -51,6 +51,7 @@ The examples below use the current `v0.1.0-rc.9`. Substitute the version you sel
 export MININGCORE_VERSION=v0.1.0-rc.9
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
+MININGCORE_INSTALL_READY=
 MININGCORE_DOWNLOAD_DIR=
 archive=
 if [ -r /etc/os-release ]; then
@@ -152,6 +153,7 @@ Create a dedicated service account, unpack the versioned directory, and point a 
 it:
 
 ```console
+MININGCORE_INSTALL_READY=
 if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
   if (
@@ -171,6 +173,15 @@ if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
     sudo chmod 0640 /etc/miningcore/config.json
     sudo ln -sfnT "$release_dir" /opt/miningcore
   ); then
+    if rm -f -- "$archive" "$checksum_file" &&
+        rmdir -- "$MININGCORE_DOWNLOAD_DIR"; then
+      MININGCORE_DOWNLOAD_DIR=
+      archive=
+      checksum_file=
+    else
+      echo "WARN: remove the verified release files from $MININGCORE_DOWNLOAD_DIR" >&2
+    fi
+    export MININGCORE_INSTALL_READY=1
     echo "READY: installed $release_dir and updated /opt/miningcore"
   else
     echo "STOP: installation failed; /opt/miningcore was not changed" >&2
@@ -182,13 +193,19 @@ fi
 
 The stable symlink is changed only after extraction and filesystem setup succeed. On upgrades, the
 existing `/etc/miningcore/config.json` is retained; compare it with the new example and apply changes
-deliberately.
+deliberately. A successful installation also removes the verified archive and checksum workspace;
+an explicit warning names the directory if cleanup cannot complete.
 
 Compare the extracted metadata with the binary before changing the live service:
 
 ```console
-cat "$release_dir/BUILD-INFO"
-LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version
+if [ "${MININGCORE_INSTALL_READY:-}" = 1 ] &&
+    [ -n "${release_dir:-}" ] && [ -d "$release_dir" ]; then
+  cat "$release_dir/BUILD-INFO"
+  LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version
+else
+  echo "STOP: no release from this installation run is available to verify" >&2
+fi
 ```
 
 `BUILD-INFO` must name the selected release, matching Ubuntu target, and source commit. Releases
@@ -928,7 +945,9 @@ The published container intentionally follows the serviced .NET Resolute runtime
 images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
 the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
 compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
-pin needs review; updating a pin still requires the complete release validation.
+pin needs review; updating a pin still requires the complete release validation. Pin drift exits
+with status 1, while registry or resolver failures use status 69 so transient infrastructure errors
+cannot be mistaken for reviewed-image movement.
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.

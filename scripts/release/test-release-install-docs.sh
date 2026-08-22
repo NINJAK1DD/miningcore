@@ -17,6 +17,13 @@ install_block=$(awk '
   capture && /^```$/ { exit }
   capture { print }
 ' "$document")
+verification_block=$(awk '
+  { sub(/\r$/, "") }
+  /^Compare the extracted metadata with the binary/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$document")
 
 assert_contains() {
   local label=$1
@@ -52,10 +59,12 @@ fi
 
 bash -n <<<"$selection_block"
 bash -n <<<"$install_block"
+bash -n <<<"$verification_block"
 
 for required in \
   'MININGCORE_HOST_RELEASE=' \
   'MININGCORE_RELEASE_READY=' \
+  'MININGCORE_INSTALL_READY=' \
   'MININGCORE_DOWNLOAD_DIR=' \
   'if [ -n "$MININGCORE_UBUNTU" ]; then' \
   'if MININGCORE_DOWNLOAD_DIR="$(' \
@@ -88,12 +97,36 @@ for curl_option in --fail --location --output; do
   fi
 done
 
+sha256sum_help=$(sha256sum --help)
+for checksum_option in --ignore-missing --strict; do
+  if ! grep -Fq -- "$checksum_option" <<<"$sha256sum_help"; then
+    echo "The current sha256sum does not support documented option $checksum_option" >&2
+    exit 1
+  fi
+done
+
+if ! grep -Fq -- '--no-target-directory' <<<"$(ln --help)"; then
+  echo 'The current ln does not support documented option -T' >&2
+  exit 1
+fi
+
+capability_dir=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-doc-test.XXXXXXXX")
+mkdir "$capability_dir/target"
+ln -sfnT "$capability_dir/target" "$capability_dir/link"
+test -L "$capability_dir/link"
+rm -f -- "$capability_dir/link"
+rmdir -- "$capability_dir/target" "$capability_dir"
+
 for required in \
+  'MININGCORE_INSTALL_READY=' \
   'if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then' \
   'test -d "$release_dir"' \
   'if [ ! -e /etc/miningcore/config.json ]; then' \
   'sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json' \
   'sudo ln -sfnT "$release_dir" /opt/miningcore' \
+  'rmdir -- "$MININGCORE_DOWNLOAD_DIR"' \
+  'WARN: remove the verified release files from $MININGCORE_DOWNLOAD_DIR' \
+  'export MININGCORE_INSTALL_READY=1' \
   'STOP: installation failed; /opt/miningcore was not changed'; do
   if ! grep -Fq "$required" <<<"$install_block"; then
     echo "Release installation block is missing: $required" >&2
@@ -109,16 +142,40 @@ fi
 directory_guard_line=$(grep -nF 'test -d "$release_dir"' <<<"$install_block" | cut -d: -f1)
 symlink_line=$(grep -nF 'sudo ln -sfnT "$release_dir" /opt/miningcore' <<<"$install_block" |
   cut -d: -f1)
+cleanup_line=$(grep -nF 'rmdir -- "$MININGCORE_DOWNLOAD_DIR"' <<<"$install_block" | cut -d: -f1)
 
 if [[ -z "$directory_guard_line" || -z "$symlink_line" ||
-    "$symlink_line" -le "$directory_guard_line" ]]; then
-  echo "The stable symlink must move only after the extracted directory is verified" >&2
+    -z "$cleanup_line" || "$symlink_line" -le "$directory_guard_line" ||
+    "$cleanup_line" -le "$symlink_line" ]]; then
+  echo 'The stable symlink and cleanup operations are not safely ordered' >&2
   exit 1
 fi
 
-blocked_install_output=$(MININGCORE_RELEASE_READY= bash -c "$install_block" 2>&1)
+blocked_install_output=$(
+  env -u MININGCORE_RELEASE_READY -u MININGCORE_INSTALL_READY \
+    bash -c "$install_block" 2>&1
+)
 if ! grep -Fq 'no release archive passed' <<<"$blocked_install_output"; then
   echo "The installation block did not stop cleanly without a verified archive" >&2
+  exit 1
+fi
+
+for required in \
+  'if [ "${MININGCORE_INSTALL_READY:-}" = 1 ]' \
+  '[ -n "${release_dir:-}" ] && [ -d "$release_dir" ]' \
+  'cat "$release_dir/BUILD-INFO"' \
+  'STOP: no release from this installation run is available to verify'; do
+  if ! grep -Fq "$required" <<<"$verification_block"; then
+    echo "Release verification block is missing: $required" >&2
+    exit 1
+  fi
+done
+
+blocked_verification_output=$(
+  env -u MININGCORE_INSTALL_READY -u release_dir bash -c "$verification_block" 2>&1
+)
+if ! grep -Fq 'no release from this installation run' <<<"$blocked_verification_output"; then
+  echo 'The verification block did not reject stale or absent installation state' >&2
   exit 1
 fi
 

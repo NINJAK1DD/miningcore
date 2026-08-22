@@ -23,6 +23,17 @@ if [[ "$#" -ne 4 || "$1" != buildx || "$2" != imagetools || "$3" != inspect ]]; 
   exit 64
 fi
 
+if [[ ${MININGCORE_TEST_INSPECT_FAILURE:-} = 1 ]]; then
+  echo 'injected registry failure' >&2
+  exit 1
+fi
+
+if [[ ${MININGCORE_TEST_MALFORMED_INSPECTION:-} = 1 ]]; then
+  printf 'Name:      docker.io/library/%s\n' "$4"
+  printf 'MediaType: application/vnd.oci.image.index.v1+json\n'
+  exit 0
+fi
+
 case "$4" in
   ubuntu:26.04)
     digest=$MININGCORE_TEST_RESOLUTE_DIGEST
@@ -67,6 +78,38 @@ if ! grep -Fq 'ubuntu:22.04 now resolves to sha256:111111' <<<"$failure_output" 
     ! grep -Fq 'Review upstream changes' <<<"$failure_output"; then
   echo 'Image-pin freshness check did not explain the required review' >&2
   printf '%s\n' "$failure_output" >&2
+  exit 1
+fi
+
+set +e
+registry_output=$(
+  MININGCORE_TEST_INSPECT_FAILURE=1 PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+registry_status=$?
+set -e
+
+if [[ "$registry_status" -ne 69 ]] ||
+    ! grep -Fq 'Unable to reach the registry while resolving ubuntu:26.04' \
+      <<<"$registry_output" ||
+    ! grep -Fq 'injected registry failure' <<<"$registry_output"; then
+  echo 'Image-pin freshness check did not distinguish registry failure from drift' >&2
+  printf '%s\n' "$registry_output" >&2
+  exit 1
+fi
+
+set +e
+malformed_output=$(
+  MININGCORE_TEST_MALFORMED_INSPECTION=1 \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+malformed_status=$?
+set -e
+
+if [[ "$malformed_status" -ne 69 ]] ||
+    ! grep -Fq 'Unable to resolve a manifest-list digest for ubuntu:26.04' \
+      <<<"$malformed_output"; then
+  echo 'Image-pin freshness check treated malformed resolver output as drift' >&2
+  printf '%s\n' "$malformed_output" >&2
   exit 1
 fi
 

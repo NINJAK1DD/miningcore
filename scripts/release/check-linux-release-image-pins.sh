@@ -14,12 +14,18 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   pinned_image=$(miningcore_linux_release_target_image "$ubuntu_version")
   image_tag=${pinned_image%@*}
   expected_digest=${pinned_image#*@}
-  inspection=$(docker buildx imagetools inspect "$image_tag")
+
+  if ! inspection=$(docker buildx imagetools inspect "$image_tag" 2>&1); then
+    echo "Unable to reach the registry while resolving $image_tag" >&2
+    printf '%s\n' "$inspection" >&2
+    exit 69
+  fi
+
   current_digest=$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspection")
 
   if [[ ! "$current_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "Unable to resolve a manifest-list digest for $image_tag" >&2
-    exit 1
+    exit 69
   fi
 
   if [[ "$current_digest" != "$expected_digest" ]]; then

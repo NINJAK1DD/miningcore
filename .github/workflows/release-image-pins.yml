@@ -1,6 +1,12 @@
 name: Release image pin freshness
 
 on:
+  pull_request:
+    branches: [ master, dev, ravencoin-rollback ]
+    paths:
+      - '.github/workflows/release-image-pins.yml'
+      - 'scripts/release/check-linux-release-image-pins.sh'
+      - 'scripts/release/linux-release-targets.sh'
   schedule:
     - cron: '23 7 * * 1'
   workflow_dispatch:
