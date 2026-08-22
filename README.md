@@ -36,12 +36,14 @@ the original authors and contributors.
 
 ## Quick start
 
-For Ubuntu 22.04 x64, the quickest tested route is the
+For Ubuntu 26.04 x64, the quickest tested route is the primary
 [prebuilt GitHub Release](docs/releases.md). It includes the binary, example configuration,
 database scripts, documentation, checksum, provenance, and a systemd unit. A matching non-root
-container image is published to `ghcr.io/ninjak1dd/miningcore`.
+container image based on Ubuntu 26.04 is published to `ghcr.io/ninjak1dd/miningcore`. Releases also
+include a separately built Ubuntu 22.04 compatibility archive; Ubuntu 24.04 remains a tested
+source-build target.
 
-To build from source on Ubuntu 26.04 x64 instead:
+To build from source on Ubuntu 26.04 x64:
 
 ```console
 git clone https://github.com/NINJAK1DD/miningcore.git
@@ -131,13 +133,15 @@ The pool validates both addresses before authorising the worker. See the comment
 
 ## Build and installation
 
-### Prebuilt Ubuntu 22.04 x64 release
+### Prebuilt Ubuntu x64 releases
 
 Download a release archive and `SHA256SUMS` from the
 [releases page](https://github.com/NINJAK1DD/miningcore/releases), verify it, and follow the
 [prebuilt installation and upgrade guide](docs/releases.md). The binary is framework-dependent and
 therefore still needs the documented .NET 10 and native runtime dependencies. No Windows or generic
-cross-distribution binary compatibility is claimed.
+cross-distribution binary compatibility is claimed. Use the primary Ubuntu 26.04 archive on 26.04;
+use the separately built compatibility archive on 22.04. Ubuntu 24.04 operators should build from
+source rather than use either distribution-specific archive.
 
 Already running Miningcore on .NET 6? Read the
 [.NET 6 to .NET 10 operator migration guide](docs/dotnet-6-to-10-migration.md) before changing the
@@ -152,9 +156,9 @@ the native build dependencies and .NET SDK, then publishes Miningcore into `buil
 | Operating system | Command | Guidance |
 | --- | --- | --- |
 | Debian 12 | `./build-debian-12.sh` | **Recommended script path** |
-| Ubuntu 26.04 LTS x64 | `./build-ubuntu-26.04.sh` | **Recommended Ubuntu source-build path** |
-| Ubuntu 24.04 LTS | `./build-ubuntu-24.04.sh` | Supported source-build path |
-| Ubuntu 22.04 LTS | `./build-ubuntu-22.04.sh` | Supported source build and prebuilt archive target |
+| Ubuntu 26.04 LTS x64 | `./build-ubuntu-26.04.sh` | **Primary release/source target** |
+| Ubuntu 24.04 LTS x64 | `./build-ubuntu-24.04.sh` | Tested source-build compatibility target |
+| Ubuntu 22.04 LTS x64 | `./build-ubuntu-22.04.sh` | Tested source and compatibility archive |
 
 For example:
 

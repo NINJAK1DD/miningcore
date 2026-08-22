@@ -1,15 +1,21 @@
 # Installing a prebuilt Miningcore release
 
-GitHub Releases provide a tested, framework-dependent build for **Ubuntu 22.04 x64** and a container
-image built from that same archive. The archive saves compilation time, but it still requires the
-.NET 10 ASP.NET Core runtime and Miningcore's native runtime libraries. Windows and other Linux
-distributions are not represented as binary-compatible by this package; use the source-build guide
-in the root README for those environments.
+GitHub Releases provide two tested, framework-dependent Linux x64 builds: a primary **Ubuntu 26.04**
+archive and a separately compiled **Ubuntu 22.04 compatibility** archive. The release container is
+built from the Ubuntu 26.04 archive. Each archive saves compilation time, but still requires the
+.NET 10 ASP.NET Core runtime and Miningcore's native runtime libraries.
 
-Ubuntu 26.04 LTS x64 is supported as a source-build target through `build-ubuntu-26.04.sh`. That
-script uses Canonical's native .NET 10 packages and does not add Microsoft's APT feed or the Ubuntu
-22.04 `dotnet/backports` PPA. This does not extend the Ubuntu 22.04 prebuilt archive's tested binary
-target to Ubuntu 26.04.
+Use only the archive matching the host release. Native libraries built on Ubuntu 26.04 can require
+a newer glibc and are not represented as compatible with Ubuntu 22.04 or 24.04. Ubuntu 24.04 remains
+a tested source-build target through `build-ubuntu-24.04.sh`. Windows and other Linux distributions
+are likewise not represented as binary-compatible by these archives; use the source-build guide in
+the root README for those environments.
+
+| Ubuntu host | Supported deployment path |
+| --- | --- |
+| 26.04 LTS x64 | Primary release archive, primary container, or source build |
+| 24.04 LTS x64 | Tested source build; do not use either prebuilt archive |
+| 22.04 LTS x64 | Compatibility release archive or source build |
 
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
@@ -33,45 +39,105 @@ on them for real funds. A version without a suffix, such as `v0.1.0`, is a stabl
 the `latest` container tag.
 
 Open the [releases page](https://github.com/NINJAK1DD/miningcore/releases), choose a version, and
-download these two files:
+download the archive matching the host and the checksum manifest:
 
-- `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz`
+- `miningcore-VERSION-linux-x64-ubuntu-26.04.tar.gz` (choose this on Ubuntu 26.04)
+- `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
 The examples below use the current `v0.1.0-rc.9`. Substitute the version you selected.
 
 ```console
 export MININGCORE_VERSION=v0.1.0-rc.9
-curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz"
-curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
-sha256sum --check SHA256SUMS
+MININGCORE_UBUNTU=
+MININGCORE_RELEASE_READY=
+MININGCORE_INSTALL_READY=
+MININGCORE_DOWNLOAD_DIR=
+archive=
+if [ -r /etc/os-release ]; then
+  MININGCORE_HOST_RELEASE="$(
+    (. /etc/os-release; printf '%s:%s' "$ID" "$VERSION_ID")
+  )"
+else
+  MININGCORE_HOST_RELEASE=unknown
+fi
+if [ "$(uname -m)" != x86_64 ]; then
+  echo "STOP: prebuilt release archives require x86_64" >&2
+else
+  case "$MININGCORE_HOST_RELEASE" in
+    ubuntu:22.04|ubuntu:26.04)
+      export MININGCORE_UBUNTU="${MININGCORE_HOST_RELEASE#ubuntu:}"
+      ;;
+    *)
+      echo "STOP: use the documented source-build path on $MININGCORE_HOST_RELEASE" >&2
+      ;;
+  esac
+fi
+if [ -n "$MININGCORE_UBUNTU" ]; then
+  archive_name="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
+  if MININGCORE_DOWNLOAD_DIR="$(
+    mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX"
+  )"; then
+    archive="$MININGCORE_DOWNLOAD_DIR/$archive_name"
+    archive_part="${archive}.part"
+    checksum_file="$MININGCORE_DOWNLOAD_DIR/SHA256SUMS"
+    checksum_part="${checksum_file}.part"
+    release_url="https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}"
+    if curl --fail --location --output "$archive_part" "$release_url/$archive_name" &&
+      curl --fail --location --output "$checksum_part" "$release_url/SHA256SUMS" &&
+      mv -- "$archive_part" "$archive" &&
+      mv -- "$checksum_part" "$checksum_file" &&
+      (cd "$MININGCORE_DOWNLOAD_DIR" &&
+        sha256sum --ignore-missing --check --strict SHA256SUMS); then
+      export MININGCORE_RELEASE_READY=1
+      echo "READY: $archive is verified and ready to install"
+    else
+      echo "STOP: release download or checksum verification failed" >&2
+      rm -f -- "$archive" "$archive_part" "$checksum_file" "$checksum_part"
+      rmdir -- "$MININGCORE_DOWNLOAD_DIR"
+      MININGCORE_DOWNLOAD_DIR=
+      MININGCORE_UBUNTU=
+      archive=
+    fi
+  else
+    echo "STOP: unable to create private release download directory" >&2
+    MININGCORE_DOWNLOAD_DIR=
+    MININGCORE_UBUNTU=
+    archive=
+  fi
+fi
 ```
 
-`SHA256SUMS` covers the release archive. GitHub also publishes build provenance for the archive. If
-the [GitHub CLI](https://cli.github.com/) is installed, verify it with:
+The host-release check prevents accidental cross-distribution installation. Downloads use unique,
+private temporary storage and are renamed from `.part` files only after curl succeeds. This avoids
+overwriting unrelated files in the operator's current directory and remains compatible with the
+curl version supplied by Ubuntu 22.04. `SHA256SUMS` covers both archives; `--ignore-missing` limits
+verification to the selected archive, while `--strict` rejects a malformed checksum line.
+Do not continue to the runtime and installation steps unless the block selected an archive and its
+checksum verification succeeded. The block deliberately returns to an interactive shell after a
+`STOP` message instead of closing an SSH session.
+
+GitHub also publishes build provenance for each archive. If the
+[GitHub CLI](https://cli.github.com/) is installed, verify it with:
 
 ```console
-gh attestation verify "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz" \
-  --repo NINJAK1DD/miningcore
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  gh attestation verify "$archive" --repo NINJAK1DD/miningcore
+else
+  echo "STOP: no release archive passed the download and checksum gate" >&2
+fi
 ```
-
-After extraction, compare the packaged metadata with the binary before changing the live service:
-
-```console
-cat "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04/BUILD-INFO"
-LD_LIBRARY_PATH="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04" \
-  "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04/Miningcore" --version
-```
-
-`BUILD-INFO` must name the selected release and source commit. Releases published after the
-version-reporting validation was introduced must report the same semantic version (without the
-tag's leading `v`) and full commit SHA. Older releases, including `v0.1.0-rc.2`, can show the legacy
-`0.1.0.0-BRANCH` format; match their full embedded SHA to `BUILD-INFO` instead. A branch label such
-as `dev` is not sufficient release provenance by itself.
 
 ## Install runtime dependencies
 
-Enable Canonical's supported .NET backports PPA, then install the framework and native libraries:
+On the primary Ubuntu 26.04 target, install Canonical's framework and native runtime packages:
+
+```console
+sudo apt-get update
+sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
+```
+
+On the Ubuntu 22.04 compatibility target, enable Canonical's supported .NET backports PPA first:
 
 ```console
 sudo apt-get update
@@ -87,18 +153,67 @@ Create a dedicated service account, unpack the versioned directory, and point a 
 it:
 
 ```console
-id -u miningcore >/dev/null 2>&1 || \
-  sudo useradd --system --home /var/lib/miningcore --shell /usr/sbin/nologin miningcore
-sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
-sudo tar -xzf "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz" -C /opt
-sudo ln -sfn "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04" /opt/miningcore
-sudo cp /opt/miningcore/config.example.json /etc/miningcore/config.json
-sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
-sudo chown root:miningcore /etc/miningcore
-sudo chown root:miningcore /etc/miningcore/config.json
-sudo chmod 0750 /etc/miningcore
-sudo chmod 0640 /etc/miningcore/config.json
+MININGCORE_INSTALL_READY=
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  if (
+    set -e
+    id -u miningcore >/dev/null 2>&1 || \
+      sudo useradd --system --home-dir /var/lib/miningcore --shell /usr/sbin/nologin miningcore
+    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
+    sudo tar -xzf "$archive" -C /opt
+    test -d "$release_dir"
+    if [ ! -e /etc/miningcore/config.json ]; then
+      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json
+    fi
+    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
+    sudo chown root:miningcore /etc/miningcore
+    sudo chown root:miningcore /etc/miningcore/config.json
+    sudo chmod 0750 /etc/miningcore
+    sudo chmod 0640 /etc/miningcore/config.json
+    sudo ln -sfnT "$release_dir" /opt/miningcore
+  ); then
+    MININGCORE_RELEASE_READY=
+    if rm -f -- "$archive" "$checksum_file" &&
+        rmdir -- "$MININGCORE_DOWNLOAD_DIR"; then
+      MININGCORE_DOWNLOAD_DIR=
+      archive=
+      checksum_file=
+    else
+      echo "WARN: remove the verified release files from $MININGCORE_DOWNLOAD_DIR" >&2
+    fi
+    export MININGCORE_INSTALL_READY=1
+    echo "READY: installed $release_dir and updated /opt/miningcore"
+  else
+    echo "STOP: installation failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no release archive passed the download and checksum gate" >&2
+fi
 ```
+
+The stable symlink is changed only after extraction and filesystem setup succeed. On upgrades, the
+existing `/etc/miningcore/config.json` is retained; compare it with the new example and apply changes
+deliberately. A successful installation also removes the verified archive and checksum workspace;
+an explicit warning names the directory if cleanup cannot complete.
+
+Compare the extracted metadata with the binary before changing the live service:
+
+```console
+if [ "${MININGCORE_INSTALL_READY:-}" = 1 ] &&
+    [ -n "${release_dir:-}" ] && [ -d "$release_dir" ]; then
+  cat "$release_dir/BUILD-INFO"
+  LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version
+else
+  echo "STOP: no release from this installation run is available to verify" >&2
+fi
+```
+
+`BUILD-INFO` must name the selected release, matching Ubuntu target, and source commit. Releases
+published after the version-reporting validation was introduced must report the same semantic
+version (without the tag's leading `v`) and full commit SHA. Older releases, including
+`v0.1.0-rc.2`, can show the legacy `0.1.0.0-BRANCH` format; match their full embedded SHA to
+`BUILD-INFO` instead. A branch label such as `dev` is not sufficient release provenance by itself.
 
 Edit `/etc/miningcore/config.json`. Replace every `CHANGE_ME` value and use absolute writable paths
 for service state:
@@ -212,10 +327,11 @@ from the container network.
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
 
-### Ubuntu 26.04 x64 source-build support
+### Ubuntu 26.04 primary release and source-build support
 
 The repository now includes `build-ubuntu-26.04.sh` and a dedicated Ubuntu 26.04 source-build CI
-lane. The native sources build with GCC 15 and Boost 1.90: the CryptoNight interfaces use explicit
+lane. Ubuntu 26.04 is now also the primary prebuilt archive, container base, and Linux development
+target. The native sources build with GCC 15 and Boost 1.90: the CryptoNight interfaces use explicit
 byte-output conversions and POSIX declarations, the CryptoNote library uses C++14 with its direct
 Boost MPL dependency, and obsolete Boost.System linkage has been removed from CryptoNote and
 ZanoNote. ZanoNote also uses the current Boost.Asio `io_context` and Boost.UUID initialization
@@ -226,8 +342,9 @@ later component can hide an incomplete build. The Ubuntu 26.04 validation publis
 24-library inventory also required by release packaging, checks x86-64 architecture, dependencies
 and required ZanoNote exports, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote load tests
 against the freshly built libraries. It also exercises version/help/schema paths and reaches a
-controlled startup safety boundary. Official prebuilt release archives remain built and tested on
-Ubuntu 22.04 x64.
+controlled startup safety boundary. Ubuntu 24.04 retains required source-build validation, and an
+official compatibility archive remains independently built and fully tested on Ubuntu 22.04 x64.
+Do not deploy the 26.04 archive on an older host; select the matching archive or build from source.
 
 ### Security: administrative API bearer authentication and safe verbs
 
@@ -656,7 +773,7 @@ closed. Journal and owner-file symlinks, hard links and non-regular objects are 
 blocking on FIFOs. The acknowledgement command acquires the same native owner before changing fatal
 evidence.
 
-On supported Ubuntu 22.04 hosts, no-replacement publication uses
+On supported Ubuntu Linux hosts, no-replacement publication uses
 `renameat2(..., RENAME_NOREPLACE)` plus retained-directory `fsync`. Unsupported libc, kernel or
 filesystem responses use a no-replace `linkat`/`unlinkat` fallback. A crash between those calls can
 leave two names for one inode; single-link checks reject that state. Filesystems supporting neither
@@ -812,15 +929,49 @@ merged-mining support before it can be offered as a Miningcore template.
 ## Maintainer release procedure
 
 The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.10` or
-`v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
-runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
-checks that the binary reports the release version and source commit, packages the result,
-smoke-tests the packaged image, and publishes both artifacts with provenance.
+`v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
+fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
+is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
+not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
+stable hosted runner and an immutable, digest-pinned Docker Official Image. The workflow-declared
+build-image reference is recorded in each archive's `BUILD-INFO` and checked against the shared
+release-target contract during collection; the in-container `VERSION_ID` check independently
+confirms the selected Ubuntu release. Each lane runs the complete PostgreSQL-backed and ZeroMQ test
+suite, validates native runtime links, and checks
+that the binary reports the release version and source commit. The workflow then verifies the
+two-archive set, creates one checksum manifest, smoke-tests the 26.04 packaged image, and publishes
+both archives and the container with provenance. A rerun first compares any existing GitHub Release
+assets and stops before attestations or GHCR mutation when the release already exists.
+The published container intentionally follows the serviced .NET Resolute runtime tag so rebuilt
+images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
+the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
+compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
+pin needs review; updating a pin still requires the complete release validation. Pin drift exits
+with status 1. A registry failure uses advisory status 69 only when its diagnostic matches a known
+transient network, service or rate-limit condition. Missing tags and every unclassified inspection
+failure use status 70 and fail closed. The checker inspects every target before deciding its final
+status, so a transient failure on one target cannot hide confirmed drift on another. An advisory
+workflow warning names only the image tags for which no drift decision could be made. Authentication
+failures remain fatal unless the registry diagnostic independently identifies rate limiting. Missing
+Docker, Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because
+the monitor itself needs repair. The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a
+private machine-readable handoff so checker diagnostics remain live; creation, read or write
+failures and malformed, unknown, duplicate or out-of-order result data use structural status 70.
+
+> **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
+> does not report a status on unrelated pull requests. Do not configure it as a required status
+> check; require the always-running build and release checks instead.
+
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
+
+> **Release retry rule:** if any Release workflow job fails, select **Re-run all jobs**.
+> Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the
+> collector may be rerun without a successful sibling archive from the earlier attempt and will
+> correctly reject the incomplete set.
 
 ```console
 git switch dev
@@ -833,3 +984,7 @@ git push origin "$NEXT_VERSION"
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight
 tag. After the first GHCR publication, confirm the package is public and inherits access from this
 repository. Do not move or reuse a published version tag; publish a new version instead.
+GitHub Release creation and GHCR publication are separate services and cannot be transactional. If
+GHCR publication succeeds but GitHub Release creation fails, leave the tag unchanged, inspect the
+failed run and registry state, then use **Re-run all jobs**. Never move the tag or manually replace
+assets to force the two publication surfaces to agree.

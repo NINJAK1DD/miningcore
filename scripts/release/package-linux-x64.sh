@@ -2,18 +2,35 @@
 
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-    echo "Usage: $0 <version> <publish-directory> <output-directory>" >&2
+if [[ $# -ne 5 ]]; then
+    echo "Usage: $0 <version> <ubuntu-version> <publish-directory>" >&2
+    echo "  <output-directory> <build-image>" >&2
     exit 64
 fi
 
 version="$1"
-publish_dir="$(realpath "$2")"
-output_dir="$(realpath -m "$3")"
+ubuntu_version="$2"
+publish_dir="$(realpath "$3")"
+output_dir="$(realpath -m "$4")"
+build_image="$5"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$repository_root/scripts/release/linux-release-targets.sh"
 
 if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
     echo "Version contains unsupported characters: $version" >&2
+    exit 64
+fi
+
+if ! miningcore_linux_release_target_supported "$ubuntu_version"; then
+    echo "Unsupported Ubuntu release archive target: $ubuntu_version" >&2
+    echo "Supported targets: $(miningcore_linux_release_target_list)" >&2
+    exit 64
+fi
+
+expected_build_image=$(miningcore_linux_release_target_image "$ubuntu_version")
+if [[ "$build_image" != "$expected_build_image" ]]; then
+    echo "Unexpected Ubuntu $ubuntu_version build image: $build_image" >&2
+    echo "Expected pinned image: $expected_build_image" >&2
     exit 64
 fi
 
@@ -31,7 +48,7 @@ if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
 else
     source_date_epoch="$(git -C "$repository_root" show -s --format=%ct "$source_commit")"
 fi
-package_name="miningcore-${version}-linux-x64-ubuntu-22.04"
+package_name="miningcore-${version}-linux-x64-ubuntu-${ubuntu_version}"
 archive_name="${package_name}.tar.gz"
 work_dir="$(mktemp -d)"
 package_root="$work_dir/$package_name"
@@ -55,7 +72,8 @@ cp "$repository_root/packaging/systemd/miningcore.service" \
 cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version
 Source commit: $source_commit
-Target: Ubuntu 22.04 x64
+Target: Ubuntu $ubuntu_version x64
+Build image: $build_image
 Framework: net10.0 framework-dependent
 Build epoch: $source_date_epoch
 EOF

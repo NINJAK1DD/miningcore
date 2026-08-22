@@ -1,0 +1,32 @@
+name: Release image pin freshness
+
+on:
+  pull_request:
+    branches: [ master, dev, ravencoin-rollback ]
+    # Path-filtered checks do not report a status on unrelated pull requests.
+    # Do not configure this workflow as a required branch-protection check.
+    paths:
+      - '.github/workflows/release-image-pins.yml'
+      - 'scripts/release/check-linux-release-image-pins.sh'
+      - 'scripts/release/run-linux-release-image-pin-monitor.sh'
+      - 'scripts/release/linux-release-targets.sh'
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify reviewed Ubuntu image pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compare current tags with reviewed manifest-list digests
+        shell: bash
+        run: bash scripts/release/run-linux-release-image-pin-monitor.sh

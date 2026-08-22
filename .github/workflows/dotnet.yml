@@ -9,7 +9,10 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    # This uncontainerized job intentionally exercises the primary development host itself.
+    # Ubuntu 24.04 source compatibility and the independently built Ubuntu 22.04 archive
+    # remain covered by dedicated lanes below/in release.yml.
+    runs-on: ubuntu-26.04
 
     services:
       postgres:
@@ -40,6 +43,10 @@ jobs:
       shell: bash
       run: bash scripts/release/test-wallet-backup-docs.sh
 
+    - name: Validate release installation documentation
+      shell: bash
+      run: bash scripts/release/test-release-install-docs.sh
+
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py
@@ -51,6 +58,14 @@ jobs:
     - name: Test source-build helper fail-closed behavior
       shell: bash
       run: bash scripts/release/test-source-build-helpers.sh
+
+    - name: Test Linux release package target contract
+      shell: bash
+      run: bash scripts/release/test-linux-package-targets.sh
+
+    - name: Test Linux release image-pin freshness checks
+      shell: bash
+      run: bash scripts/release/test-linux-release-image-pins.sh
 
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
@@ -165,13 +180,16 @@ jobs:
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
 
-  build-ubuntu-2604:
-    name: Build Ubuntu 26.04 source
-    # This hosted image is currently a public preview. The lane validates the supported
-    # source-build path; it does not change the Ubuntu 22.04 prebuilt archive target.
-    # Keep it required deliberately: a regression in a claimed supported target must be visible.
-    runs-on: ubuntu-26.04
+  build-ubuntu-source:
+    name: Build Ubuntu ${{ matrix.ubuntu }} source
+    # The 26.04 hosted image is currently a public preview. Keep both claimed source-build
+    # targets required so a regression cannot be hidden by success on the primary lane.
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: [ '24.04', '26.04' ]
 
     steps:
     - name: Checkout
@@ -179,21 +197,33 @@ jobs:
       with:
         fetch-depth: 0
 
+    - name: Verify source-build runner identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /etc/os-release
+        test "$ID" = ubuntu
+        test "$VERSION_ID" = "${{ matrix.ubuntu }}"
+        test "$(uname -m)" = x86_64
+
     - name: Build with Canonical packages
       shell: bash
-      run: ./build-ubuntu-26.04.sh "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+      run: >-
+        ./build-ubuntu-${{ matrix.ubuntu }}.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
 
     - name: Validate published native libraries and runtime paths
       shell: bash
       run: >-
-        bash scripts/release/test-ubuntu-2604-source-build.sh
-        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+        bash scripts/release/test-ubuntu-source-build.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+        "${{ matrix.ubuntu }}"
 
-    - name: Run GCC 15 native known-answer tests
+    - name: Run native known-answer tests
       shell: bash
       run: >-
-        bash scripts/release/test-ubuntu-2604-native-vectors.sh
-        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+        bash scripts/release/test-ubuntu-native-vectors.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
 
   build-windows:
     name: Build Windows x64

@@ -429,7 +429,7 @@ while Miningcore is running.
 
 ### Atomic filesystem operations
 
-On the supported Ubuntu 22.04 Linux target, Miningcore first uses
+On the supported Ubuntu 22.04, 24.04 and 26.04 Linux targets, Miningcore first uses
 `renameat2(..., RENAME_NOREPLACE)` for atomic no-replacement publication and retirement. If libc does
 not export that call, or the kernel/filesystem reports it unsupported, Miningcore falls back to
 `linkat` followed by `unlinkat`. The link step still refuses an existing destination. A process or

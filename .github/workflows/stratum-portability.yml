@@ -13,6 +13,8 @@ permissions:
 jobs:
   alpine-musl:
     name: Exclusive reservation (Alpine/musl)
+    # Retain an explicit older-Ubuntu lane as compatibility evidence; the primary Linux
+    # build, source container, and release container run on Ubuntu 26.04.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 

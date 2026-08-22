@@ -18,14 +18,20 @@ framework-dependent build will not start until the .NET 10 ASP.NET Core runtime 
 
 ## Supported starting point
 
-The tested prebuilt archive targets **Ubuntu 22.04 x64**. Ubuntu 24.04, Ubuntu 26.04 x64, Debian 12
-and Windows development use the source-build instructions in the root README. Other distributions,
-CPU architectures, custom containers, self-contained publications and orchestration systems need
-an equivalent operator-owned procedure.
+The primary tested prebuilt archive targets **Ubuntu 26.04 x64**. A separately compiled Ubuntu
+22.04 x64 compatibility archive remains available. Ubuntu 24.04 is a tested source-build target;
+Debian 12 and Windows development use their source-build instructions in the root README. Other
+distributions, CPU architectures, custom containers, self-contained publications and orchestration
+systems need an equivalent operator-owned procedure.
 
 Do not combine an operating-system upgrade, database-server upgrade and Miningcore runtime upgrade
 in one irreversible change. If the host operating system is unsupported, prefer preparing a new
 host and moving traffic after validation.
+
+Do not install the Ubuntu 26.04 archive on an older Ubuntu host. For a 22.04-to-26.04 migration,
+prefer a freshly prepared 26.04 host. If an in-place operating-system upgrade is unavoidable,
+follow Ubuntu's supported sequential LTS upgrade path through 24.04 and validate the host at each
+stage in a separate maintenance plan before changing Miningcore.
 
 ## 1. Inventory the live deployment
 
@@ -134,8 +140,8 @@ sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-d
 Use `build-ubuntu-26.04.sh` when compiling Miningcore on this x86-64 platform. It installs the
 Canonical `dotnet-sdk-10.0` package and the complete native compiler toolchain from Ubuntu's
 repositories, then verifies that the selected .NET host and SDK use Canonical's `/usr/lib/dotnet`
-layout. This source-build support does not make the Ubuntu 22.04 prebuilt archive a validated Ubuntu
-26.04 binary package.
+layout. The Ubuntu 26.04 release archive is built and tested on this platform; do not substitute the
+22.04 compatibility archive or deploy the 26.04 archive to an older host.
 
 Only source-build hosts need `dotnet-sdk-10.0` and the full compiler/native toolchain. A host running
 the framework-dependent release archive needs the ASP.NET Core runtime, not the SDK.
@@ -196,8 +202,8 @@ fi
 ```
 
 The version command must report the intended release/commit, and `ldd` must report no missing
-dependencies. Native libraries built on a newer distribution may not run on an older host; build on
-the oldest supported target or use the tested Ubuntu 22.04 release archive.
+dependencies. Native libraries built on a newer distribution may not run on an older host. Use the
+prebuilt archive matching Ubuntu 22.04 or 26.04, and build from source on Ubuntu 24.04.
 
 For a source build, verify the checkout and the resulting binary together before deployment:
 

@@ -1543,6 +1543,10 @@ public class ShareRecorderTests
         var bus = new MessageBus(coordinator);
         var fatalState = new ShareRecoveryFatalState(config, processStatus,
             config.ShareRecoveryStateDirectory);
+        var completedIncidentPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fatalState.CompletedIncidentPublishedCheckpoint = () =>
+            completedIncidentPublished.TrySetResult();
         var handler = new ShareRecoveryFailureHandler(coordinator,
             new Lazy<ICriticalNotificationSender>(() =>
                 Substitute.For<ICriticalNotificationSender>()), fatalState);
@@ -1614,6 +1618,10 @@ public class ShareRecorderTests
             Assert.Throws<OperationCanceledException>(() =>
                 acceptance.QueueResponse(() => { }));
 
+            // The exact-share sidecar uses durable writes and can take longer than
+            // a generic polling window on a loaded Windows runner. Wait for the
+            // production publication boundary, then poll only the final latch handoff.
+            await completedIncidentPublished.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await WaitUntilAsync(
                 () => FatalStateIsComplete(fatalState.FatalStateFilename),
                 TimeSpan.FromSeconds(5));
