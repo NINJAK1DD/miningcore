@@ -964,10 +964,12 @@ output, also use status 70 because the monitor itself needs repair.
 In GitHub Actions, untrusted registry and proxy diagnostics are printed only while
 workflow-command processing is suspended, preventing their contents from creating annotations or
 changing runner state. Each safe header, its evidence and the subsequent advisory warning share
-stdout, making their order deterministic. If a random guard token cannot be created, the complete
-diagnostic remains one prefixed, shell-escaped physical line; both Actions command sentinels are
-rewritten. Embedded CR/LF and command-shaped data are therefore encoded rather than emitted as
-runner input. Malformed resolver evidence uses the same guarded output path.
+stdout with confirmed-drift diagnostics, making multi-target execution order deterministic. If a
+random guard token cannot be created, the complete diagnostic remains one prefixed,
+shell-escaped physical line. Both Actions command sentinels are rewritten, and the evidence is
+capped with an explicit truncation marker. Embedded CR/LF and command-shaped data are therefore
+encoded rather than emitted as runner input. Malformed resolver evidence uses the same guarded
+output path.
 
 The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so
 checker diagnostics remain live. The checker uses the central contract and writes exactly one

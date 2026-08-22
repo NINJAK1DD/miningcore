@@ -96,6 +96,17 @@ if [[ ${MININGCORE_TEST_WORKFLOW_COMMAND_TAG:-} = "$4" ]]; then
   exit 1
 fi
 
+if [[ ${MININGCORE_TEST_LARGE_DIAGNOSTIC_TAG:-} = "$4" ]]; then
+  printf '::error title=Large registry response::' >&2
+
+  for ((index = 0; index < 5000; index++)); do
+    printf 'x' >&2
+  done
+
+  printf '\nresponse: connection reset by peer\n' >&2
+  exit 1
+fi
+
 if [[ ${MININGCORE_TEST_NOT_FOUND_TAG:-} = "$4" ]]; then
   printf 'ERROR: docker.io/library/%s: not found\n' "$4" >&2
   exit 1
@@ -374,6 +385,34 @@ if [[ "$guard_failure_status" -ne 69 ]] ||
   echo 'Image-pin checker exposed a command after its guard could not be created' >&2
   print_test_diagnostic "$guard_failure_output"
   print_test_diagnostic "$guard_failure_error"
+  exit 1
+fi
+
+large_guard_stdout="$work_dir/large-guard-failure.stdout"
+large_guard_stderr="$work_dir/large-guard-failure.stderr"
+
+set +e
+GITHUB_ACTIONS=true \
+  MININGCORE_TEST_LARGE_DIAGNOSTIC_TAG=ubuntu:26.04 \
+  PATH="$guard_failure_bin:$fake_bin:$PATH" bash "$checker" \
+  >"$large_guard_stdout" 2>"$large_guard_stderr"
+large_guard_status=$?
+set -e
+
+large_guard_output=$(<"$large_guard_stdout")
+large_guard_error=$(<"$large_guard_stderr")
+large_guard_line=$(grep -F \
+  'Registry diagnostic (encoded; command guard unavailable):' \
+  <<<"$large_guard_output")
+
+if [[ "$large_guard_status" -ne 69 ]] ||
+    contains_runner_command "$large_guard_output" ||
+    contains_runner_command "$large_guard_error" ||
+    ! grep -Fq '[truncated after 4096 characters]' <<<"$large_guard_line" ||
+    (( ${#large_guard_line} > 5000 )); then
+  echo 'Image-pin checker did not safely bound an unguarded registry diagnostic' >&2
+  print_test_diagnostic "$large_guard_output"
+  print_test_diagnostic "$large_guard_error"
   exit 1
 fi
 
@@ -682,22 +721,55 @@ if [[ "$monitor_not_found_status" -ne 70 ]] ||
   exit 1
 fi
 
+mixed_stdout="$work_dir/mixed.stdout"
+mixed_stderr="$work_dir/mixed.stderr"
+
 set +e
-mixed_output=$(
+GITHUB_ACTIONS=true \
   MININGCORE_TEST_TRANSIENT_FAILURE_TAG=ubuntu:26.04 \
-    MININGCORE_TEST_JAMMY_DIGEST=$stale_digest \
-    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
-)
+  MININGCORE_TEST_JAMMY_DIGEST=$stale_digest \
+  PATH="$fake_bin:$PATH" bash "$monitor" \
+  >"$mixed_stdout" 2>"$mixed_stderr"
 mixed_status=$?
 set -e
 
+mixed_output=$(<"$mixed_stdout")
+mixed_error=$(<"$mixed_stderr")
+mixed_guard_token=$(
+  sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' \
+    <<<"$mixed_output" | head -n 1
+)
+mixed_header_line=$(awk \
+  'index($0, "Transient registry failure while resolving ubuntu:26.04") { print NR; exit }' \
+  <<<"$mixed_output")
+mixed_stop_line=$(awk -v needle="::stop-commands::$mixed_guard_token" \
+  'index($0, needle) { print NR; exit }' <<<"$mixed_output")
+mixed_resume_line=$(awk -v needle="::$mixed_guard_token::" \
+  'index($0, needle) { print NR; exit }' <<<"$mixed_output")
+mixed_drift_line=$(awk \
+  'index($0, "ubuntu:22.04 now resolves to sha256:111111") { print NR; exit }' \
+  <<<"$mixed_output")
+mixed_reviewed_line=$(awk \
+  'index($0, "Reviewed release pin is ") { print NR; exit }' <<<"$mixed_output")
+mixed_guidance_line=$(awk \
+  'index($0, "Review upstream changes, run the complete release validation") { print NR; exit }' \
+  <<<"$mixed_output")
+
 if [[ "$mixed_status" -ne 1 ]] ||
     grep -Fq '::warning' <<<"$mixed_output" ||
+    [[ ! "$mixed_guard_token" =~ ^[0-9a-f]{32}$ ]] ||
     ! grep -Fq 'Transient registry failure while resolving ubuntu:26.04' \
       <<<"$mixed_output" ||
-    ! grep -Fq 'ubuntu:22.04 now resolves to sha256:111111' <<<"$mixed_output"; then
-  echo 'Image-pin monitor allowed one target outage to suppress another target drift' >&2
+    ! grep -Fq 'ubuntu:22.04 now resolves to sha256:111111' <<<"$mixed_output" ||
+    [[ -n "$mixed_error" ]] ||
+    [[ -z "$mixed_header_line" || -z "$mixed_stop_line" || -z "$mixed_resume_line" ||
+      -z "$mixed_drift_line" || -z "$mixed_reviewed_line" || -z "$mixed_guidance_line" ]] ||
+    (( mixed_header_line >= mixed_stop_line || mixed_stop_line >= mixed_resume_line ||
+      mixed_resume_line >= mixed_drift_line || mixed_drift_line >= mixed_reviewed_line ||
+      mixed_reviewed_line >= mixed_guidance_line )); then
+  echo 'Image-pin monitor reordered a target outage and later target drift across streams' >&2
   print_test_diagnostic "$mixed_output"
+  print_test_diagnostic "$mixed_error"
   exit 1
 fi
 
@@ -782,9 +854,14 @@ ln -s "$MININGCORE_IMAGE_PIN_RESULT_FILE.missing" \
 exit 69
 EOF
 
+private_result_dir="$work_dir/private-result-files"
+mkdir -p "$private_result_dir"
+
 set +e
 unreadable_summary_output=$(
-  bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+  POSIXLY_CORRECT=1 \
+    TMPDIR="$private_result_dir" \
+    bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
 )
 unreadable_summary_status=$?
 set -e
@@ -793,8 +870,8 @@ if [[ "$unreadable_summary_status" -ne 70 ]] ||
     grep -Fq '::warning' <<<"$unreadable_summary_output" ||
     ! grep -Fq 'Unable to read private image-pin result file' \
       <<<"$unreadable_summary_output" ||
-    grep -Fq "$work_dir" <<<"$unreadable_summary_output"; then
-  echo 'Image-pin monitor misclassified a result-file read failure as drift' >&2
+    grep -Fq "$private_result_dir" <<<"$unreadable_summary_output"; then
+  echo 'Image-pin monitor leaked or misclassified a POSIX-mode result-file read failure' >&2
   print_test_diagnostic "$unreadable_summary_output"
   exit 1
 fi
@@ -1080,6 +1157,7 @@ fi
 for expected in \
   'workflow-command processing is suspended' \
   'shell-escaped physical line' \
+  'capped with an explicit truncation marker' \
   'unresolved canonical image tag per line in central release-target order' \
   'accepts only a non-empty, unique, in-order subset of the configured tags' \
   'configured target count plus one line' \
