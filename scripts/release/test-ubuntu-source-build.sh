@@ -2,7 +2,24 @@
 
 set -euo pipefail
 
-publish_dir=${1:?"usage: $0 PUBLISH_DIRECTORY"}
+if [ "$#" -ne 2 ]; then
+  echo "usage: $0 PUBLISH_DIRECTORY UBUNTU_VERSION" >&2
+  exit 64
+fi
+
+publish_dir=$1
+ubuntu_version=$2
+
+case "$ubuntu_version" in
+  24.04|26.04)
+    ;;
+  *)
+    echo "Unsupported Ubuntu source-build target: $ubuntu_version" >&2
+    exit 64
+    ;;
+esac
+
+smoke_id="ubuntu${ubuntu_version//./}-smoke"
 publish_dir=$(realpath "$publish_dir")
 app="$publish_dir/Miningcore"
 
@@ -102,7 +119,7 @@ smoke_config="$work_dir/runtime-smoke.json"
 
 cat > "$smoke_config" <<JSON
 {
-  "clusterName": "ubuntu2604-runtime-smoke",
+  "clusterName": "$smoke_id-runtime",
   "api": {
     "enabled": true,
     "listenAddress": "127.0.0.1",
@@ -120,7 +137,7 @@ cat > "$smoke_config" <<JSON
   },
   "pools": [
     {
-      "id": "ubuntu2604-smoke",
+      "id": "$smoke_id",
       "enabled": true,
       "coin": "litecoin",
       "address": "RUNTIME_SMOKE_TEST_ONLY",
@@ -145,7 +162,7 @@ cat > "$smoke_config" <<JSON
       "host": "127.0.0.1",
       "port": 1,
       "fromAddress": "smoke-test@example.invalid",
-      "fromName": "Ubuntu 26.04 smoke test"
+      "fromName": "Ubuntu $ubuntu_version smoke test"
     },
     "admin": {
       "enabled": false
@@ -179,4 +196,4 @@ if ! grep -Fq 'Cluster cannot start. Good Bye!' <<<"$smoke_output"; then
   exit 1
 fi
 
-echo "Ubuntu 26.04 source-build artifact validation passed"
+echo "Ubuntu $ubuntu_version source-build artifact validation passed"

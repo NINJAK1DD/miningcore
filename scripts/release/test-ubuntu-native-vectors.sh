@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-publish_dir=${1:?usage: test-ubuntu-2604-native-vectors.sh PUBLISH_DIRECTORY}
+publish_dir=${1:?usage: test-ubuntu-native-vectors.sh PUBLISH_DIRECTORY}
 publish_dir=$(realpath "$publish_dir")
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_project="$repository_root/src/Miningcore.Tests/Miningcore.Tests.csproj"

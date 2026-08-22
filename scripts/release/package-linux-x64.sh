@@ -2,20 +2,31 @@
 
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-    echo "Usage: $0 <version> <publish-directory> <output-directory>" >&2
+if [[ $# -ne 4 ]]; then
+    echo "Usage: $0 <version> <ubuntu-version> <publish-directory> <output-directory>" >&2
     exit 64
 fi
 
 version="$1"
-publish_dir="$(realpath "$2")"
-output_dir="$(realpath -m "$3")"
+ubuntu_version="$2"
+publish_dir="$(realpath "$3")"
+output_dir="$(realpath -m "$4")"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
     echo "Version contains unsupported characters: $version" >&2
     exit 64
 fi
+
+case "$ubuntu_version" in
+    22.04|26.04)
+        ;;
+    *)
+        echo "Unsupported Ubuntu release archive target: $ubuntu_version" >&2
+        echo "Supported targets: 22.04, 26.04" >&2
+        exit 64
+        ;;
+esac
 
 if [[ ! -x "$publish_dir/Miningcore" ]]; then
     echo "Published Miningcore executable was not found in $publish_dir" >&2
@@ -31,7 +42,7 @@ if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
 else
     source_date_epoch="$(git -C "$repository_root" show -s --format=%ct "$source_commit")"
 fi
-package_name="miningcore-${version}-linux-x64-ubuntu-22.04"
+package_name="miningcore-${version}-linux-x64-ubuntu-${ubuntu_version}"
 archive_name="${package_name}.tar.gz"
 work_dir="$(mktemp -d)"
 package_root="$work_dir/$package_name"
@@ -55,7 +66,7 @@ cp "$repository_root/packaging/systemd/miningcore.service" \
 cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version
 Source commit: $source_commit
-Target: Ubuntu 22.04 x64
+Target: Ubuntu $ubuntu_version x64
 Framework: net10.0 framework-dependent
 Build epoch: $source_date_epoch
 EOF

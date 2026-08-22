@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS builder
+FROM mcr.microsoft.com/dotnet/sdk:10.0-resolute AS builder
 WORKDIR /app
 RUN apt-get update && \
     apt-get -y install cmake clang ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libzmq3-dev golang-go libgmp-dev libc++-dev zlib1g-dev
@@ -6,7 +6,7 @@ COPY . .
 WORKDIR /app/src/Miningcore
 RUN dotnet publish -c Release --framework net10.0 -o ../../build
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libgmp10 libzmq3-dev libsodium-dev curl && \
