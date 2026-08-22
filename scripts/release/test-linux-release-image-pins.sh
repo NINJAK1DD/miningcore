@@ -294,8 +294,25 @@ if [[ "$partial_registry_status" -ne 0 ]] ||
     ! grep -Fq 'No drift decision for ubuntu:26.04;' \
       <<<"$partial_registry_output" ||
     grep -Fq 'No drift decision for ubuntu:26.04, ubuntu:22.04' \
+      <<<"$partial_registry_output" ||
+    grep -Fq 'Transient image checks unresolved:' \
       <<<"$partial_registry_output"; then
   echo 'Image-pin monitor did not identify only the unresolved image target' >&2
+  printf '%s\n' "$partial_registry_output" >&2
+  exit 1
+fi
+
+partial_failure_line=$(
+  grep -nF 'Transient registry failure while resolving ubuntu:26.04' \
+    <<<"$partial_registry_output" | head -n 1
+)
+partial_success_line=$(
+  grep -nF 'ubuntu:22.04 still matches reviewed pin' \
+    <<<"$partial_registry_output" | head -n 1
+)
+
+if (( ${partial_failure_line%%:*} >= ${partial_success_line%%:*} )); then
+  echo 'Image-pin monitor reordered target diagnostics while capturing its result' >&2
   printf '%s\n' "$partial_registry_output" >&2
   exit 1
 fi
@@ -384,6 +401,59 @@ if [[ "$monitor_malformed_status" -ne 70 ]] ||
       <<<"$monitor_malformed_output"; then
   echo 'Image-pin monitor downgraded a structural resolver failure' >&2
   printf '%s\n' "$monitor_malformed_output" >&2
+  exit 1
+fi
+
+monitor_contract_root="$work_dir/monitor-contract"
+monitor_contract_scripts="$monitor_contract_root/scripts/release"
+mkdir -p "$monitor_contract_scripts"
+cp "$monitor" "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh"
+
+cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'injected transient checker noise' >&2
+exit 69
+EOF
+
+set +e
+missing_summary_output=$(
+  bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+missing_summary_status=$?
+set -e
+
+if [[ "$missing_summary_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$missing_summary_output" ||
+    ! grep -Fq 'injected transient checker noise' <<<"$missing_summary_output" ||
+    ! grep -Fq 'transient status without exactly one valid unresolved-target summary' \
+      <<<"$missing_summary_output"; then
+  echo 'Image-pin monitor downgraded a broken transient-result handoff' >&2
+  printf '%s\n' "$missing_summary_output" >&2
+  exit 1
+fi
+
+cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'Transient image checks unresolved: ubuntu:26.04' \
+  >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+echo 'injected diagnostic after result publication' >&2
+exit 69
+EOF
+
+set +e
+ordered_summary_output=$(
+  bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+ordered_summary_status=$?
+set -e
+
+if [[ "$ordered_summary_status" -ne 0 ]] ||
+    ! grep -Fq 'injected diagnostic after result publication' \
+      <<<"$ordered_summary_output" ||
+    ! grep -Fq 'No drift decision for ubuntu:26.04;' \
+      <<<"$ordered_summary_output"; then
+  echo 'Image-pin monitor coupled its transient handoff to diagnostic ordering' >&2
+  printf '%s\n' "$ordered_summary_output" >&2
   exit 1
 fi
 

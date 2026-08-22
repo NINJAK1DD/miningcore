@@ -119,6 +119,14 @@ if [[ "$saw_transient_failure" = true ]]; then
     unresolved_targets+=$image_tag
   done
 
-  printf 'Transient image checks unresolved: %s\n' "$unresolved_targets" >&2
+  summary="Transient image checks unresolved: $unresolved_targets"
+
+  # The workflow wrapper supplies a private result file so human diagnostics can remain live.
+  if [[ -n ${MININGCORE_IMAGE_PIN_RESULT_FILE:-} ]]; then
+    printf '%s\n' "$summary" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+  else
+    printf '%s\n' "$summary" >&2
+  fi
+
   exit 69
 fi
