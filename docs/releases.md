@@ -947,10 +947,12 @@ images receive upstream security fixes. BuildKit attaches maximum provenance and
 the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
 compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
 pin needs review; updating a pin still requires the complete release validation. Pin drift exits
-with status 1. A failed registry inspection uses status 69 and becomes a warning annotation, so a
-transient infrastructure error cannot be mistaken for reviewed-image movement. Missing Docker,
-Buildx or `imagetools inspect`, and unparseable resolver output, use status 70 and fail the workflow
-because the monitor itself needs repair.
+with status 1. A registry failure uses advisory status 69 only when its diagnostic matches a known
+transient network, service or rate-limit condition. Missing tags and every unclassified inspection
+failure use status 70 and fail closed. The checker inspects every target before deciding its final
+status, so a transient failure on one target cannot hide confirmed drift on another. Missing Docker,
+Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because the
+monitor itself needs repair.
 
 > **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
 > does not report a status on unrelated pull requests. Do not configure it as a required status

@@ -46,8 +46,14 @@ if [[ "$#" -ne 4 || "$1" != buildx || "$2" != imagetools || "$3" != inspect ]]; 
   exit 64
 fi
 
-if [[ ${MININGCORE_TEST_INSPECT_FAILURE:-} = 1 ]]; then
-  echo 'injected registry failure' >&2
+if [[ ${MININGCORE_TEST_INSPECT_FAILURE:-} = 1 ||
+    ${MININGCORE_TEST_TRANSIENT_FAILURE_TAG:-} = "$4" ]]; then
+  echo 'injected registry timeout' >&2
+  exit 1
+fi
+
+if [[ ${MININGCORE_TEST_NOT_FOUND_TAG:-} = "$4" ]]; then
+  printf 'ERROR: docker.io/library/%s: not found\n' "$4" >&2
   exit 1
 fi
 
@@ -112,11 +118,29 @@ registry_status=$?
 set -e
 
 if [[ "$registry_status" -ne 69 ]] ||
-    ! grep -Fq 'Unable to reach the registry while resolving ubuntu:26.04' \
+    ! grep -Fq 'Transient registry failure while resolving ubuntu:26.04' \
       <<<"$registry_output" ||
-    ! grep -Fq 'injected registry failure' <<<"$registry_output"; then
+    ! grep -Fq 'injected registry timeout' <<<"$registry_output"; then
   echo 'Image-pin freshness check did not distinguish registry failure from drift' >&2
   printf '%s\n' "$registry_output" >&2
+  exit 1
+fi
+
+set +e
+not_found_output=$(
+  MININGCORE_TEST_NOT_FOUND_TAG=ubuntu:22.04 \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+not_found_status=$?
+set -e
+
+if [[ "$not_found_status" -ne 70 ]] ||
+    ! grep -Fq 'ubuntu:26.04 still matches reviewed pin' <<<"$not_found_output" ||
+    ! grep -Fq 'Unable to resolve ubuntu:22.04; the failure was not recognisably transient' \
+      <<<"$not_found_output" ||
+    ! grep -Fq 'ubuntu:22.04: not found' <<<"$not_found_output"; then
+  echo 'Image-pin freshness check downgraded an authoritative missing tag' >&2
+  printf '%s\n' "$not_found_output" >&2
   exit 1
 fi
 
@@ -223,6 +247,41 @@ if [[ "$monitor_registry_status" -ne 0 ]] ||
     ! grep -Fq 'no image drift decision was made' <<<"$monitor_registry_output"; then
   echo 'Image-pin monitor did not downgrade registry failure to a visible warning' >&2
   printf '%s\n' "$monitor_registry_output" >&2
+  exit 1
+fi
+
+set +e
+monitor_not_found_output=$(
+  MININGCORE_TEST_NOT_FOUND_TAG=ubuntu:22.04 \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+monitor_not_found_status=$?
+set -e
+
+if [[ "$monitor_not_found_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$monitor_not_found_output" ||
+    ! grep -Fq 'ubuntu:22.04: not found' <<<"$monitor_not_found_output"; then
+  echo 'Image-pin monitor downgraded an authoritative missing tag' >&2
+  printf '%s\n' "$monitor_not_found_output" >&2
+  exit 1
+fi
+
+set +e
+mixed_output=$(
+  MININGCORE_TEST_TRANSIENT_FAILURE_TAG=ubuntu:26.04 \
+    MININGCORE_TEST_JAMMY_DIGEST=$stale_digest \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+mixed_status=$?
+set -e
+
+if [[ "$mixed_status" -ne 1 ]] ||
+    grep -Fq '::warning' <<<"$mixed_output" ||
+    ! grep -Fq 'Transient registry failure while resolving ubuntu:26.04' \
+      <<<"$mixed_output" ||
+    ! grep -Fq 'ubuntu:22.04 now resolves to sha256:111111' <<<"$mixed_output"; then
+  echo 'Image-pin monitor allowed one target outage to suppress another target drift' >&2
+  printf '%s\n' "$mixed_output" >&2
   exit 1
 fi
 
