@@ -139,6 +139,26 @@ if [[ "$registry_status" -ne 69 ]] ||
   exit 1
 fi
 
+unwritable_result_path="$work_dir/unwritable-result"
+mkdir -p "$unwritable_result_path"
+
+set +e
+unwritable_result_output=$(
+  MININGCORE_TEST_INSPECT_FAILURE=1 \
+    MININGCORE_IMAGE_PIN_RESULT_FILE="$unwritable_result_path" \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+unwritable_result_status=$?
+set -e
+
+if [[ "$unwritable_result_status" -ne 70 ]] ||
+    ! grep -Fq "Unable to write image-pin result file: $unwritable_result_path" \
+      <<<"$unwritable_result_output"; then
+  echo 'Image-pin checker misclassified a result-file write failure as drift' >&2
+  printf '%s\n' "$unwritable_result_output" >&2
+  exit 1
+fi
+
 set +e
 not_found_output=$(
   MININGCORE_TEST_NOT_FOUND_TAG=ubuntu:22.04 \
@@ -408,6 +428,8 @@ monitor_contract_root="$work_dir/monitor-contract"
 monitor_contract_scripts="$monitor_contract_root/scripts/release"
 mkdir -p "$monitor_contract_scripts"
 cp "$monitor" "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh"
+cp "$repository_root/scripts/release/linux-release-targets.sh" \
+  "$monitor_contract_scripts/linux-release-targets.sh"
 
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -431,6 +453,59 @@ if [[ "$missing_summary_status" -ne 70 ]] ||
   printf '%s\n' "$missing_summary_output" >&2
   exit 1
 fi
+
+cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -f -- "$MININGCORE_IMAGE_PIN_RESULT_FILE"
+ln -s "$MININGCORE_IMAGE_PIN_RESULT_FILE.missing" \
+  "$MININGCORE_IMAGE_PIN_RESULT_FILE"
+exit 69
+EOF
+
+set +e
+unreadable_summary_output=$(
+  bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+unreadable_summary_status=$?
+set -e
+
+if [[ "$unreadable_summary_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$unreadable_summary_output" ||
+    ! grep -Fq 'Unable to read image-pin result file:' \
+      <<<"$unreadable_summary_output"; then
+  echo 'Image-pin monitor misclassified a result-file read failure as drift' >&2
+  printf '%s\n' "$unreadable_summary_output" >&2
+  exit 1
+fi
+
+cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'Transient image checks unresolved: %s\n' \
+  "$MININGCORE_TEST_HANDOFF_TARGETS" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+exit 69
+EOF
+
+for invalid_targets in \
+  garbage \
+  'ubuntu:26.04, ubuntu:26.04' \
+  'ubuntu:22.04, ubuntu:26.04'; do
+  set +e
+  invalid_targets_output=$(
+    MININGCORE_TEST_HANDOFF_TARGETS="$invalid_targets" \
+      bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+  )
+  invalid_targets_status=$?
+  set -e
+
+  if [[ "$invalid_targets_status" -ne 70 ]] ||
+      grep -Fq '::warning' <<<"$invalid_targets_output" ||
+      ! grep -Fq 'unknown, duplicate, or out-of-order target' \
+        <<<"$invalid_targets_output"; then
+    echo "Image-pin monitor accepted invalid unresolved targets: $invalid_targets" >&2
+    printf '%s\n' "$invalid_targets_output" >&2
+    exit 1
+  fi
+done
 
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash

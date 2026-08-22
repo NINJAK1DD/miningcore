@@ -954,7 +954,9 @@ status, so a transient failure on one target cannot hide confirmed drift on anot
 workflow warning names only the image tags for which no drift decision could be made. Authentication
 failures remain fatal unless the registry diagnostic independently identifies rate limiting. Missing
 Docker, Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because
-the monitor itself needs repair.
+the monitor itself needs repair. The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a
+private machine-readable handoff so checker diagnostics remain live; unreadable, unwritable,
+malformed, unknown, duplicate or out-of-order result data fails structurally with status 70.
 
 > **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
 > does not report a status on unrelated pull requests. Do not configure it as a required status

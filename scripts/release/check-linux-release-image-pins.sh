@@ -123,7 +123,10 @@ if [[ "$saw_transient_failure" = true ]]; then
 
   # The workflow wrapper supplies a private result file so human diagnostics can remain live.
   if [[ -n ${MININGCORE_IMAGE_PIN_RESULT_FILE:-} ]]; then
-    printf '%s\n' "$summary" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+    if ! printf '%s\n' "$summary" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"; then
+      echo "Unable to write image-pin result file: $MININGCORE_IMAGE_PIN_RESULT_FILE" >&2
+      exit 70
+    fi
   else
     printf '%s\n' "$summary" >&2
   fi
