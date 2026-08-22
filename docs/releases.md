@@ -965,11 +965,13 @@ In GitHub Actions, untrusted registry and proxy diagnostics are printed only whi
 workflow-command processing is suspended, preventing their contents from creating annotations or
 changing runner state. Each safe header, its evidence and the subsequent advisory warning share
 stdout with confirmed-drift and monitor-validation diagnostics, making multi-target execution order
-deterministic. If a random guard token cannot be created, the diagnostic remains one prefixed,
-shell-escaped physical line. Both Actions command sentinels are rewritten. Source evidence is capped
-at 4,096 characters. Its encoded representation is capped at 8,192 characters, with explicit
-truncation markers. Embedded CR/LF and command-shaped data are therefore encoded rather than emitted
-as runner input. Malformed resolver evidence uses the same guarded output path.
+deterministic. This ordering guarantee covers messages emitted by the scripts; Bash runtime warnings
+bypass their output helpers and may still appear on stderr. If a random guard token cannot be
+created, the diagnostic remains one prefixed, shell-escaped physical line. Both Actions command
+sentinels are rewritten. Source evidence is capped at 4,096 characters. Its encoded representation
+is capped at 8,192 characters, with explicit truncation markers. Embedded CR/LF and command-shaped
+data are therefore encoded rather than emitted as runner input. Malformed resolver evidence uses the
+same guarded output path.
 
 The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so
 checker diagnostics remain live. The checker uses the central contract and writes exactly one

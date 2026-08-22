@@ -436,17 +436,22 @@ set -e
 
 control_guard_output=$(<"$control_guard_stdout")
 control_guard_error=$(<"$control_guard_stderr")
-control_guard_line=$(grep -F \
-  'Registry diagnostic (encoded; command guard unavailable):' \
-  <<<"$control_guard_output")
+control_guard_prefix='Registry diagnostic (encoded; command guard unavailable): '
+source_truncation_marker=' [truncated after 4096 characters]'
+encoded_truncation_marker=' [encoded output truncated after 8192 characters]'
+encoded_diagnostic_character_limit=8192
+control_guard_line=$(grep -F "$control_guard_prefix" <<<"$control_guard_output")
+control_guard_line_limit=$((
+  ${#control_guard_prefix} + encoded_diagnostic_character_limit +
+  ${#source_truncation_marker} + ${#encoded_truncation_marker}
+))
 
 if [[ "$control_guard_status" -ne 69 ]] ||
     contains_runner_command "$control_guard_output" ||
     contains_runner_command "$control_guard_error" ||
-    ! grep -Fq '[truncated after 4096 characters]' <<<"$control_guard_line" ||
-    ! grep -Fq '[encoded output truncated after 8192 characters]' \
-      <<<"$control_guard_line" ||
-    (( ${#control_guard_line} > 8400 )); then
+    ! grep -Fq "$source_truncation_marker" <<<"$control_guard_line" ||
+    ! grep -Fq "$encoded_truncation_marker" <<<"$control_guard_line" ||
+    (( ${#control_guard_line} > control_guard_line_limit )); then
   echo 'Image-pin checker did not bound an expanded shell-escaped diagnostic' >&2
   print_test_diagnostic "$control_guard_output"
   print_test_diagnostic "$control_guard_error"
@@ -1242,9 +1247,10 @@ fi
 
 for expected in \
   'workflow-command processing is suspended' \
+  'Bash runtime warnings' \
   'shell-escaped physical line' \
   'Source evidence is capped' \
-  'encoded representation is capped at 8,192 characters' \
+  'is capped at 8,192 characters' \
   'unresolved canonical image tag per line in central release-target order' \
   'accepts only a non-empty, unique, in-order subset of the configured tags' \
   'configured target count plus one line' \
