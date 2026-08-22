@@ -73,8 +73,16 @@ assert_contains 'the bounded release-list visibility policy' \
   'retries those visibility checks for a bounded period'
 assert_contains 'the repository-wide publication queue' \
   'queues up to 100 release tags'
+assert_contains 'the publication queue timeout' \
+  '60-minute job'
+assert_contains 'the draft ownership boundary' \
+  'hidden ownership marker bound to the repository'
+assert_contains 'the streamed bounded upload policy' \
+  'uploads are streamed'
 assert_contains 'the pruned-stage recovery rule' \
-  'both immutable GHCR tags still match the recorded digest'
+  'at least one immutable GHCR version tag still matches the recorded'
+assert_contains 'the GitHub CLI publication floor' \
+  'Publication requires GitHub CLI'
 assert_contains 'the orphan-stage recovery warning' \
   'Never delete a staging tag merely to bypass a digest or'
 assert_contains 'the declared build-image contract' \

@@ -1003,11 +1003,19 @@ The staging tag is deliberately retained as audit and retry evidence. Before the
 durable, the workflow does not create either full-version container tag and does not move `X.Y` or
 `latest`. Every draft is created with GitHub latest disabled. The repository-wide publication job
 queues up to 100 release tags, processes one at a time and never cancels an active publication. This
-keeps release freshness inspection and mutation inside one serialized boundary.
+keeps release freshness inspection and mutation inside one serialized boundary. A 60-minute job
+timeout bounds head-of-line blocking while preserving all durable state for a full rerun.
+
+Before uploading anything to an existing draft, the workflow requires its exact generated title and
+a hidden ownership marker bound to the repository, release tag and source commit. A same-tag draft
+without that evidence stops for human review instead of inheriting trusted artifacts or becoming a
+public release. This check applies only while the release is a draft.
 
 GitHub's release list may briefly lag a successful draft creation, asset upload or publication.
 The workflow retries those visibility checks for a bounded period, always pins the retained numeric
-release ID during asset work, and fails closed when authoritative state does not converge.
+release ID during asset work, and fails closed when authoritative state does not converge. Archive
+uploads are streamed, use bounded connection, retry and total-time budgets, do not follow redirects,
+and preserve GitHub's bounded error response in the failed-job log.
 
 When a stable draft is published, the workflow compares it with every other published stable
 release and explicitly chooses whether GitHub may mark it latest. After publication, each GHCR
@@ -1066,15 +1074,18 @@ docker buildx imagetools inspect \
 
 The tag endpoint is not a draft inspection command: GitHub documents it as returning a published
 release. The authenticated, paginated list above includes drafts for callers with push access and
-the exact-one check prevents an ambiguous tag from being selected. Release title and notes may be
-edited after publication; recovery identity comes from the tag, release ID, state and immutable
-asset/container evidence.
+the exact-one check prevents an ambiguous tag from being selected. Publication requires GitHub CLI
+2.51 or newer because draft discovery uses `gh api --slurp`. Once the list establishes a numeric
+release ID, repeated checks within that command use the authenticated ID endpoint instead of
+sweeping every release again. Release title and notes may be edited after publication; recovery
+identity then comes from the tag, release ID, state and immutable asset/container evidence.
 
 If a retention policy prunes the staging tag after publication has completed, a rerun remains safe
-when the release record and both immutable GHCR tags still match the recorded digest. The workflow
-uses those immutable tags as the fallback proof and does not rebuild the image. A missing staging
-tag while the release is still a draft remains a hard stop because no durable promoted tag can prove
-the recorded content.
+when the release record and at least one immutable GHCR version tag still matches the recorded
+digest. Any other immutable tag that is present must also match; conflicts fail closed. The
+matching tag proves the digest remains live, and promotion safely recreates a missing sibling from
+that digest. A missing staging tag while the release is still a draft remains a hard stop because no
+durable promoted tag can prove the recorded content.
 
 An orphaned staging tag with no matching draft or published release is also a hard stop. Preserve
 its digest, registry metadata and failed-run logs first. After establishing that no release record or

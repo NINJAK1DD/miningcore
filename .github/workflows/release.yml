@@ -745,6 +745,8 @@ jobs:
       - collect-release-assets
       - container-check
     runs-on: ubuntu-24.04
+    # Bound head-of-line blocking for the repository-wide publication queue.
+    timeout-minutes: 60
     permissions:
       contents: write
       packages: write
