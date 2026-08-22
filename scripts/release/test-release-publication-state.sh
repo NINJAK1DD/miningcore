@@ -60,6 +60,7 @@ reset_fake_services() {
   FAKE_RELEASE_STATE=absent
   FAKE_GH_VERSION=2.79.0
   FAKE_GH_VERSION_FAILURE=false
+  FAKE_GH_VERSION_WARNING=false
   FAKE_RELEASE_LATEST=false
   FAKE_RELEASE_LAST_PUBLISH_LATEST=
   FAKE_RELEASE_PRERELEASE=
@@ -227,6 +228,9 @@ gh() {
     if [[ "$FAKE_GH_VERSION_FAILURE" == true ]]; then
       echo 'simulated GitHub CLI version probe failure' >&2
       return 1
+    fi
+    if [[ "$FAKE_GH_VERSION_WARNING" == true ]]; then
+      echo 'simulated non-fatal GitHub CLI warning' >&2
     fi
     echo "gh version $FAKE_GH_VERSION (test double)"
     return
@@ -684,6 +688,14 @@ scenario_same_tag_draft_without_marker_fails_closed() (
   run_command prepare
 )
 
+scenario_same_tag_draft_with_both_mismatches_fails_closed() (
+  reset_fake_services foreign-both
+  FAKE_RELEASE_STATE=draft
+  FAKE_RELEASE_NAME='Foreign release title'
+  FAKE_RELEASE_BODY='Unrelated release notes'
+  run_command prepare
+)
+
 scenario_prerelease_mismatch_has_specific_diagnostic() (
   reset_fake_services prerelease-mismatch
   FAKE_RELEASE_STATE=draft
@@ -709,6 +721,12 @@ scenario_failed_github_cli_probe_fails_cleanly() (
   run_command prepare
 )
 
+scenario_github_cli_warning_does_not_change_version_parse() (
+  reset_fake_services gh-version-warning
+  FAKE_GH_VERSION_WARNING=true
+  run_command prepare
+)
+
 scenario_draft_visibility_timeout_fails_closed() (
   reset_fake_services draft-visibility-timeout
   FAKE_DRAFT_VISIBILITY_LAG_AFTER_CREATE=10
@@ -728,6 +746,7 @@ scenario_completed_release_survives_pruned_stage_and_metadata_edits
 scenario_legacy_assets_without_server_digests_use_byte_fallback
 scenario_completed_release_recovers_from_one_immutable_tag
 scenario_missing_asset_clears_stale_state
+scenario_github_cli_warning_does_not_change_version_parse
 
 for scenario in \
   scenario_conflicting_version_tag_fails_closed \
@@ -739,6 +758,7 @@ for scenario in \
   scenario_duplicate_release_tag_is_ambiguous \
   scenario_foreign_same_tag_draft_fails_closed \
   scenario_same_tag_draft_without_marker_fails_closed \
+  scenario_same_tag_draft_with_both_mismatches_fails_closed \
   scenario_prerelease_mismatch_has_specific_diagnostic \
   scenario_upload_failure_preserves_service_diagnostic \
   scenario_old_github_cli_fails_cleanly \
@@ -763,7 +783,16 @@ grep -Fq 'does not have the expected workflow title' \
 grep -Fq 'does not contain the expected workflow collision marker' \
   "$test_root/scenario_same_tag_draft_without_marker_fails_closed.out" ||
   fail 'Foreign draft notes failure did not identify the collision-marker contract'
-for scenario_root in foreign-draft foreign-marker; do
+grep -Fq 'fails both workflow collision checks' \
+  "$test_root/scenario_same_tag_draft_with_both_mismatches_fails_closed.out" ||
+  fail 'Combined foreign draft failure did not identify both collision checks'
+grep -Fq "title is 'Miningcore v1.2.3'" \
+  "$test_root/scenario_same_tag_draft_with_both_mismatches_fails_closed.out" ||
+  fail 'Combined foreign draft failure omitted the expected title'
+grep -Fq 'repository/tag/source collision marker is missing or mismatched' \
+  "$test_root/scenario_same_tag_draft_with_both_mismatches_fails_closed.out" ||
+  fail 'Combined foreign draft failure omitted the marker mismatch'
+for scenario_root in foreign-draft foreign-marker foreign-both; do
   if find "$test_root/$scenario_root/assets" -maxdepth 1 -type f -print -quit |
       grep -q .; then
     fail "$scenario_root received trusted release assets before draft validation"

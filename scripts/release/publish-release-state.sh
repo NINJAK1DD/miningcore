@@ -46,7 +46,7 @@ publication_require_tools() {
     fi
   done
 
-  if ! gh_version_output=$(gh --version 2>&1); then
+  if ! gh_version_output=$(gh --version 2>/dev/null); then
     publication_die "could not execute the GitHub CLI version probe"
   fi
   gh_version=$(awk 'NR == 1 { print $3 }' <<< "$gh_version_output")
@@ -180,6 +180,8 @@ publication_refresh_release() {
   local release_list=$PUBLICATION_WORK_DIR/releases.json
   local matches
   local expected_prerelease=false
+  local draft_title_matches
+  local draft_marker_matches
 
   if [[ "$GITHUB_REF_NAME" == *-* ]]; then
     expected_prerelease=true
@@ -249,15 +251,28 @@ publication_refresh_release() {
   PUBLICATION_RELEASE_ID=$(jq -r '.id' "$release_file")
   if [[ $(jq -r '.draft' "$release_file") == true ]]; then
     PUBLICATION_RELEASE_STATE=draft
+    draft_title_matches=true
     if ! jq -e --arg title "$PUBLICATION_EXPECTED_TITLE" \
         '.name == $title' "$release_file" >/dev/null; then
-      publication_die \
-        "draft release '$GITHUB_REF_NAME' does not have the expected workflow title" \
-        "'$PUBLICATION_EXPECTED_TITLE'; preserve it for review before retrying"
+      draft_title_matches=false
     fi
+    draft_marker_matches=true
     if ! jq -e --arg marker "$PUBLICATION_DRAFT_MARKER" \
         '(.body | type == "string") and (.body | contains($marker))' \
         "$release_file" >/dev/null; then
+      draft_marker_matches=false
+    fi
+
+    if [[ "$draft_title_matches" == false && "$draft_marker_matches" == false ]]; then
+      publication_die \
+        "draft release '$GITHUB_REF_NAME' fails both workflow collision checks: expected" \
+        "title is '$PUBLICATION_EXPECTED_TITLE', and the repository/tag/source collision" \
+        "marker is missing or mismatched; preserve it for review before retrying"
+    elif [[ "$draft_title_matches" == false ]]; then
+      publication_die \
+        "draft release '$GITHUB_REF_NAME' does not have the expected workflow title" \
+        "'$PUBLICATION_EXPECTED_TITLE'; preserve it for review before retrying"
+    elif [[ "$draft_marker_matches" == false ]]; then
       publication_die \
         "draft release '$GITHUB_REF_NAME' does not contain the expected workflow collision" \
         "marker for repository, tag and source commit; its notes may have been edited," \
