@@ -1007,9 +1007,11 @@ keeps release freshness inspection and mutation inside one serialized boundary. 
 timeout bounds head-of-line blocking while preserving all durable state for a full rerun.
 
 Before uploading anything to an existing draft, the workflow requires its exact generated title and
-a hidden ownership marker bound to the repository, release tag and source commit. A same-tag draft
-without that evidence stops for human review instead of inheriting trusted artifacts or becoming a
-public release. This check applies only while the release is a draft.
+a deterministic collision marker containing the repository, release tag and source commit. This
+detects a stale or unrelated same-tag draft that this workflow did not create; it is not an
+authorization control because a maintainer with release-write access can reproduce the marker. A
+mismatch stops for human review before trusted assets are uploaded. This check applies only while
+the release is a draft.
 
 GitHub's release list may briefly lag a successful draft creation, asset upload or publication.
 The workflow retries those visibility checks for a bounded period, always pins the retained numeric
@@ -1079,6 +1081,17 @@ the exact-one check prevents an ambiguous tag from being selected. Publication r
 release ID, repeated checks within that command use the authenticated ID endpoint instead of
 sweeping every release again. Release title and notes may be edited after publication; recovery
 identity then comes from the tag, release ID, state and immutable asset/container evidence.
+
+Do not manually edit the generated title or remove the collision marker while publication remains a
+draft. If the workflow stops on either check, first compare the draft ID, author and audit history
+with the failed workflow run and confirm that the Git tag still resolves to the recorded source
+commit. When that evidence proves the draft belongs to this workflow and only its presentation was
+edited, restore the exact generated title (for example, `Miningcore vX.Y.Z`) and original marker
+before using **Re-run all jobs**. If ownership cannot be established, preserve the draft, assets and
+run logs for review; only after confirming that it is unrelated should a maintainer delete the
+draft. If a staging tag remains, complete the orphan-tag evidence and cleanup procedure below before
+rerunning all jobs to create fresh workflow-owned state. Never make an unrelated draft pass by
+copying the public marker.
 
 If a retention policy prunes the staging tag after publication has completed, a rerun remains safe
 when the release record and at least one immutable GHCR version tag still matches the recorded

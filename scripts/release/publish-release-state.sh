@@ -35,6 +35,7 @@ publication_die() {
 
 publication_require_tools() {
   local tool
+  local gh_version_output
   local gh_version
   local gh_major
   local gh_minor
@@ -45,7 +46,10 @@ publication_require_tools() {
     fi
   done
 
-  gh_version=$(gh --version | awk 'NR == 1 { print $3 }')
+  if ! gh_version_output=$(gh --version 2>&1); then
+    publication_die "could not execute the GitHub CLI version probe"
+  fi
+  gh_version=$(awk 'NR == 1 { print $3 }' <<< "$gh_version_output")
   if [[ ! "$gh_version" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?([+-].*)?$ ]]; then
     publication_die "could not determine the installed GitHub CLI version"
   fi
@@ -156,6 +160,9 @@ publication_api_get_release_by_id() {
   local expected_release_id=$2
   local error_file
 
+  # The retained ID came from an authenticated list/create response. A later
+  # ID-read failure can mean deletion or changed authorization, so it is not
+  # treated as the bounded discovery/representation lag handled by wait loops.
   error_file=$(mktemp "$PUBLICATION_WORK_DIR/release-get-error.XXXXXX")
   if ! gh api "repos/$GITHUB_REPOSITORY/releases/$expected_release_id" \
       > "$destination" 2> "$error_file"; then
@@ -243,13 +250,18 @@ publication_refresh_release() {
   if [[ $(jq -r '.draft' "$release_file") == true ]]; then
     PUBLICATION_RELEASE_STATE=draft
     if ! jq -e --arg title "$PUBLICATION_EXPECTED_TITLE" \
-        --arg marker "$PUBLICATION_DRAFT_MARKER" \
-        '.name == $title and
-         (.body | type == "string") and
-         (.body | contains($marker))' "$release_file" >/dev/null; then
+        '.name == $title' "$release_file" >/dev/null; then
       publication_die \
-        "draft release '$GITHUB_REF_NAME' lacks the expected workflow title or ownership" \
-        "marker; preserve it for review and do not upload or publish automatically"
+        "draft release '$GITHUB_REF_NAME' does not have the expected workflow title" \
+        "'$PUBLICATION_EXPECTED_TITLE'; preserve it for review before retrying"
+    fi
+    if ! jq -e --arg marker "$PUBLICATION_DRAFT_MARKER" \
+        '(.body | type == "string") and (.body | contains($marker))' \
+        "$release_file" >/dev/null; then
+      publication_die \
+        "draft release '$GITHUB_REF_NAME' does not contain the expected workflow collision" \
+        "marker for repository, tag and source commit; its notes may have been edited," \
+        "the tag source may have moved, or another actor may have created the draft"
     fi
   else
     PUBLICATION_RELEASE_STATE=published
@@ -342,6 +354,9 @@ publication_upload_asset() {
   upload_url+="/releases/$PUBLICATION_RELEASE_ID/assets?name=$asset_name"
   chmod 600 "$curl_config"
   printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > "$curl_config"
+  # Retry only curl's transient transport/HTTP set. If GitHub accepted the POST
+  # but its response was lost, a non-retried 422 is preserved below and the
+  # next full run reconciles the existing asset by size, digest or bytes.
   if ! curl --fail-with-body --silent --show-error \
       --retry 4 --retry-delay 2 --retry-max-time 120 \
       --connect-timeout 20 --max-time 300 \

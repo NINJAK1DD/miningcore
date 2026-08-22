@@ -76,7 +76,15 @@ assert_contains 'the repository-wide publication queue' \
 assert_contains 'the publication queue timeout' \
   '60-minute job'
 assert_contains 'the draft ownership boundary' \
-  'hidden ownership marker bound to the repository'
+  'deterministic collision marker containing the repository'
+assert_contains 'the draft marker authorization limitation' \
+  'authorization control because a maintainer'
+assert_contains 'the draft edit recovery procedure' \
+  'Do not manually edit the generated title'
+assert_contains 'the deleted-draft staging cleanup boundary' \
+  'complete the orphan-tag evidence and cleanup procedure'
+assert_contains 'the foreign draft adoption prohibition' \
+  'Never make an unrelated draft pass'
 assert_contains 'the streamed bounded upload policy' \
   'uploads are streamed'
 assert_contains 'the pruned-stage recovery rule' \

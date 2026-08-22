@@ -59,6 +59,7 @@ reset_fake_services() {
   FAKE_ROOT="$test_root/$scenario"
   FAKE_RELEASE_STATE=absent
   FAKE_GH_VERSION=2.79.0
+  FAKE_GH_VERSION_FAILURE=false
   FAKE_RELEASE_LATEST=false
   FAKE_RELEASE_LAST_PUBLISH_LATEST=
   FAKE_RELEASE_PRERELEASE=
@@ -223,6 +224,10 @@ gh() {
   local title
 
   if [[ "$1" == --version ]]; then
+    if [[ "$FAKE_GH_VERSION_FAILURE" == true ]]; then
+      echo 'simulated GitHub CLI version probe failure' >&2
+      return 1
+    fi
     echo "gh version $FAKE_GH_VERSION (test double)"
     return
   fi
@@ -669,6 +674,12 @@ scenario_foreign_same_tag_draft_fails_closed() (
   reset_fake_services foreign-draft
   FAKE_RELEASE_STATE=draft
   FAKE_RELEASE_NAME='Foreign release title'
+  run_command prepare
+)
+
+scenario_same_tag_draft_without_marker_fails_closed() (
+  reset_fake_services foreign-marker
+  FAKE_RELEASE_STATE=draft
   FAKE_RELEASE_BODY='Unrelated release notes'
   run_command prepare
 )
@@ -689,6 +700,12 @@ scenario_upload_failure_preserves_service_diagnostic() (
 scenario_old_github_cli_fails_cleanly() (
   reset_fake_services old-gh
   FAKE_GH_VERSION=2.50.0
+  run_command prepare
+)
+
+scenario_failed_github_cli_probe_fails_cleanly() (
+  reset_fake_services failed-gh-probe
+  FAKE_GH_VERSION_FAILURE=true
   run_command prepare
 )
 
@@ -721,9 +738,11 @@ for scenario in \
   scenario_stage_without_release_is_ambiguous \
   scenario_duplicate_release_tag_is_ambiguous \
   scenario_foreign_same_tag_draft_fails_closed \
+  scenario_same_tag_draft_without_marker_fails_closed \
   scenario_prerelease_mismatch_has_specific_diagnostic \
   scenario_upload_failure_preserves_service_diagnostic \
   scenario_old_github_cli_fails_cleanly \
+  scenario_failed_github_cli_probe_fails_cleanly \
   scenario_draft_visibility_timeout_fails_closed \
   scenario_asset_visibility_timeout_fails_closed; do
   set +e
@@ -738,13 +757,18 @@ for scenario in \
     fail "$scenario did not provide a human-action diagnostic"
 done
 
-grep -Fq 'expected workflow title or ownership marker' \
+grep -Fq 'does not have the expected workflow title' \
   "$test_root/scenario_foreign_same_tag_draft_fails_closed.out" ||
-  fail 'Foreign draft failure did not identify the ownership contract'
-if find "$test_root/foreign-draft/assets" -maxdepth 1 -type f -print -quit |
-    grep -q .; then
-  fail 'Foreign draft received trusted release assets before ownership validation'
-fi
+  fail 'Foreign draft title failure did not identify the title contract'
+grep -Fq 'does not contain the expected workflow collision marker' \
+  "$test_root/scenario_same_tag_draft_without_marker_fails_closed.out" ||
+  fail 'Foreign draft notes failure did not identify the collision-marker contract'
+for scenario_root in foreign-draft foreign-marker; do
+  if find "$test_root/$scenario_root/assets" -maxdepth 1 -type f -print -quit |
+      grep -q .; then
+    fail "$scenario_root received trusted release assets before draft validation"
+  fi
+done
 grep -Fq 'prerelease classification does not match its tag' \
   "$test_root/scenario_prerelease_mismatch_has_specific_diagnostic.out" ||
   fail 'Prerelease mismatch did not provide a specific diagnostic'
@@ -754,6 +778,9 @@ grep -Fq 'simulated GitHub upload rejection' \
 grep -Fq 'GitHub CLI 2.51 or newer is required' \
   "$test_root/scenario_old_github_cli_fails_cleanly.out" ||
   fail 'Old GitHub CLI failure did not identify the required version'
+grep -Fq 'HUMAN ACTION REQUIRED: could not execute the GitHub CLI version probe' \
+  "$test_root/scenario_failed_github_cli_probe_fails_cleanly.out" ||
+  fail 'Failed GitHub CLI version probe bypassed the standard diagnostic'
 
 # Pin both ordering boundaries: public tag promotion follows durable release
 # publication, and all tag publications share one non-cancelling FIFO queue.
