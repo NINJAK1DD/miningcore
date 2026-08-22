@@ -153,15 +153,41 @@ if grep -Fq 'sudo cp /opt/miningcore/config.example.json' <<<"$install_block"; t
   exit 1
 fi
 
-directory_guard_line=$(grep -nF 'test -d "$release_dir"' <<<"$install_block" | cut -d: -f1)
-symlink_line=$(grep -nF 'sudo ln -sfnT "$release_dir" /opt/miningcore' <<<"$install_block" |
-  cut -d: -f1)
-cleanup_line=$(grep -nF 'rmdir -- "$MININGCORE_DOWNLOAD_DIR"' <<<"$install_block" | cut -d: -f1)
-release_consumed_line=$(grep -nF 'MININGCORE_RELEASE_READY=' <<<"$install_block" | cut -d: -f1)
+find_unique_line() {
+  local label=$1
+  local pattern=$2
+  local source=$3
+  local -a matches
 
-if [[ -z "$directory_guard_line" || -z "$symlink_line" ||
-    -z "$release_consumed_line" || -z "$cleanup_line" ||
-    "$symlink_line" -le "$directory_guard_line" ||
+  mapfile -t matches < <(grep -nF "$pattern" <<<"$source" | cut -d: -f1)
+  if [[ "${#matches[@]}" -ne 1 ]]; then
+    echo "Installation-order anchor '$label' occurred ${#matches[@]} times; expected 1" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${matches[0]}"
+}
+
+directory_guard_line=$(find_unique_line directory-guard 'test -d "$release_dir"' "$install_block")
+symlink_line=$(
+  find_unique_line stable-symlink \
+    'sudo ln -sfnT "$release_dir" /opt/miningcore' "$install_block"
+)
+release_consumed_line=$(
+  find_unique_line release-consumed 'MININGCORE_RELEASE_READY=' "$install_block"
+)
+cleanup_line=$(
+  find_unique_line download-cleanup 'rmdir -- "$MININGCORE_DOWNLOAD_DIR"' "$install_block"
+)
+
+duplicate_anchor_block="${install_block}"$'\nMININGCORE_RELEASE_READY='
+if find_unique_line duplicate-guard 'MININGCORE_RELEASE_READY=' \
+    "$duplicate_anchor_block" >/dev/null 2>&1; then
+  echo 'The installation-order anchor guard accepted an ambiguous duplicate' >&2
+  exit 1
+fi
+
+if [[ "$symlink_line" -le "$directory_guard_line" ||
     "$release_consumed_line" -le "$symlink_line" ||
     "$cleanup_line" -le "$symlink_line" ]]; then
   echo 'The stable symlink, readiness reset and cleanup operations are not safely ordered' >&2

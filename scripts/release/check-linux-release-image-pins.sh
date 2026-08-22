@@ -7,7 +7,7 @@ source "$repository_root/scripts/release/linux-release-targets.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo 'docker is required to resolve Docker Official Image manifest digests' >&2
-  exit 69
+  exit 70
 fi
 
 for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
@@ -25,7 +25,7 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   if [[ ! "$current_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "Unable to resolve a manifest-list digest for $image_tag" >&2
-    exit 69
+    exit 70
   fi
 
   if [[ "$current_digest" != "$expected_digest" ]]; then

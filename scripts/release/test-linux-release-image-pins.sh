@@ -107,11 +107,28 @@ malformed_output=$(
 malformed_status=$?
 set -e
 
-if [[ "$malformed_status" -ne 69 ]] ||
+if [[ "$malformed_status" -ne 70 ]] ||
     ! grep -Fq 'Unable to resolve a manifest-list digest for ubuntu:26.04' \
       <<<"$malformed_output"; then
   echo 'Image-pin freshness check treated malformed resolver output as drift' >&2
   printf '%s\n' "$malformed_output" >&2
+  exit 1
+fi
+
+missing_bin="$work_dir/missing-bin"
+mkdir -p "$missing_bin"
+ln -s "$(command -v bash)" "$missing_bin/bash"
+ln -s "$(command -v dirname)" "$missing_bin/dirname"
+
+set +e
+missing_docker_output=$(PATH="$missing_bin" bash "$checker" 2>&1)
+missing_docker_status=$?
+set -e
+
+if [[ "$missing_docker_status" -ne 70 ]] ||
+    ! grep -Fq 'docker is required' <<<"$missing_docker_output"; then
+  echo 'Image-pin freshness check did not fail structurally when docker was missing' >&2
+  printf '%s\n' "$missing_docker_output" >&2
   exit 1
 fi
 
@@ -152,6 +169,23 @@ if [[ "$monitor_registry_status" -ne 0 ]] ||
     ! grep -Fq 'no image drift decision was made' <<<"$monitor_registry_output"; then
   echo 'Image-pin monitor did not downgrade registry failure to a visible warning' >&2
   printf '%s\n' "$monitor_registry_output" >&2
+  exit 1
+fi
+
+set +e
+monitor_malformed_output=$(
+  MININGCORE_TEST_MALFORMED_INSPECTION=1 \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+monitor_malformed_status=$?
+set -e
+
+if [[ "$monitor_malformed_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$monitor_malformed_output" ||
+    ! grep -Fq 'Unable to resolve a manifest-list digest' \
+      <<<"$monitor_malformed_output"; then
+  echo 'Image-pin monitor downgraded a structural resolver failure' >&2
+  printf '%s\n' "$monitor_malformed_output" >&2
   exit 1
 fi
 
