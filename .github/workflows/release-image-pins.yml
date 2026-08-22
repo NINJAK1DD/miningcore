@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/release-image-pins.yml'
       - 'scripts/release/check-linux-release-image-pins.sh'
+      - 'scripts/release/run-linux-release-image-pin-monitor.sh'
       - 'scripts/release/linux-release-targets.sh'
   schedule:
     - cron: '23 7 * * 1'
@@ -26,4 +27,4 @@ jobs:
 
       - name: Compare current tags with reviewed manifest-list digests
         shell: bash
-        run: bash scripts/release/check-linux-release-image-pins.sh
+        run: bash scripts/release/run-linux-release-image-pin-monitor.sh

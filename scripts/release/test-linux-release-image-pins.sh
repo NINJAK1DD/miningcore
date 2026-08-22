@@ -4,6 +4,8 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 checker="$repository_root/scripts/release/check-linux-release-image-pins.sh"
+monitor="$repository_root/scripts/release/run-linux-release-image-pin-monitor.sh"
+workflow="$repository_root/.github/workflows/release-image-pins.yml"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 work_dir=$(mktemp -d)
 fake_bin="$work_dir/bin"
@@ -112,5 +114,54 @@ if [[ "$malformed_status" -ne 69 ]] ||
   printf '%s\n' "$malformed_output" >&2
   exit 1
 fi
+
+monitor_success_output=$(PATH="$fake_bin:$PATH" bash "$monitor")
+if ! grep -Fq 'ubuntu:26.04 still matches reviewed pin' <<<"$monitor_success_output" ||
+    ! grep -Fq 'ubuntu:22.04 still matches reviewed pin' <<<"$monitor_success_output"; then
+  echo 'Image-pin monitor did not preserve the successful resolver output' >&2
+  printf '%s\n' "$monitor_success_output" >&2
+  exit 1
+fi
+
+set +e
+monitor_drift_output=$(
+  MININGCORE_TEST_JAMMY_DIGEST=$stale_digest \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+monitor_drift_status=$?
+set -e
+
+if [[ "$monitor_drift_status" -ne 1 ]] ||
+    ! grep -Fq 'Review upstream changes' <<<"$monitor_drift_output"; then
+  echo 'Image-pin monitor did not retain a failing drift signal' >&2
+  printf '%s\n' "$monitor_drift_output" >&2
+  exit 1
+fi
+
+set +e
+monitor_registry_output=$(
+  MININGCORE_TEST_INSPECT_FAILURE=1 \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+monitor_registry_status=$?
+set -e
+
+if [[ "$monitor_registry_status" -ne 0 ]] ||
+    ! grep -Fq '::warning title=Ubuntu image pin check unavailable::' \
+      <<<"$monitor_registry_output" ||
+    ! grep -Fq 'no image drift decision was made' <<<"$monitor_registry_output"; then
+  echo 'Image-pin monitor did not downgrade registry failure to a visible warning' >&2
+  printf '%s\n' "$monitor_registry_output" >&2
+  exit 1
+fi
+
+for expected in \
+  "'scripts/release/run-linux-release-image-pin-monitor.sh'" \
+  'run: bash scripts/release/run-linux-release-image-pin-monitor.sh'; do
+  if ! grep -Fq "$expected" "$workflow"; then
+    echo "Image-pin workflow is missing monitor contract: $expected" >&2
+    exit 1
+  fi
+done
 
 echo 'Linux release image-pin freshness checks passed'

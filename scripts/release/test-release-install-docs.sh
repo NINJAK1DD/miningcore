@@ -4,6 +4,16 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
+capability_dir=
+
+cleanup() {
+  if [[ -n "$capability_dir" ]]; then
+    rm -f -- "$capability_dir/link"
+    rmdir -- "$capability_dir/target" "$capability_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
 selection_block=$(awk '
   { sub(/\r$/, "") }
   /^export MININGCORE_VERSION=/ { capture = 1 }
@@ -51,6 +61,8 @@ assert_contains 'the declared build-image contract' \
   'workflow-declared'
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
+assert_contains 'the path-filtered branch-protection warning' \
+  'Do not configure it as a required'
 
 if grep -Eq '(^|[[:space:]])exit([[:space:]]|$)' <<<"$selection_block"; then
   echo "The copy-paste release selection block must not exit an interactive shell" >&2
@@ -116,6 +128,7 @@ ln -sfnT "$capability_dir/target" "$capability_dir/link"
 test -L "$capability_dir/link"
 rm -f -- "$capability_dir/link"
 rmdir -- "$capability_dir/target" "$capability_dir"
+capability_dir=
 
 for required in \
   'MININGCORE_INSTALL_READY=' \
@@ -124,6 +137,7 @@ for required in \
   'if [ ! -e /etc/miningcore/config.json ]; then' \
   'sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json' \
   'sudo ln -sfnT "$release_dir" /opt/miningcore' \
+  'MININGCORE_RELEASE_READY=' \
   'rmdir -- "$MININGCORE_DOWNLOAD_DIR"' \
   'WARN: remove the verified release files from $MININGCORE_DOWNLOAD_DIR' \
   'export MININGCORE_INSTALL_READY=1' \
@@ -143,11 +157,14 @@ directory_guard_line=$(grep -nF 'test -d "$release_dir"' <<<"$install_block" | c
 symlink_line=$(grep -nF 'sudo ln -sfnT "$release_dir" /opt/miningcore' <<<"$install_block" |
   cut -d: -f1)
 cleanup_line=$(grep -nF 'rmdir -- "$MININGCORE_DOWNLOAD_DIR"' <<<"$install_block" | cut -d: -f1)
+release_consumed_line=$(grep -nF 'MININGCORE_RELEASE_READY=' <<<"$install_block" | cut -d: -f1)
 
 if [[ -z "$directory_guard_line" || -z "$symlink_line" ||
-    -z "$cleanup_line" || "$symlink_line" -le "$directory_guard_line" ||
+    -z "$release_consumed_line" || -z "$cleanup_line" ||
+    "$symlink_line" -le "$directory_guard_line" ||
+    "$release_consumed_line" -le "$symlink_line" ||
     "$cleanup_line" -le "$symlink_line" ]]; then
-  echo 'The stable symlink and cleanup operations are not safely ordered' >&2
+  echo 'The stable symlink, readiness reset and cleanup operations are not safely ordered' >&2
   exit 1
 fi
 

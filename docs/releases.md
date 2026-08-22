@@ -159,7 +159,7 @@ if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
   if (
     set -e
     id -u miningcore >/dev/null 2>&1 || \
-      sudo useradd --system --home /var/lib/miningcore --shell /usr/sbin/nologin miningcore
+      sudo useradd --system --home-dir /var/lib/miningcore --shell /usr/sbin/nologin miningcore
     sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
     sudo tar -xzf "$archive" -C /opt
     test -d "$release_dir"
@@ -173,6 +173,7 @@ if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
     sudo chmod 0640 /etc/miningcore/config.json
     sudo ln -sfnT "$release_dir" /opt/miningcore
   ); then
+    MININGCORE_RELEASE_READY=
     if rm -f -- "$archive" "$checksum_file" &&
         rmdir -- "$MININGCORE_DOWNLOAD_DIR"; then
       MININGCORE_DOWNLOAD_DIR=
@@ -946,8 +947,13 @@ images receive upstream security fixes. BuildKit attaches maximum provenance and
 the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
 compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
 pin needs review; updating a pin still requires the complete release validation. Pin drift exits
-with status 1, while registry or resolver failures use status 69 so transient infrastructure errors
-cannot be mistaken for reviewed-image movement.
+with status 1. Registry or resolver failures use status 69 and become a warning annotation, so
+transient infrastructure errors cannot be mistaken for reviewed-image movement.
+
+> **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
+> does not report a status on unrelated pull requests. Do not configure it as a required status
+> check; require the always-running build and release checks instead.
+
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
