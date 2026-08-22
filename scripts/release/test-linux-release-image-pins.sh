@@ -98,9 +98,16 @@ fi
 
 if [[ ${MININGCORE_TEST_LARGE_DIAGNOSTIC_TAG:-} = "$4" ]]; then
   printf '::error title=Large registry response::' >&2
+  printf '%*s' 5000 '' | tr ' ' x >&2
+  printf '\nresponse: connection reset by peer\n' >&2
+  exit 1
+fi
+
+if [[ ${MININGCORE_TEST_CONTROL_DIAGNOSTIC_TAG:-} = "$4" ]]; then
+  printf '::error title=Control registry response::' >&2
 
   for ((index = 0; index < 5000; index++)); do
-    printf 'x' >&2
+    printf '\001' >&2
   done
 
   printf '\nresponse: connection reset by peer\n' >&2
@@ -214,7 +221,7 @@ mapfile -t all_failure_tokens < <(
 
 if [[ "$all_failure_status" -ne 69 ]] ||
     (( ${#all_failure_tokens[@]} != ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )) ||
-    grep -Fq 'Transient registry failure while resolving' <<<"$all_failure_error"; then
+    [[ -n "$all_failure_error" ]]; then
   echo 'Image-pin checker split multi-target headers from their guarded evidence' >&2
   print_test_diagnostic "$all_failure_output"
   print_test_diagnostic "$all_failure_error"
@@ -413,6 +420,36 @@ if [[ "$large_guard_status" -ne 69 ]] ||
   echo 'Image-pin checker did not safely bound an unguarded registry diagnostic' >&2
   print_test_diagnostic "$large_guard_output"
   print_test_diagnostic "$large_guard_error"
+  exit 1
+fi
+
+control_guard_stdout="$work_dir/control-guard-failure.stdout"
+control_guard_stderr="$work_dir/control-guard-failure.stderr"
+
+set +e
+GITHUB_ACTIONS=true \
+  MININGCORE_TEST_CONTROL_DIAGNOSTIC_TAG=ubuntu:26.04 \
+  PATH="$guard_failure_bin:$fake_bin:$PATH" bash "$checker" \
+  >"$control_guard_stdout" 2>"$control_guard_stderr"
+control_guard_status=$?
+set -e
+
+control_guard_output=$(<"$control_guard_stdout")
+control_guard_error=$(<"$control_guard_stderr")
+control_guard_line=$(grep -F \
+  'Registry diagnostic (encoded; command guard unavailable):' \
+  <<<"$control_guard_output")
+
+if [[ "$control_guard_status" -ne 69 ]] ||
+    contains_runner_command "$control_guard_output" ||
+    contains_runner_command "$control_guard_error" ||
+    ! grep -Fq '[truncated after 4096 characters]' <<<"$control_guard_line" ||
+    ! grep -Fq '[encoded output truncated after 8192 characters]' \
+      <<<"$control_guard_line" ||
+    (( ${#control_guard_line} > 8400 )); then
+  echo 'Image-pin checker did not bound an expanded shell-escaped diagnostic' >&2
+  print_test_diagnostic "$control_guard_output"
+  print_test_diagnostic "$control_guard_error"
   exit 1
 fi
 
@@ -825,6 +862,55 @@ fi
 
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash
+token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+echo 'Transient registry failure while resolving ubuntu:26.04'
+printf '::stop-commands::%s\n' "$token"
+echo 'injected ordered registry evidence'
+printf '::%s::\n' "$token"
+printf 'unknown.invalid\n' >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+exit 69
+EOF
+
+monitor_validation_stdout="$work_dir/monitor-validation.stdout"
+monitor_validation_stderr="$work_dir/monitor-validation.stderr"
+
+set +e
+GITHUB_ACTIONS=true \
+  bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" \
+  >"$monitor_validation_stdout" 2>"$monitor_validation_stderr"
+monitor_validation_status=$?
+set -e
+
+monitor_validation_output=$(<"$monitor_validation_stdout")
+monitor_validation_error=$(<"$monitor_validation_stderr")
+monitor_validation_header_line=$(awk \
+  'index($0, "Transient registry failure while resolving ubuntu:26.04") { print NR; exit }' \
+  <<<"$monitor_validation_output")
+monitor_validation_stop_line=$(awk \
+  'index($0, "::stop-commands::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") { print NR; exit }' \
+  <<<"$monitor_validation_output")
+monitor_validation_resume_line=$(awk \
+  'index($0, "::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::") { print NR; exit }' \
+  <<<"$monitor_validation_output")
+monitor_validation_failure_line=$(awk \
+  -v needle='non-canonical, unknown, duplicate, or out-of-order unresolved target' \
+  'index($0, needle) { print NR; exit }' <<<"$monitor_validation_output")
+
+if [[ "$monitor_validation_status" -ne 70 ]] ||
+    [[ -n "$monitor_validation_error" ]] ||
+    [[ -z "$monitor_validation_header_line" || -z "$monitor_validation_stop_line" ||
+      -z "$monitor_validation_resume_line" || -z "$monitor_validation_failure_line" ]] ||
+    (( monitor_validation_header_line >= monitor_validation_stop_line ||
+      monitor_validation_stop_line >= monitor_validation_resume_line ||
+      monitor_validation_resume_line >= monitor_validation_failure_line )); then
+  echo 'Image-pin monitor reordered checker evidence and its own validation failure' >&2
+  print_test_diagnostic "$monitor_validation_output"
+  print_test_diagnostic "$monitor_validation_error"
+  exit 1
+fi
+
+cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
+#!/usr/bin/env bash
 echo 'injected transient checker noise' >&2
 exit 69
 EOF
@@ -1157,7 +1243,8 @@ fi
 for expected in \
   'workflow-command processing is suspended' \
   'shell-escaped physical line' \
-  'capped with an explicit truncation marker' \
+  'Source evidence is capped' \
+  'encoded representation is capped at 8,192 characters' \
   'unresolved canonical image tag per line in central release-target order' \
   'accepts only a non-empty, unique, in-order subset of the configured tags' \
   'configured target count plus one line' \

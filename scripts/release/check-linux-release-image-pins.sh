@@ -75,6 +75,7 @@ write_registry_diagnostic() {
   local encoded_diagnostic
   local truncation_notice=''
   local -r diagnostic_character_limit=4096
+  local -r encoded_diagnostic_character_limit=8192
 
   if [[ ${GITHUB_ACTIONS:-} != true ]]; then
     printf '%s\n' "$diagnostic" >&2
@@ -98,6 +99,13 @@ write_registry_diagnostic() {
     printf -v encoded_diagnostic '%q' "$diagnostic"
     encoded_diagnostic=${encoded_diagnostic//'::'/:<colon>}
     encoded_diagnostic=${encoded_diagnostic//'##['/'##<left-bracket>'}
+
+    if (( ${#encoded_diagnostic} > encoded_diagnostic_character_limit )); then
+      encoded_diagnostic=${encoded_diagnostic:0:encoded_diagnostic_character_limit}
+      truncation_notice+=' [encoded output truncated after '
+      truncation_notice+="$encoded_diagnostic_character_limit characters]"
+    fi
+
     printf 'Registry diagnostic (encoded; command guard unavailable): %s%s\n' \
       "$encoded_diagnostic" "$truncation_notice"
 
@@ -184,7 +192,7 @@ if [[ "$saw_transient_failure" = true ]]; then
       unresolved_targets+="${unresolved_targets:+, }$unresolved_tag"
     done
 
-    printf 'Transient image checks unresolved: %s\n' "$unresolved_targets" >&2
+    write_checker_message "Transient image checks unresolved: $unresolved_targets"
   fi
 
   exit 69

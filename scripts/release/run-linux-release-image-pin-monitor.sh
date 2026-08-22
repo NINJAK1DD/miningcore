@@ -6,8 +6,20 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 checker="$repository_root/scripts/release/check-linux-release-image-pins.sh"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
+write_monitor_message() {
+  local message=$1
+
+  # Keep the checker's diagnostics, monitor validation failures and any eventual workflow warning
+  # on one Actions stream. The runner consumes stdout and stderr independently and may reorder them.
+  if [[ ${GITHUB_ACTIONS:-} = true ]]; then
+    printf '%s\n' "$message"
+  else
+    printf '%s\n' "$message" >&2
+  fi
+}
+
 if ! checker_result=$(mktemp); then
-  echo 'Unable to create private image-pin result file' >&2
+  write_monitor_message 'Unable to create private image-pin result file'
   exit 70
 fi
 
@@ -20,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 set +e
-# Keep stdout and stderr live; only the machine-readable transient result uses the private file.
+# Keep diagnostics live; only the machine-readable transient result uses the private file.
 MININGCORE_IMAGE_PIN_RESULT_FILE="$checker_result" bash "$checker"
 status=$?
 set -e
@@ -41,13 +53,13 @@ if [[ "$status" -eq 69 ]]; then
   # failure is converted to the structural status 70 contract.
   if ! { mapfile -t -n "$(( ${#expected_image_tags[@]} + 1 ))" \
       unresolved_image_tags <"$checker_result"; } 2>/dev/null; then
-    echo 'Unable to read private image-pin result file' >&2
+    write_monitor_message 'Unable to read private image-pin result file'
     exit 70
   fi
 
   if (( ${#unresolved_image_tags[@]} == 0 )); then
-    echo 'Image-pin checker returned transient status without a non-empty' \
-      'unresolved-target result' >&2
+    write_monitor_message \
+      'Image-pin checker returned transient status without a non-empty unresolved-target result'
     exit 70
   fi
 
@@ -74,8 +86,9 @@ if [[ "$status" -eq 69 ]]; then
 
     if [[ "$matched" != true ]]; then
       # Do not repeat unvalidated handoff content in logs or workflow commands.
-      echo 'Image-pin checker returned a non-canonical, unknown, duplicate, or' \
-        "out-of-order unresolved target at line $reported_line" >&2
+      invalid_result_message='Image-pin checker returned a non-canonical, unknown, duplicate, or '
+      invalid_result_message+="out-of-order unresolved target at line $reported_line"
+      write_monitor_message "$invalid_result_message"
       exit 70
     fi
   done
@@ -84,8 +97,8 @@ if [[ "$status" -eq 69 ]]; then
   # reserialization so binary contamination and a missing terminal newline also fail closed.
   if ! cmp -s "$checker_result" \
       <(printf '%s\n' "${validated_image_tags[@]}"); then
-    echo 'Image-pin checker result does not exactly match the canonical line-oriented contract' \
-      >&2
+    write_monitor_message \
+      'Image-pin checker result does not exactly match the canonical line-oriented contract'
     exit 70
   fi
 
