@@ -431,6 +431,32 @@ cp "$monitor" "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh"
 cp "$repository_root/scripts/release/linux-release-targets.sh" \
   "$monitor_contract_scripts/linux-release-targets.sh"
 
+failing_mktemp_bin="$work_dir/failing-mktemp-bin"
+mkdir -p "$failing_mktemp_bin"
+
+cat > "$failing_mktemp_bin/mktemp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod 0755 "$failing_mktemp_bin/mktemp"
+
+set +e
+mktemp_failure_output=$(
+  PATH="$failing_mktemp_bin:$PATH" \
+    bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+mktemp_failure_status=$?
+set -e
+
+if [[ "$mktemp_failure_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$mktemp_failure_output" ||
+    ! grep -Fq 'Unable to create private image-pin result file' \
+      <<<"$mktemp_failure_output"; then
+  echo 'Image-pin monitor misclassified result-file creation failure as drift' >&2
+  printf '%s\n' "$mktemp_failure_output" >&2
+  exit 1
+fi
+
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash
 echo 'injected transient checker noise' >&2

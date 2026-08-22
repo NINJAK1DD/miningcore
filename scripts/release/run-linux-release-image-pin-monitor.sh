@@ -5,7 +5,11 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 checker="$repository_root/scripts/release/check-linux-release-image-pins.sh"
 source "$repository_root/scripts/release/linux-release-targets.sh"
-checker_result=$(mktemp)
+
+if ! checker_result=$(mktemp); then
+  echo 'Unable to create private image-pin result file' >&2
+  exit 70
+fi
 
 cleanup() {
   rm -f -- "$checker_result"
