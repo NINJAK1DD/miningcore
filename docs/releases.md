@@ -1002,7 +1002,10 @@ therefore treats publication as four observable states:
 The staging tag is deliberately retained as audit and retry evidence. Before the release becomes
 durable, the workflow does not create either full-version container tag and does not move `X.Y` or
 `latest`. After publication, each destination tag is created from the recorded digest and inspected
-again. A pre-existing immutable version tag with another digest, a release asset with different
+again. Before moving a mutable alias, the workflow lists every published stable release. An older
+rerun leaves `X.Y` unchanged when a higher patch exists in that line and leaves `latest` unchanged
+when any higher stable version exists. A pre-existing immutable version tag with another digest, a
+release asset with different
 bytes, missing recorded state, duplicate or unexpected assets, and any non-authoritative GitHub or
 registry response stop with `HUMAN ACTION REQUIRED`; the workflow does not overwrite the conflict.
 Only an explicit not-found response is treated as absence.

@@ -27,6 +27,7 @@ reset_fake_services() {
   FAKE_RELEASE_STATE=absent
   FAKE_API_FAILURE=false
   FAKE_REGISTRY_FAILURE=false
+  FAKE_OTHER_RELEASE_TAGS=()
   mkdir -p "$FAKE_ROOT/assets" "$FAKE_ROOT/candidate"
   printf 'ubuntu 26.04 archive\n' > \
     "$FAKE_ROOT/candidate/miningcore-v1.2.3-linux-x64-ubuntu-26.04.tar.gz"
@@ -76,6 +77,7 @@ gh() {
   local asset_index
   local asset_name
   local endpoint
+  local other_tag
   local source
 
   if [[ "$1" == api ]]; then
@@ -91,6 +93,17 @@ gh() {
         return 1
       fi
       fake_release_json
+      return
+    fi
+
+    if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases?per_page=100" ]]; then
+      {
+        fake_release_json
+        for other_tag in "${FAKE_OTHER_RELEASE_TAGS[@]}"; do
+          jq -n --arg tag "$other_tag" \
+            '{tag_name: $tag, draft: false, prerelease: false}'
+        done
+      } | jq -s '[.]'
       return
     fi
 
@@ -249,7 +262,27 @@ scenario_stage_without_release_is_ambiguous() (
   run_command prepare
 )
 
+scenario_older_rerun_preserves_newer_aliases() (
+  reset_fake_services older-rerun
+  run_command prepare
+  FAKE_REFERENCES["$PUBLICATION_STAGING_REFERENCE"]=$expected_digest
+  export MININGCORE_CONTAINER_DIGEST=$expected_digest
+  run_command record
+  run_command publish
+
+  FAKE_OTHER_RELEASE_TAGS=(v1.2.4)
+  FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$conflicting_digest
+  FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$conflicting_digest
+  run_command promote
+
+  assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2.3" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2" "$conflicting_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:latest" "$conflicting_digest"
+)
+
 scenario_interrupted_publication_resumes
+scenario_older_rerun_preserves_newer_aliases
 
 for scenario in \
   scenario_conflicting_version_tag_fails_closed \

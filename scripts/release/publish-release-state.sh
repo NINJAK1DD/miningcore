@@ -123,6 +123,34 @@ publication_api_get() {
   publication_die "GitHub API inspection failed for '$endpoint'; state is not authoritative"
 }
 
+publication_api_list_releases() {
+  local destination=$1
+  local error_file
+
+  error_file=$(mktemp)
+  if ! gh api --paginate --slurp \
+      "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+      > "$destination" 2> "$error_file"; then
+    cat "$error_file" >&2
+    rm -f -- "$error_file" "$destination"
+    publication_die \
+      "GitHub release-list inspection failed; mutable-alias freshness is unknown"
+  fi
+  rm -f -- "$error_file"
+
+  if ! jq -e \
+      'type == "array" and
+       all(.[]; type == "array") and
+       all(.[][];
+         (.tag_name | type == "string") and
+         (.draft | type == "boolean") and
+         (.prerelease | type == "boolean"))' \
+      "$destination" >/dev/null; then
+    publication_die \
+      "GitHub returned an invalid release list; mutable aliases will not move"
+  fi
+}
+
 publication_refresh_release() {
   local release_file=${PUBLICATION_WORK_DIR:?}/release.json
   local expected_prerelease=false
@@ -683,6 +711,87 @@ publication_promote_mutable_tag() {
   fi
 }
 
+publication_stable_version_is_greater() {
+  local left=$1
+  local right=$2
+  local -a left_parts
+  local -a right_parts
+  local index
+
+  IFS=. read -r -a left_parts <<< "$left"
+  IFS=. read -r -a right_parts <<< "$right"
+  for index in 0 1 2; do
+    if [[ ${#left_parts[$index]} -gt ${#right_parts[$index]} ]]; then
+      return 0
+    fi
+    if [[ ${#left_parts[$index]} -lt ${#right_parts[$index]} ]]; then
+      return 1
+    fi
+    if [[ ${left_parts[$index]} > ${right_parts[$index]} ]]; then
+      return 0
+    fi
+    if [[ ${left_parts[$index]} < ${right_parts[$index]} ]]; then
+      return 1
+    fi
+  done
+
+  return 1
+}
+
+publication_resolve_mutable_alias_freshness() {
+  local release_list=$PUBLICATION_WORK_DIR/releases.json
+  local stable_tags=$PUBLICATION_WORK_DIR/stable-tags
+  local current_line=${PUBLICATION_VERSION%.*}
+  local current_occurrences=0
+  local newest_overall=
+  local newest_in_line=
+  local tag
+  local version
+
+  publication_api_list_releases "$release_list"
+  if ! jq -er \
+      '.[][] |
+       select(.draft == false and .prerelease == false) |
+       .tag_name |
+       select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' \
+      "$release_list" > "$stable_tags"; then
+    publication_die "published stable-release tags could not be parsed authoritatively"
+  fi
+
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] || continue
+    version=${tag#v}
+    if [[ "$version" == "$PUBLICATION_VERSION" ]]; then
+      current_occurrences=$((current_occurrences + 1))
+    fi
+    if [[ -z "$newest_overall" ]] ||
+        publication_stable_version_is_greater "$version" "$newest_overall"; then
+      newest_overall=$version
+    fi
+    if [[ ${version%.*} == "$current_line" ]] &&
+        { [[ -z "$newest_in_line" ]] ||
+          publication_stable_version_is_greater "$version" "$newest_in_line"; }; then
+      newest_in_line=$version
+    fi
+  done < "$stable_tags"
+
+  if [[ "$current_occurrences" -ne 1 ]]; then
+    publication_die \
+      "published stable release '$GITHUB_REF_NAME' occurred $current_occurrences times" \
+      "in the authoritative release list"
+  fi
+
+  PUBLICATION_MAY_PROMOTE_LINE_ALIAS=false
+  PUBLICATION_MAY_PROMOTE_LATEST=false
+  if [[ "$newest_in_line" == "$PUBLICATION_VERSION" ]]; then
+    PUBLICATION_MAY_PROMOTE_LINE_ALIAS=true
+  fi
+  if [[ "$newest_overall" == "$PUBLICATION_VERSION" ]]; then
+    PUBLICATION_MAY_PROMOTE_LATEST=true
+  fi
+  export PUBLICATION_MAY_PROMOTE_LINE_ALIAS PUBLICATION_MAY_PROMOTE_LATEST
+}
+
 publication_promote() {
   local major_minor
 
@@ -698,11 +807,22 @@ publication_promote() {
 
   if [[ "$GITHUB_REF_NAME" != *-* ]]; then
     major_minor=${PUBLICATION_VERSION%.*}
-    publication_promote_mutable_tag "$MININGCORE_IMAGE:$major_minor"
-    publication_promote_mutable_tag "$MININGCORE_IMAGE:latest"
+    publication_resolve_mutable_alias_freshness
+    if [[ "$PUBLICATION_MAY_PROMOTE_LINE_ALIAS" == true ]]; then
+      publication_promote_mutable_tag "$MININGCORE_IMAGE:$major_minor"
+    else
+      printf 'Preserving newer %s alias; %s is not the newest stable release in that line\n' \
+        "$major_minor" "$GITHUB_REF_NAME"
+    fi
+    if [[ "$PUBLICATION_MAY_PROMOTE_LATEST" == true ]]; then
+      publication_promote_mutable_tag "$MININGCORE_IMAGE:latest"
+    else
+      printf 'Preserving newer latest alias; %s is not the newest stable release\n' \
+        "$GITHUB_REF_NAME"
+    fi
   fi
 
-  printf 'Promoted and verified container tags for %s@%s\n' \
+  printf 'Verified immutable tags and processed eligible aliases for %s@%s\n' \
     "$MININGCORE_IMAGE" "$PUBLICATION_RECORDED_DIGEST"
 }
 
