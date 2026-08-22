@@ -11,8 +11,9 @@ if ! checker_result=$(mktemp); then
   exit 70
 fi
 
-# The EXIT trap is the only caller; ShellCheck cannot infer that callback edge.
-# shellcheck disable=SC2317
+# The EXIT trap is the only caller; ShellCheck cannot infer that callback edge. ShellCheck 0.9
+# reports SC2317 while 0.11 reports the same indirect-callback condition as SC2329.
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   rm -f -- "$checker_result"
 }
