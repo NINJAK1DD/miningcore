@@ -950,9 +950,11 @@ pin needs review; updating a pin still requires the complete release validation.
 with status 1. A registry failure uses advisory status 69 only when its diagnostic matches a known
 transient network, service or rate-limit condition. Missing tags and every unclassified inspection
 failure use status 70 and fail closed. The checker inspects every target before deciding its final
-status, so a transient failure on one target cannot hide confirmed drift on another. Missing Docker,
-Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because the
-monitor itself needs repair.
+status, so a transient failure on one target cannot hide confirmed drift on another. An advisory
+workflow warning names only the image tags for which no drift decision could be made. Authentication
+failures remain fatal unless the registry diagnostic independently identifies rate limiting. Missing
+Docker, Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because
+the monitor itself needs repair.
 
 > **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
 > does not report a status on unrelated pull requests. Do not configure it as a required status

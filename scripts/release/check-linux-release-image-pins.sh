@@ -35,9 +35,12 @@ is_transient_registry_failure() {
     'toomanyrequests'
     'too many requests'
     'rate limit'
+    # Safe only while linux-release-targets.sh limits checks to Docker Official ubuntu: tags.
+    # A private registry could use this diagnostic for a persistent configuration error.
     'no such host'
     'network is unreachable'
     'server misbehaving'
+    '500 internal server error'
     'service unavailable'
     'bad gateway'
     'gateway timeout'
@@ -55,6 +58,7 @@ is_transient_registry_failure() {
 saw_drift=false
 saw_structural_failure=false
 saw_transient_failure=false
+transient_image_tags=()
 
 # Inspect every target before choosing the strongest outcome: drift, structural failure, then
 # transient failure. A recoverable outage must not suppress a conclusive result for another image.
@@ -67,6 +71,7 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
     if is_transient_registry_failure "$inspection"; then
       echo "Transient registry failure while resolving $image_tag" >&2
       saw_transient_failure=true
+      transient_image_tags+=("$image_tag")
     else
       echo "Unable to resolve $image_tag; the failure was not recognisably transient" >&2
       saw_structural_failure=true
@@ -104,5 +109,16 @@ if [[ "$saw_structural_failure" = true ]]; then
 fi
 
 if [[ "$saw_transient_failure" = true ]]; then
+  unresolved_targets=''
+
+  for image_tag in "${transient_image_tags[@]}"; do
+    if [[ -n "$unresolved_targets" ]]; then
+      unresolved_targets+=', '
+    fi
+
+    unresolved_targets+=$image_tag
+  done
+
+  printf 'Transient image checks unresolved: %s\n' "$unresolved_targets" >&2
   exit 69
 fi

@@ -57,6 +57,16 @@ if [[ ${MININGCORE_TEST_NOT_FOUND_TAG:-} = "$4" ]]; then
   exit 1
 fi
 
+if [[ ${MININGCORE_TEST_INTERNAL_SERVER_ERROR_TAG:-} = "$4" ]]; then
+  printf 'ERROR: docker.io/library/%s: 500 Internal Server Error\n' "$4" >&2
+  exit 1
+fi
+
+if [[ ${MININGCORE_TEST_UNAUTHORIZED_TAG:-} = "$4" ]]; then
+  printf 'ERROR: docker.io/library/%s: unauthorized: authentication required\n' "$4" >&2
+  exit 1
+fi
+
 if [[ ${MININGCORE_TEST_MALFORMED_INSPECTION:-} = 1 ]]; then
   printf 'Name:      docker.io/library/%s\n' "$4"
   printf 'MediaType: application/vnd.oci.image.index.v1+json\n'
@@ -120,7 +130,10 @@ set -e
 if [[ "$registry_status" -ne 69 ]] ||
     ! grep -Fq 'Transient registry failure while resolving ubuntu:26.04' \
       <<<"$registry_output" ||
-    ! grep -Fq 'injected registry timeout' <<<"$registry_output"; then
+    ! grep -Fq 'injected registry timeout' <<<"$registry_output" ||
+    ! grep -Fq \
+      'Transient image checks unresolved: ubuntu:26.04, ubuntu:22.04' \
+      <<<"$registry_output"; then
   echo 'Image-pin freshness check did not distinguish registry failure from drift' >&2
   printf '%s\n' "$registry_output" >&2
   exit 1
@@ -141,6 +154,22 @@ if [[ "$not_found_status" -ne 70 ]] ||
     ! grep -Fq 'ubuntu:22.04: not found' <<<"$not_found_output"; then
   echo 'Image-pin freshness check downgraded an authoritative missing tag' >&2
   printf '%s\n' "$not_found_output" >&2
+  exit 1
+fi
+
+set +e
+unauthorized_output=$(
+  MININGCORE_TEST_UNAUTHORIZED_TAG=ubuntu:22.04 \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+unauthorized_status=$?
+set -e
+
+if [[ "$unauthorized_status" -ne 70 ]] ||
+    ! grep -Fq 'unauthorized: authentication required' <<<"$unauthorized_output" ||
+    grep -Fq 'Transient image checks unresolved:' <<<"$unauthorized_output"; then
+  echo 'Image-pin freshness check downgraded an authentication failure' >&2
+  printf '%s\n' "$unauthorized_output" >&2
   exit 1
 fi
 
@@ -244,9 +273,65 @@ set -e
 if [[ "$monitor_registry_status" -ne 0 ]] ||
     ! grep -Fq '::warning title=Ubuntu image pin check unavailable::' \
       <<<"$monitor_registry_output" ||
-    ! grep -Fq 'no image drift decision was made' <<<"$monitor_registry_output"; then
+    ! grep -Fq 'No drift decision for ubuntu:26.04, ubuntu:22.04;' \
+      <<<"$monitor_registry_output"; then
   echo 'Image-pin monitor did not downgrade registry failure to a visible warning' >&2
   printf '%s\n' "$monitor_registry_output" >&2
+  exit 1
+fi
+
+set +e
+partial_registry_output=$(
+  MININGCORE_TEST_TRANSIENT_FAILURE_TAG=ubuntu:26.04 \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+partial_registry_status=$?
+set -e
+
+if [[ "$partial_registry_status" -ne 0 ]] ||
+    ! grep -Fq 'ubuntu:22.04 still matches reviewed pin' \
+      <<<"$partial_registry_output" ||
+    ! grep -Fq 'No drift decision for ubuntu:26.04;' \
+      <<<"$partial_registry_output" ||
+    grep -Fq 'No drift decision for ubuntu:26.04, ubuntu:22.04' \
+      <<<"$partial_registry_output"; then
+  echo 'Image-pin monitor did not identify only the unresolved image target' >&2
+  printf '%s\n' "$partial_registry_output" >&2
+  exit 1
+fi
+
+set +e
+internal_server_error_output=$(
+  MININGCORE_TEST_INTERNAL_SERVER_ERROR_TAG=ubuntu:22.04 \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+internal_server_error_status=$?
+set -e
+
+if [[ "$internal_server_error_status" -ne 0 ]] ||
+    ! grep -Fq 'No drift decision for ubuntu:22.04;' \
+      <<<"$internal_server_error_output" ||
+    ! grep -Fq '500 Internal Server Error' \
+      <<<"$internal_server_error_output"; then
+  echo 'Image-pin monitor did not classify a registry HTTP 500 as transient' >&2
+  printf '%s\n' "$internal_server_error_output" >&2
+  exit 1
+fi
+
+set +e
+monitor_unauthorized_output=$(
+  MININGCORE_TEST_UNAUTHORIZED_TAG=ubuntu:22.04 \
+    PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+)
+monitor_unauthorized_status=$?
+set -e
+
+if [[ "$monitor_unauthorized_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$monitor_unauthorized_output" ||
+    ! grep -Fq 'unauthorized: authentication required' \
+      <<<"$monitor_unauthorized_output"; then
+  echo 'Image-pin monitor downgraded an authentication failure' >&2
+  printf '%s\n' "$monitor_unauthorized_output" >&2
   exit 1
 fi
 
