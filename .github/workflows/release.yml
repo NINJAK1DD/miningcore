@@ -470,6 +470,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The host checkout action writes the bind-mounted worktree as the
+          # runner user, while container steps execute as root.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . /etc/os-release
           test "$ID" = ubuntu
           test "$VERSION_ID" = "${{ matrix.ubuntu }}"
