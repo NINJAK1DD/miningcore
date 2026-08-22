@@ -957,8 +957,16 @@ workflow warning names only the image tags for which no drift decision could be 
 failures remain fatal unless the registry diagnostic independently identifies rate limiting. Missing
 Docker, Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because
 the monitor itself needs repair. The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a
-private machine-readable handoff so checker diagnostics remain live; creation, read or write
-failures and malformed, unknown, duplicate or out-of-order result data use structural status 70.
+private machine-readable handoff so checker diagnostics remain live. The checker writes exactly one
+unresolved canonical image tag per line in central release-target order. The wrapper reads those
+lines with `mapfile` and accepts only a non-empty, unique, in-order subset of the configured tags
+before constructing a warning from matched contract values. Empty or overlong files, blank lines,
+whitespace or carriage-return variants, unknown, duplicate or out-of-order tags, and result-file
+creation, read or write failures use structural status 70 and never produce a workflow warning. A
+final byte comparison against the canonical serialization also rejects binary contamination and a
+missing terminal newline. A standalone checker with no private result file retains its single
+readable, comma-separated summary on stderr. Confirmed pin drift remains status 1; only recognized
+transient resolution failures use status 69.
 
 > **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
 > does not report a status on unrelated pull requests. Do not configure it as a required status

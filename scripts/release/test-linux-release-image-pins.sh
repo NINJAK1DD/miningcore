@@ -6,6 +6,7 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 checker="$repository_root/scripts/release/check-linux-release-image-pins.sh"
 monitor="$repository_root/scripts/release/run-linux-release-image-pin-monitor.sh"
 workflow="$repository_root/.github/workflows/release-image-pins.yml"
+release_docs="$repository_root/docs/releases.md"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 work_dir=$(mktemp -d)
 fake_bin="$work_dir/bin"
@@ -136,6 +137,48 @@ if [[ "$registry_status" -ne 69 ]] ||
       <<<"$registry_output"; then
   echo 'Image-pin freshness check did not distinguish registry failure from drift' >&2
   printf '%s\n' "$registry_output" >&2
+  exit 1
+fi
+
+multi_target_result="$work_dir/multi-target-result"
+multi_target_expected="$work_dir/multi-target-expected"
+printf '%s\n' ubuntu:26.04 ubuntu:22.04 >"$multi_target_expected"
+
+set +e
+multi_target_output=$(
+  MININGCORE_TEST_INSPECT_FAILURE=1 \
+    MININGCORE_IMAGE_PIN_RESULT_FILE="$multi_target_result" \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+multi_target_status=$?
+set -e
+
+if [[ "$multi_target_status" -ne 69 ]] ||
+    ! cmp -s "$multi_target_expected" "$multi_target_result" ||
+    grep -Fq 'Transient image checks unresolved:' <<<"$multi_target_output"; then
+  echo 'Image-pin checker did not write the canonical multi-target line contract' >&2
+  printf '%s\n' "$multi_target_output" >&2
+  exit 1
+fi
+
+single_target_result="$work_dir/single-target-result"
+single_target_expected="$work_dir/single-target-expected"
+printf '%s\n' ubuntu:22.04 >"$single_target_expected"
+
+set +e
+single_target_output=$(
+  MININGCORE_TEST_TRANSIENT_FAILURE_TAG=ubuntu:22.04 \
+    MININGCORE_IMAGE_PIN_RESULT_FILE="$single_target_result" \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+single_target_status=$?
+set -e
+
+if [[ "$single_target_status" -ne 69 ]] ||
+    ! cmp -s "$single_target_expected" "$single_target_result" ||
+    grep -Fq 'Transient image checks unresolved:' <<<"$single_target_output"; then
+  echo 'Image-pin checker did not write the canonical one-target line contract' >&2
+  printf '%s\n' "$single_target_output" >&2
   exit 1
 fi
 
@@ -473,7 +516,7 @@ set -e
 if [[ "$missing_summary_status" -ne 70 ]] ||
     grep -Fq '::warning' <<<"$missing_summary_output" ||
     ! grep -Fq 'injected transient checker noise' <<<"$missing_summary_output" ||
-    ! grep -Fq 'transient status without exactly one valid unresolved-target summary' \
+    ! grep -Fq 'transient status without a non-empty unresolved-target result' \
       <<<"$missing_summary_output"; then
   echo 'Image-pin monitor downgraded a broken transient-result handoff' >&2
   printf '%s\n' "$missing_summary_output" >&2
@@ -506,61 +549,161 @@ fi
 
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash
-printf 'Transient image checks unresolved: %s\n' \
-  "$MININGCORE_TEST_HANDOFF_TARGETS" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+if [[ ${MININGCORE_TEST_HANDOFF_NUL:-} = 1 ]]; then
+  printf 'ubuntu:26.04\0\n' >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+else
+  printf '%s' "${MININGCORE_TEST_HANDOFF_CONTENT:-}" \
+    >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+fi
 exit 69
 EOF
 
-for invalid_targets in \
-  garbage \
-  'ubuntu:26.04, ubuntu:26.04' \
-  'ubuntu:22.04, ubuntu:26.04'; do
+assert_valid_handoff() {
+  local label=$1
+  local content=$2
+  local expected_targets=$3
+  local output
+  local status
+
   set +e
-  invalid_targets_output=$(
-    MININGCORE_TEST_HANDOFF_TARGETS="$invalid_targets" \
+  output=$(
+    MININGCORE_TEST_HANDOFF_CONTENT="$content" \
       bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
   )
-  invalid_targets_status=$?
+  status=$?
   set -e
 
-  if [[ "$invalid_targets_status" -ne 70 ]] ||
-      grep -Fq '::warning' <<<"$invalid_targets_output" ||
-      ! grep -Fq 'unknown, duplicate, or out-of-order target' \
-        <<<"$invalid_targets_output" ||
-      grep -Fq 'out-of-order target:  ' <<<"$invalid_targets_output"; then
-    echo "Image-pin monitor accepted invalid unresolved targets: $invalid_targets" >&2
-    printf '%s\n' "$invalid_targets_output" >&2
+  if [[ "$status" -ne 0 ]] ||
+      ! grep -Fq \
+        "No drift decision for $expected_targets; all configured targets were evaluated." \
+        <<<"$output"; then
+    echo "Image-pin monitor rejected valid line-oriented handoff: $label" >&2
+    printf '%s\n' "$output" >&2
     exit 1
   fi
-done
+}
 
-for noncanonical_targets in \
-  'ubuntu:26.04,ubuntu:22.04' \
-  'ubuntu:26.04,  ubuntu:22.04' \
-  'ubuntu:26.04,' \
-  'ubuntu:26.04, ubuntu:22.04,'; do
+assert_invalid_handoff() {
+  local label=$1
+  local content=$2
+  local expected_diagnostic=$3
+  local output
+  local status
+
   set +e
-  noncanonical_output=$(
-    MININGCORE_TEST_HANDOFF_TARGETS="$noncanonical_targets" \
+  output=$(
+    MININGCORE_TEST_HANDOFF_CONTENT="$content" \
       bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
   )
-  noncanonical_status=$?
+  status=$?
   set -e
 
-  if [[ "$noncanonical_status" -ne 70 ]] ||
-      grep -Fq '::warning' <<<"$noncanonical_output" ||
-      ! grep -Fq 'non-canonical unresolved-target list' \
-        <<<"$noncanonical_output"; then
-    echo "Image-pin monitor accepted a non-canonical target list: $noncanonical_targets" >&2
-    printf '%s\n' "$noncanonical_output" >&2
+  if [[ "$status" -ne 70 ]] ||
+      grep -Fq '::warning' <<<"$output" ||
+      ! grep -Fq "$expected_diagnostic" <<<"$output"; then
+    echo "Image-pin monitor accepted invalid line-oriented handoff: $label" >&2
+    printf '%s\n' "$output" >&2
     exit 1
   fi
-done
+}
+
+assert_valid_handoff \
+  'first configured target' \
+  $'ubuntu:26.04\n' \
+  'ubuntu:26.04'
+assert_valid_handoff \
+  'later configured target' \
+  $'ubuntu:22.04\n' \
+  'ubuntu:22.04'
+assert_valid_handoff \
+  'ordered multi-target subset' \
+  $'ubuntu:26.04\nubuntu:22.04\n' \
+  'ubuntu:26.04, ubuntu:22.04'
+
+empty_result_diagnostic='transient status without a non-empty unresolved-target result'
+invalid_target_diagnostic='non-canonical, unknown, duplicate, or out-of-order unresolved target'
+
+assert_invalid_handoff 'empty file' '' "$empty_result_diagnostic"
+assert_invalid_handoff 'blank line' $'\n' "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'blank line between targets' \
+  $'ubuntu:26.04\n\nubuntu:22.04\n' \
+  'more unresolved targets than are configured'
+assert_invalid_handoff \
+  'leading whitespace' \
+  $' ubuntu:26.04\n' \
+  "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'trailing whitespace' \
+  $'ubuntu:26.04 \n' \
+  "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'carriage return' \
+  $'ubuntu:26.04\r\n' \
+  "$invalid_target_diagnostic"
+assert_invalid_handoff 'unknown tag' $'ubuntu:24.04\n' "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'duplicate tag' \
+  $'ubuntu:26.04\nubuntu:26.04\n' \
+  "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'reversed tags' \
+  $'ubuntu:22.04\nubuntu:26.04\n' \
+  "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'overlong result' \
+  $'ubuntu:26.04\nubuntu:22.04\nubuntu:26.04\n' \
+  'more unresolved targets than are configured'
+assert_invalid_handoff \
+  'legacy joined payload' \
+  $'ubuntu:26.04, ubuntu:22.04\n' \
+  "$invalid_target_diagnostic"
+assert_invalid_handoff \
+  'missing terminal newline' \
+  'ubuntu:26.04' \
+  'does not exactly match the canonical line-oriented contract'
+
+set +e
+nul_handoff_output=$(
+  MININGCORE_TEST_HANDOFF_NUL=1 \
+    bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+nul_handoff_status=$?
+set -e
+
+if [[ "$nul_handoff_status" -ne 70 ]] ||
+    grep -Fq '::warning' <<<"$nul_handoff_output" ||
+    ! grep -Fq 'does not exactly match the canonical line-oriented contract' \
+      <<<"$nul_handoff_output"; then
+  echo 'Image-pin monitor accepted NUL-contaminated handoff data' >&2
+  printf '%s\n' "$nul_handoff_output" >&2
+  exit 1
+fi
+
+injected_annotation='::warning title=Injected annotation payload::untrusted data'
+assert_invalid_handoff \
+  'workflow-command injection' \
+  "$injected_annotation"$'\n' \
+  "$invalid_target_diagnostic"
+
+set +e
+injected_annotation_output=$(
+  MININGCORE_TEST_HANDOFF_CONTENT="$injected_annotation"$'\n' \
+    bash "$monitor_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+injected_annotation_status=$?
+set -e
+
+if [[ "$injected_annotation_status" -ne 70 ]] ||
+    grep -Fq "$injected_annotation" <<<"$injected_annotation_output"; then
+  echo 'Image-pin monitor allowed raw handoff content to reach its output' >&2
+  printf '%s\n' "$injected_annotation_output" >&2
+  exit 1
+fi
 
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' 'Transient image checks unresolved: ubuntu:26.04' \
-  >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
+printf '%s\n' 'ubuntu:26.04' >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
 echo 'injected diagnostic after result publication' >&2
 exit 69
 EOF
@@ -587,6 +730,16 @@ for expected in \
   'run: bash scripts/release/run-linux-release-image-pin-monitor.sh'; do
   if ! grep -Fq "$expected" "$workflow"; then
     echo "Image-pin workflow is missing monitor contract: $expected" >&2
+    exit 1
+  fi
+done
+
+for expected in \
+  'unresolved canonical image tag per line in central release-target order' \
+  'accepts only a non-empty, unique, in-order subset of the configured tags' \
+  'readable, comma-separated summary on stderr'; do
+  if ! grep -Fq "$expected" "$release_docs"; then
+    echo "Release documentation is missing image-pin result contract: $expected" >&2
     exit 1
   fi
 done

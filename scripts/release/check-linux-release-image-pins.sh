@@ -109,26 +109,23 @@ if [[ "$saw_structural_failure" = true ]]; then
 fi
 
 if [[ "$saw_transient_failure" = true ]]; then
-  unresolved_targets=''
-
-  for image_tag in "${transient_image_tags[@]}"; do
-    if [[ -n "$unresolved_targets" ]]; then
-      unresolved_targets+=', '
-    fi
-
-    unresolved_targets+=$image_tag
-  done
-
-  summary="Transient image checks unresolved: $unresolved_targets"
-
   # The workflow wrapper supplies a private result file so human diagnostics can remain live.
+  # Keep this machine contract line-oriented and write only tags derived from the central target
+  # contract. The wrapper independently validates every line before constructing an annotation.
   if [[ -n ${MININGCORE_IMAGE_PIN_RESULT_FILE:-} ]]; then
-    if ! printf '%s\n' "$summary" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"; then
+    if ! printf '%s\n' "${transient_image_tags[@]}" \
+        >"$MININGCORE_IMAGE_PIN_RESULT_FILE"; then
       echo "Unable to write image-pin result file: $MININGCORE_IMAGE_PIN_RESULT_FILE" >&2
       exit 70
     fi
   else
-    printf '%s\n' "$summary" >&2
+    unresolved_targets=''
+
+    for image_tag in "${transient_image_tags[@]}"; do
+      unresolved_targets+="${unresolved_targets:+, }$image_tag"
+    done
+
+    printf 'Transient image checks unresolved: %s\n' "$unresolved_targets" >&2
   fi
 
   exit 69

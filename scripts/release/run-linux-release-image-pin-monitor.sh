@@ -23,40 +23,29 @@ status=$?
 set -e
 
 if [[ "$status" -eq 69 ]]; then
-  if ! mapfile -t summary_lines <"$checker_result"; then
+  unresolved_image_tags=()
+
+  if ! mapfile -t unresolved_image_tags <"$checker_result"; then
     echo "Unable to read image-pin result file: $checker_result" >&2
     exit 70
   fi
 
-  summary_prefix='Transient image checks unresolved: '
-
-  if [[ "${#summary_lines[@]}" -ne 1 ||
-      "${summary_lines[0]:-}" != "$summary_prefix"* ||
-      "${summary_lines[0]:-}" = "$summary_prefix" ]]; then
-    echo 'Image-pin checker returned transient status without exactly one valid' \
-      'unresolved-target summary' >&2
+  if (( ${#unresolved_image_tags[@]} == 0 )); then
+    echo 'Image-pin checker returned transient status without a non-empty' \
+      'unresolved-target result' >&2
     exit 70
   fi
 
-  summary=${summary_lines[0]}
-  unresolved_targets=${summary#"$summary_prefix"}
+  if (( ${#unresolved_image_tags[@]} > ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )); then
+    echo 'Image-pin checker returned more unresolved targets than are configured' >&2
+    exit 70
+  fi
 
-  IFS=',' read -r -a unresolved_image_tags <<<"$unresolved_targets"
   expected_index=0
+  validated_image_tags=()
   canonical_targets=''
 
-  for reported_index in "${!unresolved_image_tags[@]}"; do
-    reported_tag=${unresolved_image_tags[$reported_index]}
-
-    if (( reported_index > 0 )); then
-      if [[ "$reported_tag" != ' '* || "$reported_tag" == '  '* ]]; then
-        echo 'Image-pin checker returned a non-canonical unresolved-target list' >&2
-        exit 70
-      fi
-
-      reported_tag=${reported_tag# }
-    fi
-
+  for reported_tag in "${unresolved_image_tags[@]}"; do
     matched=false
 
     while (( expected_index < ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )); do
@@ -67,21 +56,29 @@ if [[ "$status" -eq 69 ]]; then
 
       if [[ "$reported_tag" == "$expected_tag" ]]; then
         matched=true
-        canonical_targets+="${canonical_targets:+, }$expected_tag"
+        validated_image_tags+=("$expected_tag")
         break
       fi
     done
 
     if [[ "$matched" != true ]]; then
-      printf '%s: %s\n' \
-        'Image-pin checker returned an unknown, duplicate, or out-of-order target' \
-        "$reported_tag" >&2
+      # Do not repeat unvalidated handoff content in logs or workflow commands.
+      echo 'Image-pin checker returned a non-canonical, unknown, duplicate, or' \
+        'out-of-order unresolved target' >&2
       exit 70
     fi
   done
 
-  if [[ "$unresolved_targets" != "$canonical_targets" ]]; then
-    echo 'Image-pin checker returned a non-canonical unresolved-target list' >&2
+  for validated_tag in "${validated_image_tags[@]}"; do
+    canonical_targets+="${canonical_targets:+, }$validated_tag"
+  done
+
+  # mapfile cannot represent NUL bytes. Compare the original bytes with a canonical
+  # reserialization so binary contamination and a missing terminal newline also fail closed.
+  if ! cmp -s "$checker_result" \
+      <(printf '%s\n' "${validated_image_tags[@]}"); then
+    echo 'Image-pin checker result does not exactly match the canonical line-oriented contract' \
+      >&2
     exit 70
   fi
 
