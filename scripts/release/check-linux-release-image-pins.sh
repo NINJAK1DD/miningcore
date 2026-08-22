@@ -68,14 +68,23 @@ write_registry_diagnostic() {
   # diagnostic beginning with "::" cannot create an annotation or mutate runner state.
   if ! command_token=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') ||
       [[ ! "$command_token" =~ ^[0-9a-f]{32}$ ]]; then
-    echo 'Registry diagnostic suppressed because its workflow-command guard could not be created' \
+    echo 'Registry diagnostic neutralized because its workflow-command guard could not be created' \
       >&2
+
+    # Preserve the evidence while ensuring that no diagnostic line begins with the workflow-command
+    # sentinel. This branch is fail-safe even when the random-token dependency is unavailable.
+    while IFS= read -r diagnostic_line || [[ -n "$diagnostic_line" ]]; do
+      printf '  %s\n' "$diagnostic_line" >&2
+    done <<<"$diagnostic"
+
     return
   fi
 
-  printf '::stop-commands::%s\n' "$command_token" >&2
-  printf '%s\n' "$diagnostic" >&2
-  printf '::%s::\n' "$command_token" >&2
+  # Use stdout for the complete bracket in Actions. The monitor's later warning uses the same
+  # stream, making stop/payload/resume/warning ordering deterministic for the runner parser.
+  printf '::stop-commands::%s\n' "$command_token"
+  printf '%s\n' "$diagnostic"
+  printf '::%s::\n' "$command_token"
 }
 
 saw_drift=false
@@ -108,6 +117,7 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   if [[ ! "$current_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "Unable to resolve a manifest-list digest for $image_tag" >&2
+    write_registry_diagnostic "$inspection"
     saw_structural_failure=true
     continue
   fi
@@ -138,7 +148,7 @@ if [[ "$saw_transient_failure" = true ]]; then
   if [[ -n ${MININGCORE_IMAGE_PIN_RESULT_FILE:-} ]]; then
     if ! printf '%s\n' "${transient_image_tags[@]}" \
         >"$MININGCORE_IMAGE_PIN_RESULT_FILE"; then
-      echo "Unable to write image-pin result file: $MININGCORE_IMAGE_PIN_RESULT_FILE" >&2
+      echo 'Unable to write private image-pin result file' >&2
       exit 70
     fi
   else

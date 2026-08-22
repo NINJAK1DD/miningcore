@@ -948,24 +948,34 @@ The published container intentionally follows the serviced .NET Resolute runtime
 images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
 the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
 compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
-pin needs review; updating a pin still requires the complete release validation. Pin drift exits
-with status 1. A registry failure uses advisory status 69 only when its diagnostic matches a known
-transient network, service or rate-limit condition. Missing tags and every unclassified inspection
-failure use status 70 and fail closed. The checker inspects every target before deciding its final
-status, so a transient failure on one target cannot hide confirmed drift on another. An advisory
-workflow warning names only the image tags for which no drift decision could be made. Authentication
-failures remain fatal unless the registry diagnostic independently identifies rate limiting. Missing
-Docker, Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because
-the monitor itself needs repair. In GitHub Actions, untrusted registry and proxy diagnostics are
-printed only while workflow-command processing is suspended, preventing their contents from
-creating annotations or changing runner state. The wrapper supplies
-`MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so checker diagnostics
-remain live. The checker writes exactly one
+pin needs review; updating a pin still requires the complete release validation. That scheduled
+monitor runs independently of lint tooling, while the always-running .NET pull-request workflow
+enforces ShellCheck for the release scripts.
+
+Pin drift exits with status 1. A registry failure uses advisory status 69 only when its diagnostic
+matches a known transient network, service or rate-limit condition. Missing tags and every
+unclassified inspection failure use status 70 and fail closed. The checker inspects every target
+before deciding its final status, so a transient failure on one target cannot hide confirmed drift
+on another. An advisory workflow warning names only the image tags for which no drift decision could
+be made. Authentication failures remain fatal unless the registry diagnostic independently
+identifies rate limiting. Missing Docker, Buildx or `imagetools inspect`, and unparseable resolver
+output, also use status 70 because the monitor itself needs repair.
+
+In GitHub Actions, untrusted registry and proxy diagnostics are printed only while
+workflow-command processing is suspended, preventing their contents from creating annotations or
+changing runner state. The guard, diagnostic and subsequent advisory warning share stdout, making
+their order deterministic. If a random guard token cannot be created, every diagnostic line is
+indented instead; the evidence remains visible, but no line can begin with the workflow-command
+prefix. Malformed resolver evidence uses the same guarded output path.
+
+The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so
+checker diagnostics remain live. The checker uses the central contract and writes exactly one
 unresolved canonical image tag per line in central release-target order. The wrapper reads those
 lines with a configured-target-plus-one bound and
 accepts only a non-empty, unique, in-order subset of the configured tags before constructing a
 warning from matched contract values. Invalid-line diagnostics identify only the safe,
-locally derived line number; they never repeat handoff content. Empty or overlong files, blank lines,
+locally derived line number; they never repeat handoff content. Result-file failures also use a
+generic diagnostic rather than exposing the private path. Empty or overlong files, blank lines,
 whitespace or carriage-return variants, unknown, duplicate or out-of-order tags, and result-file
 creation, read or write failures use structural status 70 and never produce a workflow warning. A
 final byte comparison against the canonical serialization also rejects binary contamination and a

@@ -6,6 +6,7 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 checker="$repository_root/scripts/release/check-linux-release-image-pins.sh"
 monitor="$repository_root/scripts/release/run-linux-release-image-pin-monitor.sh"
 workflow="$repository_root/.github/workflows/release-image-pins.yml"
+dotnet_workflow="$repository_root/.github/workflows/dotnet.yml"
 release_docs="$repository_root/docs/releases.md"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 work_dir=$(mktemp -d)
@@ -16,6 +17,25 @@ cleanup() {
   rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
+
+# The assertion deliberately searches production source for an unexpanded Bash expression.
+# shellcheck disable=SC2016
+if ! grep -Fq \
+    'mapfile -t -n "$(( ${#expected_image_tags[@]} + 1 ))"' "$monitor"; then
+  echo 'Image-pin monitor no longer bounds result parsing at configured-target-plus-one lines' >&2
+  exit 1
+fi
+
+print_test_diagnostic() {
+  local diagnostic=$1
+  local diagnostic_line
+
+  # Test failures may contain deliberately hostile workflow-command fixtures. Prefix every line
+  # so dumping captured output can never replay those commands into the Actions log.
+  while IFS= read -r diagnostic_line || [[ -n "$diagnostic_line" ]]; do
+    printf '  %s\n' "$diagnostic_line" >&2
+  done <<<"$diagnostic"
+}
 
 cat > "$fake_bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -123,7 +143,7 @@ fi
 if ! grep -Fq 'ubuntu:22.04 now resolves to sha256:111111' <<<"$failure_output" ||
     ! grep -Fq 'Review upstream changes' <<<"$failure_output"; then
   echo 'Image-pin freshness check did not explain the required review' >&2
-  printf '%s\n' "$failure_output" >&2
+  print_test_diagnostic "$failure_output"
   exit 1
 fi
 
@@ -142,18 +162,23 @@ if [[ "$registry_status" -ne 69 ]] ||
       'Transient image checks unresolved: ubuntu:26.04, ubuntu:22.04' \
       <<<"$registry_output"; then
   echo 'Image-pin freshness check did not distinguish registry failure from drift' >&2
-  printf '%s\n' "$registry_output" >&2
+  print_test_diagnostic "$registry_output"
   exit 1
 fi
 
+workflow_command_stdout="$work_dir/workflow-command.stdout"
+workflow_command_stderr="$work_dir/workflow-command.stderr"
+
 set +e
-workflow_command_output=$(
-  GITHUB_ACTIONS=true \
-    MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
-    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
-)
+GITHUB_ACTIONS=true \
+  MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
+  PATH="$fake_bin:$PATH" bash "$checker" \
+  >"$workflow_command_stdout" 2>"$workflow_command_stderr"
 workflow_command_status=$?
 set -e
+
+workflow_command_output=$(<"$workflow_command_stdout")
+workflow_command_error=$(<"$workflow_command_stderr")
 
 workflow_command='::error title=Injected by registry::pwned'
 workflow_guard_token=$(
@@ -162,9 +187,11 @@ workflow_guard_token=$(
 )
 
 if [[ "$workflow_command_status" -ne 69 ]] ||
-    [[ ! "$workflow_guard_token" =~ ^[0-9a-f]{32}$ ]]; then
-  echo 'Image-pin checker did not guard registry output in GitHub Actions' >&2
-  printf '%s\n' "$workflow_command_output" >&2
+    [[ ! "$workflow_guard_token" =~ ^[0-9a-f]{32}$ ]] ||
+    grep -Fq "$workflow_command" <<<"$workflow_command_error"; then
+  echo 'Image-pin checker did not guard registry output on the Actions command stream' >&2
+  print_test_diagnostic "$workflow_command_output"
+  print_test_diagnostic "$workflow_command_error"
   exit 1
 fi
 
@@ -180,7 +207,56 @@ if [[ -z "$workflow_stop_line" || -z "$workflow_payload_line" ||
     (( workflow_stop_line >= workflow_payload_line ||
       workflow_payload_line >= workflow_resume_line )); then
   echo 'Image-pin checker emitted registry output outside its workflow-command guard' >&2
-  printf '%s\n' "$workflow_command_output" >&2
+  print_test_diagnostic "$workflow_command_output"
+  print_test_diagnostic "$workflow_command_error"
+  exit 1
+fi
+
+monitor_command_stdout="$work_dir/monitor-command.stdout"
+monitor_command_stderr="$work_dir/monitor-command.stderr"
+
+set +e
+GITHUB_ACTIONS=true \
+  MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
+  PATH="$fake_bin:$PATH" bash "$monitor" \
+  >"$monitor_command_stdout" 2>"$monitor_command_stderr"
+monitor_command_status=$?
+set -e
+
+monitor_command_output=$(<"$monitor_command_stdout")
+monitor_command_error=$(<"$monitor_command_stderr")
+monitor_guard_token=$(
+  sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' \
+    <<<"$monitor_command_output" | head -n 1
+)
+
+if [[ "$monitor_command_status" -ne 0 ]] ||
+    [[ ! "$monitor_guard_token" =~ ^[0-9a-f]{32}$ ]] ||
+    grep -Fq "$workflow_command" <<<"$monitor_command_error"; then
+  echo 'Image-pin monitor did not keep guarded output and its warning on one stream' >&2
+  print_test_diagnostic "$monitor_command_output"
+  print_test_diagnostic "$monitor_command_error"
+  exit 1
+fi
+
+monitor_stop_line=$(awk -v needle="::stop-commands::$monitor_guard_token" \
+  'index($0, needle) { print NR; exit }' <<<"$monitor_command_output")
+monitor_payload_line=$(awk -v needle="$workflow_command" \
+  'index($0, needle) { print NR; exit }' <<<"$monitor_command_output")
+monitor_resume_line=$(awk -v needle="::$monitor_guard_token::" \
+  'index($0, needle) { print NR; exit }' <<<"$monitor_command_output")
+monitor_warning_line=$(awk \
+  'index($0, "::warning title=Ubuntu image pin check unavailable::") { print NR; exit }' \
+  <<<"$monitor_command_output")
+
+if [[ -z "$monitor_stop_line" || -z "$monitor_payload_line" ||
+    -z "$monitor_resume_line" || -z "$monitor_warning_line" ]] ||
+    (( monitor_stop_line >= monitor_payload_line ||
+      monitor_payload_line >= monitor_resume_line ||
+      monitor_resume_line >= monitor_warning_line )); then
+  echo 'Image-pin monitor did not order stop, payload, resume, and warning deterministically' >&2
+  print_test_diagnostic "$monitor_command_output"
+  print_test_diagnostic "$monitor_command_error"
   exit 1
 fi
 
@@ -203,11 +279,12 @@ guard_failure_status=$?
 set -e
 
 if [[ "$guard_failure_status" -ne 69 ]] ||
-    grep -Fq "$workflow_command" <<<"$guard_failure_output" ||
-    ! grep -Fq 'Registry diagnostic suppressed because its workflow-command guard' \
+    grep -q '^::' <<<"$guard_failure_output" ||
+    ! grep -Fq "  $workflow_command" <<<"$guard_failure_output" ||
+    ! grep -Fq 'Registry diagnostic neutralized because its workflow-command guard' \
       <<<"$guard_failure_output"; then
-  echo 'Image-pin checker exposed registry output after command-guard creation failed' >&2
-  printf '%s\n' "$guard_failure_output" >&2
+  echo 'Image-pin checker failed to neutralize output after command-guard creation failed' >&2
+  print_test_diagnostic "$guard_failure_output"
   exit 1
 fi
 
@@ -228,7 +305,7 @@ if [[ "$multi_target_status" -ne 69 ]] ||
     ! cmp -s "$multi_target_expected" "$multi_target_result" ||
     grep -Fq 'Transient image checks unresolved:' <<<"$multi_target_output"; then
   echo 'Image-pin checker did not write the canonical multi-target line contract' >&2
-  printf '%s\n' "$multi_target_output" >&2
+  print_test_diagnostic "$multi_target_output"
   exit 1
 fi
 
@@ -249,7 +326,7 @@ if [[ "$single_target_status" -ne 69 ]] ||
     ! cmp -s "$single_target_expected" "$single_target_result" ||
     grep -Fq 'Transient image checks unresolved:' <<<"$single_target_output"; then
   echo 'Image-pin checker did not write the canonical one-target line contract' >&2
-  printf '%s\n' "$single_target_output" >&2
+  print_test_diagnostic "$single_target_output"
   exit 1
 fi
 
@@ -266,10 +343,10 @@ unwritable_result_status=$?
 set -e
 
 if [[ "$unwritable_result_status" -ne 70 ]] ||
-    ! grep -Fq "Unable to write image-pin result file: $unwritable_result_path" \
+    ! grep -Fq 'Unable to write private image-pin result file' \
       <<<"$unwritable_result_output"; then
   echo 'Image-pin checker misclassified a result-file write failure as drift' >&2
-  printf '%s\n' "$unwritable_result_output" >&2
+  print_test_diagnostic "$unwritable_result_output"
   exit 1
 fi
 
@@ -287,7 +364,7 @@ if [[ "$not_found_status" -ne 70 ]] ||
       <<<"$not_found_output" ||
     ! grep -Fq 'ubuntu:22.04: not found' <<<"$not_found_output"; then
   echo 'Image-pin freshness check downgraded an authoritative missing tag' >&2
-  printf '%s\n' "$not_found_output" >&2
+  print_test_diagnostic "$not_found_output"
   exit 1
 fi
 
@@ -303,7 +380,7 @@ if [[ "$unauthorized_status" -ne 70 ]] ||
     ! grep -Fq 'unauthorized: authentication required' <<<"$unauthorized_output" ||
     grep -Fq 'Transient image checks unresolved:' <<<"$unauthorized_output"; then
   echo 'Image-pin freshness check downgraded an authentication failure' >&2
-  printf '%s\n' "$unauthorized_output" >&2
+  print_test_diagnostic "$unauthorized_output"
   exit 1
 fi
 
@@ -317,9 +394,11 @@ set -e
 
 if [[ "$malformed_status" -ne 70 ]] ||
     ! grep -Fq 'Unable to resolve a manifest-list digest for ubuntu:26.04' \
+      <<<"$malformed_output" ||
+    ! grep -Fq 'MediaType: application/vnd.oci.image.index.v1+json' \
       <<<"$malformed_output"; then
   echo 'Image-pin freshness check treated malformed resolver output as drift' >&2
-  printf '%s\n' "$malformed_output" >&2
+  print_test_diagnostic "$malformed_output"
   exit 1
 fi
 
@@ -336,7 +415,7 @@ set -e
 if [[ "$missing_docker_status" -ne 70 ]] ||
     ! grep -Fq 'docker is required' <<<"$missing_docker_output"; then
   echo 'Image-pin freshness check did not fail structurally when docker was missing' >&2
-  printf '%s\n' "$missing_docker_output" >&2
+  print_test_diagnostic "$missing_docker_output"
   exit 1
 fi
 
@@ -353,7 +432,7 @@ for structural_failure in BUILDX IMAGETOOLS; do
   if [[ "$structural_status" -ne 70 ]] ||
       ! grep -Fq 'is required to resolve' <<<"$structural_output"; then
     echo "Image-pin checker downgraded a missing $structural_failure command" >&2
-    printf '%s\n' "$structural_output" >&2
+    print_test_diagnostic "$structural_output"
     exit 1
   fi
 
@@ -368,7 +447,7 @@ for structural_failure in BUILDX IMAGETOOLS; do
       grep -Fq '::warning' <<<"$structural_monitor_output" ||
       ! grep -Fq 'is required to resolve' <<<"$structural_monitor_output"; then
     echo "Image-pin monitor downgraded a missing $structural_failure command" >&2
-    printf '%s\n' "$structural_monitor_output" >&2
+    print_test_diagnostic "$structural_monitor_output"
     exit 1
   fi
 done
@@ -377,7 +456,7 @@ monitor_success_output=$(PATH="$fake_bin:$PATH" bash "$monitor")
 if ! grep -Fq 'ubuntu:26.04 still matches reviewed pin' <<<"$monitor_success_output" ||
     ! grep -Fq 'ubuntu:22.04 still matches reviewed pin' <<<"$monitor_success_output"; then
   echo 'Image-pin monitor did not preserve the successful resolver output' >&2
-  printf '%s\n' "$monitor_success_output" >&2
+  print_test_diagnostic "$monitor_success_output"
   exit 1
 fi
 
@@ -392,7 +471,7 @@ set -e
 if [[ "$monitor_drift_status" -ne 1 ]] ||
     ! grep -Fq 'Review upstream changes' <<<"$monitor_drift_output"; then
   echo 'Image-pin monitor did not retain a failing drift signal' >&2
-  printf '%s\n' "$monitor_drift_output" >&2
+  print_test_diagnostic "$monitor_drift_output"
   exit 1
 fi
 
@@ -410,7 +489,7 @@ if [[ "$monitor_registry_status" -ne 0 ]] ||
     ! grep -Fq 'No drift decision for ubuntu:26.04, ubuntu:22.04;' \
       <<<"$monitor_registry_output"; then
   echo 'Image-pin monitor did not downgrade registry failure to a visible warning' >&2
-  printf '%s\n' "$monitor_registry_output" >&2
+  print_test_diagnostic "$monitor_registry_output"
   exit 1
 fi
 
@@ -432,7 +511,7 @@ if [[ "$partial_registry_status" -ne 0 ]] ||
     grep -Fq 'Transient image checks unresolved:' \
       <<<"$partial_registry_output"; then
   echo 'Image-pin monitor did not identify only the unresolved image target' >&2
-  printf '%s\n' "$partial_registry_output" >&2
+  print_test_diagnostic "$partial_registry_output"
   exit 1
 fi
 
@@ -447,7 +526,7 @@ partial_success_line=$(
 
 if (( ${partial_failure_line%%:*} >= ${partial_success_line%%:*} )); then
   echo 'Image-pin monitor reordered target diagnostics while capturing its result' >&2
-  printf '%s\n' "$partial_registry_output" >&2
+  print_test_diagnostic "$partial_registry_output"
   exit 1
 fi
 
@@ -465,7 +544,7 @@ if [[ "$internal_server_error_status" -ne 0 ]] ||
     ! grep -Fq '500 Internal Server Error' \
       <<<"$internal_server_error_output"; then
   echo 'Image-pin monitor did not classify a registry HTTP 500 as transient' >&2
-  printf '%s\n' "$internal_server_error_output" >&2
+  print_test_diagnostic "$internal_server_error_output"
   exit 1
 fi
 
@@ -482,7 +561,7 @@ if [[ "$monitor_unauthorized_status" -ne 70 ]] ||
     ! grep -Fq 'unauthorized: authentication required' \
       <<<"$monitor_unauthorized_output"; then
   echo 'Image-pin monitor downgraded an authentication failure' >&2
-  printf '%s\n' "$monitor_unauthorized_output" >&2
+  print_test_diagnostic "$monitor_unauthorized_output"
   exit 1
 fi
 
@@ -498,7 +577,7 @@ if [[ "$monitor_not_found_status" -ne 70 ]] ||
     grep -Fq '::warning' <<<"$monitor_not_found_output" ||
     ! grep -Fq 'ubuntu:22.04: not found' <<<"$monitor_not_found_output"; then
   echo 'Image-pin monitor downgraded an authoritative missing tag' >&2
-  printf '%s\n' "$monitor_not_found_output" >&2
+  print_test_diagnostic "$monitor_not_found_output"
   exit 1
 fi
 
@@ -517,7 +596,7 @@ if [[ "$mixed_status" -ne 1 ]] ||
       <<<"$mixed_output" ||
     ! grep -Fq 'ubuntu:22.04 now resolves to sha256:111111' <<<"$mixed_output"; then
   echo 'Image-pin monitor allowed one target outage to suppress another target drift' >&2
-  printf '%s\n' "$mixed_output" >&2
+  print_test_diagnostic "$mixed_output"
   exit 1
 fi
 
@@ -534,7 +613,7 @@ if [[ "$monitor_malformed_status" -ne 70 ]] ||
     ! grep -Fq 'Unable to resolve a manifest-list digest' \
       <<<"$monitor_malformed_output"; then
   echo 'Image-pin monitor downgraded a structural resolver failure' >&2
-  printf '%s\n' "$monitor_malformed_output" >&2
+  print_test_diagnostic "$monitor_malformed_output"
   exit 1
 fi
 
@@ -567,7 +646,7 @@ if [[ "$mktemp_failure_status" -ne 70 ]] ||
     ! grep -Fq 'Unable to create private image-pin result file' \
       <<<"$mktemp_failure_output"; then
   echo 'Image-pin monitor misclassified result-file creation failure as drift' >&2
-  printf '%s\n' "$mktemp_failure_output" >&2
+  print_test_diagnostic "$mktemp_failure_output"
   exit 1
 fi
 
@@ -590,7 +669,7 @@ if [[ "$missing_summary_status" -ne 70 ]] ||
     ! grep -Fq 'transient status without a non-empty unresolved-target result' \
       <<<"$missing_summary_output"; then
   echo 'Image-pin monitor downgraded a broken transient-result handoff' >&2
-  printf '%s\n' "$missing_summary_output" >&2
+  print_test_diagnostic "$missing_summary_output"
   exit 1
 fi
 
@@ -614,7 +693,7 @@ if [[ "$unreadable_summary_status" -ne 70 ]] ||
     ! grep -Fq 'Unable to read image-pin result file:' \
       <<<"$unreadable_summary_output"; then
   echo 'Image-pin monitor misclassified a result-file read failure as drift' >&2
-  printf '%s\n' "$unreadable_summary_output" >&2
+  print_test_diagnostic "$unreadable_summary_output"
   exit 1
 fi
 
@@ -649,7 +728,7 @@ assert_valid_handoff() {
         "No drift decision for $expected_targets; all configured targets were evaluated." \
         <<<"$output"; then
     echo "Image-pin monitor rejected valid line-oriented handoff: $label" >&2
-    printf '%s\n' "$output" >&2
+    print_test_diagnostic "$output"
     exit 1
   fi
 }
@@ -673,7 +752,7 @@ assert_invalid_handoff() {
       grep -Fq '::warning' <<<"$output" ||
       ! grep -Fq "$expected_diagnostic" <<<"$output"; then
     echo "Image-pin monitor accepted invalid line-oriented handoff: $label" >&2
-    printf '%s\n' "$output" >&2
+    print_test_diagnostic "$output"
     exit 1
   fi
 }
@@ -721,10 +800,24 @@ assert_invalid_handoff \
   'reversed tags' \
   $'ubuntu:22.04\nubuntu:26.04\n' \
   "$invalid_target_diagnostic"
+overlong_handoff=''
+for target in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
+  image=$(miningcore_linux_release_target_image "$target")
+  overlong_handoff+="${image%@*}"$'\n'
+done
+
+first_image=$(miningcore_linux_release_target_image \
+  "${MININGCORE_LINUX_RELEASE_TARGETS[0]}")
+first_tag=${first_image%@*}
+for ((extra_line = 0; extra_line < 50; extra_line++)); do
+  overlong_handoff+="$first_tag"$'\n'
+done
+
 assert_invalid_handoff \
-  'overlong result' \
-  $'ubuntu:26.04\nubuntu:22.04\nubuntu:26.04\n' \
-  'out-of-order unresolved target at line 3'
+  'many-line result exceeding the configured contract' \
+  "$overlong_handoff" \
+  "out-of-order unresolved target at line $(( \
+    ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} + 1 ))"
 assert_invalid_handoff \
   'legacy joined payload' \
   $'ubuntu:26.04, ubuntu:22.04\n' \
@@ -747,7 +840,7 @@ if [[ "$nul_handoff_status" -ne 70 ]] ||
     ! grep -Fq 'does not exactly match the canonical line-oriented contract' \
       <<<"$nul_handoff_output"; then
   echo 'Image-pin monitor accepted NUL-contaminated handoff data' >&2
-  printf '%s\n' "$nul_handoff_output" >&2
+  print_test_diagnostic "$nul_handoff_output"
   exit 1
 fi
 
@@ -768,7 +861,7 @@ set -e
 if [[ "$injected_annotation_status" -ne 70 ]] ||
     grep -Fq "$injected_annotation" <<<"$injected_annotation_output"; then
   echo 'Image-pin monitor allowed raw handoff content to reach its output' >&2
-  printf '%s\n' "$injected_annotation_output" >&2
+  print_test_diagnostic "$injected_annotation_output"
   exit 1
 fi
 
@@ -800,7 +893,7 @@ if [[ "$large_contract_status" -ne 0 ]] ||
     ! grep -Fq 'No drift decision for ubuntu:26.04, ubuntu:22.04, ubuntu:20.04;' \
       <<<"$large_contract_output"; then
   echo 'Image-pin monitor rejected an ordered subset of a larger target contract' >&2
-  printf '%s\n' "$large_contract_output" >&2
+  print_test_diagnostic "$large_contract_output"
   exit 1
 fi
 
@@ -816,7 +909,26 @@ if [[ "$large_contract_blank_status" -ne 70 ]] ||
     ! grep -Fq 'out-of-order unresolved target at line 2' \
       <<<"$large_contract_blank_output"; then
   echo 'Image-pin monitor did not reject a blank line under a larger target contract' >&2
-  printf '%s\n' "$large_contract_blank_output" >&2
+  print_test_diagnostic "$large_contract_blank_output"
+  exit 1
+fi
+
+large_contract_overlong_content=$'ubuntu:26.04\nubuntu:24.04\nubuntu:22.04\n'
+large_contract_overlong_content+=$'ubuntu:20.04\nubuntu:26.04\n'
+
+set +e
+large_contract_overlong_output=$(
+  MININGCORE_TEST_HANDOFF_CONTENT="$large_contract_overlong_content" \
+    bash "$large_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+large_contract_overlong_status=$?
+set -e
+
+if [[ "$large_contract_overlong_status" -ne 70 ]] ||
+    ! grep -Fq 'out-of-order unresolved target at line 5' \
+      <<<"$large_contract_overlong_output"; then
+  echo 'Image-pin monitor did not bound a larger target contract at N+1 lines' >&2
+  print_test_diagnostic "$large_contract_overlong_output"
   exit 1
 fi
 
@@ -840,19 +952,28 @@ if [[ "$ordered_summary_status" -ne 0 ]] ||
     ! grep -Fq 'No drift decision for ubuntu:26.04;' \
       <<<"$ordered_summary_output"; then
   echo 'Image-pin monitor coupled its transient handoff to diagnostic ordering' >&2
-  printf '%s\n' "$ordered_summary_output" >&2
+  print_test_diagnostic "$ordered_summary_output"
   exit 1
 fi
 
 for expected in \
   "'scripts/release/run-linux-release-image-pin-monitor.sh'" \
-  'shellcheck -x' \
   'run: bash scripts/release/run-linux-release-image-pin-monitor.sh'; do
   if ! grep -Fq "$expected" "$workflow"; then
     echo "Image-pin workflow is missing monitor contract: $expected" >&2
     exit 1
   fi
 done
+
+if grep -Fq 'shellcheck' "$workflow"; then
+  echo 'Scheduled image-pin monitoring must run independently of lint tooling' >&2
+  exit 1
+fi
+
+if ! grep -Fq 'shellcheck -x' "$dotnet_workflow"; then
+  echo 'Always-running .NET CI no longer enforces release-script ShellCheck' >&2
+  exit 1
+fi
 
 for expected in \
   'workflow-command processing is suspended' \

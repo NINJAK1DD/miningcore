@@ -10,7 +10,6 @@ on:
       - 'scripts/release/check-linux-release-image-pins.sh'
       - 'scripts/release/run-linux-release-image-pin-monitor.sh'
       - 'scripts/release/linux-release-targets.sh'
-      - 'scripts/release/test-linux-release-image-pins.sh'
   schedule:
     - cron: '23 7 * * 1'
   workflow_dispatch:
@@ -27,15 +26,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Lint image-pin scripts
-        shell: bash
-        run: >-
-          shellcheck -x
-          scripts/release/linux-release-targets.sh
-          scripts/release/check-linux-release-image-pins.sh
-          scripts/release/run-linux-release-image-pin-monitor.sh
-          scripts/release/test-linux-release-image-pins.sh
 
       - name: Compare current tags with reviewed manifest-list digests
         shell: bash
