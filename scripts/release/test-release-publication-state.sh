@@ -20,99 +20,216 @@ fail() {
   exit 1
 }
 
+# Keep publication visibility retries deterministic and fast in this hermetic
+# test. The production script still invokes the real sleep command.
+sleep() {
+  :
+}
+
+fake_has_argument() {
+  local wanted=$1
+  shift
+  local argument
+
+  for argument in "$@"; do
+    [[ "$argument" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+fake_argument_after() {
+  local wanted=$1
+  shift
+
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "$wanted" ]]; then
+      [[ $# -ge 2 ]] || fail "Fake command option '$wanted' lacks a value"
+      printf '%s\n' "$2"
+      return
+    fi
+    shift
+  done
+  return 1
+}
+
 reset_fake_services() {
   local scenario=$1
+  local release_tag=${2:-v1.2.3}
 
   FAKE_ROOT="$test_root/$scenario"
   FAKE_RELEASE_STATE=absent
+  FAKE_RELEASE_LATEST=false
+  FAKE_RELEASE_LAST_PUBLISH_LATEST=
+  FAKE_RELEASE_NAME="Miningcore $release_tag"
+  FAKE_RELEASE_BODY='release notes'
+  FAKE_RELEASE_LIST_DRAFT_READS_REMAINING=0
   FAKE_API_FAILURE=false
+  FAKE_API_NOT_FOUND_FAILURE=false
   FAKE_REGISTRY_FAILURE=false
+  FAKE_ASSET_DIGESTS_AVAILABLE=true
+  FAKE_DUPLICATE_CURRENT_RELEASE=false
   FAKE_OTHER_RELEASE_TAGS=()
   mkdir -p "$FAKE_ROOT/assets" "$FAKE_ROOT/candidate"
-  printf 'ubuntu 26.04 archive\n' > \
-    "$FAKE_ROOT/candidate/miningcore-v1.2.3-linux-x64-ubuntu-26.04.tar.gz"
-  printf 'ubuntu 22.04 archive\n' > \
-    "$FAKE_ROOT/candidate/miningcore-v1.2.3-linux-x64-ubuntu-22.04.tar.gz"
-  printf 'checksums\n' > "$FAKE_ROOT/candidate/SHA256SUMS"
-  printf 'release notes\n' > "$FAKE_ROOT/release-notes.md"
-  : > "$FAKE_ROOT/github-output"
 
-  declare -gA FAKE_REFERENCES=()
   export GITHUB_REPOSITORY=example/miningcore
-  export GITHUB_REF_NAME=v1.2.3
+  export GITHUB_REF_NAME=$release_tag
   export MININGCORE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567
   export MININGCORE_IMAGE=ghcr.io/example/miningcore
   export MININGCORE_RELEASE_ASSET_DIR="$FAKE_ROOT/candidate"
   export MININGCORE_RELEASE_NOTES_FILE="$FAKE_ROOT/release-notes.md"
   export GITHUB_OUTPUT="$FAKE_ROOT/github-output"
+  export GH_TOKEN=fake_token
+
+  printf 'ubuntu 26.04 archive\n' > \
+    "$FAKE_ROOT/candidate/miningcore-$release_tag-linux-x64-ubuntu-26.04.tar.gz"
+  printf 'ubuntu 22.04 archive\n' > \
+    "$FAKE_ROOT/candidate/miningcore-$release_tag-linux-x64-ubuntu-22.04.tar.gz"
+  printf 'checksums\n' > "$FAKE_ROOT/candidate/SHA256SUMS"
+  printf 'release notes\n' > "$MININGCORE_RELEASE_NOTES_FILE"
+  : > "$GITHUB_OUTPUT"
+
+  declare -gA FAKE_REFERENCES=()
   unset MININGCORE_CONTAINER_DIGEST
 }
 
+fake_asset_json() {
+  local asset_name=$1
+  local asset_file=$FAKE_ROOT/assets/$asset_name
+  local asset_index
+  local digest
+  local size
+
+  asset_index=$(find "$FAKE_ROOT/assets" -maxdepth 1 -type f -printf '%f\n' |
+    sort | grep -nFx "$asset_name" | cut -d: -f1)
+  [[ -n "$asset_index" ]] || fail "Unknown fake release asset: $asset_name"
+  digest=sha256:$(sha256sum "$asset_file" | awk '{print $1}')
+  if [[ "$FAKE_ASSET_DIGESTS_AVAILABLE" != true ]]; then
+    digest=
+  fi
+  size=$(stat -c '%s' "$asset_file")
+  jq -n --arg name "$asset_name" --arg digest "$digest" \
+    --argjson id "$((asset_index + 99))" --argjson size "$size" \
+    '{name: $name, id: $id, state: "uploaded", size: $size,
+      digest: (if $digest == "" then null else $digest end)}'
+}
+
 fake_release_json() {
+  local visible_state=${1:-$FAKE_RELEASE_STATE}
   local draft=false
+  local prerelease=false
   local assets_json
 
-  if [[ "$FAKE_RELEASE_STATE" == draft ]]; then
-    draft=true
-  fi
-  assets_json=$(find "$FAKE_ROOT/assets" -maxdepth 1 -type f -printf '%f\n' |
-    sort | jq -Rsc \
-      'split("\n")[:-1] | to_entries | map({name: .value, id: (.key + 100)})')
+  [[ "$visible_state" == draft ]] && draft=true
+  [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=true
+
+  assets_json=$(while IFS= read -r asset_name; do
+    [[ -n "$asset_name" ]] && fake_asset_json "$asset_name"
+  done < <(find "$FAKE_ROOT/assets" -maxdepth 1 -type f -printf '%f\n' | sort) | jq -s '.')
+
   jq -n --arg tag "$GITHUB_REF_NAME" --argjson draft "$draft" \
-    --arg name "Miningcore $GITHUB_REF_NAME" \
-    --rawfile body "$MININGCORE_RELEASE_NOTES_FILE" \
+    --argjson prerelease "$prerelease" --argjson latest "$FAKE_RELEASE_LATEST" \
+    --arg name "$FAKE_RELEASE_NAME" --arg body "$FAKE_RELEASE_BODY" \
     --argjson assets "$assets_json" \
-    '{
-      id: 1,
-      tag_name: $tag,
-      name: $name,
-      draft: $draft,
-      prerelease: false,
-      body: $body,
-      assets: $assets
-    }'
+    '{id: 1, tag_name: $tag, name: $name, draft: $draft,
+      prerelease: $prerelease, make_latest: $latest, body: $body, assets: $assets}'
+}
+
+fake_other_release_json() {
+  local tag=$1
+
+  jq -n --arg tag "$tag" \
+    '{id: 2, tag_name: $tag, name: $tag, draft: false, prerelease: false,
+      body: "other release", assets: []}'
+}
+
+fake_release_list() {
+  local visible_state=$FAKE_RELEASE_STATE
+  local other_tag
+  local page_file=$FAKE_ROOT/release-page.jsonl
+
+  if [[ "$FAKE_RELEASE_STATE" == published &&
+      "$FAKE_RELEASE_LIST_DRAFT_READS_REMAINING" -gt 0 ]]; then
+    visible_state=draft
+    FAKE_RELEASE_LIST_DRAFT_READS_REMAINING=$((FAKE_RELEASE_LIST_DRAFT_READS_REMAINING - 1))
+  fi
+
+  : > "$page_file"
+  if [[ "$FAKE_RELEASE_STATE" != absent ]]; then
+    fake_release_json "$visible_state" >> "$page_file"
+    if [[ "$FAKE_DUPLICATE_CURRENT_RELEASE" == true ]]; then
+      fake_release_json "$visible_state" >> "$page_file"
+    fi
+  fi
+  for other_tag in "${FAKE_OTHER_RELEASE_TAGS[@]}"; do
+    fake_other_release_json "$other_tag" >> "$page_file"
+  done
+  jq -s '[.]' "$page_file"
 }
 
 gh() {
+  local asset_id
   local asset_index
   local asset_name
+  local draft_value
   local endpoint
-  local other_tag
+  local latest_value
   local source
 
   if [[ "$1" == api ]]; then
     endpoint=${*: -1}
+    if [[ "$FAKE_API_NOT_FOUND_FAILURE" == true ]]; then
+      echo 'HTTP 404: Not Found' >&2
+      return 1
+    fi
     if [[ "$FAKE_API_FAILURE" == true ]]; then
       echo 'HTTP 503: service unavailable' >&2
       return 1
     fi
 
-    if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" ]]; then
-      if [[ "$FAKE_RELEASE_STATE" == absent ]]; then
-        echo 'HTTP 404: Not Found' >&2
-        return 1
-      fi
-      fake_release_json
+    if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases?per_page=100" ]]; then
+      fake_release_list
       return
     fi
 
-    if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases?per_page=100" ]]; then
-      {
-        fake_release_json
-        for other_tag in "${FAKE_OTHER_RELEASE_TAGS[@]}"; do
-          jq -n --arg tag "$other_tag" \
-            '{tag_name: $tag, draft: false, prerelease: false}'
-        done
-      } | jq -s '[.]'
+    # Match GitHub's contract: tag lookup sees published releases, while the
+    # authenticated release list is required to discover drafts.
+    if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" ]]; then
+      if [[ "$FAKE_RELEASE_STATE" != published ]]; then
+        echo 'HTTP 404: Not Found' >&2
+        return 1
+      fi
+      fake_release_json published
       return
     fi
 
     if [[ "$endpoint" == repos/$GITHUB_REPOSITORY/releases/assets/* ]]; then
-      asset_index=$((${endpoint##*/} - 99))
+      asset_id=${endpoint##*/}
+      asset_index=$((asset_id - 99))
       asset_name=$(find "$FAKE_ROOT/assets" -maxdepth 1 -type f -printf '%f\n' |
         sort | sed -n "${asset_index}p")
-      [[ -n "$asset_name" ]] || fail "Unknown fake release asset id: ${endpoint##*/}"
+      [[ -n "$asset_name" ]] || fail "Unknown fake release asset id: $asset_id"
       cat "$FAKE_ROOT/assets/$asset_name"
+      return
+    fi
+
+    if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases/1" ]]; then
+      [[ "$FAKE_RELEASE_STATE" == draft ]] || fail 'Only a draft may be published'
+      [[ $(fake_argument_after --method "$@") == PATCH ]] ||
+        fail 'Release publication did not use PATCH by release id'
+      draft_value=$(fake_argument_after -F "$@")
+      latest_value=$(fake_argument_after -f "$@")
+      [[ "$draft_value" == draft=false ]] || fail 'Release publication did not set draft=false'
+      [[ "$latest_value" == make_latest=* ]] || fail 'Release publication omitted make_latest'
+      latest_value=${latest_value#make_latest=}
+      [[ "$latest_value" == true || "$latest_value" == false ]] ||
+        fail 'Release publication supplied an invalid make_latest value'
+      if [[ "$GITHUB_REF_NAME" == *-* && "$latest_value" != false ]]; then
+        fail 'Prerelease publication attempted to become latest'
+      fi
+      FAKE_RELEASE_STATE=published
+      FAKE_RELEASE_LATEST=$latest_value
+      FAKE_RELEASE_LAST_PUBLISH_LATEST=$latest_value
+      fake_release_json published
       return
     fi
 
@@ -121,31 +238,65 @@ gh() {
 
   if [[ "$1 $2" == 'release create' ]]; then
     [[ "$FAKE_RELEASE_STATE" == absent ]] || fail 'Draft was created twice'
+    [[ "$3" == "$GITHUB_REF_NAME" ]] || fail 'Draft used the wrong release tag'
+    fake_has_argument --draft "$@" || fail 'Draft creation omitted --draft'
+    fake_has_argument --verify-tag "$@" || fail 'Draft creation omitted --verify-tag'
+    fake_has_argument --generate-notes "$@" || fail 'Draft creation omitted --generate-notes'
+    fake_has_argument --latest=false "$@" || fail 'Draft creation did not force --latest=false'
+    ! fake_has_argument --latest=true "$@" || fail 'Draft creation requested latest=true'
+    source=$(fake_argument_after --notes-file "$@")
+    [[ "$source" == "$MININGCORE_RELEASE_NOTES_FILE" ]] || fail 'Draft used wrong notes file'
+    if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+      fake_has_argument --prerelease "$@" || fail 'Prerelease draft omitted --prerelease'
+    else
+      ! fake_has_argument --prerelease "$@" || fail 'Stable draft was marked prerelease'
+    fi
     FAKE_RELEASE_STATE=draft
     return
   fi
 
-  if [[ "$1 $2" == 'release upload' ]]; then
-    [[ "$FAKE_RELEASE_STATE" == draft ]] || fail 'Asset upload targeted a non-draft release'
-    source=${*: -1}
-    [[ ! -e "$FAKE_ROOT/assets/${source##*/}" ]] || fail 'Asset overwrite was attempted'
-    cp -- "$source" "$FAKE_ROOT/assets/${source##*/}"
-    return
-  fi
-
-  if [[ "$1 $2" == 'release edit' ]]; then
-    [[ "$FAKE_RELEASE_STATE" == draft ]] || fail 'Only a draft may be published'
-    FAKE_RELEASE_STATE=published
-    return
+  if [[ "$1 $2" == 'release upload' || "$1 $2" == 'release edit' ]]; then
+    fail 'Release mutation must use the retained release id, not a tag-based gh command'
   fi
 
   fail "Unexpected fake gh call: $*"
 }
 
-docker() {
-  local reference
-  local target
+curl() {
+  local config_file
+  local output_file
   local source
+  local url=${*: -1}
+  local asset_name=${url##*name=}
+
+  [[ "$FAKE_RELEASE_STATE" == draft ]] || fail 'Asset upload targeted a non-draft release'
+  fake_has_argument --fail-with-body "$@" || fail 'Asset upload omitted fail-with-body'
+  fake_has_argument --silent "$@" || fail 'Asset upload omitted silent mode'
+  fake_has_argument --show-error "$@" || fail 'Asset upload omitted error reporting'
+  fake_has_argument --location "$@" || fail 'Asset upload omitted redirect handling'
+  [[ $(fake_argument_after --request "$@") == POST ]] ||
+    fail 'Release asset upload did not use POST'
+  config_file=$(fake_argument_after --config "$@")
+  output_file=$(fake_argument_after --output "$@")
+  source=$(fake_argument_after --data-binary "$@")
+  source=${source#@}
+
+  [[ "$url" == \
+    "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/1/assets?name=$asset_name" ]] ||
+    fail 'Release asset upload did not use the retained release id'
+  grep -Fxq 'header = "Authorization: Bearer fake_token"' "$config_file" ||
+    fail 'Release asset upload did not isolate its bearer token in the private curl config'
+  [[ "${source##*/}" == "$asset_name" ]] || fail 'Asset upload name changed'
+  [[ ! -e "$FAKE_ROOT/assets/$asset_name" ]] || fail 'Asset overwrite was attempted'
+  cp -- "$source" "$FAKE_ROOT/assets/$asset_name"
+  fake_asset_json "$asset_name" > "$output_file"
+}
+
+docker() {
+  local prefer_index=false
+  local reference
+  local source=
+  local target=
 
   if [[ "$1 $2 $3" == 'buildx imagetools inspect' ]]; then
     reference=${*: -1}
@@ -162,8 +313,30 @@ docker() {
   fi
 
   if [[ "$1 $2 $3" == 'buildx imagetools create' ]]; then
-    target=$6
-    source=$7
+    shift 3
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --prefer-index=false)
+          prefer_index=true
+          shift
+          ;;
+        --tag)
+          [[ $# -ge 2 ]] || fail 'Promotion --tag lacks a value'
+          target=$2
+          shift 2
+          ;;
+        --*)
+          fail "Unexpected promotion option: $1"
+          ;;
+        *)
+          [[ -z "$source" ]] || fail 'Promotion supplied multiple sources'
+          source=$1
+          shift
+          ;;
+      esac
+    done
+    [[ "$prefer_index" == true ]] || fail 'Promotion omitted --prefer-index=false'
+    [[ -n "$target" ]] || fail 'Promotion omitted its target tag'
     [[ "$source" == "$MININGCORE_IMAGE@"* ]] || fail "Unexpected promotion source: $source"
     FAKE_REFERENCES[$target]=${source#*@}
     return
@@ -189,6 +362,15 @@ assert_reference_digest() {
     fail "Reference $reference does not point to $digest"
 }
 
+complete_publication() {
+  run_command prepare
+  FAKE_REFERENCES["$PUBLICATION_STAGING_REFERENCE"]=$expected_digest
+  export MININGCORE_CONTAINER_DIGEST=$expected_digest
+  run_command record
+  run_command publish
+  run_command promote
+}
+
 scenario_interrupted_publication_resumes() (
   reset_fake_services interrupted
   FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$previous_digest
@@ -198,8 +380,13 @@ scenario_interrupted_publication_resumes() (
   [[ "$FAKE_RELEASE_STATE" == draft ]] || fail 'Prepare did not create a draft'
   grep -Fxq 'needs_container_build=true' "$GITHUB_OUTPUT"
 
-  # This models docker/build-push-action completing and the workflow then
-  # failing after record, before the draft is published.
+  if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+      > /dev/null 2>&1; then
+    fail 'Fake tag endpoint exposed a draft release'
+  fi
+
+  # Model docker/build-push-action completing and then failing after record,
+  # before the draft is published.
   FAKE_REFERENCES["$PUBLICATION_STAGING_REFERENCE"]=$expected_digest
   export MININGCORE_CONTAINER_DIGEST=$expected_digest
   run_command record
@@ -215,14 +402,78 @@ scenario_interrupted_publication_resumes() (
   grep -Fxq 'needs_container_build=false' "$GITHUB_OUTPUT"
   grep -Fxq "staging_digest=$expected_digest" "$GITHUB_OUTPUT"
   run_command record
+  FAKE_RELEASE_LIST_DRAFT_READS_REMAINING=2
   run_command publish
   run_command promote
 
   [[ "$FAKE_RELEASE_STATE" == published ]] || fail 'Retry did not publish the draft'
+  [[ "$FAKE_RELEASE_LAST_PUBLISH_LATEST" == true ]] ||
+    fail 'Newest stable release was not marked latest at durable publication'
   assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
   assert_reference_digest "$MININGCORE_IMAGE:1.2.3" "$expected_digest"
   assert_reference_digest "$MININGCORE_IMAGE:1.2" "$expected_digest"
   assert_reference_digest "$MININGCORE_IMAGE:latest" "$expected_digest"
+)
+
+scenario_older_rerun_preserves_newer_surfaces() (
+  reset_fake_services older-rerun
+  FAKE_OTHER_RELEASE_TAGS=(v1.2.4 v2.0.0)
+  FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$conflicting_digest
+  FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$conflicting_digest
+
+  complete_publication
+
+  [[ "$FAKE_RELEASE_LAST_PUBLISH_LATEST" == false ]] ||
+    fail 'Older stable release moved GitHub latest backward'
+  assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2.3" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2" "$conflicting_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:latest" "$conflicting_digest"
+)
+
+scenario_prerelease_never_moves_mutable_surfaces() (
+  reset_fake_services prerelease v1.2.3-rc.1
+  FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$previous_digest
+  FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$previous_digest
+
+  complete_publication
+
+  [[ "$FAKE_RELEASE_LAST_PUBLISH_LATEST" == false ]] ||
+    fail 'Prerelease became GitHub latest'
+  assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2.3-rc.1" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2" "$previous_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:latest" "$previous_digest"
+)
+
+scenario_completed_release_survives_pruned_stage_and_metadata_edits() (
+  reset_fake_services completed-rerun
+  complete_publication
+
+  unset 'FAKE_REFERENCES[$PUBLICATION_STAGING_REFERENCE]'
+  FAKE_RELEASE_NAME='Human-edited title'
+  FAKE_RELEASE_BODY='Human-edited notes after durable publication'
+  : > "$GITHUB_OUTPUT"
+
+  run_command prepare
+  grep -Fxq 'needs_container_build=false' "$GITHUB_OUTPUT"
+  grep -Fxq "staging_digest=$expected_digest" "$GITHUB_OUTPUT"
+  run_command record
+  run_command publish
+  run_command promote
+
+  assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2.3" "$expected_digest"
+)
+
+scenario_legacy_assets_without_server_digests_use_byte_fallback() (
+  reset_fake_services legacy-asset-digests
+  FAKE_ASSET_DIGESTS_AVAILABLE=false
+
+  complete_publication
+
+  assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:1.2.3" "$expected_digest"
 )
 
 scenario_conflicting_version_tag_fails_closed() (
@@ -250,6 +501,12 @@ scenario_non_authoritative_api_failure_is_fatal() (
   run_command prepare
 )
 
+scenario_release_list_404_is_not_absence() (
+  reset_fake_services api-hidden-not-found
+  FAKE_API_NOT_FOUND_FAILURE=true
+  run_command prepare
+)
+
 scenario_non_authoritative_registry_failure_is_fatal() (
   reset_fake_services registry-failure
   FAKE_REGISTRY_FAILURE=true
@@ -262,34 +519,27 @@ scenario_stage_without_release_is_ambiguous() (
   run_command prepare
 )
 
-scenario_older_rerun_preserves_newer_aliases() (
-  reset_fake_services older-rerun
+scenario_duplicate_release_tag_is_ambiguous() (
+  reset_fake_services duplicate-release
+  FAKE_RELEASE_STATE=draft
+  FAKE_DUPLICATE_CURRENT_RELEASE=true
   run_command prepare
-  FAKE_REFERENCES["$PUBLICATION_STAGING_REFERENCE"]=$expected_digest
-  export MININGCORE_CONTAINER_DIGEST=$expected_digest
-  run_command record
-  run_command publish
-
-  FAKE_OTHER_RELEASE_TAGS=(v1.2.4)
-  FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$conflicting_digest
-  FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$conflicting_digest
-  run_command promote
-
-  assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
-  assert_reference_digest "$MININGCORE_IMAGE:1.2.3" "$expected_digest"
-  assert_reference_digest "$MININGCORE_IMAGE:1.2" "$conflicting_digest"
-  assert_reference_digest "$MININGCORE_IMAGE:latest" "$conflicting_digest"
 )
 
 scenario_interrupted_publication_resumes
-scenario_older_rerun_preserves_newer_aliases
+scenario_older_rerun_preserves_newer_surfaces
+scenario_prerelease_never_moves_mutable_surfaces
+scenario_completed_release_survives_pruned_stage_and_metadata_edits
+scenario_legacy_assets_without_server_digests_use_byte_fallback
 
 for scenario in \
   scenario_conflicting_version_tag_fails_closed \
   scenario_changed_asset_is_not_overwritten \
   scenario_non_authoritative_api_failure_is_fatal \
+  scenario_release_list_404_is_not_absence \
   scenario_non_authoritative_registry_failure_is_fatal \
-  scenario_stage_without_release_is_ambiguous; do
+  scenario_stage_without_release_is_ambiguous \
+  scenario_duplicate_release_tag_is_ambiguous; do
   set +e
   "$scenario" > "$test_root/$scenario.out" 2>&1
   status=$?
@@ -302,13 +552,19 @@ for scenario in \
     fail "$scenario did not provide a human-action diagnostic"
 done
 
-# Pin the workflow boundary as well as the shell state machine: tag promotion
-# must remain textually after durable release publication.
+# Pin both ordering boundaries: public tag promotion follows durable release
+# publication, and all tag publications share one non-cancelling FIFO queue.
 workflow="$repository_root/.github/workflows/release.yml"
 publish_line=$(grep -nF 'name: Publish and verify durable GitHub Release' "$workflow" | cut -d: -f1)
 promote_line=$(grep -nF 'name: Promote and verify release container tags' "$workflow" | cut -d: -f1)
 if [[ -z "$publish_line" || -z "$promote_line" || "$promote_line" -le "$publish_line" ]]; then
   fail 'Release workflow no longer orders tag promotion after durable publication'
 fi
+grep -Fq 'group: release-publication-${{ github.repository }}' "$workflow" ||
+  fail 'Release publication no longer uses a repository-wide concurrency group'
+grep -Fq 'cancel-in-progress: false' "$workflow" ||
+  fail 'Release publication may cancel an active publication'
+grep -Fq 'queue: max' "$workflow" ||
+  fail 'Release publication no longer preserves multiple queued versions'
 
 echo 'Recoverable release publication state tests passed'

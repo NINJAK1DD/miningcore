@@ -996,19 +996,24 @@ therefore treats publication as four observable states:
 | --- | --- | --- |
 | No publication | No release and no version-scoped staging tag | Create an unpublished draft and upload the tested archives. |
 | Staged container | Draft release plus `publication-staging-vX.Y.Z` and, once recorded, `CONTAINER-IMAGE.json` | Reuse the staged digest; never rebuild over it. |
-| Durable release | Published release whose archives and container record were downloaded and verified | Create or verify the immutable full-version tags. |
-| Promoted version | `vX.Y.Z` and `X.Y.Z` match the recorded digest; stable releases also have matching `X.Y` and `latest` aliases | Publication is complete. |
+| Durable release | Published release whose archives and container record were cryptographically verified | Create or verify the immutable full-version tags. |
+| Promoted version | `vX.Y.Z` and `X.Y.Z` match the recorded digest; an eligible newest stable release also owns `X.Y`, GHCR `latest` and GitHub's latest-release pointer | Publication is complete. |
 
 The staging tag is deliberately retained as audit and retry evidence. Before the release becomes
 durable, the workflow does not create either full-version container tag and does not move `X.Y` or
-`latest`. After publication, each destination tag is created from the recorded digest and inspected
-again. Before moving a mutable alias, the workflow lists every published stable release. An older
-rerun leaves `X.Y` unchanged when a higher patch exists in that line and leaves `latest` unchanged
+`latest`. Every draft is created with GitHub latest disabled. The repository-wide publication job
+queues up to 100 release tags, processes one at a time and never cancels an active publication. This
+keeps release freshness inspection and mutation inside one serialized boundary.
+
+When a stable draft is published, the workflow compares it with every other published stable
+release and explicitly chooses whether GitHub may mark it latest. After publication, each GHCR
+destination is created from the recorded digest and inspected again. An older rerun leaves `X.Y`
+unchanged when a higher patch exists in that line and leaves both GHCR and GitHub `latest` unchanged
 when any higher stable version exists. A pre-existing immutable version tag with another digest, a
-release asset with different
-bytes, missing recorded state, duplicate or unexpected assets, and any non-authoritative GitHub or
-registry response stop with `HUMAN ACTION REQUIRED`; the workflow does not overwrite the conflict.
-Only an explicit not-found response is treated as absence.
+release asset with different bytes, missing recorded state, duplicate or unexpected assets, and any
+non-authoritative GitHub or registry response stop with `HUMAN ACTION REQUIRED`; the workflow does
+not overwrite the conflict. Registry absence is accepted only from an explicit manifest/name-unknown
+or reference-bound not-found response. Authentication and permission errors deliberately fail closed.
 
 For an interrupted tag, inspect both services without changing them. Replace the example values but
 do not move the Git tag:
@@ -1019,23 +1024,31 @@ export TAG=v0.1.0-rc.10
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 
-gh api "repos/$REPOSITORY/releases/tags/$TAG" \
-  --jq '{id,tag_name,draft,prerelease,assets:[.assets[].name]}'
+release_pages=$(mktemp)
+release_json=$(mktemp)
+trap 'rm -f -- "$release_pages" "$release_json"' EXIT
+
+gh api --paginate --slurp \
+  "repos/$REPOSITORY/releases?per_page=100" > "$release_pages"
+jq -e --arg tag "$TAG" \
+  '[.[][] | select(.tag_name == $tag)] |
+   if length == 1 then .[0]
+   else error("expected exactly one matching draft or published release") end' \
+  "$release_pages" > "$release_json"
+jq '{id,tag_name,draft,prerelease,assets:[.assets[].name]}' "$release_json"
 docker buildx imagetools inspect "$IMAGE:$STAGING_TAG"
 docker buildx imagetools inspect "$IMAGE:$TAG"
 docker buildx imagetools inspect "$IMAGE:${TAG#v}"
 ```
 
 For a stable release, also inspect `${TAG#v}` with its final `.patch` component removed and inspect
-`$IMAGE:latest`. To inspect the recorded digest without relying on `gh release download` draft
-handling, download the asset through its authenticated API identifier:
+`$IMAGE:latest`. Continue in the same shell. To inspect the recorded digest without relying on
+`gh release download` draft handling, download the asset through its authenticated API identifier:
 
 ```console
-release_json=$(mktemp)
 container_record=$(mktemp)
-trap 'rm -f -- "$release_json" "$container_record"' EXIT
+trap 'rm -f -- "$release_pages" "$release_json" "$container_record"' EXIT
 
-gh api "repos/$REPOSITORY/releases/tags/$TAG" > "$release_json"
 asset_id=$(jq -er \
   '[.assets[] | select(.name == "CONTAINER-IMAGE.json")] |
    if length == 1 then .[0].id else error("container record is absent or ambiguous") end' \
@@ -1047,10 +1060,30 @@ docker buildx imagetools inspect \
   "$(jq -r '.image' "$container_record")@$(jq -r '.digest' "$container_record")"
 ```
 
+The tag endpoint is not a draft inspection command: GitHub documents it as returning a published
+release. The authenticated, paginated list above includes drafts for callers with push access and
+the exact-one check prevents an ambiguous tag from being selected. Release title and notes may be
+edited after publication; recovery identity comes from the tag, release ID, state and immutable
+asset/container evidence.
+
+If a retention policy prunes the staging tag after publication has completed, a rerun remains safe
+when the release record and both immutable GHCR tags still match the recorded digest. The workflow
+uses those immutable tags as the fallback proof and does not rebuild the image. A missing staging
+tag while the release is still a draft remains a hard stop because no durable promoted tag can prove
+the recorded content.
+
+An orphaned staging tag with no matching draft or published release is also a hard stop. Preserve
+its digest, registry metadata and failed-run logs first. After establishing that no release record or
+public version tag ever referenced it, a maintainer may delete only that orphaned staging tag and use
+**Re-run all jobs** to restart publication. Never delete a staging tag merely to bypass a digest or
+asset conflict.
+
 If the evidence is internally consistent, open the failed Release workflow run and select
 **Re-run all jobs**. Do not use **Re-run failed jobs**, because the tested archives belong to one run
-attempt. The rerun downloads and byte-compares existing assets, reuses the exact staged digest, and
-continues from the first incomplete state. If a command above fails for a reason other than an
+attempt. The rerun verifies existing assets, reuses the exact staged digest, and continues from the
+first incomplete state. GitHub's server-computed SHA-256 and size avoid repeated
+archive downloads when available; older records fall back to download-and-compare verification. If
+a command above fails for a reason other than an
 authoritative not-found response, or any digest/asset differs, stop: preserve the tag, draft, assets,
 container tags and failed-run logs for review. Never delete, move, rebuild over, or manually replace
 publication evidence to force the services to agree.

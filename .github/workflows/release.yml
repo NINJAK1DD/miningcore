@@ -732,6 +732,13 @@ jobs:
   publish-release:
     name: Publish GitHub Release and GHCR image
     if: startsWith(github.ref, 'refs/tags/v')
+    # GitHub Releases and GHCR aliases are repository-wide mutable state. Keep
+    # every tag publication in one FIFO queue so freshness inspection and alias
+    # promotion cannot interleave across versions.
+    concurrency:
+      group: release-publication-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     needs:
       - resolve-release
       - source-container-check

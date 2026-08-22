@@ -65,12 +65,31 @@ assert_contains 'the publication conflict stop' \
   'HUMAN ACTION REQUIRED'
 assert_contains 'the non-transactional publication boundary' \
   'do not provide a shared transaction'
+assert_contains 'the authenticated draft-discovery command' \
+  'gh api --paginate --slurp'
+assert_contains 'the exact-one release selection guard' \
+  'expected exactly one matching draft or published release'
+assert_contains 'the repository-wide publication queue' \
+  'queues up to 100 release tags'
+assert_contains 'the pruned-stage recovery rule' \
+  'both immutable GHCR tags still match the recorded digest'
+assert_contains 'the orphan-stage recovery warning' \
+  'Never delete a staging tag merely to bypass a digest or'
 assert_contains 'the declared build-image contract' \
   'workflow-declared'
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
+
+recovery_section=$(awk '
+  /^### Recover an interrupted publication$/ { capture = 1 }
+  capture { print }
+' "$document")
+if grep -Fq 'releases/tags/$TAG' <<<"$recovery_section"; then
+  echo 'Release recovery documentation still uses the published-only tag endpoint' >&2
+  exit 1
+fi
 
 if grep -Eq '(^|[[:space:]])exit([[:space:]]|$)' <<<"$selection_block"; then
   echo "The copy-paste release selection block must not exit an interactive shell" >&2

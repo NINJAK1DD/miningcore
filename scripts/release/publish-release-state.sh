@@ -15,10 +15,11 @@ Usage: publish-release-state.sh <prepare|record|publish|promote>
 Required environment:
   GITHUB_REPOSITORY              owner/repository
   GITHUB_REF_NAME                immutable v-prefixed release tag
-  MININGCORE_SOURCE_COMMIT      commit named by the release tag
+  MININGCORE_SOURCE_COMMIT       commit named by the release tag
   MININGCORE_IMAGE               lowercase GHCR image name
   MININGCORE_RELEASE_ASSET_DIR   tested archive/checksum directory
   MININGCORE_RELEASE_NOTES_FILE  release-note preamble (prepare only)
+  GH_TOKEN                       release API token with contents write access
 
 GITHUB_OUTPUT is optional. When present, prepare and record append outputs for
 later GitHub Actions steps.
@@ -34,7 +35,7 @@ publication_die() {
 publication_require_tools() {
   local tool
 
-  for tool in gh jq docker cmp find sort realpath; do
+  for tool in gh jq docker curl cmp find sort realpath sha256sum stat awk; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       publication_die "required publication tool '$tool' is unavailable"
     fi
@@ -47,6 +48,7 @@ publication_validate_environment() {
   : "${MININGCORE_SOURCE_COMMIT:?MININGCORE_SOURCE_COMMIT is required}"
   : "${MININGCORE_IMAGE:?MININGCORE_IMAGE is required}"
   : "${MININGCORE_RELEASE_ASSET_DIR:?MININGCORE_RELEASE_ASSET_DIR is required}"
+  : "${GH_TOKEN:?GH_TOKEN is required}"
 
   if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     publication_die "invalid GitHub repository identity '$GITHUB_REPOSITORY'"
@@ -64,6 +66,10 @@ publication_validate_environment() {
 
   if [[ ! "$MININGCORE_IMAGE" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+$ ]]; then
     publication_die "GHCR image '$MININGCORE_IMAGE' is not a lowercase repository image"
+  fi
+
+  if [[ ! "$GH_TOKEN" =~ ^[A-Za-z0-9_]+$ ]]; then
+    publication_die "GH_TOKEN contains characters unsafe for the private curl configuration"
   fi
 
   if [[ ! -d "$MININGCORE_RELEASE_ASSET_DIR" ]]; then
@@ -95,46 +101,18 @@ publication_append_output() {
   fi
 }
 
-publication_api_get() {
-  local endpoint=$1
-  local destination=$2
-  local error_file
-  local status
-
-  error_file=$(mktemp)
-  if gh api "$endpoint" > "$destination" 2> "$error_file"; then
-    status=0
-  else
-    status=$?
-  fi
-
-  if [[ "$status" -eq 0 ]]; then
-    rm -f -- "$error_file"
-    return 0
-  fi
-
-  if grep -Fq 'HTTP 404' "$error_file"; then
-    rm -f -- "$error_file" "$destination"
-    return 44
-  fi
-
-  cat "$error_file" >&2
-  rm -f -- "$error_file" "$destination"
-  publication_die "GitHub API inspection failed for '$endpoint'; state is not authoritative"
-}
-
 publication_api_list_releases() {
   local destination=$1
   local error_file
 
-  error_file=$(mktemp)
+  error_file=$(mktemp "$PUBLICATION_WORK_DIR/release-list-error.XXXXXX")
   if ! gh api --paginate --slurp \
       "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
       > "$destination" 2> "$error_file"; then
     cat "$error_file" >&2
     rm -f -- "$error_file" "$destination"
     publication_die \
-      "GitHub release-list inspection failed; mutable-alias freshness is unknown"
+      "GitHub release-list inspection failed; publication state is not authoritative"
   fi
   rm -f -- "$error_file"
 
@@ -147,62 +125,65 @@ publication_api_list_releases() {
          (.prerelease | type == "boolean"))' \
       "$destination" >/dev/null; then
     publication_die \
-      "GitHub returned an invalid release list; mutable aliases will not move"
+      "GitHub returned an invalid release list; publication state is not authoritative"
   fi
 }
 
 publication_refresh_release() {
   local release_file=${PUBLICATION_WORK_DIR:?}/release.json
+  local release_list=$PUBLICATION_WORK_DIR/releases.json
+  local matches
   local expected_prerelease=false
-  local status
 
   if [[ "$GITHUB_REF_NAME" == *-* ]]; then
     expected_prerelease=true
   fi
 
-  if publication_api_get \
-      "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" "$release_file"; then
-    status=0
-  else
-    status=$?
+  # GitHub's tag endpoint returns published releases only. An authenticated,
+  # paginated list is the authoritative source for both drafts and published
+  # releases; accepting exactly one match also fails closed on ambiguity.
+  publication_api_list_releases "$release_list"
+  matches=$(jq --arg tag "$GITHUB_REF_NAME" \
+    '[.[][] | select(.tag_name == $tag)] | length' "$release_list")
+  if [[ "$matches" -gt 1 ]]; then
+    publication_die \
+      "GitHub returned $matches releases for tag '$GITHUB_REF_NAME'; state is ambiguous"
+  fi
+  if [[ "$matches" -eq 0 ]]; then
+    rm -f -- "$release_file"
+    PUBLICATION_RELEASE_ID=
+    PUBLICATION_RELEASE_STATE=absent
+    export PUBLICATION_RELEASE_ID PUBLICATION_RELEASE_STATE
+    return
   fi
 
-  case "$status" in
-    0)
-      if ! jq -e --arg tag "$GITHUB_REF_NAME" \
-        --arg name "Miningcore $GITHUB_REF_NAME" \
-        --argjson prerelease "$expected_prerelease" \
-        --rawfile notes "$MININGCORE_RELEASE_NOTES_FILE" \
-        '.tag_name == $tag and
-         .name == $name and
-         .prerelease == $prerelease and
-         (.body | type == "string") and
-         (.body | startswith($notes)) and
-         (.id | type == "number") and
-         (.draft | type == "boolean") and
-         (.assets | type == "array") and
-         all(.assets[];
-           (.name | type == "string") and
-           (.id | type == "number"))' \
-        "$release_file" >/dev/null; then
-        publication_die "GitHub returned an invalid release record for '$GITHUB_REF_NAME'"
-      fi
+  jq --arg tag "$GITHUB_REF_NAME" \
+    '[.[][] | select(.tag_name == $tag)][0]' "$release_list" > "$release_file"
+  if ! jq -e --arg tag "$GITHUB_REF_NAME" \
+      --argjson prerelease "$expected_prerelease" \
+      '.tag_name == $tag and
+       .prerelease == $prerelease and
+       (.id | type == "number" and . > 0 and floor == .) and
+       (.draft | type == "boolean") and
+       (.assets | type == "array") and
+       all(.assets[];
+         (.name | type == "string") and
+         (.id | type == "number" and . > 0 and floor == .) and
+         ((.state == null) or (.state == "uploaded")) and
+         ((.size == null) or
+           (.size | type == "number" and . >= 0 and floor == .)) and
+         ((.digest == null) or
+           (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))))' \
+      "$release_file" >/dev/null; then
+    publication_die "GitHub returned an invalid release record for '$GITHUB_REF_NAME'"
+  fi
 
-      PUBLICATION_RELEASE_ID=$(jq -r '.id' "$release_file")
-      if [[ $(jq -r '.draft' "$release_file") == true ]]; then
-        PUBLICATION_RELEASE_STATE=draft
-      else
-        PUBLICATION_RELEASE_STATE=published
-      fi
-      ;;
-    44)
-      PUBLICATION_RELEASE_ID=
-      PUBLICATION_RELEASE_STATE=absent
-      ;;
-    *)
-      return "$status"
-      ;;
-  esac
+  PUBLICATION_RELEASE_ID=$(jq -r '.id' "$release_file")
+  if [[ $(jq -r '.draft' "$release_file") == true ]]; then
+    PUBLICATION_RELEASE_STATE=draft
+  else
+    PUBLICATION_RELEASE_STATE=published
+  fi
 
   export PUBLICATION_RELEASE_ID PUBLICATION_RELEASE_STATE
 }
@@ -229,7 +210,14 @@ publication_asset_id() {
 
   PUBLICATION_ASSET_ID=$(jq -r --arg name "$asset_name" \
     '.assets[] | select(.name == $name) | .id' "$release_file")
-  export PUBLICATION_ASSET_ID
+  PUBLICATION_ASSET_DIGEST=$(jq -r --arg name "$asset_name" \
+    '.assets[] | select(.name == $name) | .digest // empty' "$release_file")
+  PUBLICATION_ASSET_SIZE=$(jq -r --arg name "$asset_name" \
+    '.assets[] | select(.name == $name) | .size // empty' "$release_file")
+  PUBLICATION_ASSET_STATE=$(jq -r --arg name "$asset_name" \
+    '.assets[] | select(.name == $name) | .state // empty' "$release_file")
+  export PUBLICATION_ASSET_ID PUBLICATION_ASSET_DIGEST
+  export PUBLICATION_ASSET_SIZE PUBLICATION_ASSET_STATE
 }
 
 publication_download_asset() {
@@ -238,7 +226,7 @@ publication_download_asset() {
   local error_file
   local status
 
-  error_file=$(mktemp)
+  error_file=$(mktemp "$PUBLICATION_WORK_DIR/asset-download-error.XXXXXX")
   if gh api -H 'Accept: application/octet-stream' \
       "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
       > "$destination" 2> "$error_file"; then
@@ -254,6 +242,87 @@ publication_download_asset() {
   fi
 
   rm -f -- "$error_file"
+}
+
+publication_upload_asset() {
+  local source=$1
+  local asset_name=${source##*/}
+  local response_file
+  local error_file
+  local curl_config
+
+  if [[ ! "$asset_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    publication_die "release asset name '$asset_name' is unsafe for API upload"
+  fi
+
+  response_file=$(mktemp "$PUBLICATION_WORK_DIR/asset-upload-response.XXXXXX")
+  error_file=$(mktemp "$PUBLICATION_WORK_DIR/asset-upload-error.XXXXXX")
+  curl_config=$(mktemp "$PUBLICATION_WORK_DIR/asset-upload-curl.XXXXXX")
+  chmod 600 "$curl_config"
+  printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > "$curl_config"
+  if ! curl --fail-with-body --silent --show-error --location \
+      --config "$curl_config" --request POST \
+      --header 'Accept: application/vnd.github+json' \
+      --header 'Content-Type: application/octet-stream' \
+      --data-binary "@$source" --output "$response_file" \
+      "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$PUBLICATION_RELEASE_ID/assets?name=$asset_name" \
+      2> "$error_file"; then
+    cat "$error_file" >&2
+    rm -f -- "$response_file" "$error_file" "$curl_config"
+    publication_die \
+      "upload of '$asset_name' failed; inspect release id $PUBLICATION_RELEASE_ID before retrying"
+  fi
+  rm -f -- "$error_file" "$curl_config"
+
+  if ! jq -e --arg name "$asset_name" \
+      '.name == $name and
+       (.id | type == "number" and . > 0 and floor == .) and
+       .state == "uploaded"' \
+      "$response_file" >/dev/null; then
+    rm -f -- "$response_file"
+    publication_die \
+      "GitHub did not confirm a complete upload of '$asset_name' for release id $PUBLICATION_RELEASE_ID"
+  fi
+  rm -f -- "$response_file"
+}
+
+publication_verify_candidate_asset() {
+  local asset_name=$1
+  local asset_id=$PUBLICATION_ASSET_ID
+  local local_file=$MININGCORE_RELEASE_ASSET_DIR/$asset_name
+  local downloaded
+  local local_digest
+  local local_size
+
+  if [[ -n "$PUBLICATION_ASSET_STATE" && "$PUBLICATION_ASSET_STATE" != uploaded ]]; then
+    publication_die "release asset '$asset_name' is not in the uploaded state"
+  fi
+
+  if [[ -n "$PUBLICATION_ASSET_DIGEST" ]]; then
+    local_digest=sha256:$(sha256sum "$local_file" | awk '{print $1}')
+    local_size=$(stat -c '%s' "$local_file")
+    if [[ "$PUBLICATION_ASSET_DIGEST" != "$local_digest" ]]; then
+      publication_die \
+        "release asset '$asset_name' digest differs from this run;" \
+        "existing bytes will not be overwritten"
+    fi
+    if [[ -n "$PUBLICATION_ASSET_SIZE" && "$PUBLICATION_ASSET_SIZE" != "$local_size" ]]; then
+      publication_die \
+        "release asset '$asset_name' size differs from this run;" \
+        "existing bytes will not be overwritten"
+    fi
+    return
+  fi
+
+  # Older release records may not expose GitHub's server-computed digest. Keep
+  # the byte-for-byte fallback rather than weakening verification.
+  downloaded="$PUBLICATION_WORK_DIR/existing-$asset_name"
+  publication_download_asset "$asset_id" "$downloaded"
+  if ! cmp --silent "$local_file" "$downloaded"; then
+    publication_die \
+      "release asset '$asset_name' differs from this run;" \
+      "existing bytes will not be overwritten"
+  fi
 }
 
 publication_load_candidate_assets() {
@@ -290,7 +359,6 @@ publication_load_candidate_assets() {
 }
 
 publication_validate_asset_inventory() {
-  local allow_manifest=$1
   local release_file=${PUBLICATION_WORK_DIR:?}/release.json
   local -a expected
   local asset_name
@@ -299,9 +367,7 @@ publication_validate_asset_inventory() {
   local found
 
   expected=("${PUBLICATION_CANDIDATE_ASSETS[@]}")
-  if [[ "$allow_manifest" == true ]]; then
-    expected+=("$publication_manifest_name")
-  fi
+  expected+=("$publication_manifest_name")
 
   while IFS= read -r asset_name_json; do
     if ! asset_name=$(jq -er 'select(type == "string")' <<< "$asset_name_json"); then
@@ -325,36 +391,18 @@ publication_validate_asset_inventory() {
 
 publication_sync_candidate_assets() {
   local asset_name
-  local asset_id
-  local downloaded
 
-  publication_validate_asset_inventory true
+  publication_validate_asset_inventory
   while IFS= read -r asset_name; do
     if publication_asset_id "$asset_name"; then
-      asset_id=$PUBLICATION_ASSET_ID
-      downloaded="$PUBLICATION_WORK_DIR/existing-$asset_name"
-      publication_download_asset "$asset_id" "$downloaded"
-      if ! cmp --silent "$MININGCORE_RELEASE_ASSET_DIR/$asset_name" "$downloaded"; then
-        publication_die \
-          "release asset '$asset_name' differs from this run;" \
-          "existing bytes will not be overwritten"
-      fi
+      publication_verify_candidate_asset "$asset_name"
     elif [[ "$PUBLICATION_RELEASE_STATE" == draft ]]; then
-      if ! gh release upload "$GITHUB_REF_NAME" \
-          "$MININGCORE_RELEASE_ASSET_DIR/$asset_name"; then
-        publication_die \
-          "upload of '$asset_name' failed; inspect the draft before retrying"
-      fi
+      publication_upload_asset "$MININGCORE_RELEASE_ASSET_DIR/$asset_name"
       publication_refresh_release
       if ! publication_asset_id "$asset_name"; then
         publication_die "GitHub did not report uploaded release asset '$asset_name'"
       fi
-      asset_id=$PUBLICATION_ASSET_ID
-      downloaded="$PUBLICATION_WORK_DIR/uploaded-$asset_name"
-      publication_download_asset "$asset_id" "$downloaded"
-      if ! cmp --silent "$MININGCORE_RELEASE_ASSET_DIR/$asset_name" "$downloaded"; then
-        publication_die "uploaded release asset '$asset_name' failed byte verification"
-      fi
+      publication_verify_candidate_asset "$asset_name"
     else
       publication_die \
         "published release '$GITHUB_REF_NAME' is missing '$asset_name'" \
@@ -369,6 +417,7 @@ publication_create_draft() {
   release_args=(
     "$GITHUB_REF_NAME"
     --draft
+    --latest=false
     --verify-tag
     --title "Miningcore $GITHUB_REF_NAME"
     --notes-file "$MININGCORE_RELEASE_NOTES_FILE"
@@ -376,9 +425,7 @@ publication_create_draft() {
   )
 
   if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-    release_args+=(--prerelease --latest=false)
-  else
-    release_args+=(--latest=true)
+    release_args+=(--prerelease)
   fi
 
   if ! gh release create "${release_args[@]}"; then
@@ -398,8 +445,8 @@ publication_inspect_reference() {
   local status
   local digest
 
-  output_file=$(mktemp)
-  error_file=$(mktemp)
+  output_file=$(mktemp "$PUBLICATION_WORK_DIR/registry-output.XXXXXX")
+  error_file=$(mktemp "$PUBLICATION_WORK_DIR/registry-error.XXXXXX")
   if docker buildx imagetools inspect \
       --format '{{json .Manifest.Digest}}' "$reference" \
       > "$output_file" 2> "$error_file"; then
@@ -439,7 +486,7 @@ publication_optional_digest() {
   local digest_file
   local status
 
-  digest_file=$(mktemp)
+  digest_file=$(mktemp "$PUBLICATION_WORK_DIR/digest.XXXXXX")
   if publication_inspect_reference "$reference" > "$digest_file"; then
     status=0
   else
@@ -523,20 +570,44 @@ publication_read_recorded_digest() {
   export PUBLICATION_RECORDED_DIGEST
 }
 
-publication_assert_stage_matches_record() {
-  local stage_digest
+publication_assert_immutable_tags_match_record() {
+  local reference
 
-  if ! publication_optional_digest "$PUBLICATION_STAGING_REFERENCE"; then
+  for reference in \
+      "$MININGCORE_IMAGE:$GITHUB_REF_NAME" \
+      "$MININGCORE_IMAGE:$PUBLICATION_VERSION"; do
+    if ! publication_optional_digest "$reference"; then
+      publication_die \
+        "staging image is unavailable and immutable tag '$reference' is absent"
+    fi
+    if [[ "$PUBLICATION_INSPECTED_DIGEST" != "$PUBLICATION_RECORDED_DIGEST" ]]; then
+      publication_die \
+        "staging image is unavailable and immutable tag '$reference' differs from" \
+        "recorded digest $PUBLICATION_RECORDED_DIGEST"
+    fi
+  done
+}
+
+publication_assert_container_evidence() {
+  if publication_optional_digest "$PUBLICATION_STAGING_REFERENCE"; then
+    if [[ "$PUBLICATION_INSPECTED_DIGEST" != "$PUBLICATION_RECORDED_DIGEST" ]]; then
+      publication_die \
+        "staging image digest $PUBLICATION_INSPECTED_DIGEST differs from recorded digest" \
+        "$PUBLICATION_RECORDED_DIGEST"
+    fi
+    return
+  fi
+
+  if [[ "$PUBLICATION_RELEASE_STATE" != published ]]; then
     publication_die \
       "recorded staging image '$PUBLICATION_STAGING_REFERENCE' is unavailable;" \
       "do not rebuild or retag this version"
   fi
-  stage_digest=$PUBLICATION_INSPECTED_DIGEST
 
-  if [[ "$stage_digest" != "$PUBLICATION_RECORDED_DIGEST" ]]; then
-    publication_die \
-      "staging image digest $stage_digest differs from recorded digest $PUBLICATION_RECORDED_DIGEST"
-  fi
+  # A retention policy may prune the audit-only staging tag after publication.
+  # A durable release plus both matching immutable tags is sufficient to prove
+  # that a completed publication can be re-run without rebuilding content.
+  publication_assert_immutable_tags_match_record
 }
 
 publication_prepare() {
@@ -563,8 +634,13 @@ publication_prepare() {
   if publication_read_recorded_digest; then
     recorded_digest=$PUBLICATION_RECORDED_DIGEST
     if [[ -z "$stage_digest" ]]; then
-      publication_die \
-        "release records container digest $recorded_digest but its staging tag is unavailable"
+      if [[ "$PUBLICATION_RELEASE_STATE" != published ]]; then
+        publication_die \
+          "release records container digest $recorded_digest but its staging tag is unavailable"
+      fi
+      publication_assert_immutable_tags_match_record
+      stage_digest=$recorded_digest
+      needs_build=false
     fi
     if [[ "$stage_digest" != "$recorded_digest" ]]; then
       publication_die \
@@ -590,6 +666,7 @@ publication_record() {
   local manifest=$PUBLICATION_WORK_DIR/$publication_manifest_name
   local existing_manifest=$PUBLICATION_WORK_DIR/existing-$publication_manifest_name
   local asset_id
+  local recorded_present=false
 
   publication_validate_digest "$requested_digest"
   publication_refresh_release
@@ -597,13 +674,26 @@ publication_record() {
     publication_die "container digest cannot be recorded without a matching draft release"
   fi
 
-  if ! publication_optional_digest "$PUBLICATION_STAGING_REFERENCE"; then
-    publication_die "staging image '$PUBLICATION_STAGING_REFERENCE' is unavailable"
+  if publication_read_recorded_digest; then
+    recorded_present=true
+    if [[ "$PUBLICATION_RECORDED_DIGEST" != "$requested_digest" ]]; then
+      publication_die \
+        "$publication_manifest_name records $PUBLICATION_RECORDED_DIGEST," \
+        "not requested digest $requested_digest"
+    fi
   fi
-  stage_digest=$PUBLICATION_INSPECTED_DIGEST
-  if [[ "$stage_digest" != "$requested_digest" ]]; then
-    publication_die \
-      "reported build digest $requested_digest differs from staged digest $stage_digest"
+
+  if publication_optional_digest "$PUBLICATION_STAGING_REFERENCE"; then
+    stage_digest=$PUBLICATION_INSPECTED_DIGEST
+    if [[ "$stage_digest" != "$requested_digest" ]]; then
+      publication_die \
+        "reported build digest $requested_digest differs from staged digest $stage_digest"
+    fi
+  elif [[ "$PUBLICATION_RELEASE_STATE" == published && "$recorded_present" == true ]]; then
+    stage_digest=$requested_digest
+    publication_assert_immutable_tags_match_record
+  else
+    publication_die "staging image '$PUBLICATION_STAGING_REFERENCE' is unavailable"
   fi
 
   publication_write_manifest "$stage_digest" "$manifest"
@@ -615,10 +705,7 @@ publication_record() {
         "$publication_manifest_name records different immutable container content"
     fi
   elif [[ "$PUBLICATION_RELEASE_STATE" == draft ]]; then
-    if ! gh release upload "$GITHUB_REF_NAME" "$manifest"; then
-      publication_die \
-        "upload of $publication_manifest_name failed; inspect the draft before retrying"
-    fi
+    publication_upload_asset "$manifest"
     publication_refresh_release
     if ! publication_asset_id "$publication_manifest_name"; then
       publication_die "GitHub did not report uploaded $publication_manifest_name"
@@ -642,10 +729,69 @@ publication_verify_complete_release() {
   if ! publication_read_recorded_digest; then
     publication_die "release '$GITHUB_REF_NAME' lacks $publication_manifest_name"
   fi
-  publication_assert_stage_matches_record
+  publication_assert_container_evidence
+}
+
+publication_publish_release_by_id() {
+  local make_latest=$1
+  local response_file
+  local error_file
+  local expected_prerelease=false
+
+  if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+    expected_prerelease=true
+  fi
+
+  response_file=$(mktemp "$PUBLICATION_WORK_DIR/release-update-response.XXXXXX")
+  error_file=$(mktemp "$PUBLICATION_WORK_DIR/release-update-error.XXXXXX")
+  if ! gh api --method PATCH \
+      -F draft=false -f make_latest="$make_latest" \
+      "repos/$GITHUB_REPOSITORY/releases/$PUBLICATION_RELEASE_ID" \
+      > "$response_file" 2> "$error_file"; then
+    cat "$error_file" >&2
+    rm -f -- "$response_file" "$error_file"
+    publication_die \
+      "release publication request failed for id $PUBLICATION_RELEASE_ID;" \
+      "inspect whether the draft became durable before retrying"
+  fi
+  rm -f -- "$error_file"
+
+  if ! jq -e --arg tag "$GITHUB_REF_NAME" \
+      --argjson id "$PUBLICATION_RELEASE_ID" \
+      --argjson prerelease "$expected_prerelease" \
+      '.id == $id and
+       .tag_name == $tag and .draft == false and .prerelease == $prerelease' \
+      "$response_file" >/dev/null; then
+    rm -f -- "$response_file"
+    publication_die \
+      "GitHub returned an invalid publication response for release id $PUBLICATION_RELEASE_ID"
+  fi
+  rm -f -- "$response_file"
+}
+
+publication_wait_for_published_release() {
+  local delay
+  local expected_release_id=$PUBLICATION_RELEASE_ID
+
+  for delay in 0 1 2 4 8; do
+    if [[ "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+    publication_refresh_release
+    if [[ "$PUBLICATION_RELEASE_STATE" == published &&
+        "$PUBLICATION_RELEASE_ID" == "$expected_release_id" ]]; then
+      return
+    fi
+  done
+
+  publication_die \
+    "GitHub accepted publication of release id $expected_release_id but the authenticated" \
+    "release list did not confirm its durable state after bounded retries"
 }
 
 publication_publish() {
+  local make_latest=false
+
   publication_refresh_release
   if [[ "$PUBLICATION_RELEASE_STATE" == absent ]]; then
     publication_die "release '$GITHUB_REF_NAME' is absent"
@@ -653,15 +799,12 @@ publication_publish() {
 
   publication_verify_complete_release
   if [[ "$PUBLICATION_RELEASE_STATE" == draft ]]; then
-    if ! gh release edit "$GITHUB_REF_NAME" --draft=false; then
-      publication_die \
-        "release publication request failed; inspect whether the draft became durable" \
-        "before retrying"
+    if [[ "$GITHUB_REF_NAME" != *-* ]]; then
+      publication_resolve_mutable_alias_freshness
+      make_latest=$PUBLICATION_MAY_PROMOTE_LATEST
     fi
-    publication_refresh_release
-    if [[ "$PUBLICATION_RELEASE_STATE" != published ]]; then
-      publication_die "GitHub did not confirm publication of '$GITHUB_REF_NAME'"
-    fi
+    publication_publish_release_by_id "$make_latest"
+    publication_wait_for_published_release
     publication_verify_complete_release
   fi
 
@@ -683,8 +826,9 @@ publication_promote_immutable_tag() {
     return
   fi
 
-  # Avoid Buildx wrapping a single-platform manifest in a new index: every
-  # promoted reference must retain the digest recorded in the release asset.
+  # Buildx 0.14+ provides --prefer-index. The workflow's setup-buildx action
+  # supplies a current version. Avoid wrapping a single-platform manifest in a
+  # new index: every promoted reference must retain the recorded digest.
   if ! docker buildx imagetools create --prefer-index=false \
       --tag "$target" "$MININGCORE_IMAGE@$PUBLICATION_RECORDED_DIGEST"; then
     publication_die "immutable version tag promotion failed for '$target'"
@@ -742,53 +886,42 @@ publication_resolve_mutable_alias_freshness() {
   local release_list=$PUBLICATION_WORK_DIR/releases.json
   local stable_tags=$PUBLICATION_WORK_DIR/stable-tags
   local current_line=${PUBLICATION_VERSION%.*}
-  local current_occurrences=0
-  local newest_overall=
-  local newest_in_line=
+  local current_occurrences
   local tag
   local version
 
   publication_api_list_releases "$release_list"
-  if ! jq -er \
+  if ! jq -r \
       '.[][] |
        select(.draft == false and .prerelease == false) |
        .tag_name |
        select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' \
       "$release_list" > "$stable_tags"; then
-    publication_die "published stable-release tags could not be parsed authoritatively"
+    publication_die "published stable-release tags could not be read authoritatively"
   fi
+
+  current_occurrences=$(jq --arg tag "$GITHUB_REF_NAME" \
+    '[.[][] | select(.tag_name == $tag)] | length' "$release_list")
+  if [[ "$current_occurrences" -ne 1 ]]; then
+    publication_die \
+      "release '$GITHUB_REF_NAME' occurred $current_occurrences times" \
+      "in the authoritative release list"
+  fi
+
+  PUBLICATION_MAY_PROMOTE_LINE_ALIAS=true
+  PUBLICATION_MAY_PROMOTE_LATEST=true
 
   while IFS= read -r tag; do
     [[ -n "$tag" ]] || continue
     version=${tag#v}
-    if [[ "$version" == "$PUBLICATION_VERSION" ]]; then
-      current_occurrences=$((current_occurrences + 1))
-    fi
-    if [[ -z "$newest_overall" ]] ||
-        publication_stable_version_is_greater "$version" "$newest_overall"; then
-      newest_overall=$version
-    fi
-    if [[ ${version%.*} == "$current_line" ]] &&
-        { [[ -z "$newest_in_line" ]] ||
-          publication_stable_version_is_greater "$version" "$newest_in_line"; }; then
-      newest_in_line=$version
+    if publication_stable_version_is_greater "$version" "$PUBLICATION_VERSION"; then
+      PUBLICATION_MAY_PROMOTE_LATEST=false
+      if [[ ${version%.*} == "$current_line" ]]; then
+        PUBLICATION_MAY_PROMOTE_LINE_ALIAS=false
+      fi
     fi
   done < "$stable_tags"
 
-  if [[ "$current_occurrences" -ne 1 ]]; then
-    publication_die \
-      "published stable release '$GITHUB_REF_NAME' occurred $current_occurrences times" \
-      "in the authoritative release list"
-  fi
-
-  PUBLICATION_MAY_PROMOTE_LINE_ALIAS=false
-  PUBLICATION_MAY_PROMOTE_LATEST=false
-  if [[ "$newest_in_line" == "$PUBLICATION_VERSION" ]]; then
-    PUBLICATION_MAY_PROMOTE_LINE_ALIAS=true
-  fi
-  if [[ "$newest_overall" == "$PUBLICATION_VERSION" ]]; then
-    PUBLICATION_MAY_PROMOTE_LATEST=true
-  fi
   export PUBLICATION_MAY_PROMOTE_LINE_ALIAS PUBLICATION_MAY_PROMOTE_LATEST
 }
 
