@@ -57,6 +57,14 @@ assert_contains 'the all-jobs release retry rule' \
   'select **Re-run all jobs**'
 assert_contains 'the failed-jobs retry prohibition' \
   'Do not use **Re-run failed jobs**'
+assert_contains 'the staged-publication state model' \
+  'No publication | No release and no version-scoped staging tag'
+assert_contains 'the durable-release promotion boundary' \
+  'published GitHub Release permits the public version tags'
+assert_contains 'the publication conflict stop' \
+  'HUMAN ACTION REQUIRED'
+assert_contains 'the non-transactional publication boundary' \
+  'do not provide a shared transaction'
 assert_contains 'the declared build-image contract' \
   'workflow-declared'
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \

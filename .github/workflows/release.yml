@@ -485,6 +485,9 @@ jobs:
       - name: Validate release installation documentation on target userspace
         run: bash scripts/release/test-release-install-docs.sh
 
+      - name: Test recoverable release publication state
+        run: bash scripts/release/test-release-publication-state.sh
+
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -729,7 +732,11 @@ jobs:
   publish-release:
     name: Publish GitHub Release and GHCR image
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ source-container-check, collect-release-assets, container-check ]
+    needs:
+      - resolve-release
+      - source-container-check
+      - collect-release-assets
+      - container-check
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -748,66 +755,27 @@ jobs:
           name: release-assets
           path: dist
 
-      - name: Check existing release before external mutation
-        id: existing-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          error_file=$(mktemp)
-          trap 'rm -f -- "$error_file"' EXIT
-
-          set +e
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
-            --silent >/dev/null 2>"$error_file"
-          status=$?
-          set -e
-
-          if [[ "$status" -ne 0 ]]; then
-            if grep -Fq 'HTTP 404' "$error_file"; then
-              echo 'exists=false' >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            cat "$error_file" >&2
-            exit "$status"
-          fi
-
-          mkdir existing-release
-          gh release download "$GITHUB_REF_NAME" --dir existing-release \
-            --pattern 'miningcore-*-linux-x64-ubuntu-*.tar.gz' \
-            --pattern 'SHA256SUMS'
-
-          bash scripts/release/verify-existing-release-assets.sh \
-            dist existing-release
-
-          echo "Release $GITHUB_REF_NAME already exists with identical assets"
-          echo 'exists=true' >> "$GITHUB_OUTPUT"
-
-      - name: Attest binary archive provenance
-        if: steps.existing-release.outputs.exists != 'true'
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/*.tar.gz
-
       - name: Resolve lowercase GHCR image name
-        if: steps.existing-release.outputs.exists != 'true'
         id: image
         shell: bash
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare container context
-        if: steps.existing-release.outputs.exists != 'true'
+      - name: Write release-note preamble
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir container-context
-          tar -xzf dist/miningcore-*-linux-x64-ubuntu-26.04.tar.gz \
-            --strip-components=1 -C container-context
+          cat > release-notes.md <<'EOF'
+          This release contains a primary, framework-dependent **Ubuntu 26.04 x64** build
+          and a separately built **Ubuntu 22.04 x64 compatibility** archive. Use only the archive
+          matching the host release; native binaries built on Ubuntu 26.04 are not compatible with
+          older glibc systems. Ubuntu 24.04 remains a tested source-build target.
+
+          Read the packaged `INSTALL.md` or the [release installation guide](https://github.com/NINJAK1DD/miningcore/blob/dev/docs/releases.md)
+          before deployment. Miningcore targets the supported .NET 10 LTS runtime; install the
+          documented runtime dependencies and complete all required PostgreSQL migrations before
+          startup.
+          EOF
 
       - name: Login to GitHub Container Registry
-        if: steps.existing-release.outputs.exists != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -815,24 +783,49 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Docker Buildx
-        if: steps.existing-release.outputs.exists != 'true'
         uses: docker/setup-buildx-action@v4
 
-      - name: Generate container metadata
-        if: steps.existing-release.outputs.exists != 'true'
+      - name: Prepare or resume release publication
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh prepare
+
+      - name: Attest binary archive provenance
+        if: steps.publication.outputs.release_state != 'published'
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Prepare container context
+        if: steps.publication.outputs.needs_container_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir container-context
+          tar -xzf dist/miningcore-*-linux-x64-ubuntu-26.04.tar.gz \
+            --strip-components=1 -C container-context
+
+      - name: Generate staged container metadata
+        if: steps.publication.outputs.needs_container_build == 'true'
         id: metadata
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image.outputs.name }}
           flavor: latest=false
           tags: |
-            type=raw,value=${{ github.ref_name }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=${{ steps.publication.outputs.staging_tag }}
+          labels: |
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ needs.resolve-release.outputs.source_commit }}
 
-      - name: Publish packaged container
-        if: steps.existing-release.outputs.exists != 'true'
+      - name: Publish version-scoped staged container
+        if: steps.publication.outputs.needs_container_build == 'true'
         id: container
         uses: docker/build-push-action@v7
         with:
@@ -849,46 +842,43 @@ jobs:
           cache-from: type=gha,scope=release-container
           cache-to: type=gha,mode=max,scope=release-container
 
+      - name: Record and verify staged container digest
+        id: recorded-container
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+          MININGCORE_CONTAINER_DIGEST: >-
+            ${{ steps.container.outputs.digest || steps.publication.outputs.staging_digest }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh record
+
       - name: Attest container provenance
-        if: steps.existing-release.outputs.exists != 'true'
+        if: steps.publication.outputs.release_state != 'published'
         uses: actions/attest@v4
         with:
           subject-name: ${{ steps.image.outputs.name }}
-          subject-digest: ${{ steps.container.outputs.digest }}
+          subject-digest: ${{ steps.recorded-container.outputs.digest }}
           push-to-registry: true
 
-      - name: Create GitHub Release
-        if: steps.existing-release.outputs.exists != 'true'
+      - name: Publish and verify durable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
         shell: bash
-        run: |
-          set -euo pipefail
+        run: bash scripts/release/publish-release-state.sh publish
 
-          notes='This release contains a primary, framework-dependent **Ubuntu 26.04 x64** build
-          and a separately built **Ubuntu 22.04 x64 compatibility** archive. Use only the archive
-          matching the host release; native binaries built on Ubuntu 26.04 are not compatible with
-          older glibc systems. Ubuntu 24.04 remains a tested source-build target.
-
-          Read the packaged `INSTALL.md` or the [release installation guide](https://github.com/NINJAK1DD/miningcore/blob/dev/docs/releases.md)
-          before deployment. Miningcore targets the supported .NET 10 LTS runtime; install the
-          documented runtime dependencies and complete all required PostgreSQL migrations before
-          startup.'
-
-          release_args=(
-            "$GITHUB_REF_NAME"
-            dist/*.tar.gz
-            dist/SHA256SUMS
-            --verify-tag
-            --title "Miningcore $GITHUB_REF_NAME"
-            --notes "$notes"
-            --generate-notes
-          )
-
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            release_args+=(--prerelease --latest=false)
-          else
-            release_args+=(--latest=true)
-          fi
-
-          gh release create "${release_args[@]}"
+      - name: Promote and verify release container tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh promote
