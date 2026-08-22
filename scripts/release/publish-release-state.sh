@@ -250,6 +250,7 @@ publication_upload_asset() {
   local response_file
   local error_file
   local curl_config
+  local upload_url
 
   if [[ ! "$asset_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
     publication_die "release asset name '$asset_name' is unsafe for API upload"
@@ -258,6 +259,8 @@ publication_upload_asset() {
   response_file=$(mktemp "$PUBLICATION_WORK_DIR/asset-upload-response.XXXXXX")
   error_file=$(mktemp "$PUBLICATION_WORK_DIR/asset-upload-error.XXXXXX")
   curl_config=$(mktemp "$PUBLICATION_WORK_DIR/asset-upload-curl.XXXXXX")
+  upload_url="https://uploads.github.com/repos/$GITHUB_REPOSITORY"
+  upload_url+="/releases/$PUBLICATION_RELEASE_ID/assets?name=$asset_name"
   chmod 600 "$curl_config"
   printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > "$curl_config"
   if ! curl --fail-with-body --silent --show-error --location \
@@ -265,8 +268,7 @@ publication_upload_asset() {
       --header 'Accept: application/vnd.github+json' \
       --header 'Content-Type: application/octet-stream' \
       --data-binary "@$source" --output "$response_file" \
-      "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$PUBLICATION_RELEASE_ID/assets?name=$asset_name" \
-      2> "$error_file"; then
+      "$upload_url" 2> "$error_file"; then
     cat "$error_file" >&2
     rm -f -- "$response_file" "$error_file" "$curl_config"
     publication_die \
@@ -281,7 +283,8 @@ publication_upload_asset() {
       "$response_file" >/dev/null; then
     rm -f -- "$response_file"
     publication_die \
-      "GitHub did not confirm a complete upload of '$asset_name' for release id $PUBLICATION_RELEASE_ID"
+      "GitHub did not confirm a complete upload of '$asset_name' for release id" \
+      "$PUBLICATION_RELEASE_ID"
   fi
   rm -f -- "$response_file"
 }
@@ -398,10 +401,7 @@ publication_sync_candidate_assets() {
       publication_verify_candidate_asset "$asset_name"
     elif [[ "$PUBLICATION_RELEASE_STATE" == draft ]]; then
       publication_upload_asset "$MININGCORE_RELEASE_ASSET_DIR/$asset_name"
-      publication_refresh_release
-      if ! publication_asset_id "$asset_name"; then
-        publication_die "GitHub did not report uploaded release asset '$asset_name'"
-      fi
+      publication_wait_for_release_asset "$asset_name"
       publication_verify_candidate_asset "$asset_name"
     else
       publication_die \
@@ -432,10 +432,61 @@ publication_create_draft() {
     publication_die \
       "draft creation failed; inspect GitHub before retrying because the request may have completed"
   fi
-  publication_refresh_release
-  if [[ "$PUBLICATION_RELEASE_STATE" != draft ]]; then
-    publication_die "GitHub did not create the expected draft release '$GITHUB_REF_NAME'"
-  fi
+  publication_wait_for_draft_release
+}
+
+publication_wait_for_draft_release() {
+  local delay
+
+  for delay in 0 1 2 4 8; do
+    if [[ "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+    publication_refresh_release
+    if [[ "$PUBLICATION_RELEASE_STATE" == draft ]]; then
+      return
+    fi
+    if [[ "$PUBLICATION_RELEASE_STATE" == published ]]; then
+      publication_die \
+        "draft creation unexpectedly exposed a published release for '$GITHUB_REF_NAME'"
+    fi
+  done
+
+  publication_die \
+    "GitHub accepted draft creation but the authenticated release list did not expose" \
+    "'$GITHUB_REF_NAME' after bounded retries"
+}
+
+publication_wait_for_release_asset() {
+  local asset_name=$1
+  local expected_release_id=$PUBLICATION_RELEASE_ID
+  local delay
+
+  for delay in 0 1 2 4 8; do
+    if [[ "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+    publication_refresh_release
+    if [[ "$PUBLICATION_RELEASE_STATE" == draft &&
+        "$PUBLICATION_RELEASE_ID" == "$expected_release_id" ]] &&
+        publication_asset_id "$asset_name"; then
+      return
+    fi
+    if [[ "$PUBLICATION_RELEASE_STATE" != absent &&
+        "$PUBLICATION_RELEASE_ID" != "$expected_release_id" ]]; then
+      publication_die \
+        "release identity changed while waiting for '$asset_name': expected id" \
+        "$expected_release_id, found id $PUBLICATION_RELEASE_ID"
+    fi
+    if [[ "$PUBLICATION_RELEASE_STATE" == published ]]; then
+      publication_die \
+        "release id $expected_release_id became published before '$asset_name' was verified"
+    fi
+  done
+
+  publication_die \
+    "GitHub accepted upload of '$asset_name' to release id $expected_release_id but the" \
+    "authenticated release list did not expose it after bounded retries"
 }
 
 publication_inspect_reference() {
@@ -706,10 +757,7 @@ publication_record() {
     fi
   elif [[ "$PUBLICATION_RELEASE_STATE" == draft ]]; then
     publication_upload_asset "$manifest"
-    publication_refresh_release
-    if ! publication_asset_id "$publication_manifest_name"; then
-      publication_die "GitHub did not report uploaded $publication_manifest_name"
-    fi
+    publication_wait_for_release_asset "$publication_manifest_name"
     asset_id=$PUBLICATION_ASSET_ID
     publication_download_asset "$asset_id" "$existing_manifest"
     if ! cmp --silent "$manifest" "$existing_manifest"; then

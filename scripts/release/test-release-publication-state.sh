@@ -62,7 +62,13 @@ reset_fake_services() {
   FAKE_RELEASE_LAST_PUBLISH_LATEST=
   FAKE_RELEASE_NAME="Miningcore $release_tag"
   FAKE_RELEASE_BODY='release notes'
+  FAKE_DRAFT_VISIBILITY_LAG_AFTER_CREATE=0
+  FAKE_RELEASE_LIST_ABSENT_READS_REMAINING=0
   FAKE_RELEASE_LIST_DRAFT_READS_REMAINING=0
+  FAKE_ASSET_VISIBILITY_LAG_AFTER_UPLOAD=0
+  FAKE_RELEASE_LIST_ASSET_READS_REMAINING=0
+  FAKE_LAST_UPLOADED_ASSET=
+  FAKE_ASSET_HIDDEN_THIS_READ=false
   FAKE_API_FAILURE=false
   FAKE_API_NOT_FOUND_FAILURE=false
   FAKE_REGISTRY_FAILURE=false
@@ -123,7 +129,11 @@ fake_release_json() {
   [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=true
 
   assets_json=$(while IFS= read -r asset_name; do
-    [[ -n "$asset_name" ]] && fake_asset_json "$asset_name"
+    if [[ -n "$asset_name" &&
+        !( "$FAKE_ASSET_HIDDEN_THIS_READ" == true &&
+          "$asset_name" == "$FAKE_LAST_UPLOADED_ASSET" ) ]]; then
+      fake_asset_json "$asset_name"
+    fi
   done < <(find "$FAKE_ROOT/assets" -maxdepth 1 -type f -printf '%f\n' | sort) | jq -s '.')
 
   jq -n --arg tag "$GITHUB_REF_NAME" --argjson draft "$draft" \
@@ -146,6 +156,22 @@ fake_release_list() {
   local visible_state=$FAKE_RELEASE_STATE
   local other_tag
   local page_file=$FAKE_ROOT/release-page.jsonl
+  local include_current=true
+
+  FAKE_ASSET_HIDDEN_THIS_READ=false
+  if [[ "$FAKE_RELEASE_STATE" == draft &&
+      "$FAKE_RELEASE_LIST_ABSENT_READS_REMAINING" -gt 0 ]]; then
+    include_current=false
+    FAKE_RELEASE_LIST_ABSENT_READS_REMAINING=$((
+      FAKE_RELEASE_LIST_ABSENT_READS_REMAINING - 1))
+  fi
+
+  if [[ "$FAKE_RELEASE_STATE" == draft &&
+      "$FAKE_RELEASE_LIST_ASSET_READS_REMAINING" -gt 0 ]]; then
+    FAKE_ASSET_HIDDEN_THIS_READ=true
+    FAKE_RELEASE_LIST_ASSET_READS_REMAINING=$((
+      FAKE_RELEASE_LIST_ASSET_READS_REMAINING - 1))
+  fi
 
   if [[ "$FAKE_RELEASE_STATE" == published &&
       "$FAKE_RELEASE_LIST_DRAFT_READS_REMAINING" -gt 0 ]]; then
@@ -154,7 +180,7 @@ fake_release_list() {
   fi
 
   : > "$page_file"
-  if [[ "$FAKE_RELEASE_STATE" != absent ]]; then
+  if [[ "$FAKE_RELEASE_STATE" != absent && "$include_current" == true ]]; then
     fake_release_json "$visible_state" >> "$page_file"
     if [[ "$FAKE_DUPLICATE_CURRENT_RELEASE" == true ]]; then
       fake_release_json "$visible_state" >> "$page_file"
@@ -252,6 +278,7 @@ gh() {
       ! fake_has_argument --prerelease "$@" || fail 'Stable draft was marked prerelease'
     fi
     FAKE_RELEASE_STATE=draft
+    FAKE_RELEASE_LIST_ABSENT_READS_REMAINING=$FAKE_DRAFT_VISIBILITY_LAG_AFTER_CREATE
     return
   fi
 
@@ -289,6 +316,8 @@ curl() {
   [[ "${source##*/}" == "$asset_name" ]] || fail 'Asset upload name changed'
   [[ ! -e "$FAKE_ROOT/assets/$asset_name" ]] || fail 'Asset overwrite was attempted'
   cp -- "$source" "$FAKE_ROOT/assets/$asset_name"
+  FAKE_LAST_UPLOADED_ASSET=$asset_name
+  FAKE_RELEASE_LIST_ASSET_READS_REMAINING=$FAKE_ASSET_VISIBILITY_LAG_AFTER_UPLOAD
   fake_asset_json "$asset_name" > "$output_file"
 }
 
@@ -373,6 +402,8 @@ complete_publication() {
 
 scenario_interrupted_publication_resumes() (
   reset_fake_services interrupted
+  FAKE_DRAFT_VISIBILITY_LAG_AFTER_CREATE=2
+  FAKE_ASSET_VISIBILITY_LAG_AFTER_UPLOAD=2
   FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$previous_digest
   FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$previous_digest
 
@@ -526,6 +557,18 @@ scenario_duplicate_release_tag_is_ambiguous() (
   run_command prepare
 )
 
+scenario_draft_visibility_timeout_fails_closed() (
+  reset_fake_services draft-visibility-timeout
+  FAKE_DRAFT_VISIBILITY_LAG_AFTER_CREATE=10
+  run_command prepare
+)
+
+scenario_asset_visibility_timeout_fails_closed() (
+  reset_fake_services asset-visibility-timeout
+  FAKE_ASSET_VISIBILITY_LAG_AFTER_UPLOAD=10
+  run_command prepare
+)
+
 scenario_interrupted_publication_resumes
 scenario_older_rerun_preserves_newer_surfaces
 scenario_prerelease_never_moves_mutable_surfaces
@@ -539,7 +582,9 @@ for scenario in \
   scenario_release_list_404_is_not_absence \
   scenario_non_authoritative_registry_failure_is_fatal \
   scenario_stage_without_release_is_ambiguous \
-  scenario_duplicate_release_tag_is_ambiguous; do
+  scenario_duplicate_release_tag_is_ambiguous \
+  scenario_draft_visibility_timeout_fails_closed \
+  scenario_asset_visibility_timeout_fails_closed; do
   set +e
   "$scenario" > "$test_root/$scenario.out" 2>&1
   status=$?

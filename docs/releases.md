@@ -1005,6 +1005,10 @@ durable, the workflow does not create either full-version container tag and does
 queues up to 100 release tags, processes one at a time and never cancels an active publication. This
 keeps release freshness inspection and mutation inside one serialized boundary.
 
+GitHub's release list may briefly lag a successful draft creation, asset upload or publication.
+The workflow retries those visibility checks for a bounded period, always pins the retained numeric
+release ID during asset work, and fails closed when authoritative state does not converge.
+
 When a stable draft is published, the workflow compares it with every other published stable
 release and explicitly chooses whether GitHub may mark it latest. After publication, each GHCR
 destination is created from the recorded digest and inspected again. An older rerun leaves `X.Y`

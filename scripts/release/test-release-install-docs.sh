@@ -69,6 +69,8 @@ assert_contains 'the authenticated draft-discovery command' \
   'gh api --paginate --slurp'
 assert_contains 'the exact-one release selection guard' \
   'expected exactly one matching draft or published release'
+assert_contains 'the bounded release-list visibility policy' \
+  'retries those visibility checks for a bounded period'
 assert_contains 'the repository-wide publication queue' \
   'queues up to 100 release tags'
 assert_contains 'the pruned-stage recovery rule' \
