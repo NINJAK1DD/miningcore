@@ -11,6 +11,8 @@ if ! checker_result=$(mktemp); then
   exit 70
 fi
 
+# The EXIT trap is the only caller; ShellCheck cannot infer that callback edge.
+# shellcheck disable=SC2317
 cleanup() {
   rm -f -- "$checker_result"
 }
@@ -24,8 +26,17 @@ set -e
 
 if [[ "$status" -eq 69 ]]; then
   unresolved_image_tags=()
+  expected_image_tags=()
 
-  if ! mapfile -t unresolved_image_tags <"$checker_result"; then
+  for target in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
+    expected_image=$(miningcore_linux_release_target_image "$target")
+    expected_image_tags+=("${expected_image%@*}")
+  done
+
+  # Read no more than one line beyond the complete configured set. The extra line proves an
+  # overlong result without loading an arbitrarily long multi-line file into memory.
+  if ! mapfile -t -n "$(( ${#expected_image_tags[@]} + 1 ))" \
+      unresolved_image_tags <"$checker_result"; then
     echo "Unable to read image-pin result file: $checker_result" >&2
     exit 70
   fi
@@ -36,27 +47,23 @@ if [[ "$status" -eq 69 ]]; then
     exit 70
   fi
 
-  if (( ${#unresolved_image_tags[@]} > ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )); then
-    echo 'Image-pin checker returned more unresolved targets than are configured' >&2
-    exit 70
-  fi
-
   expected_index=0
   validated_image_tags=()
   canonical_targets=''
+  reported_line=0
 
   for reported_tag in "${unresolved_image_tags[@]}"; do
     matched=false
+    ((reported_line += 1))
 
-    while (( expected_index < ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )); do
-      expected_image=$(miningcore_linux_release_target_image \
-        "${MININGCORE_LINUX_RELEASE_TARGETS[$expected_index]}")
-      expected_tag=${expected_image%@*}
+    while (( expected_index < ${#expected_image_tags[@]} )); do
+      expected_tag=${expected_image_tags[$expected_index]}
       ((expected_index += 1))
 
       if [[ "$reported_tag" == "$expected_tag" ]]; then
         matched=true
         validated_image_tags+=("$expected_tag")
+        canonical_targets+="${canonical_targets:+, }$expected_tag"
         break
       fi
     done
@@ -64,13 +71,9 @@ if [[ "$status" -eq 69 ]]; then
     if [[ "$matched" != true ]]; then
       # Do not repeat unvalidated handoff content in logs or workflow commands.
       echo 'Image-pin checker returned a non-canonical, unknown, duplicate, or' \
-        'out-of-order unresolved target' >&2
+        "out-of-order unresolved target at line $reported_line" >&2
       exit 70
     fi
-  done
-
-  for validated_tag in "${validated_image_tags[@]}"; do
-    canonical_targets+="${canonical_targets:+, }$validated_tag"
   done
 
   # mapfile cannot represent NUL bytes. Compare the original bytes with a canonical

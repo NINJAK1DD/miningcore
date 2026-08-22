@@ -53,6 +53,12 @@ if [[ ${MININGCORE_TEST_INSPECT_FAILURE:-} = 1 ||
   exit 1
 fi
 
+if [[ ${MININGCORE_TEST_WORKFLOW_COMMAND_TAG:-} = "$4" ]]; then
+  echo '::error title=Injected by registry::pwned' >&2
+  echo 'response: connection reset by peer' >&2
+  exit 1
+fi
+
 if [[ ${MININGCORE_TEST_NOT_FOUND_TAG:-} = "$4" ]]; then
   printf 'ERROR: docker.io/library/%s: not found\n' "$4" >&2
   exit 1
@@ -137,6 +143,71 @@ if [[ "$registry_status" -ne 69 ]] ||
       <<<"$registry_output"; then
   echo 'Image-pin freshness check did not distinguish registry failure from drift' >&2
   printf '%s\n' "$registry_output" >&2
+  exit 1
+fi
+
+set +e
+workflow_command_output=$(
+  GITHUB_ACTIONS=true \
+    MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
+    PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+)
+workflow_command_status=$?
+set -e
+
+workflow_command='::error title=Injected by registry::pwned'
+workflow_guard_token=$(
+  sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' \
+    <<<"$workflow_command_output" | head -n 1
+)
+
+if [[ "$workflow_command_status" -ne 69 ]] ||
+    [[ ! "$workflow_guard_token" =~ ^[0-9a-f]{32}$ ]]; then
+  echo 'Image-pin checker did not guard registry output in GitHub Actions' >&2
+  printf '%s\n' "$workflow_command_output" >&2
+  exit 1
+fi
+
+workflow_stop_line=$(awk -v needle="::stop-commands::$workflow_guard_token" \
+  'index($0, needle) { print NR; exit }' <<<"$workflow_command_output")
+workflow_payload_line=$(awk -v needle="$workflow_command" \
+  'index($0, needle) { print NR; exit }' <<<"$workflow_command_output")
+workflow_resume_line=$(awk -v needle="::$workflow_guard_token::" \
+  'index($0, needle) { print NR; exit }' <<<"$workflow_command_output")
+
+if [[ -z "$workflow_stop_line" || -z "$workflow_payload_line" ||
+    -z "$workflow_resume_line" ]] ||
+    (( workflow_stop_line >= workflow_payload_line ||
+      workflow_payload_line >= workflow_resume_line )); then
+  echo 'Image-pin checker emitted registry output outside its workflow-command guard' >&2
+  printf '%s\n' "$workflow_command_output" >&2
+  exit 1
+fi
+
+guard_failure_bin="$work_dir/guard-failure-bin"
+mkdir -p "$guard_failure_bin"
+
+cat > "$guard_failure_bin/od" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod 0755 "$guard_failure_bin/od"
+
+set +e
+guard_failure_output=$(
+  GITHUB_ACTIONS=true \
+    MININGCORE_TEST_WORKFLOW_COMMAND_TAG=ubuntu:26.04 \
+    PATH="$guard_failure_bin:$fake_bin:$PATH" bash "$checker" 2>&1
+)
+guard_failure_status=$?
+set -e
+
+if [[ "$guard_failure_status" -ne 69 ]] ||
+    grep -Fq "$workflow_command" <<<"$guard_failure_output" ||
+    ! grep -Fq 'Registry diagnostic suppressed because its workflow-command guard' \
+      <<<"$guard_failure_output"; then
+  echo 'Image-pin checker exposed registry output after command-guard creation failed' >&2
+  printf '%s\n' "$guard_failure_output" >&2
   exit 1
 fi
 
@@ -628,7 +699,7 @@ assert_invalid_handoff 'blank line' $'\n' "$invalid_target_diagnostic"
 assert_invalid_handoff \
   'blank line between targets' \
   $'ubuntu:26.04\n\nubuntu:22.04\n' \
-  'more unresolved targets than are configured'
+  'out-of-order unresolved target at line 2'
 assert_invalid_handoff \
   'leading whitespace' \
   $' ubuntu:26.04\n' \
@@ -653,7 +724,7 @@ assert_invalid_handoff \
 assert_invalid_handoff \
   'overlong result' \
   $'ubuntu:26.04\nubuntu:22.04\nubuntu:26.04\n' \
-  'more unresolved targets than are configured'
+  'out-of-order unresolved target at line 3'
 assert_invalid_handoff \
   'legacy joined payload' \
   $'ubuntu:26.04, ubuntu:22.04\n' \
@@ -701,6 +772,54 @@ if [[ "$injected_annotation_status" -ne 70 ]] ||
   exit 1
 fi
 
+large_contract_root="$work_dir/large-monitor-contract"
+large_contract_scripts="$large_contract_root/scripts/release"
+mkdir -p "$large_contract_scripts"
+cp "$monitor" "$large_contract_scripts/run-linux-release-image-pin-monitor.sh"
+cp "$monitor_contract_scripts/check-linux-release-image-pins.sh" \
+  "$large_contract_scripts/check-linux-release-image-pins.sh"
+
+cat > "$large_contract_scripts/linux-release-targets.sh" <<'EOF'
+#!/usr/bin/env bash
+readonly MININGCORE_LINUX_RELEASE_TARGETS=(26.04 24.04 22.04 20.04)
+
+miningcore_linux_release_target_image() {
+  printf 'ubuntu:%s@sha256:%064d\n' "$1" 0
+}
+EOF
+
+set +e
+large_contract_output=$(
+  MININGCORE_TEST_HANDOFF_CONTENT=$'ubuntu:26.04\nubuntu:22.04\nubuntu:20.04\n' \
+    bash "$large_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+large_contract_status=$?
+set -e
+
+if [[ "$large_contract_status" -ne 0 ]] ||
+    ! grep -Fq 'No drift decision for ubuntu:26.04, ubuntu:22.04, ubuntu:20.04;' \
+      <<<"$large_contract_output"; then
+  echo 'Image-pin monitor rejected an ordered subset of a larger target contract' >&2
+  printf '%s\n' "$large_contract_output" >&2
+  exit 1
+fi
+
+set +e
+large_contract_blank_output=$(
+  MININGCORE_TEST_HANDOFF_CONTENT=$'ubuntu:26.04\n\nubuntu:22.04\n' \
+    bash "$large_contract_scripts/run-linux-release-image-pin-monitor.sh" 2>&1
+)
+large_contract_blank_status=$?
+set -e
+
+if [[ "$large_contract_blank_status" -ne 70 ]] ||
+    ! grep -Fq 'out-of-order unresolved target at line 2' \
+      <<<"$large_contract_blank_output"; then
+  echo 'Image-pin monitor did not reject a blank line under a larger target contract' >&2
+  printf '%s\n' "$large_contract_blank_output" >&2
+  exit 1
+fi
+
 cat > "$monitor_contract_scripts/check-linux-release-image-pins.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' 'ubuntu:26.04' >"$MININGCORE_IMAGE_PIN_RESULT_FILE"
@@ -727,6 +846,7 @@ fi
 
 for expected in \
   "'scripts/release/run-linux-release-image-pin-monitor.sh'" \
+  'shellcheck -x' \
   'run: bash scripts/release/run-linux-release-image-pin-monitor.sh'; do
   if ! grep -Fq "$expected" "$workflow"; then
     echo "Image-pin workflow is missing monitor contract: $expected" >&2
@@ -735,8 +855,11 @@ for expected in \
 done
 
 for expected in \
+  'workflow-command processing is suspended' \
   'unresolved canonical image tag per line in central release-target order' \
   'accepts only a non-empty, unique, in-order subset of the configured tags' \
+  'configured-target-plus-one bound' \
+  'locally derived line number' \
   'readable, comma-separated summary on stderr'; do
   if ! grep -Fq "$expected" "$release_docs"; then
     echo "Release documentation is missing image-pin result contract: $expected" >&2

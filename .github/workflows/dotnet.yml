@@ -63,6 +63,15 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-package-targets.sh
 
+    - name: Lint Linux release image-pin scripts
+      shell: bash
+      run: >-
+        shellcheck -x
+        scripts/release/linux-release-targets.sh
+        scripts/release/check-linux-release-image-pins.sh
+        scripts/release/run-linux-release-image-pin-monitor.sh
+        scripts/release/test-linux-release-image-pins.sh
+
     - name: Test Linux release image-pin freshness checks
       shell: bash
       run: bash scripts/release/test-linux-release-image-pins.sh

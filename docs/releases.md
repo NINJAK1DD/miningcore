@@ -956,11 +956,16 @@ status, so a transient failure on one target cannot hide confirmed drift on anot
 workflow warning names only the image tags for which no drift decision could be made. Authentication
 failures remain fatal unless the registry diagnostic independently identifies rate limiting. Missing
 Docker, Buildx or `imagetools inspect`, and unparseable resolver output, also use status 70 because
-the monitor itself needs repair. The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a
-private machine-readable handoff so checker diagnostics remain live. The checker writes exactly one
+the monitor itself needs repair. In GitHub Actions, untrusted registry and proxy diagnostics are
+printed only while workflow-command processing is suspended, preventing their contents from
+creating annotations or changing runner state. The wrapper supplies
+`MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so checker diagnostics
+remain live. The checker writes exactly one
 unresolved canonical image tag per line in central release-target order. The wrapper reads those
-lines with `mapfile` and accepts only a non-empty, unique, in-order subset of the configured tags
-before constructing a warning from matched contract values. Empty or overlong files, blank lines,
+lines with a configured-target-plus-one bound and
+accepts only a non-empty, unique, in-order subset of the configured tags before constructing a
+warning from matched contract values. Invalid-line diagnostics identify only the safe,
+locally derived line number; they never repeat handoff content. Empty or overlong files, blank lines,
 whitespace or carriage-return variants, unknown, duplicate or out-of-order tags, and result-file
 creation, read or write failures use structural status 70 and never produce a workflow warning. A
 final byte comparison against the canonical serialization also rejects binary contamination and a

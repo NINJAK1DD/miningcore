@@ -55,6 +55,29 @@ is_transient_registry_failure() {
   return 1
 }
 
+write_registry_diagnostic() {
+  local diagnostic=$1
+  local command_token
+
+  if [[ ${GITHUB_ACTIONS:-} != true ]]; then
+    printf '%s\n' "$diagnostic" >&2
+    return
+  fi
+
+  # Registry and proxy output is untrusted. Suspend workflow-command parsing around it so a
+  # diagnostic beginning with "::" cannot create an annotation or mutate runner state.
+  if ! command_token=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') ||
+      [[ ! "$command_token" =~ ^[0-9a-f]{32}$ ]]; then
+    echo 'Registry diagnostic suppressed because its workflow-command guard could not be created' \
+      >&2
+    return
+  fi
+
+  printf '::stop-commands::%s\n' "$command_token" >&2
+  printf '%s\n' "$diagnostic" >&2
+  printf '::%s::\n' "$command_token" >&2
+}
+
 saw_drift=false
 saw_structural_failure=false
 saw_transient_failure=false
@@ -77,7 +100,7 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
       saw_structural_failure=true
     fi
 
-    printf '%s\n' "$inspection" >&2
+    write_registry_diagnostic "$inspection"
     continue
   fi
 
@@ -121,8 +144,8 @@ if [[ "$saw_transient_failure" = true ]]; then
   else
     unresolved_targets=''
 
-    for image_tag in "${transient_image_tags[@]}"; do
-      unresolved_targets+="${unresolved_targets:+, }$image_tag"
+    for unresolved_tag in "${transient_image_tags[@]}"; do
+      unresolved_targets+="${unresolved_targets:+, }$unresolved_tag"
     done
 
     printf 'Transient image checks unresolved: %s\n' "$unresolved_targets" >&2
