@@ -10,6 +10,16 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 70
 fi
 
+if ! docker buildx version >/dev/null 2>&1; then
+  echo 'Docker Buildx is required to resolve Docker Official Image manifest digests' >&2
+  exit 70
+fi
+
+if ! docker buildx imagetools inspect --help >/dev/null 2>&1; then
+  echo 'Docker Buildx imagetools inspect is required to resolve image digests' >&2
+  exit 70
+fi
+
 for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   pinned_image=$(miningcore_linux_release_target_image "$ubuntu_version")
   image_tag=${pinned_image%@*}

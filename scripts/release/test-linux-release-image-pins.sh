@@ -20,6 +20,27 @@ cat > "$fake_bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$#" -eq 2 && "$1" = buildx && "$2" = version ]]; then
+  if [[ ${MININGCORE_TEST_BUILDX_FAILURE:-} = 1 ]]; then
+    echo "docker: 'buildx' is not a docker command" >&2
+    exit 1
+  fi
+
+  echo 'github.com/docker/buildx v0.0.0-test'
+  exit 0
+fi
+
+if [[ "$#" -eq 4 && "$1" = buildx && "$2" = imagetools &&
+    "$3" = inspect && "$4" = --help ]]; then
+  if [[ ${MININGCORE_TEST_IMAGETOOLS_FAILURE:-} = 1 ]]; then
+    echo "unknown command 'imagetools' for 'docker buildx'" >&2
+    exit 1
+  fi
+
+  echo 'Usage: docker buildx imagetools inspect NAME'
+  exit 0
+fi
+
 if [[ "$#" -ne 4 || "$1" != buildx || "$2" != imagetools || "$3" != inspect ]]; then
   echo "Unexpected docker invocation: $*" >&2
   exit 64
@@ -131,6 +152,39 @@ if [[ "$missing_docker_status" -ne 70 ]] ||
   printf '%s\n' "$missing_docker_output" >&2
   exit 1
 fi
+
+for structural_failure in BUILDX IMAGETOOLS; do
+  failure_variable="MININGCORE_TEST_${structural_failure}_FAILURE"
+
+  set +e
+  structural_output=$(
+    env "$failure_variable=1" PATH="$fake_bin:$PATH" bash "$checker" 2>&1
+  )
+  structural_status=$?
+  set -e
+
+  if [[ "$structural_status" -ne 70 ]] ||
+      ! grep -Fq 'is required to resolve' <<<"$structural_output"; then
+    echo "Image-pin checker downgraded a missing $structural_failure command" >&2
+    printf '%s\n' "$structural_output" >&2
+    exit 1
+  fi
+
+  set +e
+  structural_monitor_output=$(
+    env "$failure_variable=1" PATH="$fake_bin:$PATH" bash "$monitor" 2>&1
+  )
+  structural_monitor_status=$?
+  set -e
+
+  if [[ "$structural_monitor_status" -ne 70 ]] ||
+      grep -Fq '::warning' <<<"$structural_monitor_output" ||
+      ! grep -Fq 'is required to resolve' <<<"$structural_monitor_output"; then
+    echo "Image-pin monitor downgraded a missing $structural_failure command" >&2
+    printf '%s\n' "$structural_monitor_output" >&2
+    exit 1
+  fi
+done
 
 monitor_success_output=$(PATH="$fake_bin:$PATH" bash "$monitor")
 if ! grep -Fq 'ubuntu:26.04 still matches reviewed pin' <<<"$monitor_success_output" ||

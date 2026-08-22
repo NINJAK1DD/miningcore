@@ -168,6 +168,7 @@ find_unique_line() {
   printf '%s\n' "${matches[0]}"
 }
 
+# Keep these as bare assignments: set -e makes an ambiguous or missing anchor fail the test.
 directory_guard_line=$(find_unique_line directory-guard 'test -d "$release_dir"' "$install_block")
 symlink_line=$(
   find_unique_line stable-symlink \
@@ -189,7 +190,7 @@ fi
 
 if [[ "$symlink_line" -le "$directory_guard_line" ||
     "$release_consumed_line" -le "$symlink_line" ||
-    "$cleanup_line" -le "$symlink_line" ]]; then
+    "$cleanup_line" -le "$release_consumed_line" ]]; then
   echo 'The stable symlink, readiness reset and cleanup operations are not safely ordered' >&2
   exit 1
 fi
