@@ -127,7 +127,50 @@ cat > "$work_dir/bin/dotnet" <<'SH'
 set -eu
 
 printf 'dotnet %s\n' "$*" >> "$MININGCORE_HELPER_TEST_TRACE"
-test "${1:-}" = publish
+
+case "${1:-}" in
+  --list-sdks)
+    printf '%s\n' '10.0.100 [/usr/lib/dotnet/sdk]'
+    ;;
+  --info)
+    printf '%s\n' '.NET SDK 10.0.100 (Ubuntu fixture)'
+    ;;
+  publish)
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+SH
+
+cat > "$work_dir/bin/readlink" <<'SH'
+#!/usr/bin/env sh
+set -eu
+
+test "${1:-}" = -f
+test -n "${2:-}"
+printf '%s\n' /usr/lib/dotnet/dotnet
+SH
+
+cat > "$work_dir/bin/dpkg-query" <<'SH'
+#!/usr/bin/env sh
+set -eu
+
+case "$*" in
+  '-S /usr/lib/dotnet/dotnet')
+    printf '%s\n' 'dotnet-host-10.0: /usr/lib/dotnet/dotnet'
+    ;;
+  *'${Status}'*'dotnet-sdk-10.0')
+    printf '%s\n' 'install ok installed'
+    ;;
+  *'${Maintainer}'*)
+    printf '%s\n' 'Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>'
+    ;;
+  *)
+    echo "Unexpected dpkg-query fixture call: $*" >&2
+    exit 1
+    ;;
+esac
 SH
 
 chmod +x "$work_dir/bin/"*
@@ -161,6 +204,7 @@ helpers=(
   build-debian-12.sh
   build-ubuntu-22.04.sh
   build-ubuntu-24.04.sh
+  build-ubuntu-26.04.sh
 )
 
 assert_fail_closed() {
@@ -221,6 +265,8 @@ for helper in "${helpers[@]}"; do
   cp "$repository_root/$helper" "$sandbox/$helper"
   cp "$repository_root/scripts/release/source-build-identity.sh" \
     "$sandbox/scripts/release/source-build-identity.sh"
+  cp "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
+    "$sandbox/scripts/release/verify-ubuntu-dotnet-sdk.sh"
 
   bash -n "$sandbox/$helper"
 

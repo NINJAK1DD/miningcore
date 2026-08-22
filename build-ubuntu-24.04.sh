@@ -19,7 +19,10 @@ sudo apt-get -o Acquire::Retries=3 -y install \
   libsodium-dev \
   libzmq5 \
   libzmq3-dev \
-  libgmp-dev
+  libgmp-dev \
+  file
+
+bash scripts/release/verify-ubuntu-dotnet-sdk.sh
 
 (
   cd src/Miningcore

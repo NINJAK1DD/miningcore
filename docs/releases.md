@@ -41,34 +41,53 @@ the `latest` container tag.
 Open the [releases page](https://github.com/NINJAK1DD/miningcore/releases), choose a version, and
 download the archive matching the host and the checksum manifest:
 
-- `miningcore-VERSION-linux-x64-ubuntu-26.04.tar.gz` (primary Ubuntu release)
-- `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz`
+- `miningcore-VERSION-linux-x64-ubuntu-26.04.tar.gz` (choose this on Ubuntu 26.04)
+- `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
 The examples below use the current `v0.1.0-rc.9`. Substitute the version you selected.
 
 ```console
 export MININGCORE_VERSION=v0.1.0-rc.9
-. /etc/os-release
+MININGCORE_UBUNTU=
+if [ -r /etc/os-release ]; then
+  MININGCORE_HOST_RELEASE="$(
+    (. /etc/os-release; printf '%s:%s' "$ID" "$VERSION_ID")
+  )"
+else
+  MININGCORE_HOST_RELEASE=unknown
+fi
 if [ "$(uname -m)" != x86_64 ]; then
   echo "STOP: prebuilt release archives require x86_64" >&2
-  exit 1
+else
+  case "$MININGCORE_HOST_RELEASE" in
+    ubuntu:22.04|ubuntu:26.04)
+      export MININGCORE_UBUNTU="${MININGCORE_HOST_RELEASE#ubuntu:}"
+      ;;
+    *)
+      echo "STOP: use the documented source-build path on $MININGCORE_HOST_RELEASE" >&2
+      ;;
+  esac
 fi
-case "$ID:$VERSION_ID" in
-  ubuntu:22.04|ubuntu:26.04) export MININGCORE_UBUNTU="$VERSION_ID" ;;
-  *) echo "STOP: use the documented source-build path on $ID $VERSION_ID" >&2; exit 1 ;;
-esac
-archive="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
-curl -fLO \
-  "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/${archive}"
-curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
-sha256sum --ignore-missing --check --strict SHA256SUMS
+if [ -n "$MININGCORE_UBUNTU" ]; then
+  archive="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
+  curl -fLO \
+    "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/${archive}"
+  curl -fLO \
+    "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
+  sha256sum --ignore-missing --check --strict SHA256SUMS
+fi
 ```
 
 The host-release check prevents accidental cross-distribution installation. `SHA256SUMS` covers both
 archives; `--ignore-missing` limits verification to the selected archive, while `--strict` rejects a
-malformed checksum line. GitHub also publishes build provenance for each archive. If
-the [GitHub CLI](https://cli.github.com/) is installed, verify it with:
+malformed checksum line.
+Do not continue to the runtime and installation steps unless the block selected an archive and its
+checksum verification succeeded. The block deliberately returns to an interactive shell after a
+`STOP` message instead of closing an SSH session.
+
+GitHub also publishes build provenance for each archive. If the
+[GitHub CLI](https://cli.github.com/) is installed, verify it with:
 
 ```console
 gh attestation verify "$archive" --repo NINJAK1DD/miningcore
@@ -841,11 +860,14 @@ merged-mining support before it can be offered as a Miningcore template.
 
 The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.10` or
 `v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
-fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. Each lane runs
+fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
+is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
+not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Each lane runs
 the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links, and checks
 that the binary reports the release version and source commit. The workflow then verifies the
 two-archive set, creates one checksum manifest, smoke-tests the 26.04 packaged image, and publishes
-both archives and the container with provenance.
+both archives and the container with provenance. A rerun first compares any existing GitHub Release
+assets and stops before attestations or GHCR mutation when the release already exists.
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.

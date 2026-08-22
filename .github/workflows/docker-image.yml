@@ -7,7 +7,9 @@ jobs:
 
   build:
 
-    runs-on: ubuntu-26.04
+    # Docker supplies the Ubuntu 26.04 build userspace. Keep generic publication
+    # orchestration on GitHub's current stable runner image.
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out the repo

@@ -8,7 +8,7 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_project="$repository_root/src/Miningcore.Tests/Miningcore.Tests.csproj"
 test_output="$repository_root/src/Miningcore.Tests/bin/Release/net10.0"
 
-# Build only the managed test host. The reviewed GCC 15 libraries have already been built and
+# Build only the managed test host. The target Ubuntu native libraries have already been built and
 # published, and are copied into the test output below so these tests execute those exact files.
 dotnet build "$test_project" \
   --configuration Release \

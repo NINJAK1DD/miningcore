@@ -26,9 +26,52 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  resolve-release:
+    name: Resolve release identity and targets
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      source_commit: ${{ steps.release.outputs.source_commit }}
+      source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
+      target_matrix: ${{ steps.release.outputs.target_matrix }}
+
+    steps:
+      - name: Checkout release contract
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve one release identity and target matrix
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/release/linux-release-targets.sh
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            # A failed-job rerun reuses this successful job's output instead of
+            # independently changing one matrix leg to the new run attempt.
+            version="v0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          fi
+
+          source_commit=$(git rev-parse 'HEAD^{commit}')
+          source_date_epoch=$(git show -s --format=%ct "$source_commit")
+          target_matrix=$(miningcore_linux_release_matrix_json)
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$source_date_epoch" >> "$GITHUB_OUTPUT"
+          echo "target_matrix=$target_matrix" >> "$GITHUB_OUTPUT"
+
   source-container-check:
     name: Test source container
-    runs-on: ubuntu-26.04
+    # Docker supplies the Ubuntu 26.04 userspace under test. Stable orchestration
+    # avoids coupling a generic container job to preview-runner capacity.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -379,15 +422,16 @@ jobs:
 
   build-release:
     name: Test and package Ubuntu ${{ matrix.ubuntu }} x64 (${{ matrix.role }})
-    runs-on: ubuntu-${{ matrix.ubuntu }}
+    needs: resolve-release
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ubuntu:${{ matrix.ubuntu }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - ubuntu: '26.04'
-            role: primary
-          - ubuntu: '22.04'
-            role: compatibility
+      matrix: ${{ fromJSON(needs.resolve-release.outputs.target_matrix) }}
     permissions:
       contents: read
 
@@ -407,12 +451,22 @@ jobs:
           --health-retries 5
 
     steps:
+      - name: Bootstrap release build container
+        run: |
+          set -euo pipefail
+          apt-get -o Acquire::Retries=3 update
+          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y \
+            ca-certificates curl git gzip tar unzip cmake ninja-build \
+            build-essential libssl-dev pkg-config libboost-all-dev \
+            libsodium-dev libzmq3-dev libgmp-dev \
+            libicu-dev libgssapi-krb5-2 zlib1g file passwd util-linux
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Verify release runner identity
+      - name: Verify release build identity
         shell: bash
         run: |
           set -euo pipefail
@@ -420,6 +474,8 @@ jobs:
           test "$ID" = ubuntu
           test "$VERSION_ID" = "${{ matrix.ubuntu }}"
           test "$(uname -m)" = x86_64
+          test "$(git rev-parse 'HEAD^{commit}')" = \
+            "${{ needs.resolve-release.outputs.source_commit }}"
 
       - name: Test administrative API systemd permissions
         run: bash scripts/release/test-admin-api-systemd-permissions.sh
@@ -446,27 +502,6 @@ jobs:
             echo "Release tag $GITHUB_REF_NAME does not point to a commit reachable from dev"
             exit 1
           fi
-
-      - name: Resolve package version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            version="$GITHUB_REF_NAME"
-          else
-            version="v0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          fi
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "source_date_epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Install build and runtime dependencies
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          cmake ninja-build build-essential libssl-dev pkg-config
-          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev file
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -524,7 +559,7 @@ jobs:
       - name: Run complete test suite
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0
-          MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
+          MININGCORE_TEST_POSTGRES: Host=postgres;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
         run: >-
           dotnet test --configuration Release
           --logger:"console;verbosity=detailed"
@@ -582,11 +617,11 @@ jobs:
 
       - name: Assemble release archive
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
-          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.source_date_epoch }}
+          SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+          SOURCE_DATE_EPOCH: ${{ needs.resolve-release.outputs.source_date_epoch }}
         run: >-
           bash scripts/release/package-linux-x64.sh
-          "${{ steps.version.outputs.version }}"
+          "${{ needs.resolve-release.outputs.version }}"
           "${{ matrix.ubuntu }}"
           "$GITHUB_WORKSPACE/publish"
           "$GITHUB_WORKSPACE/dist"
@@ -596,7 +631,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check SHA256SUMS)
-          archive="miningcore-${{ steps.version.outputs.version }}"
+          archive="miningcore-${{ needs.resolve-release.outputs.version }}"
           archive+="-linux-x64-ubuntu-${{ matrix.ubuntu }}.tar.gz"
           tar -tzf "dist/$archive"
 
@@ -606,12 +641,12 @@ jobs:
           name: release-archive-ubuntu-${{ matrix.ubuntu }}
           path: dist/*.tar.gz
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   collect-release-assets:
     name: Collect release archives
-    needs: build-release
-    runs-on: ubuntu-26.04
+    needs: [ resolve-release, build-release ]
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
 
@@ -628,7 +663,10 @@ jobs:
 
       - name: Validate archive set and write combined checksums
         shell: bash
-        run: bash scripts/release/collect-linux-release-assets.sh dist
+        run: >-
+          bash scripts/release/collect-linux-release-assets.sh dist
+          "${{ needs.resolve-release.outputs.version }}"
+          "${{ needs.resolve-release.outputs.source_commit }}"
 
       - name: Upload complete release asset set
         uses: actions/upload-artifact@v7
@@ -643,7 +681,7 @@ jobs:
   container-check:
     name: Test packaged container
     needs: collect-release-assets
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
 
@@ -686,7 +724,7 @@ jobs:
     name: Publish GitHub Release and GHCR image
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [ source-container-check, collect-release-assets, container-check ]
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: write
@@ -704,17 +742,57 @@ jobs:
           name: release-assets
           path: dist
 
+      - name: Check existing release before external mutation
+        id: existing-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          error_file=$(mktemp)
+          trap 'rm -f -- "$error_file"' EXIT
+
+          set +e
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+            --silent >/dev/null 2>"$error_file"
+          status=$?
+          set -e
+
+          if [[ "$status" -ne 0 ]]; then
+            if grep -Fq 'HTTP 404' "$error_file"; then
+              echo 'exists=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            cat "$error_file" >&2
+            exit "$status"
+          fi
+
+          mkdir existing-release
+          gh release download "$GITHUB_REF_NAME" --dir existing-release \
+            --pattern 'miningcore-*-linux-x64-ubuntu-*.tar.gz' \
+            --pattern 'SHA256SUMS'
+
+          bash scripts/release/verify-existing-release-assets.sh \
+            dist existing-release
+
+          echo "Release $GITHUB_REF_NAME already exists with identical assets"
+          echo 'exists=true' >> "$GITHUB_OUTPUT"
+
       - name: Attest binary archive provenance
+        if: steps.existing-release.outputs.exists != 'true'
         uses: actions/attest@v4
         with:
           subject-path: dist/*.tar.gz
 
       - name: Resolve lowercase GHCR image name
+        if: steps.existing-release.outputs.exists != 'true'
         id: image
         shell: bash
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare container context
+        if: steps.existing-release.outputs.exists != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -723,6 +801,7 @@ jobs:
             --strip-components=1 -C container-context
 
       - name: Login to GitHub Container Registry
+        if: steps.existing-release.outputs.exists != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -730,9 +809,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Docker Buildx
+        if: steps.existing-release.outputs.exists != 'true'
         uses: docker/setup-buildx-action@v4
 
       - name: Generate container metadata
+        if: steps.existing-release.outputs.exists != 'true'
         id: metadata
         uses: docker/metadata-action@v6
         with:
@@ -745,6 +826,7 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Publish packaged container
+        if: steps.existing-release.outputs.exists != 'true'
         id: container
         uses: docker/build-push-action@v7
         with:
@@ -758,6 +840,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-container
 
       - name: Attest container provenance
+        if: steps.existing-release.outputs.exists != 'true'
         uses: actions/attest@v4
         with:
           subject-name: ${{ steps.image.outputs.name }}
@@ -765,6 +848,7 @@ jobs:
           push-to-registry: true
 
       - name: Create GitHub Release
+        if: steps.existing-release.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -795,20 +879,6 @@ jobs:
             release_args+=(--prerelease --latest=false)
           else
             release_args+=(--latest=true)
-          fi
-
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            mkdir existing-release
-            gh release download "$GITHUB_REF_NAME" --dir existing-release \
-              --pattern 'miningcore-*-linux-x64-ubuntu-*.tar.gz' \
-              --pattern 'SHA256SUMS'
-            cmp dist/SHA256SUMS existing-release/SHA256SUMS
-
-            for archive in dist/*.tar.gz; do
-              cmp "$archive" "existing-release/$(basename "$archive")"
-            done
-            echo "Release $GITHUB_REF_NAME already exists with identical assets"
-            exit 0
           fi
 
           gh release create "${release_args[@]}"

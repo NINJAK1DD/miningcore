@@ -12,21 +12,18 @@ ubuntu_version="$2"
 publish_dir="$(realpath "$3")"
 output_dir="$(realpath -m "$4")"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$repository_root/scripts/release/linux-release-targets.sh"
 
 if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
     echo "Version contains unsupported characters: $version" >&2
     exit 64
 fi
 
-case "$ubuntu_version" in
-    22.04|26.04)
-        ;;
-    *)
-        echo "Unsupported Ubuntu release archive target: $ubuntu_version" >&2
-        echo "Supported targets: 22.04, 26.04" >&2
-        exit 64
-        ;;
-esac
+if ! miningcore_linux_release_target_supported "$ubuntu_version"; then
+    echo "Unsupported Ubuntu release archive target: $ubuntu_version" >&2
+    echo "Supported targets: $(miningcore_linux_release_target_list)" >&2
+    exit 64
+fi
 
 if [[ ! -x "$publish_dir/Miningcore" ]]; then
     echo "Published Miningcore executable was not found in $publish_dir" >&2
