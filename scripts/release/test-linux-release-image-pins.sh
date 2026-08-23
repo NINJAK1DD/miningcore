@@ -1245,18 +1245,22 @@ if ! grep -Fq 'shellcheck -x' "$dotnet_workflow"; then
   exit 1
 fi
 
+# Documentation paragraphs are hard-wrapped for readability. Normalize CR/LF and repeated spaces
+# so security-contract assertions remain specific without becoming coupled to harmless reflowing.
+release_docs_flat=$(tr '\r\n' '  ' <"$release_docs" | tr -s ' ')
+
 for expected in \
   'workflow-command processing is suspended' \
   'Bash runtime warnings' \
   'shell-escaped physical line' \
   'Source evidence is capped' \
-  'is capped at 8,192 characters' \
+  'encoded representation is capped at 8,192 characters' \
   'unresolved canonical image tag per line in central release-target order' \
   'accepts only a non-empty, unique, in-order subset of the configured tags' \
   'configured target count plus one line' \
   'locally derived line number' \
   'readable, comma-separated summary on stderr'; do
-  if ! grep -Fq "$expected" "$release_docs"; then
+  if ! grep -Fq "$expected" <<<"$release_docs_flat"; then
     echo "Release documentation is missing image-pin result contract: $expected" >&2
     exit 1
   fi
