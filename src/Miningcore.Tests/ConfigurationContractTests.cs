@@ -15,6 +15,35 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    private static readonly IReadOnlyDictionary<string, string>
+        ApprovedExampleDonationAddresses =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["bitcoin"] =
+                    "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+                ["dogecoin"] =
+                    "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
+                ["ethereum"] =
+                    "0x4DE55672F0bBB88882A5a589b320eE40FfbdebF9",
+                ["ethereumclassic"] =
+                    "0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0",
+                ["firo"] =
+                    "aH1tURoFqY1quNraAtceE6YFPv3DLFo8zT",
+                ["kaspa"] =
+                    "kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu",
+                ["litecoin"] =
+                    "ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg",
+                ["monero"] =
+                    "43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4" +
+                    "HBosKZch8t7Fpg34DL9dNcN22T7H6JWEC23B9iDLAZqQsp",
+                ["warthog"] =
+                    "4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46",
+                ["xelis"] =
+                    "xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4",
+                ["zcash"] =
+                    "t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
+            };
+
     private static readonly Lazy<JObject> BundledCoinTemplates = new(() =>
         JObject.Parse(File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory, "coins.json"))));
@@ -161,6 +190,7 @@ public class ConfigurationContractTests
         string fileName)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "examples", fileName);
+        var document = ParseConfigurationDocument(File.ReadAllText(path));
         var config = Program.ReadConfig(path, false);
         var result = new ClusterConfigValidator().Validate(config);
 
@@ -174,9 +204,102 @@ public class ConfigurationContractTests
             $"{fileName}: pool '{pool.Id}' references unknown bundled coin " +
             $"template '{pool.Coin}'"));
 
+        AssertShippedExampleOperationalPolicy(fileName, document);
+
         // Exercise mode-aware defaults and cross-setting contracts, including
         // merged-mining persistence and relay sender/recorder ownership rules.
         ValidateNormalStartupWithDiagnostics(config);
+    }
+
+    private static void AssertShippedExampleOperationalPolicy(
+        string fileName, JObject document)
+    {
+        Assert.Null(document.SelectToken(
+            "paymentProcessing.shareRecoveryFile"));
+
+        if(document.SelectToken("paymentProcessing.enabled")?.Value<bool>() ==
+            true)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(
+                    document["shareRecoveryFile"]?.Value<string>()),
+                $"{fileName}: enabled payment processing requires the root " +
+                "shareRecoveryFile setting");
+        }
+
+        var api = Assert.IsType<JObject>(document["api"]);
+        Assert.Equal("127.0.0.1", api["listenAddress"]?.Value<string>());
+        Assert.Equal(4000, api["port"]?.Value<int>());
+        Assert.Equal(4001, api["adminPort"]?.Value<int>());
+        Assert.Equal(4002, api["metricsPort"]?.Value<int>());
+        Assert.Equal(new[] { "127.0.0.1" },
+            api["adminIpWhitelist"]?.Values<string>());
+        Assert.Equal(new[] { "127.0.0.1" },
+            api["metricsIpWhitelist"]?.Values<string>());
+        Assert.False(api.SelectToken("rateLimiting.disabled")?.Value<bool>() ??
+            true);
+        Assert.NotEmpty(api.SelectToken("rateLimiting.rules") ?? new JArray());
+
+        foreach(var credential in document.Descendants()
+                    .OfType<JProperty>()
+                    .Where(property => new[]
+                    {
+                        "apiKey",
+                        "password",
+                        "sharedEncryptionKey",
+                        "user",
+                        "walletPassword",
+                    }.Contains(property.Name,
+                        StringComparer.OrdinalIgnoreCase)))
+        {
+            if(credential.Value.Type != JTokenType.String ||
+                string.IsNullOrEmpty(credential.Value.Value<string>()))
+                continue;
+
+            if(credential.Name.Equals("user",
+                    StringComparison.OrdinalIgnoreCase) &&
+                credential.Value.Value<string>() == "miningcore")
+                continue;
+
+            Assert.StartsWith("CHANGE_ME_",
+                credential.Value.Value<string>());
+        }
+
+        foreach(var pool in document["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var poolId = pool["id"]?.Value<string>() ?? "<unknown>";
+            var coin = pool["coin"]?.Value<string>() ?? string.Empty;
+            var address = pool["address"]?.Value<string>();
+
+            Assert.True(address?.StartsWith("CHANGE_ME_",
+                    StringComparison.Ordinal) == true,
+                $"{fileName}: pool '{poolId}' must use a CHANGE_ME primary " +
+                "wallet placeholder");
+
+            foreach(var propertyName in new[] { "pubKey", "z-address" })
+            {
+                var value = pool[propertyName]?.Value<string>();
+
+                if(value != null)
+                    Assert.StartsWith("CHANGE_ME_", value);
+            }
+
+            foreach(var recipient in pool["rewardRecipients"]?
+                        .Children<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var recipientAddress = recipient["address"]?.Value<string>();
+                var isPlaceholder = recipientAddress?.StartsWith("CHANGE_ME_",
+                    StringComparison.Ordinal) == true;
+                var isApprovedDonation =
+                    ApprovedExampleDonationAddresses.TryGetValue(coin,
+                        out var approvedAddress) &&
+                    recipientAddress == approvedAddress;
+
+                Assert.True(isPlaceholder || isApprovedDonation,
+                    $"{fileName}: pool '{poolId}' has an unexpected reward " +
+                    $"recipient address '{recipientAddress}'");
+            }
+        }
     }
 
     [Theory]

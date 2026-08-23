@@ -5,6 +5,12 @@ Choose the smallest topology that matches the deployment, copy it outside the re
 editors may report those comments even though Miningcore accepts them.
 
 These files are starting points, not production secrets or universal difficulty recommendations.
+Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so copying an example cannot
+silently redirect block rewards. Some coin examples retain a clearly separate `rewardRecipients`
+entry for the maintainer donation address listed in the main README; remove it or change the
+percentage deliberately before deployment. Other optional reward-recipient fields remain
+`CHANGE_ME` placeholders rather than preserving historical third-party addresses.
+
 Do not commit populated configurations. Miningcore does not have a parse-only startup flag; validate
 on an isolated staging host or during a controlled maintenance window, then stop the foreground
 process after its startup checks complete:
@@ -93,6 +99,7 @@ using this advanced topology.
 ## Production checklist
 
 - Replace every `CHANGE_ME` value and every documentation-only address.
+- Review every `rewardRecipients` entry and its percentage; keep, remove or replace it deliberately.
 - Use unique pool IDs and do not rename an ID after it has accounting history.
 - Keep daemon RPC, PostgreSQL, admin, metrics and relay listeners behind appropriate firewalls.
 - Put API and Stratum TLS keys outside source control and restrict their filesystem permissions.

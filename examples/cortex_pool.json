@@ -3,25 +3,25 @@
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
-        "banOnJunkReceive": false,
-        "banOnInvalidShares": false
+        "banOnJunkReceive": true,
+        "banOnInvalidShares": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
             "fromAddress": "info@yourpool.org",
-            "fromName": "pool support"
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,32 +34,35 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 100,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
+            "disabled": false,
             "rules": [
                 {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
+                    "endpoint": "*",
+                    "period": "1s",
+                    "limit": 20
                 }
             ],
-            "ipWhitelist": [
-                ""
-            ]
+            "ipWhitelist": [ "127.0.0.1" ]
         }
     },
     "clusterName": "eu1",
@@ -68,11 +71,11 @@
         "id": "ctxc1",
         "enabled": true,
         "coin": "cortex",
-        "address": "0x6dd47dff7cf7daae47331f7f3556c0a31ab2511b",
+        "address": "CHANGE_ME_CORTEX_POOL_WALLET_ADDRESS",
         "rewardRecipients": [
           {
             "type": "op",
-            "address": "0x6dd47dff7cf7daae47331f7f3556c0a31ab2511b",
+            "address": "CHANGE_ME_CORTEX_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
             "percentage": 1.0
           }
         ],

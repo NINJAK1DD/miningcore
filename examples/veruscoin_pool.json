@@ -3,25 +3,25 @@
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
             "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,39 +34,42 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
+            "disabled": false,
             "rules": [
                 {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
+                    "endpoint": "*",
+                    "period": "1s",
+                    "limit": 20
                 }
             ],
-            "ipWhitelist": [
-                ""
-            ]
+            "ipWhitelist": [ "127.0.0.1" ]
         }
     },
     "pools": [{
         "id": "vrsc1",
         "enabled": true,
         "coin": "veruscoin",
-        "address": "RHux2fYMyxMG4W5F2Va436cANsR47JUvTE",
+        "address": "CHANGE_ME_VERUSCOIN_POOL_WALLET_ADDRESS",
         "GBTArgs": [{
             "capabilities": [
                 "coinbasetxn", 
@@ -80,7 +83,7 @@
         "rewardRecipients": [
             {
                 "type": "op",
-                "address": "RHux2fYMyxMG4W5F2Va436cANsR47JUvTE",
+                "address": "CHANGE_ME_VERUSCOIN_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
                 "percentage": 1.5
             }
         ],
@@ -125,8 +128,8 @@
             {
                 "host": "127.0.0.1",
                 "port": 7771,
-                "user": "user",
-                "password": "pass",
+                "user": "CHANGE_ME_DAEMON_RPC_USER",
+                "password": "CHANGE_ME_DAEMON_RPC_PASSWORD",
                 "zmqBlockNotifySocket": "tcp://127.0.0.1:7772",
                 "zmqBlockNotifyTopic": "hashblock"
             }

@@ -3,25 +3,25 @@
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
             "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,43 +34,46 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
+            "disabled": false,
             "rules": [
                 {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
+                    "endpoint": "*",
+                    "period": "1s",
+                    "limit": 20
                 }
             ],
-            "ipWhitelist": [
-                ""
-            ]
+            "ipWhitelist": [ "127.0.0.1" ]
         }
     },
     "pools": [{
         "id": "kas1",
         "enabled": true,
         "coin": "kaspa",
-        "address": "kaspa:qpee454h906cyt6pqr5gfegpxx7xjqp79dtwcqz8t698ugulhq8fxg56uaxm9",
+        "address": "CHANGE_ME_KASPA_POOL_WALLET_ADDRESS",
         "rewardRecipients": [
             {
                 "type": "op",
-                "address": "kaspa:qpee454h906cyt6pqr5gfegpxx7xjqp79dtwcqz8t698ugulhq8fxg56uaxm9",
+                "address": "kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu",
                 "percentage": 1
             }
         ],
@@ -128,7 +131,7 @@
         ],
         "paymentProcessing": {
             "enabled": true,
-            "walletPassword": "<The Kaspa's wallet password which owns the pool address>",
+            "walletPassword": "CHANGE_ME_KASPA_WALLET_PASSWORD",
             "minimumPayment": 1,
             "versionEnablingMaxFee": "v0.12.18-rc5",
             "maxFee": 200000,
