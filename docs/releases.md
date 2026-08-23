@@ -34,7 +34,7 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Existing RC.9 operator | [RC.10 highlights](#rc10-highlights) |
+| Existing RC.9 operator | [RC.11 highlights](#rc11-highlights) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
@@ -42,9 +42,9 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## RC.10 highlights
+## RC.11 highlights
 
-`v0.1.0-rc.10` advances the supported build and release pipeline without adding a database migration
+`v0.1.0-rc.11` advances the supported build and release pipeline without adding a database migration
 or changing the live pool configuration contract from RC.9.
 
 - Ubuntu 26.04 x64 is the primary archive, container and Linux development target.
@@ -54,6 +54,8 @@ or changing the live pool configuration contract from RC.9.
   library inventory before packaging.
 - GitHub Release and GHCR publication is staged, digest-pinned, serialized across release tags and
   recoverable after an interrupted run without silently replacing conflicting evidence.
+- Release publication treats GitHub Actions installation tokens as opaque values, including the
+  stateless `ghs_APPID_JWT` format, while rejecting unsafe control characters at the HTTP boundary.
 - The scheduled Ubuntu image-pin monitor uses a strict, bounded, line-oriented internal handoff and
   fails closed on malformed or ambiguous results.
 
@@ -74,10 +76,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.1.0-rc.10`. Substitute the version you selected.
+The examples below use `v0.1.0-rc.11`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.10
+export MININGCORE_VERSION=v0.1.0-rc.11
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -320,7 +322,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.10  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.1.0-rc.11  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -986,7 +988,7 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.10` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.11` or
 `v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
@@ -1074,7 +1076,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0-rc.10  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.1.0-rc.11  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1137,7 +1139,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.1.0-rc.10
+export TAG=v0.1.0-rc.11
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

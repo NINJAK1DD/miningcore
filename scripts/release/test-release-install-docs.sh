@@ -4,6 +4,7 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
+readme="$repository_root/README.md"
 capability_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
@@ -46,6 +47,17 @@ assert_contains() {
   fi
 }
 
+assert_file_contains() {
+  local label=$1
+  local expected=$2
+  local source=$3
+
+  if ! grep -Fq "$expected" "$source"; then
+    echo "$source is missing $label" >&2
+    exit 1
+  fi
+}
+
 assert_prose_contains() {
   local label=$1
   local expected=$2
@@ -60,8 +72,14 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_contains 'the RC.10 release example' \
-  'export MININGCORE_VERSION=v0.1.0-rc.10'
+assert_file_contains 'the RC.11 release example' \
+  'export MININGCORE_VERSION=v0.1.0-rc.11' "$document"
+assert_file_contains 'the RC.11 container example' \
+  'MININGCORE_VERSION=v0.1.0-rc.11' "$readme"
+assert_contains 'the RC.11 recovery example' \
+  'export TAG=v0.1.0-rc.11'
+assert_contains 'the RC.11 tagging example' \
+  'NEXT_VERSION=v0.1.0-rc.11'
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
@@ -113,11 +131,12 @@ assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
 
-if grep -Fq 'MININGCORE_VERSION=v0.1.0-rc.9' \
-    "$repository_root/README.md" "$document"; then
-  echo 'Copy-paste installation examples still reference RC.9' >&2
-  exit 1
-fi
+for stale_version in v0.1.0-rc.9 v0.1.0-rc.10; do
+  if grep -Fq "$stale_version" "$readme" "$document"; then
+    echo "Release documentation still references stale version $stale_version" >&2
+    exit 1
+  fi
+done
 
 recovery_section=$(awk '
   /^### Recover an interrupted publication$/ { capture = 1 }
