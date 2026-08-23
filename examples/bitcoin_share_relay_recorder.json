@@ -1,0 +1,81 @@
+{
+  // Central recorder and sole payout owner for the example Bitcoin relay cluster.
+  "clusterName": "bitcoin-relay-recorder",
+  "instanceId": 21,
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log"
+  },
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ]
+  },
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore"
+    }
+  },
+  "paymentProcessing": {
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "Miningcore"
+  },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "shareRelays": [
+    {
+      // Sender A: matches bitcoin_share_relay_sender.json.
+      "url": "tcp://192.0.2.20:5555",
+      "sharedEncryptionKey": "CHANGE_ME_RELAY_A_SHARED_SECRET"
+    },
+    {
+      // Optional sender B: clone the sender example with a unique instanceId, address and secret.
+      "url": "tcp://192.0.2.21:5556",
+      "sharedEncryptionKey": "CHANGE_ME_RELAY_B_SHARED_SECRET"
+    }
+  ],
+  "pools": [
+    {
+      // Must exactly match every sender's stable pool ID and coin definition.
+      "id": "bitcoin-solo",
+      "enabled": true,
+      "coin": "bitcoin",
+      "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      // The recorder subscribes to senders and does not expose these ports itself.
+      "enableInternalStratum": false,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "ports": {
+        "3032": {
+          "name": "BTC-RECORDER-NOT-BOUND",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 8192
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
+        }
+      ],
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.001,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}

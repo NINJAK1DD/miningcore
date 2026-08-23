@@ -228,6 +228,11 @@ existing `/etc/miningcore/config.json` is retained; compare it with the new exam
 deliberately. A successful installation also removes the verified archive and checksum workspace;
 an explicit warning names the directory if cleanup cannot complete.
 
+The archive's `examples/` directory contains CI-validated direct, multi-coin, merged-mining and
+distributed-recorder starting points. They do not replace the live configuration automatically;
+choose a topology from `examples/README.md`, stage it separately, and apply local secrets and
+network settings deliberately.
+
 Compare the extracted metadata with the binary before changing the live service:
 
 ```console

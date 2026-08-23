@@ -98,9 +98,8 @@
             "3093": {
                 "listenAddress": "0.0.0.0",
                 "difficulty": 700,
-                "tls": true,
-                "tlsPfxFile": "<Your directory for the pfx file>",
-                "tlsPfxPassword": "password",
+                "tls": false,
+                // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                 "varDiff": {
                     "minDiff": 200,
                     "maxDiff": null,
@@ -114,10 +113,11 @@
         "daemons": [
             {
                 "host": "127.0.0.1",
-                "port": <stratum_port>,
+                // Must match beam-node's configured stratum_port.
+                "port": 10005,
                 "user": null,
                 "password": null,
-                "apiKey": "<Miner registration key <api_key>"
+                "apiKey": "CHANGE_ME_BEAM_NODE_API_KEY"
             },
             {
                 "host": "127.0.0.1",

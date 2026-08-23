@@ -16,6 +16,7 @@ on:
       - 'packaging/**'
       - 'scripts/release/**'
       - 'docs/**'
+      - 'examples/**'
       - 'config.example.json'
       - 'README.md'
       - 'LICENSE'

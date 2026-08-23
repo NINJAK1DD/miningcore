@@ -12,10 +12,12 @@ from urllib.parse import unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS_ROOT = REPO_ROOT / "docs"
+EXAMPLES_ROOT = REPO_ROOT / "examples"
 DOCS_INDEX = DOCS_ROOT / "README.md"
 MARKDOWN_FILES = [
     REPO_ROOT / "README.md",
     REPO_ROOT / "ShareRelaysReadMe.md",
+    *sorted(EXAMPLES_ROOT.rglob("*.md")),
     *sorted(DOCS_ROOT.rglob("*.md")),
 ]
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")

@@ -1,0 +1,90 @@
+{
+  // Direct Dogecoin SOLO pool. This is not an AuxPoW merged-mining example.
+  "clusterName": "dogecoin-example",
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log"
+  },
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ]
+  },
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore"
+    }
+  },
+  "paymentProcessing": {
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "Miningcore"
+  },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "pools": [
+    {
+      "id": "dogecoin-solo",
+      "enabled": true,
+      "coin": "dogecoin",
+      "address": "CHANGE_ME_DOGECOIN_POOL_WALLET_ADDRESS",
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "ports": {
+        "3042": {
+          "name": "DOGE-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 1024,
+          "varDiff": {
+            "minDiff": 512,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3043": {
+          "name": "DOGE-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 65536,
+          "varDiff": {
+            "minDiff": 32768,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 22555,
+          "user": "CHANGE_ME_DOGECOIN_RPC_USER",
+          "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD"
+          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:44556"
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 1.0,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}

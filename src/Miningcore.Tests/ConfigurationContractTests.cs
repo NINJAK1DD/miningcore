@@ -15,12 +15,25 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    private static readonly Lazy<JObject> BundledCoinTemplates = new(() =>
+        JObject.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "coins.json"))));
+
     public static IEnumerable<object[]> DateLookingConfigurationStrings()
     {
         yield return new object[] { "2025-01-01" };
         yield return new object[] { "2026-08-16T15:30:00Z" };
         yield return new object[] { "2026-08-16T15:30:00+01:00" };
         yield return new object[] { "2026-08-16T15:30:00" };
+    }
+
+    public static IEnumerable<object[]> ShippedExampleConfigurations()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "examples");
+
+        return Directory.GetFiles(directory, "*.json")
+            .OrderBy(Path.GetFileName, StringComparer.Ordinal)
+            .Select(path => new object[] { Path.GetFileName(path) });
     }
 
     private static string FormatValidationErrors(
@@ -139,6 +152,30 @@ public class ConfigurationContractTests
         // Exercise the actual live-startup boundary as well as the diagnostic-rich
         // direct result above. This applies live defaults, merged-mining checks,
         // API/Stratum conflict detection and the enabled-pool requirement.
+        ValidateNormalStartupWithDiagnostics(config);
+    }
+
+    [Theory]
+    [MemberData(nameof(ShippedExampleConfigurations))]
+    public void ShippedTopologyExample_PassesNormalStartupValidation(
+        string fileName)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "examples", fileName);
+        var config = Program.ReadConfig(path, false);
+        var result = new ClusterConfigValidator().Validate(config);
+
+        Assert.True(result.IsValid,
+            $"{fileName}:{Environment.NewLine}{FormatValidationErrors(result.Errors)}");
+        Assert.All(config.Pools,
+            pool => Assert.NotNull(pool.PaymentProcessing));
+
+        Assert.All(config.Pools, pool => Assert.True(
+            BundledCoinTemplates.Value.ContainsKey(pool.Coin),
+            $"{fileName}: pool '{pool.Id}' references unknown bundled coin " +
+            $"template '{pool.Coin}'"));
+
+        // Exercise mode-aware defaults and cross-setting contracts, including
+        // merged-mining persistence and relay sender/recorder ownership rules.
         ValidateNormalStartupWithDiagnostics(config);
     }
 

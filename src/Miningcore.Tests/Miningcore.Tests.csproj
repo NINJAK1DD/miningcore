@@ -61,7 +61,7 @@
     <None Include="../../config.example.json" Link="config.example.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="../../examples/*_pool.json"
+    <None Include="../../examples/*.json"
           Link="examples/%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>

@@ -1,0 +1,126 @@
+{
+  // Litecoin parent Stratum with Dogecoin AuxPoW rewards. Read the merged-mining guide first.
+  "clusterName": "litecoin-dogecoin-merged-example",
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log",
+    "perPoolLogFile": true
+  },
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ]
+  },
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore"
+    }
+  },
+  "paymentProcessing": {
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "Miningcore"
+  },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "pools": [
+    {
+      "id": "litecoin-solo",
+      "enabled": true,
+      "coin": "litecoin",
+      "address": "CHANGE_ME_LITECOIN_POOL_WALLET_ADDRESS",
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "ports": {
+        "3032": {
+          "name": "LTC-DOGE-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 1024,
+          "varDiff": {
+            "minDiff": 512,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3033": {
+          "name": "LTC-DOGE-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 65536,
+          "varDiff": {
+            "minDiff": 32768,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 9332,
+          "user": "CHANGE_ME_LITECOIN_RPC_USER",
+          "password": "CHANGE_ME_LITECOIN_RPC_PASSWORD"
+          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:29332"
+        }
+      ],
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.01,
+        "payoutScheme": "SOLO"
+      },
+      "mergedMining": {
+        "enabled": true,
+        "auxPoolId": "dogecoin-solo",
+        // Miner password example: d=65536;doge=DOGE_MINER_ADDRESS
+        "addressParameter": "doge",
+        "requireAuxAddress": true,
+        // Raise this modestly only after diagnosing repeated timeout/fallback telemetry.
+        "auxiliaryTemplatePollTimeoutMs": 500
+      }
+    },
+    {
+      "id": "dogecoin-solo",
+      "enabled": true,
+      "coin": "dogecoin",
+      "address": "CHANGE_ME_DOGECOIN_POOL_WALLET_ADDRESS",
+      // Merged miners connect to the Litecoin parent ports above.
+      "enableInternalStratum": false,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "ports": {
+        "3042": {
+          "name": "DOGE-DIRECT-DISABLED",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 1024
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 22555,
+          "user": "CHANGE_ME_DOGECOIN_RPC_USER",
+          "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD"
+          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:44556"
+        }
+      ],
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 1.0,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}

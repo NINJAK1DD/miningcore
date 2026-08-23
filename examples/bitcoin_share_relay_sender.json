@@ -1,0 +1,81 @@
+{
+  // Edge Stratum node A. It relays ordinary shares and does not own payouts or PostgreSQL.
+  "clusterName": "bitcoin-relay-sender-a",
+  "instanceId": 11,
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log"
+  },
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ]
+  },
+  "paymentProcessing": {
+    "enabled": false,
+    "interval": 600
+  },
+  "shareRelay": {
+    // Documentation-only address. Replace with an assigned private address on this sender.
+    "publishUrl": "tcp://192.0.2.20:5555",
+    // false makes this sender bind. The receiver connects to it.
+    "connect": false,
+    "sharedEncryptionKey": "CHANGE_ME_RELAY_A_SHARED_SECRET"
+  },
+  "pools": [
+    {
+      // Must exactly match the receiver's stable pool ID.
+      "id": "bitcoin-solo",
+      "enabled": true,
+      "coin": "bitcoin",
+      "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "ports": {
+        "3032": {
+          "name": "BTC-EDGE-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 8192,
+          "varDiff": {
+            "minDiff": 4096,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3033": {
+          "name": "BTC-EDGE-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 1048576,
+          "varDiff": {
+            "minDiff": 524288,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
+        }
+      ],
+      "paymentProcessing": {
+        "enabled": false,
+        "minimumPayment": 0.001,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}

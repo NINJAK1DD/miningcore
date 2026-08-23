@@ -71,6 +71,7 @@ replaced. The following sections walk through each step.
 | I want to… | Read… |
 | --- | --- |
 | Install, upgrade or roll back a release | [Release guide](docs/releases.md) |
+| Choose a ready-to-edit pool or relay topology | [Example configuration index](examples/README.md) |
 | Configure pools, logging and recovery storage | [Configuration guide](docs/configuration.md) |
 | Operate and monitor a production service | [Operator handbook](docs/operations.md) |
 | Diagnose a startup, mining, payout or storage problem | [Troubleshooting guide](docs/troubleshooting.md) |
@@ -408,9 +409,11 @@ cp config.example.json build/config.json
 ```
 
 Replace all `CHANGE_ME` values and remove pools or services you do not intend to run. The
-[configuration guide](docs/configuration.md) explains the main sections and miner login formats. The
-machine-readable [configuration schema](src/Miningcore/config.schema.json) is the exhaustive option
-reference, including less common coin-specific extension fields.
+[example configuration index](examples/README.md) provides smaller direct, multi-coin,
+merged-mining and distributed-recorder starting points. The [configuration guide](docs/configuration.md)
+explains the main sections and miner login formats. The machine-readable
+[configuration schema](src/Miningcore/config.schema.json) is the exhaustive option reference,
+including less common coin-specific extension fields.
 
 ## Running Miningcore
 

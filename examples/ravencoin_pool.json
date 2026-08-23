@@ -109,9 +109,8 @@
             "3095": {
                 "listenAddress": "0.0.0.0",
                 "difficulty": 1,
-                "tls": true,
-                "tlsPfxFile": "<Your directory for the pfx file>",
-                "tlsPfxPassword": "password",
+                "tls": false,
+                // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                 "varDiff": {
                     "minDiff": 0.125,
                     "maxDiff": null,

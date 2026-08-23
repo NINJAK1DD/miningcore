@@ -58,10 +58,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$package_root" "$package_root/migrations" "$package_root/systemd" "$output_dir"
+mkdir -p "$package_root" "$package_root/examples" "$package_root/migrations" \
+    "$package_root/systemd" "$output_dir"
 cp -a "$publish_dir/." "$package_root/"
 cp "$repository_root/README.md" "$repository_root/LICENSE" \
     "$repository_root/config.example.json" "$package_root/"
+cp "$repository_root/examples/README.md" "$repository_root"/examples/*.json \
+    "$package_root/examples/"
 cp "$repository_root/docs/releases.md" "$package_root/INSTALL.md"
 cp -a "$repository_root/docs" "$package_root/docs"
 cp "$repository_root"/src/Miningcore/Persistence/Postgres/Scripts/*.sql \
