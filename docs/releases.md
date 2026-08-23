@@ -1117,6 +1117,11 @@ release ID during asset work, and fails closed when authoritative state does not
 uploads are streamed, use bounded connection, retry and total-time budgets, do not follow redirects,
 and preserve GitHub's bounded error response in the failed-job log.
 
+Actions installation tokens are opaque and may use GitHub's stateless `ghs_APPID_JWT` format. The
+publisher rejects control characters and escapes curl's private configuration syntax, but does not
+validate a token alphabet or parse its contents. Do not add token-format regexes or print a token
+while troubleshooting authentication.
+
 When a stable draft is published, the workflow compares it with every other published stable
 release and explicitly chooses whether GitHub may mark it latest. After publication, each GHCR
 destination is created from the recorded digest and inspected again. An older rerun leaves `X.Y`

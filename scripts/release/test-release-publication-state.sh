@@ -89,7 +89,10 @@ reset_fake_services() {
   export MININGCORE_RELEASE_ASSET_DIR="$FAKE_ROOT/candidate"
   export MININGCORE_RELEASE_NOTES_FILE="$FAKE_ROOT/release-notes.md"
   export GITHUB_OUTPUT="$FAKE_ROOT/github-output"
-  export GH_TOKEN=fake_token
+  # Exercise GitHub's stateless installation-token shape plus every
+  # punctuation character permitted by the Bearer credential grammar. The
+  # publisher must treat the token as opaque rather than pinning its format.
+  export GH_TOKEN='ghs_12345_eyJhbGciOi.test-._~+/='
 
   FAKE_RELEASE_NAME="Miningcore $release_tag"
   FAKE_EXPECTED_DRAFT_MARKER="<!-- miningcore-release-publication:v1"
@@ -345,6 +348,8 @@ gh() {
 
 curl() {
   local config_file
+  local escaped_token
+  local expected_authorization_line
   local output_file
   local source
   local url=${*: -1}
@@ -374,7 +379,9 @@ curl() {
   [[ "$url" == \
     "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/1/assets?name=$asset_name" ]] ||
     fail 'Release asset upload did not use the retained release id'
-  grep -Fxq 'header = "Authorization: Bearer fake_token"' "$config_file" ||
+  escaped_token=$(publication_escape_curl_config_value "$GH_TOKEN")
+  expected_authorization_line="header = \"Authorization: Bearer $escaped_token\""
+  grep -Fxq "$expected_authorization_line" "$config_file" ||
     fail 'Release asset upload did not isolate its bearer token in the private curl config'
   [[ "${source##*/}" == "$asset_name" ]] || fail 'Asset upload name changed'
   if [[ "$FAKE_UPLOAD_FAILURE" == true ]]; then
@@ -624,6 +631,23 @@ scenario_missing_asset_clears_stale_state() (
     fail 'Missing asset lookup retained stale asset metadata'
 )
 
+scenario_opaque_token_config_escaping_is_injection_safe() (
+  reset_fake_services opaque-token
+  GH_TOKEN='opaque"token\value'
+
+  publication_validate_environment
+  [[ $(publication_escape_curl_config_value "$GH_TOKEN") == \
+      'opaque\"token\\value' ]] ||
+    fail 'Opaque token escaping did not protect curl config syntax'
+  run_command prepare
+)
+
+scenario_control_character_token_fails_closed() (
+  reset_fake_services control-token
+  GH_TOKEN=$'opaque-token\nheader = "Injected: value"'
+  publication_validate_environment
+)
+
 scenario_conflicting_version_tag_fails_closed() (
   reset_fake_services conflict
   run_command prepare
@@ -746,6 +770,7 @@ scenario_completed_release_survives_pruned_stage_and_metadata_edits
 scenario_legacy_assets_without_server_digests_use_byte_fallback
 scenario_completed_release_recovers_from_one_immutable_tag
 scenario_missing_asset_clears_stale_state
+scenario_opaque_token_config_escaping_is_injection_safe
 scenario_github_cli_warning_does_not_change_version_parse
 
 for scenario in \
@@ -763,6 +788,7 @@ for scenario in \
   scenario_upload_failure_preserves_service_diagnostic \
   scenario_old_github_cli_fails_cleanly \
   scenario_failed_github_cli_probe_fails_cleanly \
+  scenario_control_character_token_fails_closed \
   scenario_draft_visibility_timeout_fails_closed \
   scenario_asset_visibility_timeout_fails_closed; do
   set +e
@@ -810,6 +836,13 @@ grep -Fq 'GitHub CLI 2.51 or newer is required' \
 grep -Fq 'HUMAN ACTION REQUIRED: could not execute the GitHub CLI version probe' \
   "$test_root/scenario_failed_github_cli_probe_fails_cleanly.out" ||
   fail 'Failed GitHub CLI version probe bypassed the standard diagnostic'
+grep -Fq 'GH_TOKEN contains a control character' \
+  "$test_root/scenario_control_character_token_fails_closed.out" ||
+  fail 'Control-character token failure did not identify the safe header boundary'
+if grep -Fq 'Injected: value' \
+    "$test_root/scenario_control_character_token_fails_closed.out"; then
+  fail 'Control-character token failure exposed secret content'
+fi
 
 # Pin both ordering boundaries: public tag promotion follows durable release
 # publication, and all tag publications share one non-cancelling FIFO queue.

@@ -33,6 +33,18 @@ publication_die() {
   exit 70
 }
 
+publication_escape_curl_config_value() {
+  local value=$1
+
+  # GitHub installation tokens are opaque and may use the stateless
+  # ghs_APPID_JWT format. Do not validate their alphabet. Escape only the two
+  # characters with meaning inside curl's quoted config values after the
+  # environment check has rejected HTTP/config control characters.
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '%s' "$value"
+}
+
 publication_require_tools() {
   local tool
   local gh_version_output
@@ -87,10 +99,9 @@ publication_validate_environment() {
     publication_die "GHCR image '$MININGCORE_IMAGE' is not a lowercase repository image"
   fi
 
-  if [[ ! "$GH_TOKEN" =~ ^[A-Za-z0-9_]+$ ]]; then
+  if [[ "$GH_TOKEN" =~ [[:cntrl:]] ]]; then
     publication_die \
-      "GH_TOKEN does not match the conservative character allowlist used by the" \
-      "private curl configuration"
+      "GH_TOKEN contains a control character and cannot be placed in an HTTP header"
   fi
 
   if [[ ! -d "$MININGCORE_RELEASE_ASSET_DIR" ]]; then
@@ -354,6 +365,7 @@ publication_upload_asset() {
   local error_file
   local status_file
   local curl_config
+  local escaped_token
   local http_status
   local upload_url
 
@@ -368,7 +380,9 @@ publication_upload_asset() {
   upload_url="https://uploads.github.com/repos/$GITHUB_REPOSITORY"
   upload_url+="/releases/$PUBLICATION_RELEASE_ID/assets?name=$asset_name"
   chmod 600 "$curl_config"
-  printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > "$curl_config"
+  escaped_token=$(publication_escape_curl_config_value "$GH_TOKEN")
+  printf 'header = "Authorization: Bearer %s"\n' "$escaped_token" > "$curl_config"
+  unset escaped_token
   # Retry only curl's transient transport/HTTP set. If GitHub accepted the POST
   # but its response was lost, a non-retried 422 is preserved below and the
   # next full run reconciles the existing asset by size, digest or bytes.
