@@ -1,10 +1,29 @@
 # Litecoin–Dogecoin merged mining
 
-Miningcore can run Litecoin as the parent Scrypt pool and submit the same proof of work to Dogecoin through AuxPoW.
+Miningcore can run Litecoin as the parent Scrypt pool and submit the same proof of work to Dogecoin
+through AuxPoW.
+
+| Task | Section |
+| --- | --- |
+| Configure pools and miner logins | [Requirements and miner login](#requirements-and-miner-login) |
+| Understand share and block accounting | [Share and block accounting](#share-and-block-accounting) |
+| Diagnose auxiliary address rejection | [Auxiliary-address policy](#auxiliary-address-policy) |
+| Diagnose template fallback or timeouts | [Template refresh](#template-refresh) |
+| Apply database migrations | [Database migrations](#database-migrations) |
+| Deploy relays and payout ownership | [Relay and payout ownership](#relay-and-payout-ownership) |
+| Validate before production | [Pre-production validation](#pre-production-validation) |
+
+For incident-first routing, use [Troubleshooting](troubleshooting.md).
 
 ## Requirements and miner login
 
-This version is limited to SOLO. Configure Litecoin and Dogecoin as separate enabled pools with unique pool IDs, both using `SOLO` payment processing. On direct and relay receiver/recorder nodes, cluster-level `paymentProcessing.enabled` must also be `true`; otherwise the reconciliation and payout manager is not running. The Dogecoin pool supplies its daemon, wallet address, block classification and payout pipeline. The Litecoin pool references it:
+This version is limited to SOLO. The required relationship is:
+
+- Litecoin and Dogecoin are separate enabled pools with unique IDs.
+- Both pools use `SOLO` payment processing.
+- Direct and relay receiver/recorder nodes set cluster-level `paymentProcessing.enabled` to `true`.
+- Dogecoin supplies its daemon, wallet address, block classification and payout pipeline.
+- Litecoin references that Dogecoin pool through `mergedMining`.
 
 ```json
 "mergedMining": {
@@ -21,13 +40,28 @@ Connect miners only to the Litecoin Stratum endpoint.
 - Username: `LTC_ADDRESS.worker`
 - Password: `d=65536;doge=DOGE_ADDRESS`
 
-The Dogecoin daemon mines rewards to the configured Dogecoin pool wallet. Miningcore records the password-supplied Dogecoin address as the SOLO beneficiary and pays it through the existing Dogecoin payout processor after maturity.
+The Dogecoin daemon mines rewards to the configured Dogecoin pool wallet. Miningcore records the
+password-supplied Dogecoin address as the SOLO beneficiary and pays it through the existing
+Dogecoin payout processor after maturity.
 
 ## Share and block accounting
 
 ### Share publication and candidate persistence
 
-A new parent job is generated when either chain changes. Each submitted Scrypt proof is checked against both targets. Once proof validation succeeds, Miningcore publishes a cleared ordinary statistical copy before starting either daemon submission; a slow or failed peer-chain path therefore cannot suppress the share or move it beyond the parent effort boundary. Litecoin and Dogecoin block submissions are independent. Accepted or transport-uncertain merged-mining blocks are synchronously persisted as block-only candidates as soon as their own submission finishes; they do not wait for the ordinary five-second share batch or ZeroMQ relay. The pool does not publish the original proof a second time. No synthetic Dogecoin share row is inserted.
+A new parent job is generated when either chain changes. Each submitted Scrypt proof is checked
+against both targets.
+
+After proof validation:
+
+1. Miningcore publishes one cleared ordinary statistical share before either daemon submission.
+2. Litecoin and Dogecoin submissions run independently.
+3. Each accepted or transport-uncertain block is synchronously persisted as a block-only candidate
+   when its own submission completes.
+4. Block candidates do not wait for the ordinary five-second share batch or ZeroMQ relay.
+
+A slow or failed peer-chain path therefore cannot suppress the statistical share or move it beyond
+the parent effort boundary. Miningcore does not publish the original proof twice and does not add a
+synthetic Dogecoin share row.
 
 ### Block states and notifications
 
@@ -69,13 +103,34 @@ inactive or definitively absent.
 
 ### Address validation
 
-When `requireAuxAddress` is true, authorisation fails if the address is missing or rejected by Dogecoin's `validateaddress` RPC. A bounded process-local cache remembers up to 4096 addresses that this process has positively validated. During a temporary validation-RPC outage, a reconnect using one of those exact addresses may continue; a new or previously unseen address still fails closed. The cache is deliberately not persisted and is empty after restart. The address is captured once at authorisation, so changing it requires reconnecting. The Dogecoin pool must remain enabled so its normal classifier, maturity checks and payout processor can handle auxiliary blocks.
+When `requireAuxAddress` is true:
 
-When `requireAuxAddress` is false, a worker that omits `doge=` mines Litecoin only. If its proof also reaches the DOGE target, Miningcore deliberately does not submit that auxiliary candidate because no miner-supplied SOLO beneficiary can be attributed. It is not credited to a fallback or pool address. This avoids unattributed funds at the cost of discarding that DOGE candidate; production merged-mining pools should normally keep `requireAuxAddress` enabled.
+- authorisation fails when the address is missing or Dogecoin rejects it;
+- a process-local cache retains up to 4096 positively validated addresses;
+- a reconnect with an exact cached address may continue through a temporary validation-RPC outage;
+- a new or unseen address still fails closed; and
+- changing the address requires reconnecting.
+
+The cache is not persisted and is empty after restart. Keep the Dogecoin pool enabled so its normal
+classifier, maturity checks and payout processor can handle auxiliary blocks.
+
+When `requireAuxAddress` is false, a worker that omits `doge=` mines Litecoin only. Miningcore does
+not submit an otherwise qualifying DOGE candidate because no miner-supplied SOLO beneficiary can be
+attributed. It does not credit a fallback or pool address. This avoids unattributed funds at the
+cost of discarding that candidate; production pools should normally require the auxiliary address.
 
 ### Pool configuration safeguards
 
-All enabled pool coin templates are assigned before any pool is configured, so the LTC and DOGE entries may appear in either order. `addressParameter` is trimmed, defaults to `doge` when blank, and cannot be `d` or contain `;` or `=`. Definitively invalid DOGE logins use the normal failed-login ban path; a temporary DOGE validation RPC failure returns a server error without banning the miner unless the exact address has already passed validation in this process. When multiple Dogecoin daemon endpoints are configured, the merged-mining manager logs a warning and uses the first endpoint; configure one authoritative auxiliary endpoint rather than assuming failover.
+Pool ordering does not matter because enabled coin templates are assigned before pool configuration.
+Other safeguards are:
+
+- `addressParameter` is trimmed, defaults to `doge` when blank, and cannot be `d` or contain `;` or
+  `=`.
+- A definitively invalid DOGE login uses the normal failed-login ban path.
+- A temporary validation-RPC failure returns a server error without banning the miner, unless the
+  exact address was already validated by this process.
+- When several Dogecoin daemon endpoints are configured, Miningcore warns and uses the first.
+  Configure one authoritative auxiliary endpoint rather than assuming failover.
 
 ## Template refresh, submission and shutdown
 
@@ -112,22 +167,28 @@ support it.
 Prometheus exposes the complete startup and refresh paths, including attempts that time out or are
 cancelled:
 
-| Metric | Meaning |
-| --- | --- |
-| `miningcore_auxiliary_template_rpc_duration_seconds` | Histogram of `createauxblock` duration by parent `pool`, `aux_pool`, `startup`/`refresh` phase and bounded outcome; its `_count` series is the attempt count |
-| `miningcore_auxiliary_template_fallback_total` | Number of entries into degraded cached-template operation by parent/auxiliary pair |
-| `miningcore_auxiliary_template_available` | `1` when a usable auxiliary template exists; `0` when no usable auxiliary template is available, preventing construction of a merged-mining job |
-| `miningcore_auxiliary_template_degraded` | `1` while that parent uses a cached template from the named auxiliary pool; otherwise `0` |
+- `miningcore_auxiliary_template_rpc_duration_seconds` records `createauxblock` duration by parent,
+  auxiliary pool, `startup`/`refresh` phase and bounded outcome. Its `_count` series is the attempt
+  count.
+- `miningcore_auxiliary_template_fallback_total` counts entries into degraded cached-template
+  operation by parent/auxiliary pair.
+- `miningcore_auxiliary_template_available` is `1` when an installed job has a usable auxiliary
+  template and `0` when no combined job can be constructed.
+- `miningcore_auxiliary_template_degraded` is `1` while the parent uses a cached template from the
+  named auxiliary pool; otherwise it is `0`.
 
 Separate parent-pool labels prevent a healthy parent from clearing another parent's degraded state
 when both reference the same auxiliary pool. Separate phase labels keep ten-second startup probes
 out of recurring timeout analysis. Histogram buckets straddle the 500 ms default and extend through
-the ten-second startup deadline. State gauges are reasserted on each auxiliary poll refresh so a
+the ten-second startup deadline.
+
+State gauges are reasserted on each auxiliary poll refresh so a
 transient telemetry processing failure self-heals, while the fallback counter increments only on a
 new degraded episode. After an active merged job exists, parent stream events that merely reuse its
 cached auxiliary template do not reassert the gauges; the next configured `blockRefreshInterval`
 poll does. A missing or nonpositive interval defaults to 1000 ms, while an explicitly configured
 positive interval is respected.
+
 The histogram remains bounded to ten label sets per configured parent/auxiliary pair (two phases by
 five outcomes); each set exports the configured buckets plus `+Inf`, `_sum` and `_count`. For example,
 the fraction of refresh attempts within 500 ms is:
@@ -299,24 +360,50 @@ for a direct single-node deployment.
 
 ## Pre-production validation
 
-The automated suite verifies the AuxPoW byte layout, password parsing, old/new relay compatibility, bounded recovery hashing, independent task draining, Alephium sweep identities, manager-level reorganisations, and that an accepted auxiliary candidate creates a block without a synthetic share row. CI also launches PostgreSQL 17 to verify exact index definitions under custom schemas, reject expression/order/predicate mutations, and include delayed direct and relay winning shares in effort. It does not launch Litecoin Core or Dogecoin Core.
+The automated suite covers:
+
+- AuxPoW layout, password parsing and old/new relay compatibility;
+- bounded recovery hashing and independent task draining;
+- Alephium sweep identities and manager-level reorganisations; and
+- accepted auxiliary candidates without synthetic share rows.
+
+CI also launches PostgreSQL 17 to verify exact indexes under custom schemas, reject mutated
+expressions/order/predicates, and include delayed direct and relay winning shares in effort. It does
+not launch Litecoin Core or Dogecoin Core.
 
 Live results for the reference Windows/WSL regtest environment are tracked in
 [merged-mining-regtest-validation.md](merged-mining-regtest-validation.md). Items marked outstanding
 there remain deployment gates rather than being implied by the automated suite.
 
-Before enabling mainnet traffic, run a daemon-backed regtest with real `litecoind` and `dogecoind` processes:
+Before enabling mainnet traffic, run a daemon-backed regtest with real `litecoind` and `dogecoind`
+processes:
 
-1. Create and fund/mature regtest wallets on both nodes, then configure distinct enabled LTC and DOGE SOLO pools.
-2. Connect a Scrypt miner only to the LTC Stratum port using `d=<difficulty>;doge=<address>`.
-3. Advance only the Dogecoin tip and confirm Miningcore broadcasts a fresh combined job without waiting for the Litecoin tip to change.
-4. Submit an auxiliary-only solution and confirm `submitauxblock` accepts it, proof attribution matches the active block's `auxpow.parentblock`, one pending DOGE block row is created, and no synthetic DOGE row is added to `shares`.
-5. Interrupt or restart Dogecoin RPC before the `submitauxblock` response is received. Confirm an uncertain block row records the submitted parent header, survives, and later resolves only if the active block's `auxpow.parentblock` matches it.
+1. Create and fund/mature regtest wallets on both nodes, then configure distinct enabled LTC and
+   DOGE SOLO pools.
+2. Connect a Scrypt miner only to the LTC Stratum port using
+   `d=<difficulty>;doge=<address>`.
+3. Advance only the Dogecoin tip and confirm Miningcore broadcasts a fresh combined job without
+   waiting for the Litecoin tip to change.
+4. Submit an auxiliary-only solution. Confirm `submitauxblock` accepts it, attribution matches the
+   active block's `auxpow.parentblock`, one pending DOGE row is created, and no synthetic DOGE share
+   is inserted.
+5. Interrupt Dogecoin RPC before the `submitauxblock` response arrives. Confirm the uncertain row
+   records the submitted parent header, survives, and resolves only when the active block's
+   `auxpow.parentblock` matches.
 6. Mature the DOGE coinbase and confirm the normal DOGE classifier credits and pays the password-supplied beneficiary.
-7. Repeat with a parent-only solution and with a solution meeting both targets to confirm LTC and DOGE submissions run independently.
-8. Trigger a same-height Dogecoin template refresh and confirm a clean Stratum job is broadcast without a false chain-height notification.
+7. Repeat with a parent-only solution and a solution meeting both targets; confirm LTC and DOGE
+   submissions run independently.
+8. Trigger a same-height Dogecoin template refresh and confirm a clean Stratum job without a false
+   chain-height notification.
 9. Repeat with Litecoin MWEB enabled and a normal transaction-bearing parent template.
-10. Submit two different parent proofs for one DOGE child template and confirm only the proof matching the accepted `auxpow.parentblock` is credited.
-11. Reorg a DOGE AuxPoW block out of the active chain and confirm `confirmations = -1` rows do not finalize or receive wallet-index grace.
-12. Trigger a height-decreasing Litecoin reorganisation and confirm the freshly fetched lower-height template replaces the old job when its `previousblockhash` changes.
-13. Exercise relay disconnect/reconnect and PostgreSQL duplicate insertion explicitly if those deployment modes will be used in production. On the final receiver host, run `bash scripts/regtest/validate-physical-relay.sh RELAY_HOST RELAY_PORT POOL_ID SENDER_SOURCE` with PostgreSQL environment variables set, then submit mining work through the physical sender. The script verifies both the TCP path and end-to-end ordinary-share persistence.
+10. Submit two parent proofs for one DOGE child template and confirm only the proof matching the
+    accepted `auxpow.parentblock` is credited.
+11. Reorg a DOGE AuxPoW block out of the active chain and confirm `confirmations = -1` rows do not
+    finalize or receive wallet-index grace.
+12. Trigger a height-decreasing Litecoin reorganisation and confirm the fresh lower template
+    replaces the old job when `previousblockhash` changes.
+13. If production uses relays, exercise relay disconnect/reconnect and PostgreSQL duplicate
+    insertion. On the final receiver, run
+    `bash scripts/regtest/validate-physical-relay.sh RELAY_HOST RELAY_PORT POOL_ID SENDER_SOURCE`
+    with PostgreSQL environment variables set, then submit through the physical sender. The script
+    verifies both TCP reachability and end-to-end ordinary-share persistence.

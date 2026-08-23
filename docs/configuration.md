@@ -13,6 +13,18 @@ recovery-journal JSON readers.
 The exhaustive machine-readable reference is [`config.schema.json`](../src/Miningcore/config.schema.json).
 Coin-family extensions are intentionally flexible and may also be documented beside their implementation.
 
+| Task | Section |
+| --- | --- |
+| Configure a pool and miner difficulty | [Pool basics](#pool-basics) |
+| Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
+| Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
+| Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
+| Enable Litecoin–Dogecoin merged mining | [LTC/DOGE merged mining](#ltcdoge-merged-mining) |
+| Protect emergency share persistence | [Share recovery storage](#share-recovery-storage) |
+| Validate an edited file | [Validate changes safely](#validate-changes-safely) |
+
+For symptom-first diagnostics, use [Troubleshooting](troubleshooting.md).
+
 ## Main sections
 
 | Section | Purpose |
@@ -99,35 +111,50 @@ both conflicting pools and their effective endpoints.
 
 ### Stratum listener reservation
 
-Normal startup then creates, configures, binds and retains every enabled internal Stratum socket as
-one cluster-scoped reservation phase. No pool initialization can announce `Online` until the whole
-set has been reserved. If any endpoint is occupied, unavailable in the current host or container
-network namespace, or otherwise rejected by the operating system, Miningcore releases every socket
-acquired by that attempt and stops the complete cluster. The startup error identifies the pool,
-effective endpoint, socket classification and native error. Miningcore hands those same retained
-sockets to the Stratum accept loops; it does not probe, close and later rebind them. Reservation
-calls `Bind` but deliberately defers `Listen` until that pool has completed initialization and enters
-its accept path, so miners cannot accumulate in a connection backlog while daemon synchronization
-or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
-`SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
-`Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
-Accepted sockets begin with abortive-close protection so an OOM kill, forced container stop,
-process crash or ordinary host shutdown normally cannot strand the exclusive endpoint. Only a
-genuine peer-initiated EOF disarms that protection and closes gracefully; bytes already written to
-the network may then drain with FIN, but Miningcore does not drain its application send queue during
-shutdown. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
-request-handler-failure, send-timeout and other independent-cancellation paths remain abortive. If
-an unclean stop still leaves a
-local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with one
-shared, bounded retry-delay budget totalling up to 90 seconds for the complete cluster reservation
-attempt. Scheduled waits do not multiply with the number of endpoints. This is not a hard
-wall-clock deadline: bind-call duration and scheduler overshoot are additional and ordinarily
-negligible. Sockets acquired earlier in the attempt remain reserved but do not listen while a later
-endpoint consumes that budget; this preserves the all-or-nothing ownership boundary. A genuinely
-occupied port exhausts the shared delay allowance and then fails with the complete pool and socket
-diagnostic; no partial cluster starts. Configure the service manager's startup timeout to exceed
-the retry-delay budget, binding overhead and ordinary pool initialization time so it cannot
-terminate Miningcore before the final diagnostic is emitted.
+#### Reservation lifecycle
+
+Normal startup reserves every enabled internal Stratum socket in one cluster-scoped phase:
+
+1. Miningcore creates, configures and binds the complete listener set.
+2. No pool can announce `Online` until every bind succeeds.
+3. A failure releases every socket acquired by that attempt and stops the complete cluster.
+4. The retained sockets are handed to their Stratum accept loops; Miningcore never probes, closes
+   and later rebinds them.
+5. `Listen` is deferred until the owning pool finishes initialization, preventing miners from
+   waiting in an accept backlog during daemon synchronization or first-job setup.
+
+The startup error identifies the pool, effective endpoint, socket classification and native error.
+Reserved listeners are exclusive and do not enable `SO_REUSEADDR`; reuse-enabled sockets do not
+provide deterministic ownership across the supported operating systems.
+
+#### Connection shutdown behavior
+
+Accepted sockets start with abortive-close protection. OOM termination, forced container stop,
+process failure and independent cancellation therefore normally release the endpoint promptly.
+Only a genuine peer-initiated EOF disarms that protection and closes gracefully. Bytes already
+written to the network may drain with FIN, but Miningcore does not drain its application send queue
+during shutdown.
+
+Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake, handler-failure and send-
+timeout paths remain abortive. These are implementation guarantees; operators should diagnose the
+named endpoint rather than changing socket-reuse policy.
+
+#### Restart retry budget
+
+An unclean stop can leave a local `TIME_WAIT` entry. Startup retries only
+`AddressAlreadyInUse` failures, using one cluster-wide retry-delay budget totalling up to 90
+seconds. Scheduled waits do not multiply with listener count.
+
+The 90 seconds is not a hard wall-clock deadline: bind duration and scheduler overshoot are
+additional and normally small. Earlier sockets stay reserved without listening while a later
+endpoint consumes the budget. A genuinely occupied port exhausts the allowance and then fails the
+whole cluster; no partial pool set starts.
+
+Configure the service manager's startup timeout to cover the retry-delay budget, binding overhead
+and normal pool initialization. See [Troubleshooting](troubleshooting.md) for safe endpoint and
+process checks.
+
+#### Address suitability
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
@@ -138,6 +165,7 @@ addresses, so containers, dynamic interfaces and failover addresses still rely o
 The active IPv4 subnet snapshot is captured once per validation or reservation pass and is used only
 for positive directed-broadcast rejection, so one pass cannot classify ports from different host
 interface snapshots.
+
 For IPv6 link-local addresses, include the correct interface scope where the operating system
 requires it. A missing or incorrect scope fails startup safely rather than leaving a partial pool set.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
@@ -153,10 +181,14 @@ Protected admin and metrics responses produced by the API pipeline send
 `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` and
 `X-Content-Type-Options: nosniff` on success and on listener, rate-limit, whitelist, authentication,
 credential-unavailable or method rejection. Protocol errors rejected by Kestrel before the request
-enters the pipeline cannot carry these application headers. The resource policy blocks eligible
+enters the pipeline cannot carry these application headers.
+
+The resource policy blocks eligible
 cross-origin no-CORS subresource use, but does not generally prohibit navigation or iframe
 embedding. CORS and these headers limit how a browser can use the response; they do not prevent the
-request or replace the listener, IP, authentication, TLS and firewall controls above. Once listener,
+request or replace the listener, IP, authentication, TLS and firewall controls above.
+
+Once listener,
 rate-limit and IP checks pass, the metrics route accepts only the exact, case-sensitive `GET` and
 `HEAD` method tokens; unsupported methods return an empty `405 Method Not Allowed` with
 `Allow: GET, HEAD`. Exact scrapes bypass the public API rate limiter, while rejected lowercase,
@@ -199,9 +231,11 @@ pool fields it consumes: required `id` and optional string `coin` metadata. It d
 live-only field, including cluster instance identity, enabled state, Stratum listeners, wallet and
 daemon settings, payout and banning policy, reward recipients, timing values and extension data.
 Empty `ports` and `daemons` placeholders satisfy the configuration schema without starting those
-services. Damaged or stale
-live-pool values therefore cannot block recovery, while ambiguous names and missing or malformed
-pool identity remain errors. Pools may all be disabled during import. A non-empty pool collection
+services. Damaged or stale live-pool values therefore cannot block recovery, while ambiguous names
+and missing or malformed
+pool identity remain errors.
+
+Pools may all be disabled during import. A non-empty pool collection
 with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory. Those
 IDs form a fail-closed import allowlist: every journal record must name one exactly. An unknown,
 missing or mistyped record pool ID stops recovery before the pending marker, database transaction

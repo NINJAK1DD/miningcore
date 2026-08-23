@@ -1,5 +1,23 @@
 # Database setup and upgrades
 
+Miningcore's database contains financial accounting state. Use the procedure matching the task;
+do not improvise SQL from another section during an incident.
+
+| Task | Section |
+| --- | --- |
+| Create a database | [New installation](#new-installation) |
+| Back up or restore | [Back up and restore](#back-up-and-restore) |
+| Apply release migrations | [Upgrade an existing database](#upgrade-an-existing-database) |
+| Recover after disk exhaustion | [Recover after disk exhaustion](#recover-after-disk-exhaustion) |
+| Import a recovery journal | [Inspect and import a recovery journal](#inspect-and-import-a-recovery-journal) |
+| Reconcile a fatal recovery latch | [Reconcile fatal share-recovery state](#reconcile-fatal-share-recovery-state) |
+| Recover payout ownership | [Recover payout-manager ownership safely](#recover-payout-manager-ownership-safely) |
+| Reconcile a wallet submission | [Reconcile a Bitcoin-family payout](#reconcile-a-bitcoin-family-payout) |
+| Inspect routine accounting state | [Routine inspection](#routine-inspection) |
+| Partition a large shares table | [Advanced share-table partitioning](#advanced-share-table-partitioning) |
+
+Start with [Troubleshooting](troubleshooting.md) when the failing boundary is not yet known.
+
 This guide expands the beginner database steps in the root README. Commands assume PostgreSQL is on
 the local Linux host; adjust host names and access controls for a private database server.
 
@@ -291,12 +309,16 @@ preflight checks every configured ID, including an extra historical pool that ha
 source. Configured pool IDs are an explicit import allowlist: every journal record must match one
 exactly. An unknown or mistyped record ID fails before a pending marker, transaction or manifest is
 created. Add an intentional historical pool ID to the recovery configuration only after inspecting
-the retained journal. After a committed import, crash-resume retirement revalidates the marker,
+the retained journal.
+
+After a committed import, crash-resume retirement revalidates the marker,
 manifest, record count and content hash without requiring those historical IDs to remain in the
 current configuration; it cannot replay the already-committed data. Committed cleanup likewise
 does not require current AuxPoW indexes because it never replays a block. Fresh or unproven AuxPoW
 imports still require those indexes before Miningcore publishes a pending marker or opens the
-import transaction. The configured recovery path and state directory still identify active journal
+import transaction.
+
+The configured recovery path and state directory still identify active journal
 ownership, terminal anchors and interrupted retirement markers, even when `-rs` names a reviewed
 copy.
 

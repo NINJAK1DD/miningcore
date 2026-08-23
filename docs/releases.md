@@ -27,10 +27,39 @@ If this replaces an existing .NET 6 deployment, first follow the dedicated
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
 commands below as an instruction to overwrite a live configuration or database.
 
-New installations can continue at [Choose a version](#choose-a-version). Existing operators should
-first read [Logging and disk recovery](#logging-and-disk-recovery) and
-[Payout and WebSocket compatibility](#payout-and-websocket-compatibility) for behavior changes that
-may require monitoring, migration or front-end work.
+Use this guide by task:
+
+| Task | Start here |
+| --- | --- |
+| New installation | [Choose a version](#choose-a-version) |
+| Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
+| Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
+| Existing RC.9 operator | [RC.10 highlights](#rc10-highlights) |
+| Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
+| Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
+| Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
+
+For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
+copying a recovery command from the maintainer section.
+
+## RC.10 highlights
+
+`v0.1.0-rc.10` advances the supported build and release pipeline without adding a database migration
+or changing the live pool configuration contract from RC.9.
+
+- Ubuntu 26.04 x64 is the primary archive, container and Linux development target.
+- Ubuntu 22.04 x64 retains its separately compiled compatibility archive.
+- Ubuntu 24.04 x64 remains a required source-build target.
+- Native builds fail immediately when any hashing component fails and verify the complete shared
+  library inventory before packaging.
+- GitHub Release and GHCR publication is staged, digest-pinned, serialized across release tags and
+  recoverable after an interrupted run without silently replacing conflicting evidence.
+- The scheduled Ubuntu image-pin monitor uses a strict, bounded, line-oriented internal handoff and
+  fails closed on malformed or ambiguous results.
+
+The release-pipeline items are maintainer-facing. Operators should still verify the selected
+archive, provenance and host compatibility, and should read the cumulative operational changes
+before upgrading from an older release candidate.
 
 ## Choose a version
 
@@ -45,10 +74,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use the current `v0.1.0-rc.9`. Substitute the version you selected.
+The examples below use `v0.1.0-rc.10`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.9
+export MININGCORE_VERSION=v0.1.0-rc.10
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -291,7 +320,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.9  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.1.0-rc.10  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -393,12 +422,15 @@ Source-IP whitelist rejection logs for `/api/admin` and `/metrics` are now bound
 amplification. Each route family owns an independent, fixed-size limiter: its first rejection is
 written at `Info`, intervening rejections are counted, and the next informational entry after the
 one-minute monotonic interval includes the suppressed count. Per-request details remain available
-at `Debug`; enabling that level during hostile traffic can substantially increase log volume. A
-summary remains pending until another rejection arrives after the interval, and the source shown
+at `Debug`; enabling that level during hostile traffic can substantially increase log volume.
+
+A summary remains pending until another rejection arrives after the interval, and the source shown
 on it belongs to that current request rather than the potentially different suppressed sources.
 Varying attacker addresses does not increase limiter state, and a metrics flood cannot suppress
 the first administrative rejection. Bearer-authentication rejection logging retains its separate
-per-pipeline limiter. New Prometheus counter `miningcore_api_ip_whitelist_rejections_total`
+per-pipeline limiter.
+
+New Prometheus counter `miningcore_api_ip_whitelist_rejections_total`
 increments for every whitelist rejection regardless of log suppression. Its `route_family` label
 is restricted to the fixed values `admin`, `metrics` or `other` and never contains a source address
 or request path, preserving bounded metric cardinality under hostile traffic.
@@ -465,13 +497,17 @@ public listener for backwards compatibility. If `adminPort` is omitted, explicit
 `/api/admin` at the reverse proxy unless the admin whitelist and firewall are the intended
 protection. If `metricsPort` is omitted, likewise deny `/metrics` unless public metric exposure is
 intentional. A same-host reverse proxy normally reaches Miningcore from trusted loopback, so the
-application whitelist alone does not block a route forwarded by that proxy. Explicit API ports must
+application whitelist alone does not block a route forwarded by that proxy.
+
+Explicit API ports must
 be unique and in the range 1–65535. Enabled internal Stratum ports must also be in that range;
 port `0` is now rejected instead of creating an unpredictable ephemeral mining endpoint.
 TLS-enabled deployments use the same configured certificate on every listener. An API listener
 that uses the same port and an overlapping bind address as an enabled local Stratum endpoint now
 stops startup with the conflicting port identified; different specific bind addresses may reuse a
-port. Enabled Stratum endpoints follow the same address-aware rule: two pools may share a numeric
+port.
+
+Enabled Stratum endpoints follow the same address-aware rule: two pools may share a numeric
 port on distinct specific IPv4 or IPv6 addresses, while identical addresses, wildcards and
 IPv4-mapped equivalents fail startup with both pool and endpoint identities. All overlapping pairs
 are reported together so operators can correct the complete configuration before restart. See
@@ -480,18 +516,22 @@ are reported together so operators can correct the complete configuration before
 Every enabled internal Stratum port must map to an endpoint object. A JSON `null` endpoint now
 stops normal startup with the affected pool and numeric port identified instead of being treated as
 an omitted loopback address. Disabled and relay-only pools retain deferred listener validation, and
-`-rs` recovery continues to discard listener settings because it opens no Stratum sockets. An enabled
-relay-only pool remains available through the public API, but unusable null endpoint entries are omitted
-from its public `ports` map instead of causing the complete pool response to fail. Miningcore warns at
-startup when an enabled relay-only pool retains such an entry. API reads now project listener settings
-into dedicated public endpoint DTOs rather than mapping or mutating the live configuration type. The
-public DTOs have no TLS credential fields or trusted PROXY-protocol peer allow-list, preventing those
-runtime-only values from entering the response even when legacy null serialization is enabled.
+`-rs` recovery continues to discard listener settings because it opens no Stratum sockets.
+
+An enabled relay-only pool remains available through the public API, but unusable null endpoint
+entries are omitted from its public `ports` map instead of causing the complete pool response to
+fail. Miningcore warns at startup when an enabled relay-only pool retains such an entry. API reads
+now project listener settings into dedicated public endpoint DTOs rather than mapping or mutating
+the live configuration type. The public DTOs have no TLS credential fields or trusted
+PROXY-protocol peer allow-list, preventing those runtime-only values from entering the response
+even when legacy null serialization is enabled.
+
 Consequently, `ports[*].tlsPfxFile` and `ports[*].tlsPfxPassword` change from `null` to absent.
 `ports[*].tcpProxyProtocol.proxyAddresses` was previously returned with the configured trusted-proxy
 allow-list and is now absent entirely. This is an intentional information-disclosure hardening change.
 REST clients must remove references to those private fields; the remaining endpoint keys retain their
 existing names and values.
+
 Consumers compiling directly against Miningcore response classes must also update the generic value
 type of `PoolInfo.Ports` from `PoolEndpoint` to `ApiPoolEndpoint`.
 
@@ -518,8 +558,10 @@ wallet-password and wallet-private-key settings from the untyped `paymentProcess
 bag. Earlier builds could return one live credential through `/api/pools` and `/api/pools/{id}` when
 the configuration contained the same sensitive setting more than once with case-variant names, such
 as both `WalletPassword` and `walletPassword`. The affected redaction paths are Alephium, Bitcoin,
-Ergo, Handshake and Kaspa wallet passwords plus Warthog wallet private keys. Operators can assess
-exposure by inspecting their configuration locally for duplicate sensitive names after ignoring case.
+Ergo, Handshake and Kaspa wallet passwords plus Warthog wallet private keys.
+
+Operators can assess exposure by inspecting their configuration locally for duplicate sensitive
+names after ignoring case.
 If checking `/api/pools`, use a trusted local connection, avoid saving or sharing the response and
 treat any key under `paymentProcessing.extra` matching `walletPassword` or `walletPrivateKey`
 without regard to letter case as exposed. Operators who used such a configuration should upgrade,
@@ -559,8 +601,10 @@ never log values, replace every sensitive-looking omitted key name with
 `<redacted-sensitive-key>`, escape unsafe characters in ordinary names within a fixed output-length
 bound and emit at most ten key warnings per pool plus one reason-grouped remainder summary. A
 redacted unknown-key warning can list the family's recognised private field names as safe spelling
-hints without echoing the supplied name. Disabled pools, share recovery and API requests do not emit
-these warnings. They use the dedicated `PaymentExtraDiagnostics` NLog category for independent
+hints without echoing the supplied name.
+
+Disabled pools, share recovery and API requests do not emit these warnings. They use the dedicated
+`PaymentExtraDiagnostics` NLog category for independent
 routing or filtering through the standard console and main log. Per-pool files remain limited to
 their pool-id logger. A private entry can still be active runtime configuration when the coin
 family's binder accepts it; operators should correct or remove a warning-producing setting only
@@ -571,14 +615,18 @@ ISO-looking date-time strings as dates. UTC, offset and unsuffixed date-time val
 normal startup, recovery-mode configuration loading, typed payment-extension projection,
 parsed-configuration output and approved REST responses. Date-only strings were already preserved
 and remain covered by regression tests. This intentionally corrects earlier builds that could
-replace configured text with a normalized, culture-dependent date representation. It affects
+replace configured text with a normalized, culture-dependent date representation.
+
+It affects
 extension values such as Handshake `walletName` or `walletAccount`, Kaspa
 `versionEnablingMaxFee`, custom
 coin-template extension values, and any other configured string that resembles a full date-time.
 System.Text.Json and Newtonsoft deserialization of the public payment DTO from JSON text now
 preserve the same typed string value. Newtonsoft clients that first materialize a `JObject` must use
 `DateParseHandling.None`; the DTO rejects an already-coerced `JTokenType.Date` because its exact
-lexical value can no longer be recovered. Operators or API clients that relied on the normalized
+lexical value can no longer be recovered.
+
+Operators or API clients that relied on the normalized
 value must instead configure the literal they require and update that dependency before upgrading.
 RPC, Stratum, recovery-journal and schema-file readers retain their existing parsing behavior.
 
@@ -588,7 +636,9 @@ startup before any pool is announced online and releases all sockets already acq
 attempt. The failure identifies the pool, effective endpoint and operating-system socket error.
 Broadcast and multicast listener addresses are rejected during configuration validation, while
 IPv4 loopback and link-local ranges remain eligible for the authoritative host bind. Existing valid
-listener configurations require no migration. Reserved sockets remain bound but do not call
+listener configurations require no migration.
+
+Reserved sockets remain bound but do not call
 `Listen` until their pool finishes initialization; activation must succeed before the pool announces
 `Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and all server-
 initiated accepted-socket closes—including ordinary host shutdown, malformed requests, TLS handshake
@@ -596,7 +646,9 @@ failures, request-handler faults and independent send-timeout cancellation—use
 Accepted sockets are protected against
 unclean process termination by default, while only genuine peer-initiated EOF switches to graceful
 close. This permits bytes already written to the network to drain but does not drain Miningcore's
-application send queue during shutdown. Startup retries `AddressAlreadyInUse` with one cluster-wide
+application send queue during shutdown.
+
+Startup retries `AddressAlreadyInUse` with one cluster-wide
 bounded retry-delay budget totalling up to 90 seconds when residual `TIME_WAIT` survives an unclean
 stop; scheduled waits do not multiply with the number of endpoints. Bind-call duration and scheduler
 overshoot remain outside that delay budget, so it is not a hard wall-clock deadline.
@@ -613,6 +665,7 @@ would silently restore the unsafe per-pool bind path. The protected surface now 
 `CreateConnectionId` and `BeforeConnectionTaskRemovalAsync` lifecycle hooks, while
 `UnregisterConnection` fails fast when the identity is absent instead of relying on a Debug-only
 assertion. Out-of-tree subclasses must not call it defensively for an already-removed connection.
+
 After a terminal completion or error callback has been invoked, an exception from that callback or
 subsequent stream teardown is logged and absorbed: `DispatchAsync` completes without issuing a
 second terminal callback. Operators diagnosing lifecycle-callback programming errors must therefore
@@ -928,22 +981,32 @@ merged-mining support before it can be offered as a Miningcore template.
 
 ## Maintainer release procedure
 
+This section is for repository maintainers. Operators installing or recovering a service should use
+the task links at the top of this guide and the [troubleshooting guide](troubleshooting.md).
+
+### Build and package contract
+
 The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.10` or
 `v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
-stable hosted runner and an immutable, digest-pinned Docker Official Image. The workflow-declared
+stable hosted runner and an immutable, digest-pinned Docker Official Image.
+
+The workflow-declared
 build-image reference is recorded in each archive's `BUILD-INFO` and checked against the shared
 release-target contract during collection; the in-container `VERSION_ID` check independently
 confirms the selected Ubuntu release. Each lane runs the complete PostgreSQL-backed and ZeroMQ test
-suite, validates native runtime links, and checks
-that the binary reports the release version and source commit. The workflow then verifies the
-two-archive set, creates one checksum manifest, smoke-tests the 26.04 packaged image, and publishes
-both archives and the container with provenance. Publication uses an explicit, recoverable sequence:
-an unpublished draft receives and verifies the archive set, a version-scoped staging tag records the
-container digest, the draft records that digest in `CONTAINER-IMAGE.json`, and only a verified,
-published GitHub Release permits the public version tags and mutable aliases to move.
+suite, validates native runtime links, and checks that the binary reports the release version and
+source commit.
+
+The workflow then verifies the two-archive set, creates one checksum manifest, smoke-tests the
+26.04 packaged image, and publishes both archives and the container with provenance. Publication
+uses an explicit, recoverable sequence: an unpublished draft receives and verifies the archive set,
+a version-scoped staging tag records the container digest, the draft records that digest in
+`CONTAINER-IMAGE.json`, and only a verified, published GitHub Release permits the public version
+tags and mutable aliases to move.
+
 The published container intentionally follows the serviced .NET Resolute runtime tag so rebuilt
 images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
 the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
@@ -951,6 +1014,8 @@ compares the archive-build tags with their reviewed manifest-list digests and fa
 pin needs review; updating a pin still requires the complete release validation. That scheduled
 monitor runs independently of lint tooling, while the always-running .NET pull-request workflow
 enforces ShellCheck for the release scripts.
+
+### Image-pin monitor contract
 
 Pin drift exits with status 1. A registry failure uses advisory status 69 only when its diagnostic
 matches a known transient network, service or rate-limit condition. Missing tags and every
@@ -976,11 +1041,14 @@ same guarded output path.
 The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so
 checker diagnostics remain live. The checker uses the central contract and writes exactly one
 unresolved canonical image tag per line in central release-target order.
+
 The wrapper limits each read to the configured target count plus one line. It then
 accepts only a non-empty, unique, in-order subset of the configured tags before constructing a
 warning from matched contract values. Invalid-line diagnostics identify only the safe,
 locally derived line number; they never repeat handoff content. Result-file failures also use a
-generic diagnostic rather than exposing the private path. Empty or overlong files, blank lines,
+generic diagnostic rather than exposing the private path.
+
+Empty or overlong files, blank lines,
 whitespace or carriage-return variants, unknown, duplicate or out-of-order tags, and result-file
 creation, read or write failures use structural status 70 and never produce a workflow warning. A
 final byte comparison against the canonical serialization also rejects binary contamination and a
@@ -1020,12 +1088,14 @@ repository. Do not move or reuse a published version tag; publish a new version 
 GitHub Releases and GHCR are separate services and do not provide a shared transaction. The workflow
 therefore treats publication as four observable states:
 
-| State | Durable evidence | Automatic next action |
-| --- | --- | --- |
-| No publication | No release and no version-scoped staging tag | Create an unpublished draft and upload the tested archives. |
-| Staged container | Draft release plus `publication-staging-vX.Y.Z` and, once recorded, `CONTAINER-IMAGE.json` | Reuse the staged digest; never rebuild over it. |
-| Durable release | Published release whose archives and container record were cryptographically verified | Create or verify the immutable full-version tags. |
-| Promoted version | `vX.Y.Z` and `X.Y.Z` match the recorded digest; an eligible newest stable release also owns `X.Y`, GHCR `latest` and GitHub's latest-release pointer | Publication is complete. |
+1. **No publication:** no release or version-scoped staging tag exists. Create an unpublished draft
+   and upload the tested archives.
+2. **Staged container:** the draft has `publication-staging-vX.Y.Z` and, once recorded,
+   `CONTAINER-IMAGE.json`. Reuse that digest; never rebuild over it.
+3. **Durable release:** the published archives and container record are cryptographically verified.
+   Create or verify the immutable full-version tags.
+4. **Promoted version:** `vX.Y.Z` and `X.Y.Z` match the recorded digest. When eligible, the newest
+   stable release also owns `X.Y`, GHCR `latest` and GitHub's latest-release pointer.
 
 The staging tag is deliberately retained as audit and retry evidence. Before the release becomes
 durable, the workflow does not create either full-version container tag and does not move `X.Y` or
