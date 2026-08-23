@@ -695,6 +695,11 @@ public class ShareRecorderTests
         }
         finally
         {
+            // The assertion above deliberately exercises very small production deadlines.
+            // Cleanup has a different contract: after releasing the fake provider, wait long
+            // enough for the persistence worker to relinquish every recovery-journal handle.
+            recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromSeconds(5);
+            recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(5);
             releaseDatabase.TrySetResult();
             await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
@@ -702,6 +707,19 @@ public class ShareRecorderTests
             ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
             Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public async Task FixtureCleanup_RejectsServiceTimeoutThatMayLeaveWorkerActive()
+    {
+        var timeout = new TimeoutException(
+            "simulated completed stop with an active persistence worker");
+
+        var error = await Assert.ThrowsAsync<TimeoutException>(() =>
+            AwaitRecorderStopBeforeFixtureCleanupAsync(
+                Task.FromException(timeout)));
+
+        Assert.Same(timeout, error);
     }
 
     [Fact]
@@ -7867,14 +7885,16 @@ public class ShareRecorderTests
     {
         try
         {
-            await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+            await stopping.WaitAsync(TimeSpan.FromSeconds(30));
         }
-        catch(Exception) when(stopping.IsCompleted)
+        catch(Exception ex) when(stopping.IsCompleted && ex is not TimeoutException)
         {
             // These fixtures deliberately fault persistence and recovery targets.
-            // Swallow only a terminal service failure. If the outer wait expires
-            // while StopAsync is still running, let that timeout escape so callers
-            // cannot delete a directory beneath a live recovery owner or worker.
+            // Swallow only a terminal non-timeout service failure. A StopAsync
+            // TimeoutException means its underlying worker may still be running even
+            // though the stop task itself is complete. The outer 30-second timeout has
+            // the same unsafe-cleanup meaning, so either timeout must escape before a
+            // caller can delete a directory beneath a live recovery owner or worker.
         }
     }
 
