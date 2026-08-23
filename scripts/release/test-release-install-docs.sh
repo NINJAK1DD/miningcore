@@ -60,8 +60,8 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_contains 'the RC.10 release example' \
-  'export MININGCORE_VERSION=v0.1.0-rc.10'
+assert_contains 'the RC.11 release example' \
+  'export MININGCORE_VERSION=v0.1.0-rc.11'
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
