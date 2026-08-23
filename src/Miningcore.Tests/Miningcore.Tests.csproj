@@ -55,6 +55,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../../README.md" Link="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="../../config.example.json" Link="config.example.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
