@@ -5,18 +5,32 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
+write_checker_message() {
+  local message=$1
+
+  # Actions consumes stdout and stderr independently. Keep every ordered checker diagnostic and
+  # any later workflow warning on stdout so the runner cannot reorder messages across streams.
+  if [[ ${GITHUB_ACTIONS:-} = true ]]; then
+    printf '%s\n' "$message"
+  else
+    printf '%s\n' "$message" >&2
+  fi
+}
+
 if ! command -v docker >/dev/null 2>&1; then
-  echo 'docker is required to resolve Docker Official Image manifest digests' >&2
+  write_checker_message 'docker is required to resolve Docker Official Image manifest digests'
   exit 70
 fi
 
 if ! docker buildx version >/dev/null 2>&1; then
-  echo 'Docker Buildx is required to resolve Docker Official Image manifest digests' >&2
+  write_checker_message \
+    'Docker Buildx is required to resolve Docker Official Image manifest digests'
   exit 70
 fi
 
 if ! docker buildx imagetools inspect --help >/dev/null 2>&1; then
-  echo 'Docker Buildx imagetools inspect is required to resolve image digests' >&2
+  write_checker_message \
+    'Docker Buildx imagetools inspect is required to resolve image digests'
   exit 70
 fi
 
@@ -55,6 +69,56 @@ is_transient_registry_failure() {
   return 1
 }
 
+write_registry_diagnostic() {
+  local diagnostic=$1
+  local command_token
+  local encoded_diagnostic
+  local truncation_notice=''
+  local -r diagnostic_character_limit=4096
+  local -r encoded_diagnostic_character_limit=8192
+
+  if [[ ${GITHUB_ACTIONS:-} != true ]]; then
+    printf '%s\n' "$diagnostic" >&2
+    return
+  fi
+
+  # Registry and proxy output is untrusted. Suspend workflow-command parsing around it so a
+  # diagnostic beginning with "::" cannot create an annotation or mutate runner state.
+  if ! command_token=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') ||
+      [[ ! "$command_token" =~ ^[0-9a-f]{32}$ ]]; then
+    # Bash %q produces one physical line and escapes CR/LF. Its ANSI-C form can retain the runner's
+    # command sentinels, so rewrite those exact byte sequences as well. The fixed non-whitespace
+    # prefix then remains safe under V2 TrimStart(), while no legacy "##[" substring survives.
+    # Bound this emergency representation so a failed random source cannot turn a large registry
+    # response into one arbitrarily long Actions log line.
+    if (( ${#diagnostic} > diagnostic_character_limit )); then
+      diagnostic=${diagnostic:0:diagnostic_character_limit}
+      truncation_notice=" [truncated after $diagnostic_character_limit characters]"
+    fi
+
+    printf -v encoded_diagnostic '%q' "$diagnostic"
+    encoded_diagnostic=${encoded_diagnostic//'::'/:<colon>}
+    encoded_diagnostic=${encoded_diagnostic//'##['/'##<left-bracket>'}
+
+    if (( ${#encoded_diagnostic} > encoded_diagnostic_character_limit )); then
+      encoded_diagnostic=${encoded_diagnostic:0:encoded_diagnostic_character_limit}
+      truncation_notice+=' [encoded output truncated after '
+      truncation_notice+="$encoded_diagnostic_character_limit characters]"
+    fi
+
+    printf 'Registry diagnostic (encoded; command guard unavailable): %s%s\n' \
+      "$encoded_diagnostic" "$truncation_notice"
+
+    return
+  fi
+
+  # Use stdout for the complete bracket in Actions. The monitor's later warning uses the same
+  # stream, making stop/payload/resume/warning ordering deterministic for the runner parser.
+  printf '::stop-commands::%s\n' "$command_token"
+  printf '%s\n' "$diagnostic"
+  printf '::%s::\n' "$command_token"
+}
+
 saw_drift=false
 saw_structural_failure=false
 saw_transient_failure=false
@@ -69,30 +133,33 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   if ! inspection=$(docker buildx imagetools inspect "$image_tag" 2>&1); then
     if is_transient_registry_failure "$inspection"; then
-      echo "Transient registry failure while resolving $image_tag" >&2
+      write_checker_message "Transient registry failure while resolving $image_tag"
       saw_transient_failure=true
       transient_image_tags+=("$image_tag")
     else
-      echo "Unable to resolve $image_tag; the failure was not recognisably transient" >&2
+      write_checker_message \
+        "Unable to resolve $image_tag; the failure was not recognisably transient"
       saw_structural_failure=true
     fi
 
-    printf '%s\n' "$inspection" >&2
+    write_registry_diagnostic "$inspection"
     continue
   fi
 
   current_digest=$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspection")
 
   if [[ ! "$current_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo "Unable to resolve a manifest-list digest for $image_tag" >&2
+    write_checker_message "Unable to resolve a manifest-list digest for $image_tag"
+    write_registry_diagnostic "$inspection"
     saw_structural_failure=true
     continue
   fi
 
   if [[ "$current_digest" != "$expected_digest" ]]; then
-    echo "$image_tag now resolves to $current_digest" >&2
-    echo "Reviewed release pin is $expected_digest" >&2
-    echo 'Review upstream changes, run the complete release validation, then update the pin.' >&2
+    write_checker_message "$image_tag now resolves to $current_digest"
+    write_checker_message "Reviewed release pin is $expected_digest"
+    write_checker_message \
+      'Review upstream changes, run the complete release validation, then update the pin.'
     saw_drift=true
     continue
   fi
@@ -109,26 +176,23 @@ if [[ "$saw_structural_failure" = true ]]; then
 fi
 
 if [[ "$saw_transient_failure" = true ]]; then
-  unresolved_targets=''
-
-  for image_tag in "${transient_image_tags[@]}"; do
-    if [[ -n "$unresolved_targets" ]]; then
-      unresolved_targets+=', '
-    fi
-
-    unresolved_targets+=$image_tag
-  done
-
-  summary="Transient image checks unresolved: $unresolved_targets"
-
   # The workflow wrapper supplies a private result file so human diagnostics can remain live.
+  # Keep this machine contract line-oriented and write only tags derived from the central target
+  # contract. The wrapper independently validates every line before constructing an annotation.
   if [[ -n ${MININGCORE_IMAGE_PIN_RESULT_FILE:-} ]]; then
-    if ! printf '%s\n' "$summary" >"$MININGCORE_IMAGE_PIN_RESULT_FILE"; then
-      echo "Unable to write image-pin result file: $MININGCORE_IMAGE_PIN_RESULT_FILE" >&2
+    if ! printf '%s\n' "${transient_image_tags[@]}" \
+        >"$MININGCORE_IMAGE_PIN_RESULT_FILE"; then
+      write_checker_message 'Unable to write private image-pin result file'
       exit 70
     fi
   else
-    printf '%s\n' "$summary" >&2
+    unresolved_targets=''
+
+    for unresolved_tag in "${transient_image_tags[@]}"; do
+      unresolved_targets+="${unresolved_targets:+, }$unresolved_tag"
+    done
+
+    write_checker_message "Transient image checks unresolved: $unresolved_targets"
   fi
 
   exit 69

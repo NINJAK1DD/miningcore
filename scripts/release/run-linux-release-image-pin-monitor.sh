@@ -6,82 +6,99 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 checker="$repository_root/scripts/release/check-linux-release-image-pins.sh"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
+write_monitor_message() {
+  local message=$1
+
+  # Keep the checker's diagnostics, monitor validation failures and any eventual workflow warning
+  # on one Actions stream. The runner consumes stdout and stderr independently and may reorder them.
+  if [[ ${GITHUB_ACTIONS:-} = true ]]; then
+    printf '%s\n' "$message"
+  else
+    printf '%s\n' "$message" >&2
+  fi
+}
+
 if ! checker_result=$(mktemp); then
-  echo 'Unable to create private image-pin result file' >&2
+  write_monitor_message 'Unable to create private image-pin result file'
   exit 70
 fi
 
+# The EXIT trap is the only caller; ShellCheck cannot infer that callback edge. ShellCheck 0.9
+# reports SC2317 while 0.11 reports the same indirect-callback condition as SC2329.
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   rm -f -- "$checker_result"
 }
 trap cleanup EXIT
 
 set +e
-# Keep stdout and stderr live; only the machine-readable transient result uses the private file.
+# Keep diagnostics live; only the machine-readable transient result uses the private file.
 MININGCORE_IMAGE_PIN_RESULT_FILE="$checker_result" bash "$checker"
 status=$?
 set -e
 
 if [[ "$status" -eq 69 ]]; then
-  if ! mapfile -t summary_lines <"$checker_result"; then
-    echo "Unable to read image-pin result file: $checker_result" >&2
+  unresolved_image_tags=()
+  expected_image_tags=()
+
+  for target in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
+    expected_image=$(miningcore_linux_release_target_image "$target")
+    expected_image_tags+=("${expected_image%@*}")
+  done
+
+  # Read no more than one line beyond the complete configured set. The extra line proves an
+  # overlong result without loading an arbitrarily long multi-line file into memory. Suppress the
+  # redirection diagnostic inside the conditional so Bash cannot disclose the private mktemp path.
+  # mapfile is not a POSIX special builtin, so POSIX mode cannot terminate the shell before this
+  # failure is converted to the structural status 70 contract.
+  if ! { mapfile -t -n "$(( ${#expected_image_tags[@]} + 1 ))" \
+      unresolved_image_tags <"$checker_result"; } 2>/dev/null; then
+    write_monitor_message 'Unable to read private image-pin result file'
     exit 70
   fi
 
-  summary_prefix='Transient image checks unresolved: '
-
-  if [[ "${#summary_lines[@]}" -ne 1 ||
-      "${summary_lines[0]:-}" != "$summary_prefix"* ||
-      "${summary_lines[0]:-}" = "$summary_prefix" ]]; then
-    echo 'Image-pin checker returned transient status without exactly one valid' \
-      'unresolved-target summary' >&2
+  if (( ${#unresolved_image_tags[@]} == 0 )); then
+    write_monitor_message \
+      'Image-pin checker returned transient status without a non-empty unresolved-target result'
     exit 70
   fi
 
-  summary=${summary_lines[0]}
-  unresolved_targets=${summary#"$summary_prefix"}
-
-  IFS=',' read -r -a unresolved_image_tags <<<"$unresolved_targets"
   expected_index=0
+  validated_image_tags=()
   canonical_targets=''
+  reported_line=0
 
-  for reported_index in "${!unresolved_image_tags[@]}"; do
-    reported_tag=${unresolved_image_tags[$reported_index]}
-
-    if (( reported_index > 0 )); then
-      if [[ "$reported_tag" != ' '* || "$reported_tag" == '  '* ]]; then
-        echo 'Image-pin checker returned a non-canonical unresolved-target list' >&2
-        exit 70
-      fi
-
-      reported_tag=${reported_tag# }
-    fi
-
+  for reported_tag in "${unresolved_image_tags[@]}"; do
     matched=false
+    ((reported_line += 1))
 
-    while (( expected_index < ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} )); do
-      expected_image=$(miningcore_linux_release_target_image \
-        "${MININGCORE_LINUX_RELEASE_TARGETS[$expected_index]}")
-      expected_tag=${expected_image%@*}
+    while (( expected_index < ${#expected_image_tags[@]} )); do
+      expected_tag=${expected_image_tags[$expected_index]}
       ((expected_index += 1))
 
       if [[ "$reported_tag" == "$expected_tag" ]]; then
         matched=true
+        validated_image_tags+=("$expected_tag")
         canonical_targets+="${canonical_targets:+, }$expected_tag"
         break
       fi
     done
 
     if [[ "$matched" != true ]]; then
-      printf '%s: %s\n' \
-        'Image-pin checker returned an unknown, duplicate, or out-of-order target' \
-        "$reported_tag" >&2
+      # Do not repeat unvalidated handoff content in logs or workflow commands.
+      invalid_result_message='Image-pin checker returned a non-canonical, unknown, duplicate, or '
+      invalid_result_message+="out-of-order unresolved target at line $reported_line"
+      write_monitor_message "$invalid_result_message"
       exit 70
     fi
   done
 
-  if [[ "$unresolved_targets" != "$canonical_targets" ]]; then
-    echo 'Image-pin checker returned a non-canonical unresolved-target list' >&2
+  # mapfile cannot represent NUL bytes. Compare the original bytes with a canonical
+  # reserialization so binary contamination and a missing terminal newline also fail closed.
+  if ! cmp -s "$checker_result" \
+      <(printf '%s\n' "${validated_image_tags[@]}"); then
+    write_monitor_message \
+      'Image-pin checker result does not exactly match the canonical line-oriented contract'
     exit 70
   fi
 
