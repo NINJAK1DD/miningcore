@@ -5,6 +5,7 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 capability_dir=
+normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
 cleanup() {
   if [[ -n "$capability_dir" ]]; then
@@ -45,10 +46,22 @@ assert_contains() {
   fi
 }
 
+assert_prose_contains() {
+  local label=$1
+  local expected=$2
+
+  if ! grep -Fq "$expected" <<<"$normalized_document"; then
+    echo "Release installation guide is missing $label" >&2
+    exit 1
+  fi
+}
+
 assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
+assert_contains 'the RC.10 release example' \
+  'export MININGCORE_VERSION=v0.1.0-rc.10'
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
@@ -58,8 +71,8 @@ assert_contains 'the all-jobs release retry rule' \
 assert_contains 'the failed-jobs retry prohibition' \
   'Do not use **Re-run failed jobs**'
 assert_contains 'the staged-publication state model' \
-  'No publication | No release and no version-scoped staging tag'
-assert_contains 'the durable-release promotion boundary' \
+  '**No publication:** no release or version-scoped staging tag'
+assert_prose_contains 'the durable-release promotion boundary' \
   'published GitHub Release permits the public version tags'
 assert_contains 'the publication conflict stop' \
   'HUMAN ACTION REQUIRED'
@@ -99,6 +112,12 @@ assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
+
+if grep -Fq 'MININGCORE_VERSION=v0.1.0-rc.9' \
+    "$repository_root/README.md" "$document"; then
+  echo 'Copy-paste installation examples still reference RC.9' >&2
+  exit 1
+fi
 
 recovery_section=$(awk '
   /^### Recover an interrupted publication$/ { capture = 1 }

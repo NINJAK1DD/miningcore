@@ -11,10 +11,12 @@ from urllib.parse import unquote, urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCS_ROOT = REPO_ROOT / "docs"
+DOCS_INDEX = DOCS_ROOT / "README.md"
 MARKDOWN_FILES = [
     REPO_ROOT / "README.md",
     REPO_ROOT / "ShareRelaysReadMe.md",
-    *sorted((REPO_ROOT / "docs").rglob("*.md")),
+    *sorted(DOCS_ROOT.rglob("*.md")),
 ]
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -96,6 +98,7 @@ def local_targets(path: Path):
 def main() -> int:
     errors: list[str] = []
     anchor_cache: dict[Path, set[str]] = {}
+    indexed_guides: set[Path] = set()
 
     if markdown_slug("`payment_batches` recovery") != "payment_batches-recovery":
         errors.append("internal slug regression: underscores must match GitHub heading anchors")
@@ -121,6 +124,9 @@ def main() -> int:
                 errors.append(f"{source.relative_to(REPO_ROOT)}:{line}: missing target: {target}")
                 continue
 
+            if source == DOCS_INDEX and destination.suffix.lower() == ".md":
+                indexed_guides.add(destination)
+
             if not parsed.fragment or destination.is_dir() or destination.suffix.lower() != ".md":
                 continue
 
@@ -131,6 +137,14 @@ def main() -> int:
                     f"{source.relative_to(REPO_ROOT)}:{line}: missing anchor "
                     f"#{parsed.fragment} in {destination.relative_to(REPO_ROOT)}"
                 )
+
+    for guide in sorted(DOCS_ROOT.glob("*.md")):
+        if guide == DOCS_INDEX:
+            continue
+        if guide.resolve() not in indexed_guides:
+            errors.append(
+                f"{guide.relative_to(REPO_ROOT)}: guide is missing from docs/README.md"
+            )
 
     if errors:
         print("Markdown link validation failed:", file=sys.stderr)

@@ -18,42 +18,128 @@ were made against the same PostgreSQL instance used by the running payout manage
 
 ## Results
 
-| Production gate | Status | Evidence or remaining work |
-| --- | --- | --- |
-| Real `litecoind` and `dogecoind` | Passed | Both pools started, served combined jobs and accepted mined blocks. |
-| Real PostgreSQL | Passed | Real inserts, partial unique indexes, rollbacks and concurrent transactions were exercised. |
-| Dual-target proof | Passed | One proof produced independent payable LTC `merged-parent` and DOGE `auxpow` rows. |
-| Litecoin-only proof | Passed | The fault proxy advertised a harder DOGE target while leaving Litecoin at regtest minimum. Miningcore submitted only Litecoin, which accepted block 291; exactly one new `merged-parent` row was recorded. |
-| Dogecoin-only proof | Passed | The fault proxy advertised a harder Litecoin target while leaving DOGE at regtest minimum. Miningcore submitted only AuxPoW, which Dogecoin accepted at height 212; exactly one new `auxpow` row was recorded. |
-| Competing parent proofs | Passed | Six different valid parent proofs were submitted for one frozen DOGE child. Dogecoin returned `true` for all; only the header matching `getblock.auxpow.parentblock` was credited. |
-| Lost DOGE HTTP response | Passed | The proxy forwarded `submitauxblock`, dropped the response, and Miningcore recovered the matching active proof without duplicate rows. |
-| Boolean-positive duplicate DOGE submission | Passed | Competing valid proofs returned Boolean success; mismatching parent headers were rejected for accounting. |
-| Litecoin JSON-null response | Passed | A forwarded accepted block had its response replaced with JSON null and was recovered by exact active-hash lookup. |
-| Litecoin `inconclusive` response | Passed | The replacement fault fired once; the active block and coinbase were recovered into one idempotent parent row. |
-| Duplicate parent/recovery replay | Passed | The same real `merged-parent` block-only recovery record was imported twice; both imports exited and one database row remained. |
-| Atomic ordinary-share recovery | Passed | Recovery holds the source read-locked, validates every record before opening a transaction, then imports all batches in one transaction. Tests cover a malformed record after 100 valid shares, valid/invalid/valid input, second-batch database rollback followed by safe full retry, exact valid-file batching and block-only replay. A real Linux recovery run with 100 valid records followed by malformed input exited 1 while PostgreSQL remained at 24 shares before and after. |
-| Lower-height Litecoin reorganisation | Passed | An authoritative lower template with a changed `previousblockhash` replaced the job and retained the cached DOGE template. |
-| Dogecoin reorganisation | Passed | An accepted child was invalidated, returned `confirmations = -1`, and its row became orphaned; the chain was then restored. |
-| Litecoin MWEB template | Passed | The original failure skipped Litecoin Core's required pre-activation pegin. Repeating the [official v0.21.5.5 functional-test sequence](https://github.com/litecoin-project/litecoin/blob/v0.21.5.5/test/functional/mweb_mining.py) produced a height-432 template with a 4,198-character `mweb` payload. CUDA ccminer then submitted through Miningcore; Litecoin accepted blocks 433 and 434, and verbose `getblock` returned valid MWEB extension data for both. |
-| Parent wallet-index lag | Passed | Repeated Litecoin `gettransaction -5` responses retained exact active parent rows as pending. |
-| Dogecoin wallet-index lag | Passed | Repeated DOGE `gettransaction -5` responses retained exact active AuxPoW rows; pass-through recovery resumed normal maturity checks. |
-| Coinbase maturity and wallet credit | Passed | Earlier blocks matured and produced actual 100 LTC and 1,000,000 DOGE payment records in this regtest environment. |
-| Claim promotion vs direct insert | Passed | Twenty real PostgreSQL races retained exactly one payable AuxPoW row, including uniqueness-conflict rollback/retry outcomes. |
-| Losing-claim balance side effects | Passed | A real PostgreSQL direct-final-vs-claim race produced `0` losing balances, `0` losing balance-change rows, `1` winner balance, `1` winner balance-change row and `1` payable finalized AuxPoW row. The repeatable harness is `scripts/regtest/postgres-claim-balance-race.sh`. |
-| Two concurrent claim promotions | Passed | One guarded update affected one row, the other affected zero; both transactions committed with `1 auxpow : 0 claims`. |
-| PostgreSQL replay/idempotency | Passed | Final AuxPoW, proof claims and accepted/uncertain merged-parent replay each retained one protected identity. |
-| Reordered JSON-RPC batch | Passed | Both pools initialized and Stratum authorized while the proxy reversed batch response arrays, validating ID correlation. |
-| Mixed-version accepted-parent relay safety | Automated | Once the synchronous `merged-parent` copy commits, the original proof is serialized with `IsBlockCandidate = false`. A base-compatible protobuf receiver model ignores the new field and still cannot attempt another block insert. |
-| PostgreSQL custom-schema preflight | Automated real PostgreSQL | CI and the local PostgreSQL integration test select valid and stale same-named `blocks` relations through different `search_path` orders. Exact canonical keys and predicates are required; `lower(poolid)`, reversed keys, `lower(hash)` and a narrower status predicate are rejected. |
-| Delayed parent winning share and effort | Automated real PostgreSQL | Direct and relay merged-parent processing waits one minute, the relayed parent preserves its originating timestamp, and an ordinary share inserted later at the exact block timestamp is included by the final effort query. |
-| Independent submission failure drain | Automated | Parent failure/DOGE success, DOGE failure/parent success, one timeout plus peer acceptance, and dual failures all drain both bounded tasks before one or all errors propagate. |
-| Statistical share independent of submissions | Automated | A cleared ordinary share is published immediately after proof validation, before parent or DOGE submission starts. Peer timeout/persistence failure cannot suppress it, and current receivers preserve a parent candidate's originating effort-boundary timestamp. |
-| Alephium sweep transaction identities | Automated | Null/empty sweep envelopes, null entries and blank transaction IDs are financially uncertain; valid multi-result sweeps require every identity. |
-| Relay disconnect/reconnect | Passed, including physical hosts | Separate Ubuntu 22.04/WSL2 sender and receiver processes exercised real Stratum, CurveZMQ and PostgreSQL across two physical hosts on a routed LAN. The baseline persisted 11 relayed shares plus 8 LTC and 8 DOGE candidates. A Windows Firewall block on sender TCP 7000 suppressed ordinary shares during the outage while 3 LTC and 3 DOGE block records remained independently durable. After the production 60-second reconnect interval, 4 subsequent ordinary shares persisted, no duplicate pool/hash identities existed, and the accepted DOGE parent header matched the Litecoin block header. Ordinary PUB/SUB shares sent during disconnection were intentionally not replayed. |
-| Accidental dual payout manager | Passed | Real PostgreSQL advisory-backend termination stopped generation 1 but left its durable owner token. A normal replacement process was rejected until the dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation 2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions produced one 25-unit balance credit and one terminal row, while concurrent payment persistence produced one batch and one balance reset. |
-| Wallet accepted, response lost during shutdown | Passed | The Dogecoin fault proxy forwarded `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged, generation 6 ownership remained durable, and replacement startup was rejected. After `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset, the dead owner was explicitly released and generation 7 started normally. |
-| Successful recovery-file replay | Passed plus automated hardening | A valid ordinary-share file imported once and was renamed with `.imported-<timestamp>`. The automated regression rejects the same normalized record multiset even when records are reordered or comments, JSON whitespace and line endings differ. Four domain-separated modular accumulators plus cardinality retain only 128 bytes of digest state; a one-million-record regression verifies the state does not grow with the journal. |
-| Durable merged-block delivery during PostgreSQL outage | Passed | With PostgreSQL blocked from WSL, real ccminer produced LTC height 300 (`96ad5c54...52de68`) and DOGE height 223 (`bee32eb6...2aae36`). Both daemons accepted the proof and DOGE reported the submitted parent header. Fail-closed payout ownership then initiated shutdown; Miningcore waited for the active candidate operation and force-flushed one ordinary share, one `merged-parent` record and one `auxpow` record to the write-through journal (SHA-256 `a82246b46d8224f03a3058b1fa9ba8a89f88b325f6a05367cb5c95af5a44fd64`). Import changed PostgreSQL from 25/35/1 to 26 shares, 37 blocks and 2 recovery manifests. Both protected block identities occurred exactly once with the correct LTC/DOGE beneficiaries. Replaying identical content exited 1 and left all counts unchanged. The first attempt exposed rollback failure masking the original Npgsql timeout; `RunTx` now preserves the original retryable exception and regression tests cover both overloads. Automated shutdown, singleton-recorder, canonical-journal-lock and simultaneous database/journal failure tests remain in place. |
+The evidence is listed by gate so each result remains readable on narrow screens. `Passed`
+identifies a daemon-backed or physical test; `Automated` identifies a focused regression test.
+
+- **Real `litecoind` and `dogecoind` — Passed.** Both pools started, served combined jobs and
+  accepted mined blocks.
+- **Real PostgreSQL — Passed.** Real inserts, partial unique indexes, rollbacks and concurrent
+  transactions were exercised.
+- **Dual-target proof — Passed.** One proof produced independent payable LTC `merged-parent` and
+  DOGE `auxpow` rows.
+- **Litecoin-only proof — Passed.** The fault proxy advertised a harder DOGE target while leaving
+  Litecoin at regtest minimum. Miningcore submitted only Litecoin, which accepted block 291; exactly
+  one new `merged-parent` row was recorded.
+- **Dogecoin-only proof — Passed.** The fault proxy advertised a harder Litecoin target while
+  leaving DOGE at regtest minimum. Miningcore submitted only AuxPoW, which Dogecoin accepted at
+  height 212; exactly one new `auxpow` row was recorded.
+- **Competing parent proofs — Passed.** Six different valid parent proofs were submitted for one
+  frozen DOGE child. Dogecoin returned `true` for all; only the header matching
+  `getblock.auxpow.parentblock` was credited.
+- **Lost DOGE HTTP response — Passed.** The proxy forwarded `submitauxblock`, dropped the response,
+  and Miningcore recovered the matching active proof without duplicate rows.
+- **Boolean-positive duplicate DOGE submission — Passed.** Competing valid proofs returned Boolean
+  success; mismatching parent headers were rejected for accounting.
+- **Litecoin JSON-null response — Passed.** A forwarded accepted block had its response replaced
+  with JSON null and was recovered by exact active-hash lookup.
+- **Litecoin `inconclusive` response — Passed.** The replacement fault fired once; the active block
+  and coinbase were recovered into one idempotent parent row.
+- **Duplicate parent/recovery replay — Passed.** The same real `merged-parent` block-only recovery
+  record was imported twice; both imports exited and one database row remained.
+- **Atomic ordinary-share recovery — Passed.** Recovery holds the source read-locked, validates
+  every record before opening a transaction, then imports all batches in one transaction. Tests
+  cover a malformed record after 100 valid shares, valid/invalid/valid input, second-batch database
+  rollback followed by safe full retry, exact valid-file batching and block-only replay. A real
+  Linux recovery run with 100 valid records followed by malformed input exited 1 while PostgreSQL
+  remained at 24 shares before and after.
+- **Lower-height Litecoin reorganisation — Passed.** An authoritative lower template with a changed
+  `previousblockhash` replaced the job and retained the cached DOGE template.
+- **Dogecoin reorganisation — Passed.** An accepted child was invalidated, returned `confirmations =
+  -1`, and its row became orphaned; the chain was then restored.
+- **Litecoin MWEB template — Passed.** The original failure skipped Litecoin Core's required
+  pre-activation pegin. Repeating the [official v0.21.5.5 functional-test
+  sequence](https://github.com/litecoin-project/litecoin/blob/v0.21.5.5/test/functional/mweb_mining.py)
+  produced a height-432 template with a 4,198-character `mweb` payload. CUDA ccminer then submitted
+  through Miningcore; Litecoin accepted blocks 433 and 434, and verbose `getblock` returned valid
+  MWEB extension data for both.
+- **Parent wallet-index lag — Passed.** Repeated Litecoin `gettransaction -5` responses retained
+  exact active parent rows as pending.
+- **Dogecoin wallet-index lag — Passed.** Repeated DOGE `gettransaction -5` responses retained exact
+  active AuxPoW rows; pass-through recovery resumed normal maturity checks.
+- **Coinbase maturity and wallet credit — Passed.** Earlier blocks matured and produced actual 100
+  LTC and 1,000,000 DOGE payment records in this regtest environment.
+- **Claim promotion vs direct insert — Passed.** Twenty real PostgreSQL races retained exactly one
+  payable AuxPoW row, including uniqueness-conflict rollback/retry outcomes.
+- **Losing-claim balance side effects — Passed.** A real PostgreSQL direct-final-vs-claim race
+  produced `0` losing balances, `0` losing balance-change rows, `1` winner balance, `1` winner
+  balance-change row and `1` payable finalized AuxPoW row. The repeatable harness is
+  `scripts/regtest/postgres-claim-balance-race.sh`.
+- **Two concurrent claim promotions — Passed.** One guarded update affected one row, the other
+  affected zero; both transactions committed with `1 auxpow : 0 claims`.
+- **PostgreSQL replay/idempotency — Passed.** Final AuxPoW, proof claims and accepted/uncertain
+  merged-parent replay each retained one protected identity.
+- **Reordered JSON-RPC batch — Passed.** Both pools initialized and Stratum authorized while the
+  proxy reversed batch response arrays, validating ID correlation.
+- **Mixed-version accepted-parent relay safety — Automated.** Once the synchronous `merged-parent`
+  copy commits, the original proof is serialized with `IsBlockCandidate = false`. A base-compatible
+  protobuf receiver model ignores the new field and still cannot attempt another block insert.
+- **PostgreSQL custom-schema preflight — Automated real PostgreSQL.** CI and the local PostgreSQL
+  integration test select valid and stale same-named `blocks` relations through different
+  `search_path` orders. Exact canonical keys and predicates are required; `lower(poolid)`, reversed
+  keys, `lower(hash)` and a narrower status predicate are rejected.
+- **Delayed parent winning share and effort — Automated real PostgreSQL.** Direct and relay
+  merged-parent processing waits one minute, the relayed parent preserves its originating timestamp,
+  and an ordinary share inserted later at the exact block timestamp is included by the final effort
+  query.
+- **Independent submission failure drain — Automated.** Parent failure/DOGE success, DOGE
+  failure/parent success, one timeout plus peer acceptance, and dual failures all drain both bounded
+  tasks before one or all errors propagate.
+- **Statistical share independent of submissions — Automated.** A cleared ordinary share is
+  published immediately after proof validation, before parent or DOGE submission starts. Peer
+  timeout/persistence failure cannot suppress it, and current receivers preserve a parent
+  candidate's originating effort-boundary timestamp.
+- **Alephium sweep transaction identities — Automated.** Null/empty sweep envelopes, null entries
+  and blank transaction IDs are financially uncertain; valid multi-result sweeps require every
+  identity.
+- **Relay disconnect/reconnect — Passed, including physical hosts.** Separate Ubuntu 22.04/WSL2
+  sender and receiver processes exercised real Stratum, CurveZMQ and PostgreSQL across two physical
+  hosts on a routed LAN. The baseline persisted 11 relayed shares plus 8 LTC and 8 DOGE candidates.
+  A Windows Firewall block on sender TCP 7000 suppressed ordinary shares during the outage while 3
+  LTC and 3 DOGE block records remained independently durable. After the production 60-second
+  reconnect interval, 4 subsequent ordinary shares persisted, no duplicate pool/hash identities
+  existed, and the accepted DOGE parent header matched the Litecoin block header. Ordinary PUB/SUB
+  shares sent during disconnection were intentionally not replayed.
+- **Accidental dual payout manager — Passed.** Real PostgreSQL advisory-backend termination stopped
+  generation 1 but left its durable owner token. A normal replacement process was rejected until the
+  dead PID was confirmed and the marker explicitly cleared. Controlled recovery acquired generation
+  2; clean stop cleared it and generation 3 started normally. Concurrent pending-block transactions
+  produced one 25-unit balance credit and one terminal row, while concurrent payment persistence
+  produced one batch and one balance reset.
+- **Wallet accepted, response lost during shutdown — Passed.** The Dogecoin fault proxy forwarded
+  `sendmany`, captured accepted txid `4646670c...eaa4`, delayed the response and dropped it while
+  systemd stopped Miningcore in 0.85 seconds. The database balance/payment rows remained unchanged,
+  generation 6 ownership remained durable, and replacement startup was rejected. After
+  `gettransaction` reconciliation, the exact txid was persisted once, the test balance was reset,
+  the dead owner was explicitly released and generation 7 started normally.
+- **Successful recovery-file replay — Passed plus automated hardening.** A valid ordinary-share file
+  imported once and was renamed with `.imported-<timestamp>`. The automated regression rejects the
+  same normalized record multiset even when records are reordered or comments, JSON whitespace and
+  line endings differ. Four domain-separated modular accumulators plus cardinality retain only 128
+  bytes of digest state; a one-million-record regression verifies the state does not grow with the
+  journal.
+- **Durable merged-block delivery during PostgreSQL outage — Passed.** With PostgreSQL blocked from
+  WSL, real ccminer produced LTC height 300 (`96ad5c54...52de68`) and DOGE height 223
+  (`bee32eb6...2aae36`). Both daemons accepted the proof and DOGE reported the submitted parent
+  header. Fail-closed payout ownership then initiated shutdown; Miningcore waited for the active
+  candidate operation and force-flushed one ordinary share, one `merged-parent` record and one
+  `auxpow` record to the write-through journal (SHA-256 `a82246b46d8224f03a3058b1fa9ba8a89f88b325f6a05367cb5c95af5a44fd64`).
+  Import changed PostgreSQL from 25/35/1 to 26 shares, 37 blocks and 2 recovery manifests. Both
+  protected block identities
+  occurred exactly once with the correct LTC/DOGE beneficiaries. Replaying identical content exited
+  1 and left all counts unchanged. The first attempt exposed rollback failure masking the original
+  Npgsql timeout; `RunTx` now preserves the original retryable exception and regression tests cover
+  both overloads. Automated shutdown, singleton-recorder, canonical-journal-lock and simultaneous
+  database/journal failure tests remain in place.
 
 ## Runtime hardening observed during validation
 

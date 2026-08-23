@@ -27,9 +27,11 @@ the original authors and contributors.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
+- Cluster-wide, exclusive Stratum listener reservation with address-aware safe port reuse.
 - Share relays for advanced distributed pool deployments.
 - REST API and WebSocket notifications, with bearer-authenticated, route-isolated administration
   and dedicated Prometheus listeners.
+- Typed public API projections that keep wallet credentials and listener secrets out of responses.
 - Integrated banning, TLS options, native log rotation and administrative notifications.
 - Litecoin parent-chain and Dogecoin AuxPoW merged mining for SOLO pools.
 - Versioned Ubuntu release archives, non-root containers and source-build paths.
@@ -71,6 +73,7 @@ replaced. The following sections walk through each step.
 | Install, upgrade or roll back a release | [Release guide](docs/releases.md) |
 | Configure pools, logging and recovery storage | [Configuration guide](docs/configuration.md) |
 | Operate and monitor a production service | [Operator handbook](docs/operations.md) |
+| Diagnose a startup, mining, payout or storage problem | [Troubleshooting guide](docs/troubleshooting.md) |
 | Set up, back up or recover PostgreSQL | [Database and recovery guide](docs/database.md) |
 | Use the API, WebSocket events or metrics | [API guide](docs/api.md) |
 | Secure and call administrative routes | [Administrative API security](docs/admin-api-security.md) |
@@ -195,7 +198,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.1.0-rc.9  # Replace with the release you selected.
+MININGCORE_VERSION=v0.1.0-rc.10  # Replace with the release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -205,7 +208,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 ```console
-MININGCORE_VERSION=v0.1.0-rc.9  # Replace with the release you selected.
+MININGCORE_VERSION=v0.1.0-rc.10  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \
@@ -302,17 +305,22 @@ version-pinned `docker run` command above. See the
 [administrative API security guide](docs/admin-api-security.md#rotate-or-revoke) for safe token
 rotation.
 
-The container must be able to reach PostgreSQL and every coin daemon. `127.0.0.1` inside a container
-means the container itself, not the Docker host. Host traffic on a published port normally appears
-from the bridge gateway; confirm the observed address in Miningcore's unauthorized-request log if a
-protected request returns `403`, and never broaden a whitelist without verifying that address. A
-containerised Prometheus service should use a dedicated network and a predictable whitelisted
-address. PostgreSQL or coin daemons running directly on the Docker host must likewise be configured
-for controlled access through `172.30.56.1` (or the selected gateway), rather than container-local
-`127.0.0.1`, and restricted with their own authentication and firewall rules. Build on hardware
-compatible with the production host because native hashing libraries can be affected by CPU
-architecture and features. The full release, checksum, provenance, container and update procedure
-is in [the release guide](docs/releases.md).
+Remember these container boundaries:
+
+- `127.0.0.1` inside a container means the container itself, not the Docker host.
+- Miningcore must be able to reach PostgreSQL and every coin daemon through controlled network
+  routes. Services on the Docker host normally use the selected bridge gateway rather than
+  container-local loopback.
+- Host traffic on a published port normally appears from the bridge gateway. If a protected request
+  returns `403`, confirm the address in Miningcore's unauthorized-request log before changing a
+  whitelist.
+- A containerised Prometheus service should use a dedicated network and a predictable whitelisted
+  address.
+- Native hashing libraries can depend on CPU architecture and features, so build locally only on
+  hardware compatible with the production host.
+
+The full release, checksum, provenance, container and update procedure is in the
+[release guide](docs/releases.md).
 
 ## Database setup
 
@@ -539,8 +547,9 @@ dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
 They cover consensus serialization, attribution and persistence regressions, but do not replace real
 `litecoind`, `dogecoind`, wallet and PostgreSQL testing.
 
-The [operator handbook](docs/operations.md) collects the routine health, monitoring, stop/start,
-backup and incident-response checks for a live service.
+The [operator handbook](docs/operations.md) collects routine health, monitoring, stop/start and
+backup checks. Start with the [troubleshooting guide](docs/troubleshooting.md) when a live service
+reports an error or unexpected state.
 
 ## Contributions and support
 

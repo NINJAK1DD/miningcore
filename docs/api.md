@@ -3,6 +3,19 @@
 This guide describes the API implemented by the current repository. The root URL is normally
 `http://HOST:4000`; use HTTPS through a trusted reverse proxy for public access.
 
+| Task | Section |
+| --- | --- |
+| Configure public, admin and metrics listeners | [Configuration](#configuration) |
+| Check health or discover routes | [Discovery and health](#discovery-and-health) |
+| Integrate pool-response fields safely | [Pool response contracts](#pool-response-contracts) |
+| List public REST routes | [Public routes](#public-routes) |
+| Consume notifications | [WebSocket notifications](#websocket-notifications) |
+| Scrape metrics or call administration | [Metrics and administration](#metrics-and-administration) |
+| Deploy a front end or reverse proxy | [Front ends and reverse proxies](#front-ends-and-reverse-proxies) |
+
+For status-code triage and safe evidence collection, use
+[Troubleshooting](troubleshooting.md#api-administration-and-metrics).
+
 ## Configuration
 
 ```json
@@ -21,6 +34,8 @@ This guide describes the API implemented by the current repository. The root URL
   }
 }
 ```
+
+### Protected-route controls
 
 Keep the admin and metrics listeners private. If `adminIpWhitelist` or `metricsIpWhitelist` is empty,
 the default is localhost. If a reverse proxy is used, test which client address Miningcore observes
@@ -68,16 +83,20 @@ intervening details remain available at `Debug`. The next rejection after the in
 summary, so a final count remains pending if no later rejection arrives and may be reported much
 later. Its source address describes that current request, not the suppressed requests, which may
 have come from other sources. The limiter uses fixed-size state and a monotonic elapsed-time clock,
-so changing source addresses or correcting the host wall clock cannot defeat it. Prometheus
-counter `miningcore_api_ip_whitelist_rejections_total` increments for every rejected request,
-including entries omitted from normal logs, so operators can alert on rejection volume. Its
-`route_family` label uses only the fixed values `admin`, `metrics` or `other`; it never contains a
-source address or request path. Every rejected request still returns `403 Forbidden`. This
-protection also applies when API rate limiting is disabled and to exact `GET` or `HEAD` metrics
+so changing source addresses or correcting the host wall clock cannot defeat it.
+
+Prometheus counter `miningcore_api_ip_whitelist_rejections_total` increments for every rejected
+request, including entries omitted from normal logs, so operators can alert on rejection volume.
+Its `route_family` label uses only the fixed values `admin`, `metrics` or `other`; it never contains
+a source address or request path. Every rejected request still returns `403 Forbidden`.
+
+This protection also applies when API rate limiting is disabled and to exact `GET` or `HEAD` metrics
 scrapes, which intentionally bypass the public API rate limiter. Keep the listener private and
 retain firewall and IP-whitelist controls; bounded informational logging is not a request-rate
 control. Enabling `Debug` restores per-request detail and therefore can increase log volume
 substantially during hostile traffic.
+
+### Listener and route isolation
 
 When `adminPort` or `metricsPort` is configured, Miningcore creates a dedicated listener and exposes
 only that route family on it. Public REST and WebSocket routes remain on `port`; requests for
@@ -150,6 +169,8 @@ both pool endpoints, including under `legacyNullValueHandling`. Miningcore does 
 disabled state, a zero payment threshold or default payout-scheme values for an object that does
 not exist.
 
+#### Payment extension allowlist
+
 The nested `paymentProcessing.extra` object is an explicit typed public projection. Miningcore emits
 only these approved blockchain-specific fields:
 
@@ -178,18 +199,23 @@ ambiguous case-variant duplicates and every wallet password or private key are o
 runtime extension property does not make it public; it must be classified and projected
 deliberately. JSON object member order is not part of this contract.
 
+#### Payment extension diagnostics
+
 After coin templates are resolved, normal startup classifies `paymentProcessing.extra` entries for
 enabled pools once using the same family-aware public projection and runtime-binder contract. This
 step is not run for disabled pools or during share recovery. Recognised runtime-only fields such as
 wallet credentials are intentionally absent from the public response and do not produce warnings.
 An unrecognised or malformed public entry produces a warning that identifies the pool, a safe key
 label and one of four reasons: unknown key, ambiguous case variant, unsupported public scalar or
-conversion failure. Miningcore logs no extension values. A key whose name looks
+conversion failure. Miningcore logs no extension values.
+
+A key whose name looks
 credential-sensitive is shown only as `<redacted-sensitive-key>`; an unknown-key warning can list
 the family's recognised private field names as safe spelling hints without echoing the supplied
 name. Unsafe characters in other key names are escaped within a fixed output-length bound. Each
 pool emits at most ten key-level warnings followed by one reason-grouped count for any remainder.
 Requests to `/api/pools` and `/api/pools/{id}` do not emit these warnings again.
+
 The warnings use the `PaymentExtraDiagnostics` NLog category so operators can route or filter them
 without suppressing unrelated `Core` startup warnings. The standard console and main-file rules
 include this category. Per-pool files remain limited to their pool-id logger, so use the main log
@@ -200,6 +226,8 @@ or private entries remain in the pool's runtime extension dictionary and are act
 relevant family-specific binder accepts and consumes them. Check the spelling and the deployed coin
 family's configuration contract before removing a setting. Recognised credential fields are
 intentionally runtime-only and do not generate omission warnings.
+
+#### Payment extension client compatibility
 
 REST clients must therefore accept either the canonical JSON type or a runtime-coercible legacy
 representation for an approved `extra` field; they must not infer the REST value's JSON type from
@@ -348,7 +376,9 @@ Prometheus scraping because CORS is enforced by browsers, not server-side monito
 After listener, rate-limit and IP-whitelist checks succeed, Miningcore accepts only `GET` and `HEAD`
 for the metrics route family. `HEAD` returns the same response headers without an exposition body.
 It still performs a full registry collection and serialization server-side, so it is not a cheaper
-high-frequency liveness probe than `GET`. Exact `GET` and `HEAD` scrapes bypass the public API rate
+high-frequency liveness probe than `GET`.
+
+Exact `GET` and `HEAD` scrapes bypass the public API rate
 limiter; rejected lowercase, mixed-case and unsupported method tokens remain subject to it.
 `OPTIONS`, `POST` and every other method return an empty `405 Method Not Allowed` response with
 `Allow: GET, HEAD`; they never invoke the metrics exporter. Rejected listener and client identities

@@ -310,17 +310,28 @@ request cancellation within the bounded shutdown window.
 
 ## Incident routing
 
-| Symptom | First action | Procedure |
-| --- | --- | --- |
-| Disk full, PostgreSQL or Miningcore will not start | Preserve logs and recovery files; restore writable space without deleting accounting evidence | [Disk-exhaustion recovery](database.md#recover-after-disk-exhaustion) |
-| Exit status 74 or a share-recovery fatal latch | Keep miners offline, verify all incident evidence and reconcile PostgreSQL before acknowledgement | [Share-recovery fatal state](database.md#reconcile-fatal-share-recovery-state) |
-| `recovered-shares.txt` contains fallback records | Preserve the source, inspect it, then use the manifested one-shot importer | [Share-recovery import](database.md#inspect-and-import-a-recovery-journal) |
-| Startup says another payout manager owns the database | Prove the old process/backend is dead and reconcile every affected wallet transaction | [Payout ownership recovery](database.md#recover-payout-manager-ownership-safely) |
-| `sendmany` returns `Insufficient funds` code `-6` | Verify no payout was persisted; inspect confirmed inputs, fee ownership and fallback mode; correct the cause, then allow the scheduler to retry—never manufacture a second payment | [Fee reserve and balance readiness](#fee-reserve-and-balance-readiness) |
-| `Auxiliary template update failed` | Confirm a recovery message, then inspect DOGE sync, host/storage load, RPC saturation and timeout/fallback metrics before changing the deadline | [Merged-mining template refresh](merged-mining-litecoin-dogecoin.md#template-refresh) |
-| Startup retries or cannot reserve a Stratum listener | Allow the single cluster-wide `AddressAlreadyInUse` retry-delay budget to outlive local `TIME_WAIT`; it bounds scheduled waits rather than total wall-clock time, so ensure the supervisor startup timeout also covers bind/scheduler overhead and normal initialization; if it exhausts, keep the cluster offline and inspect the named pool, endpoint, scope and competing process | [Stratum listener reservation](configuration.md#stratum-listener-reservation) |
-| Log files consume unexpected space | Check native NLog archives and remove conflicting external `copytruncate` rules | [Log rotation](configuration.md#log-files-and-rotation) |
-| Relay receiver is unavailable | Restore the route and receiver; do not assume ordinary shares published during the outage will replay | [Share relays](share-relays.md#durability-boundary) |
+Start with [Troubleshooting](troubleshooting.md) for bounded evidence collection, HTTP status
+interpretation and symptom-based triage. The table below identifies the authoritative recovery
+procedure for incidents that can affect accounting or availability.
+
+- **Disk full or database startup failure:** preserve logs and recovery files, then follow
+  [disk-exhaustion recovery](database.md#recover-after-disk-exhaustion).
+- **Exit status `74` or fatal recovery latch:** keep miners offline and follow
+  [share-recovery fatal-state reconciliation](database.md#reconcile-fatal-share-recovery-state).
+- **Recovery journal contains records:** preserve the source and use the
+  [manifested one-shot importer](database.md#inspect-and-import-a-recovery-journal).
+- **Another payout manager owns the database:** prove the old process and backend are dead, then
+  follow [payout ownership recovery](database.md#recover-payout-manager-ownership-safely).
+- **`sendmany` returns code `-6`:** inspect confirmed inputs, fee ownership and fallback mode; see
+  [fee reserve readiness](#fee-reserve-and-balance-readiness).
+- **Auxiliary template update fails:** confirm recovery and inspect DOGE sync, load, RPC pressure
+  and [template metrics](merged-mining-litecoin-dogecoin.md#template-refresh).
+- **Stratum listener cannot be reserved:** keep the cluster offline and inspect the named endpoint;
+  see [listener reservation](configuration.md#stratum-listener-reservation).
+- **Logs consume unexpected space:** inspect native archives and follow
+  [log-rotation guidance](configuration.md#log-files-and-rotation).
+- **Relay receiver is unavailable:** restore the route and review the
+  [share-relay durability boundary](share-relays.md#durability-boundary).
 
 Never clear a payout owner, delete a fatal latch, edit a recovery journal, or manually change balances
 as a first response. The recovery gates exist to prevent duplicate payments and silent share loss.
