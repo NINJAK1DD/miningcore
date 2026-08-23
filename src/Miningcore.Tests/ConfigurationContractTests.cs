@@ -314,9 +314,20 @@ public class ConfigurationContractTests
                 $"{fileName}: internal Stratum requires invalid-share banning");
             Assert.True(config.Banning?.BanOnLoginFailure == true,
                 $"{fileName}: internal Stratum requires login-failure banning");
-            Assert.All(internalPools, pool => Assert.True(
-                pool.Banning?.Enabled == true,
-                $"{fileName}: pool '{pool.Id}' must enable its share-ban threshold"));
+            Assert.All(internalPools, pool =>
+            {
+                Assert.True(pool.Banning?.Enabled == true,
+                    $"{fileName}: pool '{pool.Id}' must enable its " +
+                    "share-ban threshold");
+                Assert.True(pool.Banning.CheckThreshold == 50,
+                    $"{fileName}: pool '{pool.Id}' must check share banning " +
+                    "after exactly 50 shares");
+                Assert.True(pool.Banning.InvalidPercent == 50,
+                    $"{fileName}: pool '{pool.Id}' must ban at exactly 50% " +
+                    "invalid shares");
+                Assert.True(pool.Banning.Time == 600,
+                    $"{fileName}: pool '{pool.Id}' must apply a 600-second ban");
+            });
         }
 
         foreach(var credential in document.Descendants()
@@ -333,17 +344,24 @@ public class ConfigurationContractTests
                     }.Contains(property.Name,
                         StringComparer.OrdinalIgnoreCase)))
         {
-            if(credential.Value.Type != JTokenType.String)
-                continue;
-
-            var credentialValue = credential.Value.Value<string>();
             // Several local daemon examples intentionally use no HTTP Basic
             // authentication. Other configured secret types must never use an
             // empty value because that would weaken this fixture guard.
-            var permitsEmptyValue = credential.Name.Equals("password",
-                    StringComparison.OrdinalIgnoreCase) ||
-                credential.Name.Equals("user",
-                    StringComparison.OrdinalIgnoreCase);
+            var permitsEmptyValue = IsDaemonEndpointCredential(credential);
+
+            if(credential.Value.Type == JTokenType.Null)
+            {
+                Assert.True(permitsEmptyValue,
+                    $"{fileName}: configured secret '{credential.Name}' must " +
+                    "use an explicit CHANGE_ME placeholder");
+                continue;
+            }
+
+            Assert.True(credential.Value.Type == JTokenType.String,
+                $"{fileName}: configured secret '{credential.Name}' must be " +
+                "a string");
+
+            var credentialValue = credential.Value.Value<string>();
 
             if(string.IsNullOrWhiteSpace(credentialValue))
             {
@@ -399,6 +417,24 @@ public class ConfigurationContractTests
                 Assert.Equal(0m, percentage);
             }
         }
+    }
+
+    private static bool IsDaemonEndpointCredential(JProperty credential)
+    {
+        var isUserOrPassword = credential.Name.Equals("password",
+                StringComparison.OrdinalIgnoreCase) ||
+            credential.Name.Equals("user", StringComparison.OrdinalIgnoreCase);
+
+        if(!isUserOrPassword || credential.Parent?.Parent is not JArray daemons ||
+            daemons.Parent is not JProperty daemonsProperty ||
+            !daemonsProperty.Name.Equals("daemons",
+                StringComparison.OrdinalIgnoreCase) ||
+            daemonsProperty.Parent?.Parent is not JArray pools ||
+            pools.Parent is not JProperty poolsProperty)
+            return false;
+
+        return poolsProperty.Name.Equals("pools",
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
