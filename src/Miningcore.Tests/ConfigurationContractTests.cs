@@ -337,6 +337,9 @@ public class ConfigurationContractTests
                 continue;
 
             var credentialValue = credential.Value.Value<string>();
+            // Several local daemon examples intentionally use no HTTP Basic
+            // authentication. Other configured secret types must never use an
+            // empty value because that would weaken this fixture guard.
             var permitsEmptyValue = credential.Name.Equals("password",
                     StringComparison.OrdinalIgnoreCase) ||
                 credential.Name.Equals("user",
