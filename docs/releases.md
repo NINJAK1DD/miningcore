@@ -936,6 +936,11 @@ balance deduction; any residual remains on the balance for a later payout. Revie
 [configuration guidance](configuration.md#bitcoin-family-payout-precision), particularly when a
 template relies on the four-decimal fallback.
 
+Only positive-percentage `rewardRecipients` are omitted from public payment history. A configured
+zero-percent recipient is inactive: if that address also mines, its ordinary payout remains visible
+in the `payments` table and API. This makes the zero-percent examples behaviorally inert while
+preserving the established privacy treatment for active pool-fee and donation recipients.
+
 Before enabling Bitcoin-family payments, confirm whether the pool or miners pay transaction fees.
 Pool-paid fees require a confirmed spendable reserve because a matured coinbase may cover the
 recipient outputs but not the additional fee, causing `sendmany` to return `Insufficient funds`

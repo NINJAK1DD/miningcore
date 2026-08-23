@@ -725,18 +725,21 @@ ORDER BY id;
 ```
 
 A `payment_batches` row, any public `payments` rows and the corresponding balance resets are committed
-together. Miningcore deliberately omits configured `rewardRecipients` from public payment history,
-so a batch with no matching `payments` rows can be valid when every balance represented by that
-transaction belonged to a configured reward recipient. This is especially plausible for a
-per-recipient payout path in which one wallet transaction pays only one reward recipient.
+together. Miningcore deliberately omits active, positive-percentage `rewardRecipients` from public
+payment history, so a batch with no matching `payments` rows can be valid when every balance
+represented by that transaction belonged to an active reward recipient. A zero-percent entry is
+inactive and remains visible in payment history if the same address earns a miner payout. This is
+especially relevant to a per-recipient payout path in which one wallet transaction pays only one
+reward recipient.
 
 Treat a zero-public-payment batch as requiring reconciliation, not as corruption by itself. Inspect
-the production `rewardRecipients` configuration that was active at payout time, the transaction's
-wallet outputs, the bounded Miningcore log and nearby `balance_changes` rows whose usage is
+the positive-percentage `rewardRecipients` configuration that was active at payout time, the
+transaction's wallet outputs, the bounded Miningcore log and nearby `balance_changes` rows whose
+usage is
 `Balance reset after payment`. Current configuration alone is insufficient if reward recipients
 changed after the payout, and timestamp proximity is supporting evidence rather than a transaction-ID
-link. If any represented wallet recipient was not a configured reward recipient, or the evidence is
-incomplete, stop and investigate before releasing ownership.
+link. If any represented wallet recipient was not an active, positive-percentage reward recipient,
+or the evidence is incomplete, stop and investigate before releasing ownership.
 
 ```sql
 SELECT poolid,
