@@ -4,6 +4,10 @@ Share relay separates public Stratum servers from a central recorder. It is an a
 model: most pools should run Miningcore and PostgreSQL on one protected Linux host unless load or
 network placement requires separate roles.
 
+The repository includes a complete, CI-validated
+[Bitcoin sender/recorder example pair](../examples/README.md#distributed-recorder-layout). Read this
+guide before populating or deploying those files.
+
 ## Roles
 
 - A **relay sender** accepts miners and publishes validated ordinary shares through `shareRelay`.

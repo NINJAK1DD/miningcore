@@ -4,6 +4,9 @@ Miningcore reads JSON with comments. Start with [`config.example.json`](../confi
 it to `config.json`, and replace every `CHANGE_ME` placeholder. Strict JSON editors may complain about
 comments even though Miningcore accepts them.
 
+For a smaller topology-specific starting point, choose a direct, multi-coin, merged-mining or
+distributed-recorder file from the [example configuration index](../examples/README.md).
+
 Miningcore preserves JSON string values in both the cluster configuration and bundled or
 operator-supplied coin-template files. Content that resembles an ISO date remains the exact string
 the operator configured; it is not silently converted to a date or rewritten for the host's locale
@@ -15,6 +18,7 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 
 | Task | Section |
 | --- | --- |
+| Choose a complete example topology | [Example configurations](../examples/README.md) |
 | Configure a pool and miner difficulty | [Pool basics](#pool-basics) |
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
@@ -46,8 +50,9 @@ For symptom-first diagnostics, use [Troubleshooting](troubleshooting.md).
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
 secrets. Restrict the file to the service account.
 
-Distributed sender/receiver roles have additional durability, security and database requirements;
-use the dedicated [share-relay guide](share-relays.md) rather than copying an old relay example.
+Distributed sender/receiver roles have additional durability, security and database requirements.
+Start with the maintained [relay example pair](../examples/README.md#distributed-recorder-layout),
+then follow the dedicated [share-relay guide](share-relays.md).
 
 ## Pool basics
 

@@ -151,6 +151,15 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
     exit 1
   fi
 
+  while IFS= read -r example; do
+    member="$package_root/examples/$(basename "$example")"
+    if ! tar -xOf "$output_dir/$archive" "$member" | cmp -s - "$example"; then
+      echo "$archive does not contain the reviewed example $(basename "$example")" >&2
+      exit 1
+    fi
+  done < <(find "$repository_root/examples" -maxdepth 1 -type f \
+    \( -name '*.json' -o -name 'README.md' \) -print | sort)
+
   cp "$output_dir/$archive" "$complete_dir/"
 done
 

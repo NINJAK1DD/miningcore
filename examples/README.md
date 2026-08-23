@@ -1,0 +1,127 @@
+# Example configurations
+
+Choose the smallest topology that matches the deployment, copy it outside the repository as
+`config.json`, and replace every `CHANGE_ME` value. Miningcore accepts comments in JSON; strict JSON
+editors may report those comments even though Miningcore accepts them.
+
+These files are starting points, not production secrets or universal difficulty recommendations.
+Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so copying an example cannot
+silently redirect block rewards. Existing `rewardRecipients` entries demonstrate either a
+maintainer donation address listed in the main README or an operator-supplied placeholder, but every
+sample percentage is `0`. No example accrues a fee or donation until the operator deliberately sets
+a non-zero percentage.
+
+Do not commit populated configurations. Miningcore does not have a parse-only startup flag; validate
+on an isolated staging host or during a controlled maintenance window, then stop the foreground
+process after its startup checks complete:
+
+```console
+./Miningcore -c /etc/miningcore/config.json
+```
+
+Follow the full [safe validation sequence](../docs/configuration.md#validate-changes-safely) before
+moving production traffic.
+
+All example APIs bind to loopback and assume a same-host HTTPS reverse proxy. Miningcore does not
+process trusted forwarded-client headers, so it sees that proxy as the client and cannot apply a
+meaningful per-public-client limit. Application rate limiting is therefore explicitly disabled in
+these files; enforce request limits at the reverse proxy. Enable Miningcore's limiter only for a
+topology where it observes each real client address directly.
+
+Every enabled internal Stratum pool uses the integrated cluster ban manager and a pool threshold of
+50 submitted shares, 50% invalid shares and a 600-second ban. The modernization of the older files
+intentionally enables junk-request, invalid-share and invalid-login protection; review those values
+for the expected miner fleet before deployment.
+
+## Common pool layouts
+
+| Example | Use it for |
+| --- | --- |
+| [`bitcoin_pool.json`](bitcoin_pool.json) | One Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
+| [`dogecoin_pool.json`](dogecoin_pool.json) | One direct Dogecoin SOLO pool with low- and high-difficulty ports |
+| [`bitcoin_dogecoin_pool.json`](bitcoin_dogecoin_pool.json) | Independent Bitcoin and Dogecoin pools managed by one Miningcore process |
+| [`litecoin_dogecoin_merged_mining_pool.json`](litecoin_dogecoin_merged_mining_pool.json) | Litecoin parent mining with Dogecoin AuxPoW rewards and two miner difficulty tiers |
+| [`litecoin_pool.json`](litecoin_pool.json) | Legacy full Litecoin PPLNS example |
+
+The low/high labels are operational hints, not fixed hardware classes. The included values are
+conservative starting points and may be unsuitable for a particular network, miner fleet or rental.
+Watch accepted-share cadence and adjust them deliberately. A compatible miner can also request a
+starting difficulty with `d=VALUE` in its password.
+
+Dogecoin is not merge-mined with Bitcoin. The Bitcoin/Dogecoin example runs two independent pools.
+Use the Litecoin/Dogecoin example for AuxPoW merged mining and read the
+[merged-mining guide](../docs/merged-mining-litecoin-dogecoin.md) before enabling it.
+
+## Additional coin examples
+
+These longer-standing examples remain available for their coin-specific daemon and payout fields.
+They pass the same configuration-contract test as the common layouts above, but their sample
+difficulty, fee and payout values still require an operator review.
+
+| Coin or mode | Example |
+| --- | --- |
+| Alephium | [`alephium_pool.json`](alephium_pool.json) |
+| Beam | [`beam_pool.json`](beam_pool.json) |
+| Callisto | [`callisto_pool.json`](callisto_pool.json) |
+| Conceal | [`conceal_pool.json`](conceal_pool.json) |
+| Cortex | [`cortex_pool.json`](cortex_pool.json) |
+| Dash | [`dash_pool.json`](dash_pool.json) |
+| Dash without polling | [`dash_pool_no_polling.json`](dash_pool_no_polling.json) |
+| DigiByte Scrypt | [`digibyte_scrypt_pool.json`](digibyte_scrypt_pool.json) |
+| DigiByte SHA-256 | [`digibyte_sha256_pool.json`](digibyte_sha256_pool.json) |
+| Ethereum | [`ethereum_pool.json`](ethereum_pool.json) |
+| Ethereum Classic | [`ethereumclassic_pool.json`](ethereumclassic_pool.json) |
+| Firo | [`firo_pool.json`](firo_pool.json) |
+| FLO | [`flo_pool.json`](flo_pool.json) |
+| Handshake | [`handshake_pool.json`](handshake_pool.json) |
+| Kaspa | [`kaspa_pool.json`](kaspa_pool.json) |
+| Litecoin/Dash | [`litecoin_dash_pool.json`](litecoin_dash_pool.json) |
+| Monero | [`monero_pool.json`](monero_pool.json) |
+| Nexa | [`nexa_pool.json`](nexa_pool.json) |
+| OctaSpace | [`octaspace_pool.json`](octaspace_pool.json) |
+| Pakcoin | [`pakcoin_pool.json`](pakcoin_pool.json) |
+| Ravencoin | [`ravencoin_pool.json`](ravencoin_pool.json) |
+| SatoshiCash | [`satoshicash_pool.json`](satoshicash_pool.json) |
+| Ubiq | [`ubiq_pool.json`](ubiq_pool.json) |
+| Verus Coin | [`veruscoin_pool.json`](veruscoin_pool.json) |
+| Warthog | [`warthog_pool.json`](warthog_pool.json) |
+| Xelis | [`xelis_pool.json`](xelis_pool.json) |
+| Zano | [`zano_pool.json`](zano_pool.json) |
+| Zcash | [`zcash_pool.json`](zcash_pool.json) |
+| Zephyr | [`zephyr_pool.json`](zephyr_pool.json) |
+
+## Distributed recorder layout
+
+| Example | Role |
+| --- | --- |
+| [`bitcoin_share_relay_sender.json`](bitcoin_share_relay_sender.json) | Edge Stratum node that relays ordinary Bitcoin shares without owning payouts |
+| [`bitcoin_share_relay_recorder.json`](bitcoin_share_relay_recorder.json) | Central PostgreSQL recorder and sole payout owner for two example senders |
+
+The two relay files form one example deployment and must use the same stable pool ID and coin
+definition. Give every process a unique `instanceId`, generate a different long secret for each
+sender/receiver relationship, and expose relay ports only on a private network or VPN. The addresses
+in these files use the documentation-only `192.0.2.0/24` range and must be replaced.
+
+Ordinary share relay uses ZeroMQ PUB/SUB and is not a durable acknowledged queue. Shares sent while
+the recorder or route is unavailable are not replayed. Only the recorder should enable payment
+processing for this pool/database set. Read the [share-relay guide](../docs/share-relays.md) before
+using this advanced topology.
+
+## Production checklist
+
+- Replace every `CHANGE_ME` value and every documentation-only address.
+- Review every disabled `rewardRecipients` entry and enable a percentage only deliberately.
+- Use unique pool IDs and do not rename an ID after it has accounting history.
+- Keep daemon RPC, PostgreSQL, admin, metrics and relay listeners behind appropriate firewalls.
+- Configure public-client request limiting on the HTTPS reverse proxy used by these examples.
+- Put API and Stratum TLS keys outside source control and restrict their filesystem permissions.
+- Create PostgreSQL schema/migrations and exact share partitions before enabling a pool.
+- Fund Bitcoin-family payout wallets with a confirmed fee reserve before enabling payments.
+- Keep only one payout/reconciliation owner for each database and pool set.
+- Back up wallet and database state, then test restoration away from production.
+- Read [Configuration](../docs/configuration.md), [Operations](../docs/operations.md), and
+  [Troubleshooting](../docs/troubleshooting.md) before admitting miners.
+
+All JSON examples are parsed and passed through Miningcore's normal-startup configuration validator
+in CI. That proves their structure and cross-setting contracts; it cannot verify operator-supplied
+wallet addresses, credentials, daemon availability, network interfaces or firewall policy.

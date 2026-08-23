@@ -3,25 +3,26 @@
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,7 +35,7 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
@@ -42,38 +43,33 @@
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [{
         "id": "zec1",
         "enabled": true,
         "coin": "zcash",
-        "address": "t1YHZHz2DGVMJiggD2P4fBQ2TAPgtLSUwZ7",
-        "z-address": "zca7tCyUqn6axyZTWfiFTufI28sJNOnC2p3PHV4txH1XdDGsAjw1AKM8qiHznMTSw5GXUbWqS7P7Qc1sDw93CQePCLuPXXr",
+        "address": "CHANGE_ME_ZCASH_POOL_WALLET_ADDRESS",
+        "z-address": "CHANGE_ME_ZCASH_SHIELDED_WALLET_ADDRESS",
         "rewardRecipients": [
             {
                 "type": "op",
-                "address": "t1YHZHz2DGVMJiggD2P4fBQ2TAPgtLSUwZ7",
-                "percentage": 1.5
+                "address": "t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
+                "percentage": 0
             }
         ],
         "blockRefreshInterval": 500,
@@ -105,8 +101,8 @@
             {
                 "host": "127.0.0.1",
                 "port": 8232,
-                "user": "user",
-                "password": "pass"
+                "user": "CHANGE_ME_DAEMON_RPC_USER",
+                "password": "CHANGE_ME_DAEMON_RPC_PASSWORD"
             }
         ],
         "paymentProcessing": {

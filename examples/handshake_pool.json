@@ -3,25 +3,26 @@
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,45 +35,40 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [{
         "id": "hns1",
         "enabled": true,
         "coin": "handshake",
-        "address": "ts1qj633ftn403c8zm365kq6qhr60vzdx8qyk92ee4",
-        "pubKey": "0370ce96be2fc2288d308a9f9ca233efa830a1b8a5cee9a26bcc4de6a4c0892687",
+        "address": "CHANGE_ME_HANDSHAKE_POOL_WALLET_ADDRESS",
+        "pubKey": "CHANGE_ME_HANDSHAKE_POOL_PUBLIC_KEY",
         "rewardRecipients": [
             {
                 "type": "op",
-                "address": "ts1qj633ftn403c8zm365kq6qhr60vzdx8qyk92ee4",
-                "percentage": 1
+                "address": "CHANGE_ME_HANDSHAKE_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+                "percentage": 0
             }
         ],
         "enableAsicBoost": true,
@@ -113,7 +109,7 @@
         ],
         "paymentProcessing": {
             "enabled": true,
-            "walletAccount": "<The Handshake Node's wallet account which owns the pool address>",
+            "walletAccount": "CHANGE_ME_HANDSHAKE_WALLET_ACCOUNT",
             "minimumPayment": 1,
             "payoutScheme": "PPLNS",
             "payoutSchemeConfig": {

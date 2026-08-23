@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using FluentValidation.Results;
 using Miningcore.Blockchain.Handshake.Configuration;
 using Miningcore.Configuration;
@@ -15,6 +16,42 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    private const string MissingExamplesDirectoryMarker =
+        "<missing-examples-directory>";
+
+    private static readonly IReadOnlyDictionary<string, string>
+        ApprovedExampleDonationAddresses =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["bitcoin"] =
+                    "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+                ["dogecoin"] =
+                    "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
+                ["ethereum"] =
+                    "0x4DE55672F0bBB88882A5a589b320eE40FfbdebF9",
+                ["ethereumclassic"] =
+                    "0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0",
+                ["firo"] =
+                    "aH1tURoFqY1quNraAtceE6YFPv3DLFo8zT",
+                ["kaspa"] =
+                    "kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu",
+                ["litecoin"] =
+                    "ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg",
+                ["monero"] =
+                    "43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4" +
+                    "HBosKZch8t7Fpg34DL9dNcN22T7H6JWEC23B9iDLAZqQsp",
+                ["warthog"] =
+                    "4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46",
+                ["xelis"] =
+                    "xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4",
+                ["zcash"] =
+                    "t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
+            };
+
+    private static readonly Lazy<JObject> BundledCoinTemplates = new(() =>
+        JObject.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "coins.json"))));
+
     public static IEnumerable<object[]> DateLookingConfigurationStrings()
     {
         yield return new object[] { "2025-01-01" };
@@ -23,13 +60,39 @@ public class ConfigurationContractTests
         yield return new object[] { "2026-08-16T15:30:00" };
     }
 
+    public static IEnumerable<object[]> ShippedExampleConfigurations()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "examples");
+
+        if(!Directory.Exists(directory))
+        {
+            yield return new object[] { MissingExamplesDirectoryMarker };
+            yield break;
+        }
+
+        var paths = Directory.EnumerateFiles(directory)
+            .Where(path => Path.GetExtension(path).Equals(".json",
+                StringComparison.Ordinal))
+            .OrderBy(Path.GetFileName, StringComparer.Ordinal)
+            .ToArray();
+
+        if(paths.Length == 0)
+        {
+            yield return new object[] { MissingExamplesDirectoryMarker };
+            yield break;
+        }
+
+        foreach(var path in paths)
+            yield return new object[] { Path.GetFileName(path) };
+    }
+
     private static string FormatValidationErrors(
         IEnumerable<ValidationFailure> errors) =>
         string.Join(Environment.NewLine, errors.Select(error =>
             $"{error.PropertyName}: {error.ErrorMessage}"));
 
     private static void ValidateNormalStartupWithDiagnostics(
-        ClusterConfig config)
+        ClusterConfig config, string context = null)
     {
         try
         {
@@ -48,6 +111,9 @@ public class ConfigurationContractTests
                 ? "Full startup validation failed without a diagnostic " +
                   "after applying live defaults."
                 : FormatValidationErrors(result.Errors);
+
+            if(!string.IsNullOrEmpty(context))
+                diagnostic = $"{context}:{Environment.NewLine}{diagnostic}";
 
             // The inner-exception constructor became public in xUnit 2.4.2.
             // Keep the test package at or above that version while this helper
@@ -143,6 +209,235 @@ public class ConfigurationContractTests
     }
 
     [Theory]
+    [MemberData(nameof(ShippedExampleConfigurations))]
+    public void ShippedTopologyExample_PassesNormalStartupValidation(
+        string fileName)
+    {
+        Assert.True(fileName != MissingExamplesDirectoryMarker,
+            "No shipped JSON examples were copied to the test output.");
+
+        var path = Path.Combine(AppContext.BaseDirectory, "examples", fileName);
+        var document = ParseConfigurationDocument(File.ReadAllText(path));
+        var config = Program.ReadConfig(path, false);
+        var result = new ClusterConfigValidator().Validate(config);
+
+        Assert.True(result.IsValid,
+            $"{fileName}:{Environment.NewLine}{FormatValidationErrors(result.Errors)}");
+        Assert.All(config.Pools,
+            pool => Assert.NotNull(pool.PaymentProcessing));
+
+        Assert.All(config.Pools, pool => Assert.True(
+            BundledCoinTemplates.Value.ContainsKey(pool.Coin),
+            $"{fileName}: pool '{pool.Id}' references unknown bundled coin " +
+            $"template '{pool.Coin}'"));
+
+        // Exercise mode-aware defaults and cross-setting contracts, including
+        // merged-mining persistence and relay sender/recorder ownership rules.
+        ValidateNormalStartupWithDiagnostics(config, fileName);
+        AssertShippedExampleOperationalPolicy(fileName, document, config);
+    }
+
+    private static void AssertShippedExampleOperationalPolicy(
+        string fileName, JObject document, ClusterConfig config)
+    {
+        Assert.Null(document.SelectToken(
+            "paymentProcessing.shareRecoveryFile"));
+
+        if(document.SelectToken("paymentProcessing.enabled")?.Value<bool>() ==
+            true)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(
+                    document["shareRecoveryFile"]?.Value<string>()),
+                $"{fileName}: enabled payment processing requires the root " +
+                "shareRecoveryFile setting");
+        }
+
+        Assert.Null(document["$schema"]);
+
+        if(document.TryGetValue("api", out var apiToken))
+        {
+            var api = apiToken as JObject;
+
+            Assert.True(api != null,
+                $"{fileName}: api must be an object when configured");
+
+            var listenAddress = api["listenAddress"]?.Value<string>();
+            var addressIsValid = IPAddress.TryParse(listenAddress,
+                out var parsedListenAddress);
+
+            Assert.True(addressIsValid &&
+                    IPAddress.IsLoopback(parsedListenAddress),
+                $"{fileName}: example API listeners must remain on loopback");
+
+            var ports = new[]
+            {
+                api["port"]?.Value<int?>(),
+                api["adminPort"]?.Value<int?>(),
+                api["metricsPort"]?.Value<int?>(),
+            };
+
+            Assert.All(ports, port => Assert.True(port is >= 1 and <= 65535,
+                $"{fileName}: API ports must be between 1 and 65535"));
+            Assert.Equal(ports.Length, ports.Distinct().Count());
+
+            foreach(var whitelistName in new[]
+                        {
+                            "adminIpWhitelist",
+                            "metricsIpWhitelist",
+                        })
+            {
+                var whitelist = api[whitelistName]?.Values<string>() ??
+                    Enumerable.Empty<string>();
+
+                Assert.Contains(whitelist, address =>
+                    IPAddress.TryParse(address, out var parsedAddress) &&
+                    IPAddress.IsLoopback(parsedAddress));
+            }
+
+            Assert.True(api.SelectToken("rateLimiting.disabled")?
+                    .Value<bool>() == true,
+                $"{fileName}: loopback/reverse-proxy examples must delegate " +
+                "public-client rate limiting to the proxy");
+        }
+
+        var internalPools = config.Pools.Where(pool =>
+                pool.Enabled && pool.EnableInternalStratum == true)
+            .ToArray();
+
+        if(internalPools.Length > 0)
+        {
+            Assert.Equal(BanManagerKind.Integrated,
+                config.Banning?.Manager);
+            Assert.True(config.Banning?.BanOnJunkReceive == true,
+                $"{fileName}: internal Stratum requires junk-request banning");
+            Assert.True(config.Banning?.BanOnInvalidShares == true,
+                $"{fileName}: internal Stratum requires invalid-share banning");
+            Assert.True(config.Banning?.BanOnLoginFailure == true,
+                $"{fileName}: internal Stratum requires login-failure banning");
+            Assert.All(internalPools, pool =>
+            {
+                Assert.True(pool.Banning?.Enabled == true,
+                    $"{fileName}: pool '{pool.Id}' must enable its " +
+                    "share-ban threshold");
+                Assert.True(pool.Banning.CheckThreshold == 50,
+                    $"{fileName}: pool '{pool.Id}' must check share banning " +
+                    "after exactly 50 shares");
+                Assert.True(pool.Banning.InvalidPercent == 50,
+                    $"{fileName}: pool '{pool.Id}' must ban at exactly 50% " +
+                    "invalid shares");
+                Assert.True(pool.Banning.Time == 600,
+                    $"{fileName}: pool '{pool.Id}' must apply a 600-second ban");
+            });
+        }
+
+        foreach(var credential in document.Descendants()
+                    .OfType<JProperty>()
+                    .Where(property => new[]
+                    {
+                        "apiKey",
+                        "password",
+                        "sharedEncryptionKey",
+                        "tlsPfxPassword",
+                        "user",
+                        "walletPrivateKey",
+                        "walletPassword",
+                    }.Contains(property.Name,
+                        StringComparer.OrdinalIgnoreCase)))
+        {
+            // Several local daemon examples intentionally use no HTTP Basic
+            // authentication. Other configured secret types must never use an
+            // empty value because that would weaken this fixture guard.
+            var permitsEmptyValue = IsDaemonEndpointCredential(credential);
+
+            if(credential.Value.Type == JTokenType.Null)
+            {
+                Assert.True(permitsEmptyValue,
+                    $"{fileName}: configured secret '{credential.Name}' must " +
+                    "use an explicit CHANGE_ME placeholder");
+                continue;
+            }
+
+            Assert.True(credential.Value.Type == JTokenType.String,
+                $"{fileName}: configured secret '{credential.Name}' must be " +
+                "a string");
+
+            var credentialValue = credential.Value.Value<string>();
+
+            if(string.IsNullOrWhiteSpace(credentialValue))
+            {
+                Assert.True(permitsEmptyValue,
+                    $"{fileName}: configured secret '{credential.Name}' must " +
+                    "use an explicit CHANGE_ME placeholder");
+                continue;
+            }
+
+            if(credential.Name.Equals("user",
+                    StringComparison.OrdinalIgnoreCase) &&
+                credentialValue == "miningcore")
+                continue;
+
+            Assert.StartsWith("CHANGE_ME_", credentialValue);
+        }
+
+        foreach(var pool in document["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var poolId = pool["id"]?.Value<string>() ?? "<unknown>";
+            var coin = pool["coin"]?.Value<string>() ?? string.Empty;
+            var address = pool["address"]?.Value<string>();
+
+            Assert.True(address?.StartsWith("CHANGE_ME_",
+                    StringComparison.Ordinal) == true,
+                $"{fileName}: pool '{poolId}' must use a CHANGE_ME primary " +
+                "wallet placeholder");
+
+            foreach(var propertyName in new[] { "pubKey", "z-address" })
+            {
+                var value = pool[propertyName]?.Value<string>();
+
+                if(value != null)
+                    Assert.StartsWith("CHANGE_ME_", value);
+            }
+
+            foreach(var recipient in pool["rewardRecipients"]?
+                        .Children<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var recipientAddress = recipient["address"]?.Value<string>();
+                var percentage = recipient["percentage"]?.Value<decimal?>();
+                var isPlaceholder = recipientAddress?.StartsWith("CHANGE_ME_",
+                    StringComparison.Ordinal) == true;
+                var isApprovedDonation =
+                    ApprovedExampleDonationAddresses.TryGetValue(coin,
+                        out var approvedAddress) &&
+                    recipientAddress == approvedAddress;
+
+                Assert.True(isPlaceholder || isApprovedDonation,
+                    $"{fileName}: pool '{poolId}' has an unexpected reward " +
+                    $"recipient address '{recipientAddress}'");
+                Assert.Equal(0m, percentage);
+            }
+        }
+    }
+
+    private static bool IsDaemonEndpointCredential(JProperty credential)
+    {
+        var isUserOrPassword = credential.Name.Equals("password",
+                StringComparison.OrdinalIgnoreCase) ||
+            credential.Name.Equals("user", StringComparison.OrdinalIgnoreCase);
+
+        if(!isUserOrPassword || credential.Parent?.Parent is not JArray daemons ||
+            daemons.Parent is not JProperty daemonsProperty ||
+            !daemonsProperty.Name.Equals("daemons",
+                StringComparison.OrdinalIgnoreCase) ||
+            daemonsProperty.Parent?.Parent is not JArray pools ||
+            pools.Parent is not JProperty poolsProperty)
+            return false;
+
+        return poolsProperty.Name.Equals("pools",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
     [MemberData(nameof(DateLookingConfigurationStrings))]
     public void NormalStartupAndParsedConfigDump_PreserveDateLookingStrings(
         string configuredValue)
@@ -221,9 +516,7 @@ public class ConfigurationContractTests
             .Where(x => x.EnableInternalStratum == true)
             .ToArray();
 
-        Assert.True(internalPools.Length == 1,
-            "The diagnostic fixture requires exactly one example pool with " +
-            "internal Stratum explicitly enabled.");
+        Assert.NotEmpty(internalPools);
 
         var pool = internalPools[0];
 

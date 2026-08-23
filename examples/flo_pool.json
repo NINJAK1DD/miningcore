@@ -3,25 +3,26 @@
     "level": "info",
     "enableConsoleLog": true,
     "enableConsoleColors": true,
-    "logFile": "",
-    "apiLogFile": "",
-    "logBaseDirectory": "",
+    "logFile": "miningcore.log",
+    "apiLogFile": "miningcore-api.log",
+    "logBaseDirectory": "logs",
     "perPoolLogFile": false
   },
   "banning": {
     "manager": "Integrated",
     "banOnJunkReceive": true,
-    "banOnInvalidShares": false
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
   },
   "notifications": {
     "enabled": false,
     "email": {
       "host": "smtp.example.com",
       "port": 587,
-      "user": "user",
-      "password": "password",
-      "fromAddress": "info@yourpool.org",
-      "fromName": "support"
+      "user": "CHANGE_ME_SMTP_USER",
+      "password": "CHANGE_ME_SMTP_PASSWORD",
+      "fromAddress": "pool@example.com",
+      "fromName": "Miningcore operator"
     },
     "admin": {
       "enabled": false,
@@ -33,45 +34,40 @@
     "postgres": {
       "host": "127.0.0.1",
       "port": 5432,
-      "user": "user",
-      "password": "pass",
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
       "database": "miningcore"
     }
   },
   "paymentProcessing": {
     "enabled": true,
     "interval": 600,
-    "shareRecoveryFile": "recovered-shares.txt"
+    "coinbaseString": "Miningcore"
   },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
   "api": {
-        "enabled": true,
-        "listenAddress": "*",
-        "port": 4000,
-        "metricsIpWhitelist": [],
-        "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
-        }
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false,
+    "rateLimiting": {
+      "disabled": true
+    }
   },
   "pools": [
     {
       "id": "flo1",
       "enabled": true,
       "coin": "flo",
-      "address": "FC3d6JT1Z3uZvKVNWjKt3qN8PX8knhAU7d",
+      "address": "CHANGE_ME_FLO_POOL_WALLET_ADDRESS",
       "rewardRecipients": [
         {
-          "address": "FCH4uesFJADBGK85gW74Cqmka54dpZk4ZH",
-          "percentage": 1.0
+          "address": "CHANGE_ME_FLO_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
         }
       ],
       "maxActiveJobs": 10,
@@ -101,8 +97,8 @@
         {
           "host": "127.0.0.1",
           "port": 7313,
-          "user": "user",
-          "password": "pass"
+          "user": "CHANGE_ME_DAEMON_RPC_USER",
+          "password": "CHANGE_ME_DAEMON_RPC_PASSWORD"
         }
       ],
       "paymentProcessing": {

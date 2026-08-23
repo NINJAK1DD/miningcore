@@ -13,6 +13,7 @@ wallet balances or recovery files.
 | Task | Guide |
 | --- | --- |
 | Install, upgrade or roll back a release | [Release installation](releases.md) |
+| Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
 | Configure pools, logging and recovery storage | [Configuration](configuration.md) |
 | Operate and monitor a production service | [Operator handbook](operations.md) |
 | Diagnose startup, mining, payout or storage problems | [Troubleshooting](troubleshooting.md) |
