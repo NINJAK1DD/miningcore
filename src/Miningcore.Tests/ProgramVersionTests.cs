@@ -59,4 +59,48 @@ public class ProgramVersionTests
     {
         Assert.Equal("unknown", Program.FormatVersion(fullSemVer, sha));
     }
+
+    [Fact]
+    public void FormatDonationAddresses_PreservesMaintainerAddressesAndReadmeOrder()
+    {
+        var expected = string.Join(System.Environment.NewLine, new[]
+        {
+            " Donations to support development and maintenance of this NINJAK1DD Miningcore fork:",
+            string.Empty,
+            " BTC  - bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+            " ETH  - 0x4DE55672F0bBB88882A5a589b320eE40FfbdebF9",
+            " DOGE - DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
+            " ZEC  - t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
+            " XMR  - 43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4HBosKZch8t7Fpg34" +
+            "DL9dNcN22T7H6JWEC23B9iDLAZqQsp",
+            " BCH  - qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
+            " LTC  - ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg",
+            " KAS  - kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu",
+            " ETC  - 0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0",
+            " FIRO - aH1tURoFqY1quNraAtceE6YFPv3DLFo8zT",
+            " XEL  - xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4",
+            " WART - 4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46",
+        });
+
+        Assert.Equal(expected, Program.FormatDonationAddresses());
+
+        var readme = System.IO.File.ReadAllText(
+            System.IO.Path.Combine(System.AppContext.BaseDirectory, "README.md"));
+        var previousRowIndex = -1;
+        var lines = expected.Split(System.Environment.NewLine);
+
+        Assert.Contains(lines[0].Trim(), readme);
+
+        for(var i = 2; i < lines.Length; i++)
+        {
+            var fields = lines[i].Trim().Split(" - ", 2,
+                System.StringSplitOptions.None);
+            var row = $"| {fields[0].Trim()} | `{fields[1]}` |";
+            var rowIndex = readme.IndexOf(row, System.StringComparison.Ordinal);
+
+            Assert.True(rowIndex > previousRowIndex,
+                $"README.md is missing the ordered donation row: {row}");
+            previousRowIndex = rowIndex;
+        }
+    }
 }

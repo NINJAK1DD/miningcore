@@ -66,11 +66,11 @@
         "id": "xel1",
         "enabled": true,
         "coin": "xelis",
-        "address": "xel:ajnsfv065qusndt0hfsngecrnf5690drmqmc0uq0etlx8zjlcyzqq2slgvt",
+        "address": "xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4",
         "rewardRecipients": [
           {
             "type": "op",
-            "address": "xel:ajnsfv065qusndt0hfsngecrnf5690drmqmc0uq0etlx8zjlcyzqq2slgvt",
+            "address": "xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4",
             "percentage": 1.0
           }
         ],

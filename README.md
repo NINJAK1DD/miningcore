@@ -561,6 +561,28 @@ fork-specific bugs. Operational information for the hosted pool belongs on
 The [upstream repository](https://github.com/blackmennewstyle/miningcore), its discussions and any
 upstream commercial services are maintained separately and are not support offered by BTCPool.co.uk.
 
+### Donations
+
+Donations to support development and maintenance of this NINJAK1DD Miningcore fork:
+
+| Coin | Address |
+| --- | --- |
+| BTC | `bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j` |
+| ETH | `0x4DE55672F0bBB88882A5a589b320eE40FfbdebF9` |
+| DOGE | `DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt` |
+| ZEC | `t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66` |
+| XMR | `43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4HBosKZch8t7Fpg34DL9dNcN22T7H6JWEC23B9iDLAZqQsp` |
+| BCH | `qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de` |
+| LTC | `ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg` |
+| KAS | `kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu` |
+| ETC | `0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0` |
+| FIRO | `aH1tURoFqY1quNraAtceE6YFPv3DLFo8zT` |
+| XEL | `xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4` |
+| WART | `4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46` |
+
+Always verify the address and network before sending funds. Cryptocurrency transfers cannot be
+reversed.
+
 ## Licence and upstream credit
 
 Miningcore is distributed under the terms in [LICENSE](LICENSE). This distribution derives from
