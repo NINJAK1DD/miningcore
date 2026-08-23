@@ -106,6 +106,9 @@ public abstract class PayoutHandlerBase
     private RewardRecipient[] RewardRecipients =>
         poolConfig.RewardRecipients ?? Array.Empty<RewardRecipient>();
 
+    private bool IsActiveRewardRecipient(string address) =>
+        RewardRecipients.Any(x => x.Percentage > 0 && x.Address == address);
+
     protected void BuildFaultHandlingPolicy()
     {
         var retry = Policy
@@ -168,7 +171,8 @@ public abstract class PayoutHandlerBase
 
                     foreach(var balance in balances)
                     {
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
+                        if(!string.IsNullOrEmpty(transactionConfirmation) &&
+                            !IsActiveRewardRecipient(balance.Address))
                         {
                             // record payment
                             var payment = new Payment
@@ -238,7 +242,8 @@ public abstract class PayoutHandlerBase
                         {
                             var balance = kvp.Key;
 
-                            if(!string.IsNullOrEmpty(transactionConfirmation) && RewardRecipients.All(x => x.Address != balance.Address))
+                            if(!string.IsNullOrEmpty(transactionConfirmation) &&
+                                !IsActiveRewardRecipient(balance.Address))
                             {
                                 // record payment
                                 var payment = new Payment
