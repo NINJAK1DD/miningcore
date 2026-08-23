@@ -2,14 +2,16 @@
 
 Choose the smallest topology that matches the deployment, copy it outside the repository as
 `config.json`, and replace every `CHANGE_ME` value. Miningcore accepts comments in JSON; strict JSON
-editors may report those comments even though Miningcore accepts them.
+editors may report those comments even though Miningcore accepts them. Per-coin comments stay
+compact so these files remain scannable; use the fully annotated
+[`config.example.json`](../config.example.json) for field-by-field guidance.
 
 These files are starting points, not production secrets or universal difficulty recommendations.
 Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so copying an example cannot
-silently redirect block rewards. Existing `rewardRecipients` entries demonstrate either a
-maintainer donation address listed in the main README or an operator-supplied placeholder, but every
-sample percentage is `0`. No example accrues a fee or donation until the operator deliberately sets
-a non-zero percentage.
+silently redirect block rewards. Every pool includes a `rewardRecipients` entry demonstrating
+either a maintainer donation address listed in the main README or an operator-supplied placeholder,
+but every sample percentage is `0`. Miningcore does not require a reward recipient to mine or pay
+miners; set a reviewed non-zero percentage only when the pool should collect a fee or donation.
 
 Do not commit populated configurations. Miningcore does not have a parse-only startup flag; validate
 on an isolated staging host or during a controlled maintenance window, then stop the foreground
@@ -110,7 +112,7 @@ using this advanced topology.
 ## Production checklist
 
 - Replace every `CHANGE_ME` value and every documentation-only address.
-- Review every disabled `rewardRecipients` entry and enable a percentage only deliberately.
+- Review every zero-percent `rewardRecipients` entry and set a fee only deliberately.
 - Use unique pool IDs and do not rename an ID after it has accounting history.
 - Keep daemon RPC, PostgreSQL, admin, metrics and relay listeners behind appropriate firewalls.
 - Configure public-client request limiting on the HTTPS reverse proxy used by these examples.

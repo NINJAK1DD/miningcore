@@ -399,8 +399,13 @@ public class ConfigurationContractTests
                     Assert.StartsWith("CHANGE_ME_", value);
             }
 
-            foreach(var recipient in pool["rewardRecipients"]?
-                        .Children<JObject>() ?? Enumerable.Empty<JObject>())
+            var rewardRecipients = pool["rewardRecipients"] as JArray;
+
+            Assert.True(rewardRecipients?.Count > 0,
+                $"{fileName}: pool '{poolId}' must demonstrate at least one " +
+                "zero-percent reward recipient");
+
+            foreach(var recipient in rewardRecipients.Children<JObject>())
             {
                 var recipientAddress = recipient["address"]?.Value<string>();
                 var percentage = recipient["percentage"]?.Value<decimal?>();

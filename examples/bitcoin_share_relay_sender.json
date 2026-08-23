@@ -1,4 +1,6 @@
 {
+  // Starter configuration: replace every CHANGE_ME value and review it before use.
+  // See README.md and ../config.example.json for topology and field guidance.
   // Edge Stratum node A. It relays ordinary shares and does not own payouts or PostgreSQL.
   "clusterName": "bitcoin-relay-sender-a",
   "instanceId": 11,
@@ -45,6 +47,13 @@
       "enabled": true,
       "coin": "bitcoin",
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      // Keep this identical to the recorder's payout-owner configuration.
+      "rewardRecipients": [
+        {
+          "address": "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+          "percentage": 0
+        }
+      ],
       "enableInternalStratum": true,
       "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,

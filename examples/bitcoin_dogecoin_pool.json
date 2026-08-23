@@ -1,4 +1,6 @@
 {
+  // Starter configuration: replace every CHANGE_ME value and review it before use.
+  // See README.md and ../config.example.json for topology and field guidance.
   // Two independent SOLO pools in one process. Bitcoin and Dogecoin are not merge-mined together.
   "clusterName": "bitcoin-dogecoin-example",
   "logging": {
@@ -48,6 +50,13 @@
       "enabled": true,
       "coin": "bitcoin",
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
+      "rewardRecipients": [
+        {
+          "address": "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+          "percentage": 0
+        }
+      ],
       "enableInternalStratum": true,
       "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,
@@ -101,6 +110,13 @@
       "enabled": true,
       "coin": "dogecoin",
       "address": "CHANGE_ME_DOGECOIN_POOL_WALLET_ADDRESS",
+      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
+      "rewardRecipients": [
+        {
+          "address": "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
+          "percentage": 0
+        }
+      ],
       "enableInternalStratum": true,
       "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,
