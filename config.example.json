@@ -64,7 +64,9 @@
     //   "tlsPfxFile": "/etc/miningcore/api-certificate.pfx",
     //   "tlsPfxPassword": "CHANGE_ME_API_CERTIFICATE_PASSWORD"
     // },
-    // Per-client API request limiting.
+    // Per-client API request limiting. Miningcore does not process trusted forwarded-client
+    // headers. If a same-host reverse proxy connects over loopback, enforce public-client limits
+    // at that proxy because Miningcore sees the proxy's loopback address, not the remote client.
     "rateLimiting": {
       // Disabling this exposes the API without application-level throttling.
       "disabled": false,

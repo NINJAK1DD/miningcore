@@ -28,9 +28,7 @@ For status-code triage and safe evidence collection, use
   "adminIpWhitelist": [ "127.0.0.1" ],
   "metricsIpWhitelist": [ "127.0.0.1" ],
   "rateLimiting": {
-    "disabled": false,
-    "ipWhitelist": [ "127.0.0.1" ],
-    "rules": []
+    "disabled": true
   }
 }
 ```
@@ -40,6 +38,13 @@ For status-code triage and safe evidence collection, use
 Keep the admin and metrics listeners private. If `adminIpWhitelist` or `metricsIpWhitelist` is empty,
 the default is localhost. If a reverse proxy is used, test which client address Miningcore observes
 before changing a whitelist.
+
+Miningcore does not install trusted forwarded-header processing. A same-host reverse proxy therefore
+appears to Miningcore as its loopback address: whitelisting loopback bypasses Miningcore's limiter,
+while removing that exemption makes all public users share one proxy-address bucket. Enforce
+per-public-client request limits at that reverse proxy. Use Miningcore's per-IP limiter only when it
+receives connections directly and observes each real client address; do not trust arbitrary
+forwarding headers from the public network.
 
 Miningcore does not attach permissive CORS headers to `/api/admin` or `/metrics`, whether those
 routes use dedicated ports or the legacy shared listener. Prometheus, `curl` and other non-browser

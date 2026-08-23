@@ -8,6 +8,12 @@
     "logFile": "miningcore.log",
     "perPoolLogFile": true
   },
+  "banning": {
+    "manager": "Integrated",
+    "banOnJunkReceive": true,
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
+  },
   "api": {
     "enabled": true,
     "listenAddress": "127.0.0.1",
@@ -18,15 +24,7 @@
     "metricsIpWhitelist": [ "127.0.0.1" ],
     "legacyNullValueHandling": false,
     "rateLimiting": {
-      "disabled": false,
-      "ipWhitelist": [ "127.0.0.1" ],
-      "rules": [
-        {
-          "endpoint": "*",
-          "period": "1s",
-          "limit": 20
-        }
-      ]
+      "disabled": true
     }
   },
   "persistence": {
@@ -78,15 +76,21 @@
           }
         }
       },
-      "daemons": [
-        {
-          "host": "127.0.0.1",
-          "port": 8332,
-          "user": "CHANGE_ME_BITCOIN_RPC_USER",
-          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
-        }
-      ],
-      "paymentProcessing": {
+        "daemons": [
+          {
+            "host": "127.0.0.1",
+            "port": 8332,
+            "user": "CHANGE_ME_BITCOIN_RPC_USER",
+            "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
+          }
+        ],
+        "banning": {
+          "enabled": true,
+          "checkThreshold": 50,
+          "invalidPercent": 50,
+          "time": 600
+        },
+        "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 0.001,
         "payoutScheme": "SOLO"
@@ -125,15 +129,21 @@
           }
         }
       },
-      "daemons": [
-        {
-          "host": "127.0.0.1",
-          "port": 22555,
-          "user": "CHANGE_ME_DOGECOIN_RPC_USER",
-          "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD"
-        }
-      ],
-      "paymentProcessing": {
+        "daemons": [
+          {
+            "host": "127.0.0.1",
+            "port": 22555,
+            "user": "CHANGE_ME_DOGECOIN_RPC_USER",
+            "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD"
+          }
+        ],
+        "banning": {
+          "enabled": true,
+          "checkThreshold": 50,
+          "invalidPercent": 50,
+          "time": 600
+        },
+        "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 1.0,
         "payoutScheme": "SOLO"

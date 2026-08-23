@@ -3,15 +3,16 @@
     "level": "info",
     "enableConsoleLog": true,
     "enableConsoleColors": true,
-      "logFile": "miningcore.log",
-      "apiLogFile": "miningcore-api.log",
-      "logBaseDirectory": "logs",
+    "logFile": "miningcore.log",
+    "apiLogFile": "miningcore-api.log",
+    "logBaseDirectory": "logs",
     "perPoolLogFile": false
   },
   "banning": {
     "manager": "Integrated",
     "banOnJunkReceive": true,
-      "banOnInvalidShares": true
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
   },
   "notifications": {
     "enabled": false,
@@ -20,7 +21,7 @@
       "port": 587,
       "user": "CHANGE_ME_SMTP_USER",
       "password": "CHANGE_ME_SMTP_PASSWORD",
-      "fromAddress": "info@yourpool.org",
+      "fromAddress": "pool@example.com",
       "fromName": "Miningcore operator"
     },
     "admin": {
@@ -40,30 +41,22 @@
   },
   "paymentProcessing": {
     "enabled": true,
-      "interval": 600,
-      "coinbaseString": "Miningcore"
+    "interval": 600,
+    "coinbaseString": "Miningcore"
   },
   "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
   "api": {
-        "enabled": true,
-      "listenAddress": "127.0.0.1",
-      "port": 4000,
-      "adminPort": 4001,
-      "metricsPort": 4002,
-      "adminIpWhitelist": [ "127.0.0.1" ],
-      "metricsIpWhitelist": [ "127.0.0.1" ],
-      "legacyNullValueHandling": false,
-      "rateLimiting": {
-          "disabled": false,
-          "rules": [
-              {
-                  "endpoint": "*",
-                  "period": "1s",
-                  "limit": 20
-              }
-          ],
-          "ipWhitelist": [ "127.0.0.1" ]
-        }
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false,
+    "rateLimiting": {
+      "disabled": true
+    }
   },
   "pools": [
     {
@@ -74,7 +67,7 @@
       "rewardRecipients": [
         {
           "address": "CHANGE_ME_FLO_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
-          "percentage": 1.0
+          "percentage": 0
         }
       ],
       "maxActiveJobs": 10,

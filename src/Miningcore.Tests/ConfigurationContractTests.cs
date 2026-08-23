@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using FluentValidation.Results;
 using Miningcore.Blockchain.Handshake.Configuration;
 using Miningcore.Configuration;
@@ -15,6 +16,9 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    private const string MissingExamplesDirectoryMarker =
+        "<missing-examples-directory>";
+
     private static readonly IReadOnlyDictionary<string, string>
         ApprovedExampleDonationAddresses =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -60,9 +64,26 @@ public class ConfigurationContractTests
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "examples");
 
-        return Directory.GetFiles(directory, "*.json")
+        if(!Directory.Exists(directory))
+        {
+            yield return new object[] { MissingExamplesDirectoryMarker };
+            yield break;
+        }
+
+        var paths = Directory.EnumerateFiles(directory)
+            .Where(path => Path.GetExtension(path).Equals(".json",
+                StringComparison.Ordinal))
             .OrderBy(Path.GetFileName, StringComparer.Ordinal)
-            .Select(path => new object[] { Path.GetFileName(path) });
+            .ToArray();
+
+        if(paths.Length == 0)
+        {
+            yield return new object[] { MissingExamplesDirectoryMarker };
+            yield break;
+        }
+
+        foreach(var path in paths)
+            yield return new object[] { Path.GetFileName(path) };
     }
 
     private static string FormatValidationErrors(
@@ -71,7 +92,7 @@ public class ConfigurationContractTests
             $"{error.PropertyName}: {error.ErrorMessage}"));
 
     private static void ValidateNormalStartupWithDiagnostics(
-        ClusterConfig config)
+        ClusterConfig config, string context = null)
     {
         try
         {
@@ -90,6 +111,9 @@ public class ConfigurationContractTests
                 ? "Full startup validation failed without a diagnostic " +
                   "after applying live defaults."
                 : FormatValidationErrors(result.Errors);
+
+            if(!string.IsNullOrEmpty(context))
+                diagnostic = $"{context}:{Environment.NewLine}{diagnostic}";
 
             // The inner-exception constructor became public in xUnit 2.4.2.
             // Keep the test package at or above that version while this helper
@@ -189,6 +213,9 @@ public class ConfigurationContractTests
     public void ShippedTopologyExample_PassesNormalStartupValidation(
         string fileName)
     {
+        Assert.True(fileName != MissingExamplesDirectoryMarker,
+            "No shipped JSON examples were copied to the test output.");
+
         var path = Path.Combine(AppContext.BaseDirectory, "examples", fileName);
         var document = ParseConfigurationDocument(File.ReadAllText(path));
         var config = Program.ReadConfig(path, false);
@@ -204,15 +231,14 @@ public class ConfigurationContractTests
             $"{fileName}: pool '{pool.Id}' references unknown bundled coin " +
             $"template '{pool.Coin}'"));
 
-        AssertShippedExampleOperationalPolicy(fileName, document);
-
         // Exercise mode-aware defaults and cross-setting contracts, including
         // merged-mining persistence and relay sender/recorder ownership rules.
-        ValidateNormalStartupWithDiagnostics(config);
+        ValidateNormalStartupWithDiagnostics(config, fileName);
+        AssertShippedExampleOperationalPolicy(fileName, document, config);
     }
 
     private static void AssertShippedExampleOperationalPolicy(
-        string fileName, JObject document)
+        string fileName, JObject document, ClusterConfig config)
     {
         Assert.Null(document.SelectToken(
             "paymentProcessing.shareRecoveryFile"));
@@ -226,18 +252,72 @@ public class ConfigurationContractTests
                 "shareRecoveryFile setting");
         }
 
-        var api = Assert.IsType<JObject>(document["api"]);
-        Assert.Equal("127.0.0.1", api["listenAddress"]?.Value<string>());
-        Assert.Equal(4000, api["port"]?.Value<int>());
-        Assert.Equal(4001, api["adminPort"]?.Value<int>());
-        Assert.Equal(4002, api["metricsPort"]?.Value<int>());
-        Assert.Equal(new[] { "127.0.0.1" },
-            api["adminIpWhitelist"]?.Values<string>());
-        Assert.Equal(new[] { "127.0.0.1" },
-            api["metricsIpWhitelist"]?.Values<string>());
-        Assert.False(api.SelectToken("rateLimiting.disabled")?.Value<bool>() ??
-            true);
-        Assert.NotEmpty(api.SelectToken("rateLimiting.rules") ?? new JArray());
+        Assert.Null(document["$schema"]);
+
+        if(document.TryGetValue("api", out var apiToken))
+        {
+            var api = apiToken as JObject;
+
+            Assert.True(api != null,
+                $"{fileName}: api must be an object when configured");
+
+            var listenAddress = api["listenAddress"]?.Value<string>();
+            var addressIsValid = IPAddress.TryParse(listenAddress,
+                out var parsedListenAddress);
+
+            Assert.True(addressIsValid &&
+                    IPAddress.IsLoopback(parsedListenAddress),
+                $"{fileName}: example API listeners must remain on loopback");
+
+            var ports = new[]
+            {
+                api["port"]?.Value<int?>(),
+                api["adminPort"]?.Value<int?>(),
+                api["metricsPort"]?.Value<int?>(),
+            };
+
+            Assert.All(ports, port => Assert.True(port is >= 1 and <= 65535,
+                $"{fileName}: API ports must be between 1 and 65535"));
+            Assert.Equal(ports.Length, ports.Distinct().Count());
+
+            foreach(var whitelistName in new[]
+                        {
+                            "adminIpWhitelist",
+                            "metricsIpWhitelist",
+                        })
+            {
+                var whitelist = api[whitelistName]?.Values<string>() ??
+                    Enumerable.Empty<string>();
+
+                Assert.Contains(whitelist, address =>
+                    IPAddress.TryParse(address, out var parsedAddress) &&
+                    IPAddress.IsLoopback(parsedAddress));
+            }
+
+            Assert.True(api.SelectToken("rateLimiting.disabled")?
+                    .Value<bool>() == true,
+                $"{fileName}: loopback/reverse-proxy examples must delegate " +
+                "public-client rate limiting to the proxy");
+        }
+
+        var internalPools = config.Pools.Where(pool =>
+                pool.Enabled && pool.EnableInternalStratum == true)
+            .ToArray();
+
+        if(internalPools.Length > 0)
+        {
+            Assert.Equal(BanManagerKind.Integrated,
+                config.Banning?.Manager);
+            Assert.True(config.Banning?.BanOnJunkReceive == true,
+                $"{fileName}: internal Stratum requires junk-request banning");
+            Assert.True(config.Banning?.BanOnInvalidShares == true,
+                $"{fileName}: internal Stratum requires invalid-share banning");
+            Assert.True(config.Banning?.BanOnLoginFailure == true,
+                $"{fileName}: internal Stratum requires login-failure banning");
+            Assert.All(internalPools, pool => Assert.True(
+                pool.Banning?.Enabled == true,
+                $"{fileName}: pool '{pool.Id}' must enable its share-ban threshold"));
+        }
 
         foreach(var credential in document.Descendants()
                     .OfType<JProperty>()
@@ -246,22 +326,36 @@ public class ConfigurationContractTests
                         "apiKey",
                         "password",
                         "sharedEncryptionKey",
+                        "tlsPfxPassword",
                         "user",
+                        "walletPrivateKey",
                         "walletPassword",
                     }.Contains(property.Name,
                         StringComparer.OrdinalIgnoreCase)))
         {
-            if(credential.Value.Type != JTokenType.String ||
-                string.IsNullOrEmpty(credential.Value.Value<string>()))
+            if(credential.Value.Type != JTokenType.String)
                 continue;
+
+            var credentialValue = credential.Value.Value<string>();
+            var permitsEmptyValue = credential.Name.Equals("password",
+                    StringComparison.OrdinalIgnoreCase) ||
+                credential.Name.Equals("user",
+                    StringComparison.OrdinalIgnoreCase);
+
+            if(string.IsNullOrWhiteSpace(credentialValue))
+            {
+                Assert.True(permitsEmptyValue,
+                    $"{fileName}: configured secret '{credential.Name}' must " +
+                    "use an explicit CHANGE_ME placeholder");
+                continue;
+            }
 
             if(credential.Name.Equals("user",
                     StringComparison.OrdinalIgnoreCase) &&
-                credential.Value.Value<string>() == "miningcore")
+                credentialValue == "miningcore")
                 continue;
 
-            Assert.StartsWith("CHANGE_ME_",
-                credential.Value.Value<string>());
+            Assert.StartsWith("CHANGE_ME_", credentialValue);
         }
 
         foreach(var pool in document["pools"]?.Children<JObject>() ??
@@ -288,6 +382,7 @@ public class ConfigurationContractTests
                         .Children<JObject>() ?? Enumerable.Empty<JObject>())
             {
                 var recipientAddress = recipient["address"]?.Value<string>();
+                var percentage = recipient["percentage"]?.Value<decimal?>();
                 var isPlaceholder = recipientAddress?.StartsWith("CHANGE_ME_",
                     StringComparison.Ordinal) == true;
                 var isApprovedDonation =
@@ -298,6 +393,7 @@ public class ConfigurationContractTests
                 Assert.True(isPlaceholder || isApprovedDonation,
                     $"{fileName}: pool '{poolId}' has an unexpected reward " +
                     $"recipient address '{recipientAddress}'");
+                Assert.Equal(0m, percentage);
             }
         }
     }
@@ -381,9 +477,7 @@ public class ConfigurationContractTests
             .Where(x => x.EnableInternalStratum == true)
             .ToArray();
 
-        Assert.True(internalPools.Length == 1,
-            "The diagnostic fixture requires exactly one example pool with " +
-            "internal Stratum explicitly enabled.");
+        Assert.NotEmpty(internalPools);
 
         var pool = internalPools[0];
 

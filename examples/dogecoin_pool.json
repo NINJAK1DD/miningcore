@@ -7,6 +7,12 @@
     "enableConsoleColors": true,
     "logFile": "miningcore.log"
   },
+  "banning": {
+    "manager": "Integrated",
+    "banOnJunkReceive": true,
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
+  },
   "api": {
     "enabled": true,
     "listenAddress": "127.0.0.1",
@@ -17,15 +23,7 @@
     "metricsIpWhitelist": [ "127.0.0.1" ],
     "legacyNullValueHandling": false,
     "rateLimiting": {
-      "disabled": false,
-      "ipWhitelist": [ "127.0.0.1" ],
-      "rules": [
-        {
-          "endpoint": "*",
-          "period": "1s",
-          "limit": 20
-        }
-      ]
+      "disabled": true
     }
   },
   "persistence": {

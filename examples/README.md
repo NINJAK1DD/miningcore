@@ -6,10 +6,10 @@ editors may report those comments even though Miningcore accepts them.
 
 These files are starting points, not production secrets or universal difficulty recommendations.
 Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so copying an example cannot
-silently redirect block rewards. Some coin examples retain a clearly separate `rewardRecipients`
-entry for the maintainer donation address listed in the main README; remove it or change the
-percentage deliberately before deployment. Other optional reward-recipient fields remain
-`CHANGE_ME` placeholders rather than preserving historical third-party addresses.
+silently redirect block rewards. Existing `rewardRecipients` entries demonstrate either a
+maintainer donation address listed in the main README or an operator-supplied placeholder, but every
+sample percentage is `0`. No example accrues a fee or donation until the operator deliberately sets
+a non-zero percentage.
 
 Do not commit populated configurations. Miningcore does not have a parse-only startup flag; validate
 on an isolated staging host or during a controlled maintenance window, then stop the foreground
@@ -21,6 +21,17 @@ process after its startup checks complete:
 
 Follow the full [safe validation sequence](../docs/configuration.md#validate-changes-safely) before
 moving production traffic.
+
+All example APIs bind to loopback and assume a same-host HTTPS reverse proxy. Miningcore does not
+process trusted forwarded-client headers, so it sees that proxy as the client and cannot apply a
+meaningful per-public-client limit. Application rate limiting is therefore explicitly disabled in
+these files; enforce request limits at the reverse proxy. Enable Miningcore's limiter only for a
+topology where it observes each real client address directly.
+
+Every enabled internal Stratum pool uses the integrated cluster ban manager and a pool threshold of
+50 submitted shares, 50% invalid shares and a 600-second ban. The modernization of the older files
+intentionally enables junk-request, invalid-share and invalid-login protection; review those values
+for the expected miner fleet before deployment.
 
 ## Common pool layouts
 
@@ -99,9 +110,10 @@ using this advanced topology.
 ## Production checklist
 
 - Replace every `CHANGE_ME` value and every documentation-only address.
-- Review every `rewardRecipients` entry and its percentage; keep, remove or replace it deliberately.
+- Review every disabled `rewardRecipients` entry and enable a percentage only deliberately.
 - Use unique pool IDs and do not rename an ID after it has accounting history.
 - Keep daemon RPC, PostgreSQL, admin, metrics and relay listeners behind appropriate firewalls.
+- Configure public-client request limiting on the HTTPS reverse proxy used by these examples.
 - Put API and Stratum TLS keys outside source control and restrict their filesystem permissions.
 - Create PostgreSQL schema/migrations and exact share partitions before enabling a pool.
 - Fund Bitcoin-family payout wallets with a confirmed fee reserve before enabling payments.

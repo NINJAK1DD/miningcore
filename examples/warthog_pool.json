@@ -11,7 +11,8 @@
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": true
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
@@ -20,7 +21,7 @@
             "port": 587,
             "user": "CHANGE_ME_SMTP_USER",
             "password": "CHANGE_ME_SMTP_PASSWORD",
-            "fromAddress": "info@yourpool.org",
+            "fromAddress": "pool@example.com",
             "fromName": "Miningcore operator"
         },
         "admin": {
@@ -54,15 +55,7 @@
         "metricsIpWhitelist": [ "127.0.0.1" ],
         "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": false,
-            "rules": [
-                {
-                    "endpoint": "*",
-                    "period": "1s",
-                    "limit": 20
-                }
-            ],
-            "ipWhitelist": [ "127.0.0.1" ]
+            "disabled": true
         }
     },
     "pools": [{
@@ -74,7 +67,7 @@
           {
             "type": "op",
             "address": "4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46",
-            "percentage": 1.0
+            "percentage": 0
           }
         ],
         "blockRefreshInterval": 250,
@@ -110,7 +103,7 @@
           }
         ],
         "paymentProcessing": {
-            "walletPrivateKey": "<DANGER: The Warthog Node's wallet private key which owns the pool address>",
+            "walletPrivateKey": "CHANGE_ME_WARTHOG_WALLET_PRIVATE_KEY",
             "enabled": true,
             "minimumPayment": 1,
             "payoutScheme": "PPLNS",

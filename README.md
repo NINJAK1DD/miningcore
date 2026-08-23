@@ -530,6 +530,8 @@ Before advertising a public pool:
 - Run Miningcore on a maintained Linux release with a serviced .NET 10 runtime.
 - Isolate daemon, wallet, PostgreSQL, admin API and relay ports with host/network firewalls.
 - Put the public API and website behind an HTTPS reverse proxy; do not expose the admin API port.
+- Enforce public-client request limits at that proxy. Miningcore does not recover the original
+  client address from forwarded headers when the proxy connects over loopback.
 - Keep hot-wallet balances limited. When the pool pays Bitcoin-family transaction fees, maintain a
   confirmed fee reserve; account for `minersPayTxFees` and per-recipient fallback behavior. Test
   daemon-generated wallet backups, database backups and configuration recovery.

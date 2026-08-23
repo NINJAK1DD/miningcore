@@ -11,7 +11,8 @@
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": true
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
@@ -20,7 +21,7 @@
             "port": 587,
             "user": "CHANGE_ME_SMTP_USER",
             "password": "CHANGE_ME_SMTP_PASSWORD",
-            "fromAddress": "info@yourpool.org",
+            "fromAddress": "pool@example.com",
             "fromName": "Miningcore operator"
         },
         "admin": {
@@ -54,15 +55,7 @@
         "metricsIpWhitelist": [ "127.0.0.1" ],
         "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": false,
-            "rules": [
-                {
-                    "endpoint": "*",
-                    "period": "1s",
-                    "limit": 20
-                }
-            ],
-            "ipWhitelist": [ "127.0.0.1" ]
+            "disabled": true
         }
     },
     "pools": [{
@@ -73,7 +66,7 @@
       "rewardRecipients": [
         {
           "address": "CHANGE_ME_DIGIBYTE_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
-          "percentage": 1
+          "percentage": 0
         }
       ],
       "blockRefreshInterval": 500,
