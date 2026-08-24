@@ -55,6 +55,10 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
+    - name: Test warning-free build audit
+      shell: bash
+      run: bash scripts/release/test-warning-free-build.sh
+
     - name: Test source-build helper fail-closed behavior
       shell: bash
       run: bash scripts/release/test-source-build-helpers.sh

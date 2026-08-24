@@ -14,7 +14,9 @@ if [[ ! -r "$build_log" ]]; then
   exit 70
 fi
 
-warning_pattern='(^|[[:space:]])warning([[:space:]]+[[:alnum:]_-]+)?:|^CMake Warning'
+warning_pattern='(^|[[:space:]])warning([[:space:]]+[[:alnum:]_-]+)?:'
+warning_pattern+='|(^|[[:space:]])CMake([[:space:]]+[[:alpha:]_-]+)*'
+warning_pattern+='[[:space:]]+Warning([[:space:](]|:)'
 
 if grep -Ein "$warning_pattern" "$build_log" > /dev/null; then
   echo "Build emitted compiler or build-system warnings:" >&2
