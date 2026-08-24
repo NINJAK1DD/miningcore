@@ -50,8 +50,10 @@ build_external_native_library() {
   stage_native_library "$component" "$library"
 }
 
-export UNAME_S=$(uname -s)
-export UNAME_P=$(uname -m || uname -p)
+UNAME_S=$(uname -s)
+export UNAME_S
+UNAME_P=$(uname -m || uname -p)
+export UNAME_P
 
 AES=$("$NativeDir/check_cpu.sh" aes && echo -maes || echo)
 SSE2=$("$NativeDir/check_cpu.sh" sse2 && echo -msse2 || echo)
@@ -122,6 +124,13 @@ build_randomx_family() {
   local source_name=$3
   local component=$4
   local build_target=${5:-}
+  local source_patch=${6:-}
+  local source_manifest=${7:-}
+
+  if [[ -n "$source_patch" && -z "$source_manifest" ]]; then
+    echo "Pinned source patch '$source_patch' requires a SHA-256 manifest" >&2
+    return 64
+  fi
 
   (
     cd "${TMPDIR:-/tmp}"
@@ -129,6 +138,12 @@ build_randomx_family() {
     git clone "$repository" "$source_name"
     cd "$source_name"
     git checkout "$checkout"
+    if [[ -n "$source_patch" ]]; then
+      bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
+        . "$ScriptDir/$source_manifest"
+      git apply --check "$ScriptDir/$source_patch"
+      git apply "$ScriptDir/$source_patch"
+    fi
     cmake -S . -B build \
       -DARCH=native \
       -DCMAKE_C_FLAGS=-Wa,--noexecstack \
@@ -147,13 +162,21 @@ build_randomx_family() {
 
 build_external_native_library libnexapow libnexapow.so build_nexapow
 build_external_native_library librandomx librandomx.so \
-  build_randomx_family https://github.com/tevador/RandomX tags/v1.2.1 RandomX librandomx
+  build_randomx_family https://github.com/tevador/RandomX tags/v1.2.1 RandomX librandomx '' \
+  patches/randomx-cmake-policy-floor.patch \
+  patches/randomx-cmake-policy-floor.sha256
 build_external_native_library librandomarq librandomarq.so \
   build_randomx_family https://github.com/arqma/RandomARQ \
-  3bcb6bafe63d70f8e6f78a0d431e71be2b638083 RandomARQ librandomarq randomx
+  3bcb6bafe63d70f8e6f78a0d431e71be2b638083 RandomARQ librandomarq randomx \
+  patches/randomarq-cmake-policy-floor.patch \
+  patches/randomarq-cmake-policy-floor.sha256
 build_external_native_library libpanthera libpanthera.so \
   build_randomx_family https://github.com/scala-network/Panthera \
-  cc7425f468d935ba328fba5bbb05f8227f4f22d7 Panthera libpanthera randomx
+  cc7425f468d935ba328fba5bbb05f8227f4f22d7 Panthera libpanthera randomx \
+  patches/panthera-build-status-warnings.patch \
+  patches/panthera-build-status-warnings.sha256
 build_external_native_library librandomxscash librandomxscash.so \
   build_randomx_family https://github.com/scashnetwork/RandomX \
-  0b3e0ded68b95491516fe974e3db784ca2742ca7 RandomXSCash librandomxscash randomx
+  0b3e0ded68b95491516fe974e3db784ca2742ca7 RandomXSCash librandomxscash randomx \
+  patches/randomxscash-cmake-policy-floor.patch \
+  patches/randomxscash-cmake-policy-floor.sha256

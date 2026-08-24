@@ -55,6 +55,14 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
+    - name: Test warning-free build audit
+      shell: bash
+      run: bash scripts/release/test-warning-free-build.sh
+
+    - name: Test Xelis v1 portable AES path
+      shell: bash
+      run: bash scripts/release/test-xelis-portable-aes.sh
+
     - name: Test source-build helper fail-closed behavior
       shell: bash
       run: bash scripts/release/test-source-build-helpers.sh
@@ -115,7 +123,18 @@ jobs:
       run: dotnet restore src
 
     - name: Build
-      run: dotnet build --no-restore src
+      shell: bash
+      env:
+        DOTNET_CLI_UI_LANGUAGE: en
+        LC_ALL: C
+      run: |
+        set -euo pipefail
+
+        build_log=$(mktemp)
+        trap 'rm -f -- "$build_log"' EXIT
+
+        dotnet build --no-restore src 2>&1 | tee "$build_log"
+        bash scripts/release/assert-warning-free-build.sh "$build_log"
 
     - name: Stage Linux native libs for tests
       if: runner.os == 'Linux'

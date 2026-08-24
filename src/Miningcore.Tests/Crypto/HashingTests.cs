@@ -200,6 +200,32 @@ public class HashingTests : TestBase
     }
 
     [LinuxNativeFact]
+    public void Argon2d250_Hash_MatchesKnownVector()
+    {
+        var hasher = new Argon2d250();
+        var hash = new byte[32];
+
+        hasher.Digest(testValue2, hash);
+
+        Assert.Equal("5b75d9a75f843872e975ae322e6011d3b2598b6eadb6c0c0df150b4e0604ff0a",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Allium_Hash_MatchesExternalGarlicoinVector()
+    {
+        var hasher = new Allium();
+        var hash = new byte[32];
+
+        hasher.Digest(testValue2, hash);
+
+        // Independently cross-checked with garlicoin-project/allium-hash-python 1.0.3.
+        // PyPI source SHA-256: 50f23cfecf1dfe656c9dc30b82f5547ca5eff001cdf3c824b3c0d86fac5db4e8.
+        Assert.Equal("41db9975e0fed3d25f33d5a689f97544349cd3e26f657be483073935964e9d65",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
     public void Zanonote_LoadsReviewedNativeEntryPoints()
     {
         var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,

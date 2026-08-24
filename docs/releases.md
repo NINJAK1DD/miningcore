@@ -382,6 +382,54 @@ controlled startup safety boundary. Ubuntu 24.04 retains required source-build v
 official compatibility archive remains independently built and fully tested on Ubuntu 22.04 x64.
 Do not deploy the 26.04 archive on an older host; select the matching archive or build from source.
 
+Supported source-build helpers force stable English diagnostics and fail if the compiler or build
+system emits a warning. The normal pull-request build and source-container build enforce the same
+contract, while managed warnings are also promoted structurally to errors. The warning cleanup
+repairs the reported managed-code and native-library findings instead of hiding them globally,
+including undefined behavior in CryptoNight, Argon2, Ethash, Xelis, Verus and libkeccak code. The
+CryptoNight soft-shell buffer defect was in a currently unregistered algorithm path, but is fixed
+to keep that native implementation memory-safe if it is enabled later.
+
+Three Linux hashing defects are corrected and deserve particular attention from operators:
+
+- Argon2d previously left `blake2b_long` unresolved in `libmultihash.so`. Calling `argon2d250`,
+  `argon2d500`, `argon2d1000` or `argon2d16000` could therefore terminate Miningcore on the first
+  hash. The implementation is now linked into the library, uses a collision-resistant internal
+  symbol name, clears its working state and is pinned by a known-answer test independently checked
+  against a reference Argon2 implementation.
+- Allium was registered and exported, but its implementation object was absent from
+  `libmultihash.so`. An Allium share could therefore terminate Miningcore on the first hash. The
+  implementation is now linked and pinned by a vector independently cross-checked against the
+  Garlicoin project's published `allium-hash` package.
+- Xelis v1 on a CPU without AES-NI previously called unavailable OpenSSL symbols and implemented a
+  full AES block encryption where the mining algorithm requires one AES round. The portable path
+  now uses the same single-round operation as Xelis v2. A no-AES build and known-answer test run on
+  every supported Linux lane; AES-capable lanes additionally compare it directly with AES-NI.
+
+The `libmultihash.so` link now rejects unresolved symbols, which structurally prevents this class of
+missing-object defect from returning. Source-build validation also verifies every managed
+`Multihash` entry point against the published library's exports, preventing an orphan import from
+remaining hidden until its first call. The four Ethash-family libraries run synthetic light-cache
+vectors that exercise the corrected temporary-node lifetime without allocating a production-size
+DAG. Those vectors pin stability; separate development-versus-corrected-build comparison found the
+digests identical, confirming that the lifetime repair is output-neutral. The Ubuntu native-vector
+lanes also run RandomX and RandomARQ known-answer tests against the exact patched release artifacts.
+The pinned RandomX-family sources are verified by SHA-256 before patches are applied. Raising their
+CMake policy floor to 3.10 selects CMake's newer policy defaults through that version; the native
+vectors protect the hashing contract.
+
+The Equihash memory-cleanse helper now compiles correctly on Windows and uses guaranteed volatile
+byte stores on non-Windows targets. This removes its undeclared OpenSSL dependency without relying
+on taking the address of a C++ standard-library function.
+
+For diagnosis on a future, unsupported compiler only, an operator may set
+`MININGCORE_ALLOW_BUILD_WARNINGS=1` when invoking a user-facing source-build helper. The warnings
+remain visible and the helper labels the result unsuitable for release. This override cannot bypass
+an unreadable audit log and applies only to the post-build native/compiler/build-system diagnostic
+audit. Managed compiler warnings and NuGet security advisories remain errors and cannot be bypassed
+with this variable. The override is never enabled by CI or release packaging; resolve every warning
+before deploying the artifact.
+
 ### Security: administrative API bearer authentication and safe verbs
 
 Every `/api/admin` request now requires both the existing source-IP whitelist and a bearer token

@@ -5,17 +5,18 @@
 
 #include "cleanse.h"
 
-#ifndef _WIN32
-#include <openssl/crypto.h>
-#else
+#ifdef _WIN32
 #include <Windows.h>
 #endif
 
 void memory_cleanse(void *ptr, size_t len)
 {
-#ifndef _WIN32
-    OPENSSL_cleanse(ptr, len);
+#ifdef _WIN32
+    SecureZeroMemory(ptr, len);
 #else
-    ZeroMemory(ptr, 0, len);
+    volatile unsigned char *bytes = static_cast<volatile unsigned char *>(ptr);
+
+    while(len-- > 0)
+        *bytes++ = 0;
 #endif
 }

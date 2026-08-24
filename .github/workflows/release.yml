@@ -525,8 +525,14 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          DOTNET_CLI_UI_LANGUAGE: en
+          LC_ALL: C
         run: |
           set -euo pipefail
+
+          build_log=$(mktemp)
+          trap 'rm -f -- "$build_log"' EXIT
 
           build_identity_args=()
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
@@ -539,7 +545,9 @@ jobs:
           dotnet build src \
             --configuration Release \
             --no-restore \
-            "${build_identity_args[@]}"
+            "${build_identity_args[@]}" 2>&1 | tee "$build_log"
+
+          bash scripts/release/assert-warning-free-build.sh "$build_log"
 
       - name: Stage Linux native libraries for tests
         shell: bash

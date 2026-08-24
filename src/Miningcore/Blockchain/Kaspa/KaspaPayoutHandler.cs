@@ -22,7 +22,6 @@ using Block = Miningcore.Persistence.Model.Block;
 using Contract = Miningcore.Contracts.Contract;
 using static Miningcore.Util.ActionUtils;
 using kaspaWalletd = Miningcore.Blockchain.Kaspa.KaspaWalletd;
-using kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
 
 namespace Miningcore.Blockchain.Kaspa;
 
@@ -50,7 +49,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
     }
 
     protected readonly IComponentContext ctx;
-    protected kaspad.KaspadRPC.KaspadRPCClient rpc;
+    protected Kaspad.KaspadRPC.KaspadRPCClient rpc;
     protected kaspaWalletd.KaspaWalletdRPC.KaspaWalletdRPCClient walletRpc;
     protected string network;
     private KaspaPoolConfigExtra extraPoolConfig;
@@ -94,8 +93,8 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
         // we need a stream to communicate with Kaspad
         var stream = rpc.MessageStream(null, null, ct);
         
-        var request = new kaspad.KaspadMessage();
-        request.GetCurrentNetworkRequest = new kaspad.GetCurrentNetworkRequestMessage();
+        var request = new Kaspad.KaspadMessage();
+        request.GetCurrentNetworkRequest = new Kaspad.GetCurrentNetworkRequestMessage();
         await Guard(() => stream.RequestStream.WriteAsync(request),
             ex=> throw new PaymentException($"Error writing a request in the communication stream '{ex.GetType().Name}' : {ex}"));
         await foreach (var currentNetwork in stream.ResponseStream.ReadAllAsync(ct))
@@ -176,8 +175,8 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                     BlockStatus.Pending
                 }, block.Created));
 
-                var request = new kaspad.KaspadMessage();
-                request.GetBlockRequest = new kaspad.GetBlockRequestMessage
+                var request = new Kaspad.KaspadMessage();
+                request.GetBlockRequest = new Kaspad.GetBlockRequestMessage
                 {
                     Hash = block.Hash,
                     IncludeTransactions = true,
@@ -214,8 +213,8 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                     {
                         logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} uses a custom minimum confirmations calculation [{minConfirmations}]");
 
-                        var requestConfirmations = new kaspad.KaspadMessage();
-                        requestConfirmations.GetBlocksRequest = new kaspad.GetBlocksRequestMessage
+                        var requestConfirmations = new Kaspad.KaspadMessage();
+                        requestConfirmations.GetBlocksRequest = new Kaspad.GetBlocksRequestMessage
                         {
                             LowHash = (string) block.Hash,
                             IncludeBlocks = false,
@@ -249,8 +248,8 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                             {
                                 logger.Debug(() => $"[{LogCategory}] Block {block.BlockHeight} contains child: {childrenHash}");
 
-                                var requestChildren = new kaspad.KaspadMessage();
-                                requestChildren.GetBlockRequest = new kaspad.GetBlockRequestMessage
+                                var requestChildren = new Kaspad.KaspadMessage();
+                                requestChildren.GetBlockRequest = new Kaspad.GetBlockRequestMessage
                                 {
                                     Hash = childrenHash,
                                     IncludeTransactions = true,

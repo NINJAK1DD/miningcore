@@ -11,7 +11,6 @@ using Miningcore.Stratum;
 using Miningcore.Time;
 using Miningcore.Util;
 using NBitcoin;
-using kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
 
 namespace Miningcore.Blockchain.Kaspa;
 
@@ -57,7 +56,7 @@ public class KaspaJob
 {
     protected IMasterClock clock;
     protected double shareMultiplier;
-    public kaspad.RpcBlock BlockTemplate { get; protected set; }
+    public Kaspad.RpcBlock BlockTemplate { get; protected set; }
     public double Difficulty { get; protected set; }
     public string JobId { get; protected set; }
     public uint256 blockTargetValue { get; protected set; }
@@ -195,7 +194,7 @@ public class KaspaJob
         }
     }
     
-    protected virtual void SerializeHeader(kaspad.RpcBlockHeader header, Span<byte> result, bool isPrePow = true)
+    protected virtual void SerializeHeader(Kaspad.RpcBlockHeader header, Span<byte> result, bool isPrePow = true)
     {
         ulong nonce = isPrePow ? 0 : header.Nonce;
         long timestamp = isPrePow ? 0 : header.Timestamp;
@@ -359,7 +358,7 @@ public class KaspaJob
         return ProcessShareInternal(worker, nonce);
     }
 
-    public virtual void Init(kaspad.RpcBlock blockTemplate, string jobId, double shareMultiplier)
+    public virtual void Init(Kaspad.RpcBlock blockTemplate, string jobId, double shareMultiplier)
     {
         Contract.RequiresNonNull(blockTemplate);
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId));

@@ -209,10 +209,10 @@ static bool ethash_hash(
 
 		for (unsigned n = 0; n != MIX_NODES; ++n) {
 			node const* dag_node;
+			node tmp_node;
 			if (full_nodes) {
 				dag_node = &full_nodes[MIX_NODES * index + n];
 			} else {
-				node tmp_node;
 				ethash_calculate_dag_item(&tmp_node, index * MIX_NODES + n, light);
 				dag_node = &tmp_node;
 			}

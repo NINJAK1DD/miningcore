@@ -1,10 +1,18 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0-resolute AS builder
 WORKDIR /app
+ENV DOTNET_CLI_UI_LANGUAGE=en \
+    LC_ALL=C
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && \
     apt-get -y install cmake clang ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libzmq3-dev golang-go libgmp-dev libc++-dev zlib1g-dev
 COPY . .
 WORKDIR /app/src/Miningcore
-RUN dotnet publish -c Release --framework net10.0 -o ../../build
+RUN set -euo pipefail; \
+    build_log=$(mktemp); \
+    trap 'rm -f -- "$build_log"' EXIT; \
+    dotnet publish -c Release --framework net10.0 -o ../../build \
+      2>&1 | tee "$build_log"; \
+    bash ../../scripts/release/assert-warning-free-build.sh "$build_log"
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 WORKDIR /app
