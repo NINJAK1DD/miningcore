@@ -154,14 +154,17 @@ build_randomx_family() {
 
 build_external_native_library libnexapow libnexapow.so build_nexapow
 build_external_native_library librandomx librandomx.so \
-  build_randomx_family https://github.com/tevador/RandomX tags/v1.2.1 RandomX librandomx
+  build_randomx_family https://github.com/tevador/RandomX tags/v1.2.1 RandomX librandomx '' \
+  patches/randomx-cmake-policy-floor.patch
 build_external_native_library librandomarq librandomarq.so \
   build_randomx_family https://github.com/arqma/RandomARQ \
-  3bcb6bafe63d70f8e6f78a0d431e71be2b638083 RandomARQ librandomarq randomx
+  3bcb6bafe63d70f8e6f78a0d431e71be2b638083 RandomARQ librandomarq randomx \
+  patches/randomarq-cmake-policy-floor.patch
 build_external_native_library libpanthera libpanthera.so \
   build_randomx_family https://github.com/scala-network/Panthera \
   cc7425f468d935ba328fba5bbb05f8227f4f22d7 Panthera libpanthera randomx \
   patches/panthera-build-status-warnings.patch
 build_external_native_library librandomxscash librandomxscash.so \
   build_randomx_family https://github.com/scashnetwork/RandomX \
-  0b3e0ded68b95491516fe974e3db784ca2742ca7 RandomXSCash librandomxscash randomx
+  0b3e0ded68b95491516fe974e3db784ca2742ca7 RandomXSCash librandomxscash randomx \
+  patches/randomxscash-cmake-policy-floor.patch

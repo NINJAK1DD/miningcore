@@ -1,0 +1,10 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -28,4 +28,4 @@
+ # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+-
+-cmake_minimum_required(VERSION 3.7)
++
++cmake_minimum_required(VERSION 3.10)
+ message(STATUS "CMake version ${CMAKE_VERSION}")

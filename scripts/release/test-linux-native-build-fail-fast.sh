@@ -4,13 +4,49 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 driver="$repository_root/src/Miningcore/build-libs-linux.sh"
+randomx_patch="$repository_root/src/Miningcore/patches/randomx-cmake-policy-floor.patch"
+randomarq_patch="$repository_root/src/Miningcore/patches/randomarq-cmake-policy-floor.patch"
 panthera_patch="$repository_root/src/Miningcore/patches/panthera-build-status-warnings.patch"
+randomxscash_patch="$repository_root/src/Miningcore/patches/randomxscash-cmake-policy-floor.patch"
 work_dir=$(mktemp -d)
 
 cleanup() {
   rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
+
+for fixture in randomx randomarq panthera randomxscash; do
+  mkdir -p "$work_dir/$fixture"
+done
+
+: > "$work_dir/randomx/CMakeLists.txt"
+for ((line = 1; line <= 26; line++)); do
+  printf '# fixture context %d\n' "$line" >> "$work_dir/randomx/CMakeLists.txt"
+done
+cat >> "$work_dir/randomx/CMakeLists.txt" <<'CMAKE'
+# THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+cmake_minimum_required(VERSION 3.5)
+
+project(RandomX)
+CMAKE
+
+: > "$work_dir/randomarq/CMakeLists.txt"
+for ((line = 1; line <= 25; line++)); do
+  printf '# fixture context %d\n' "$line" >> "$work_dir/randomarq/CMakeLists.txt"
+done
+cat >> "$work_dir/randomarq/CMakeLists.txt" <<'CMAKE'
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
+# THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+cmake_minimum_required(VERSION 3.7)
+message(STATUS "CMake version ${CMAKE_VERSION}")
+
+CMAKE
+
+cp "$work_dir/randomx/CMakeLists.txt" "$work_dir/panthera/CMakeLists.txt"
+cp "$work_dir/randomx/CMakeLists.txt" "$work_dir/randomxscash/CMakeLists.txt"
 
 mkdir -p "$work_dir/panthera/src/yespower"
 cat > "$work_dir/panthera/src/yespower/yespower-opt.c" <<'C'
@@ -41,10 +77,36 @@ cat > "$work_dir/panthera/src/yespower/yespower-opt.c" <<'C'
 C
 
 (
+  cd "$work_dir/randomx"
+  git apply --check "$randomx_patch"
+  git apply "$randomx_patch"
+)
+
+(
+  cd "$work_dir/randomarq"
+  git apply --check "$randomarq_patch"
+  git apply "$randomarq_patch"
+)
+
+(
   cd "$work_dir/panthera"
   git apply --check "$panthera_patch"
   git apply "$panthera_patch"
 )
+
+(
+  cd "$work_dir/randomxscash"
+  git apply --check "$randomxscash_patch"
+  git apply "$randomxscash_patch"
+)
+
+for fixture in randomx randomarq panthera randomxscash; do
+  if ! grep -Fxq 'cmake_minimum_required(VERSION 3.10)' \
+      "$work_dir/$fixture/CMakeLists.txt"; then
+    echo "$fixture source patch did not set the supported CMake policy floor" >&2
+    exit 1
+  fi
+done
 
 if grep -n '^[[:space:]]*#warning' \
     "$work_dir/panthera/src/yespower/yespower-opt.c"; then

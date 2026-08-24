@@ -1,3 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -27,5 +27,5 @@
+ # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+-
+-cmake_minimum_required(VERSION 3.5)
+-
++
++cmake_minimum_required(VERSION 3.10)
++
+ project(RandomX)
 diff --git a/src/yespower/yespower-opt.c b/src/yespower/yespower-opt.c
 index d9fb007..0c49765 100644
 --- a/src/yespower/yespower-opt.c
