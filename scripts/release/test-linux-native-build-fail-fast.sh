@@ -76,6 +76,26 @@ cat > "$work_dir/panthera/src/yespower/yespower-opt.c" <<'C'
 	__asm__("" : : : "memory");
 C
 
+: > "$work_dir/panthera/src/yespower/sha256.c"
+for ((line = 1; line <= 386; line++)); do
+  printf '/* fixture context %d */\n' "$line" \
+    >> "$work_dir/panthera/src/yespower/sha256.c"
+done
+cat >> "$work_dir/panthera/src/yespower/sha256.c" <<'C'
+	memset(pad, 0x36, 64);
+	for (i = 0; i < Klen; i++)
+		pad[i] ^= K[i];
+	_SHA256_Update(&ctx->ictx, pad, 64, tmp32);
+
+	/* Outer SHA256 operation is SHA256(K xor [block of 0x5c] || hash). */
+	SHA256_Init(&ctx->octx);
+	memset(pad, 0x5c, 64);
+	for (i = 0; i < Klen; i++)
+		pad[i] ^= K[i];
+	_SHA256_Update(&ctx->octx, pad, 64, tmp32);
+}
+C
+
 (
   cd "$work_dir/randomx"
   git apply --check "$randomx_patch"
@@ -111,6 +131,12 @@ done
 if grep -n '^[[:space:]]*#warning' \
     "$work_dir/panthera/src/yespower/yespower-opt.c"; then
   echo "Panthera source patch left an active build warning" >&2
+  exit 1
+fi
+
+if [[ $(grep -Fxc $'\tfor (i = 0; i < Klen && i < 64; i++)' \
+      "$work_dir/panthera/src/yespower/sha256.c") -ne 2 ]]; then
+  echo "Panthera source patch did not bound both HMAC pad loops" >&2
   exit 1
 fi
 

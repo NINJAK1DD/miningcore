@@ -43,3 +43,31 @@ index d9fb007..0c49765 100644
 +/* Use the optimized x86-64 inline-assembly pwxform implementation. */
  #undef MAYBE_MEMORY_BARRIER
  #define MAYBE_MEMORY_BARRIER \
+diff --git a/src/yespower/sha256.c b/src/yespower/sha256.c
+index 02395d5..dfd639e 100644
+--- a/src/yespower/sha256.c
++++ b/src/yespower/sha256.c
+@@ -387,12 +387,12 @@
+-	memset(pad, 0x36, 64);
+-	for (i = 0; i < Klen; i++)
+-		pad[i] ^= K[i];
+-	_SHA256_Update(&ctx->ictx, pad, 64, tmp32);
+-
+-	/* Outer SHA256 operation is SHA256(K xor [block of 0x5c] || hash). */
+-	SHA256_Init(&ctx->octx);
+-	memset(pad, 0x5c, 64);
+-	for (i = 0; i < Klen; i++)
+-		pad[i] ^= K[i];
+-	_SHA256_Update(&ctx->octx, pad, 64, tmp32);
++	memset(pad, 0x36, 64);
++	for (i = 0; i < Klen && i < 64; i++)
++		pad[i] ^= K[i];
++	_SHA256_Update(&ctx->ictx, pad, 64, tmp32);
++
++	/* Outer SHA256 operation is SHA256(K xor [block of 0x5c] || hash). */
++	SHA256_Init(&ctx->octx);
++	memset(pad, 0x5c, 64);
++	for (i = 0; i < Klen && i < 64; i++)
++		pad[i] ^= K[i];
++	_SHA256_Update(&ctx->octx, pad, 64, tmp32);
+ }
