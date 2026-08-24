@@ -88,7 +88,8 @@ if [[ ! -f "$multihash_source" || ! -r "$multihash_source" ]]; then
 fi
 
 if ! multihash_imports=$(sed -nE \
-    's/.*EntryPoint = "([^"]+)".*/\1/p' "$multihash_source" | sort -u); then
+    's/.*EntryPoint[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+    "$multihash_source" | sort -u); then
   echo "Unable to inspect managed libmultihash entry points" >&2
   exit 1
 fi

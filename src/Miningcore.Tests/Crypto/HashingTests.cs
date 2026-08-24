@@ -212,13 +212,15 @@ public class HashingTests : TestBase
     }
 
     [LinuxNativeFact]
-    public void Allium_Hash_MatchesKnownVector()
+    public void Allium_Hash_MatchesExternalGarlicoinVector()
     {
         var hasher = new Allium();
         var hash = new byte[32];
 
         hasher.Digest(testValue2, hash);
 
+        // Independently cross-checked with garlicoin-project/allium-hash-python 1.0.3.
+        // PyPI source SHA-256: 50f23cfecf1dfe656c9dc30b82f5547ca5eff001cdf3c824b3c0d86fac5db4e8.
         Assert.Equal("41db9975e0fed3d25f33d5a689f97544349cd3e26f657be483073935964e9d65",
             hash.ToHexString());
     }

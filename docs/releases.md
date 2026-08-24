@@ -399,7 +399,8 @@ Three Linux hashing defects are corrected and deserve particular attention from 
   against a reference Argon2 implementation.
 - Allium was registered and exported, but its implementation object was absent from
   `libmultihash.so`. An Allium share could therefore terminate Miningcore on the first hash. The
-  implementation is now linked and pinned by a known-answer test.
+  implementation is now linked and pinned by a vector independently cross-checked against the
+  Garlicoin project's published `allium-hash` package.
 - Xelis v1 on a CPU without AES-NI previously called unavailable OpenSSL symbols and implemented a
   full AES block encryption where the mining algorithm requires one AES round. The portable path
   now uses the same single-round operation as Xelis v2. A no-AES build and known-answer test run on
