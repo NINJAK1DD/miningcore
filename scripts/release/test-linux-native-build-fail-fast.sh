@@ -4,12 +4,53 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 driver="$repository_root/src/Miningcore/build-libs-linux.sh"
+panthera_patch="$repository_root/src/Miningcore/patches/panthera-build-status-warnings.patch"
 work_dir=$(mktemp -d)
 
 cleanup() {
   rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
+
+mkdir -p "$work_dir/panthera/src/yespower"
+cat > "$work_dir/panthera/src/yespower/yespower-opt.c" <<'C'
+ * no slowdown from the prefixes is generally observed on AMD CPUs supporting
+ * XOP, some slowdown is sometimes observed on Intel CPUs with AVX.
+ */
+#ifdef __XOP__
+#warning "Note: XOP is enabled.  That's great."
+#elif defined(__AVX__)
+#warning "Note: AVX is enabled.  That's OK."
+#elif defined(__SSE2__)
+#warning "Note: AVX and XOP are not enabled.  That's OK."
+#elif defined(__x86_64__) || defined(__i386__)
+#warning "SSE2 not enabled.  Expect poor performance."
+#else
+#warning "Note: building generic code for non-x86.  That's OK."
+#endif
+
+/*
+ * The SSE4 code version has fewer instructions than the generic SSE2 version,
+/* 64-bit without AVX.  This relies on out-of-order execution and register
+ * renaming.  It may actually be fastest on CPUs with AVX(2) as well - e.g.,
+ * it runs great on Haswell. */
+#warning "Note: using x86-64 inline assembly for pwxform.  That's great."
+#undef MAYBE_MEMORY_BARRIER
+#define MAYBE_MEMORY_BARRIER \
+	__asm__("" : : : "memory");
+C
+
+(
+  cd "$work_dir/panthera"
+  git apply --check "$panthera_patch"
+  git apply "$panthera_patch"
+)
+
+if grep -n '^[[:space:]]*#warning' \
+    "$work_dir/panthera/src/yespower/yespower-opt.c"; then
+  echo "Panthera source patch left an active build warning" >&2
+  exit 1
+fi
 
 mkdir -p \
   "$work_dir/src/Miningcore" \

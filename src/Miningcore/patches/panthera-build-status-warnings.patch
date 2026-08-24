@@ -1,8 +1,9 @@
 diff --git a/src/yespower/yespower-opt.c b/src/yespower/yespower-opt.c
-index 1ab5814..1320f82 100644
+index d9fb007..0c49765 100644
 --- a/src/yespower/yespower-opt.c
 +++ b/src/yespower/yespower-opt.c
-@@ -49,13 +49,4 @@
+@@ -49,17 +49,8 @@
+  * no slowdown from the prefixes is generally observed on AMD CPUs supporting
   * XOP, some slowdown is sometimes observed on Intel CPUs with AVX.
   */
 -#ifdef __XOP__
@@ -16,5 +17,17 @@ index 1ab5814..1320f82 100644
 -#else
 -#warning "Note: building generic code for non-x86.  That's OK."
 -#endif
+-
 +/* The active instruction-set branch is selected by the feature macros below.
 + * Do not emit build warnings for this expected configuration choice. */
++
+ /*
+  * The SSE4 code version has fewer instructions than the generic SSE2 version,
+@@ -527,6 +518,6 @@ static volatile uint64_t Smask2var = Smask2;
+ /* 64-bit without AVX.  This relies on out-of-order execution and register
+  * renaming.  It may actually be fastest on CPUs with AVX(2) as well - e.g.,
+  * it runs great on Haswell. */
+-#warning "Note: using x86-64 inline assembly for pwxform.  That's great."
++/* Use the optimized x86-64 inline-assembly pwxform implementation. */
+ #undef MAYBE_MEMORY_BARRIER
+ #define MAYBE_MEMORY_BARRIER \
