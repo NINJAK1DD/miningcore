@@ -10,7 +10,7 @@ fi
 source_root=$1
 manifest=$2
 
-if [[ ! -d "$source_root" || ! -r "$manifest" ]]; then
+if [[ ! -d "$source_root" || ! -f "$manifest" || ! -r "$manifest" ]]; then
   echo "Pinned source verification could not read its inputs" >&2
   exit 70
 fi

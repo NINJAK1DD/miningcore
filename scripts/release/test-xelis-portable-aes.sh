@@ -44,10 +44,19 @@ if nm -u "$work_dir/xelishashv1-no-aes.o" | grep -Eq 'AES_(encrypt|set_encrypt_k
   exit 1
 fi
 
+aesni_compared=0
+
 if "$repository_root/src/Native/check_cpu.sh" aes; then
   g++ "${common_flags[@]}" -maes -DMININGCORE_TEST_AESNI \
     "$fixture" -o "$work_dir/hardware-aes-round"
   "$work_dir/hardware-aes-round"
+  aesni_compared=1
+else
+  echo "Skipping Xelis v1 AES-NI equivalence: host CPU does not expose AES support"
 fi
 
-echo "Xelis v1 portable AES path is warning-free and matches the reviewed round vector"
+if [[ "$aesni_compared" -eq 1 ]]; then
+  echo "Xelis v1 portable AES path is warning-free and matches the AES-NI round"
+else
+  echo "Xelis v1 portable AES path is warning-free and matches the reviewed vector"
+fi

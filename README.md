@@ -57,7 +57,8 @@ cp config.example.json build/config.json
 
 The supported source-build helpers fail on compiler and build-system warnings. See the
 [release guide](docs/releases.md#ubuntu-2604-primary-release-and-source-build-support) for the
-warning policy and its diagnostic-only escape hatch for future unsupported toolchains.
+warning policy and its native/build-system diagnostic escape hatch for future unsupported
+toolchains. Managed compiler warnings and NuGet security advisories remain unconditionally fatal.
 
 Next, install PostgreSQL, create the database, replace every `CHANGE_ME` value in `config.json`, and
 start Miningcore from the build directory:

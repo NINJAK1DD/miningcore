@@ -23,6 +23,14 @@ warning_cases=(
   'fixture.c:1:1: warning: compiler diagnostic'
   'fixture.c:1: warning: compiler diagnostic without column'
   'cc1plus: warning: command-line diagnostic'
+  '/usr/bin/ld: warning: missing .note.GNU-stack section implies executable stack'
+  '/usr/bin/ld.bfd: warning: foo.o has a LOAD segment with RWX permissions'
+  '/opt/toolchain/bin/ld.gold: warning: libfoo.so, needed by x, not found'
+  'ld.lld: warning: foo.o: requires executable stack'
+  'collect2: warning: ld returned a diagnostic'
+  '/usr/bin/ar: warning: creating libfixture.a'
+  'as: warning: end of file not at end of a line'
+  'ranlib: warning: libfixture.a has no symbols'
   'Fixture.cs(1,1): warning CS8981: managed diagnostic'
   'fixture.c(1,1): warning G1234ABCD: native MSBuild diagnostic'
   'CMake Warning at CMakeLists.txt:1 (message):'
@@ -109,6 +117,50 @@ fi
 if grep -Fq "$work_dir" "$work_dir/missing-output"; then
   echo "Warning audit exposed its private log path" >&2
   cat "$work_dir/missing-output" >&2
+  exit 1
+fi
+
+mkdir "$work_dir/log-directory"
+
+set +e
+bash "$audit" "$work_dir/log-directory" > "$work_dir/directory-output" 2>&1
+directory_status=$?
+set -e
+
+if [[ "$directory_status" -ne 70 ]]; then
+  echo "Warning audit returned $directory_status instead of 70 for a directory" >&2
+  cat "$work_dir/directory-output" >&2
+  exit 1
+fi
+
+if grep -Fq "$work_dir" "$work_dir/directory-output"; then
+  echo "Warning audit exposed its private log path for a non-regular input" >&2
+  cat "$work_dir/directory-output" >&2
+  exit 1
+fi
+
+mkdir "$work_dir/bin"
+cat > "$work_dir/bin/grep" <<'EOF'
+#!/usr/bin/env bash
+exit 2
+EOF
+chmod +x "$work_dir/bin/grep"
+
+set +e
+PATH="$work_dir/bin:$PATH" \
+  bash "$audit" "$clean_log" > "$work_dir/grep-error-output" 2>&1
+grep_error_status=$?
+set -e
+
+if [[ "$grep_error_status" -ne 70 ]]; then
+  echo "Warning audit returned $grep_error_status instead of 70 for a grep failure" >&2
+  cat "$work_dir/grep-error-output" >&2
+  exit 1
+fi
+
+if grep -Fq "$work_dir" "$work_dir/grep-error-output"; then
+  echo "Warning audit exposed its private log path after a grep failure" >&2
+  cat "$work_dir/grep-error-output" >&2
   exit 1
 fi
 

@@ -127,6 +127,11 @@ build_randomx_family() {
   local source_patch=${6:-}
   local source_manifest=${7:-}
 
+  if [[ -n "$source_patch" && -z "$source_manifest" ]]; then
+    echo "Pinned source patch '$source_patch' requires a SHA-256 manifest" >&2
+    return 64
+  fi
+
   (
     cd "${TMPDIR:-/tmp}"
     rm -rf "$source_name"

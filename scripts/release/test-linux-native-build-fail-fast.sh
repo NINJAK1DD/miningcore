@@ -112,6 +112,19 @@ done
 )
 bash "$source_verifier" "$work_dir/panthera" "$work_dir/panthera.sha256"
 
+mkdir "$work_dir/manifest-directory"
+set +e
+bash "$source_verifier" "$work_dir/randomx" "$work_dir/manifest-directory" \
+  > "$work_dir/manifest-directory-output" 2>&1
+manifest_directory_status=$?
+set -e
+
+if [[ "$manifest_directory_status" -ne 70 ]]; then
+  echo "Pinned source verifier accepted a directory as its manifest" >&2
+  cat "$work_dir/manifest-directory-output" >&2
+  exit 1
+fi
+
 cp "$work_dir/randomx/CMakeLists.txt" "$work_dir/randomx/CMakeLists.txt.clean"
 printf '%s\n' '# injected upstream drift' >> "$work_dir/randomx/CMakeLists.txt"
 
@@ -129,6 +142,8 @@ fi
 
 mv "$work_dir/randomx/CMakeLists.txt.clean" "$work_dir/randomx/CMakeLists.txt"
 
+# These minimal fixtures validate only that each patch still applies and has the intended shape.
+# The SHA-256 manifests above are the authoritative upstream-source drift boundary.
 (
   cd "$work_dir/randomx"
   git apply --check "$randomx_patch"

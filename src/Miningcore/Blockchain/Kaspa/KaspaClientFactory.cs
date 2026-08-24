@@ -9,7 +9,6 @@ using Miningcore.Extensions;
 using Miningcore.Mining;
 using NLog;
 using kaspaWalletd = Miningcore.Blockchain.Kaspa.KaspaWalletd;
-using Kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
 
 namespace Miningcore.Blockchain.Kaspa;
 

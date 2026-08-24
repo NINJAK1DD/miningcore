@@ -65,8 +65,20 @@ fi
 
 # Do not use `ldd -r` as a blanket gate here. Some hashing plugins intentionally retain
 # lazy/optional symbols that are supplied only by the algorithm path that consumes them. The
-# companion native test script loads the changed libraries and calls the reviewed CryptoNote,
-# Flex and yescrypt paths; ZanoNote is loaded and its managed entry-point contract is verified.
+# libmultihash link uses --no-undefined because all of its dependencies are known at build time.
+# Companion native tests load other changed libraries and call their reviewed algorithm paths.
+if ! multihash_relocations=$(ldd -r "$publish_dir/libmultihash.so" 2>&1); then
+  echo "libmultihash.so failed dynamic relocation validation:" >&2
+  printf '%s\n' "$multihash_relocations" >&2
+  exit 1
+fi
+
+if grep -Fq 'undefined symbol:' <<<"$multihash_relocations"; then
+  echo "libmultihash.so contains an unresolved dynamic symbol:" >&2
+  printf '%s\n' "$multihash_relocations" >&2
+  exit 1
+fi
+
 if ! zanonote_symbols=$(nm -D --defined-only "$publish_dir/libzanonote.so" | \
     awk '{ print $3 }'); then
   echo "Unable to inspect exported symbols in libzanonote.so" >&2
