@@ -55,6 +55,20 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
+    - name: Lint Linux native symbol contracts
+      shell: bash
+      run: >-
+        shellcheck -x
+        scripts/release/linux-release-targets.sh
+        scripts/release/test-linux-native-inventory.sh
+        scripts/release/test-linux-native-symbol-contracts.sh
+        scripts/release/test-linux-package-targets.sh
+        scripts/release/test-ubuntu-source-build.sh
+
+    - name: Test Linux native symbol contracts
+      shell: bash
+      run: bash scripts/release/test-linux-native-symbol-contracts.sh
+
     - name: Test warning-free build audit
       shell: bash
       run: bash scripts/release/test-warning-free-build.sh

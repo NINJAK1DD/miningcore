@@ -109,9 +109,36 @@ mkdir -p "$publish_dir" "$output_dir" "$complete_dir"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$publish_dir/Miningcore"
 chmod 0755 "$publish_dir/Miningcore"
 
+python3 - \
+  "$repository_root/scripts/release/assert-linux-native-symbol-contracts.py" \
+  "$repository_root/src/Miningcore/Native" \
+  "$repository_root/scripts/release/linux-native-libraries.txt" \
+  "$work_dir/native-fixture.c" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+validator_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("native_contracts", validator_path)
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+
+inventory = validator.load_inventory(pathlib.Path(sys.argv[3]))
+contracts = validator.discover_managed_contracts(pathlib.Path(sys.argv[2]), set(inventory))
+symbols = sorted({symbol for exports in contracts.values() for symbol in exports})
+
+with pathlib.Path(sys.argv[4]).open("w", encoding="utf-8", newline="\n") as stream:
+    for symbol in symbols:
+        stream.write(f"void {symbol}(void) {{}}\n")
+PY
+
+cc -shared -fPIC -Wl,--no-undefined \
+  -o "$work_dir/native-fixture.so" "$work_dir/native-fixture.c"
+
 while IFS= read -r library; do
+  library=${library%$'\r'}
   [[ -n "$library" ]] || continue
-  : > "$publish_dir/$library"
+  cp "$work_dir/native-fixture.so" "$publish_dir/$library"
 done < "$repository_root/scripts/release/linux-native-libraries.txt"
 
 if ! compgen -G "$publish_dir/*.so" >/dev/null; then

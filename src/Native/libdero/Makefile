@@ -8,11 +8,11 @@ else
         CXXFLAGS += -march=native -m64 
 endif
 
-LDFLAGS += -shared 
+LDFLAGS += -shared -Wl,--no-undefined
 LDLIBS = -lboost_atomic -lboost_context -lboost_chrono -lboost_program_options -lboost_thread -lpthread -lssl -lcrypto
 TARGET = libdero.so
 
-OBJECTS = include/highwayhash/arch_specific.o include/highwayhash/c_bindings.o include/highwayhash/hh_portable.o include/highwayhash/scalar_sip_tree_hash.o include/highwayhash/sip_hash.o \
+OBJECTS = include/highwayhash/arch_specific.o include/highwayhash/c_bindings.o include/highwayhash/hh_portable.o include/highwayhash/instruction_sets.o include/highwayhash/scalar_sip_tree_hash.o include/highwayhash/sip_hash.o \
         include/libkeccak/digest.o include/libkeccak/libkeccak_behex_lower.o include/libkeccak/libkeccak_behex_upper.o include/libkeccak/libkeccak_cshake_initialise.o include/libkeccak/libkeccak_cshake_suffix.o \
         include/libkeccak/libkeccak_degeneralise_spec.o include/libkeccak/libkeccak_generalised_sum_fd.o include/libkeccak/libkeccak_hmac_copy.o include/libkeccak/libkeccak_hmac_create.o include/libkeccak/libkeccak_hmac_destroy.o \
         include/libkeccak/libkeccak_hmac_digest.o include/libkeccak/libkeccak_hmac_duplicate.o include/libkeccak/libkeccak_hmac_fast_destroy.o include/libkeccak/libkeccak_hmac_fast_digest.o include/libkeccak/libkeccak_hmac_fast_free.o \

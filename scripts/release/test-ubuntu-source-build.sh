@@ -29,14 +29,11 @@ if [ ! -x "$app" ]; then
 fi
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-repository_root=$(cd "$script_dir/../.." && pwd)
 bash "$script_dir/test-linux-native-inventory.sh" "$publish_dir"
 
 mapfile -t actual_libraries < <(
   find "$publish_dir" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort
 )
-
-missing_dependencies=0
 
 for library_name in "${actual_libraries[@]}"; do
   library="$publish_dir/$library_name"
@@ -47,92 +44,6 @@ for library_name in "${actual_libraries[@]}"; do
     exit 1
   fi
 
-  if ! dependencies=$(ldd "$library" 2>&1); then
-    echo "$library_name could not be inspected with ldd:" >&2
-    printf '%s\n' "$dependencies" >&2
-    exit 1
-  fi
-
-  if grep -Fq 'not found' <<<"$dependencies"; then
-    echo "$library_name has unresolved native dependencies:" >&2
-    printf '%s\n' "$dependencies" >&2
-    missing_dependencies=1
-  fi
-done
-
-if [ "$missing_dependencies" -ne 0 ]; then
-  exit 1
-fi
-
-# Do not use `ldd -r` as a blanket gate here. Some hashing plugins intentionally retain
-# lazy/optional symbols that are supplied only by the algorithm path that consumes them. The
-# libmultihash link uses --no-undefined because all of its dependencies are known at build time.
-# Companion native tests load other changed libraries and call their reviewed algorithm paths.
-if ! multihash_relocations=$(ldd -r "$publish_dir/libmultihash.so" 2>&1); then
-  echo "libmultihash.so failed dynamic relocation validation:" >&2
-  printf '%s\n' "$multihash_relocations" >&2
-  exit 1
-fi
-
-if grep -Fq 'undefined symbol:' <<<"$multihash_relocations"; then
-  echo "libmultihash.so contains an unresolved dynamic symbol:" >&2
-  printf '%s\n' "$multihash_relocations" >&2
-  exit 1
-fi
-
-multihash_source="$repository_root/src/Miningcore/Native/Multihash.cs"
-
-if [[ ! -f "$multihash_source" || ! -r "$multihash_source" ]]; then
-  echo "Unable to read the managed libmultihash import contract" >&2
-  exit 1
-fi
-
-if ! multihash_imports=$(sed -nE \
-    's/.*EntryPoint[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
-    "$multihash_source" | sort -u); then
-  echo "Unable to inspect managed libmultihash entry points" >&2
-  exit 1
-fi
-
-if [[ -z "$multihash_imports" ]]; then
-  echo "Managed libmultihash entry-point contract is empty" >&2
-  exit 1
-fi
-
-if ! multihash_exports=$(nm -D --defined-only "$publish_dir/libmultihash.so" | \
-    awk '{ print $3 }' | sort -u); then
-  echo "Unable to inspect exported symbols in libmultihash.so" >&2
-  exit 1
-fi
-
-missing_multihash_import=0
-
-while IFS= read -r symbol; do
-  if ! grep -Fxq "$symbol" <<<"$multihash_exports"; then
-    echo "libmultihash.so does not export managed entry point: $symbol" >&2
-    missing_multihash_import=1
-  fi
-done <<<"$multihash_imports"
-
-if [[ "$missing_multihash_import" -ne 0 ]]; then
-  exit 1
-fi
-
-if ! zanonote_symbols=$(nm -D --defined-only "$publish_dir/libzanonote.so" | \
-    awk '{ print $3 }'); then
-  echo "Unable to inspect exported symbols in libzanonote.so" >&2
-  exit 1
-fi
-
-for symbol in \
-    convert_blob_export \
-    convert_block_export \
-    get_blob_id_export \
-    get_block_id_export; do
-  if ! grep -Fxq "$symbol" <<<"$zanonote_symbols"; then
-    echo "libzanonote.so does not export required entry point: $symbol" >&2
-    exit 1
-  fi
 done
 
 run_miningcore() {

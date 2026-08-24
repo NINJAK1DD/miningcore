@@ -2,6 +2,9 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        libboost-locale-dev \
+        libboost-regex-dev \
+        libboost-serialization-dev \
         libgmp10 \
         libsodium-dev \
         libzmq3-dev && \
@@ -14,6 +17,18 @@ RUN apt-get update && \
 
 WORKDIR /app
 COPY --chown=root:root . /app/
+
+RUN set -eu; \
+    for library in /app/*.so; do \
+        relocations=$(ldd -r "$library" 2>&1) || { \
+            printf '%s\n' "$relocations" >&2; \
+            exit 1; \
+        }; \
+        if printf '%s\n' "$relocations" | grep -Eq 'not found|undefined symbol:'; then \
+            printf '%s\n' "$relocations" >&2; \
+            exit 1; \
+        fi; \
+    done
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     LD_LIBRARY_PATH=/app

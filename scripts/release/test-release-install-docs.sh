@@ -128,6 +128,16 @@ assert_contains 'the declared build-image contract' \
   'workflow-declared'
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
+assert_contains 'the CryptoNote Boost.Regex runtime provider' \
+  'libboost-regex-dev'
+assert_contains 'the ZanoNote Boost.Locale runtime provider' \
+  'libboost-locale-dev'
+assert_contains 'the ZanoNote Boost.Serialization runtime provider' \
+  'libboost-serialization-dev'
+assert_contains 'the all-library managed export contract' \
+  'every managed entry point must be present in that library'
+assert_contains 'the all-library relocation contract' \
+  '`ldd -r` inspection then rejects missing dependencies'
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
 

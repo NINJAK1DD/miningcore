@@ -165,7 +165,14 @@ On the primary Ubuntu 26.04 target, install Canonical's framework and native run
 
 ```console
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y \
+  aspnetcore-runtime-10.0 \
+  libboost-locale-dev \
+  libboost-regex-dev \
+  libboost-serialization-dev \
+  libgmp10 \
+  libsodium-dev \
+  libzmq3-dev
 ```
 
 On the Ubuntu 22.04 compatibility target, enable Canonical's supported .NET backports PPA first:
@@ -175,7 +182,14 @@ sudo apt-get update
 sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:dotnet/backports
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y \
+  aspnetcore-runtime-10.0 \
+  libboost-locale-dev \
+  libboost-regex-dev \
+  libboost-serialization-dev \
+  libgmp10 \
+  libsodium-dev \
+  libzmq3-dev
 ```
 
 ## Install the archive
@@ -375,12 +389,13 @@ forms.
 
 The Linux native build driver now propagates each component failure explicitly and stops before a
 later component can hide an incomplete build. The Ubuntu 26.04 validation publishes the shared
-24-library inventory also required by release packaging, checks x86-64 architecture, dependencies
-and required ZanoNote exports, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote load tests
-against the freshly built libraries. It also exercises version/help/schema paths and reaches a
-controlled startup safety boundary. Ubuntu 24.04 retains required source-build validation, and an
-official compatibility archive remains independently built and fully tested on Ubuntu 22.04 x64.
-Do not deploy the 26.04 archive on an older host; select the matching archive or build from source.
+24-library inventory also required by release packaging, checks x86-64 architecture, managed
+exports and dynamic relocation providers, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote
+load tests against the freshly built libraries. It also exercises version/help/schema paths and
+reaches a controlled startup safety boundary. Ubuntu 24.04 retains required source-build
+validation, and an official compatibility archive remains independently built and fully tested on
+Ubuntu 22.04 x64. Do not deploy the 26.04 archive on an older host; select the matching archive or
+build from source.
 
 Supported source-build helpers force stable English diagnostics and fail if the compiler or build
 system emits a warning. The normal pull-request build and source-container build enforce the same
@@ -406,17 +421,40 @@ Three Linux hashing defects are corrected and deserve particular attention from 
   now uses the same single-round operation as Xelis v2. A no-AES build and known-answer test run on
   every supported Linux lane; AES-capable lanes additionally compare it directly with AES-NI.
 
-The `libmultihash.so` link now rejects unresolved symbols, which structurally prevents this class of
-missing-object defect from returning. Source-build validation also verifies every managed
-`Multihash` entry point against the published library's exports, preventing an orphan import from
-remaining hidden until its first call. The four Ethash-family libraries run synthetic light-cache
-vectors that exercise the corrected temporary-node lifetime without allocating a production-size
-DAG. Those vectors pin stability; separate development-versus-corrected-build comparison found the
-digests identical, confirming that the lifetime repair is output-neutral. The Ubuntu native-vector
-lanes also run RandomX and RandomARQ known-answer tests against the exact patched release artifacts.
-The pinned RandomX-family sources are verified by SHA-256 before patches are applied. Raising their
-CMake policy floor to 3.10 selects CMake's newer policy defaults through that version; the native
-vectors protect the hashing contract.
+All 24 packaged Linux hashing libraries now link with `-Wl,--no-undefined`. CryptoNote explicitly
+links its Boost.Regex, OpenSSL and libsodium providers and includes its parsing-only Miningcore
+stubs; Dero includes HighwayHash's runtime instruction-set resolver; and ZanoNote includes the
+cryptographic and proof objects its parsing exports reference. This closes latent load-time failures
+that were previously outside the strict `libmultihash.so` boundary.
+
+Release and source-build validation derives every `DllImport` and `LibraryImport` from all managed
+native-wrapper sources, tolerating formatting changes while failing if any attribute cannot be
+parsed unambiguously. Each wrapper must map to exactly one library in
+`scripts/release/linux-native-libraries.txt`, every listed library must have exactly one wrapper,
+and every managed entry point must be present in that library's dynamic export table. Provider-aware
+`ldd -r` inspection then rejects missing dependencies and unresolved native-to-native relocations
+for every artifact. Missing, symlinked or otherwise non-regular inputs and failed inspection tools
+also fail closed. The validator supports a precise, per-library JSON exception manifest for a
+future genuinely optional provider, but the current release has no exceptions; any configured
+exception must be observed or validation rejects it as stale.
+
+When adding a Linux native library, add its sorted filename to the inventory, give it one managed
+wrapper with literal library and entry-point names, export every imported symbol, and link the
+shared object with `-Wl,--no-undefined`. Add all direct provider libraries and implementation
+objects to its Makefile rather than relying on another plugin to have been loaded first. The
+hermetic symbol-contract suite automatically discovers new wrappers and tests missing exports,
+unresolved providers, malformed inputs, exact exception scoping and stale exceptions. The Ubuntu
+22.04 and 26.04 release artifacts and Ubuntu 24.04 and 26.04 source builds run the same real-artifact
+contract before packaging or smoke testing.
+
+The four Ethash-family libraries run synthetic light-cache vectors that exercise the corrected
+temporary-node lifetime without allocating a production-size DAG. Those vectors pin stability;
+separate development-versus-corrected-build comparison found the digests identical, confirming
+that the lifetime repair is output-neutral. The Ubuntu native-vector lanes also run RandomX and
+RandomARQ known-answer tests against the exact patched release artifacts. The pinned RandomX-family
+sources are verified by SHA-256 before patches are applied. Raising their CMake policy floor to 3.10
+selects CMake's newer policy defaults through that version; the native vectors protect the hashing
+contract.
 
 The Equihash memory-cleanse helper now compiles correctly on Windows and uses guaranteed volatile
 byte stores on non-Windows targets. This removes its undeclared OpenSSL dependency without relying
