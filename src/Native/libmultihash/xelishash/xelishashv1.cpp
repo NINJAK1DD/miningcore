@@ -1,4 +1,5 @@
 #include "xelishash.hpp"
+#include "aes.hpp"
 #include <stdlib.h>
 #include <iostream>
 
@@ -11,10 +12,6 @@
 #include <cstring>
 #include <array>
 #include <cassert>
-
-#if !defined(__AES__)
-  #include <openssl/aes.h>
-#endif
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -82,9 +79,7 @@ static void aes_round(uint8_t *block, const uint8_t *key)
   __m128i result = _mm_aesenc_si128(block_m128i, key_m128i);
   _mm_store_si128((__m128i *)block, result);
   #else
-    AES_KEY aes_key;
-    AES_set_encrypt_key(key, 128, &aes_key);
-    AES_encrypt(block, block, &aes_key);
+    aes_single_round_no_intrinsics(block, key);
   #endif
 }
 

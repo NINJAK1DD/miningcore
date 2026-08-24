@@ -382,10 +382,28 @@ controlled startup safety boundary. Ubuntu 24.04 retains required source-build v
 official compatibility archive remains independently built and fully tested on Ubuntu 22.04 x64.
 Do not deploy the 26.04 archive on an older host; select the matching archive or build from source.
 
-Supported source-build helpers now fail if the compiler or build system emits a warning. The
-warning cleanup repairs the previously reported managed-code and native-library findings instead
-of hiding them globally, including undefined behavior in CryptoNight, Argon2, Xelis, Verus and
-libkeccak code.
+Supported source-build helpers force stable English diagnostics and fail if the compiler or build
+system emits a warning. The normal pull-request build and source-container build enforce the same
+contract, while managed warnings are also promoted structurally to errors. The warning cleanup
+repairs the reported managed-code and native-library findings instead of hiding them globally,
+including undefined behavior in CryptoNight, Argon2, Ethash, Xelis, Verus and libkeccak code. The
+CryptoNight soft-shell buffer defect was in a currently unregistered algorithm path, but is fixed
+to keep that native implementation memory-safe if it is enabled later.
+
+Xelis v1 now uses the same portable single AES round as Xelis v2 when AES instructions are not
+available; a no-AES compile and known-answer test pins equivalence with AES-NI. Argon2d has a native
+known-answer test, and the four Ethash-family libraries run synthetic light-cache vectors that
+exercise the corrected temporary-node lifetime without allocating a production-size DAG. The Ubuntu
+native-vector lanes also run RandomX and RandomARQ known-answer tests against the exact patched
+release artifacts. The pinned RandomX-family sources are verified by SHA-256 before patches are
+applied. Raising their CMake policy floor to 3.10 selects CMake's newer policy defaults through that
+version; the native vectors protect the hashing contract.
+
+For diagnosis on a future, unsupported compiler only, an operator may set
+`MININGCORE_ALLOW_BUILD_WARNINGS=1` when invoking a user-facing source-build helper. The warnings
+remain visible and the helper labels the result unsuitable for release. This override cannot bypass
+an unreadable audit log and is never enabled by CI or release packaging; resolve every warning
+before deploying the artifact.
 
 ### Security: administrative API bearer authentication and safe verbs
 

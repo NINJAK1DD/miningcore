@@ -8,9 +8,7 @@ using Miningcore.Native;
 using Miningcore.Stratum;
 using Miningcore.Util;
 using NBitcoin;
-#pragma warning disable CS8981 // Protobuf namespace alias follows the upstream kaspad service name.
-using kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
-#pragma warning restore CS8981
+using Kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
 
 namespace Miningcore.Blockchain.Kaspa.Custom.Spectre;
 
@@ -111,7 +109,7 @@ public class SpectreJob : KaspaJob
         return result;
     }
 
-    public override void Init(kaspad.RpcBlock blockTemplate, string jobId, double shareMultiplier)
+    public override void Init(Kaspad.RpcBlock blockTemplate, string jobId, double shareMultiplier)
     {
         Contract.RequiresNonNull(blockTemplate);
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId));

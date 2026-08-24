@@ -33,7 +33,9 @@ bash scripts/release/verify-ubuntu-dotnet-sdk.sh
   miningcore_resolve_source_build_identity ../.. BUILD_IDENTITY_ARGS
   BUILD_LOG=$(mktemp)
   trap 'rm -f -- "$BUILD_LOG"' EXIT
+  export DOTNET_CLI_UI_LANGUAGE=en
+  export LC_ALL=C
   dotnet publish -c Release --framework net10.0 -o "$BUILDIR" \
     "${BUILD_IDENTITY_ARGS[@]}" 2>&1 | tee "$BUILD_LOG"
-  bash ../../scripts/release/assert-warning-free-build.sh "$BUILD_LOG"
+  bash ../../scripts/release/audit-source-build-warnings.sh "$BUILD_LOG"
 )

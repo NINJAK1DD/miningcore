@@ -525,6 +525,9 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          DOTNET_CLI_UI_LANGUAGE: en
+          LC_ALL: C
         run: |
           set -euo pipefail
 

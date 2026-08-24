@@ -84,6 +84,7 @@
 
 #pragma once
 
+#include <cstring>
 #include <istream>
 
 // basic headers

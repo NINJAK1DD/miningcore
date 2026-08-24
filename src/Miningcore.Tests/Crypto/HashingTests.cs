@@ -200,6 +200,18 @@ public class HashingTests : TestBase
     }
 
     [LinuxNativeFact]
+    public void Argon2d250_Hash_MatchesKnownVector()
+    {
+        var hasher = new Argon2d250();
+        var hash = new byte[32];
+
+        hasher.Digest(testValue2, hash);
+
+        Assert.Equal("5b75d9a75f843872e975ae322e6011d3b2598b6eadb6c0c0df150b4e0604ff0a",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
     public void Zanonote_LoadsReviewedNativeEntryPoints()
     {
         var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,

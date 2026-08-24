@@ -16,13 +16,17 @@
 
 #if defined(_M_IX86_FP)
     #if _M_IX86_FP == 2
-        #define HAVE_SSE2
+        #ifndef HAVE_SSE2
+            #define HAVE_SSE2
+        #endif
         #ifndef HAVE_AVX
             #define HAVE_AVX
         #endif
     #endif
 #elif defined(_M_AMD64) || defined(_M_X64)
-    #define HAVE_SSSE3
+    #ifndef HAVE_SSSE3
+        #define HAVE_SSSE3
+    #endif
 #endif
 
 // These don't work everywhere

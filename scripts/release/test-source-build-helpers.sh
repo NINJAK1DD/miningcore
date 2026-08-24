@@ -136,6 +136,10 @@ case "${1:-}" in
     printf '%s\n' '.NET SDK 10.0.100 (Ubuntu fixture)'
     ;;
   publish)
+    if [ "${LC_ALL:-}" != C ] || [ "${DOTNET_CLI_UI_LANGUAGE:-}" != en ]; then
+      echo 'dotnet publish was not forced to stable English diagnostics' >&2
+      exit 91
+    fi
     if [ "${MININGCORE_HELPER_EMIT_WARNING:-}" = 1 ]; then
       echo 'fixture.c:1:1: warning: injected compiler warning'
     fi
@@ -222,6 +226,10 @@ assert_fail_closed() {
   local status
 
   : > "$trace"
+  [[ -d "$state" ]] || {
+    echo "Source-helper fixture state directory is missing" >&2
+    exit 1
+  }
   /bin/rm -f -- "$state"/*
 
   set +e
@@ -270,6 +278,8 @@ for helper in "${helpers[@]}"; do
     "$sandbox/scripts/release/source-build-identity.sh"
   cp "$repository_root/scripts/release/assert-warning-free-build.sh" \
     "$sandbox/scripts/release/assert-warning-free-build.sh"
+  cp "$repository_root/scripts/release/audit-source-build-warnings.sh" \
+    "$sandbox/scripts/release/audit-source-build-warnings.sh"
   cp "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
     "$sandbox/scripts/release/verify-ubuntu-dotnet-sdk.sh"
 
@@ -307,6 +317,10 @@ for helper in "${helpers[@]}"; do
   fi
 
   : > "$trace"
+  [[ -d "$state" ]] || {
+    echo "Source-helper fixture state directory is missing" >&2
+    exit 1
+  }
   /bin/rm -f -- "$state"/*
   set +e
   (
@@ -329,6 +343,29 @@ for helper in "${helpers[@]}"; do
 
   if ! grep -Fq 'Build emitted compiler or build-system warnings:' "$output"; then
     echo "$helper did not report its warning-audit failure" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  : > "$trace"
+  [[ -d "$state" ]] || {
+    echo "Source-helper fixture state directory is missing" >&2
+    exit 1
+  }
+  /bin/rm -f -- "$state"/*
+  (
+    cd "$sandbox"
+    PATH="$work_dir/bin:$PATH" \
+      MININGCORE_ALLOW_BUILD_WARNINGS=1 \
+      MININGCORE_HELPER_EMIT_WARNING=1 \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
+      MININGCORE_HELPER_TEST_STATE="$state" \
+      MININGCORE_HELPER_TEST_TRACE="$trace" \
+      bash "$helper" "$publish_dir"
+  ) > "$output" 2>&1
+
+  if ! grep -Fq 'Do not use this artifact for a release' "$output"; then
+    echo "$helper did not identify its warning override as unsuitable for release" >&2
     cat "$output" >&2
     exit 1
   fi

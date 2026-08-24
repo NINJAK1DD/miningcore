@@ -4,6 +4,7 @@ set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 driver="$repository_root/src/Miningcore/build-libs-linux.sh"
+source_verifier="$repository_root/scripts/release/verify-pinned-source-files.sh"
 randomx_patch="$repository_root/src/Miningcore/patches/randomx-cmake-policy-floor.patch"
 randomarq_patch="$repository_root/src/Miningcore/patches/randomarq-cmake-policy-floor.patch"
 panthera_patch="$repository_root/src/Miningcore/patches/panthera-build-status-warnings.patch"
@@ -95,6 +96,38 @@ cat >> "$work_dir/panthera/src/yespower/sha256.c" <<'C'
 	_SHA256_Update(&ctx->octx, pad, 64, tmp32);
 }
 C
+
+for fixture in randomx randomarq randomxscash; do
+  (
+    cd "$work_dir/$fixture"
+    sha256sum CMakeLists.txt > "$work_dir/$fixture.sha256"
+  )
+  bash "$source_verifier" "$work_dir/$fixture" "$work_dir/$fixture.sha256"
+done
+
+(
+  cd "$work_dir/panthera"
+  sha256sum CMakeLists.txt src/yespower/yespower-opt.c \
+    src/yespower/sha256.c > "$work_dir/panthera.sha256"
+)
+bash "$source_verifier" "$work_dir/panthera" "$work_dir/panthera.sha256"
+
+cp "$work_dir/randomx/CMakeLists.txt" "$work_dir/randomx/CMakeLists.txt.clean"
+printf '%s\n' '# injected upstream drift' >> "$work_dir/randomx/CMakeLists.txt"
+
+set +e
+bash "$source_verifier" "$work_dir/randomx" "$work_dir/randomx.sha256" \
+  > "$work_dir/source-drift-output" 2>&1
+source_drift_status=$?
+set -e
+
+if [[ "$source_drift_status" -ne 1 ]]; then
+  echo "Pinned source verifier accepted modified upstream content" >&2
+  cat "$work_dir/source-drift-output" >&2
+  exit 1
+fi
+
+mv "$work_dir/randomx/CMakeLists.txt.clean" "$work_dir/randomx/CMakeLists.txt"
 
 (
   cd "$work_dir/randomx"
