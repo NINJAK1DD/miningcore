@@ -60,6 +60,7 @@ jobs:
       run: >-
         shellcheck -x
         scripts/release/linux-release-targets.sh
+        scripts/release/test-cryptonote-abi-safety.sh
         scripts/release/test-linux-native-inventory.sh
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-linux-package-targets.sh

@@ -114,8 +114,8 @@ sudo apt-get update
 sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:dotnet/backports
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale-dev libboost-regex-dev \
-  libboost-serialization-dev libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale1.74.0 \
+  libboost-regex1.74.0 libboost-serialization1.74.0 libgmp10 libsodium-dev libzmq3-dev
 ```
 
 ### Ubuntu 24.04
@@ -125,8 +125,8 @@ feed or combine it with Ubuntu .NET packages:
 
 ```console
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale-dev libboost-regex-dev \
-  libboost-serialization-dev libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale1.83.0 \
+  libboost-regex1.83.0 libboost-serialization1.83.0 libgmp10 libsodium-dev libzmq3-dev
 ```
 
 ### Ubuntu 26.04 x64
@@ -136,8 +136,8 @@ feed, the Ubuntu 22.04 `dotnet/backports` PPA, or combine those sources with Ubu
 
 ```console
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale-dev libboost-regex-dev \
-  libboost-serialization-dev libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale1.90.0 \
+  libboost-regex1.90.0 libboost-serialization1.90.0 libgmp10 libsodium-dev libzmq3-dev
 ```
 
 Use `build-ubuntu-26.04.sh` when compiling Miningcore on this x86-64 platform. It installs the

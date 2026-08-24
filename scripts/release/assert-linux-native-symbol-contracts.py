@@ -16,6 +16,7 @@ from collections import defaultdict
 
 
 STRUCTURAL_EXIT = 70
+CONTRACT_EXIT = 1
 LIBRARY_PATTERN = re.compile(r"lib[A-Za-z0-9._+-]+\.so\Z")
 SYMBOL_PATTERN = re.compile(r"[^\s\x00-\x1f\x7f]+\Z")
 ATTRIBUTE_PATTERN = re.compile(
@@ -24,19 +25,34 @@ ATTRIBUTE_PATTERN = re.compile(
 )
 IMPORT_TOKEN_PATTERN = re.compile(r"\b(?:DllImport|LibraryImport)(?:Attribute)?\b")
 ENTRY_POINT_PATTERN = re.compile(
-    r"\bEntryPoint\s*=\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")",
+    r"\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")",
     re.DOTALL,
 )
+ENTRY_POINT_ASSIGNMENT_PATTERN = re.compile(r"\bEntryPoint\s*=")
 METHOD_PATTERN = re.compile(
     r"\b(?:extern|partial)\b[^;{}]*?\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.DOTALL,
 )
 UNDEFINED_PATTERN = re.compile(
-    r"^\s*undefined symbol:\s*(?P<symbol>\S+)\s+\((?P<object>[^()]*)\)\s*$"
+    r"^\s*undefined symbol:\s*(?P<symbol>\S+)\s+\((?P<object>.*)\)\s*$"
 )
+CALLABLE_SYMBOL_TYPES = {"T", "W", "i"}
+IGNORED_TOOLCHAIN_WEAK_SYMBOLS = {
+    "_ITM_deregisterTMCloneTable",
+    "_ITM_registerTMCloneTable",
+    "__cxa_finalize",
+    "__cxa_finalize@GLIBC_2.2.5",
+    "__cxa_pure_virtual",
+    "__cxa_pure_virtual@CXXABI_1.3",
+    "__gmon_start__",
+}
 
 
 class ContractError(Exception):
+    pass
+
+
+class ContractViolation(ContractError):
     pass
 
 
@@ -107,10 +123,44 @@ def mask_comments(source: str, path: pathlib.Path) -> str:
                 state = "block-comment"
                 index += 2
                 continue
+            if source.startswith('$@"', index) or source.startswith('@$"', index):
+                state = "verbatim-string"
+                index += 3
+                continue
+            if current == "$":
+                dollar_count = 1
+                while (
+                    index + dollar_count < len(source)
+                    and source[index + dollar_count] == "$"
+                ):
+                    dollar_count += 1
+                quote_start = index + dollar_count
+                quote_count = 0
+                while (
+                    quote_start + quote_count < len(source)
+                    and source[quote_start + quote_count] == '"'
+                ):
+                    quote_count += 1
+                if quote_count >= 3:
+                    state = f"raw-string:{quote_count}"
+                    index = quote_start + quote_count
+                    continue
             if current == "@" and following == '"':
                 state = "verbatim-string"
                 index += 2
                 continue
+            if current == "$" and following == '"':
+                state = "string"
+                index += 2
+                continue
+            if current == '"':
+                quote_count = 1
+                while index + quote_count < len(source) and source[index + quote_count] == '"':
+                    quote_count += 1
+                if quote_count >= 3:
+                    state = f"raw-string:{quote_count}"
+                    index += quote_count
+                    continue
             if current == '"':
                 state = "string"
             elif current == "'":
@@ -163,8 +213,118 @@ def mask_comments(source: str, path: pathlib.Path) -> str:
                 state = "normal"
             index += 1
 
-    if state == "block-comment":
-        raise ContractError(f"Unterminated block comment in managed wrapper: {path}")
+        if state.startswith("raw-string:"):
+            quote_count = int(state.split(":", 1)[1])
+            if source.startswith('"' * quote_count, index):
+                state = "normal"
+                index += quote_count
+            else:
+                index += 1
+
+    if state != "normal" and state != "line-comment":
+        raise ContractError(f"Unterminated comment or literal in managed wrapper: {path}")
+
+    return "".join(result)
+
+
+def mask_literals(source: str, path: pathlib.Path) -> str:
+    """Mask C# string/character literals while preserving positions and newlines."""
+    result = list(source)
+    index = 0
+
+    def blank(start: int, end: int) -> None:
+        for position in range(start, min(end, len(result))):
+            if result[position] not in "\r\n":
+                result[position] = " "
+
+    while index < len(source):
+        start = index
+        verbatim = False
+        raw_quotes = 0
+
+        if source.startswith('$@"', index) or source.startswith('@$"', index):
+            verbatim = True
+            index += 3
+        elif source.startswith('@"', index):
+            verbatim = True
+            index += 2
+        elif source[index] == "$":
+            dollar_count = 1
+            while (
+                index + dollar_count < len(source)
+                and source[index + dollar_count] == "$"
+            ):
+                dollar_count += 1
+            quote_start = index + dollar_count
+            while (
+                quote_start + raw_quotes < len(source)
+                and source[quote_start + raw_quotes] == '"'
+            ):
+                raw_quotes += 1
+            if raw_quotes >= 3:
+                index = quote_start + raw_quotes
+            elif dollar_count == 1 and raw_quotes == 1:
+                raw_quotes = 0
+                index += 2
+            else:
+                raw_quotes = 0
+                index += 1
+        elif source[index] == '"':
+            while index + raw_quotes < len(source) and source[index + raw_quotes] == '"':
+                raw_quotes += 1
+            if raw_quotes >= 3:
+                index += raw_quotes
+            else:
+                raw_quotes = 0
+                index += 1
+        elif source[index] == "'":
+            index += 1
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                elif source[index] == "'":
+                    index += 1
+                    break
+                else:
+                    index += 1
+            else:
+                raise ContractError(f"Unterminated character literal in managed wrapper: {path}")
+            blank(start, index)
+            continue
+        else:
+            index += 1
+            continue
+
+        if raw_quotes:
+            closing = '"' * raw_quotes
+            end = source.find(closing, index)
+            if end == -1:
+                raise ContractError(f"Unterminated raw string in managed wrapper: {path}")
+            index = end + raw_quotes
+        elif verbatim:
+            while index < len(source):
+                if source.startswith('""', index):
+                    index += 2
+                elif source[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            else:
+                raise ContractError(f"Unterminated verbatim string in managed wrapper: {path}")
+        else:
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                elif source[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            else:
+                raise ContractError(f"Unterminated string in managed wrapper: {path}")
+
+        blank(start, index)
 
     return "".join(result)
 
@@ -229,14 +389,16 @@ def decode_csharp_string(literal: str, path: pathlib.Path) -> str:
 def parse_imports(path: pathlib.Path) -> list[tuple[str, str]]:
     source = read_text(path, "managed native wrapper")
     masked = mask_comments(source, path)
-    token_count = len(IMPORT_TOKEN_PATTERN.findall(masked))
+    code_only = mask_literals(masked, path)
+    token_count = len(IMPORT_TOKEN_PATTERN.findall(code_only))
     imports: list[tuple[str, str]] = []
     search_index = 0
 
-    while match := ATTRIBUTE_PATTERN.search(masked, search_index):
+    while match := ATTRIBUTE_PATTERN.search(code_only, search_index):
         opening = match.end() - 1
-        closing = find_closing_parenthesis(masked, opening, path)
+        closing = find_closing_parenthesis(code_only, opening, path)
         arguments = masked[opening + 1 : closing]
+        argument_code = code_only[opening + 1 : closing]
         library_match = re.match(
             r'\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")', arguments, re.DOTALL
         )
@@ -245,17 +407,29 @@ def parse_imports(path: pathlib.Path) -> list[tuple[str, str]]:
             raise ContractError(f"Native import library must be a string literal in {path}")
 
         library = decode_csharp_string(library_match.group("literal"), path)
-        entry_matches = list(ENTRY_POINT_PATTERN.finditer(arguments))
-        if len(entry_matches) > 1:
+        assignments = list(ENTRY_POINT_ASSIGNMENT_PATTERN.finditer(argument_code))
+        if len(assignments) > 1:
             raise ContractError(f"Native import contains multiple EntryPoint values in {path}")
 
-        if entry_matches:
-            symbol = decode_csharp_string(entry_matches[0].group("literal"), path)
+        if assignments:
+            literal_match = ENTRY_POINT_PATTERN.match(arguments, assignments[0].end())
+            if literal_match is None:
+                raise ContractError(
+                    f"Native import EntryPoint must be a string literal in {path}"
+                )
+            argument_end = argument_code.find(",", literal_match.end())
+            if argument_end == -1:
+                argument_end = len(argument_code)
+            if argument_code[literal_match.end() : argument_end].strip():
+                raise ContractError(
+                    f"Native import EntryPoint must be one string literal in {path}"
+                )
+            symbol = decode_csharp_string(literal_match.group("literal"), path)
         else:
-            declaration_end = masked.find(";", closing + 1)
+            declaration_end = code_only.find(";", closing + 1)
             if declaration_end == -1:
                 raise ContractError(f"Native import has no terminating declaration in {path}")
-            declaration = masked[closing + 1 : declaration_end + 1]
+            declaration = code_only[closing + 1 : declaration_end + 1]
             method_match = METHOD_PATTERN.search(declaration)
             if method_match is None:
                 raise ContractError(
@@ -300,6 +474,15 @@ def discover_managed_contracts(
     if not source_files:
         raise ContractError("No managed native-wrapper sources were found")
 
+    for source_file in source_files:
+        source = read_text(source_file, "managed native wrapper")
+        code_only = mask_literals(mask_comments(source, source_file), source_file)
+        if re.search(r"(?m)^\s*#(?:if|elif|else|endif)\b", code_only):
+            raise ContractError(
+                f"Conditional native imports are unsupported; keep the Linux contract "
+                f"unconditional or extend the validator explicitly: {source_file}"
+            )
+
     libraries_to_files: dict[str, set[pathlib.Path]] = defaultdict(set)
     exports: dict[str, set[str]] = defaultdict(set)
 
@@ -334,7 +517,47 @@ def discover_managed_contracts(
     return exports
 
 
-def run_tool(command: list[str], description: str) -> str:
+def reject_inventory_imports_outside_directory(
+    project_dir: pathlib.Path, source_dir: pathlib.Path, inventory: set[str]
+) -> None:
+    try:
+        project_mode = project_dir.lstat().st_mode
+    except OSError as error:
+        raise ContractError(f"Unable to inspect managed project directory: {error}") from error
+    if not stat.S_ISDIR(project_mode):
+        raise ContractError(f"Managed project path is not a directory: {project_dir}")
+
+    source_dir = source_dir.resolve()
+    inventory_names = {library.removesuffix(".so") for library in inventory}
+    for source_file in sorted(project_dir.rglob("*.cs")):
+        try:
+            source_file.resolve().relative_to(source_dir)
+            continue
+        except ValueError:
+            pass
+
+        source = read_text(source_file, "managed project source")
+        if IMPORT_TOKEN_PATTERN.search(source) is None:
+            continue
+
+        for library, _ in parse_imports(source_file):
+            if library in inventory_names:
+                raise ContractError(
+                    f"Packaged native import is outside the reviewed Native directory: "
+                    f"{source_file}: {library}"
+                )
+
+
+def run_tool(
+    command: list[str], description: str, environment: dict[str, str] | None = None
+) -> str:
+    tool_environment = dict(os.environ)
+    tool_environment.pop("LD_PRELOAD", None)
+    tool_environment.pop("LD_LIBRARY_PATH", None)
+    tool_environment["LC_ALL"] = "C"
+    if environment:
+        tool_environment.update(environment)
+
     try:
         result = subprocess.run(
             command,
@@ -343,7 +566,7 @@ def run_tool(command: list[str], description: str) -> str:
             text=True,
             encoding="utf-8",
             errors="strict",
-            env={**os.environ, "LC_ALL": "C"},
+            env=tool_environment,
             timeout=30,
         )
     except subprocess.TimeoutExpired as error:
@@ -421,13 +644,14 @@ def validate_library(
     regular_readable_file(library_path, f"published native library {library}")
 
     relocation_output = run_tool(
-        [ldd_tool, "-r", str(library_path)], f"dynamic relocation inspection for {library}"
+        [ldd_tool, "-r", str(library_path)],
+        f"dynamic relocation inspection for {library}",
     )
     unresolved: set[str] = set()
 
     for line in relocation_output.splitlines():
         if "not found" in line:
-            raise ContractError(f"{library} has an unresolved provider: {line.strip()}")
+            raise ContractViolation(f"{library} has an unresolved provider: {line.strip()}")
         if "undefined symbol:" not in line:
             continue
         match = UNDEFINED_PATTERN.fullmatch(line)
@@ -437,17 +661,37 @@ def validate_library(
             )
         unresolved.add(match.group("symbol"))
 
+    weak_output = run_tool(
+        [nm_tool, "-D", "--undefined-only", "--format=posix", str(library_path)],
+        f"weak-import inspection for {library}",
+    )
+    for line in weak_output.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split()
+        if (
+            len(fields) < 2
+            or not SYMBOL_PATTERN.fullmatch(fields[0])
+            or len(fields[1]) != 1
+        ):
+            raise ContractError(f"Unrecognized undefined-symbol diagnostic for {library}: {line!r}")
+        if fields[1] in {"w", "v"} and fields[0] not in IGNORED_TOOLCHAIN_WEAK_SYMBOLS:
+            unresolved.add(fields[0])
+
+    violations: list[str] = []
     for symbol in sorted(unresolved):
         key = (library, symbol)
         if key not in exceptions:
-            raise ContractError(f"{library} contains an unapproved unresolved symbol: {symbol}")
-        observed_exceptions.add(key)
+            violations.append(f"{library} contains an unapproved unresolved symbol: {symbol}")
+        else:
+            observed_exceptions.add(key)
 
     export_output = run_tool(
         [nm_tool, "-D", "--defined-only", "--format=posix", str(library_path)],
         f"export inspection for {library}",
     )
-    actual_exports: set[str] = set()
+    callable_exports: set[str] = set()
+    non_callable_exports: dict[str, str] = {}
     for line in export_output.splitlines():
         if not line.strip():
             continue
@@ -458,10 +702,22 @@ def validate_library(
             or len(fields[1]) != 1
         ):
             raise ContractError(f"Unrecognized export diagnostic for {library}: {line!r}")
-        actual_exports.add(fields[0])
+        if fields[1] in CALLABLE_SYMBOL_TYPES:
+            callable_exports.add(fields[0])
+        else:
+            non_callable_exports[fields[0]] = fields[1]
 
-    for symbol in sorted(expected_exports - actual_exports):
-        raise ContractError(f"{library} does not export managed entry point: {symbol}")
+    for symbol in sorted(expected_exports - callable_exports):
+        if symbol in non_callable_exports:
+            violations.append(
+                f"{library} exports managed entry point {symbol} as non-callable "
+                f"symbol type {non_callable_exports[symbol]}"
+            )
+        else:
+            violations.append(f"{library} does not export managed entry point: {symbol}")
+
+    if violations:
+        raise ContractViolation("; ".join(violations))
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -469,6 +725,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("publish_directory", type=pathlib.Path)
     parser.add_argument("managed_source_directory", type=pathlib.Path)
     parser.add_argument("inventory", type=pathlib.Path)
+    parser.add_argument("--managed-project-directory", type=pathlib.Path)
     parser.add_argument("--exceptions", type=pathlib.Path)
     parser.add_argument("--ldd", default=os.environ.get("MININGCORE_LDD", "ldd"))
     parser.add_argument("--nm", default=os.environ.get("MININGCORE_NM", "nm"))
@@ -477,34 +734,52 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> int:
     arguments = parse_arguments()
+    libraries: list[str] = []
+    expected_exports: dict[str, set[str]] = {}
 
     try:
         libraries = load_inventory(arguments.inventory)
         inventory = set(libraries)
         expected_exports = discover_managed_contracts(arguments.managed_source_directory, inventory)
+        project_directory = (
+            arguments.managed_project_directory
+            if arguments.managed_project_directory is not None
+            else arguments.managed_source_directory.parent
+        )
+        reject_inventory_imports_outside_directory(
+            project_directory, arguments.managed_source_directory, inventory
+        )
         exceptions = load_exceptions(arguments.exceptions, inventory)
         observed_exceptions: set[tuple[str, str]] = set()
+        violations: list[str] = []
 
         for library in libraries:
-            validate_library(
-                library,
-                arguments.publish_directory,
-                expected_exports[library],
-                arguments.ldd,
-                arguments.nm,
-                exceptions,
-                observed_exceptions,
-            )
+            try:
+                validate_library(
+                    library,
+                    arguments.publish_directory,
+                    expected_exports[library],
+                    arguments.ldd,
+                    arguments.nm,
+                    exceptions,
+                    observed_exceptions,
+                )
+            except ContractViolation as error:
+                violations.append(str(error))
 
         stale_exceptions = set(exceptions) - observed_exceptions
         if stale_exceptions:
             details = ", ".join(
                 f"{library}: {symbol}" for library, symbol in sorted(stale_exceptions)
             )
-            raise ContractError(
-                f"Native-symbol exception manifest contains stale entries: {details}"
-            )
+            violations.append(f"Native-symbol exception manifest contains stale entries: {details}")
 
+        if violations:
+            raise ContractViolation("\n- ".join(violations))
+
+    except ContractViolation as error:
+        print(f"Native symbol contract violation:\n- {error}", file=sys.stderr)
+        return CONTRACT_EXIT
     except ContractError as error:
         print(f"Native symbol contract validation failed: {error}", file=sys.stderr)
         return STRUCTURAL_EXIT

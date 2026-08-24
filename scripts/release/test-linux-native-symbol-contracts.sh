@@ -65,6 +65,13 @@ CS
 set -euo pipefail
 library=${!#}
 
+if [[ "${TEST_ASSERT_ENV:-0}" == 1 ]]; then
+  if [[ -n "${LD_PRELOAD:-}" || -n "${LD_LIBRARY_PATH:-}" ]]; then
+    echo 'The ldd environment was not isolated' >&2
+    exit 97
+  fi
+fi
+
 case "${TEST_LDD_MODE:-clean}" in
   clean)
     echo 'libc.so.6 => /lib/libc.so.6 (0x1)'
@@ -72,6 +79,11 @@ case "${TEST_LDD_MODE:-clean}" in
   optional)
     if [[ "$library" == */libalpha.so ]]; then
       echo "undefined symbol: optional_symbol ($library)"
+    fi
+    ;;
+  optional-parentheses)
+    if [[ "$library" == */libalpha.so ]]; then
+      echo "undefined symbol: optional_symbol (${library%/*}/path (copy)/libalpha.so)"
     fi
     ;;
   missing-provider)
@@ -99,18 +111,60 @@ SH
 set -euo pipefail
 library=${!#}
 
+if [[ "${TEST_ASSERT_ENV:-0}" == 1 ]] &&
+  [[ -n "${LD_PRELOAD:-}" || -n "${LD_LIBRARY_PATH:-}" ]]; then
+  echo 'The nm environment was not isolated' >&2
+  exit 97
+fi
+
 if [[ "${TEST_NM_MODE:-clean}" == failure ]]; then
   exit 8
 fi
 
+if [[ " $* " == *' --undefined-only '* ]]; then
+  case "${TEST_NM_MODE:-clean}:$(basename "$library")" in
+    weak-project:libalpha.so)
+      echo 'weak_missing w'
+      ;;
+    weak-toolchain:libalpha.so)
+      echo '_ITM_registerTMCloneTable w'
+      echo '__cxa_finalize w'
+      ;;
+  esac
+  exit 0
+fi
+
 case "$(basename "$library")" in
   libalpha.so)
-    if [[ "${TEST_NM_MODE:-clean}" != missing ]]; then
-      echo 'alpha_export T 0 0'
-    fi
+    case "${TEST_NM_MODE:-clean}" in
+      missing)
+        ;;
+      data)
+        echo 'alpha_export D 0 8'
+        ;;
+      bss)
+        echo 'alpha_export B 0 8'
+        ;;
+      read-only)
+        echo 'alpha_export R 0 8'
+        ;;
+      local-text)
+        echo 'alpha_export t 0 8'
+        ;;
+      undefined)
+        echo 'alpha_export U'
+        ;;
+      missing-all)
+        ;;
+      *)
+        echo 'alpha_export T 0 0'
+        ;;
+    esac
     ;;
   libbeta.so)
-    echo 'beta_export T 0 0'
+    if [[ "${TEST_NM_MODE:-clean}" != missing-all ]]; then
+      echo 'beta_export T 0 0'
+    fi
     ;;
   libgamma.so)
     echo 'gamma_export T 0 0'
@@ -152,6 +206,24 @@ expect_structural_failure() {
   fi
 }
 
+expect_contract_failure() {
+  local description=$1
+  shift
+  local output
+  local status
+
+  set +e
+  output=$("$@" 2>&1)
+  status=$?
+  set -e
+
+  if [[ "$status" -ne 1 ]]; then
+    echo "$description returned $status instead of contract status 1" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
 run_with_missing_export() {
   TEST_NM_MODE=missing run_validator
 }
@@ -172,14 +244,29 @@ run_with_malformed_relocation() {
   TEST_LDD_MODE=malformed run_validator
 }
 
+run_with_non_callable_export() {
+  TEST_NM_MODE=$1 run_validator
+}
+
+run_with_weak_project_import() {
+  TEST_NM_MODE=weak-project run_validator
+}
+
 reset_fixture
+run_validator
+
+reset_fixture
+TEST_ASSERT_ENV=1 LD_LIBRARY_PATH=/host/injected run_validator
+
+reset_fixture
+printf 'libalpha.so\r\nlibbeta.so\r\n' > "$inventory"
 run_validator
 
 reset_fixture
 run_with_unapproved_symbol() {
   TEST_LDD_MODE=optional run_validator "$@"
 }
-expect_structural_failure 'unapproved unresolved symbol' run_with_unapproved_symbol
+expect_contract_failure 'unapproved unresolved symbol' run_with_unapproved_symbol
 
 reset_fixture
 cat > "$exceptions" <<'JSON'
@@ -198,6 +285,19 @@ reset_fixture
 cat > "$exceptions" <<'JSON'
 [
   {
+    "library": "libalpha.so",
+    "symbol": "optional_symbol",
+    "consumer": "Parenthesized-path fixture",
+    "rationale": "The object path syntax must not alter exception matching."
+  }
+]
+JSON
+TEST_LDD_MODE=optional-parentheses run_validator --exceptions "$exceptions"
+
+reset_fixture
+cat > "$exceptions" <<'JSON'
+[
+  {
     "library": "libbeta.so",
     "symbol": "optional_symbol",
     "consumer": "Wrong-library fixture",
@@ -205,7 +305,7 @@ cat > "$exceptions" <<'JSON'
   }
 ]
 JSON
-expect_structural_failure 'wrong-library exception' \
+expect_contract_failure 'wrong-library exception' \
   run_with_unapproved_symbol --exceptions "$exceptions"
 
 reset_fixture
@@ -219,10 +319,37 @@ cat > "$exceptions" <<'JSON'
   }
 ]
 JSON
-expect_structural_failure 'stale exception' run_validator --exceptions "$exceptions"
+expect_contract_failure 'stale exception' run_validator --exceptions "$exceptions"
 
 reset_fixture
-expect_structural_failure 'missing managed export' run_with_missing_export
+expect_contract_failure 'missing managed export' run_with_missing_export
+
+for symbol_type in data bss read-only local-text undefined; do
+  reset_fixture
+  expect_contract_failure "non-callable $symbol_type export" \
+    run_with_non_callable_export "$symbol_type"
+done
+
+reset_fixture
+set +e
+aggregate_output=$(TEST_NM_MODE=missing-all run_validator 2>&1)
+aggregate_status=$?
+set -e
+if [[ "$aggregate_status" -ne 1 ]] ||
+  ! grep -Fq 'libalpha.so does not export managed entry point: alpha_export' \
+    <<< "$aggregate_output" ||
+  ! grep -Fq 'libbeta.so does not export managed entry point: beta_export' \
+    <<< "$aggregate_output"; then
+  echo 'Contract violations were not aggregated across libraries' >&2
+  printf '%s\n' "$aggregate_output" >&2
+  exit 1
+fi
+
+reset_fixture
+expect_contract_failure 'unapproved weak project import' run_with_weak_project_import
+
+reset_fixture
+TEST_NM_MODE=weak-toolchain run_validator
 
 reset_fixture
 expect_structural_failure 'dynamic-loader inspection failure' run_with_ldd_failure
@@ -231,7 +358,7 @@ reset_fixture
 expect_structural_failure 'export inspection failure' run_with_nm_failure
 
 reset_fixture
-expect_structural_failure 'missing provider' run_with_missing_provider
+expect_contract_failure 'missing provider' run_with_missing_provider
 
 reset_fixture
 expect_structural_failure 'malformed relocation diagnostic' run_with_malformed_relocation
@@ -275,6 +402,68 @@ internal static class AliasedImport
 }
 CS
 expect_structural_failure 'aliased import attribute' run_validator
+
+for expression in 'Constants.Alpha' 'nameof(alpha_export)' '"alpha_" + "export"'; do
+  reset_fixture
+  cat > "$source_dir/Alpha.cs" <<CS
+using System.Runtime.InteropServices;
+
+internal static class Alpha
+{
+    private const string AlphaName = "alpha_export";
+
+    [DllImport("libalpha", EntryPoint = $expression)]
+    internal static extern void alpha_export();
+}
+
+internal static class Constants
+{
+    internal const string Alpha = "alpha_export";
+}
+CS
+  expect_structural_failure "non-literal EntryPoint expression $expression" run_validator
+done
+
+reset_fixture
+cat >> "$source_dir/Alpha.cs" <<'CS'
+
+internal static class LiteralNoise
+{
+    private const string Ordinary = "DllImport and [DllImport(\"libevil\")]";
+    private const string Verbatim = @"DllImport and [DllImport(""libevil"")]";
+    private const string Interpolated = $"DllImport {1}";
+    private const string InterpolatedVerbatim = @$"DllImport {1}";
+    private const string Raw = """DllImport and [DllImport("libevil")]""";
+    private const string InterpolatedRaw = $$"""DllImport {{1}}""";
+}
+CS
+run_validator
+
+reset_fixture
+cat > "$source_dir/Conditional.cs" <<'CS'
+using System.Runtime.InteropServices;
+
+#if WINDOWS
+internal static class Conditional
+{
+    [DllImport("libalpha", EntryPoint = "conditional_export")]
+    internal static extern void Invoke();
+}
+#endif
+CS
+expect_structural_failure 'conditional native import' run_validator
+
+reset_fixture
+cat > "$fixture/Outside.cs" <<'CS'
+using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}
+CS
+expect_structural_failure 'packaged import outside reviewed directory' run_validator
 
 reset_fixture
 cat >> "$inventory" <<'EOF'

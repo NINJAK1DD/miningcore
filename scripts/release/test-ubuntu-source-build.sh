@@ -43,7 +43,6 @@ for library_name in "${actual_libraries[@]}"; do
     echo "$library_name has an unexpected format: $description" >&2
     exit 1
   fi
-
 done
 
 run_miningcore() {

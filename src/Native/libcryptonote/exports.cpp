@@ -1,4 +1,5 @@
 #include <cmath>
+#include <limits>
 #include <stdint.h>
 #include <string>
 #include <algorithm>
@@ -21,7 +22,16 @@ extern "C" void cn_fast_hash(const void* data, size_t length, char* hash);
 
 extern "C" MODULE_API bool convert_blob_export(const char* input, unsigned int inputSize, unsigned char *output, unsigned int *outputSize, unsigned int blobType)
 {
-	unsigned int originalOutputSize = *outputSize;
+    if(outputSize == nullptr)
+        return false;
+
+    const unsigned int originalOutputSize = *outputSize;
+    *outputSize = 0;
+    if(input == nullptr || output == nullptr)
+        return false;
+
+    try
+    {
         enum BLOB_TYPE blob_type = static_cast<enum BLOB_TYPE>((int) blobType);
 
 	blobdata input_blob = std::string(input, inputSize);
@@ -36,8 +46,11 @@ extern "C" MODULE_API bool convert_blob_export(const char* input, unsigned int i
 	}
 
 	// now hash it
-	get_block_hashing_blob(block, result);
-	*outputSize = (int) result.length();
+	if(!get_block_hashing_blob(block, result))
+		return false;
+	if(result.length() > std::numeric_limits<unsigned int>::max())
+		return false;
+	*outputSize = static_cast<unsigned int>(result.length());
 
 	// output buffer big enough?
 	if (result.length() > originalOutputSize)
@@ -46,10 +59,23 @@ extern "C" MODULE_API bool convert_blob_export(const char* input, unsigned int i
 	// success
 	memcpy(output, result.data(), result.length());
 	return true;
+    }
+    catch (...)
+    {
+        *outputSize = 0;
+        return false;
+    }
 }
 
 extern "C" MODULE_API bool get_block_id_export(const char* input, unsigned int inputSize, unsigned char *output, unsigned int blobType)
 {
+	if(input == nullptr || output == nullptr)
+		return false;
+
+	memset(output, 0, 32);
+
+	try
+	{
 	enum BLOB_TYPE blob_type = static_cast<enum BLOB_TYPE>((int) blobType);
 
 	blobdata input_blob = std::string(input, inputSize);
@@ -68,10 +94,21 @@ extern "C" MODULE_API bool get_block_id_export(const char* input, unsigned int i
 	// success
 	memcpy(output, cstr, 32);
 	return true;
+	}
+	catch (...)
+	{
+		memset(output, 0, 32);
+		return false;
+	}
 }
 
 extern "C" MODULE_API uint64_t decode_address_export(const char* input, unsigned int inputSize)
 {
+	if(input == nullptr)
+		return 0L;
+
+	try
+	{
 	blobdata input_blob = std::string(input, inputSize);
 	blobdata data = "";
 
@@ -89,10 +126,20 @@ extern "C" MODULE_API uint64_t decode_address_export(const char* input, unsigned
 		return 0L;
 
 	return prefix;
+	}
+	catch (...)
+	{
+		return 0L;
+	}
 }
 
 extern "C" MODULE_API uint64_t decode_integrated_address_export(const char* input, unsigned int inputSize)
 {
+    if(input == nullptr)
+        return 0L;
+
+    try
+    {
     blobdata input_blob = std::string(input, inputSize);
     blobdata data = "";
 
@@ -107,9 +154,28 @@ extern "C" MODULE_API uint64_t decode_integrated_address_export(const char* inpu
         return 0L;	// error
 
     return prefix;
+    }
+    catch (...)
+    {
+        return 0L;
+    }
 }
 
 extern "C" MODULE_API void cn_fast_hash_export(const char* input, unsigned char *output, uint32_t inputSize)
 {
+    if(output == nullptr)
+        return;
+
+    memset(output, 0, 32);
+    if(input == nullptr)
+        return;
+
+    try
+    {
     cn_fast_hash((const void *)input, (const size_t) inputSize, (char *) output);
+    }
+    catch (...)
+    {
+        memset(output, 0, 32);
+    }
 }

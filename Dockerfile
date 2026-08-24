@@ -23,9 +23,9 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
-        libboost-locale-dev \
-        libboost-regex-dev \
-        libboost-serialization-dev \
+        libboost-locale1.90.0 \
+        libboost-regex1.90.0 \
+        libboost-serialization1.90.0 \
         libgmp10 \
         libsodium-dev \
         libzmq3-dev && \

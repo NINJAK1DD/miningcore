@@ -19,6 +19,11 @@ OBJECTS = exports.o \
         salvium_oracle/pricing_record.o \
 	miningcore_stubs.o
 
+# Miningcore uses this library only for parsing, block hashing-blob conversion and fast hashing.
+# miningcore_stubs.o supplies the upstream range-proof sizing and hex helpers required by those
+# paths. Its remaining cn_slow_hash stub is unreachable from the exported API today; every C ABI
+# entry point catches native exceptions so a future call cannot unwind across P/Invoke.
+
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)

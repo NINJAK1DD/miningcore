@@ -5,6 +5,9 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
+migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
+source_dockerfile="$repository_root/Dockerfile"
+release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
 capability_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
@@ -129,15 +132,51 @@ assert_contains 'the declared build-image contract' \
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
 assert_contains 'the CryptoNote Boost.Regex runtime provider' \
-  'libboost-regex-dev'
+  'libboost-regex1.90.0'
 assert_contains 'the ZanoNote Boost.Locale runtime provider' \
-  'libboost-locale-dev'
+  'libboost-locale1.90.0'
 assert_contains 'the ZanoNote Boost.Serialization runtime provider' \
-  'libboost-serialization-dev'
+  'libboost-serialization1.90.0'
+assert_contains 'the Ubuntu 22.04 Boost.Regex runtime provider' \
+  'libboost-regex1.74.0'
+assert_contains 'the Ubuntu 22.04 Boost.Locale runtime provider' \
+  'libboost-locale1.74.0'
+assert_contains 'the Ubuntu 22.04 Boost.Serialization runtime provider' \
+  'libboost-serialization1.74.0'
+assert_file_contains 'the Ubuntu 24.04 Boost.Locale runtime provider' \
+  'libboost-locale1.83.0' "$migration_document"
+assert_file_contains 'the Ubuntu 24.04 Boost.Regex runtime provider' \
+  'libboost-regex1.83.0' "$migration_document"
+assert_file_contains 'the Ubuntu 24.04 Boost.Serialization runtime provider' \
+  'libboost-serialization1.83.0' "$migration_document"
+
+if grep -Eq 'libboost-(locale|regex|serialization)-dev' \
+  "$document" "$migration_document"; then
+  echo 'Runtime installation documentation still names Boost development packages' >&2
+  exit 1
+fi
+
+for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
+  assert_file_contains 'the Ubuntu 26.04 Boost.Locale runtime package' \
+    'libboost-locale1.90.0' "$dockerfile"
+  assert_file_contains 'the Ubuntu 26.04 Boost.Regex runtime package' \
+    'libboost-regex1.90.0' "$dockerfile"
+  assert_file_contains 'the Ubuntu 26.04 Boost.Serialization runtime package' \
+    'libboost-serialization1.90.0' "$dockerfile"
+
+  if grep -Eq 'libboost-(locale|regex|serialization)-dev' "$dockerfile"; then
+    echo "$dockerfile installs Boost development packages in its runtime stage" >&2
+    exit 1
+  fi
+done
 assert_contains 'the all-library managed export contract' \
-  'every managed entry point must be present in that library'
+  'every managed entry point must be a callable function in that library'
 assert_contains 'the all-library relocation contract' \
-  '`ldd -r` inspection then rejects missing dependencies'
+  'weak-import inspection then reject missing dependencies'
+assert_contains 'the native plugin provider-closure reversal' \
+  'previous sibling-plugin assumption is deliberately reversed'
+assert_contains 'the CryptoNote exception-containment boundary' \
+  'daemon-supplied block template from unwinding C++ through P/Invoke'
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
 
