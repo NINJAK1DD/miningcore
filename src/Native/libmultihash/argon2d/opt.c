@@ -191,6 +191,21 @@ void fill_segment(const argon2_instance_t *instance,
         return;
     }
 
+    data_independent_addressing =
+        (instance->type == Argon2_i) ||
+        (instance->type == Argon2_id && (position.pass == 0) &&
+         (position.slice < ARGON2_SYNC_POINTS / 2));
+
+    if (data_independent_addressing) {
+        init_block_value(&input_block, 0);
+        input_block.v[0] = position.pass;
+        input_block.v[1] = position.lane;
+        input_block.v[2] = position.slice;
+        input_block.v[3] = instance->memory_blocks;
+        input_block.v[4] = instance->passes;
+        input_block.v[5] = instance->type;
+    }
+
     starting_index = 0;
 
     if ((0 == position.pass) && (0 == position.slice)) {

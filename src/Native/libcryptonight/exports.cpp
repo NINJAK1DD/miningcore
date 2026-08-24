@@ -46,10 +46,10 @@ extern "C" {
 //#warning Using IvyBridge assembler implementation
 #define ASM_TYPE xmrig::Assembly::INTEL
 #elif defined(CPU_AMD)
-#warning Using Ryzen assembler implementation
+// Use the Ryzen assembler implementation selected by the build configuration.
 #define ASM_TYPE xmrig::Assembly::RYZEN
 #elif defined(CPU_AMD_OLD)
-#warning Using Bulldozer assembler implementation
+// Use the Bulldozer assembler implementation selected by the build configuration.
 #define ASM_TYPE xmrig::Assembly::BULLDOZER
 #elif !defined(__ARM_ARCH)
 #error Unknown ASM implementation!

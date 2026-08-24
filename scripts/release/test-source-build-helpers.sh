@@ -136,6 +136,9 @@ case "${1:-}" in
     printf '%s\n' '.NET SDK 10.0.100 (Ubuntu fixture)'
     ;;
   publish)
+    if [ "${MININGCORE_HELPER_EMIT_WARNING:-}" = 1 ]; then
+      echo 'fixture.c:1:1: warning: injected compiler warning'
+    fi
     ;;
   *)
     exit 1
@@ -265,6 +268,8 @@ for helper in "${helpers[@]}"; do
   cp "$repository_root/$helper" "$sandbox/$helper"
   cp "$repository_root/scripts/release/source-build-identity.sh" \
     "$sandbox/scripts/release/source-build-identity.sh"
+  cp "$repository_root/scripts/release/assert-warning-free-build.sh" \
+    "$sandbox/scripts/release/assert-warning-free-build.sh"
   cp "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
     "$sandbox/scripts/release/verify-ubuntu-dotnet-sdk.sh"
 
@@ -298,6 +303,33 @@ for helper in "${helpers[@]}"; do
   if grep -Fq 'unstubbed-privileged ' "$trace"; then
     echo "$helper reached an un-stubbed privileged command" >&2
     cat "$trace" >&2
+    exit 1
+  fi
+
+  : > "$trace"
+  /bin/rm -f -- "$state"/*
+  set +e
+  (
+    cd "$sandbox"
+    PATH="$work_dir/bin:$PATH" \
+      MININGCORE_HELPER_EMIT_WARNING=1 \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
+      MININGCORE_HELPER_TEST_STATE="$state" \
+      MININGCORE_HELPER_TEST_TRACE="$trace" \
+      bash "$helper" "$publish_dir"
+  ) > "$output" 2>&1
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    echo "$helper accepted an injected compiler warning" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq 'Build emitted compiler or build-system warnings:' "$output"; then
+    echo "$helper did not report its warning-audit failure" >&2
+    cat "$output" >&2
     exit 1
   fi
 

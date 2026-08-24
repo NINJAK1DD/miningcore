@@ -50,8 +50,10 @@ build_external_native_library() {
   stage_native_library "$component" "$library"
 }
 
-export UNAME_S=$(uname -s)
-export UNAME_P=$(uname -m || uname -p)
+UNAME_S=$(uname -s)
+export UNAME_S
+UNAME_P=$(uname -m || uname -p)
+export UNAME_P
 
 AES=$("$NativeDir/check_cpu.sh" aes && echo -maes || echo)
 SSE2=$("$NativeDir/check_cpu.sh" sse2 && echo -msse2 || echo)
@@ -122,6 +124,7 @@ build_randomx_family() {
   local source_name=$3
   local component=$4
   local build_target=${5:-}
+  local source_patch=${6:-}
 
   (
     cd "${TMPDIR:-/tmp}"
@@ -129,6 +132,10 @@ build_randomx_family() {
     git clone "$repository" "$source_name"
     cd "$source_name"
     git checkout "$checkout"
+    if [[ -n "$source_patch" ]]; then
+      git apply --check "$ScriptDir/$source_patch"
+      git apply "$ScriptDir/$source_patch"
+    fi
     cmake -S . -B build \
       -DARCH=native \
       -DCMAKE_C_FLAGS=-Wa,--noexecstack \
@@ -153,7 +160,8 @@ build_external_native_library librandomarq librandomarq.so \
   3bcb6bafe63d70f8e6f78a0d431e71be2b638083 RandomARQ librandomarq randomx
 build_external_native_library libpanthera libpanthera.so \
   build_randomx_family https://github.com/scala-network/Panthera \
-  cc7425f468d935ba328fba5bbb05f8227f4f22d7 Panthera libpanthera randomx
+  cc7425f468d935ba328fba5bbb05f8227f4f22d7 Panthera libpanthera randomx \
+  patches/panthera-build-status-warnings.patch
 build_external_native_library librandomxscash librandomxscash.so \
   build_randomx_family https://github.com/scashnetwork/RandomX \
   0b3e0ded68b95491516fe974e3db784ca2742ca7 RandomXSCash librandomxscash randomx

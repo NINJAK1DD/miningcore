@@ -11,7 +11,9 @@ using Miningcore.Stratum;
 using Miningcore.Time;
 using Miningcore.Util;
 using NBitcoin;
+#pragma warning disable CS8981 // Protobuf namespace alias follows the upstream kaspad service name.
 using kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
+#pragma warning restore CS8981
 
 namespace Miningcore.Blockchain.Kaspa;
 

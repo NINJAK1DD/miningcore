@@ -382,6 +382,11 @@ controlled startup safety boundary. Ubuntu 24.04 retains required source-build v
 official compatibility archive remains independently built and fully tested on Ubuntu 22.04 x64.
 Do not deploy the 26.04 archive on an older host; select the matching archive or build from source.
 
+Supported source-build helpers now fail if the compiler or build system emits a warning. The
+warning cleanup repairs the previously reported managed-code and native-library findings instead
+of hiding them globally, including undefined behavior in CryptoNight, Argon2, Xelis, Verus and
+libkeccak code.
+
 ### Security: administrative API bearer authentication and safe verbs
 
 Every `/api/admin` request now requires both the existing source-IP whitelist and a bearer token

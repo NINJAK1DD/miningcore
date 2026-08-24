@@ -32,7 +32,9 @@ using Newtonsoft.Json;
 using Contract = Miningcore.Contracts.Contract;
 using static Miningcore.Util.ActionUtils;
 using kaspaWalletd = Miningcore.Blockchain.Kaspa.KaspaWalletd;
+#pragma warning disable CS8981 // Protobuf namespace alias follows the upstream kaspad service name.
 using kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
+#pragma warning restore CS8981
 
 namespace Miningcore.Blockchain.Kaspa;
 
