@@ -26,6 +26,8 @@ warning_cases=(
   '/usr/bin/ld: warning: missing .note.GNU-stack section implies executable stack'
   '/usr/bin/ld.bfd: warning: foo.o has a LOAD segment with RWX permissions'
   '/opt/toolchain/bin/ld.gold: warning: libfoo.so, needed by x, not found'
+  'x86_64-linux-gnu-ld: warning: foo.o has a LOAD segment with RWX permissions'
+  '/opt/toolchain/bin/aarch64-linux-gnu-ld.lld: warning: foo.o: requires executable stack'
   'ld.lld: warning: foo.o: requires executable stack'
   'collect2: warning: ld returned a diagnostic'
   '/usr/bin/ar: warning: creating libfixture.a'
@@ -65,6 +67,7 @@ ignored_cases=(
   "warning: unable to access '/root/.gitconfig'"
   'Fixture.cs(1,1): Warnung CS8981: localized managed diagnostic'
   'Documentation warning: this is not compiler output'
+  'x86_64-linux-gnu-git: warning: this is not compiler output'
 )
 
 for ignored_text in "${ignored_cases[@]}"; do

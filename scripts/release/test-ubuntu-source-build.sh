@@ -29,6 +29,7 @@ if [ ! -x "$app" ]; then
 fi
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repository_root=$(cd "$script_dir/../.." && pwd)
 bash "$script_dir/test-linux-native-inventory.sh" "$publish_dir"
 
 mapfile -t actual_libraries < <(
@@ -76,6 +77,43 @@ fi
 if grep -Fq 'undefined symbol:' <<<"$multihash_relocations"; then
   echo "libmultihash.so contains an unresolved dynamic symbol:" >&2
   printf '%s\n' "$multihash_relocations" >&2
+  exit 1
+fi
+
+multihash_source="$repository_root/src/Miningcore/Native/Multihash.cs"
+
+if [[ ! -f "$multihash_source" || ! -r "$multihash_source" ]]; then
+  echo "Unable to read the managed libmultihash import contract" >&2
+  exit 1
+fi
+
+if ! multihash_imports=$(sed -nE \
+    's/.*EntryPoint = "([^"]+)".*/\1/p' "$multihash_source" | sort -u); then
+  echo "Unable to inspect managed libmultihash entry points" >&2
+  exit 1
+fi
+
+if [[ -z "$multihash_imports" ]]; then
+  echo "Managed libmultihash entry-point contract is empty" >&2
+  exit 1
+fi
+
+if ! multihash_exports=$(nm -D --defined-only "$publish_dir/libmultihash.so" | \
+    awk '{ print $3 }' | sort -u); then
+  echo "Unable to inspect exported symbols in libmultihash.so" >&2
+  exit 1
+fi
+
+missing_multihash_import=0
+
+while IFS= read -r symbol; do
+  if ! grep -Fxq "$symbol" <<<"$multihash_exports"; then
+    echo "libmultihash.so does not export managed entry point: $symbol" >&2
+    missing_multihash_import=1
+  fi
+done <<<"$multihash_imports"
+
+if [[ "$missing_multihash_import" -ne 0 ]]; then
   exit 1
 fi
 

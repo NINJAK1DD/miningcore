@@ -7,8 +7,6 @@
 
 #ifdef _WIN32
 #include <Windows.h>
-#else
-#include <cstring>
 #endif
 
 void memory_cleanse(void *ptr, size_t len)
@@ -16,7 +14,9 @@ void memory_cleanse(void *ptr, size_t len)
 #ifdef _WIN32
     SecureZeroMemory(ptr, len);
 #else
-    static void *(*const volatile memset_secure)(void *, int, size_t) = &std::memset;
-    memset_secure(ptr, 0, len);
+    volatile unsigned char *bytes = static_cast<volatile unsigned char *>(ptr);
+
+    while(len-- > 0)
+        *bytes++ = 0;
 #endif
 }

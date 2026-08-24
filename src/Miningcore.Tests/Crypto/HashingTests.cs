@@ -212,6 +212,18 @@ public class HashingTests : TestBase
     }
 
     [LinuxNativeFact]
+    public void Allium_Hash_MatchesKnownVector()
+    {
+        var hasher = new Allium();
+        var hash = new byte[32];
+
+        hasher.Digest(testValue2, hash);
+
+        Assert.Equal("41db9975e0fed3d25f33d5a689f97544349cd3e26f657be483073935964e9d65",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
     public void Zanonote_LoadsReviewedNativeEntryPoints()
     {
         var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,
