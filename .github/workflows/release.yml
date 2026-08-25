@@ -103,11 +103,27 @@ jobs:
       - name: Smoke-test source container
         run: docker run --rm miningcore-source-test:${{ github.sha }} --version
 
-      - name: Setup .NET for container listener test
-        if: github.event_name == 'pull_request'
+      - name: Setup .NET for container runtime tests
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
+
+      - name: Publish ZeroMQ runtime probe
+        run: >-
+          dotnet publish
+          scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj
+          --configuration Release
+          --output zeromq-runtime-probe
+
+      - name: Smoke-test managed ZeroMQ binding in source container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/zeromq-runtime-probe:/probe:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /probe/ZeroMqRuntimeProbe.dll
 
       - name: Install container listener test build dependencies
         if: github.event_name == 'pull_request'
@@ -713,6 +729,18 @@ jobs:
           name: release-assets
           path: dist
 
+      - name: Setup .NET for container runtime test
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish ZeroMQ runtime probe
+        run: >-
+          dotnet publish
+          scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj
+          --configuration Release
+          --output zeromq-runtime-probe
+
       - name: Prepare container context
         shell: bash
         run: |
@@ -737,6 +765,16 @@ jobs:
 
       - name: Smoke-test packaged container
         run: docker run --rm miningcore-release-test:${{ github.sha }} --version
+
+      - name: Smoke-test managed ZeroMQ binding in packaged container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/zeromq-runtime-probe:/probe:ro" \
+            --entrypoint dotnet \
+            miningcore-release-test:${{ github.sha }} \
+            /probe/ZeroMqRuntimeProbe.dll
 
   publish-release:
     name: Publish GitHub Release and GHCR image

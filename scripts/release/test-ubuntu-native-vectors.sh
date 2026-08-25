@@ -12,6 +12,10 @@ test_output="$repository_root/src/Miningcore.Tests/bin/Release/net10.0"
 # The synthetic cache keeps this deterministic and fast without allocating a production-size DAG.
 bash "$repository_root/scripts/release/test-ethash-light-vectors.sh" "$publish_dir"
 
+# Run hostile CryptoNote proof shapes in a separate native process so an exception escaping the
+# extern "C" boundary becomes an unambiguous process failure rather than taking down the test host.
+bash "$repository_root/scripts/release/test-cryptonote-abi-safety.sh" "$publish_dir"
+
 # Build only the managed test host. The target Ubuntu native libraries have already been built and
 # published, and are copied into the test output below so these tests execute those exact files.
 dotnet build "$test_project" \

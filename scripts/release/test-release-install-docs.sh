@@ -5,6 +5,11 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
+migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
+source_dockerfile="$repository_root/Dockerfile"
+release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
+release_workflow="$repository_root/.github/workflows/release.yml"
+zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Program.cs"
 capability_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
@@ -128,6 +133,126 @@ assert_contains 'the declared build-image contract' \
   'workflow-declared'
 assert_contains 'the Ubuntu 22.04 curl compatibility statement' \
   'curl version supplied by Ubuntu 22.04'
+assert_contains 'the CryptoNote Boost.Regex runtime provider' \
+  'libboost-regex1.90.0'
+assert_contains 'the ZanoNote Boost.Locale runtime provider' \
+  'libboost-locale1.90.0'
+assert_contains 'the ZanoNote Boost.Serialization runtime provider' \
+  'libboost-serialization1.90.0'
+assert_contains 'the Ubuntu 22.04 Boost.Regex runtime provider' \
+  'libboost-regex1.74.0'
+assert_contains 'the Ubuntu 22.04 Boost.Locale runtime provider' \
+  'libboost-locale1.74.0'
+assert_contains 'the Ubuntu 22.04 Boost.Serialization runtime provider' \
+  'libboost-serialization1.74.0'
+assert_file_contains 'the Ubuntu 24.04 Boost.Locale runtime provider' \
+  'libboost-locale1.83.0' "$migration_document"
+assert_file_contains 'the Ubuntu 24.04 Boost.Regex runtime provider' \
+  'libboost-regex1.83.0' "$migration_document"
+assert_file_contains 'the Ubuntu 24.04 Boost.Serialization runtime provider' \
+  'libboost-serialization1.83.0' "$migration_document"
+
+if grep -Eq 'libboost-(locale|regex|serialization)-dev' \
+  "$document" "$migration_document"; then
+  echo 'Runtime installation documentation still names Boost development packages' >&2
+  exit 1
+fi
+
+if awk '
+  FNR == 1 { code = 0 }
+  /^```/ { code = !code; next }
+  code && /libsodium-dev/ { found = 1 }
+  END { exit found ? 0 : 1 }
+' "$document" "$migration_document"; then
+  echo 'Runtime installation commands still name the redundant libsodium-dev package' >&2
+  exit 1
+fi
+
+for runtime_package in libsodium23 libzmq3-dev; do
+  assert_file_contains "the documented $runtime_package provider" \
+    "$runtime_package" "$document"
+  assert_file_contains "the migration $runtime_package provider" \
+    "$runtime_package" "$migration_document"
+done
+
+for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
+  assert_file_contains 'the Ubuntu 26.04 Boost.Locale runtime package' \
+    'libboost-locale1.90.0' "$dockerfile"
+  assert_file_contains 'the Ubuntu 26.04 Boost.Regex runtime package' \
+    'libboost-regex1.90.0' "$dockerfile"
+  assert_file_contains 'the Ubuntu 26.04 Boost.Serialization runtime package' \
+    'libboost-serialization1.90.0' "$dockerfile"
+
+  if grep -Eq 'libboost-(locale|regex|serialization)-dev' "$dockerfile"; then
+    echo "$dockerfile installs Boost development packages in its runtime stage" >&2
+    exit 1
+  fi
+
+  runtime_stage=$(awk '
+    /^FROM / { stage = "" }
+    { stage = stage $0 ORS }
+    END { printf "%s", stage }
+  ' "$dockerfile")
+  for runtime_package in libsodium23 libzmq3-dev; do
+    if ! grep -Fq "$runtime_package" <<< "$runtime_stage"; then
+      echo "$dockerfile runtime stage omits $runtime_package" >&2
+      exit 1
+    fi
+  done
+  if grep -Fq 'libsodium-dev' <<< "$runtime_stage"; then
+    echo "$dockerfile directly lists redundant libsodium-dev in its runtime stage" >&2
+    exit 1
+  fi
+done
+assert_file_contains 'the Release pull-request trigger' \
+  'pull_request:' "$release_workflow"
+assert_file_contains 'the source Dockerfile pull-request build' \
+  'file: Dockerfile' "$release_workflow"
+assert_file_contains 'the packaged Dockerfile pull-request build' \
+  'file: packaging/docker/Dockerfile.release' "$release_workflow"
+assert_file_contains 'the real managed ZeroMQ probe' \
+  'new ZSocket' "$zeromq_probe"
+if [[ $(grep -Fc 'Smoke-test managed ZeroMQ binding' "$release_workflow") -ne 2 ]]; then
+  echo 'Both final container images must execute the managed ZeroMQ runtime probe' >&2
+  exit 1
+fi
+assert_prose_contains 'the apt-package validation boundary' \
+  'validates the current apt package names'
+assert_prose_contains 'the apt-package monitor exclusion' \
+  'outside the digest-based release image-pin monitor'
+assert_prose_contains 'the unversioned ZeroMQ loader requirement' \
+  'Linux needs the unversioned'
+assert_prose_contains 'the accepted ZeroMQ development-dependency exception' \
+  'also pulls development dependencies'
+assert_file_contains 'the migration ZeroMQ development-dependency exception' \
+  "also installs \`libzmq3-dev\`'s development-package dependencies" \
+  "$migration_document"
+assert_prose_contains 'the final-image ZeroMQ load probe' \
+  'managed ZeroMQ load inside each final image'
+assert_contains 'the all-library managed export contract' \
+  'every managed entry point must be a callable function in that library'
+assert_contains 'the all-library relocation contract' \
+  'weak-import inspection then reject missing dependencies'
+assert_contains 'the native plugin provider-closure reversal' \
+  'previous sibling-plugin assumption is deliberately reversed'
+assert_prose_contains 'the generated interop exclusion' \
+  "Generated \`bin\` and \`obj\` trees are excluded"
+assert_prose_contains 'the unrelated P/Invoke scope boundary' \
+  'without applying the wrapper grammar to unrelated'
+assert_prose_contains 'the named native-import constructor contract' \
+  'correctly named constructor arguments'
+assert_prose_contains 'the complete native-import library expression contract' \
+  'Nonliteral library or entry-point expressions'
+assert_prose_contains 'the verbatim native-import parameter contract' \
+  'including C# verbatim identifiers'
+assert_prose_contains 'the Unix native-library variation contract' \
+  'map to one canonical inventory entry'
+assert_prose_contains 'the path-qualified native-import boundary' \
+  'relative or absolute path is rejected'
+assert_prose_contains 'the canonical ELF symbol-version contract' \
+  'must use canonical unversioned symbol names'
+assert_contains 'the CryptoNote exception-containment boundary' \
+  'daemon-supplied block template from unwinding C++ through P/Invoke'
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
 

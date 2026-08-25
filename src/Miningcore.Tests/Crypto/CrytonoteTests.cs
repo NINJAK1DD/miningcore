@@ -1,4 +1,6 @@
 using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using Miningcore.Extensions;
 using Miningcore.Native;
 using Xunit;
@@ -7,6 +9,21 @@ namespace Miningcore.Tests.Crypto;
 
 public class CrytonoteTests : TestBase
 {
+    [Fact]
+    public void Cryptonote_FastHashManagedSignatureMatchesNativeVoidExport()
+    {
+        var method = typeof(CryptonoteBindings).GetMethod("cn_fast_hash",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.Equal(typeof(void), method!.ReturnType);
+
+        var import = method.GetCustomAttribute<DllImportAttribute>();
+        Assert.NotNull(import);
+        Assert.Equal("cn_fast_hash_export", import!.EntryPoint);
+        Assert.Equal(CallingConvention.Cdecl, import.CallingConvention);
+    }
+
     [Fact]
     public void Crytonote_ConvertBlob()
     {
