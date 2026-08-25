@@ -175,13 +175,17 @@ sudo apt-get install -y \
   libzmq3-dev
 ```
 
-`libsodium23` and the versioned Boost/GMP packages are runtime-only providers. `libzmq3-dev` is a
-deliberate exception: the vendored `ZeroMQ.dll` imports `libzmq`, so Linux needs the unversioned
-`libzmq.so` symlink supplied by that package; `libzmq5` alone supplies only `libzmq.so.5`. Every
-release-affecting pull request builds both the source and packaged Dockerfiles, validates the current
-apt package names and `ldd -r` provider closure, and performs a managed ZeroMQ load inside each final
-image. Apt package names are not OCI image references and therefore remain outside the digest-based
-release image-pin monitor.
+`libsodium23` and the versioned Boost/GMP packages are direct runtime-provider declarations.
+`libzmq3-dev` is a deliberate exception: the vendored `ZeroMQ.dll` imports `libzmq`, so Linux needs
+the unversioned `libzmq.so` symlink supplied by that package; `libzmq5` alone supplies only
+`libzmq.so.5`. On supported Ubuntu releases, `libzmq3-dev` also pulls development dependencies,
+including `libsodium-dev`, into the final image. This accepted size tradeoff keeps the loader name
+distro-managed instead of creating an application-owned symlink; the package list must not be read
+as guaranteeing that final images contain no development headers. Every release-affecting pull
+request builds both the source and packaged Dockerfiles, validates the current apt package names and
+`ldd -r` provider closure, and performs a managed ZeroMQ load inside each final image. Apt package
+names are not OCI image references and therefore remain outside the digest-based release image-pin
+monitor.
 
 On the Ubuntu 22.04 compatibility target, enable Canonical's supported .NET backports PPA first:
 
@@ -448,10 +452,13 @@ Nonliteral entry-point expressions and conditional imports inside the reviewed `
 fail structurally instead of being guessed. A separate lightweight scan rejects direct literal
 imports of packaged libraries elsewhere in source-controlled application code without applying the
 wrapper grammar to unrelated operating-system P/Invokes. The shared attribute grammar recognizes
-qualified and aliased `DllImport`/`LibraryImport` names, attribute targets and lists, and both
-extensionless and exact `.so` library names regardless of line layout. Generated `bin` and `obj`
-trees are excluded so a future `LibraryImport` source generator cannot create a false duplicate
-contract.
+qualified and aliased `DllImport`/`LibraryImport` names, attribute targets and lists, positional or
+correctly named constructor arguments, and both extensionless and exact `.so` library names
+regardless of line layout. The Unix loader variations `libname`, `libname.so`, `name` and `name.so`
+map to one canonical inventory entry; an ambiguous mapping fails structurally. Outside the reviewed
+directory, a relative or absolute path is rejected when its basename matches any of those forms.
+Reviewed wrappers may not use paths. Generated `bin` and `obj` trees are excluded so a future
+`LibraryImport` source generator cannot create a false duplicate contract.
 
 Provider-aware `ldd -r` and weak-import inspection then reject missing dependencies and unresolved
 native-to-native relocations for every artifact. ELF version suffixes are normalized before matching

@@ -158,8 +158,12 @@ if grep -Eq 'libboost-(locale|regex|serialization)-dev' \
   exit 1
 fi
 
-if grep -Fq 'libsodium-dev' "$document" "$migration_document"; then
-  echo 'Runtime installation documentation still names the libsodium development package' >&2
+if awk '
+  /^```/ { code = !code; next }
+  code && /libsodium-dev/ { found = 1 }
+  END { exit found ? 0 : 1 }
+' "$document" "$migration_document"; then
+  echo 'Runtime installation commands still name the redundant libsodium-dev package' >&2
   exit 1
 fi
 
@@ -195,7 +199,7 @@ for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
     fi
   done
   if grep -Fq 'libsodium-dev' <<< "$runtime_stage"; then
-    echo "$dockerfile installs the libsodium development package in its runtime stage" >&2
+    echo "$dockerfile directly lists redundant libsodium-dev in its runtime stage" >&2
     exit 1
   fi
 done
@@ -217,6 +221,11 @@ assert_prose_contains 'the apt-package monitor exclusion' \
   'outside the digest-based release image-pin monitor'
 assert_prose_contains 'the unversioned ZeroMQ loader requirement' \
   'Linux needs the unversioned'
+assert_prose_contains 'the accepted ZeroMQ development-dependency exception' \
+  'also pulls development dependencies'
+assert_file_contains 'the migration ZeroMQ development-dependency exception' \
+  "also installs \`libzmq3-dev\`'s development-package dependencies" \
+  "$migration_document"
 assert_prose_contains 'the final-image ZeroMQ load probe' \
   'managed ZeroMQ load inside each final image'
 assert_contains 'the all-library managed export contract' \
@@ -229,6 +238,12 @@ assert_prose_contains 'the generated interop exclusion' \
   "Generated \`bin\` and \`obj\` trees are excluded"
 assert_prose_contains 'the unrelated P/Invoke scope boundary' \
   'without applying the wrapper grammar to unrelated'
+assert_prose_contains 'the named native-import constructor contract' \
+  'correctly named constructor arguments'
+assert_prose_contains 'the Unix native-library variation contract' \
+  'map to one canonical inventory entry'
+assert_prose_contains 'the path-qualified native-import boundary' \
+  'relative or absolute path is rejected'
 assert_prose_contains 'the canonical ELF symbol-version contract' \
   'must use canonical unversioned symbol names'
 assert_contains 'the CryptoNote exception-containment boundary' \

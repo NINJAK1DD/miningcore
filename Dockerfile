@@ -23,6 +23,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 WORKDIR /app
 # ZeroMQ.dll imports the unversioned libzmq name. Keep libzmq3-dev because it
 # supplies libzmq.so; libzmq5 supplies only the versioned libzmq.so.5 object.
+# This deliberate runtime exception also installs its development dependencies.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \

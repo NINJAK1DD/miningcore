@@ -25,6 +25,10 @@ ATTRIBUTE_PATTERN = re.compile(
     r"(?P<kind>DllImport|LibraryImport)(?:Attribute)?\s*\("
 )
 IMPORT_TOKEN_PATTERN = re.compile(r"\b(?:DllImport|LibraryImport)(?:Attribute)?\b")
+IMPORT_LIBRARY_PARAMETER_NAMES = {
+    "DllImport": "dllName",
+    "LibraryImport": "libraryName",
+}
 ENTRY_POINT_PATTERN = re.compile(
     r"\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")",
     re.DOTALL,
@@ -389,6 +393,45 @@ def decode_csharp_string(literal: str, path: pathlib.Path) -> str:
         raise ContractError(f"Unsupported string literal in native import in {path}") from error
 
 
+def match_import_library_literal(
+    arguments: str, kind: str
+) -> re.Match[str] | None:
+    parameter_name = IMPORT_LIBRARY_PARAMETER_NAMES[kind]
+    return re.match(
+        rf'\s*(?:{parameter_name}\s*:\s*)?'
+        r'(?P<literal>@?"(?:""|\\.|[^"])*")',
+        arguments,
+        re.DOTALL,
+    )
+
+
+def inventory_library_aliases(library: str) -> set[str]:
+    extensionless = library.removesuffix(".so")
+    loader_stem = extensionless.removeprefix("lib")
+    return {
+        extensionless,
+        library,
+        loader_stem,
+        f"{loader_stem}.so",
+    }
+
+
+def import_library_basename(library: str) -> str:
+    # Treat both separators conservatively. Linux varies names only when no '/'
+    # is present, but source can be built on Windows and path-qualified imports
+    # must not evade the packaged-library ownership boundary on either host.
+    return re.split(r"[/\\]", library)[-1]
+
+
+def matching_inventory_libraries(library: str, inventory: set[str]) -> list[str]:
+    basename = import_library_basename(library)
+    return sorted(
+        candidate
+        for candidate in inventory
+        if basename in inventory_library_aliases(candidate)
+    )
+
+
 def prepare_managed_source(
     path: pathlib.Path, description: str
 ) -> tuple[str, str]:
@@ -418,9 +461,7 @@ def parse_imports(
         closing = find_closing_parenthesis(code_only, opening, path)
         arguments = masked[opening + 1 : closing]
         argument_code = code_only[opening + 1 : closing]
-        library_match = re.match(
-            r'\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")', arguments, re.DOTALL
-        )
+        library_match = match_import_library_literal(arguments, match.group("kind"))
 
         if library_match is None:
             raise ContractError(f"Native import library must be a string literal in {path}")
@@ -509,15 +550,27 @@ def discover_managed_contracts(
 
     for source_file in source_files:
         imports = parse_imports(source_file, prepared_sources[source_file])
-        resolved_imports = [
-            (
-                managed_library
-                if managed_library.endswith(".so")
-                else f"{managed_library}.so",
-                symbol,
-            )
-            for managed_library, symbol in imports
-        ]
+        resolved_imports: list[tuple[str, str]] = []
+        for managed_library, symbol in imports:
+            if import_library_basename(managed_library) != managed_library:
+                raise ContractError(
+                    f"Managed wrapper library must not contain a path: "
+                    f"{source_file}: {managed_library}"
+                )
+
+            matches = matching_inventory_libraries(managed_library, inventory)
+            if not matches:
+                raise ContractError(
+                    f"Managed wrapper references a library outside the reviewed inventory: "
+                    f"{source_file}: {managed_library}"
+                )
+            if len(matches) > 1:
+                raise ContractError(
+                    f"Managed wrapper library name is ambiguous under Unix loader variations: "
+                    f"{source_file}: {managed_library}: {', '.join(matches)}"
+                )
+
+            resolved_imports.append((matches[0], symbol))
         file_libraries = {library for library, _ in resolved_imports}
 
         if len(file_libraries) > 1:
@@ -527,11 +580,6 @@ def discover_managed_contracts(
             )
 
         for native_library, symbol in resolved_imports:
-            if native_library not in inventory:
-                raise ContractError(
-                    f"Managed wrapper references a library outside the reviewed inventory: "
-                    f"{source_file}: {native_library}"
-                )
             libraries_to_files[native_library].add(source_file)
             exports[native_library].add(symbol)
 
@@ -557,8 +605,11 @@ def reject_inventory_imports_outside_directory(
         raise ContractError(f"Managed project path is not a directory: {project_dir}")
 
     source_dir = source_dir.resolve()
-    inventory_names = {library.removesuffix(".so") for library in inventory}
-    inventory_import_names = inventory_names | inventory
+    inventory_import_names = {
+        alias
+        for library in inventory
+        for alias in inventory_library_aliases(library)
+    }
     for source_file in sorted(project_dir.rglob("*.cs")):
         relative_parts = source_file.relative_to(project_dir).parts
         if any(part in GENERATED_DIRECTORY_NAMES for part in relative_parts[:-1]):
@@ -584,15 +635,13 @@ def reject_inventory_imports_outside_directory(
             opening = match.end() - 1
             closing = find_closing_parenthesis(code_only, opening, source_file)
             arguments = masked[opening + 1 : closing]
-            library_match = re.match(
-                r'\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")',
-                arguments,
-                re.DOTALL,
+            library_match = match_import_library_literal(
+                arguments, match.group("kind")
             )
 
             if library_match is not None:
                 library = decode_csharp_string(library_match.group("literal"), source_file)
-                if library in inventory_import_names:
+                if import_library_basename(library) in inventory_import_names:
                     raise ContractError(
                         f"Packaged native import is outside the reviewed Native directory: "
                         f"{source_file}: {library}"

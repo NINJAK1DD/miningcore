@@ -102,7 +102,9 @@ after checking that no other application on the host requires it.
 Keep `libzmq3-dev` in the runtime dependency set despite its package name. Miningcore's vendored
 `ZeroMQ.dll` requests `libzmq`; on Linux, that requires the unversioned `libzmq.so` symlink supplied
 by `libzmq3-dev`. Installing only `libzmq5` leaves `libzmq.so.5` and breaks share relay, external
-Stratum relay and block-template streaming when the binding first loads.
+Stratum relay and block-template streaming when the binding first loads. This deliberate exception
+also installs `libzmq3-dev`'s development-package dependencies, including `libsodium-dev`; accept
+that size cost rather than replacing the distro-managed loader symlink manually.
 
 ### Ubuntu 22.04
 

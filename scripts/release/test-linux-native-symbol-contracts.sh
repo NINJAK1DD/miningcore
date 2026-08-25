@@ -43,7 +43,7 @@ using System.Runtime.InteropServices;
 internal static class Alpha
 {
     [DllImport(
-        "libalpha",
+        dllName: "alpha",
         EntryPoint   =   "alpha_export",
         CallingConvention = CallingConvention.Cdecl)]
     internal static extern void Invoke();
@@ -55,7 +55,7 @@ using System.Runtime.InteropServices;
 
 internal static partial class Beta
 {
-    [LibraryImportAttribute ( "libbeta" )]
+    [LibraryImportAttribute ( libraryName: "beta.so" )]
     internal static partial void beta_export();
 }
 CS
@@ -533,6 +533,32 @@ CS
 expect_structural_failure 'conditional native import' run_validator
 
 reset_fixture
+cat > "$source_dir/Alpha.cs" <<'CS'
+using System.Runtime.InteropServices;
+
+internal static class Alpha
+{
+    [DllImport("./libalpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}
+CS
+expect_structural_failure 'path-qualified reviewed wrapper import' run_validator
+
+reset_fixture
+printf '%s\n' libalpha.so libbeta.so liblibalpha.so > "$inventory"
+: > "$publish_dir/liblibalpha.so"
+cat > "$source_dir/Alpha.cs" <<'CS'
+using System.Runtime.InteropServices;
+
+internal static class Alpha
+{
+    [DllImport("libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}
+CS
+expect_structural_failure 'ambiguous Unix loader library variation' run_validator
+
+reset_fixture
 cat > "$fixture/Outside.cs" <<'CS'
 using System.Runtime.InteropServices;
 
@@ -592,6 +618,78 @@ internal static class Outside
     internal static extern void Invoke();
 }'
 
+expect_outside_import_rejected 'named DllImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport(dllName: "libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'unprefixed packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("alpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'unprefixed filename-form packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("alpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'relative-path packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("./libalpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'parent-relative packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("../native/libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'absolute-path packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("/opt/miningcore/libalpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'absolute-path loader-alias import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("/opt/miningcore/alpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'Windows-path packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport(@"C:\Miningcore\libalpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
 expect_outside_import_rejected 'escaped-literal packaged import' \
   'using System.Runtime.InteropServices;
 
@@ -606,6 +704,42 @@ expect_outside_import_rejected 'qualified LibraryImport packaged import' \
 {
     [global::System.Runtime.InteropServices.LibraryImport("libalpha.so",
         EntryPoint = "alpha_export")]
+    internal static partial void Invoke();
+}'
+
+expect_outside_import_rejected 'named LibraryImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static partial class Outside
+{
+    [LibraryImport(libraryName: "libalpha", EntryPoint = "alpha_export")]
+    internal static partial void Invoke();
+}'
+
+expect_outside_import_rejected 'unprefixed LibraryImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static partial class Outside
+{
+    [LibraryImport("alpha", EntryPoint = "alpha_export")]
+    internal static partial void Invoke();
+}'
+
+expect_outside_import_rejected 'unprefixed filename LibraryImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static partial class Outside
+{
+    [LibraryImport("alpha.so", EntryPoint = "alpha_export")]
+    internal static partial void Invoke();
+}'
+
+expect_outside_import_rejected 'path-qualified LibraryImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static partial class Outside
+{
+    [LibraryImport("./libalpha.so", EntryPoint = "alpha_export")]
     internal static partial void Invoke();
 }'
 
@@ -670,6 +804,18 @@ internal static class NativeLibraries
 internal static class OutsideSystemImport
 {
     [DllImport(NativeLibraries.Libc, EntryPoint = "getpid")]
+    internal static extern int GetProcessId();
+}
+CS
+run_validator
+
+reset_fixture
+cat > "$fixture/OutsideSystemPathImport.cs" <<'CS'
+using System.Runtime.InteropServices;
+
+internal static class OutsideSystemPathImport
+{
+    [DllImport("/usr/lib/libc.so.6", EntryPoint = "getpid")]
     internal static extern int GetProcessId();
 }
 CS
