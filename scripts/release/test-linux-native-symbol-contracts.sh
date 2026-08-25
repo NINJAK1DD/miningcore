@@ -216,6 +216,25 @@ expect_structural_failure() {
   fi
 }
 
+expect_structural_failure_containing() {
+  local description=$1
+  local expected=$2
+  shift 2
+  local output
+  local status
+
+  set +e
+  output=$("$@" 2>&1)
+  status=$?
+  set -e
+
+  if [[ "$status" -ne 70 ]] || [[ "$output" != *"$expected"* ]]; then
+    echo "$description did not fail with the expected structural diagnostic" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
 expect_contract_failure() {
   local description=$1
   shift
@@ -503,6 +522,28 @@ CS
   expect_structural_failure "non-literal EntryPoint expression $expression" run_validator
 done
 
+for import_case in \
+  'DllImport|"libalpha" + "evil"|internal static extern void Invoke();' \
+  'DllImport|dllName: "libalpha" + "evil"|internal static extern void Invoke();' \
+  'LibraryImport|"libalpha" + "evil"|internal static partial void Invoke();' \
+  'LibraryImport|libraryName: "libalpha" + "evil"|internal static partial void Invoke();'; do
+  IFS='|' read -r import_kind library_argument declaration <<< "$import_case"
+  reset_fixture
+  cat > "$source_dir/Alpha.cs" <<CS
+using System.Runtime.InteropServices;
+
+internal static partial class Alpha
+{
+    [$import_kind($library_argument, EntryPoint = "alpha_export")]
+    $declaration
+}
+CS
+  expect_structural_failure_containing \
+    "$import_kind concatenated import-library argument $library_argument" \
+    'Native import library must be one string literal in' \
+    run_validator
+done
+
 reset_fixture
 cat >> "$source_dir/Alpha.cs" <<'CS'
 
@@ -627,6 +668,15 @@ internal static class Outside
     internal static extern void Invoke();
 }'
 
+expect_outside_import_rejected 'verbatim-named DllImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport(@dllName: "libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
 expect_outside_import_rejected 'unprefixed packaged import' \
   'using System.Runtime.InteropServices;
 
@@ -713,6 +763,15 @@ expect_outside_import_rejected 'named LibraryImport packaged import' \
 internal static partial class Outside
 {
     [LibraryImport(libraryName: "libalpha", EntryPoint = "alpha_export")]
+    internal static partial void Invoke();
+}'
+
+expect_outside_import_rejected 'verbatim-named LibraryImport packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static partial class Outside
+{
+    [LibraryImport(@libraryName: "libalpha", EntryPoint = "alpha_export")]
     internal static partial void Invoke();
 }'
 

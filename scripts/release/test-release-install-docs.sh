@@ -159,6 +159,7 @@ if grep -Eq 'libboost-(locale|regex|serialization)-dev' \
 fi
 
 if awk '
+  FNR == 1 { code = 0 }
   /^```/ { code = !code; next }
   code && /libsodium-dev/ { found = 1 }
   END { exit found ? 0 : 1 }
@@ -240,6 +241,10 @@ assert_prose_contains 'the unrelated P/Invoke scope boundary' \
   'without applying the wrapper grammar to unrelated'
 assert_prose_contains 'the named native-import constructor contract' \
   'correctly named constructor arguments'
+assert_prose_contains 'the complete native-import library expression contract' \
+  'Nonliteral library or entry-point expressions'
+assert_prose_contains 'the verbatim native-import parameter contract' \
+  'including C# verbatim identifiers'
 assert_prose_contains 'the Unix native-library variation contract' \
   'map to one canonical inventory entry'
 assert_prose_contains 'the path-qualified native-import boundary' \

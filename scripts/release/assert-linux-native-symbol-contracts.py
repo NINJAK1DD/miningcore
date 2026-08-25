@@ -398,7 +398,7 @@ def match_import_library_literal(
 ) -> re.Match[str] | None:
     parameter_name = IMPORT_LIBRARY_PARAMETER_NAMES[kind]
     return re.match(
-        rf'\s*(?:{parameter_name}\s*:\s*)?'
+        rf'\s*(?:@?{parameter_name}\s*:\s*)?'
         r'(?P<literal>@?"(?:""|\\.|[^"])*")',
         arguments,
         re.DOTALL,
@@ -465,6 +465,14 @@ def parse_imports(
 
         if library_match is None:
             raise ContractError(f"Native import library must be a string literal in {path}")
+
+        argument_end = argument_code.find(",", library_match.end())
+        if argument_end == -1:
+            argument_end = len(argument_code)
+        if argument_code[library_match.end() : argument_end].strip():
+            raise ContractError(
+                f"Native import library must be one string literal in {path}"
+            )
 
         library = decode_csharp_string(library_match.group("literal"), path)
         assignments = list(ENTRY_POINT_ASSIGNMENT_PATTERN.finditer(argument_code))

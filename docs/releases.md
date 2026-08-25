@@ -448,15 +448,16 @@ native-wrapper sources, tolerating formatting changes while failing if any attri
 parsed unambiguously. Each wrapper must map to exactly one library in
 `scripts/release/linux-native-libraries.txt`, every listed library must have exactly one wrapper,
 and every managed entry point must be a callable function in that library's dynamic export table.
-Nonliteral entry-point expressions and conditional imports inside the reviewed `Native` directory
-fail structurally instead of being guessed. A separate lightweight scan rejects direct literal
-imports of packaged libraries elsewhere in source-controlled application code without applying the
-wrapper grammar to unrelated operating-system P/Invokes. The shared attribute grammar recognizes
-qualified and aliased `DllImport`/`LibraryImport` names, attribute targets and lists, positional or
-correctly named constructor arguments, and both extensionless and exact `.so` library names
-regardless of line layout. The Unix loader variations `libname`, `libname.so`, `name` and `name.so`
-map to one canonical inventory entry; an ambiguous mapping fails structurally. Outside the reviewed
-directory, a relative or absolute path is rejected when its basename matches any of those forms.
+Nonliteral library or entry-point expressions and conditional imports inside the reviewed `Native`
+directory fail structurally instead of being guessed. A separate lightweight scan rejects direct
+literal imports of packaged libraries elsewhere in source-controlled application code without
+applying the wrapper grammar to unrelated operating-system P/Invokes. The shared attribute grammar
+recognizes qualified and aliased `DllImport`/`LibraryImport` names, attribute targets and lists,
+positional or correctly named constructor arguments (including C# verbatim identifiers), and both
+extensionless and exact `.so` library names regardless of line layout. The Unix loader variations
+`libname`, `libname.so`, `name` and `name.so` map to one canonical inventory entry; an ambiguous
+mapping fails structurally. Outside the reviewed directory, a relative or absolute path is rejected
+when its basename matches any of those forms.
 Reviewed wrappers may not use paths. Generated `bin` and `obj` trees are excluded so a future
 `LibraryImport` source generator cannot create a false duplicate contract.
 
