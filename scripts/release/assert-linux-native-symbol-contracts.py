@@ -20,7 +20,8 @@ CONTRACT_EXIT = 1
 LIBRARY_PATTERN = re.compile(r"lib[A-Za-z0-9._+-]+\.so\Z")
 SYMBOL_PATTERN = re.compile(r"[^\s\x00-\x1f\x7f]+\Z")
 ATTRIBUTE_PATTERN = re.compile(
-    r"\[\s*(?:(?:System\.)?Runtime\.InteropServices\.)?"
+    r"(?:\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)?|,\s*)"
+    r"(?:(?:global\s*::\s*)?[A-Za-z_][A-Za-z0-9_]*\s*(?:\.\s*|::\s*))*"
     r"(?P<kind>DllImport|LibraryImport)(?:Attribute)?\s*\("
 )
 IMPORT_TOKEN_PATTERN = re.compile(r"\b(?:DllImport|LibraryImport)(?:Attribute)?\b")
@@ -508,7 +509,16 @@ def discover_managed_contracts(
 
     for source_file in source_files:
         imports = parse_imports(source_file, prepared_sources[source_file])
-        file_libraries = {library for library, _ in imports}
+        resolved_imports = [
+            (
+                managed_library
+                if managed_library.endswith(".so")
+                else f"{managed_library}.so",
+                symbol,
+            )
+            for managed_library, symbol in imports
+        ]
+        file_libraries = {library for library, _ in resolved_imports}
 
         if len(file_libraries) > 1:
             listed = ", ".join(sorted(file_libraries))
@@ -516,12 +526,11 @@ def discover_managed_contracts(
                 f"Managed wrapper maps ambiguously to multiple libraries: {source_file}: {listed}"
             )
 
-        for managed_library, symbol in imports:
-            native_library = f"{managed_library}.so"
+        for native_library, symbol in resolved_imports:
             if native_library not in inventory:
                 raise ContractError(
                     f"Managed wrapper references a library outside the reviewed inventory: "
-                    f"{source_file}: {managed_library}"
+                    f"{source_file}: {native_library}"
                 )
             libraries_to_files[native_library].add(source_file)
             exports[native_library].add(symbol)
@@ -549,12 +558,7 @@ def reject_inventory_imports_outside_directory(
 
     source_dir = source_dir.resolve()
     inventory_names = {library.removesuffix(".so") for library in inventory}
-    inventory_literal_pattern = re.compile(
-        r"(?m)^\s*\[\s*(?:(?:global\s*::\s*)?[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)*"
-        r"(?:DllImport|LibraryImport)(?:Attribute)?\s*\(\s*@?\"(?:"
-        + "|".join(re.escape(name) for name in sorted(inventory_names))
-        + r")\""
-    )
+    inventory_import_names = inventory_names | inventory
     for source_file in sorted(project_dir.rglob("*.cs")):
         relative_parts = source_file.relative_to(project_dir).parts
         if any(part in GENERATED_DIRECTORY_NAMES for part in relative_parts[:-1]):
@@ -567,11 +571,11 @@ def reject_inventory_imports_outside_directory(
             pass
 
         source = read_text(source_file, "managed project source")
-        # This outer-project check has one narrow purpose: catch direct imports of
-        # packaged libraries that escaped the reviewed Native directory. Avoid
-        # applying the strict Native-wrapper grammar to unrelated platform P/Invoke
-        # files unless a line begins with a literal inventory import.
-        if inventory_literal_pattern.search(source) is None:
+        # The outer scan does not apply the strict wrapper grammar. Mask and
+        # inspect every source-controlled file that can contain an import token,
+        # so attribute layout and escaped library literals cannot bypass it while
+        # unrelated constant-based operating-system imports remain unaffected.
+        if IMPORT_TOKEN_PATTERN.search(source) is None:
             continue
 
         masked, code_only = prepare_managed_text(source, source_file)
@@ -588,7 +592,7 @@ def reject_inventory_imports_outside_directory(
 
             if library_match is not None:
                 library = decode_csharp_string(library_match.group("literal"), source_file)
-                if library in inventory_names:
+                if library in inventory_import_names:
                     raise ContractError(
                         f"Packaged native import is outside the reviewed Native directory: "
                         f"{source_file}: {library}"

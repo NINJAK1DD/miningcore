@@ -172,14 +172,16 @@ sudo apt-get install -y \
   libboost-serialization1.90.0 \
   libgmp10 \
   libsodium23 \
-  libzmq5
+  libzmq3-dev
 ```
 
-These are runtime-only shared-library packages; development headers remain confined to source-build
-stages. Every release-affecting pull request builds both the source and packaged Dockerfiles, which
-validates the current apt package names and the resulting `ldd -r` provider closure. Apt package
-names are not OCI image references and therefore are deliberately outside the digest-based release
-image-pin monitor.
+`libsodium23` and the versioned Boost/GMP packages are runtime-only providers. `libzmq3-dev` is a
+deliberate exception: the vendored `ZeroMQ.dll` imports `libzmq`, so Linux needs the unversioned
+`libzmq.so` symlink supplied by that package; `libzmq5` alone supplies only `libzmq.so.5`. Every
+release-affecting pull request builds both the source and packaged Dockerfiles, validates the current
+apt package names and `ldd -r` provider closure, and performs a managed ZeroMQ load inside each final
+image. Apt package names are not OCI image references and therefore remain outside the digest-based
+release image-pin monitor.
 
 On the Ubuntu 22.04 compatibility target, enable Canonical's supported .NET backports PPA first:
 
@@ -195,7 +197,7 @@ sudo apt-get install -y \
   libboost-serialization1.74.0 \
   libgmp10 \
   libsodium23 \
-  libzmq5
+  libzmq3-dev
 ```
 
 ## Install the archive
@@ -445,8 +447,11 @@ and every managed entry point must be a callable function in that library's dyna
 Nonliteral entry-point expressions and conditional imports inside the reviewed `Native` directory
 fail structurally instead of being guessed. A separate lightweight scan rejects direct literal
 imports of packaged libraries elsewhere in source-controlled application code without applying the
-wrapper grammar to unrelated operating-system P/Invokes. Generated `bin` and `obj` trees are excluded
-so a future `LibraryImport` source generator cannot create a false duplicate contract.
+wrapper grammar to unrelated operating-system P/Invokes. The shared attribute grammar recognizes
+qualified and aliased `DllImport`/`LibraryImport` names, attribute targets and lists, and both
+extensionless and exact `.so` library names regardless of line layout. Generated `bin` and `obj`
+trees are excluded so a future `LibraryImport` source generator cannot create a false duplicate
+contract.
 
 Provider-aware `ldd -r` and weak-import inspection then reject missing dependencies and unresolved
 native-to-native relocations for every artifact. ELF version suffixes are normalized before matching

@@ -21,6 +21,8 @@ RUN set -euo pipefail; \
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 WORKDIR /app
+# ZeroMQ.dll imports the unversioned libzmq name. Keep libzmq3-dev because it
+# supplies libzmq.so; libzmq5 supplies only the versioned libzmq.so.5 object.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
@@ -29,7 +31,7 @@ RUN apt-get update && \
         libboost-serialization1.90.0 \
         libgmp10 \
         libsodium23 \
-        libzmq5 && \
+        libzmq3-dev && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 10001 miningcore && \
     useradd --system --uid 10001 --gid miningcore --home-dir /var/lib/miningcore \

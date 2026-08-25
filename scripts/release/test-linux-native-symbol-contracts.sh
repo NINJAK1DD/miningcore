@@ -270,6 +270,27 @@ reset_fixture
 run_validator
 
 reset_fixture
+cat > "$source_dir/Alpha.cs" <<'CS'
+internal static class Alpha
+{
+    [global::System.Runtime.InteropServices.DllImport("libalpha.so",
+        EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}
+CS
+cat > "$source_dir/Beta.cs" <<'CS'
+using System;
+using RI = System.Runtime.InteropServices;
+
+internal static partial class Beta
+{
+    [method: Obsolete, RI.LibraryImport("libbeta.so")]
+    internal static partial void beta_export();
+}
+CS
+run_validator
+
+reset_fixture
 TEST_ASSERT_ENV=1 LD_LIBRARY_PATH=/host/injected run_validator
 
 reset_fixture
@@ -522,6 +543,104 @@ internal static class Outside
 }
 CS
 expect_structural_failure 'packaged import outside reviewed directory' run_validator
+
+expect_outside_import_rejected() {
+  local description=$1
+  local source=$2
+  local output
+  local status
+
+  reset_fixture
+  printf '%s\n' "$source" > "$fixture/OutsideVariant.cs"
+
+  set +e
+  output=$(run_validator 2>&1)
+  status=$?
+  set -e
+
+  if [[ "$status" -ne 70 ]] ||
+    [[ "$output" != *'Packaged native import is outside the reviewed Native directory:'* ]]; then
+    echo "$description did not fail at the outer packaged-import boundary" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+expect_outside_import_rejected 'global-qualified packaged import' \
+  'internal static class Outside
+{
+    [global::System.Runtime.InteropServices.DllImport("libalpha",
+        EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'alias-qualified packaged import' \
+  'using RI = System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [RI.DllImport("libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'filename-form packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("libalpha.so", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'escaped-literal packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport("lib\u0061lpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'qualified LibraryImport packaged import' \
+  'internal static partial class Outside
+{
+    [global::System.Runtime.InteropServices.LibraryImport("libalpha.so",
+        EntryPoint = "alpha_export")]
+    internal static partial void Invoke();
+}'
+
+expect_outside_import_rejected 'mid-line packaged import' \
+  'using System.Runtime.InteropServices;
+internal static class Outside { [DllImport("libalpha",
+    EntryPoint = "alpha_export")] internal static extern void Invoke(); }'
+
+expect_outside_import_rejected 'multi-attribute packaged import' \
+  'using System;
+using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [Obsolete, DllImport("libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'targeted packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [method: DllImport("libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
+
+expect_outside_import_rejected 'comment-separated packaged import' \
+  'using System.Runtime.InteropServices;
+
+internal static class Outside
+{
+    [DllImport(/* reviewed literal */ "libalpha", EntryPoint = "alpha_export")]
+    internal static extern void Invoke();
+}'
 
 reset_fixture
 mkdir -p "$fixture/obj/Release/net10.0/generated" "$fixture/bin/generated"

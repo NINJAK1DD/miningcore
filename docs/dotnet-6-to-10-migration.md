@@ -99,6 +99,11 @@ Keep .NET 6 in place during the first deployment. Major .NET runtimes can normal
 side, which preserves application rollback while the new service is validated. Remove .NET 6 only
 after checking that no other application on the host requires it.
 
+Keep `libzmq3-dev` in the runtime dependency set despite its package name. Miningcore's vendored
+`ZeroMQ.dll` requests `libzmq`; on Linux, that requires the unversioned `libzmq.so` symlink supplied
+by `libzmq3-dev`. Installing only `libzmq5` leaves `libzmq.so.5` and breaks share relay, external
+Stratum relay and block-template streaming when the binding first loads.
+
 ### Ubuntu 22.04
 
 The tested APT path uses Canonical's .NET backports PPA:
@@ -115,7 +120,7 @@ sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:dotnet/backports
 sudo apt-get update
 sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale1.74.0 \
-  libboost-regex1.74.0 libboost-serialization1.74.0 libgmp10 libsodium23 libzmq5
+  libboost-regex1.74.0 libboost-serialization1.74.0 libgmp10 libsodium23 libzmq3-dev
 ```
 
 ### Ubuntu 24.04
@@ -126,7 +131,7 @@ feed or combine it with Ubuntu .NET packages:
 ```console
 sudo apt-get update
 sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale1.83.0 \
-  libboost-regex1.83.0 libboost-serialization1.83.0 libgmp10 libsodium23 libzmq5
+  libboost-regex1.83.0 libboost-serialization1.83.0 libgmp10 libsodium23 libzmq3-dev
 ```
 
 ### Ubuntu 26.04 x64
@@ -137,7 +142,7 @@ feed, the Ubuntu 22.04 `dotnet/backports` PPA, or combine those sources with Ubu
 ```console
 sudo apt-get update
 sudo apt-get install -y aspnetcore-runtime-10.0 libboost-locale1.90.0 \
-  libboost-regex1.90.0 libboost-serialization1.90.0 libgmp10 libsodium23 libzmq5
+  libboost-regex1.90.0 libboost-serialization1.90.0 libgmp10 libsodium23 libzmq3-dev
 ```
 
 Use `build-ubuntu-26.04.sh` when compiling Miningcore on this x86-64 platform. It installs the

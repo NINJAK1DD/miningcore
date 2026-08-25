@@ -9,6 +9,7 @@ migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
 release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
 release_workflow="$repository_root/.github/workflows/release.yml"
+zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Program.cs"
 capability_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
@@ -157,12 +158,12 @@ if grep -Eq 'libboost-(locale|regex|serialization)-dev' \
   exit 1
 fi
 
-if grep -Eq 'libsodium-dev|libzmq3-dev' "$document" "$migration_document"; then
-  echo 'Runtime installation documentation still names development packages' >&2
+if grep -Fq 'libsodium-dev' "$document" "$migration_document"; then
+  echo 'Runtime installation documentation still names the libsodium development package' >&2
   exit 1
 fi
 
-for runtime_package in libsodium23 libzmq5; do
+for runtime_package in libsodium23 libzmq3-dev; do
   assert_file_contains "the documented $runtime_package provider" \
     "$runtime_package" "$document"
   assert_file_contains "the migration $runtime_package provider" \
@@ -187,14 +188,14 @@ for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
     { stage = stage $0 ORS }
     END { printf "%s", stage }
   ' "$dockerfile")
-  for runtime_package in libsodium23 libzmq5; do
+  for runtime_package in libsodium23 libzmq3-dev; do
     if ! grep -Fq "$runtime_package" <<< "$runtime_stage"; then
       echo "$dockerfile runtime stage omits $runtime_package" >&2
       exit 1
     fi
   done
-  if grep -Eq 'libsodium-dev|libzmq3-dev' <<< "$runtime_stage"; then
-    echo "$dockerfile installs development packages in its runtime stage" >&2
+  if grep -Fq 'libsodium-dev' <<< "$runtime_stage"; then
+    echo "$dockerfile installs the libsodium development package in its runtime stage" >&2
     exit 1
   fi
 done
@@ -204,10 +205,20 @@ assert_file_contains 'the source Dockerfile pull-request build' \
   'file: Dockerfile' "$release_workflow"
 assert_file_contains 'the packaged Dockerfile pull-request build' \
   'file: packaging/docker/Dockerfile.release' "$release_workflow"
+assert_file_contains 'the real managed ZeroMQ probe' \
+  'new ZSocket' "$zeromq_probe"
+if [[ $(grep -Fc 'Smoke-test managed ZeroMQ binding' "$release_workflow") -ne 2 ]]; then
+  echo 'Both final container images must execute the managed ZeroMQ runtime probe' >&2
+  exit 1
+fi
 assert_prose_contains 'the apt-package validation boundary' \
-  'apt package names and the resulting'
+  'validates the current apt package names'
 assert_prose_contains 'the apt-package monitor exclusion' \
   'outside the digest-based release image-pin monitor'
+assert_prose_contains 'the unversioned ZeroMQ loader requirement' \
+  'Linux needs the unversioned'
+assert_prose_contains 'the final-image ZeroMQ load probe' \
+  'managed ZeroMQ load inside each final image'
 assert_contains 'the all-library managed export contract' \
   'every managed entry point must be a callable function in that library'
 assert_contains 'the all-library relocation contract' \
