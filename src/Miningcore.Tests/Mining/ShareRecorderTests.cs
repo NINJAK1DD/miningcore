@@ -1670,6 +1670,11 @@ public class ShareRecorderTests
         }
         finally
         {
+            // This test proves the captured fail-stop set, not a one-second shutdown SLA.
+            // Give the deliberately faulted providers a bounded cleanup window before the
+            // outer guard decides that deleting their retained recovery directory is unsafe.
+            recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromSeconds(5);
+            recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(5);
             releaseJournal.TrySetResult();
             releaseDatabase.TrySetResult();
             await StopRecorderBeforeFixtureCleanupAsync(recorder);
