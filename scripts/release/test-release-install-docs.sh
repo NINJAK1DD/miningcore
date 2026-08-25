@@ -77,14 +77,14 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the RC.11 release example' \
-  'export MININGCORE_VERSION=v0.1.0-rc.11' "$document"
-assert_file_contains 'the RC.11 container example' \
-  'MININGCORE_VERSION=v0.1.0-rc.11' "$readme"
-assert_contains 'the RC.11 recovery example' \
-  'export TAG=v0.1.0-rc.11'
-assert_contains 'the RC.11 tagging example' \
-  'NEXT_VERSION=v0.1.0-rc.11'
+assert_file_contains 'the RC.12 release example' \
+  'export MININGCORE_VERSION=v0.1.0-rc.12' "$document"
+assert_file_contains 'the RC.12 container example' \
+  'MININGCORE_VERSION=v0.1.0-rc.12' "$readme"
+assert_contains 'the RC.12 recovery example' \
+  'export TAG=v0.1.0-rc.12'
+assert_contains 'the RC.12 tagging example' \
+  'NEXT_VERSION=v0.1.0-rc.12'
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
@@ -256,7 +256,7 @@ assert_contains 'the CryptoNote exception-containment boundary' \
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
 
-for stale_version in v0.1.0-rc.9 v0.1.0-rc.10; do
+for stale_version in v0.1.0-rc.9 v0.1.0-rc.10 v0.1.0-rc.11; do
   if grep -Fq "$stale_version" "$readme" "$document"; then
     echo "Release documentation still references stale version $stale_version" >&2
     exit 1
