@@ -21,8 +21,8 @@ trap cleanup EXIT
   -Werror \
   -Wno-class-memaccess \
   -Wno-unused-parameter \
-  -I"$source_dir" \
-  -I"$source_dir/contrib/epee/include" \
+  -isystem "$source_dir" \
+  -isystem "$source_dir/contrib/epee/include" \
   "$fixture" \
   -L"$publish_dir" \
   -Wl,-rpath,"$publish_dir" \

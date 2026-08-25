@@ -20,7 +20,7 @@ public static unsafe class CryptonoteBindings
     private static extern ulong decode_integrated_address(byte* input, int inputSize);
 
     [DllImport("libcryptonote", EntryPoint = "cn_fast_hash_export", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int cn_fast_hash(byte* input, byte* output, uint inputLength);
+    private static extern void cn_fast_hash(byte* input, byte* output, uint inputLength);
 
     public static byte[] ConvertBlob(ReadOnlySpan<byte> data, int size, int blobType = 0)
     {

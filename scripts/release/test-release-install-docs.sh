@@ -8,6 +8,7 @@ readme="$repository_root/README.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
 release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
+release_workflow="$repository_root/.github/workflows/release.yml"
 capability_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
@@ -156,6 +157,18 @@ if grep -Eq 'libboost-(locale|regex|serialization)-dev' \
   exit 1
 fi
 
+if grep -Eq 'libsodium-dev|libzmq3-dev' "$document" "$migration_document"; then
+  echo 'Runtime installation documentation still names development packages' >&2
+  exit 1
+fi
+
+for runtime_package in libsodium23 libzmq5; do
+  assert_file_contains "the documented $runtime_package provider" \
+    "$runtime_package" "$document"
+  assert_file_contains "the migration $runtime_package provider" \
+    "$runtime_package" "$migration_document"
+done
+
 for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
   assert_file_contains 'the Ubuntu 26.04 Boost.Locale runtime package' \
     'libboost-locale1.90.0' "$dockerfile"
@@ -168,13 +181,45 @@ for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
     echo "$dockerfile installs Boost development packages in its runtime stage" >&2
     exit 1
   fi
+
+  runtime_stage=$(awk '
+    /^FROM / { stage = "" }
+    { stage = stage $0 ORS }
+    END { printf "%s", stage }
+  ' "$dockerfile")
+  for runtime_package in libsodium23 libzmq5; do
+    if ! grep -Fq "$runtime_package" <<< "$runtime_stage"; then
+      echo "$dockerfile runtime stage omits $runtime_package" >&2
+      exit 1
+    fi
+  done
+  if grep -Eq 'libsodium-dev|libzmq3-dev' <<< "$runtime_stage"; then
+    echo "$dockerfile installs development packages in its runtime stage" >&2
+    exit 1
+  fi
 done
+assert_file_contains 'the Release pull-request trigger' \
+  'pull_request:' "$release_workflow"
+assert_file_contains 'the source Dockerfile pull-request build' \
+  'file: Dockerfile' "$release_workflow"
+assert_file_contains 'the packaged Dockerfile pull-request build' \
+  'file: packaging/docker/Dockerfile.release' "$release_workflow"
+assert_prose_contains 'the apt-package validation boundary' \
+  'apt package names and the resulting'
+assert_prose_contains 'the apt-package monitor exclusion' \
+  'outside the digest-based release image-pin monitor'
 assert_contains 'the all-library managed export contract' \
   'every managed entry point must be a callable function in that library'
 assert_contains 'the all-library relocation contract' \
   'weak-import inspection then reject missing dependencies'
 assert_contains 'the native plugin provider-closure reversal' \
   'previous sibling-plugin assumption is deliberately reversed'
+assert_prose_contains 'the generated interop exclusion' \
+  "Generated \`bin\` and \`obj\` trees are excluded"
+assert_prose_contains 'the unrelated P/Invoke scope boundary' \
+  'without applying the wrapper grammar to unrelated'
+assert_prose_contains 'the canonical ELF symbol-version contract' \
+  'must use canonical unversioned symbol names'
 assert_contains 'the CryptoNote exception-containment boundary' \
   'daemon-supplied block template from unwinding C++ through P/Invoke'
 assert_contains 'the path-filtered branch-protection warning' \

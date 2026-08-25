@@ -37,13 +37,12 @@ UNDEFINED_PATTERN = re.compile(
     r"^\s*undefined symbol:\s*(?P<symbol>\S+)\s+\((?P<object>.*)\)\s*$"
 )
 CALLABLE_SYMBOL_TYPES = {"T", "W", "i"}
+GENERATED_DIRECTORY_NAMES = {"bin", "obj"}
 IGNORED_TOOLCHAIN_WEAK_SYMBOLS = {
     "_ITM_deregisterTMCloneTable",
     "_ITM_registerTMCloneTable",
     "__cxa_finalize",
-    "__cxa_finalize@GLIBC_2.2.5",
     "__cxa_pure_virtual",
-    "__cxa_pure_virtual@CXXABI_1.3",
     "__gmon_start__",
 }
 
@@ -153,6 +152,8 @@ def mask_comments(source: str, path: pathlib.Path) -> str:
                 state = "string"
                 index += 2
                 continue
+            # Raw strings use three or more quotes. A shorter run is handled by
+            # the ordinary-string branch immediately below.
             if current == '"':
                 quote_count = 1
                 while index + quote_count < len(source) and source[index + quote_count] == '"':
@@ -269,6 +270,7 @@ def mask_literals(source: str, path: pathlib.Path) -> str:
             else:
                 raw_quotes = 0
                 index += 1
+                continue
         elif source[index] == '"':
             while index + raw_quotes < len(source) and source[index + raw_quotes] == '"':
                 raw_quotes += 1
@@ -386,10 +388,26 @@ def decode_csharp_string(literal: str, path: pathlib.Path) -> str:
         raise ContractError(f"Unsupported string literal in native import in {path}") from error
 
 
-def parse_imports(path: pathlib.Path) -> list[tuple[str, str]]:
-    source = read_text(path, "managed native wrapper")
+def prepare_managed_source(
+    path: pathlib.Path, description: str
+) -> tuple[str, str]:
+    source = read_text(path, description)
+    return prepare_managed_text(source, path)
+
+
+def prepare_managed_text(source: str, path: pathlib.Path) -> tuple[str, str]:
     masked = mask_comments(source, path)
-    code_only = mask_literals(masked, path)
+    return masked, mask_literals(masked, path)
+
+
+def parse_imports(
+    path: pathlib.Path, prepared: tuple[str, str] | None = None
+) -> list[tuple[str, str]]:
+    masked, code_only = (
+        prepared
+        if prepared is not None
+        else prepare_managed_source(path, "managed native wrapper")
+    )
     token_count = len(IMPORT_TOKEN_PATTERN.findall(code_only))
     imports: list[tuple[str, str]] = []
     search_index = 0
@@ -474,9 +492,11 @@ def discover_managed_contracts(
     if not source_files:
         raise ContractError("No managed native-wrapper sources were found")
 
+    prepared_sources: dict[pathlib.Path, tuple[str, str]] = {}
     for source_file in source_files:
-        source = read_text(source_file, "managed native wrapper")
-        code_only = mask_literals(mask_comments(source, source_file), source_file)
+        prepared = prepare_managed_source(source_file, "managed native wrapper")
+        prepared_sources[source_file] = prepared
+        _, code_only = prepared
         if re.search(r"(?m)^\s*#(?:if|elif|else|endif)\b", code_only):
             raise ContractError(
                 f"Conditional native imports are unsupported; keep the Linux contract "
@@ -487,7 +507,7 @@ def discover_managed_contracts(
     exports: dict[str, set[str]] = defaultdict(set)
 
     for source_file in source_files:
-        imports = parse_imports(source_file)
+        imports = parse_imports(source_file, prepared_sources[source_file])
         file_libraries = {library for library, _ in imports}
 
         if len(file_libraries) > 1:
@@ -529,7 +549,17 @@ def reject_inventory_imports_outside_directory(
 
     source_dir = source_dir.resolve()
     inventory_names = {library.removesuffix(".so") for library in inventory}
+    inventory_literal_pattern = re.compile(
+        r"(?m)^\s*\[\s*(?:(?:global\s*::\s*)?[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)*"
+        r"(?:DllImport|LibraryImport)(?:Attribute)?\s*\(\s*@?\"(?:"
+        + "|".join(re.escape(name) for name in sorted(inventory_names))
+        + r")\""
+    )
     for source_file in sorted(project_dir.rglob("*.cs")):
+        relative_parts = source_file.relative_to(project_dir).parts
+        if any(part in GENERATED_DIRECTORY_NAMES for part in relative_parts[:-1]):
+            continue
+
         try:
             source_file.resolve().relative_to(source_dir)
             continue
@@ -537,15 +567,42 @@ def reject_inventory_imports_outside_directory(
             pass
 
         source = read_text(source_file, "managed project source")
-        if IMPORT_TOKEN_PATTERN.search(source) is None:
+        # This outer-project check has one narrow purpose: catch direct imports of
+        # packaged libraries that escaped the reviewed Native directory. Avoid
+        # applying the strict Native-wrapper grammar to unrelated platform P/Invoke
+        # files unless a line begins with a literal inventory import.
+        if inventory_literal_pattern.search(source) is None:
             continue
 
-        for library, _ in parse_imports(source_file):
-            if library in inventory_names:
-                raise ContractError(
-                    f"Packaged native import is outside the reviewed Native directory: "
-                    f"{source_file}: {library}"
-                )
+        masked, code_only = prepare_managed_text(source, source_file)
+        search_index = 0
+        while match := ATTRIBUTE_PATTERN.search(code_only, search_index):
+            opening = match.end() - 1
+            closing = find_closing_parenthesis(code_only, opening, source_file)
+            arguments = masked[opening + 1 : closing]
+            library_match = re.match(
+                r'\s*(?P<literal>@?\"(?:\"\"|\\.|[^\"])*\")',
+                arguments,
+                re.DOTALL,
+            )
+
+            if library_match is not None:
+                library = decode_csharp_string(library_match.group("literal"), source_file)
+                if library in inventory_names:
+                    raise ContractError(
+                        f"Packaged native import is outside the reviewed Native directory: "
+                        f"{source_file}: {library}"
+                    )
+
+            search_index = closing + 1
+
+
+def normalize_elf_symbol(symbol: str) -> str:
+    """Return the symbol name used by contracts, without an ELF version suffix."""
+    normalized = symbol.split("@", 1)[0]
+    if not normalized or not SYMBOL_PATTERN.fullmatch(normalized):
+        raise ContractError(f"Invalid versioned ELF symbol: {symbol!r}")
+    return normalized
 
 
 def run_tool(
@@ -615,6 +672,10 @@ def load_exceptions(path: pathlib.Path | None, inventory: set[str]) -> dict[tupl
         symbol = entry["symbol"]
         if library not in inventory or not SYMBOL_PATTERN.fullmatch(symbol):
             raise ContractError(f"Native-symbol exception {index} has an invalid library or symbol")
+        if normalize_elf_symbol(symbol) != symbol:
+            raise ContractError(
+                f"Native-symbol exception {index} must use an unversioned symbol name"
+            )
 
         for field in ("consumer", "rationale"):
             value = entry[field]
@@ -659,7 +720,7 @@ def validate_library(
             raise ContractError(
                 f"Unrecognized unresolved-symbol diagnostic for {library}: {line!r}"
             )
-        unresolved.add(match.group("symbol"))
+        unresolved.add(normalize_elf_symbol(match.group("symbol")))
 
     weak_output = run_tool(
         [nm_tool, "-D", "--undefined-only", "--format=posix", str(library_path)],
@@ -675,8 +736,9 @@ def validate_library(
             or len(fields[1]) != 1
         ):
             raise ContractError(f"Unrecognized undefined-symbol diagnostic for {library}: {line!r}")
-        if fields[1] in {"w", "v"} and fields[0] not in IGNORED_TOOLCHAIN_WEAK_SYMBOLS:
-            unresolved.add(fields[0])
+        symbol = normalize_elf_symbol(fields[0])
+        if fields[1] in {"w", "v"} and symbol not in IGNORED_TOOLCHAIN_WEAK_SYMBOLS:
+            unresolved.add(symbol)
 
     violations: list[str] = []
     for symbol in sorted(unresolved):
@@ -725,7 +787,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("publish_directory", type=pathlib.Path)
     parser.add_argument("managed_source_directory", type=pathlib.Path)
     parser.add_argument("inventory", type=pathlib.Path)
-    parser.add_argument("--managed-project-directory", type=pathlib.Path)
+    parser.add_argument("--managed-project-directory", required=True, type=pathlib.Path)
     parser.add_argument("--exceptions", type=pathlib.Path)
     parser.add_argument("--ldd", default=os.environ.get("MININGCORE_LDD", "ldd"))
     parser.add_argument("--nm", default=os.environ.get("MININGCORE_NM", "nm"))
@@ -741,13 +803,10 @@ def main() -> int:
         libraries = load_inventory(arguments.inventory)
         inventory = set(libraries)
         expected_exports = discover_managed_contracts(arguments.managed_source_directory, inventory)
-        project_directory = (
-            arguments.managed_project_directory
-            if arguments.managed_project_directory is not None
-            else arguments.managed_source_directory.parent
-        )
         reject_inventory_imports_outside_directory(
-            project_directory, arguments.managed_source_directory, inventory
+            arguments.managed_project_directory,
+            arguments.managed_source_directory,
+            inventory,
         )
         exceptions = load_exceptions(arguments.exceptions, inventory)
         observed_exceptions: set[tuple[str, str]] = set()

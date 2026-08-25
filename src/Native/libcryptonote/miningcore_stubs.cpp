@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <ios>
 #include <limits>
 #include <stdexcept>
@@ -17,9 +18,10 @@ constexpr auto error_message =
 template<typename Proof>
 size_t max_amounts_for_proof(const Proof &proof)
 {
-  // Monero's range-proof format uses six base bits and supports up to 16 outputs.
-  // Invalid proof shapes are rejected by returning zero, which is what the
-  // deserializer expects from these parsing helpers.
+  // Mirrors monero-project/monero src/ringct/rctTypes.cpp at commit
+  // b5f1886d08e3178bcd1ace3b0aaf37786035b3f5. The range-proof format uses six
+  // base bits and supports up to 16 outputs. Invalid proof shapes return zero,
+  // which is the rejecting value expected by the deserializer.
   constexpr size_t base_bits = 6;
   constexpr size_t max_extra_bits = 4;
 
@@ -37,11 +39,12 @@ template<typename Proof>
 size_t max_amounts_for_proofs(const std::vector<Proof> &proofs)
 {
   size_t result = 0;
+  constexpr auto max_count = std::numeric_limits<std::uint32_t>::max();
 
   for(const auto &proof : proofs)
   {
     const auto count = max_amounts_for_proof(proof);
-    if(count == 0 || count > std::numeric_limits<size_t>::max() - result)
+    if(count == 0 || result >= max_count || count >= max_count - result)
       return 0;
 
     result += count;

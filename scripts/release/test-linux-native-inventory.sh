@@ -37,4 +37,5 @@ echo "Validated ${#expected_libraries[@]} Linux native libraries in $publish_dir
 python3 "$script_dir/assert-linux-native-symbol-contracts.py" \
   "$publish_dir" \
   "$repository_root/src/Miningcore/Native" \
-  "$inventory"
+  "$inventory" \
+  --managed-project-directory "$repository_root/src/Miningcore"

@@ -6,8 +6,8 @@ RUN apt-get update && \
         libboost-regex1.90.0 \
         libboost-serialization1.90.0 \
         libgmp10 \
-        libsodium-dev \
-        libzmq3-dev && \
+        libsodium23 \
+        libzmq5 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 10001 miningcore && \
     useradd --system --uid 10001 --gid miningcore --home-dir /var/lib/miningcore \

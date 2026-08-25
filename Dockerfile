@@ -16,7 +16,8 @@ RUN set -euo pipefail; \
       2>&1 | tee "$build_log"; \
     bash ../../scripts/release/assert-warning-free-build.sh "$build_log"; \
     python3 ../../scripts/release/assert-linux-native-symbol-contracts.py \
-      ../../build Native ../../scripts/release/linux-native-libraries.txt
+      ../../build Native ../../scripts/release/linux-native-libraries.txt \
+      --managed-project-directory .
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 WORKDIR /app
@@ -27,8 +28,8 @@ RUN apt-get update && \
         libboost-regex1.90.0 \
         libboost-serialization1.90.0 \
         libgmp10 \
-        libsodium-dev \
-        libzmq3-dev && \
+        libsodium23 \
+        libzmq5 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 10001 miningcore && \
     useradd --system --uid 10001 --gid miningcore --home-dir /var/lib/miningcore \

@@ -171,9 +171,15 @@ sudo apt-get install -y \
   libboost-regex1.90.0 \
   libboost-serialization1.90.0 \
   libgmp10 \
-  libsodium-dev \
-  libzmq3-dev
+  libsodium23 \
+  libzmq5
 ```
+
+These are runtime-only shared-library packages; development headers remain confined to source-build
+stages. Every release-affecting pull request builds both the source and packaged Dockerfiles, which
+validates the current apt package names and the resulting `ldd -r` provider closure. Apt package
+names are not OCI image references and therefore are deliberately outside the digest-based release
+image-pin monitor.
 
 On the Ubuntu 22.04 compatibility target, enable Canonical's supported .NET backports PPA first:
 
@@ -188,8 +194,8 @@ sudo apt-get install -y \
   libboost-regex1.74.0 \
   libboost-serialization1.74.0 \
   libgmp10 \
-  libsodium-dev \
-  libzmq3-dev
+  libsodium23 \
+  libzmq5
 ```
 
 ## Install the archive
@@ -428,21 +434,28 @@ cryptographic and proof objects its parsing exports reference. This closes laten
 that were previously outside the strict `libmultihash.so` boundary. CryptoNote's Bulletproof and
 Bulletproof+ sizing helpers now reject malformed proof shapes without throwing, every exported C ABI
 entry point catches native exceptions, and isolated hostile miner-transaction vectors prevent a
-daemon-supplied block template from unwinding C++ through P/Invoke.
+daemon-supplied block template from unwinding C++ through P/Invoke. The managed fast-hash declaration
+also returns `void`, matching `cn_fast_hash_export` exactly instead of ignoring a synthetic integer.
 
 Release and source-build validation derives every `DllImport` and `LibraryImport` from all managed
 native-wrapper sources, tolerating formatting changes while failing if any attribute cannot be
 parsed unambiguously. Each wrapper must map to exactly one library in
 `scripts/release/linux-native-libraries.txt`, every listed library must have exactly one wrapper,
 and every managed entry point must be a callable function in that library's dynamic export table.
-Nonliteral entry-point expressions, conditional imports, and packaged-library imports outside the
-reviewed `Native` directory fail structurally instead of being guessed. Provider-aware `ldd -r` and
-weak-import inspection then reject missing dependencies and unresolved native-to-native relocations
-for every artifact. Missing, symlinked or otherwise non-regular inputs, malformed tool output and
-failed inspection tools also fail closed. Contract mismatches use status 1; defects in the validator
-input or inspection process use status 70. The validator supports a precise, per-library JSON
-exception manifest for a future genuinely optional provider, but the current release has no
-exceptions; any configured exception must be observed or validation rejects it as stale.
+Nonliteral entry-point expressions and conditional imports inside the reviewed `Native` directory
+fail structurally instead of being guessed. A separate lightweight scan rejects direct literal
+imports of packaged libraries elsewhere in source-controlled application code without applying the
+wrapper grammar to unrelated operating-system P/Invokes. Generated `bin` and `obj` trees are excluded
+so a future `LibraryImport` source generator cannot create a false duplicate contract.
+
+Provider-aware `ldd -r` and weak-import inspection then reject missing dependencies and unresolved
+native-to-native relocations for every artifact. ELF version suffixes are normalized before matching
+the narrow standard-toolchain weak-symbol allowlist and the exception manifest, whose entries must
+use canonical unversioned symbol names. Missing, symlinked or otherwise non-regular inputs, malformed
+tool output and failed inspection tools also fail closed. Contract mismatches use status 1; defects
+in the validator input or inspection process use status 70. The validator supports a precise,
+per-library JSON exception manifest for a future genuinely optional provider, but the current release
+has no exceptions; any configured exception must be observed or validation rejects it as stale.
 
 When adding a Linux native library, add its sorted filename to the inventory, give it one managed
 wrapper with literal library and entry-point names, export every imported symbol, and link the
