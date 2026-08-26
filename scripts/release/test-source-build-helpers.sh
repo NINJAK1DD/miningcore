@@ -147,12 +147,12 @@ case "${1:-}" in
     fi
 
     build_log=
-    terminal_logger=false
+    explicit_terminal_logger=false
 
     for argument in "$@"; do
       case "$argument" in
-        --tl:auto)
-          terminal_logger=true
+        --tl|--tl:*|--terminalLogger|--terminalLogger:*)
+          explicit_terminal_logger=true
           ;;
         -flp:LogFile=*)
           build_log=${argument#-flp:LogFile=}
@@ -161,9 +161,15 @@ case "${1:-}" in
       esac
     done
 
-    if [ "$terminal_logger" != true ] || [ -z "$build_log" ]; then
-      echo 'dotnet publish did not receive the terminal and private-log contract' >&2
+    if [ "$explicit_terminal_logger" = true ] || [ -z "$build_log" ]; then
+      echo 'dotnet publish did not receive the automatic terminal/private-log contract' >&2
       exit 92
+    fi
+
+    if [ "${MININGCORE_HELPER_EXPECT_TERMINAL_LOGGER_OFF:-}" = 1 ] &&
+        [ "${MSBUILDTERMINALLOGGER:-}" != off ]; then
+      echo 'dotnet publish did not preserve the terminal-logger opt-out' >&2
+      exit 93
     fi
 
     if [ "${MININGCORE_HELPER_SKIP_BUILD_LOG:-}" != 1 ]; then
@@ -175,7 +181,7 @@ case "${1:-}" in
       fi
     fi
 
-    echo 'Terminal logger fixture progress'
+    echo 'Direct dotnet fixture output'
     ;;
   *)
     exit 1
@@ -345,14 +351,14 @@ for helper in "${helpers[@]}"; do
     exit 1
   fi
 
-  if ! grep -Fq -- '--tl:auto' "$trace" ||
+  if grep -Eq -- '--(tl|terminalLogger)(:|[[:space:]]|$)' "$trace" ||
       ! grep -Eq -- '-flp:LogFile=[^;]+;Verbosity=normal;Encoding=UTF-8' "$trace"; then
-    echo "$helper did not preserve terminal output with a separate warning log" >&2
+    echo "$helper did not preserve automatic terminal selection with a separate warning log" >&2
     cat "$trace" >&2
     exit 1
   fi
 
-  if ! grep -Fq 'Terminal logger fixture progress' "$output"; then
+  if ! grep -Fq 'Direct dotnet fixture output' "$output"; then
     echo "$helper did not preserve direct terminal output" >&2
     cat "$output" >&2
     exit 1
@@ -371,6 +377,34 @@ for helper in "${helpers[@]}"; do
 
   if grep -Fq 'unstubbed-privileged ' "$trace"; then
     echo "$helper reached an un-stubbed privileged command" >&2
+    cat "$trace" >&2
+    exit 1
+  fi
+
+  : > "$trace"
+  /bin/rm -f -- "$state"/*
+  set +e
+  (
+    cd "$sandbox"
+    PATH="$work_dir/bin:$PATH" \
+      MSBUILDTERMINALLOGGER=off \
+      MININGCORE_HELPER_EXPECT_TERMINAL_LOGGER_OFF=1 \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
+      MININGCORE_HELPER_TEST_STATE="$state" \
+      MININGCORE_HELPER_TEST_TRACE="$trace" \
+      bash "$helper" "$publish_dir"
+  ) > "$output" 2>&1
+  opt_out_status=$?
+  set -e
+
+  if [[ "$opt_out_status" -ne 0 ]]; then
+    echo "$helper did not respect MSBUILDTERMINALLOGGER=off" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  if grep -Eq -- '--(tl|terminalLogger)(:|[[:space:]]|$)' "$trace"; then
+    echo "$helper overrode MSBUILDTERMINALLOGGER=off on the command line" >&2
     cat "$trace" >&2
     exit 1
   fi

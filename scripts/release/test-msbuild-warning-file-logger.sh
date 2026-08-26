@@ -34,7 +34,8 @@ chmod +x "$emitter"
 : > "$build_log"
 
 set +e
-bash "$repository_root/scripts/release/run-warning-audited-dotnet.sh" \
+MSBUILDTERMINALLOGGER=off \
+  bash "$repository_root/scripts/release/run-warning-audited-dotnet.sh" \
   "$build_log" build "$project" -nologo -verbosity:minimal \
   "-p:WarningEmitter=$emitter" > "$audit_output" 2>&1
 audit_status=$?

@@ -83,6 +83,8 @@ assert_file_contains 'the RC.12 container example' \
   'MININGCORE_VERSION=v0.1.0-rc.12' "$readme"
 assert_file_contains 'the concise source-build progress contract' \
   "Interactive builds retain .NET's concise progress and elapsed-time display" "$readme"
+assert_file_contains 'the terminal-logger opt-out contract' \
+  'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
 assert_contains 'the RC.12 recovery example' \

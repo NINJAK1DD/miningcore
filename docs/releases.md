@@ -423,7 +423,9 @@ to keep that native implementation memory-safe if it is enabled later.
 In an interactive terminal, the source-build helpers show .NET's concise progress and elapsed-time
 display. Warning enforcement uses a separate private normal-verbosity MSBuild log, which is audited
 after a successful build and removed when the helper exits. Redirected and non-interactive runs use
-.NET's conventional output automatically. A missing or empty audit log fails the build closed.
+.NET's conventional output automatically. Operators may also set `MSBUILDTERMINALLOGGER=off`
+without the helpers overriding that standard opt-out. A missing or empty audit log fails the build
+closed.
 
 Three Linux hashing defects are corrected and deserve particular attention from operators:
 

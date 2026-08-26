@@ -28,10 +28,11 @@ fi
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 file_logger="-flp:LogFile=$build_log;Verbosity=normal;Encoding=UTF-8"
 
-# Keep stdout/stderr attached directly to the caller. Interactive source builds
-# therefore retain .NET's concise terminal progress and elapsed-time display,
-# while the separate MSBuild file logger captures the complete warning audit.
-dotnet "$@" --tl:auto "$file_logger"
+# Keep stdout/stderr attached directly to the caller. .NET can therefore select
+# its concise terminal display automatically while still respecting the
+# operator's MSBUILDTERMINALLOGGER setting. The separate MSBuild file logger
+# captures the complete warning audit with either console implementation.
+dotnet "$@" "$file_logger"
 
 if [[ ! -s "$build_log" ]]; then
   echo "Warning-audited build did not produce its private log" >&2

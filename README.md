@@ -61,7 +61,8 @@ warning policy and its native/build-system diagnostic escape hatch for future un
 toolchains. Managed compiler warnings and NuGet security advisories remain unconditionally fatal.
 Interactive builds retain .NET's concise progress and elapsed-time display; a separate private
 MSBuild log is audited and removed when the helper exits, while any warning remains visible and
-fatal.
+fatal. The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available for
+accessibility, terminal compatibility, and log-processing requirements.
 
 Next, install PostgreSQL, create the database, replace every `CHANGE_ME` value in `config.json`, and
 start Miningcore from the build directory:
