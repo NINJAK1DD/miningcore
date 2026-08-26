@@ -82,9 +82,11 @@
                 "percentage": 0
             }
         ],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 0,
         "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -93,7 +95,8 @@
         },
         "ports": {
             "3094": {
-                "listenAddress": "0.0.0.0",
+                "name": "NEXA-LOW-DIFF",
+                "listenAddress": "*",
                 "difficulty": 1,
                 "varDiff": {
                     "minDiff": 0.125,
@@ -101,21 +104,22 @@
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 1
                 }
             },
             "3095": {
-                "listenAddress": "0.0.0.0",
-                "difficulty": 1,
+                "name": "NEXA-HIGH-DIFF",
+                "listenAddress": "*",
+                "difficulty": 64,
                 "tls": false,
                 // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                 "varDiff": {
-                    "minDiff": 0.125,
+                    "minDiff": 32,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 64
                 }
             }
         },

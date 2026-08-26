@@ -1105,6 +1105,28 @@ financial outcome. Handshake now requires successful wallet discovery or selecti
 Handshake and Equihash treat cancellation during `walletpassphrase` as ordinary pre-submission
 shutdown and conservatively attempt bounded relock when the unlock result is unknown.
 
+### Example configuration baselines
+
+The packaged catalogue includes standalone Bitcoin Cash and combined Bitcoin/Bitcoin Cash SOLO
+examples. Bitcoin Cash uses the bundled `bitcoin-cash` template, `BCash` address decoding and
+CashAddr wallet fields. The same-host combined topology assigns Bitcoin Cash Node a non-default RPC
+port so it cannot collide with Bitcoin Core.
+
+Every example that exposes internal Stratum now has named low- and high-difficulty tiers with
+VarDiff. Receiver-only share recorders and auxiliary-only pools remain single dormant endpoint
+descriptions because they do not accept miners. Active examples explicitly record their listener
+mode, polling and rebroadcast behavior, 600-second inactive-client timeout, 30-second idle-VarDiff
+sweep, payout threshold and payout scheme. CI requires a positive, distinct low/high pair and the
+reviewed 15-second target, 90-second retarget and 30% variance baseline.
+
+The Dash ZMQ-only example now places `zmqBlockNotifySocket` and its topic on the daemon endpoint read
+by the Bitcoin-family job manager. Its zero `blockRefreshInterval` therefore means genuine
+notification-only template updates instead of silently discarding the configured socket.
+
+`config.example.json` demonstrates inactive zero-percent reward-recipient placeholders instead of
+empty arrays. These placeholders do not collect rewards and must be replaced or removed with every
+other `CHANGE_ME` value before production.
+
 ### Coin definition accuracy
 
 The bundled definitions now select StakeCubeCoin's current SCCPow implementation instead of a

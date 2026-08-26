@@ -410,16 +410,18 @@ optional advanced partitioning.
 ## Configuration
 
 Copy [config.example.json](config.example.json) to `config.json`. It is a JSON-with-comments example
-covering the common cluster, API, PostgreSQL, statistics, banning, payment, daemon, Stratum, vardiff
-and LTC/DOGE merged-mining options. Miningcore accepts comments; ordinary strict-JSON tools may not.
+covering the common cluster, API, PostgreSQL, statistics, banning, payment, daemon, low/high
+Stratum, vardiff and LTC/DOGE merged-mining options. Miningcore accepts comments; ordinary
+strict-JSON tools may not.
 
 ```console
 cp config.example.json build/config.json
 ```
 
 Replace all `CHANGE_ME` values and remove pools or services you do not intend to run. The
-[example configuration index](examples/README.md) provides smaller direct, multi-coin,
-merged-mining and distributed-recorder starting points. The [configuration guide](docs/configuration.md)
+[example configuration index](examples/README.md) provides smaller direct, Bitcoin Cash,
+multi-coin, merged-mining and distributed-recorder starting points. The
+[configuration guide](docs/configuration.md)
 explains the main sections and miner login formats. The machine-readable
 [configuration schema](src/Miningcore/config.schema.json) is the exhaustive option reference,
 including less common coin-specific extension fields.

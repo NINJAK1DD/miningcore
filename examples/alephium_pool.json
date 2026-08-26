@@ -73,7 +73,11 @@
             }
         ],
         "enableAsicBoost": true,
+        "enableInternalStratum": true,
+        "blockRefreshInterval": 0,
+        "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "socketJobMessageBufferSize": 16384,
         "banning": {
             "enabled": true,
@@ -83,19 +87,21 @@
         },
         "ports": {
             "3094": {
-                "listenAddress": "0.0.0.0",
+                "name": "ALPH-LOW-DIFF",
+                "listenAddress": "*",
                 "difficulty": 4,
                 "varDiff": {
                     "minDiff": 2,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
-                    "variancePercent": 100,
-                    "maxDelta": 512
+                    "variancePercent": 30,
+                    "maxDelta": 4
                 }
             },
             "3095": {
-                "listenAddress": "0.0.0.0",
+                "name": "ALPH-LOW-DIFF-TLS-OPTION",
+                "listenAddress": "*",
                 "difficulty": 4,
                 "tls": false,
                 // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
@@ -104,12 +110,13 @@
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
-                    "variancePercent": 100,
-                    "maxDelta": 512
+                    "variancePercent": 30,
+                    "maxDelta": 4
                 }
             },
             "3096": {
-                "listenAddress": "0.0.0.0",
+                "name": "ALPH-HIGH-DIFF",
+                "listenAddress": "*",
                 "difficulty": 256,
                 "varDiff": {
                     "minDiff": 256,
@@ -117,7 +124,7 @@
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 2048
+                    "maxDelta": 256
                 }
             }
         },

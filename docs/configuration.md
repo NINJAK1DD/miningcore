@@ -74,6 +74,13 @@ The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff`
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
 
+Shipped miner-facing examples expose low and high starting tiers with VarDiff enabled. Their common
+15-second target, 90-second retarget interval and 30% variance band are commissioning baselines, not
+hardware classifications. Select the tier that produces prompt first shares, then verify accepted
+share cadence under the real miner fleet. Receiver-only and auxiliary-only examples deliberately do
+not advertise duplicate dormant tiers. See the [example index](../examples/README.md) for the audited
+common and coin-specific defaults.
+
 Each `ports` entry must contain an endpoint object. The endpoint's `listenAddress` may be omitted to
 use the `127.0.0.1` default, but the endpoint object itself must not be replaced with JSON `null` for
 an enabled internal Stratum listener. Listener validation remains deferred for disabled and relay-only

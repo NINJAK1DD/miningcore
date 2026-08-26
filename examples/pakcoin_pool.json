@@ -72,9 +72,11 @@
           "percentage": 0
         }
       ],
+      "enableInternalStratum": true,
       "blockRefreshInterval": 500,
       "jobRebroadcastTimeout": 10,
       "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
       "banning": {
         "enabled": true,
         "time": 600,
@@ -83,10 +85,22 @@
       },
       "ports": {
         "3062": {
-          "listenAddress": "0.0.0.0",
+          "name": "PAK-LOW-DIFF",
+          "listenAddress": "*",
           "difficulty": 512,
           "varDiff": {
             "minDiff": 128,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3063": {
+          "name": "PAK-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 32768,
+          "varDiff": {
+            "minDiff": 16384,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30

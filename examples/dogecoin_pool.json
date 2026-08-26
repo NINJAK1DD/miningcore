@@ -60,6 +60,7 @@
       "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,
       "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
       "ports": {
         "3042": {
           "name": "DOGE-LOW-DIFF",

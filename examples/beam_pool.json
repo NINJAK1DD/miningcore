@@ -73,7 +73,11 @@
                 "percentage": 0
             }
         ],
+        "enableInternalStratum": true,
+        "blockRefreshInterval": 0,
+        "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -82,7 +86,8 @@
         },
         "ports": {
             "3092": {
-                "listenAddress": "0.0.0.0",
+                "name": "BEAM-LOW-DIFF",
+                "listenAddress": "*",
                 "difficulty": 200,
                 "varDiff": {
                     "minDiff": 200,
@@ -94,7 +99,8 @@
                 }
             },
             "3093": {
-                "listenAddress": "0.0.0.0",
+                "name": "BEAM-HIGH-DIFF",
+                "listenAddress": "*",
                 "difficulty": 700,
                 "tls": false,
                 // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.

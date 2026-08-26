@@ -72,9 +72,11 @@
             "percentage": 0
           }
         ],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 250,
         "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
           "enabled": true,
           "time": 600,
@@ -83,7 +85,7 @@
         },
         "ports": {
           "4073": {
-            "name": "GPU-SMALL",
+            "name": "WART-LOW-DIFF",
             "listenAddress": "*",
             "difficulty": 512000000,
             "varDiff": {
@@ -91,8 +93,21 @@
               "maxDiff": null,
               "targetTime": 15,
               "retargetTime": 90,
-              "variancePercent": 100,
-              "maxDelta": 512
+              "variancePercent": 30,
+              "maxDelta": 512000000
+            }
+          },
+          "4074": {
+            "name": "WART-HIGH-DIFF",
+            "listenAddress": "*",
+            "difficulty": 8192000000,
+            "varDiff": {
+              "minDiff": 4096000000,
+              "maxDiff": null,
+              "targetTime": 15,
+              "retargetTime": 90,
+              "variancePercent": 30,
+              "maxDelta": 8192000000
             }
           }
         },

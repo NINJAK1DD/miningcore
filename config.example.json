@@ -221,8 +221,13 @@
       // Seconds between checks for idle VarDiff connections.
       "vardiffIdleSweepInterval": 30,
       // Optional fixed reward splits (for example pool fees). Percentages reduce miner reward.
-      // Example: [ { "address": "LTC_FEE_ADDRESS", "percentage": 1.0 } ]
-      "rewardRecipients": [],
+      // The zero-percent placeholder is inactive; replace or remove it before production.
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_LTC_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
       // One pool may expose several ports with different initial/variable difficulties.
       // Different pools may reuse a port only on distinct, non-overlapping specific addresses.
       // Miningcore reserves every enabled internal listener before any pool starts. One bind
@@ -232,16 +237,16 @@
         // JSON property name is the TCP port miners connect to.
         "3032": {
           // Human-readable port label shown through the API.
-          "name": "LTC-DOGE-SOLO",
+          "name": "LTC-DOGE-LOW-DIFF",
           // "*" listens on every IPv4 interface. A specific address must exist and be
           // bindable inside the host/container network namespace at startup.
           "listenAddress": "*",
           // Initial fixed difficulty assigned when a miner connects.
-          "difficulty": 65536,
+          "difficulty": 1024,
           // Optional automatic per-miner difficulty adjustment.
           "varDiff": {
             // Never retarget below this difficulty.
-            "minDiff": 65536,
+            "minDiff": 512,
             // Maximum difficulty; null means no configured ceiling.
             "maxDiff": null,
             // Maximum single retarget change; null uses the implementation default.
@@ -268,6 +273,20 @@
             "mandatory": false,
             // Only these direct peers may assert a miner's original address.
             "proxyAddresses": [ "127.0.0.1" ]
+          }
+        },
+        "3033": {
+          // Higher starting floor for large Scrypt ASICs, farms, proxies and rentals.
+          "name": "LTC-DOGE-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 65536,
+          "varDiff": {
+            "minDiff": 32768,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
           }
         }
       },
@@ -345,10 +364,15 @@
       // Disconnect silent direct-DOGE workers after this many seconds.
       "clientConnectionTimeout": 600,
       // Optional DOGE fee/donation recipients, using the same format as the LTC pool.
-      "rewardRecipients": [],
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_DOGE_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
       // A ports object is part of the pool contract even when internal Stratum is disabled.
       "ports": {
-        "3033": {
+        "3042": {
           // This port is not opened while enableInternalStratum is false.
           "name": "DOGE-SOLO-DISABLED",
           "listenAddress": "127.0.0.1",
@@ -404,15 +428,34 @@
       "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,
       "clientConnectionTimeout": 600,
-      "rewardRecipients": [],
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_BITCOIN_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
       "ports": {
         "3052": {
-          "name": "BTC-SOLO-DISABLED",
+          "name": "BTC-LOW-DIFF-DISABLED",
           "listenAddress": "127.0.0.1",
           "difficulty": 8192,
           "varDiff": {
             "minDiff": 4096,
             "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3053": {
+          "name": "BTC-HIGH-DIFF-DISABLED",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 1048576,
+          "varDiff": {
+            "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30

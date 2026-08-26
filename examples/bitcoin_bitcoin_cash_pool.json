@@ -1,13 +1,14 @@
 {
   // Starter configuration: replace every CHANGE_ME value and review it before use.
   // See README.md and ../config.example.json for topology and field guidance.
-  // Direct Bitcoin SOLO pool. Replace every CHANGE_ME value before use.
-  "clusterName": "bitcoin-example",
+  // Two independent SHA-256 SOLO pools. Bitcoin and Bitcoin Cash are not merged here.
+  "clusterName": "bitcoin-bitcoin-cash-example",
   "logging": {
     "level": "info",
     "enableConsoleLog": true,
     "enableConsoleColors": true,
-    "logFile": "miningcore.log"
+    "logFile": "miningcore.log",
+    "perPoolLogFile": true
   },
   "banning": {
     "manager": "Integrated",
@@ -49,7 +50,6 @@
       "enabled": true,
       "coin": "bitcoin",
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
-      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
       "rewardRecipients": [
         {
           "address": "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
@@ -68,6 +68,8 @@
           "difficulty": 8192,
           "varDiff": {
             "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
@@ -79,6 +81,8 @@
           "difficulty": 1048576,
           "varDiff": {
             "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
@@ -91,7 +95,6 @@
           "port": 8332,
           "user": "CHANGE_ME_BITCOIN_RPC_USER",
           "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
-          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:28332"
         }
       ],
       "banning": {
@@ -103,6 +106,72 @@
       "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 0.001,
+        "payoutScheme": "SOLO"
+      }
+    },
+    {
+      "id": "bitcoin-cash-solo",
+      "enabled": true,
+      "coin": "bitcoin-cash",
+      "addressType": "BCash",
+      "address": "CHANGE_ME_BITCOIN_CASH_POOL_WALLET_CASHADDR",
+      "rewardRecipients": [
+        {
+          "address": "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
+          "percentage": 0
+        }
+      ],
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
+      "ports": {
+        "3052": {
+          "name": "BCH-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 8192,
+          "varDiff": {
+            "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3053": {
+          "name": "BCH-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 1048576,
+          "varDiff": {
+            "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          // Set rpcport=8334 in bitcoin.conf for this same-host BCH node.
+          "port": 8334,
+          "user": "CHANGE_ME_BITCOIN_CASH_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_CASH_RPC_PASSWORD"
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.01,
         "payoutScheme": "SOLO"
       }
     }

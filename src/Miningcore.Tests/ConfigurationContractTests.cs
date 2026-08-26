@@ -4,11 +4,13 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using FluentValidation.Results;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Handshake.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Mining;
 using Newtonsoft.Json.Linq;
+using NBitcoin;
 using Xunit;
 using Xunit.Sdk;
 
@@ -25,6 +27,8 @@ public class ConfigurationContractTests
             {
                 ["bitcoin"] =
                     "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+                ["bitcoin-cash"] =
+                    "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
                 ["dogecoin"] =
                     "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
                 ["ethereum"] =
@@ -191,6 +195,7 @@ public class ConfigurationContractTests
     {
         var path = Path.Combine(AppContext.BaseDirectory,
             "config.example.json");
+        var document = ParseConfigurationDocument(File.ReadAllText(path));
         var config = Program.ReadConfig(path, false);
         var result = new ClusterConfigValidator().Validate(config);
 
@@ -201,6 +206,9 @@ public class ConfigurationContractTests
             FormatValidationErrors(result.Errors));
         Assert.All(config.Pools,
             pool => Assert.NotNull(pool.PaymentProcessing));
+        AssertConfigExampleRewardRecipientPlaceholders(document);
+        AssertInternalStratumDifficultyTiers("config.example.json",
+            document, config);
 
         // Exercise the actual live-startup boundary as well as the diagnostic-rich
         // direct result above. This applies live defaults, merged-mining checks,
@@ -242,6 +250,18 @@ public class ConfigurationContractTests
     {
         Assert.Null(document.SelectToken(
             "paymentProcessing.shareRecoveryFile"));
+
+        var clusterPaymentProcessing = document["paymentProcessing"] as JObject;
+
+        Assert.NotNull(clusterPaymentProcessing);
+        Assert.Equal(600,
+            clusterPaymentProcessing["interval"]?.Value<int?>());
+
+        if(clusterPaymentProcessing["enabled"]?.Value<bool>() == true)
+        {
+            Assert.Equal("Miningcore",
+                clusterPaymentProcessing["coinbaseString"]?.Value<string>());
+        }
 
         if(document.SelectToken("paymentProcessing.enabled")?.Value<bool>() ==
             true)
@@ -385,11 +405,54 @@ public class ConfigurationContractTests
             var poolId = pool["id"]?.Value<string>() ?? "<unknown>";
             var coin = pool["coin"]?.Value<string>() ?? string.Empty;
             var address = pool["address"]?.Value<string>();
+            var configuredPool = config.Pools.Single(item =>
+                item.Id == poolId);
+
+            Assert.NotNull(pool["enableInternalStratum"]);
+            Assert.True(pool["blockRefreshInterval"]?.Value<int?>() >= 0,
+                $"{fileName}: pool '{poolId}' must explicitly configure a " +
+                "non-negative blockRefreshInterval");
+            Assert.True(pool["jobRebroadcastTimeout"]?.Value<int?>() >= 0,
+                $"{fileName}: pool '{poolId}' must explicitly configure a " +
+                "non-negative jobRebroadcastTimeout");
+            Assert.Equal(600,
+                pool["clientConnectionTimeout"]?.Value<int?>());
+
+            var paymentProcessing = pool["paymentProcessing"] as JObject;
+            Assert.NotNull(paymentProcessing);
+            Assert.True(paymentProcessing["minimumPayment"]?.Value<decimal?>() >
+                0m, $"{fileName}: pool '{poolId}' must use a positive " +
+                "minimumPayment");
+            Assert.False(string.IsNullOrWhiteSpace(
+                paymentProcessing["payoutScheme"]?.Value<string>()));
+
+            foreach(var daemon in pool["daemons"]?.Children<JObject>() ??
+                        Enumerable.Empty<JObject>())
+            {
+                Assert.Equal("127.0.0.1",
+                    daemon["host"]?.Value<string>());
+                Assert.InRange(daemon["port"]?.Value<int>() ?? 0,
+                    1, ushort.MaxValue);
+            }
+
+            if(configuredPool.Enabled &&
+                configuredPool.EnableInternalStratum == true)
+            {
+                Assert.Equal(30,
+                    pool["vardiffIdleSweepInterval"]?.Value<int?>());
+            }
 
             Assert.True(address?.StartsWith("CHANGE_ME_",
                     StringComparison.Ordinal) == true,
                 $"{fileName}: pool '{poolId}' must use a CHANGE_ME primary " +
                 "wallet placeholder");
+
+            if(coin.Equals("bitcoin-cash",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Assert.Equal("BCash",
+                    pool["addressType"]?.Value<string>());
+            }
 
             foreach(var propertyName in new[] { "pubKey", "z-address" })
             {
@@ -420,6 +483,92 @@ public class ConfigurationContractTests
                     $"{fileName}: pool '{poolId}' has an unexpected reward " +
                     $"recipient address '{recipientAddress}'");
                 Assert.Equal(0m, percentage);
+            }
+        }
+
+        AssertInternalStratumDifficultyTiers(fileName, document, config);
+    }
+
+    [Fact]
+    public void BitcoinCashExampleDonationAddress_ParsesAsMainnetCashAddr()
+    {
+        var address = ApprovedExampleDonationAddresses["bitcoin-cash"];
+
+        Assert.NotNull(BitcoinUtils.BCashAddressToDestination(address,
+            Network.Main));
+    }
+
+    private static void AssertConfigExampleRewardRecipientPlaceholders(
+        JObject document)
+    {
+        foreach(var pool in document["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var poolId = pool["id"]?.Value<string>() ?? "<unknown>";
+            var recipients = pool["rewardRecipients"] as JArray;
+
+            Assert.True(recipients?.Count > 0,
+                $"config.example.json: pool '{poolId}' must demonstrate " +
+                "a zero-percent reward-recipient placeholder");
+
+            foreach(var recipient in recipients.Children<JObject>())
+            {
+                Assert.StartsWith("CHANGE_ME_",
+                    recipient["address"]?.Value<string>());
+                Assert.Equal(0m,
+                    recipient["percentage"]?.Value<decimal?>());
+            }
+        }
+    }
+
+    private static void AssertInternalStratumDifficultyTiers(string fileName,
+        JObject document, ClusterConfig config)
+    {
+        foreach(var configuredPool in config.Pools.Where(pool =>
+                    pool.Enabled && pool.EnableInternalStratum == true))
+        {
+            var pool = document["pools"]?.Children<JObject>()
+                .Single(item => item["id"]?.Value<string>() ==
+                    configuredPool.Id);
+            var endpoints = pool?["ports"]?.Children<JProperty>()
+                .Select(property => property.Value as JObject)
+                .Where(endpoint => endpoint != null)
+                .ToArray() ?? Array.Empty<JObject>();
+            var low = endpoints.SingleOrDefault(endpoint =>
+                endpoint["name"]?.Value<string>()?.EndsWith("LOW-DIFF",
+                    StringComparison.Ordinal) == true);
+            var high = endpoints.SingleOrDefault(endpoint =>
+                endpoint["name"]?.Value<string>()?.EndsWith("HIGH-DIFF",
+                    StringComparison.Ordinal) == true);
+
+            Assert.NotNull(low);
+            Assert.NotNull(high);
+
+            var lowDifficulty = low["difficulty"]?.Value<double>() ?? 0;
+            var highDifficulty = high["difficulty"]?.Value<double>() ?? 0;
+
+            Assert.True(lowDifficulty > 0,
+                $"{fileName}: pool '{configuredPool.Id}' low tier must use " +
+                "a positive initial difficulty");
+            Assert.True(highDifficulty > lowDifficulty,
+                $"{fileName}: pool '{configuredPool.Id}' high tier must " +
+                "start above its low tier");
+
+            foreach(var endpoint in endpoints)
+            {
+                var varDiff = endpoint["varDiff"] as JObject;
+                var difficulty = endpoint["difficulty"]?.Value<double>() ?? 0;
+                var minDifficulty = varDiff?["minDiff"]?.Value<double>() ?? 0;
+
+                Assert.NotNull(varDiff);
+                Assert.True(minDifficulty > 0);
+                Assert.True(minDifficulty <= difficulty);
+                Assert.Equal(15d,
+                    varDiff["targetTime"]?.Value<double>());
+                Assert.Equal(90d,
+                    varDiff["retargetTime"]?.Value<double>());
+                Assert.Equal(30d,
+                    varDiff["variancePercent"]?.Value<double>());
             }
         }
     }

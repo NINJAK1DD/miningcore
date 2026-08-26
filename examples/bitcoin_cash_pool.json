@@ -1,14 +1,13 @@
 {
   // Starter configuration: replace every CHANGE_ME value and review it before use.
   // See README.md and ../config.example.json for topology and field guidance.
+  // Direct Bitcoin Cash SOLO pool using Bitcoin Cash Node and CashAddr wallets.
+  "clusterName": "bitcoin-cash-example",
   "logging": {
     "level": "info",
     "enableConsoleLog": true,
     "enableConsoleColors": true,
-    "logFile": "miningcore.log",
-    "apiLogFile": "miningcore-api.log",
-    "logBaseDirectory": "logs",
-    "perPoolLogFile": false
+    "logFile": "miningcore.log"
   },
   "banning": {
     "manager": "Integrated",
@@ -16,20 +15,17 @@
     "banOnInvalidShares": true,
     "banOnLoginFailure": true
   },
-  "notifications": {
-    "enabled": false,
-    "email": {
-      "host": "smtp.example.com",
-      "port": 587,
-      "user": "CHANGE_ME_SMTP_USER",
-      "password": "CHANGE_ME_SMTP_PASSWORD",
-      "fromAddress": "pool@example.com",
-      "fromName": "Miningcore operator"
-    },
-    "admin": {
-      "enabled": false,
-      "emailAddress": "user@example.com",
-      "notifyBlockFound": true
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false,
+    "rateLimiting": {
+      "disabled": true
     }
   },
   "persistence": {
@@ -47,61 +43,48 @@
     "coinbaseString": "Miningcore"
   },
   "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
-  "api": {
-    "enabled": true,
-    "listenAddress": "127.0.0.1",
-    "port": 4000,
-    "adminPort": 4001,
-    "metricsPort": 4002,
-    "adminIpWhitelist": [ "127.0.0.1" ],
-    "metricsIpWhitelist": [ "127.0.0.1" ],
-    "legacyNullValueHandling": false,
-    "rateLimiting": {
-      "disabled": true
-    }
-  },
   "pools": [
     {
-      "id": "flo1",
+      "id": "bitcoin-cash-solo",
       "enabled": true,
-      "coin": "flo",
-      "address": "CHANGE_ME_FLO_POOL_WALLET_ADDRESS",
+      "coin": "bitcoin-cash",
+      "addressType": "BCash",
+      "address": "CHANGE_ME_BITCOIN_CASH_POOL_WALLET_CASHADDR",
+      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
       "rewardRecipients": [
         {
-          "address": "CHANGE_ME_FLO_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "address": "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
           "percentage": 0
         }
       ],
-      "maxActiveJobs": 10,
       "enableInternalStratum": true,
-      "blockRefreshInterval": 500,
+      // Bitcoin Cash Node is polled once per second and jobs are rebroadcast after 10 seconds.
+      "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,
       "clientConnectionTimeout": 600,
       "vardiffIdleSweepInterval": 30,
-      "banning": {
-        "enabled": true,
-        "time": 600,
-        "invalidPercent": 50,
-        "checkThreshold": 50
-      },
       "ports": {
-        "3042": {
+        "3052": {
+          "name": "BCH-LOW-DIFF",
           "listenAddress": "*",
           "difficulty": 8192,
-          "name": "FLO-LOW-DIFF",
           "varDiff": {
             "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
           }
         },
-        "3043": {
+        "3053": {
+          "name": "BCH-HIGH-DIFF",
           "listenAddress": "*",
-          "difficulty": 524287,
-          "name": "FLO-HIGH-DIFF",
+          "difficulty": 1048576,
           "varDiff": {
-            "minDiff": 65535,
+            "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
@@ -111,18 +94,23 @@
       "daemons": [
         {
           "host": "127.0.0.1",
-          "port": 7313,
-          "user": "CHANGE_ME_DAEMON_RPC_USER",
-          "password": "CHANGE_ME_DAEMON_RPC_PASSWORD"
+          // Bitcoin Cash Node mainnet JSON-RPC default.
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_CASH_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_CASH_RPC_PASSWORD"
+          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:29332"
         }
       ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
       "paymentProcessing": {
         "enabled": true,
-        "minimumPayment": 0.5,
-        "payoutScheme": "PPLNS",
-        "payoutSchemeConfig": {
-          "factor": 2.0
-        }
+        "minimumPayment": 0.01,
+        "payoutScheme": "SOLO"
       }
     }
   ]

@@ -72,8 +72,11 @@
           "percentage": 0
         }
       ],
+      "enableInternalStratum": true,
       "blockRefreshInterval": 500,
+      "jobRebroadcastTimeout": 0,
       "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
       "banning": {
         "enabled": true,
         "time": 600,
@@ -82,9 +85,9 @@
       },
       "ports": {
         "3032": {
-          "listenAddress": "0.0.0.0",
+          "listenAddress": "*",
           "difficulty": 7500,
-          "name": "CPU Mining",
+          "name": "XMR-LOW-DIFF",
           "varDiff": {
             "minDiff": 1000,
             "maxDiff": null,
@@ -94,9 +97,9 @@
           }
         },
         "3033": {
-          "listenAddress": "0.0.0.0",
+          "listenAddress": "*",
           "difficulty": 25000,
-          "name": "GPU Mining",
+          "name": "XMR-MEDIUM-DIFF",
           "varDiff": {
             "minDiff": 10000,
             "maxDiff": null,
@@ -106,14 +109,14 @@
           }
         },
         "3034": {
-          "listenAddress": "0.0.0.0",
+          "listenAddress": "*",
           "difficulty": 200000,
-          "name": "High-End Multi GPU Mining",
+          "name": "XMR-HIGH-DIFF",
           "varDiff": {
             "minDiff": 200000,
             "maxDiff": null,
             "targetTime": 15,
-            "retargetTime": 120,
+            "retargetTime": 90,
             "variancePercent": 30
           }
         }
