@@ -498,6 +498,31 @@ public class ConfigurationContractTests
             Network.Main));
     }
 
+    [Fact]
+    public void CombinedBitcoinCashExample_UsesNonConflictingNodePorts()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "examples",
+            "bitcoin_bitcoin_cash_pool.json");
+        var source = File.ReadAllText(path);
+        var document = ParseConfigurationDocument(source);
+        var bitcoin = document["pools"]?.Children<JObject>().Single(pool =>
+            pool["coin"]?.Value<string>() == "bitcoin");
+        var bitcoinCash = document["pools"]?.Children<JObject>().Single(pool =>
+            pool["coin"]?.Value<string>() == "bitcoin-cash");
+        var bitcoinRpcPort = bitcoin?["daemons"]?.First?["port"]?.Value<int>();
+        var bitcoinCashRpcPort = bitcoinCash?["daemons"]?.First?["port"]
+            ?.Value<int>();
+
+        Assert.Equal(8332, bitcoinRpcPort);
+        Assert.Equal(8432, bitcoinCashRpcPort);
+        Assert.NotEqual(bitcoinRpcPort, bitcoinCashRpcPort);
+        Assert.Contains("rpcport=8432", source, StringComparison.Ordinal);
+        Assert.Contains("port=8433", source, StringComparison.Ordinal);
+        Assert.Contains("listenonion=0", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("rpcport=8334", source,
+            StringComparison.Ordinal);
+    }
+
     private static void AssertConfigExampleRewardRecipientPlaceholders(
         JObject document)
     {

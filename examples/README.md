@@ -72,11 +72,20 @@ Dogecoin is not merge-mined with Bitcoin. The Bitcoin/Dogecoin example runs two 
 Use the Litecoin/Dogecoin example for AuxPoW merged mining and read the
 [merged-mining guide](../docs/merged-mining-litecoin-dogecoin.md) before enabling it.
 
-Bitcoin and Bitcoin Cash are also independent in the combined example. Both daemons default to the
-same JSON-RPC port, so the combined same-host topology assigns Bitcoin Cash Node port `8334`; set
-`rpcport=8334` in that node's separate data directory. Bitcoin Cash pool and reward addresses use
-the explicit `bitcoincash:` CashAddr prefix required by Miningcore's current parser, and
-`addressType` remains `BCash`.
+Bitcoin and Bitcoin Cash are also independent in the combined example. Their normal mainnet RPC,
+P2P and automatic-onion listeners overlap. The collision-free same-host baseline keeps Bitcoin Core
+on its defaults and requires these entries in Bitcoin Cash Node's separate `bitcoin.conf`:
+
+```ini
+rpcport=8432
+port=8433
+listenonion=0
+```
+
+The Miningcore BCH daemon endpoint uses `8432`. If the BCH node must provide an inbound onion
+service, replace `listenonion=0` with a separately reviewed non-conflicting onion bind and Tor target.
+Bitcoin Cash pool and reward addresses use the explicit `bitcoincash:` CashAddr prefix required by
+Miningcore's current parser, and `addressType` remains `BCash`.
 
 ## Additional coin examples
 

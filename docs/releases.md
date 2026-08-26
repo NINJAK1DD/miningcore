@@ -1109,8 +1109,10 @@ shutdown and conservatively attempt bounded relock when the unlock result is unk
 
 The packaged catalogue includes standalone Bitcoin Cash and combined Bitcoin/Bitcoin Cash SOLO
 examples. Bitcoin Cash uses the bundled `bitcoin-cash` template, `BCash` address decoding and
-CashAddr wallet fields. The same-host combined topology assigns Bitcoin Cash Node a non-default RPC
-port so it cannot collide with Bitcoin Core.
+CashAddr wallet fields. The same-host combined topology keeps Bitcoin Core on its mainnet defaults
+and assigns Bitcoin Cash Node RPC port `8432` and P2P port `8433`. It also disables BCHN's automatic
+onion listener in this baseline so neither daemon competes for loopback port `8334`; operators that
+need a BCH onion service must configure a separate non-conflicting onion bind and Tor target.
 
 Every example that exposes internal Stratum now has named low- and high-difficulty tiers with
 VarDiff. Receiver-only share recorders and auxiliary-only pools remain single dormant endpoint

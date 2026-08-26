@@ -157,8 +157,15 @@
       "daemons": [
         {
           "host": "127.0.0.1",
-          // Set rpcport=8334 in bitcoin.conf for this same-host BCH node.
-          "port": 8334,
+          // For this same-host topology, set all three lines in the BCH node's
+          // separate bitcoin.conf:
+          // rpcport=8432
+          // port=8433
+          // listenonion=0
+          // The last setting prevents either node from competing for the conventional
+          // 127.0.0.1:8334 automatic-onion listener. Configure a separate, reviewed
+          // BCH onion bind instead if inbound Tor service is required.
+          "port": 8432,
           "user": "CHANGE_ME_BITCOIN_CASH_RPC_USER",
           "password": "CHANGE_ME_BITCOIN_CASH_RPC_PASSWORD"
         }
