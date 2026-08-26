@@ -372,35 +372,13 @@
         }
       ],
       // A ports object is part of the pool contract even when internal Stratum is disabled.
-      // These mirror the normal low/high Scrypt tiers but are not opened until
-      // enableInternalStratum is deliberately changed to true.
+      // Keep one dormant direct-mining endpoint: merged miners use the LTC ports above.
       "ports": {
         "3042": {
           // This port is not opened while enableInternalStratum is false.
-          "name": "DOGE-LOW-DIFF-DISABLED",
+          "name": "DOGE-DIRECT-DISABLED",
           "listenAddress": "127.0.0.1",
-          "difficulty": 1024,
-          "varDiff": {
-            "minDiff": 512,
-            "maxDiff": null,
-            "maxDelta": null,
-            "targetTime": 15,
-            "retargetTime": 90,
-            "variancePercent": 30
-          }
-        },
-        "3043": {
-          "name": "DOGE-HIGH-DIFF-DISABLED",
-          "listenAddress": "127.0.0.1",
-          "difficulty": 65536,
-          "varDiff": {
-            "minDiff": 32768,
-            "maxDiff": null,
-            "maxDelta": null,
-            "targetTime": 15,
-            "retargetTime": 90,
-            "variancePercent": 30
-          }
+          "difficulty": 1024
         }
       },
       // Dogecoin Core RPC used for createauxblock, submitauxblock, proof attribution,

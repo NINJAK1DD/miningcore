@@ -130,11 +130,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         coin = poolConfig.Template.As<CoinTemplate>();
         if(coin is BitcoinTemplate bitcoinTemplate)
         {
-            minConfirmations = extraPoolEndpointConfig?.MinimumConfirmations ?? bitcoinTemplate.CoinbaseMinConfimations ?? BitcoinConstants.CoinbaseMinConfimations;
+            minConfirmations = extraPoolConfig?.MinimumConfirmations ??
+                bitcoinTemplate.CoinbaseMinConfimations ??
+                BitcoinConstants.CoinbaseMinConfimations;
             payoutDecimalPlaces = bitcoinTemplate.PayoutDecimalPlaces ?? 4;
         }
         else
-            minConfirmations = extraPoolEndpointConfig?.MinimumConfirmations ?? BitcoinConstants.CoinbaseMinConfimations;
+            minConfirmations = extraPoolConfig?.MinimumConfirmations ??
+                BitcoinConstants.CoinbaseMinConfimations;
 
         logger = LogUtil.GetPoolScopedLogger(typeof(BitcoinPayoutHandler), pc);
 

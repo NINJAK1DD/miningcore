@@ -1149,6 +1149,12 @@ family's runtime types. Unknown, mis-cased, wrong-family, wrong-scope and wrong-
 suite. This closes the class of fixture error in which a misplaced or ineffective extension remains
 structurally valid but is ignored after extension-data binding.
 
+Bitcoin-derived configuration now represents the established runtime scopes explicitly:
+pool-level `minimumConfirmations` controls payout reconciliation, while daemon-level
+`zmqBlockNotifySocket` and `zmqBlockNotifyTopic` control template notifications. The previous public
+`BitcoinDaemonEndpointConfigExtra` aggregate remains available for external .NET compatibility, but
+Miningcore binds the two runtime paths through scope-specific contracts.
+
 `config.example.json` demonstrates inactive zero-percent reward-recipient placeholders instead of
 empty arrays. These placeholders do not collect rewards and must be replaced or removed with every
 other `CHANGE_ME` value before production.

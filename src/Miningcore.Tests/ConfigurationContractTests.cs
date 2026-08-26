@@ -102,7 +102,7 @@ public class ConfigurationContractTests
                         typeof(BitcoinPoolConfigExtra),
                         typeof(MergedMiningPoolConfigExtra),
                     },
-                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinDaemonNotificationConfigExtra) },
                     new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
                 [CoinFamily.Conceal] = Contract(
                     new[] { typeof(ConcealPoolConfigExtra) },
@@ -121,7 +121,7 @@ public class ConfigurationContractTests
                         typeof(BitcoinPoolConfigExtra),
                         typeof(EquihashPoolConfigExtra),
                     },
-                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinDaemonNotificationConfigExtra) },
                     new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
                 [CoinFamily.Ergo] = Contract(
                     new[] { typeof(ErgoPoolConfigExtra) },
@@ -136,7 +136,7 @@ public class ConfigurationContractTests
                     }),
                 [CoinFamily.Handshake] = Contract(
                     new[] { typeof(BitcoinPoolConfigExtra) },
-                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinDaemonNotificationConfigExtra) },
                     new[]
                     {
                         typeof(HandshakePoolPaymentProcessingConfigExtra),
@@ -151,7 +151,7 @@ public class ConfigurationContractTests
                 [CoinFamily.Progpow] = BitcoinFamilyContract(),
                 [CoinFamily.Satoshicash] = Contract(
                     new[] { typeof(SatoshicashPoolConfigExtra) },
-                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinDaemonNotificationConfigExtra) },
                     new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
                 [CoinFamily.Warthog] = Contract(
                     new[] { typeof(WarthogPoolConfigExtra) },
@@ -320,6 +320,7 @@ public class ConfigurationContractTests
         AssertOnlyReviewedExtensions("config.example.json", document);
         AssertConfigExampleRewardRecipientPlaceholders(document);
         AssertConfigExampleOperationalPolicy(document);
+        AssertConfigExampleAuxiliaryPoolPolicy(document, config);
         AssertExamplePortsDoNotConflict("config.example.json", document,
             config);
         AssertInternalStratumDifficultyTiers("config.example.json",
@@ -626,6 +627,49 @@ public class ConfigurationContractTests
     }
 
     [Fact]
+    public void BitcoinExtensionGuard_AcceptsAndBindsPoolMinimumConfirmations()
+    {
+        var document = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "bitcoin_pool.json")));
+        var pool = Assert.IsType<JObject>(document["pools"]?.First);
+        pool["minimumConfirmations"] = 120;
+
+        Assert.DoesNotContain($"{pool["id"]}.minimumConfirmations",
+            FindInvalidExtensionProperties(document));
+
+        var path = WriteTemporaryConfig(document);
+
+        try
+        {
+            var config = Program.ReadConfig(path, false);
+            var extra = config.Pools.Single().Extra
+                .SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+
+            Assert.Equal(120, extra?.MinimumConfirmations);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void BitcoinExtensionGuard_RejectsDaemonMinimumConfirmations()
+    {
+        var document = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "bitcoin_pool.json")));
+        var pool = Assert.IsType<JObject>(document["pools"]?.First);
+        var daemon = Assert.IsType<JObject>(pool["daemons"]?.First);
+        daemon["minimumConfirmations"] = 120;
+
+        Assert.Contains(
+            $"{pool["id"]}.daemons[0].minimumConfirmations",
+            FindInvalidExtensionProperties(document));
+    }
+
+    [Fact]
     public void ShippedExampleExtensionGuard_RejectsWrongFamilyProperties()
     {
         var ethereumDocument = ParseConfigurationDocument(File.ReadAllText(
@@ -862,6 +906,27 @@ public class ConfigurationContractTests
             "application rate limiting enabled");
     }
 
+    private static void AssertConfigExampleAuxiliaryPoolPolicy(
+        JObject document, ClusterConfig config)
+    {
+        var parent = document["pools"]?.Children<JObject>().Single(pool =>
+            pool.SelectToken("mergedMining.auxPoolId")?.Value<string>() ==
+            "doge-solo");
+        var auxiliary = document["pools"]?.Children<JObject>().Single(pool =>
+            pool["id"]?.Value<string>() == "doge-solo");
+        var configuredAuxiliary = config.Pools.Single(pool =>
+            pool.Id == "doge-solo");
+        var endpoint = Assert.Single(
+            auxiliary["ports"]?.Children<JProperty>() ??
+            Enumerable.Empty<JProperty>());
+
+        Assert.NotNull(parent);
+        Assert.False(configuredAuxiliary.EnableInternalStratum);
+        Assert.Equal("3042", endpoint.Name);
+        Assert.Equal("DOGE-DIRECT-DISABLED",
+            endpoint.Value["name"]?.Value<string>());
+    }
+
     private static void AssertConfigExampleRewardRecipientPlaceholders(
         JObject document)
     {
@@ -1027,7 +1092,7 @@ public class ConfigurationContractTests
 
     private static ExampleExtensionContract BitcoinFamilyContract() =>
         Contract(new[] { typeof(BitcoinPoolConfigExtra) },
-            new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+            new[] { typeof(BitcoinDaemonNotificationConfigExtra) },
             new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) });
 
     private static ExampleExtensionContract Contract(Type[] poolTypes = null,

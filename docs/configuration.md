@@ -335,6 +335,12 @@ notification settings, and CryptoNote or Equihash tuning fields. These values in
 through the shared JSON schema as extension data and are bound only by the matching coin-family
 implementation.
 
+Scope is part of the contract. For Bitcoin-derived pools, place `minimumConfirmations` on the pool
+object because payout reconciliation consumes it there. Place `zmqBlockNotifySocket` and optional
+`zmqBlockNotifyTopic` on an individual daemon endpoint because template notification consumes them
+there. Moving any of these fields between those objects makes the setting ineffective and is
+rejected in shipped examples.
+
 That flexibility means a structurally valid key can still be ineffective when placed at the wrong
 level or copied to an unrelated coin family. Start from the matching file in the
 [example configuration index](../examples/README.md), retain its exact camel-case spelling and

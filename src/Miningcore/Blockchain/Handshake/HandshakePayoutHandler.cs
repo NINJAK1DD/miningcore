@@ -79,11 +79,14 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
         coin = poolConfig.Template.As<CoinTemplate>();
         if(coin is BitcoinTemplate bitcoinTemplate)
         {
-            minConfirmations = extraPoolEndpointConfig?.MinimumConfirmations ?? bitcoinTemplate.CoinbaseMinConfimations ?? HandshakeConstants.CoinbaseMinConfimations;
+            minConfirmations = extraPoolConfig?.MinimumConfirmations ??
+                bitcoinTemplate.CoinbaseMinConfimations ??
+                HandshakeConstants.CoinbaseMinConfimations;
             payoutDecimalPlaces = bitcoinTemplate.PayoutDecimalPlaces ?? 6;
         }
         else
-            minConfirmations = extraPoolEndpointConfig?.MinimumConfirmations ?? HandshakeConstants.CoinbaseMinConfimations;
+            minConfirmations = extraPoolConfig?.MinimumConfirmations ??
+                HandshakeConstants.CoinbaseMinConfimations;
 
         logger = LogUtil.GetPoolScopedLogger(typeof(HandshakePayoutHandler), pc);
 

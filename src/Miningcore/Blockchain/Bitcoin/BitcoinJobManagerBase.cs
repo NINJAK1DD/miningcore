@@ -94,10 +94,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         {
             // collect ports
             var zmq = poolConfig.Daemons
-                .Where(x => !string.IsNullOrEmpty(x.Extra.SafeExtensionDataAs<BitcoinDaemonEndpointConfigExtra>()?.ZmqBlockNotifySocket))
+                .Where(x => !string.IsNullOrEmpty(x.Extra
+                    .SafeExtensionDataAs<BitcoinDaemonNotificationConfigExtra>()?
+                    .ZmqBlockNotifySocket))
                 .ToDictionary(x => x, x =>
                 {
-                    var extra = x.Extra.SafeExtensionDataAs<BitcoinDaemonEndpointConfigExtra>();
+                    var extra = x.Extra
+                        .SafeExtensionDataAs<BitcoinDaemonNotificationConfigExtra>();
                     var topic = !string.IsNullOrEmpty(extra.ZmqBlockNotifyTopic?.Trim()) ? extra.ZmqBlockNotifyTopic.Trim() : BitcoinConstants.ZmqPublisherTopicBlockHash;
 
                     return (Socket: extra.ZmqBlockNotifySocket, Topic: topic);
