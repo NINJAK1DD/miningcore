@@ -18,6 +18,21 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 
 public class BitcoinJobTests : TestBase
 {
+    [Fact]
+    public void ResolveAddressDestination_BCashUsesSuppliedAddress()
+    {
+        const string address =
+            "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de";
+        var expected = BitcoinUtils.BCashAddressToDestination(address,
+            Network.Main);
+
+        var actual = BitcoinJobManagerBase<BitcoinJob>
+            .ResolveAddressDestination(address, BitcoinAddressType.BCash,
+                Network.Main);
+
+        Assert.Equal(expected.ScriptPubKey, actual.ScriptPubKey);
+    }
+
     [Theory]
     [InlineData(1, "main", false, true)]
     [InlineData(0, "regtest", true, true)]

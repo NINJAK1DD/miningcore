@@ -73,9 +73,11 @@
         }
       ],
       "maxActiveJobs": 10,
+      "enableInternalStratum": true,
       "blockRefreshInterval": 500,
       "jobRebroadcastTimeout": 10,
       "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
       "banning": {
         "enabled": true,
         "time": 600,
@@ -83,12 +85,23 @@
         "checkThreshold": 50
       },
       "ports": {
-        "3043": {
-          "listenAddress": "0.0.0.0",
-          "difficulty": 524287,
-          "name": "NiceHash Mining",
+        "3042": {
+          "listenAddress": "*",
+          "difficulty": 1024,
+          "name": "FLO-LOW-DIFF",
           "varDiff": {
-            "minDiff": 65535,
+            "minDiff": 512,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3043": {
+          "listenAddress": "*",
+          "difficulty": 65536,
+          "name": "FLO-HIGH-DIFF",
+          "varDiff": {
+            "minDiff": 32768,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30

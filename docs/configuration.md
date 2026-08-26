@@ -13,13 +13,16 @@ the operator configured; it is not silently converted to a date or rewritten for
 or time zone. This policy applies to configuration files, not daemon RPC, Stratum or
 recovery-journal JSON readers.
 
-The exhaustive machine-readable reference is [`config.schema.json`](../src/Miningcore/config.schema.json).
-Coin-family extensions are intentionally flexible and may also be documented beside their implementation.
+The machine-readable [`config.schema.json`](../src/Miningcore/config.schema.json) validates shared
+typed structure before CLR binding. It is not an exhaustive catalogue of coin-family extension
+fields carried through `JsonExtensionData`; use the reviewed examples and the
+[coin-specific guidance](#coin-specific-extension-fields) for those settings.
 
 | Task | Section |
 | --- | --- |
 | Choose a complete example topology | [Example configurations](../examples/README.md) |
 | Configure a pool and miner difficulty | [Pool basics](#pool-basics) |
+| Configure a coin-family-only field | [Coin-specific extension fields](#coin-specific-extension-fields) |
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
@@ -73,6 +76,13 @@ schema's required list, because that would prevent `-rs` from loading its saniti
 The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff` block allows the pool
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
+
+Shipped miner-facing examples expose low and high starting tiers with VarDiff enabled. Their common
+15-second target, 90-second retarget interval and 30% variance band are commissioning baselines, not
+hardware classifications. Select the tier that produces prompt first shares, then verify accepted
+share cadence under the real miner fleet. Receiver-only and auxiliary-only examples deliberately do
+not advertise duplicate dormant tiers. See the [example index](../examples/README.md) for the audited
+common and coin-specific defaults.
 
 Each `ports` entry must contain an endpoint object. The endpoint's `listenAddress` may be omitted to
 use the `127.0.0.1` default, but the endpoint object itself must not be replaced with JSON `null` for
@@ -316,6 +326,27 @@ Native proof validation can consume substantial CPU and memory:
 
 Do not copy a setting from a different coin merely because it uses the same broad family. Read the
 coin definition and daemon/wallet documentation together.
+
+### Coin-specific extension fields
+
+Pool, daemon and payment extensions let coin families expose settings that are not common to every
+Miningcore pool. Examples include Bitcoin-family `addressType` and `gbtArgs`, daemon-level ZMQ
+notification settings, and CryptoNote or Equihash tuning fields. These values intentionally pass
+through the shared JSON schema as extension data and are bound only by the matching coin-family
+implementation.
+
+Scope is part of the contract. For Bitcoin-derived pools, place `minimumConfirmations` on the pool
+object because payout reconciliation consumes it there. Place `zmqBlockNotifySocket` and optional
+`zmqBlockNotifyTopic` on an individual daemon endpoint because template notification consumes them
+there. Moving any of these fields between those objects makes the setting ineffective and is
+rejected in shipped examples.
+
+That flexibility means a structurally valid key can still be ineffective when placed at the wrong
+level or copied to an unrelated coin family. Start from the matching file in the
+[example configuration index](../examples/README.md), retain its exact camel-case spelling and
+nesting, and verify the daemon or wallet feature during staged startup. CI derives the permitted
+pool, daemon and payment fields from each family's concrete runtime contracts and rejects unknown,
+mis-cased, wrong-family, wrong-scope and wrong-typed extension values in every shipped example.
 
 ## Log files and rotation
 

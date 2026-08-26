@@ -69,9 +69,11 @@
             "address": "ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg",
             "percentage": 0
         }],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 500,
         "jobRebroadcastTimeout": 10,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -80,11 +82,22 @@
         },
         "ports": {
             "3042": {
-                "listenAddress": "0.0.0.0",
+                "listenAddress": "*",
                 "difficulty": 1024,
-                "name": "ASIC Mining",
+                "name": "LTC-LOW-DIFF",
                 "varDiff": {
                     "minDiff": 512,
+                    "targetTime": 15,
+                    "retargetTime": 90,
+                    "variancePercent": 30
+                }
+            },
+            "3043": {
+                "listenAddress": "*",
+                "difficulty": 65536,
+                "name": "LTC-HIGH-DIFF",
+                "varDiff": {
+                    "minDiff": 32768,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30
@@ -116,9 +129,11 @@
             "address": "CHANGE_ME_DASH_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
             "percentage": 0
         }],
-        "blockRefreshInterval": 1000,
-        "jobRebroadcastTimeout": 55,
+        "enableInternalStratum": true,
+        "blockRefreshInterval": 500,
+        "jobRebroadcastTimeout": 10,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -127,11 +142,22 @@
         },
         "ports": {
             "3062": {
-                "listenAddress": "0.0.0.0",
+                "listenAddress": "*",
                 "difficulty": 1024,
-                "name": "ASIC Mining",
+                "name": "DASH-LOW-DIFF",
                 "varDiff": {
                     "minDiff": 512,
+                    "targetTime": 15,
+                    "retargetTime": 90,
+                    "variancePercent": 30
+                }
+            },
+            "3063": {
+                "listenAddress": "*",
+                "difficulty": 65536,
+                "name": "DASH-HIGH-DIFF",
+                "varDiff": {
+                    "minDiff": 32768,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30

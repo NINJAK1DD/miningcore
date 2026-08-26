@@ -73,9 +73,11 @@
                     "percentage": 0
                 }
             ],
+            "enableInternalStratum": true,
             "blockRefreshInterval": 250,
             "jobRebroadcastTimeout": 3,
             "clientConnectionTimeout": 600,
+            "vardiffIdleSweepInterval": 30,
             "banning": {
                 "enabled": true,
                 "time": 600,
@@ -84,29 +86,31 @@
             },
             "ports": {
                 "3364": {
-                    "listenAddress": "0.0.0.0",
+                    "name": "ZANO-LOW-DIFF",
+                    "listenAddress": "*",
                     "difficulty": 250000000,
                     "varDiff": {
-                        "minDiff": 250000000,
+                        "minDiff": 125000000,
                         "maxDiff": null,
                         "targetTime": 15,
                         "retargetTime": 90,
                         "variancePercent": 30,
-                        "maxDelta": 500
+                        "maxDelta": 250000000
                     }
                 },
                 "3365": {
-                    "listenAddress": "0.0.0.0",
-                    "difficulty": 250000000,
+                    "name": "ZANO-HIGH-DIFF",
+                    "listenAddress": "*",
+                    "difficulty": 4000000000,
                     "tls": false,
                     // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                     "varDiff": {
-                        "minDiff": 250000000,
+                        "minDiff": 2000000000,
                         "maxDiff": null,
                         "targetTime": 15,
                         "retargetTime": 90,
                         "variancePercent": 30,
-                        "maxDelta": 500
+                        "maxDelta": 4000000000
                     }
                 }
             },

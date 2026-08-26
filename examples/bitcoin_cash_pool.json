@@ -1,8 +1,8 @@
 {
   // Starter configuration: replace every CHANGE_ME value and review it before use.
   // See README.md and ../config.example.json for topology and field guidance.
-  // Direct Dogecoin SOLO pool. This is not an AuxPoW merged-mining example.
-  "clusterName": "dogecoin-example",
+  // Direct Bitcoin Cash SOLO pool using Bitcoin Cash Node and CashAddr wallets.
+  "clusterName": "bitcoin-cash-example",
   "logging": {
     "level": "info",
     "enableConsoleLog": true,
@@ -45,40 +45,48 @@
   "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
   "pools": [
     {
-      "id": "dogecoin-solo",
+      "id": "bitcoin-cash-solo",
       "enabled": true,
-      "coin": "dogecoin",
-      "address": "CHANGE_ME_DOGECOIN_POOL_WALLET_ADDRESS",
+      "coin": "bitcoin-cash",
+      "addressType": "BCash",
+      // Use a mainnet P2PKH CashAddr beginning with q. P2SH CashAddr values
+      // beginning with p are not supported by the current payout path.
+      "address": "CHANGE_ME_BITCOIN_CASH_POOL_WALLET_CASHADDR",
       // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
       "rewardRecipients": [
         {
-          "address": "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
+          "address": "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
           "percentage": 0
         }
       ],
       "enableInternalStratum": true,
+      // Bitcoin Cash Node is polled once per second and jobs are rebroadcast after 10 seconds.
       "blockRefreshInterval": 1000,
       "jobRebroadcastTimeout": 10,
       "clientConnectionTimeout": 600,
       "vardiffIdleSweepInterval": 30,
       "ports": {
-        "3042": {
-          "name": "DOGE-LOW-DIFF",
+        "3052": {
+          "name": "BCH-LOW-DIFF",
           "listenAddress": "*",
-          "difficulty": 1024,
+          "difficulty": 8192,
           "varDiff": {
-            "minDiff": 512,
+            "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
           }
         },
-        "3043": {
-          "name": "DOGE-HIGH-DIFF",
+        "3053": {
+          "name": "BCH-HIGH-DIFF",
           "listenAddress": "*",
-          "difficulty": 65536,
+          "difficulty": 1048576,
           "varDiff": {
-            "minDiff": 32768,
+            "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
@@ -88,10 +96,11 @@
       "daemons": [
         {
           "host": "127.0.0.1",
-          "port": 22555,
-          "user": "CHANGE_ME_DOGECOIN_RPC_USER",
-          "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD"
-          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:44556"
+          // Bitcoin Cash Node mainnet JSON-RPC default.
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_CASH_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_CASH_RPC_PASSWORD"
+          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:29332"
         }
       ],
       "banning": {
@@ -102,7 +111,7 @@
       },
       "paymentProcessing": {
         "enabled": true,
-        "minimumPayment": 1.0,
+        "minimumPayment": 0.01,
         "payoutScheme": "SOLO"
       }
     }

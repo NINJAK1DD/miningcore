@@ -43,7 +43,7 @@
     },
     "paymentProcessing": {
         "enabled": true,
-        "interval": 100,
+        "interval": 600,
         "coinbaseString": "Miningcore"
     },
     "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
@@ -74,8 +74,11 @@
             "percentage": 0
           }
         ],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 120,
+        "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
           "enabled": true,
           "time": 600,
@@ -84,11 +87,23 @@
         },
         "ports": {
           "4073": {
-            "name": "GPU-SMALL",
+            "name": "ETH-LOW-DIFF",
             "listenAddress": "*",
             "difficulty": 0.1,
             "varDiff": {
-              "minDiff": 0.1,
+              "minDiff": 0.05,
+              "maxDiff": null,
+              "targetTime": 15,
+              "retargetTime": 90,
+              "variancePercent": 30
+            }
+          },
+          "4074": {
+            "name": "ETH-HIGH-DIFF",
+            "listenAddress": "*",
+            "difficulty": 4,
+            "varDiff": {
+              "minDiff": 2,
               "maxDiff": null,
               "targetTime": 15,
               "retargetTime": 90,

@@ -5,6 +5,11 @@ namespace Miningcore.Blockchain.Bitcoin.Configuration;
 
 public class BitcoinPoolConfigExtra
 {
+    /// <summary>
+    /// Minimum confirmations required before a mined block is credited.
+    /// </summary>
+    public int? MinimumConfirmations { get; set; }
+
     public BitcoinAddressType AddressType { get; set; } = BitcoinAddressType.Legacy;
 
     public string BechPrefix { get; set; } = "bc";

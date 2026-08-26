@@ -46,6 +46,8 @@
         "interval": 600,
         "coinbaseString": "Miningcore"
     },
+    // Cluster-wide CryptoNight proof-validation concurrency. This is not a pool extension.
+    "cryptonightMaxThreads": 1,
     "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
@@ -66,7 +68,6 @@
             "enabled": true,
             "coin": "conceal",
             "networkTypeOverride": "mainnet",
-            "cryptonightMaxThreads": 1,
             "address": "CHANGE_ME_CONCEAL_POOL_WALLET_ADDRESS",
             "rewardRecipients": [
                 {
@@ -75,9 +76,11 @@
                     "percentage": 0
                 }
             ],
+            "enableInternalStratum": true,
             "blockRefreshInterval": 250,
             "jobRebroadcastTimeout": 3,
             "clientConnectionTimeout": 600,
+            "vardiffIdleSweepInterval": 30,
             "banning": {
                 "enabled": true,
                 "time": 600,
@@ -86,7 +89,8 @@
             },
             "ports": {
                 "3364": {
-                    "listenAddress": "0.0.0.0",
+                    "name": "CCX-LOW-DIFF",
+                    "listenAddress": "*",
                     "difficulty": 5000,
                     "varDiff": {
                         "minDiff": 2500,
@@ -94,21 +98,22 @@
                         "targetTime": 15,
                         "retargetTime": 90,
                         "variancePercent": 30,
-                        "maxDelta": 500
+                        "maxDelta": 5000
                     }
                 },
                 "3365": {
-                    "listenAddress": "0.0.0.0",
-                    "difficulty": 5000,
+                    "name": "CCX-HIGH-DIFF",
+                    "listenAddress": "*",
+                    "difficulty": 200000,
                     "tls": false,
                     // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                     "varDiff": {
-                        "minDiff": 2500,
+                        "minDiff": 100000,
                         "maxDiff": null,
                         "targetTime": 15,
                         "retargetTime": 90,
                         "variancePercent": 30,
-                        "maxDelta": 500
+                        "maxDelta": 200000
                     }
                 }
             },

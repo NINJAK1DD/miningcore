@@ -6,12 +6,13 @@ editors may report those comments even though Miningcore accepts them. Per-coin 
 compact so these files remain scannable; use the fully annotated
 [`config.example.json`](../config.example.json) for field-by-field guidance.
 
-These files are starting points, not production secrets or universal difficulty recommendations.
-Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so copying an example cannot
-silently redirect block rewards. Every pool includes a `rewardRecipients` entry demonstrating
-either a maintainer donation address listed in the main README or an operator-supplied placeholder,
-but every sample percentage is `0`. Miningcore does not require a reward recipient to mine or pay
-miners; set a reviewed non-zero percentage only when the pool should collect a fee or donation.
+These files are reviewed operational baselines, not production secrets or promises that one setting
+fits every miner fleet. Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so
+copying an example cannot silently redirect block rewards. Every pool includes a
+`rewardRecipients` entry demonstrating either a maintainer donation address listed in the main
+README or an operator-supplied placeholder, but every sample percentage is `0`. Miningcore does not
+require a reward recipient to mine or pay miners; set a reviewed non-zero percentage only when the
+pool should collect a fee or donation.
 
 Do not commit populated configurations. Miningcore does not have a parse-only startup flag; validate
 on an isolated staging host or during a controlled maintenance window, then stop the foreground
@@ -31,8 +32,9 @@ these files; enforce request limits at the reverse proxy. Enable Miningcore's li
 topology where it observes each real client address directly.
 
 Every enabled internal Stratum pool uses the integrated cluster ban manager and a pool threshold of
-50 submitted shares, 50% invalid shares and a 600-second ban. The modernization of the older files
-intentionally enables junk-request, invalid-share and invalid-login protection; review those values
+50 submitted shares, 50% invalid shares and a 600-second ban. It also explicitly disconnects miners
+after 600 seconds without activity and checks idle VarDiff workers every 30 seconds. The examples
+intentionally enable junk-request, invalid-share and invalid-login protection; review those values
 for the expected miner fleet before deployment.
 
 ## Common pool layouts
@@ -40,25 +42,69 @@ for the expected miner fleet before deployment.
 | Example | Use it for |
 | --- | --- |
 | [`bitcoin_pool.json`](bitcoin_pool.json) | One Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
+| [`bitcoin_cash_pool.json`](bitcoin_cash_pool.json) | One Bitcoin Cash SOLO pool using CashAddr and low/high SHA-256 ports |
+| [`bitcoin_bitcoin_cash_pool.json`](bitcoin_bitcoin_cash_pool.json) | Independent Bitcoin and Bitcoin Cash pools with separate daemon and Stratum ports |
 | [`dogecoin_pool.json`](dogecoin_pool.json) | One direct Dogecoin SOLO pool with low- and high-difficulty ports |
 | [`bitcoin_dogecoin_pool.json`](bitcoin_dogecoin_pool.json) | Independent Bitcoin and Dogecoin pools managed by one Miningcore process |
 | [`litecoin_dogecoin_merged_mining_pool.json`](litecoin_dogecoin_merged_mining_pool.json) | Litecoin parent mining with Dogecoin AuxPoW rewards and two miner difficulty tiers |
 | [`litecoin_pool.json`](litecoin_pool.json) | Legacy full Litecoin PPLNS example |
 
-The low/high labels are operational hints, not fixed hardware classes. The included values are
-conservative starting points and may be unsuitable for a particular network, miner fleet or rental.
-Watch accepted-share cadence and adjust them deliberately. A compatible miner can also request a
-starting difficulty with `d=VALUE` in its password.
+Every example that opens an internal Stratum listener has named low- and high-difficulty tiers. A
+few protocols retain a useful medium or optional-TLS tier as well. Receiver-only share recorders and
+the auxiliary-only DOGE pool do not open miner listeners, so duplicating their dormant endpoint
+metadata would be misleading.
+
+The low/high labels are operational hints, not fixed hardware classes. The catalogue uses a
+consistent relative spread on each coin family's existing Miningcore difficulty scale: low tiers
+admit smaller or commissioning miners, while high tiers reduce share traffic from ASIC farms,
+proxies and rental hashpower. These are reviewed commissioning baselines, not measurements of every
+current miner model. Every active tier targets one accepted share per 15 seconds, retargets every 90
+seconds and uses a 30% variance band. `maxDelta`, when present, is an absolute difficulty-step cap,
+not a percentage; retune it together with the tier's scale. The examples also state the built-in
+30-second idle VarDiff sweep explicitly so copied configurations retain an auditable value. Watch
+actual accepted-share cadence and adjust deliberately; network difficulty, firmware and hashrate
+can make any static starting value unsuitable. A compatible miner can request a starting difficulty
+with `d=VALUE` in its password.
+
+Polling and payout values remain coin-specific. A zero block-poll interval is intentional only where
+the example supplies the protocol's subscription or ZMQ update path. Positive polling intervals are
+milliseconds; job-rebroadcast values are seconds. The cluster payout manager runs every 600 seconds,
+while each positive `minimumPayment` is denominated in that pool's coin. Recheck payout economics,
+wallet fee policy, dust rules and daemon capabilities before accepting miners.
 
 Dogecoin is not merge-mined with Bitcoin. The Bitcoin/Dogecoin example runs two independent pools.
 Use the Litecoin/Dogecoin example for AuxPoW merged mining and read the
 [merged-mining guide](../docs/merged-mining-litecoin-dogecoin.md) before enabling it.
 
+Bitcoin and Bitcoin Cash are also independent in the combined example. Their normal mainnet RPC,
+P2P and automatic-onion listeners overlap. The collision-free same-host baseline keeps Bitcoin Core
+on its defaults. Start BCHN with `-datadir=/var/lib/bitcoin-cash` (or an equivalently isolated
+`-conf` path) so it cannot read Bitcoin Core's configuration, then place these entries in BCHN's
+separate `bitcoin.conf`:
+
+```ini
+datadir=/var/lib/bitcoin-cash
+rpcport=8432
+port=8433
+listenonion=0
+```
+
+See BCHN's [configuration-file documentation](https://docs.bitcoincashnode.org/doc/bitcoin-conf/)
+for `-datadir`, `-conf` and file-discovery behavior.
+
+The Miningcore BCH daemon endpoint uses `8432`. If the BCH node must provide an inbound onion
+service, replace `listenonion=0` with a separately reviewed non-conflicting onion bind and Tor target.
+Bitcoin Cash pool and reward addresses use mainnet P2PKH CashAddr values beginning with `q`, with the
+canonical explicit `bitcoincash:` prefix used consistently across the examples and startup banner.
+P2SH CashAddr values beginning with `p` are not supported by the current payout path, and
+`addressType` remains `BCash`.
+
 ## Additional coin examples
 
-These longer-standing examples remain available for their coin-specific daemon and payout fields.
-They pass the same configuration-contract test as the common layouts above, but their sample
-difficulty, fee and payout values still require an operator review.
+These examples retain their coin-specific daemon and payout fields while following the same
+listener, VarDiff, timeout, banning, credential and payout-safety contracts as the common layouts.
+Their defaults are practical commissioning baselines, but network liveness and third-party daemon
+compatibility can change independently of a Miningcore release.
 
 | Coin or mode | Example |
 | --- | --- |
@@ -126,4 +172,7 @@ using this advanced topology.
 
 All JSON examples are parsed and passed through Miningcore's normal-startup configuration validator
 in CI. That proves their structure and cross-setting contracts; it cannot verify operator-supplied
-wallet addresses, credentials, daemon availability, network interfaces or firewall policy.
+wallet addresses, credentials, daemon availability, network interfaces or firewall policy. CI also
+derives each coin family's exact pool, daemon and payment extension contracts. It rejects unknown,
+mis-cased, wrong-family, wrong-scope and wrong-typed extension values before they can disappear
+silently into extension data.

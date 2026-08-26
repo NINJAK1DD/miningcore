@@ -1105,6 +1105,60 @@ financial outcome. Handshake now requires successful wallet discovery or selecti
 Handshake and Equihash treat cancellation during `walletpassphrase` as ordinary pre-submission
 shutdown and conservatively attempt bounded relock when the unlock result is unknown.
 
+### Example configuration baselines
+
+The packaged catalogue includes standalone Bitcoin Cash and combined Bitcoin/Bitcoin Cash SOLO
+examples. Bitcoin Cash uses the bundled `bitcoin-cash` template, `BCash` address decoding and
+mainnet P2PKH CashAddr wallet fields. P2SH CashAddr values are not supported by the current payout
+path. The same-host combined topology keeps Bitcoin Core on its mainnet defaults and requires a
+separate BCH data directory plus these Bitcoin Cash Node settings. The BCHN service must select it
+with `-datadir=/var/lib/bitcoin-cash` (or use an equivalently isolated `-conf` path) before reading
+the node configuration:
+
+```ini
+datadir=/var/lib/bitcoin-cash
+rpcport=8432
+port=8433
+listenonion=0
+```
+
+This also prevents BCHN's automatic onion listener from competing for loopback port `8334`;
+operators that need a BCH onion service must configure a separate non-conflicting onion bind and
+Tor target.
+
+The exact `getblocktemplate` request emitted by Miningcore, including `rules: ["segwit"]`, was
+accepted during a smoke test against the official x86-64 Bitcoin Cash Node v29.1.0 release. The BCH
+examples therefore do not need a `gbtArgs` override for that supported daemon version.
+
+Every example that exposes internal Stratum now has named low- and high-difficulty tiers with
+VarDiff. Receiver-only share recorders and auxiliary-only pools remain single dormant endpoint
+descriptions because they do not accept miners. Active examples explicitly record their listener
+mode, polling and rebroadcast behavior, reviewed inactive-client timeout, explicit 30-second
+idle-VarDiff sweep, payout threshold and payout scheme. The difficulty values use a consistent
+relative spread on existing per-family scales; they are commissioning baselines rather than an
+audit of every miner model. CI requires exactly one positive, distinct low/high pair, permits the
+low tier to retarget below its starting value and pins the 15-second target, 90-second retarget and
+30% variance baseline. `maxDelta`, where configured, remains an absolute difficulty-step cap.
+
+The Dash ZMQ-only example now places `zmqBlockNotifySocket` and its topic on the daemon endpoint read
+by the Bitcoin-family job manager. Its zero `blockRefreshInterval` therefore means genuine
+notification-only template updates instead of silently discarding the configured socket.
+
+Example CI now derives exact-casing pool, daemon and payment extension contracts from each coin
+family's runtime types. Unknown, mis-cased, wrong-family, wrong-scope and wrong-typed values fail the
+suite. This closes the class of fixture error in which a misplaced or ineffective extension remains
+structurally valid but is ignored after extension-data binding.
+
+Bitcoin-derived configuration now represents the established runtime scopes explicitly:
+pool-level `minimumConfirmations` controls payout reconciliation, while daemon-level
+`zmqBlockNotifySocket` and `zmqBlockNotifyTopic` control template notifications. The previous public
+`BitcoinDaemonEndpointConfigExtra` aggregate remains available for external .NET compatibility, but
+Miningcore binds the two runtime paths through scope-specific contracts.
+
+`config.example.json` demonstrates inactive zero-percent reward-recipient placeholders instead of
+empty arrays. These placeholders do not collect rewards and must be replaced or removed with every
+other `CHANGE_ME` value before production.
+
 ### Coin definition accuracy
 
 The bundled definitions now select StakeCubeCoin's current SCCPow implementation instead of a

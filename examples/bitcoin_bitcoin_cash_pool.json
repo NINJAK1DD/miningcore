@@ -1,8 +1,8 @@
 {
   // Starter configuration: replace every CHANGE_ME value and review it before use.
   // See README.md and ../config.example.json for topology and field guidance.
-  // Two independent SOLO pools in one process. Bitcoin and Dogecoin are not merge-mined together.
-  "clusterName": "bitcoin-dogecoin-example",
+  // Two independent SHA-256 SOLO pools. Bitcoin and Bitcoin Cash are not merged here.
+  "clusterName": "bitcoin-bitcoin-cash-example",
   "logging": {
     "level": "info",
     "enableConsoleLog": true,
@@ -50,7 +50,6 @@
       "enabled": true,
       "coin": "bitcoin",
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
-      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
       "rewardRecipients": [
         {
           "address": "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
@@ -69,6 +68,8 @@
           "difficulty": 8192,
           "varDiff": {
             "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
@@ -80,41 +81,45 @@
           "difficulty": 1048576,
           "varDiff": {
             "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
           }
         }
       },
-        "daemons": [
-          {
-            "host": "127.0.0.1",
-            "port": 8332,
-            "user": "CHANGE_ME_BITCOIN_RPC_USER",
-            "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
-          }
-        ],
-        "banning": {
-          "enabled": true,
-          "checkThreshold": 50,
-          "invalidPercent": 50,
-          "time": 600
-        },
-        "paymentProcessing": {
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 0.001,
         "payoutScheme": "SOLO"
       }
     },
     {
-      "id": "dogecoin-solo",
+      "id": "bitcoin-cash-solo",
       "enabled": true,
-      "coin": "dogecoin",
-      "address": "CHANGE_ME_DOGECOIN_POOL_WALLET_ADDRESS",
-      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
+      "coin": "bitcoin-cash",
+      "addressType": "BCash",
+      // Use a mainnet P2PKH CashAddr beginning with q. P2SH CashAddr values
+      // beginning with p are not supported by the current payout path.
+      "address": "CHANGE_ME_BITCOIN_CASH_POOL_WALLET_CASHADDR",
       "rewardRecipients": [
         {
-          "address": "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt",
+          "address": "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
           "percentage": 0
         }
       ],
@@ -124,46 +129,59 @@
       "clientConnectionTimeout": 600,
       "vardiffIdleSweepInterval": 30,
       "ports": {
-        "3042": {
-          "name": "DOGE-LOW-DIFF",
+        "3052": {
+          "name": "BCH-LOW-DIFF",
           "listenAddress": "*",
-          "difficulty": 1024,
+          "difficulty": 8192,
           "varDiff": {
-            "minDiff": 512,
+            "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
           }
         },
-        "3043": {
-          "name": "DOGE-HIGH-DIFF",
+        "3053": {
+          "name": "BCH-HIGH-DIFF",
           "listenAddress": "*",
-          "difficulty": 65536,
+          "difficulty": 1048576,
           "varDiff": {
-            "minDiff": 32768,
+            "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
           }
         }
       },
-        "daemons": [
-          {
-            "host": "127.0.0.1",
-            "port": 22555,
-            "user": "CHANGE_ME_DOGECOIN_RPC_USER",
-            "password": "CHANGE_ME_DOGECOIN_RPC_PASSWORD"
-          }
-        ],
-        "banning": {
-          "enabled": true,
-          "checkThreshold": 50,
-          "invalidPercent": 50,
-          "time": 600
-        },
-        "paymentProcessing": {
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          // Start BCHN with -datadir=/var/lib/bitcoin-cash so it reads its own
+          // bitcoin.conf, then set all four lines there:
+          // datadir=/var/lib/bitcoin-cash
+          // rpcport=8432
+          // port=8433
+          // listenonion=0
+          // The last setting prevents either node from competing for the conventional
+          // 127.0.0.1:8334 automatic-onion listener. Configure a separate, reviewed
+          // BCH onion bind instead if inbound Tor service is required.
+          "port": 8432,
+          "user": "CHANGE_ME_BITCOIN_CASH_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_CASH_RPC_PASSWORD"
+        }
+      ],
+      "banning": {
         "enabled": true,
-        "minimumPayment": 1.0,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.01,
         "payoutScheme": "SOLO"
       }
     }

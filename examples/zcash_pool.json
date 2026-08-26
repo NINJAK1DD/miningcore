@@ -74,9 +74,11 @@
                 "percentage": 0
             }
         ],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 500,
         "jobRebroadcastTimeout": 10,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -85,6 +87,8 @@
         },
         "ports": {
             "3092": {
+                "name": "ZEC-LOW-DIFF",
+                "listenAddress": "*",
                 "difficulty": 0.1,
                 "varDiff": {
                     "minDiff": 0.01,
@@ -92,11 +96,21 @@
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 1
+                    "maxDelta": 0.1
                 }
             },
             "3093": {
-                "difficulty": 1
+                "name": "ZEC-HIGH-DIFF",
+                "listenAddress": "*",
+                "difficulty": 12.8,
+                "varDiff": {
+                    "minDiff": 6.4,
+                    "maxDiff": null,
+                    "targetTime": 15,
+                    "retargetTime": 90,
+                    "variancePercent": 30,
+                    "maxDelta": 12.8
+                }
             }
         },
         "daemons": [
