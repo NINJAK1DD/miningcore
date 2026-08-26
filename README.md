@@ -423,8 +423,10 @@ Replace all `CHANGE_ME` values and remove pools or services you do not intend to
 multi-coin, merged-mining and distributed-recorder starting points. The
 [configuration guide](docs/configuration.md)
 explains the main sections and miner login formats. The machine-readable
-[configuration schema](src/Miningcore/config.schema.json) is the exhaustive option reference,
-including less common coin-specific extension fields.
+[configuration schema](src/Miningcore/config.schema.json) validates the shared typed structure.
+Coin-specific extension fields are intentionally outside that structural catalogue; use the
+reviewed examples and the [coin-family guidance](docs/configuration.md#coin-specific-extension-fields)
+for those settings.
 
 ## Running Miningcore
 
@@ -588,7 +590,7 @@ Donations to support development and maintenance of this NINJAK1DD Miningcore fo
 | DOGE | `DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt` |
 | ZEC | `t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66` |
 | XMR | `43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4HBosKZch8t7Fpg34DL9dNcN22T7H6JWEC23B9iDLAZqQsp` |
-| BCH | `qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de` |
+| BCH | `bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de` |
 | LTC | `ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg` |
 | KAS | `kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu` |
 | ETC | `0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0` |

@@ -1125,6 +1125,10 @@ The Dash ZMQ-only example now places `zmqBlockNotifySocket` and its topic on the
 by the Bitcoin-family job manager. Its zero `blockRefreshInterval` therefore means genuine
 notification-only template updates instead of silently discarding the configured socket.
 
+Example CI now rejects pool-level keys that are neither shared schema properties nor explicitly
+reviewed coin-family extensions. This closes the class of fixture error in which a misplaced daemon
+setting remains structurally valid but is ignored after extension-data binding.
+
 `config.example.json` demonstrates inactive zero-percent reward-recipient placeholders instead of
 empty arrays. These placeholders do not collect rewards and must be replaced or removed with every
 other `CHANGE_ME` value before production.

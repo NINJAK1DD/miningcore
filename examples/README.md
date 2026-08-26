@@ -160,4 +160,7 @@ using this advanced topology.
 
 All JSON examples are parsed and passed through Miningcore's normal-startup configuration validator
 in CI. That proves their structure and cross-setting contracts; it cannot verify operator-supplied
-wallet addresses, credentials, daemon availability, network interfaces or firewall policy.
+wallet addresses, credentials, daemon availability, network interfaces or firewall policy. CI also
+rejects a pool-level key unless it is a shared schema property or an explicitly reviewed
+coin-family extension, preventing misplaced daemon settings and unreviewed fields from disappearing
+silently into extension data.

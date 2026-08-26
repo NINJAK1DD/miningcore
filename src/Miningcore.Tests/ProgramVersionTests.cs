@@ -95,7 +95,11 @@ public class ProgramVersionTests
         {
             var fields = lines[i].Trim().Split(" - ", 2,
                 System.StringSplitOptions.None);
-            var row = $"| {fields[0].Trim()} | `{fields[1]}` |";
+            var symbol = fields[0].Trim();
+            var address = symbol == "BCH"
+                ? $"bitcoincash:{fields[1]}"
+                : fields[1];
+            var row = $"| {symbol} | `{address}` |";
             var rowIndex = readme.IndexOf(row, System.StringComparison.Ordinal);
 
             Assert.True(rowIndex > previousRowIndex,

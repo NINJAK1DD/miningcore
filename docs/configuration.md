@@ -13,8 +13,10 @@ the operator configured; it is not silently converted to a date or rewritten for
 or time zone. This policy applies to configuration files, not daemon RPC, Stratum or
 recovery-journal JSON readers.
 
-The exhaustive machine-readable reference is [`config.schema.json`](../src/Miningcore/config.schema.json).
-Coin-family extensions are intentionally flexible and may also be documented beside their implementation.
+The machine-readable [`config.schema.json`](../src/Miningcore/config.schema.json) validates shared
+typed structure before CLR binding. It is not an exhaustive catalogue of coin-family extension
+fields carried through `JsonExtensionData`; use the reviewed examples and the
+[coin-specific guidance](#coin-specific-extension-fields) for those settings.
 
 | Task | Section |
 | --- | --- |
@@ -323,6 +325,20 @@ Native proof validation can consume substantial CPU and memory:
 
 Do not copy a setting from a different coin merely because it uses the same broad family. Read the
 coin definition and daemon/wallet documentation together.
+
+### Coin-specific extension fields
+
+Pool, daemon and payment extensions let coin families expose settings that are not common to every
+Miningcore pool. Examples include Bitcoin-family `addressType` and `GBTArgs`, daemon-level ZMQ
+notification settings, and CryptoNote or Equihash tuning fields. These values intentionally pass
+through the shared JSON schema as extension data and are bound only by the matching coin-family
+implementation.
+
+That flexibility means a structurally valid key can still be ineffective when placed at the wrong
+level or copied to an unrelated coin family. Start from the matching file in the
+[example configuration index](../examples/README.md), retain its nesting, and verify the daemon or
+wallet feature during staged startup. The shipped examples have an additional CI allowlist for
+pool-level extension keys so an unreviewed or misplaced field cannot be added silently.
 
 ## Log files and rotation
 

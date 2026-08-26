@@ -52,6 +52,27 @@ public class ConfigurationContractTests
                     "t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
             };
 
+    // The shared schema cannot enumerate JsonExtensionData fields. Keep the
+    // shipped examples on a deliberately reviewed, exact-casing pool-level
+    // subset so a misplaced daemon field or typo cannot disappear silently.
+    private static readonly IReadOnlySet<string> ReviewedPoolExtensionProperties =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "addressType",
+            "bechPrefix",
+            "chainTypeOverride",
+            "cryptonightMaxThreads",
+            "GBTArgs",
+            "hasLegacyDaemon",
+            "maxActiveJobs",
+            "mergedMining",
+            "networkTypeOverride",
+            "protobufWalletRpcServiceName",
+            "randomXRealm",
+            "socketJobMessageBufferSize",
+            "z-address",
+        };
+
     private static readonly Lazy<JObject> BundledCoinTemplates = new(() =>
         JObject.Parse(File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory, "coins.json"))));
@@ -206,6 +227,7 @@ public class ConfigurationContractTests
             FormatValidationErrors(result.Errors));
         Assert.All(config.Pools,
             pool => Assert.NotNull(pool.PaymentProcessing));
+        AssertOnlyReviewedPoolProperties("config.example.json", document);
         AssertConfigExampleRewardRecipientPlaceholders(document);
         AssertInternalStratumDifficultyTiers("config.example.json",
             document, config);
@@ -248,6 +270,7 @@ public class ConfigurationContractTests
     private static void AssertShippedExampleOperationalPolicy(
         string fileName, JObject document, ClusterConfig config)
     {
+        AssertOnlyReviewedPoolProperties(fileName, document);
         Assert.Null(document.SelectToken(
             "paymentProcessing.shareRecoveryFile"));
 
@@ -487,6 +510,52 @@ public class ConfigurationContractTests
         }
 
         AssertInternalStratumDifficultyTiers(fileName, document, config);
+    }
+
+    [Fact]
+    public void ShippedExamplePoolPropertyGuard_RejectsMisplacedDaemonField()
+    {
+        var document = ReadExampleConfigDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?.First);
+        pool["zmqBlockNotifySocket"] = "tcp://127.0.0.1:28332";
+
+        Assert.Contains(
+            $"{pool["id"]}.zmqBlockNotifySocket",
+            FindUnreviewedPoolProperties(document));
+    }
+
+    private static void AssertOnlyReviewedPoolProperties(string fileName,
+        JObject document)
+    {
+        var unreviewed = FindUnreviewedPoolProperties(document);
+
+        Assert.True(unreviewed.Length == 0,
+            $"{fileName}: unreviewed pool-level properties: " +
+            string.Join(", ", unreviewed));
+    }
+
+    private static string[] FindUnreviewedPoolProperties(JObject document)
+    {
+        var schemaPath = Path.Combine(AppContext.BaseDirectory,
+            "config.schema.json");
+        var schema = JObject.Parse(File.ReadAllText(schemaPath));
+        var sharedProperties = schema.SelectToken(
+                "definitions.PoolConfig.properties")?
+            .Children<JProperty>()
+            .Select(property => property.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.NotNull(sharedProperties);
+
+        return document["pools"]?.Children<JObject>()
+            .SelectMany(pool => pool.Properties()
+                .Where(property => !sharedProperties.Contains(property.Name) &&
+                    !ReviewedPoolExtensionProperties.Contains(property.Name))
+                .Select(property =>
+                    $"{pool["id"]?.Value<string>() ?? "<unknown>"}." +
+                    property.Name))
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray() ?? Array.Empty<string>();
     }
 
     [Fact]
