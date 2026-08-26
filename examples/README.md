@@ -54,13 +54,17 @@ few protocols retain a useful medium or optional-TLS tier as well. Receiver-only
 the auxiliary-only DOGE pool do not open miner listeners, so duplicating their dormant endpoint
 metadata would be misleading.
 
-The low/high labels are operational hints, not fixed hardware classes. Values are conservative
-coin-family starting points derived from the existing Miningcore difficulty scale: low tiers admit
-smaller or commissioning miners, while high tiers reduce share traffic from ASIC farms, proxies and
-rental hashpower. Every active tier targets one accepted share per 15 seconds, retargets every 90
-seconds and uses a 30% variance band. Watch actual accepted-share cadence and adjust deliberately;
-network difficulty, firmware and hashrate can make any static starting value unsuitable. A
-compatible miner can also request a starting difficulty with `d=VALUE` in its password.
+The low/high labels are operational hints, not fixed hardware classes. The catalogue uses a
+consistent relative spread on each coin family's existing Miningcore difficulty scale: low tiers
+admit smaller or commissioning miners, while high tiers reduce share traffic from ASIC farms,
+proxies and rental hashpower. These are reviewed commissioning baselines, not measurements of every
+current miner model. Every active tier targets one accepted share per 15 seconds, retargets every 90
+seconds and uses a 30% variance band. `maxDelta`, when present, is an absolute difficulty-step cap,
+not a percentage; retune it together with the tier's scale. The examples also state the built-in
+30-second idle VarDiff sweep explicitly so copied configurations retain an auditable value. Watch
+actual accepted-share cadence and adjust deliberately; network difficulty, firmware and hashrate
+can make any static starting value unsuitable. A compatible miner can request a starting difficulty
+with `d=VALUE` in its password.
 
 Polling and payout values remain coin-specific. A zero block-poll interval is intentional only where
 the example supplies the protocol's subscription or ZMQ update path. Positive polling intervals are
@@ -74,18 +78,26 @@ Use the Litecoin/Dogecoin example for AuxPoW merged mining and read the
 
 Bitcoin and Bitcoin Cash are also independent in the combined example. Their normal mainnet RPC,
 P2P and automatic-onion listeners overlap. The collision-free same-host baseline keeps Bitcoin Core
-on its defaults and requires these entries in Bitcoin Cash Node's separate `bitcoin.conf`:
+on its defaults. Start BCHN with `-datadir=/var/lib/bitcoin-cash` (or an equivalently isolated
+`-conf` path) so it cannot read Bitcoin Core's configuration, then place these entries in BCHN's
+separate `bitcoin.conf`:
 
 ```ini
+datadir=/var/lib/bitcoin-cash
 rpcport=8432
 port=8433
 listenonion=0
 ```
 
+See BCHN's [configuration-file documentation](https://docs.bitcoincashnode.org/doc/bitcoin-conf/)
+for `-datadir`, `-conf` and file-discovery behavior.
+
 The Miningcore BCH daemon endpoint uses `8432`. If the BCH node must provide an inbound onion
 service, replace `listenonion=0` with a separately reviewed non-conflicting onion bind and Tor target.
-Bitcoin Cash pool and reward addresses use the explicit `bitcoincash:` CashAddr prefix required by
-Miningcore's current parser, and `addressType` remains `BCash`.
+Bitcoin Cash pool and reward addresses use mainnet P2PKH CashAddr values beginning with `q`, with the
+canonical explicit `bitcoincash:` prefix used consistently across the examples and startup banner.
+P2SH CashAddr values beginning with `p` are not supported by the current payout path, and
+`addressType` remains `BCash`.
 
 ## Additional coin examples
 
@@ -161,6 +173,6 @@ using this advanced topology.
 All JSON examples are parsed and passed through Miningcore's normal-startup configuration validator
 in CI. That proves their structure and cross-setting contracts; it cannot verify operator-supplied
 wallet addresses, credentials, daemon availability, network interfaces or firewall policy. CI also
-rejects a pool-level key unless it is a shared schema property or an explicitly reviewed
-coin-family extension, preventing misplaced daemon settings and unreviewed fields from disappearing
+derives each coin family's exact pool, daemon and payment extension contracts. It rejects unknown,
+mis-cased, wrong-family, wrong-scope and wrong-typed extension values before they can disappear
 silently into extension data.

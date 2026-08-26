@@ -65,7 +65,7 @@
         "enabled": true,
         "coin": "ravencoin",
         "address": "CHANGE_ME_RAVENCOIN_POOL_WALLET_ADDRESS",
-        "GBTArgs": [{
+        "gbtArgs": [{
             "capabilities": [
                 "coinbasetxn", 
                 "workid",

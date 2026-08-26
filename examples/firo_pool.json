@@ -65,7 +65,7 @@
         "enabled": true,
         "coin": "firo",
         "address": "CHANGE_ME_FIRO_POOL_WALLET_ADDRESS",
-        "GBTArgs": [{
+        "gbtArgs": [{
             "capabilities": [
                 "coinbasetxn", 
                 "workid",

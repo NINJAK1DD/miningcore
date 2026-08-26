@@ -96,20 +96,20 @@
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 1
+                    "maxDelta": 0.1
                 }
             },
             "3093": {
                 "name": "ZEC-HIGH-DIFF",
                 "listenAddress": "*",
-                "difficulty": 1,
+                "difficulty": 12.8,
                 "varDiff": {
-                    "minDiff": 0.5,
+                    "minDiff": 6.4,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 1
+                    "maxDelta": 12.8
                 }
             }
         },

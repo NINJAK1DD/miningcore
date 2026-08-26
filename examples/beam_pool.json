@@ -90,27 +90,27 @@
                 "listenAddress": "*",
                 "difficulty": 200,
                 "varDiff": {
-                    "minDiff": 200,
+                    "minDiff": 100,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 200
                 }
             },
             "3093": {
                 "name": "BEAM-HIGH-DIFF",
                 "listenAddress": "*",
-                "difficulty": 700,
+                "difficulty": 12800,
                 "tls": false,
                 // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                 "varDiff": {
-                    "minDiff": 200,
+                    "minDiff": 6400,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 12800
                 }
             }
         },

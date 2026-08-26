@@ -46,6 +46,8 @@
         "interval": 600,
         "coinbaseString": "Miningcore"
     },
+    // Cluster-wide CryptoNight proof-validation concurrency. This is not a pool extension.
+    "cryptonightMaxThreads": 1,
     "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
@@ -66,7 +68,6 @@
             "enabled": true,
             "coin": "conceal",
             "networkTypeOverride": "mainnet",
-            "cryptonightMaxThreads": 1,
             "address": "CHANGE_ME_CONCEAL_POOL_WALLET_ADDRESS",
             "rewardRecipients": [
                 {

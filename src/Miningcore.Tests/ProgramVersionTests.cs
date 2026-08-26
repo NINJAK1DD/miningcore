@@ -73,7 +73,7 @@ public class ProgramVersionTests
             " ZEC  - t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
             " XMR  - 43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4HBosKZch8t7Fpg34" +
             "DL9dNcN22T7H6JWEC23B9iDLAZqQsp",
-            " BCH  - qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
+            " BCH  - bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de",
             " LTC  - ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg",
             " KAS  - kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu",
             " ETC  - 0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0",
@@ -96,10 +96,7 @@ public class ProgramVersionTests
             var fields = lines[i].Trim().Split(" - ", 2,
                 System.StringSplitOptions.None);
             var symbol = fields[0].Trim();
-            var address = symbol == "BCH"
-                ? $"bitcoincash:{fields[1]}"
-                : fields[1];
-            var row = $"| {symbol} | `{address}` |";
+            var row = $"| {symbol} | `{fields[1]}` |";
             var rowIndex = readme.IndexOf(row, System.StringComparison.Ordinal);
 
             Assert.True(rowIndex > previousRowIndex,

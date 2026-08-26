@@ -91,7 +91,7 @@
             "listenAddress": "*",
             "difficulty": 0.1,
             "varDiff": {
-              "minDiff": 0.1,
+              "minDiff": 0.05,
               "maxDiff": null,
               "targetTime": 15,
               "retargetTime": 90,
@@ -129,7 +129,7 @@
             },
             "gas": 21000,
             "maxFeePerGas": 50000000000,
-            "BlockSearchOffset": 100,
+            "blockSearchOffset": 100,
             "keepUncles": false,
             "keepTransactionFees": false
         }

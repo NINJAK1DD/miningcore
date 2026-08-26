@@ -65,7 +65,7 @@
         "enabled": true,
         "coin": "nexa",
         "address": "CHANGE_ME_NEXA_POOL_WALLET_ADDRESS",
-        "GBTArgs": [{
+        "gbtArgs": [{
             "capabilities": [
                 "coinbasetxn", 
                 "workid",

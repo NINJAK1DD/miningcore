@@ -36,9 +36,10 @@
   "api": {
     // Set false to run Miningcore without its HTTP API.
     "enabled": true,
-    // Use "127.0.0.1" when a host reverse proxy is the only API client.
-    // "*" is useful in a container but requires firewall/reverse-proxy protection.
-    "listenAddress": "*",
+    // Safe copy-first baseline: a same-host reverse proxy is the only API client.
+    // Container or remote exposure requires an explicit address change plus firewall,
+    // whitelist, TLS and reverse-proxy review.
+    "listenAddress": "127.0.0.1",
     // Main public API and WebSocket port.
     "port": 4000,
     // Dedicated administrative API port. When omitted, /api/admin remains on
@@ -371,12 +372,35 @@
         }
       ],
       // A ports object is part of the pool contract even when internal Stratum is disabled.
+      // These mirror the normal low/high Scrypt tiers but are not opened until
+      // enableInternalStratum is deliberately changed to true.
       "ports": {
         "3042": {
           // This port is not opened while enableInternalStratum is false.
-          "name": "DOGE-SOLO-DISABLED",
+          "name": "DOGE-LOW-DIFF-DISABLED",
           "listenAddress": "127.0.0.1",
-          "difficulty": 65536
+          "difficulty": 1024,
+          "varDiff": {
+            "minDiff": 512,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3043": {
+          "name": "DOGE-HIGH-DIFF-DISABLED",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 65536,
+          "varDiff": {
+            "minDiff": 32768,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
         }
       },
       // Dogecoin Core RPC used for createauxblock, submitauxblock, proof attribution,

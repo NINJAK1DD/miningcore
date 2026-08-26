@@ -114,6 +114,8 @@
       "enabled": true,
       "coin": "bitcoin-cash",
       "addressType": "BCash",
+      // Use a mainnet P2PKH CashAddr beginning with q. P2SH CashAddr values
+      // beginning with p are not supported by the current payout path.
       "address": "CHANGE_ME_BITCOIN_CASH_POOL_WALLET_CASHADDR",
       "rewardRecipients": [
         {
@@ -157,8 +159,9 @@
       "daemons": [
         {
           "host": "127.0.0.1",
-          // For this same-host topology, set all three lines in the BCH node's
-          // separate bitcoin.conf:
+          // Start BCHN with -datadir=/var/lib/bitcoin-cash so it reads its own
+          // bitcoin.conf, then set all four lines there:
+          // datadir=/var/lib/bitcoin-cash
           // rpcport=8432
           // port=8433
           // listenonion=0

@@ -87,10 +87,10 @@
       "ports": {
         "3042": {
           "listenAddress": "*",
-          "difficulty": 8192,
+          "difficulty": 1024,
           "name": "FLO-LOW-DIFF",
           "varDiff": {
-            "minDiff": 4096,
+            "minDiff": 512,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30
@@ -98,10 +98,10 @@
         },
         "3043": {
           "listenAddress": "*",
-          "difficulty": 524287,
+          "difficulty": 65536,
           "name": "FLO-HIGH-DIFF",
           "varDiff": {
-            "minDiff": 65535,
+            "minDiff": 32768,
             "targetTime": 15,
             "retargetTime": 90,
             "variancePercent": 30

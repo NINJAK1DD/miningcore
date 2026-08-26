@@ -741,22 +741,35 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     protected virtual IDestination AddressToDestination(string address, BitcoinAddressType? addressType)
     {
+        return ResolveAddressDestination(address, addressType, network,
+            extraPoolConfig?.BechPrefix);
+    }
+
+    internal static IDestination ResolveAddressDestination(string address,
+        BitcoinAddressType? addressType, Network expectedNetwork,
+        string bechPrefix = null)
+    {
         if(!addressType.HasValue)
-            return BitcoinUtils.AddressToDestination(address, network);
+            return BitcoinUtils.AddressToDestination(address,
+                expectedNetwork);
 
         switch(addressType.Value)
         {
             case BitcoinAddressType.BechSegwit:
-                return BitcoinUtils.BechSegwitAddressToDestination(poolConfig.Address, network, extraPoolConfig?.BechPrefix);
+                return BitcoinUtils.BechSegwitAddressToDestination(address,
+                    expectedNetwork, bechPrefix);
 
             case BitcoinAddressType.BCash:
-                return BitcoinUtils.BCashAddressToDestination(poolConfig.Address, network);
+                return BitcoinUtils.BCashAddressToDestination(address,
+                    expectedNetwork);
 
             case BitcoinAddressType.Litecoin:
-                return BitcoinUtils.LitecoinAddressToDestination(poolConfig.Address, network);
+                return BitcoinUtils.LitecoinAddressToDestination(address,
+                    expectedNetwork);
 
             default:
-                return BitcoinUtils.AddressToDestination(poolConfig.Address, network);
+                return BitcoinUtils.AddressToDestination(address,
+                    expectedNetwork);
         }
     }
 

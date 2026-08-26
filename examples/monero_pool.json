@@ -113,7 +113,7 @@
           "difficulty": 200000,
           "name": "XMR-HIGH-DIFF",
           "varDiff": {
-            "minDiff": 200000,
+            "minDiff": 100000,
             "maxDiff": null,
             "targetTime": 15,
             "retargetTime": 90,

@@ -65,7 +65,7 @@
         "enabled": true,
         "coin": "veruscoin",
         "address": "CHANGE_ME_VERUSCOIN_POOL_WALLET_ADDRESS",
-        "GBTArgs": [{
+        "gbtArgs": [{
             "capabilities": [
                 "coinbasetxn", 
                 "workid",
@@ -85,7 +85,8 @@
         "enableInternalStratum": true,
         "blockRefreshInterval": 0,
         "jobRebroadcastTimeout": 0,
-        "clientConnectionTimeout": 600,
+        // VerusHash miners can require longer startup and reconnect windows.
+        "clientConnectionTimeout": 2400,
         "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
@@ -99,7 +100,7 @@
                 "listenAddress": "*",
                 "difficulty": 25600000,
                 "varDiff": {
-                    "minDiff": 25600000,
+                    "minDiff": 12800000,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,

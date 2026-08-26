@@ -3,13 +3,29 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Text.RegularExpressions;
 using FluentValidation.Results;
+using Miningcore.Blockchain.Alephium.Configuration;
+using Miningcore.Blockchain.Beam.Configuration;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.Configuration;
+using Miningcore.Blockchain.Conceal.Configuration;
+using Miningcore.Blockchain.Cryptonote.Configuration;
+using Miningcore.Blockchain.Equihash.Configuration;
+using Miningcore.Blockchain.Ergo.Configuration;
+using Miningcore.Blockchain.Ethereum.Configuration;
 using Miningcore.Blockchain.Handshake.Configuration;
+using Miningcore.Blockchain.Kaspa.Configuration;
+using Miningcore.Blockchain.Satoshicash.Configuration;
+using Miningcore.Blockchain.Warthog.Configuration;
+using Miningcore.Blockchain.Xelis.Configuration;
+using Miningcore.Blockchain.Zano.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Mining;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Serialization;
 using NBitcoin;
 using Xunit;
 using Xunit.Sdk;
@@ -52,30 +68,104 @@ public class ConfigurationContractTests
                     "t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66",
             };
 
-    // The shared schema cannot enumerate JsonExtensionData fields. Keep the
-    // shipped examples on a deliberately reviewed, exact-casing pool-level
-    // subset so a misplaced daemon field or typo cannot disappear silently.
-    private static readonly IReadOnlySet<string> ReviewedPoolExtensionProperties =
-        new HashSet<string>(StringComparer.Ordinal)
-        {
-            "addressType",
-            "bechPrefix",
-            "chainTypeOverride",
-            "cryptonightMaxThreads",
-            "GBTArgs",
-            "hasLegacyDaemon",
-            "maxActiveJobs",
-            "mergedMining",
-            "networkTypeOverride",
-            "protobufWalletRpcServiceName",
-            "randomXRealm",
-            "socketJobMessageBufferSize",
-            "z-address",
-        };
-
     private static readonly Lazy<JObject> BundledCoinTemplates = new(() =>
         JObject.Parse(File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory, "coins.json"))));
+
+    private static readonly Lazy<JObject> ConfigSchema = new(() =>
+        JObject.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "config.schema.json"))));
+
+    private static readonly DefaultContractResolver ExtensionContractResolver =
+        new()
+        {
+            NamingStrategy = new CamelCaseNamingStrategy(),
+        };
+
+    // Runtime extension binding is family-specific. Keep the shipped examples
+    // on those same concrete contracts at every extension-data boundary so a
+    // correctly spelled field cannot be accepted for the wrong coin family.
+    private static readonly Lazy<IReadOnlyDictionary<CoinFamily,
+        ExampleExtensionContract>> ExampleExtensionContracts = new(() =>
+            new Dictionary<CoinFamily, ExampleExtensionContract>
+            {
+                [CoinFamily.Alephium] = Contract(
+                    new[] { typeof(AlephiumPoolConfigExtra) },
+                    new[] { typeof(AlephiumDaemonEndpointConfigExtra) },
+                    new[] { typeof(AlephiumPaymentProcessingConfigExtra) }),
+                [CoinFamily.Beam] = Contract(
+                    new[] { typeof(BeamPoolConfigExtra) },
+                    new[] { typeof(BeamDaemonEndpointConfigExtra) }),
+                [CoinFamily.Bitcoin] = Contract(
+                    new[]
+                    {
+                        typeof(BitcoinPoolConfigExtra),
+                        typeof(MergedMiningPoolConfigExtra),
+                    },
+                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
+                [CoinFamily.Conceal] = Contract(
+                    new[] { typeof(ConcealPoolConfigExtra) },
+                    new[] { typeof(ConcealDaemonEndpointConfigExtra) },
+                    new[] { typeof(ConcealPoolPaymentProcessingConfigExtra) }),
+                [CoinFamily.Cryptonote] = Contract(
+                    new[] { typeof(CryptonotePoolConfigExtra) },
+                    new[] { typeof(CryptonoteDaemonEndpointConfigExtra) },
+                    new[]
+                    {
+                        typeof(CryptonotePoolPaymentProcessingConfigExtra),
+                    }),
+                [CoinFamily.Equihash] = Contract(
+                    new[]
+                    {
+                        typeof(BitcoinPoolConfigExtra),
+                        typeof(EquihashPoolConfigExtra),
+                    },
+                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
+                [CoinFamily.Ergo] = Contract(
+                    new[] { typeof(ErgoPoolConfigExtra) },
+                    new[] { typeof(ErgoDaemonEndpointConfigExtra) },
+                    new[] { typeof(ErgoPaymentProcessingConfigExtra) }),
+                [CoinFamily.Ethereum] = Contract(
+                    new[] { typeof(EthereumPoolConfigExtra) },
+                    new[] { typeof(EthereumDaemonEndpointConfigExtra) },
+                    new[]
+                    {
+                        typeof(EthereumPoolPaymentProcessingConfigExtra),
+                    }),
+                [CoinFamily.Handshake] = Contract(
+                    new[] { typeof(BitcoinPoolConfigExtra) },
+                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[]
+                    {
+                        typeof(HandshakePoolPaymentProcessingConfigExtra),
+                    }),
+                [CoinFamily.Kaspa] = Contract(
+                    new[] { typeof(KaspaPoolConfigExtra) },
+                    paymentTypes: new[]
+                    {
+                        typeof(KaspaPaymentProcessingConfigExtra),
+                    }),
+                [CoinFamily.Nexa] = BitcoinFamilyContract(),
+                [CoinFamily.Progpow] = BitcoinFamilyContract(),
+                [CoinFamily.Satoshicash] = Contract(
+                    new[] { typeof(SatoshicashPoolConfigExtra) },
+                    new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+                    new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
+                [CoinFamily.Warthog] = Contract(
+                    new[] { typeof(WarthogPoolConfigExtra) },
+                    new[] { typeof(WarthogDaemonEndpointConfigExtra) },
+                    new[] { typeof(WarthogPaymentProcessingConfigExtra) }),
+                [CoinFamily.Xelis] = Contract(
+                    new[] { typeof(XelisPoolConfigExtra) },
+                    new[] { typeof(XelisDaemonEndpointConfigExtra) },
+                    new[] { typeof(XelisPaymentProcessingConfigExtra) }),
+                [CoinFamily.Zano] = Contract(
+                    new[] { typeof(ZanoPoolConfigExtra) },
+                    new[] { typeof(ZanoDaemonEndpointConfigExtra) },
+                    new[] { typeof(ZanoPoolPaymentProcessingConfigExtra) }),
+            });
 
     public static IEnumerable<object[]> DateLookingConfigurationStrings()
     {
@@ -227,8 +317,11 @@ public class ConfigurationContractTests
             FormatValidationErrors(result.Errors));
         Assert.All(config.Pools,
             pool => Assert.NotNull(pool.PaymentProcessing));
-        AssertOnlyReviewedPoolProperties("config.example.json", document);
+        AssertOnlyReviewedExtensions("config.example.json", document);
         AssertConfigExampleRewardRecipientPlaceholders(document);
+        AssertConfigExampleOperationalPolicy(document);
+        AssertExamplePortsDoNotConflict("config.example.json", document,
+            config);
         AssertInternalStratumDifficultyTiers("config.example.json",
             document, config);
 
@@ -270,7 +363,7 @@ public class ConfigurationContractTests
     private static void AssertShippedExampleOperationalPolicy(
         string fileName, JObject document, ClusterConfig config)
     {
-        AssertOnlyReviewedPoolProperties(fileName, document);
+        AssertOnlyReviewedExtensions(fileName, document);
         Assert.Null(document.SelectToken(
             "paymentProcessing.shareRecoveryFile"));
 
@@ -438,8 +531,15 @@ public class ConfigurationContractTests
             Assert.True(pool["jobRebroadcastTimeout"]?.Value<int?>() >= 0,
                 $"{fileName}: pool '{poolId}' must explicitly configure a " +
                 "non-negative jobRebroadcastTimeout");
-            Assert.Equal(600,
-                pool["clientConnectionTimeout"]?.Value<int?>());
+            if(configuredPool.Enabled &&
+               configuredPool.EnableInternalStratum == true)
+            {
+                var connectionTimeout = pool["clientConnectionTimeout"]?
+                    .Value<int?>();
+                Assert.True(connectionTimeout is >= 60 and <= 3600,
+                    $"{fileName}: pool '{poolId}' must use a reviewed miner " +
+                    "connection timeout between 60 and 3600 seconds");
+            }
 
             var paymentProcessing = pool["paymentProcessing"] as JObject;
             Assert.NotNull(paymentProcessing);
@@ -509,11 +609,12 @@ public class ConfigurationContractTests
             }
         }
 
+        AssertExamplePortsDoNotConflict(fileName, document, config);
         AssertInternalStratumDifficultyTiers(fileName, document, config);
     }
 
     [Fact]
-    public void ShippedExamplePoolPropertyGuard_RejectsMisplacedDaemonField()
+    public void ShippedExampleExtensionGuard_RejectsMisplacedDaemonField()
     {
         var document = ReadExampleConfigDocument();
         var pool = Assert.IsType<JObject>(document["pools"]?.First);
@@ -521,41 +622,175 @@ public class ConfigurationContractTests
 
         Assert.Contains(
             $"{pool["id"]}.zmqBlockNotifySocket",
-            FindUnreviewedPoolProperties(document));
+            FindInvalidExtensionProperties(document));
     }
 
-    private static void AssertOnlyReviewedPoolProperties(string fileName,
+    [Fact]
+    public void ShippedExampleExtensionGuard_RejectsWrongFamilyProperties()
+    {
+        var ethereumDocument = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "ethereum_pool.json")));
+        var ethereum = Assert.IsType<JObject>(
+            ethereumDocument["pools"]?.First);
+        var bitcoinDocument = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "bitcoin_pool.json")));
+        var bitcoin = Assert.IsType<JObject>(
+            bitcoinDocument["pools"]?.First);
+
+        ethereum["addressType"] = "BCash";
+        bitcoin["chainTypeOverride"] = "Ethereum";
+
+        var invalid = FindInvalidExtensionProperties(ethereumDocument)
+            .Concat(FindInvalidExtensionProperties(bitcoinDocument))
+            .ToArray();
+
+        Assert.Contains($"{ethereum["id"]}.addressType", invalid);
+        Assert.Contains($"{bitcoin["id"]}.chainTypeOverride", invalid);
+    }
+
+    [Fact]
+    public void ShippedExampleExtensionGuard_RejectsInvalidValueTypes()
+    {
+        var document = ReadExampleConfigDocument();
+        var bitcoin = document["pools"]?.Children<JObject>().Single(pool =>
+            pool["coin"]?.Value<string>() == "bitcoin");
+        bitcoin["maxActiveJobs"] = "12";
+
+        Assert.Contains($"{bitcoin["id"]}.maxActiveJobs",
+            FindInvalidExtensionProperties(document));
+    }
+
+    [Fact]
+    public void ShippedExampleExtensionGuard_RejectsMisCasedProperty()
+    {
+        var document = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "firo_pool.json")));
+        var pool = Assert.IsType<JObject>(document["pools"]?.First);
+        pool["GBTArgs"] = pool["gbtArgs"];
+        pool.Remove("gbtArgs");
+
+        Assert.Contains($"{pool["id"]}.GBTArgs",
+            FindInvalidExtensionProperties(document));
+    }
+
+    [Fact]
+    public void ShippedExampleExtensionGuard_RejectsMisplacedClusterSetting()
+    {
+        var document = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "conceal_pool.json")));
+        var conceal = Assert.IsType<JObject>(document["pools"]?.First);
+        conceal["cryptonightMaxThreads"] = 2;
+
+        Assert.Contains($"{conceal["id"]}.cryptonightMaxThreads",
+            FindInvalidExtensionProperties(document));
+    }
+
+    [Fact]
+    public void ShippedExampleExtensionGuard_RejectsNestedExtensionTypo()
+    {
+        var document = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "dash_pool_no_polling.json")));
+        var pool = Assert.IsType<JObject>(document["pools"]?.First);
+        var daemon = Assert.IsType<JObject>(pool["daemons"]?.First);
+        daemon["zmqBlockNotifySoket"] = daemon["zmqBlockNotifySocket"];
+        daemon.Remove("zmqBlockNotifySocket");
+
+        Assert.Contains($"{pool["id"]}.daemons[0].zmqBlockNotifySoket",
+            FindInvalidExtensionProperties(document));
+    }
+
+    [Fact]
+    public void ShippedExampleExtensionGuard_RejectsPaymentExtensionTypo()
+    {
+        var document = ParseConfigurationDocument(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "examples",
+                "ethereum_pool.json")));
+        var pool = Assert.IsType<JObject>(document["pools"]?.First);
+        var payment = Assert.IsType<JObject>(pool["paymentProcessing"]);
+        payment["maxFeePerGass"] = payment["maxFeePerGas"];
+        payment.Remove("maxFeePerGas");
+
+        Assert.Contains($"{pool["id"]}.paymentProcessing.maxFeePerGass",
+            FindInvalidExtensionProperties(document));
+    }
+
+    [Fact]
+    public void ConcealExample_ConfiguresCryptonightConcurrencyAtClusterScope()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "examples",
+            "conceal_pool.json");
+        var document = ParseConfigurationDocument(File.ReadAllText(path));
+        var config = Program.ReadConfig(path, false);
+
+        Assert.Equal(1, document["cryptonightMaxThreads"]?.Value<int?>());
+        Assert.Equal(1, config.CryptonightMaxThreads);
+        Assert.Null(document.SelectToken("pools[0].cryptonightMaxThreads"));
+    }
+
+    private static void AssertOnlyReviewedExtensions(string fileName,
         JObject document)
     {
-        var unreviewed = FindUnreviewedPoolProperties(document);
+        var invalid = FindInvalidExtensionProperties(document);
 
-        Assert.True(unreviewed.Length == 0,
-            $"{fileName}: unreviewed pool-level properties: " +
-            string.Join(", ", unreviewed));
+        Assert.True(invalid.Length == 0,
+            $"{fileName}: invalid or unreviewed extension properties: " +
+            string.Join(", ", invalid));
     }
 
-    private static string[] FindUnreviewedPoolProperties(JObject document)
+    private static string[] FindInvalidExtensionProperties(JObject document)
     {
-        var schemaPath = Path.Combine(AppContext.BaseDirectory,
-            "config.schema.json");
-        var schema = JObject.Parse(File.ReadAllText(schemaPath));
-        var sharedProperties = schema.SelectToken(
-                "definitions.PoolConfig.properties")?
-            .Children<JProperty>()
-            .Select(property => property.Name)
-            .ToHashSet(StringComparer.Ordinal);
+        var invalid = new List<string>();
+        var sharedPoolProperties = GetSchemaProperties("PoolConfig");
+        var sharedDaemonProperties = GetSchemaProperties(
+            "DaemonEndpointConfig");
+        var sharedPaymentProperties = GetSchemaProperties(
+            "PoolPaymentProcessingConfig");
 
-        Assert.NotNull(sharedProperties);
+        foreach(var pool in document["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var poolId = pool["id"]?.Value<string>() ?? "<unknown>";
+            var coin = pool["coin"]?.Value<string>();
+            var familyName = coin == null
+                ? null
+                : BundledCoinTemplates.Value[coin]?["family"]?.Value<string>();
 
-        return document["pools"]?.Children<JObject>()
-            .SelectMany(pool => pool.Properties()
-                .Where(property => !sharedProperties.Contains(property.Name) &&
-                    !ReviewedPoolExtensionProperties.Contains(property.Name))
-                .Select(property =>
-                    $"{pool["id"]?.Value<string>() ?? "<unknown>"}." +
-                    property.Name))
-            .OrderBy(value => value, StringComparer.Ordinal)
-            .ToArray() ?? Array.Empty<string>();
+            if(!Enum.TryParse<CoinFamily>(familyName, true, out var family) ||
+               !ExampleExtensionContracts.Value.TryGetValue(family,
+                   out var contract))
+            {
+                invalid.Add($"{poolId}.<unknown-coin-family>");
+                continue;
+            }
+
+            ValidateExtensionObject(pool, sharedPoolProperties,
+                contract.Pool, poolId, invalid);
+
+            var daemonIndex = 0;
+            foreach(var daemon in pool["daemons"]?.Children<JObject>() ??
+                        Enumerable.Empty<JObject>())
+            {
+                ValidateExtensionObject(daemon, sharedDaemonProperties,
+                    contract.Daemon, $"{poolId}.daemons[{daemonIndex}]",
+                    invalid);
+                daemonIndex++;
+            }
+
+            if(pool["paymentProcessing"] is JObject paymentProcessing)
+            {
+                ValidateExtensionObject(paymentProcessing,
+                    sharedPaymentProperties, contract.Payment,
+                    $"{poolId}.paymentProcessing", invalid);
+            }
+        }
+
+        return invalid.OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
     }
 
     [Fact]
@@ -568,7 +803,7 @@ public class ConfigurationContractTests
     }
 
     [Fact]
-    public void CombinedBitcoinCashExample_UsesNonConflictingNodePorts()
+    public void CombinedBitcoinCashExample_PinsDocumentedNodeTopology()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "examples",
             "bitcoin_bitcoin_cash_pool.json");
@@ -584,12 +819,47 @@ public class ConfigurationContractTests
 
         Assert.Equal(8332, bitcoinRpcPort);
         Assert.Equal(8432, bitcoinCashRpcPort);
-        Assert.NotEqual(bitcoinRpcPort, bitcoinCashRpcPort);
-        Assert.Contains("rpcport=8432", source, StringComparison.Ordinal);
-        Assert.Contains("port=8433", source, StringComparison.Ordinal);
-        Assert.Contains("listenonion=0", source, StringComparison.Ordinal);
+        var sourceLines = Regex.Split(source, "\\r?\\n")
+            .Select(line => line.Trim())
+            .ToArray();
+
+        Assert.Contains("// datadir=/var/lib/bitcoin-cash", sourceLines);
+        Assert.Contains("// rpcport=8432", sourceLines);
+        Assert.Contains("// port=8433", sourceLines);
+        Assert.Contains("// listenonion=0", sourceLines);
         Assert.DoesNotContain("rpcport=8334", source,
             StringComparison.Ordinal);
+
+        foreach(var relativePath in new[]
+                    {
+                        Path.Combine("examples", "README.md"),
+                        Path.Combine("docs", "releases.md"),
+                    })
+        {
+            var lines = File.ReadAllLines(Path.Combine(
+                AppContext.BaseDirectory, relativePath));
+
+            Assert.Contains("datadir=/var/lib/bitcoin-cash", lines);
+            Assert.Contains("rpcport=8432", lines);
+            Assert.Contains("port=8433", lines);
+            Assert.Contains("listenonion=0", lines);
+        }
+    }
+
+    private static void AssertConfigExampleOperationalPolicy(JObject document)
+    {
+        var api = Assert.IsType<JObject>(document["api"]);
+        var listenAddress = api["listenAddress"]?.Value<string>();
+
+        Assert.True(IPAddress.TryParse(listenAddress,
+                out var parsedListenAddress) &&
+            IPAddress.IsLoopback(parsedListenAddress),
+            "config.example.json: the copy-first API baseline must bind to " +
+            "loopback; container exposure requires an explicit operator edit");
+        Assert.True(api.SelectToken("rateLimiting.disabled")?
+                .Value<bool>() == false,
+            "config.example.json: the direct API baseline must keep " +
+            "application rate limiting enabled");
     }
 
     private static void AssertConfigExampleRewardRecipientPlaceholders(
@@ -625,18 +895,26 @@ public class ConfigurationContractTests
                 .Single(item => item["id"]?.Value<string>() ==
                     configuredPool.Id);
             var endpoints = pool?["ports"]?.Children<JProperty>()
-                .Select(property => property.Value as JObject)
-                .Where(endpoint => endpoint != null)
-                .ToArray() ?? Array.Empty<JObject>();
-            var low = endpoints.SingleOrDefault(endpoint =>
-                endpoint["name"]?.Value<string>()?.EndsWith("LOW-DIFF",
-                    StringComparison.Ordinal) == true);
-            var high = endpoints.SingleOrDefault(endpoint =>
-                endpoint["name"]?.Value<string>()?.EndsWith("HIGH-DIFF",
-                    StringComparison.Ordinal) == true);
+                .Where(property => property.Value is JObject)
+                .ToArray() ?? Array.Empty<JProperty>();
+            var lowMatches = endpoints.Where(endpoint =>
+                    endpoint.Value["name"]?.Value<string>()?.EndsWith(
+                        "LOW-DIFF", StringComparison.Ordinal) == true)
+                .ToArray();
+            var highMatches = endpoints.Where(endpoint =>
+                    endpoint.Value["name"]?.Value<string>()?.EndsWith(
+                        "HIGH-DIFF", StringComparison.Ordinal) == true)
+                .ToArray();
 
-            Assert.NotNull(low);
-            Assert.NotNull(high);
+            Assert.True(lowMatches.Length == 1,
+                $"{fileName}: pool '{configuredPool.Id}' must expose exactly " +
+                $"one LOW-DIFF endpoint, found {lowMatches.Length}");
+            Assert.True(highMatches.Length == 1,
+                $"{fileName}: pool '{configuredPool.Id}' must expose exactly " +
+                $"one HIGH-DIFF endpoint, found {highMatches.Length}");
+
+            var low = (JObject) lowMatches[0].Value;
+            var high = (JObject) highMatches[0].Value;
 
             var lowDifficulty = low["difficulty"]?.Value<double>() ?? 0;
             var highDifficulty = high["difficulty"]?.Value<double>() ?? 0;
@@ -648,24 +926,335 @@ public class ConfigurationContractTests
                 $"{fileName}: pool '{configuredPool.Id}' high tier must " +
                 "start above its low tier");
 
-            foreach(var endpoint in endpoints)
+            foreach(var endpointProperty in endpoints)
             {
+                var endpoint = (JObject) endpointProperty.Value;
+                var endpointName = endpoint["name"]?.Value<string>() ??
+                    "<unnamed>";
+                var endpointContext = $"{fileName}: pool " +
+                    $"'{configuredPool.Id}' endpoint " +
+                    $"'{endpointProperty.Name}' ({endpointName})";
                 var varDiff = endpoint["varDiff"] as JObject;
                 var difficulty = endpoint["difficulty"]?.Value<double>() ?? 0;
                 var minDifficulty = varDiff?["minDiff"]?.Value<double>() ?? 0;
 
-                Assert.NotNull(varDiff);
-                Assert.True(minDifficulty > 0);
-                Assert.True(minDifficulty <= difficulty);
+                Assert.True(varDiff != null,
+                    $"{endpointContext} must configure VarDiff");
+                Assert.True(minDifficulty > 0,
+                    $"{endpointContext} must use a positive minDiff");
+                Assert.True(minDifficulty <= difficulty,
+                    $"{endpointContext} minDiff must not exceed its " +
+                    "starting difficulty");
+
+                if(endpointName.EndsWith("LOW-DIFF",
+                       StringComparison.Ordinal))
+                {
+                    Assert.True(minDifficulty < difficulty,
+                        $"{endpointContext} must be able to retarget below " +
+                        "its starting difficulty");
+                }
+
                 Assert.Equal(15d,
-                    varDiff["targetTime"]?.Value<double>());
+                    varDiff["targetTime"]?.Value<double>() ?? double.NaN, 8);
                 Assert.Equal(90d,
-                    varDiff["retargetTime"]?.Value<double>());
+                    varDiff["retargetTime"]?.Value<double>() ?? double.NaN, 8);
                 Assert.Equal(30d,
-                    varDiff["variancePercent"]?.Value<double>());
+                    varDiff["variancePercent"]?.Value<double>() ??
+                    double.NaN, 8);
             }
         }
     }
+
+    private static void AssertExamplePortsDoNotConflict(string fileName,
+        JObject document, ClusterConfig config)
+    {
+        var bindings = new List<(int Port, string Owner)>();
+
+        if(document["api"] is JObject api)
+        {
+            foreach(var name in new[] { "port", "adminPort", "metricsPort" })
+            {
+                if(api[name]?.Value<int?>() is { } port)
+                    bindings.Add((port, $"api.{name}"));
+            }
+        }
+
+        foreach(var pool in document["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var poolId = pool["id"]?.Value<string>() ?? "<unknown>";
+            var configuredPool = config.Pools.Single(candidate =>
+                candidate.Id == poolId);
+
+            var daemonIndex = 0;
+            foreach(var daemon in pool["daemons"]?.Children<JObject>() ??
+                        Enumerable.Empty<JObject>())
+            {
+                if(daemon["port"]?.Value<int?>() is { } daemonPort)
+                {
+                    bindings.Add((daemonPort,
+                        $"pool '{poolId}' daemon[{daemonIndex}]"));
+                }
+
+                daemonIndex++;
+            }
+
+            if(configuredPool.Enabled &&
+               configuredPool.EnableInternalStratum == true)
+            {
+                foreach(var port in pool["ports"]?.Children<JProperty>() ??
+                            Enumerable.Empty<JProperty>())
+                {
+                    Assert.True(int.TryParse(port.Name, out var portNumber),
+                        $"{fileName}: pool '{poolId}' has invalid Stratum " +
+                        $"port key '{port.Name}'");
+                    bindings.Add((portNumber,
+                        $"pool '{poolId}' Stratum '{port.Name}'"));
+                }
+            }
+        }
+
+        var collisions = bindings.GroupBy(binding => binding.Port)
+            .Where(group => group.Count() > 1)
+            .Select(group => $"{group.Key}: " + string.Join(", ",
+                group.Select(binding => binding.Owner)))
+            .ToArray();
+
+        Assert.True(collisions.Length == 0,
+            $"{fileName}: configured service-port collisions: " +
+            string.Join("; ", collisions));
+    }
+
+    private static ExampleExtensionContract BitcoinFamilyContract() =>
+        Contract(new[] { typeof(BitcoinPoolConfigExtra) },
+            new[] { typeof(BitcoinDaemonEndpointConfigExtra) },
+            new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) });
+
+    private static ExampleExtensionContract Contract(Type[] poolTypes = null,
+        Type[] daemonTypes = null, Type[] paymentTypes = null) => new(
+        CreateExtensionScopeContract(poolTypes),
+        CreateExtensionScopeContract(daemonTypes),
+        CreateExtensionScopeContract(paymentTypes));
+
+    private static IReadOnlyDictionary<string, Type>
+        CreateExtensionScopeContract(IEnumerable<Type> types)
+    {
+        var result = new Dictionary<string, Type>(StringComparer.Ordinal);
+
+        foreach(var type in types ?? Enumerable.Empty<Type>())
+        {
+            var contract = Assert.IsType<JsonObjectContract>(
+                ExtensionContractResolver.ResolveContract(type));
+
+            foreach(var property in contract.Properties.Where(property =>
+                         !property.Ignored && property.Writable &&
+                         !string.IsNullOrEmpty(property.PropertyName)))
+            {
+                Assert.True(!result.TryGetValue(property.PropertyName,
+                        out var existingType) ||
+                    existingType == property.PropertyType,
+                    $"Extension property '{property.PropertyName}' has " +
+                    $"conflicting types '{existingType}' and " +
+                    $"'{property.PropertyType}'");
+                result[property.PropertyName] = property.PropertyType;
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlySet<string> GetSchemaProperties(
+        string definitionName)
+    {
+        var properties = ConfigSchema.Value.SelectToken(
+                $"definitions.{definitionName}.properties")?
+            .Children<JProperty>()
+            .Select(property => property.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.NotNull(properties);
+        return properties;
+    }
+
+    private static void ValidateExtensionObject(JObject value,
+        IReadOnlySet<string> sharedProperties,
+        IReadOnlyDictionary<string, Type> extensionProperties, string path,
+        ICollection<string> invalid)
+    {
+        foreach(var property in value.Properties().Where(property =>
+                     !sharedProperties.Contains(property.Name)))
+        {
+            var propertyPath = $"{path}.{property.Name}";
+
+            if(!extensionProperties.TryGetValue(property.Name,
+                   out var propertyType))
+            {
+                invalid.Add(propertyPath);
+                continue;
+            }
+
+            try
+            {
+                ValidateExtensionToken(property.Value, propertyType,
+                    propertyPath);
+
+                var serializer = JsonSerializer.Create(new JsonSerializerSettings
+                {
+                    ContractResolver = ExtensionContractResolver,
+                    DateParseHandling = DateParseHandling.None,
+                    MissingMemberHandling = MissingMemberHandling.Error,
+                });
+                property.Value.ToObject(propertyType, serializer);
+            }
+            catch(JsonException)
+            {
+                invalid.Add(propertyPath);
+            }
+            catch(InvalidOperationException)
+            {
+                invalid.Add(propertyPath);
+            }
+        }
+    }
+
+    private static void ValidateExtensionToken(JToken token, Type targetType,
+        string path)
+    {
+        var nullableType = Nullable.GetUnderlyingType(targetType);
+        var acceptsNull = !targetType.IsValueType || nullableType != null;
+        targetType = nullableType ?? targetType;
+
+        if(token.Type is JTokenType.Null or JTokenType.Undefined)
+        {
+            if(!acceptsNull)
+                throw new JsonSerializationException(
+                    $"{path} cannot be null");
+
+            return;
+        }
+
+        if(typeof(JToken).IsAssignableFrom(targetType) ||
+           targetType == typeof(object))
+            return;
+
+        if(targetType == typeof(string) || targetType == typeof(char) ||
+           targetType == typeof(Guid) || targetType == typeof(Uri) ||
+           targetType == typeof(TimeSpan) || targetType == typeof(DateTime) ||
+           targetType == typeof(DateTimeOffset))
+        {
+            RequireTokenType(token, path, JTokenType.String);
+            return;
+        }
+
+        if(targetType == typeof(bool))
+        {
+            RequireTokenType(token, path, JTokenType.Boolean);
+            return;
+        }
+
+        if(targetType.IsEnum)
+        {
+            RequireTokenType(token, path, JTokenType.String);
+
+            if(!Enum.TryParse(targetType, token.Value<string>(), true,
+                   out var enumValue) ||
+               !Enum.IsDefined(targetType, enumValue))
+            {
+                throw new JsonSerializationException(
+                    $"{path} is not a defined {targetType.Name} value");
+            }
+
+            return;
+        }
+
+        if(IsIntegralType(targetType))
+        {
+            RequireTokenType(token, path, JTokenType.Integer);
+            return;
+        }
+
+        if(IsFloatingPointType(targetType))
+        {
+            if(token.Type is not (JTokenType.Integer or JTokenType.Float))
+                throw new JsonSerializationException(
+                    $"{path} must be numeric");
+
+            return;
+        }
+
+        var contract = ExtensionContractResolver.ResolveContract(targetType);
+
+        if(contract is JsonArrayContract arrayContract)
+        {
+            RequireTokenType(token, path, JTokenType.Array);
+            var itemType = arrayContract.CollectionItemType ?? typeof(object);
+            var index = 0;
+
+            foreach(var item in token.Children())
+            {
+                ValidateExtensionToken(item, itemType, $"{path}[{index}]");
+                index++;
+            }
+
+            return;
+        }
+
+        if(contract is JsonDictionaryContract)
+        {
+            RequireTokenType(token, path, JTokenType.Object);
+            return;
+        }
+
+        if(contract is JsonObjectContract objectContract)
+        {
+            RequireTokenType(token, path, JTokenType.Object);
+            var objectValue = (JObject) token;
+            var properties = objectContract.Properties.Where(property =>
+                    !property.Ignored && property.Writable &&
+                    !string.IsNullOrEmpty(property.PropertyName))
+                .ToDictionary(property => property.PropertyName,
+                    StringComparer.Ordinal);
+
+            foreach(var property in objectValue.Properties())
+            {
+                if(!properties.TryGetValue(property.Name,
+                       out var expectedProperty))
+                {
+                    throw new JsonSerializationException(
+                        $"{path}.{property.Name} is not supported");
+                }
+
+                ValidateExtensionToken(property.Value,
+                    expectedProperty.PropertyType,
+                    $"{path}.{property.Name}");
+            }
+        }
+    }
+
+    private static void RequireTokenType(JToken token, string path,
+        JTokenType expected)
+    {
+        if(token.Type != expected)
+        {
+            throw new JsonSerializationException(
+                $"{path} must be {expected}, not {token.Type}");
+        }
+    }
+
+    private static bool IsIntegralType(Type type) =>
+        type == typeof(byte) || type == typeof(sbyte) ||
+        type == typeof(short) || type == typeof(ushort) ||
+        type == typeof(int) || type == typeof(uint) ||
+        type == typeof(long) || type == typeof(ulong);
+
+    private static bool IsFloatingPointType(Type type) =>
+        type == typeof(float) || type == typeof(double) ||
+        type == typeof(decimal);
+
+    private sealed record ExampleExtensionContract(
+        IReadOnlyDictionary<string, Type> Pool,
+        IReadOnlyDictionary<string, Type> Daemon,
+        IReadOnlyDictionary<string, Type> Payment);
 
     private static bool IsDaemonEndpointCredential(JProperty credential)
     {

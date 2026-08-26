@@ -49,6 +49,8 @@
       "enabled": true,
       "coin": "bitcoin-cash",
       "addressType": "BCash",
+      // Use a mainnet P2PKH CashAddr beginning with q. P2SH CashAddr values
+      // beginning with p are not supported by the current payout path.
       "address": "CHANGE_ME_BITCOIN_CASH_POOL_WALLET_CASHADDR",
       // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
       "rewardRecipients": [

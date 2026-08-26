@@ -22,6 +22,7 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | --- | --- |
 | Choose a complete example topology | [Example configurations](../examples/README.md) |
 | Configure a pool and miner difficulty | [Pool basics](#pool-basics) |
+| Configure a coin-family-only field | [Coin-specific extension fields](#coin-specific-extension-fields) |
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
@@ -329,16 +330,17 @@ coin definition and daemon/wallet documentation together.
 ### Coin-specific extension fields
 
 Pool, daemon and payment extensions let coin families expose settings that are not common to every
-Miningcore pool. Examples include Bitcoin-family `addressType` and `GBTArgs`, daemon-level ZMQ
+Miningcore pool. Examples include Bitcoin-family `addressType` and `gbtArgs`, daemon-level ZMQ
 notification settings, and CryptoNote or Equihash tuning fields. These values intentionally pass
 through the shared JSON schema as extension data and are bound only by the matching coin-family
 implementation.
 
 That flexibility means a structurally valid key can still be ineffective when placed at the wrong
 level or copied to an unrelated coin family. Start from the matching file in the
-[example configuration index](../examples/README.md), retain its nesting, and verify the daemon or
-wallet feature during staged startup. The shipped examples have an additional CI allowlist for
-pool-level extension keys so an unreviewed or misplaced field cannot be added silently.
+[example configuration index](../examples/README.md), retain its exact camel-case spelling and
+nesting, and verify the daemon or wallet feature during staged startup. CI derives the permitted
+pool, daemon and payment fields from each family's concrete runtime contracts and rejects unknown,
+mis-cased, wrong-family, wrong-scope and wrong-typed extension values in every shipped example.
 
 ## Log files and rotation
 

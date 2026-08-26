@@ -90,7 +90,7 @@
                     "listenAddress": "*",
                     "difficulty": 250000000,
                     "varDiff": {
-                        "minDiff": 250000000,
+                        "minDiff": 125000000,
                         "maxDiff": null,
                         "targetTime": 15,
                         "retargetTime": 90,
