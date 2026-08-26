@@ -55,15 +55,19 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
-    - name: Lint Linux native symbol contracts
+    - name: Lint Linux native and build-audit scripts
       shell: bash
       run: >-
         shellcheck -x
+        scripts/release/assert-warning-free-build.sh
+        scripts/release/audit-source-build-warnings.sh
         scripts/release/linux-release-targets.sh
+        scripts/release/run-warning-audited-dotnet.sh
         scripts/release/test-cryptonote-abi-safety.sh
         scripts/release/test-linux-native-inventory.sh
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-linux-package-targets.sh
+        scripts/release/test-msbuild-warning-file-logger.sh
         scripts/release/test-ubuntu-source-build.sh
 
     - name: Test Linux native symbol contracts
@@ -133,6 +137,10 @@ jobs:
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 10.0.x
+
+    - name: Test MSBuild warning file logger
+      shell: bash
+      run: bash scripts/release/test-msbuild-warning-file-logger.sh
 
     - name: Restore dependencies
       run: dotnet restore src

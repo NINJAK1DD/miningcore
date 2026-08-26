@@ -35,7 +35,7 @@ bash scripts/release/verify-ubuntu-dotnet-sdk.sh
   trap 'rm -f -- "$BUILD_LOG"' EXIT
   export DOTNET_CLI_UI_LANGUAGE=en
   export LC_ALL=C
-  dotnet publish -c Release --framework net10.0 -o "$BUILDIR" \
-    "${BUILD_IDENTITY_ARGS[@]}" 2>&1 | tee "$BUILD_LOG"
-  bash ../../scripts/release/audit-source-build-warnings.sh "$BUILD_LOG"
+  bash ../../scripts/release/run-warning-audited-dotnet.sh "$BUILD_LOG" \
+    publish -c Release --framework net10.0 -o "$BUILDIR" \
+    "${BUILD_IDENTITY_ARGS[@]}"
 )
