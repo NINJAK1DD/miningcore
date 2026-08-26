@@ -420,6 +420,11 @@ including undefined behavior in CryptoNight, Argon2, Ethash, Xelis, Verus and li
 CryptoNight soft-shell buffer defect was in a currently unregistered algorithm path, but is fixed
 to keep that native implementation memory-safe if it is enabled later.
 
+In an interactive terminal, the source-build helpers show .NET's concise progress and elapsed-time
+display. Warning enforcement uses a separate private normal-verbosity MSBuild log, which is audited
+after a successful build and removed when the helper exits. Redirected and non-interactive runs use
+.NET's conventional output automatically. A missing or empty audit log fails the build closed.
+
 Three Linux hashing defects are corrected and deserve particular attention from operators:
 
 - Argon2d previously left `blake2b_long` unresolved in `libmultihash.so`. Calling `argon2d250`,

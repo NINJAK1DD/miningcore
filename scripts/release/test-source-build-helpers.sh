@@ -140,9 +140,42 @@ case "${1:-}" in
       echo 'dotnet publish was not forced to stable English diagnostics' >&2
       exit 91
     fi
-    if [ "${MININGCORE_HELPER_EMIT_WARNING:-}" = 1 ]; then
-      echo 'fixture.c:1:1: warning: injected compiler warning'
+
+    if [ "${MININGCORE_HELPER_FAIL_PUBLISH:-}" = 1 ]; then
+      echo 'injected dotnet publish failure' >&2
+      exit 42
     fi
+
+    build_log=
+    terminal_logger=false
+
+    for argument in "$@"; do
+      case "$argument" in
+        --tl:auto)
+          terminal_logger=true
+          ;;
+        -flp:LogFile=*)
+          build_log=${argument#-flp:LogFile=}
+          build_log=${build_log%%;*}
+          ;;
+      esac
+    done
+
+    if [ "$terminal_logger" != true ] || [ -z "$build_log" ]; then
+      echo 'dotnet publish did not receive the terminal and private-log contract' >&2
+      exit 92
+    fi
+
+    if [ "${MININGCORE_HELPER_SKIP_BUILD_LOG:-}" != 1 ]; then
+      printf '%s\n' \
+        'cc -g -Wall -c -fPIC fixture.c -o fixture.o' > "$build_log"
+
+      if [ "${MININGCORE_HELPER_EMIT_WARNING:-}" = 1 ]; then
+        echo 'fixture.c:1:1: warning: injected compiler warning' >> "$build_log"
+      fi
+    fi
+
+    echo 'Terminal logger fixture progress'
     ;;
   *)
     exit 1
@@ -280,6 +313,8 @@ for helper in "${helpers[@]}"; do
     "$sandbox/scripts/release/assert-warning-free-build.sh"
   cp "$repository_root/scripts/release/audit-source-build-warnings.sh" \
     "$sandbox/scripts/release/audit-source-build-warnings.sh"
+  cp "$repository_root/scripts/release/run-warning-audited-dotnet.sh" \
+    "$sandbox/scripts/release/run-warning-audited-dotnet.sh"
   cp "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
     "$sandbox/scripts/release/verify-ubuntu-dotnet-sdk.sh"
 
@@ -307,6 +342,30 @@ for helper in "${helpers[@]}"; do
       "$trace"; then
     echo "$helper did not reach the expected dotnet publish boundary" >&2
     cat "$trace" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq -- '--tl:auto' "$trace" ||
+      ! grep -Eq -- '-flp:LogFile=[^;]+;Verbosity=normal;Encoding=UTF-8' "$trace"; then
+    echo "$helper did not preserve terminal output with a separate warning log" >&2
+    cat "$trace" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq 'Terminal logger fixture progress' "$output"; then
+    echo "$helper did not preserve direct terminal output" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  if grep -Fq 'cc -g -Wall -c -fPIC fixture.c -o fixture.o' "$output"; then
+    echo "$helper replayed private native compiler detail during a clean build" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  if grep -Eq '2>&1[[:space:]]*\|[[:space:]]*tee' "$sandbox/$helper"; then
+    echo "$helper still redirects dotnet output through tee" >&2
     exit 1
   fi
 
@@ -366,6 +425,56 @@ for helper in "${helpers[@]}"; do
 
   if ! grep -Fq 'Do not use this artifact for a release' "$output"; then
     echo "$helper did not identify its warning override as unsuitable for release" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  : > "$trace"
+  /bin/rm -f -- "$state"/*
+  set +e
+  (
+    cd "$sandbox"
+    PATH="$work_dir/bin:$PATH" \
+      MININGCORE_HELPER_SKIP_BUILD_LOG=1 \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
+      MININGCORE_HELPER_TEST_STATE="$state" \
+      MININGCORE_HELPER_TEST_TRACE="$trace" \
+      bash "$helper" "$publish_dir"
+  ) > "$output" 2>&1
+  missing_log_status=$?
+  set -e
+
+  if [[ "$missing_log_status" -ne 70 ]] ||
+      ! grep -Fq 'did not produce its private log' "$output"; then
+    echo "$helper did not fail closed when MSBuild omitted its private log" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  if grep -Fq -- '-flp:LogFile=' "$output"; then
+    echo "$helper exposed its private warning-log path" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+
+  : > "$trace"
+  /bin/rm -f -- "$state"/*
+  set +e
+  (
+    cd "$sandbox"
+    PATH="$work_dir/bin:$PATH" \
+      MININGCORE_HELPER_FAIL_PUBLISH=1 \
+      MININGCORE_HELPER_TEST_BIN="$work_dir/bin" \
+      MININGCORE_HELPER_TEST_STATE="$state" \
+      MININGCORE_HELPER_TEST_TRACE="$trace" \
+      bash "$helper" "$publish_dir"
+  ) > "$output" 2>&1
+  publish_failure_status=$?
+  set -e
+
+  if [[ "$publish_failure_status" -ne 42 ]] ||
+      ! grep -Fq 'injected dotnet publish failure' "$output"; then
+    echo "$helper did not preserve a dotnet publish failure" >&2
     cat "$output" >&2
     exit 1
   fi
