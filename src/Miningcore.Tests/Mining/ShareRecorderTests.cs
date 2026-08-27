@@ -1456,6 +1456,10 @@ public class ShareRecorderTests
         var bus = new MessageBus(coordinator);
         var fatalState = new ShareRecoveryFatalState(config, processStatus,
             config.ShareRecoveryStateDirectory);
+        var completedIncidentPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fatalState.CompletedIncidentPublishedCheckpoint = () =>
+            completedIncidentPublished.TrySetResult();
         var handler = new ShareRecoveryFailureHandler(coordinator,
             new Lazy<ICriticalNotificationSender>(() =>
                 Substitute.For<ICriticalNotificationSender>()), fatalState);
@@ -1508,8 +1512,15 @@ public class ShareRecorderTests
             returnedShare.SetPersistenceAdmission(
                 statisticalShare.PersistenceAdmission);
             returnedShare.StatisticalRecordEmitted = true;
+
+            // Publishing the exact-share sidecar performs durable writes for the
+            // complete 551-share incident. Observe that production boundary instead
+            // of imposing a five-second filesystem SLA on a loaded Windows runner.
+            await completedIncidentPublished.Task.WaitAsync(
+                TimeSpan.FromSeconds(30));
             await Assert.ThrowsAnyAsync<IOException>(() =>
-                returnedShare.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(5)));
+                returnedShare.PersistenceAdmission.WaitAsync(
+                    TimeSpan.FromSeconds(30)));
             Assert.Throws<OperationCanceledException>(() =>
                 acceptance.QueueResponse(() => acknowledged = true));
 
@@ -1528,15 +1539,7 @@ public class ShareRecorderTests
         finally
         {
             releaseDatabase.TrySetResult();
-            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
-            {
-                await recorder.StopAsync(stop.Token);
-            }
-            catch
-            {
-                // The injected journal failure deliberately faults the hosted service.
-            }
+            await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
