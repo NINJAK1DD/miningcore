@@ -34,7 +34,7 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Existing RC.11 operator | [RC.12 highlights](#rc12-highlights) |
+| Existing RC.12 operator | [RC.13 highlights](#rc13-highlights) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
@@ -42,25 +42,27 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## RC.12 highlights
+## RC.13 highlights
 
-`v0.1.0-rc.12` strengthens examples, supported Linux builds and native-library contracts without
-adding a database migration or changing the live pool configuration contract from RC.11.
+`v0.1.0-rc.13` expands the audited configuration catalogue and restores concise source-build
+progress without adding a database migration.
 
-- The example catalogue now covers common Bitcoin, Dogecoin, Litecoin/Dogecoin merged-mining,
-  multi-pool and share-relay deployments with validated listener, banning, credential and payout
-  ownership boundaries.
-- Pool examples make optional operator fees explicit without registering a zero-percent reward
-  recipient that could suppress matching addresses from public payment history.
-- Supported Ubuntu source and release builds are warning-free and fail closed when compiler,
-  linker, CMake or MSBuild warnings appear.
-- Every packaged Linux native plugin links without unresolved symbols and is checked against all
-  240 managed imports, runtime relocations and callable exports across 24 libraries.
-- CryptoNote native exports contain parser failures and C++ exceptions at the C ABI boundary, and
-  isolated hostile fixtures protect the process from malformed Bulletproof data.
-- Source and packaged containers exercise the real managed ZeroMQ binding, while release guidance
-  documents the distro-managed unversioned loader dependency and its image-size trade-off.
-- Project branding and maintainer donation destinations now identify this maintained fork.
+- Standalone Bitcoin Cash and combined Bitcoin/Bitcoin Cash SOLO examples include isolated RPC,
+  P2P and onion-service ports, canonical CashAddr wallets and a BCHN configuration verified against
+  the daemon's `getblocktemplate` behavior.
+- Every miner-facing example now provides named low- and high-difficulty VarDiff tiers as
+  commissioning baselines, alongside reviewed polling, rebroadcast, timeout, payout and banning
+  defaults.
+- All shipped configurations pass the real schema reader, CLR binding and normal-startup validation;
+  additional contracts reject unknown, mis-cased, wrong-family, wrong-scope and wrong-typed
+  coin-family extension fields.
+- Bitcoin-family `minimumConfirmations` is bound at pool scope, while ZeroMQ notification settings
+  remain daemon-scoped. Regression tests reject the ineffective inverse placements.
+- Bitcoin Cash address conversion now honors the address supplied to the conversion method instead
+  of reusing the pool's configured address.
+- Interactive Ubuntu and Debian source builds again show .NET's concise progress and elapsed time.
+  A separate private MSBuild log preserves fail-closed warning enforcement and respects the standard
+  `MSBUILDTERMINALLOGGER=off` opt-out.
 
 The release-pipeline items are maintainer-facing. Operators should still verify the selected
 archive, provenance and host compatibility, and should read the cumulative operational changes
@@ -79,10 +81,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.1.0-rc.12`. Substitute the version you selected.
+The examples below use `v0.1.0-rc.13`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.12
+export MININGCORE_VERSION=v0.1.0-rc.13
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -356,7 +358,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.12  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.1.0-rc.13  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1182,7 +1184,7 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.12` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.13` or
 `v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
@@ -1270,7 +1272,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0-rc.12  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.1.0-rc.13  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1333,7 +1335,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.1.0-rc.12
+export TAG=v0.1.0-rc.13
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 
