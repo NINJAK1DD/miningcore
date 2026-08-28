@@ -325,10 +325,12 @@ directory, validate every changed network and hashing field, and retest them aft
 Duplicate properties inside one file are rejected; an intentional definition in a later file can
 replace one loaded earlier.
 
-Bitcoin-family templates whose upper version bits contain consensus chain identifiers set
-`disableVersionRolling: true`. Miningcore then declines Stratum version-rolling negotiation for that
-coin and preserves the daemon-provided version exactly. Do not remove this capability merely to
-accommodate a miner; use a source-verified per-chain mask when that support is implemented.
+Definitions whose reviewed daemons enforce consensus chain identifiers in upper version bits set
+`disableVersionRolling: true`. The current audited set is Dogecoin, Cyberyen, Bells and Namecoin.
+Miningcore then declines Stratum version-rolling negotiation and preserves the daemon-provided
+version exactly. Do not remove this capability merely to accommodate a miner; use a source-verified
+per-chain mask when that support is implemented. [Issue #114](https://github.com/NINJAK1DD/miningcore/issues/114)
+tracks the remaining catalogue survey and future safe-mask work.
 
 Native proof validation can consume substantial CPU and memory:
 

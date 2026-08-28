@@ -401,6 +401,8 @@ public class BitcoinPool : PoolBase
         if(extensionParams.TryGetValue(BitcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue))
             requestedMask = uint.Parse(requestedMaskValue.Value<string>(), NumberStyles.HexNumber);
 
+        // A merged pool evaluates its parent template here because rolling changes
+        // only the parent header; the auxiliary header remains daemon-owned.
         context.VersionRollingMask = ResolveVersionRollingMask(poolConfig.Template,
             requestedMask);
 

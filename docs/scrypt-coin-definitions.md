@@ -36,8 +36,10 @@ height and deployment state therefore remain owned by the daemon.
 
 Dogecoin, Cyberyen and Bells reserve upper block-version bits for consensus chain identifiers.
 Miningcore therefore declines Stratum `version-rolling` negotiation for these templates instead of
-allowing a miner to clear or replace those bits. [Issue #114](https://github.com/NINJAK1DD/miningcore/issues/114)
-tracks source-verified nonzero masks for chains that can safely expose mutable version bits later.
+allowing a miner to clear or replace those bits. The same shared template capability also protects
+Namecoin. [Issue #114](https://github.com/NINJAK1DD/miningcore/issues/114) tracks the remaining
+catalogue survey and source-verified nonzero masks for chains that can safely expose mutable version
+bits later.
 
 ## Definitions deliberately withheld
 

@@ -184,6 +184,7 @@ public class ScryptCoinTemplateTests : TestBase
     [InlineData("dogecoin", 0x00620004u)]
     [InlineData("cyberyen", 0x10000004u)]
     [InlineData("bells", 0x00100004u)]
+    [InlineData("namecoin", 0x00010001u)]
     public void StrictChainIdTemplate_DisablesVersionRollingAndPreservesVersion(
         string key, uint templateVersion)
     {
@@ -198,6 +199,19 @@ public class ScryptCoinTemplateTests : TestBase
             templateVersion, mask, 0));
         Assert.Equal(templateVersion, BitcoinJob.ApplyVersionRolling(
             templateVersion, mask, uint.MaxValue));
+    }
+
+    [Fact]
+    public void VersionRollingDisabledTemplates_MatchReviewedStrictChainIdSet()
+    {
+        var expected = new[] { "bells", "cyberyen", "dogecoin", "namecoin" };
+        var actual = ModuleInitializer.CoinTemplates
+            .Where(x => x.Value is BitcoinTemplate {DisableVersionRolling: true})
+            .Select(x => x.Key)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(expected, actual);
     }
 
     [Fact]

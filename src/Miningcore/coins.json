@@ -1960,6 +1960,7 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
         "explorerBlockLink": "https://explorer.namecoin.info/b/$height$",
         "explorerTxLink": "https://explorer.namecoin.info/tx/{0}",
         "explorerAccountLink": "https://explorer.namecoin.info/a/{0}"
