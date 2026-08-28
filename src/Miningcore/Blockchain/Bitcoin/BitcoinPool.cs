@@ -401,14 +401,33 @@ public class BitcoinPool : PoolBase
         if(extensionParams.TryGetValue(BitcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue))
             requestedMask = uint.Parse(requestedMaskValue.Value<string>(), NumberStyles.HexNumber);
 
-        // Compute effective mask
-        context.VersionRollingMask = BitcoinConstants.VersionRollingPoolMask & requestedMask;
+        // A merged pool evaluates its parent template here because rolling changes
+        // only the parent header; the auxiliary header remains daemon-owned.
+        context.VersionRollingMask = ResolveVersionRollingMask(poolConfig.Template,
+            requestedMask);
+
+        if(!context.VersionRollingMask.HasValue)
+        {
+            result[BitcoinStratumExtensions.VersionRolling] = false;
+            logger.Info(() => $"[{connection.ConnectionId}] Version rolling disabled " +
+                $"for {poolConfig.Template.Symbol}");
+            return;
+        }
 
         // enabled
         result[BitcoinStratumExtensions.VersionRolling] = true;
         result[BitcoinStratumExtensions.VersionRollingMask] = context.VersionRollingMask.Value.ToStringHex8();
 
         logger.Info(() => $"[{connection.ConnectionId}] Using version-rolling mask {result[BitcoinStratumExtensions.VersionRollingMask]}");
+    }
+
+    internal static uint? ResolveVersionRollingMask(CoinTemplate coin,
+        uint requestedMask)
+    {
+        if(coin is BitcoinTemplate {DisableVersionRolling: true})
+            return null;
+
+        return BitcoinConstants.VersionRollingPoolMask & requestedMask;
     }
 
     private void ConfigureMinimumDiff(StratumConnection connection, BitcoinWorkerContext context,

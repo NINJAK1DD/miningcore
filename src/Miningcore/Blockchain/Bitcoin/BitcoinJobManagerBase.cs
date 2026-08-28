@@ -463,12 +463,15 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected async Task<bool> AreDaemonsConnectedLegacyAsync(CancellationToken ct)
     {
         var response = await rpc.ExecuteAsync<DaemonInfo>(logger, BitcoinCommands.GetInfo, ct);
-        
-        // update stats
-        if(!string.IsNullOrEmpty(response.Response.Version))
-            BlockchainStats.NodeVersion = (string) response.Response.Version;
 
-        return response.Error == null && response.Response.Connections > 0;
+        if(!TryGetLegacyDaemonConnection(response, out var version))
+            return false;
+
+        // update stats
+        if(!string.IsNullOrEmpty(version))
+            BlockchainStats.NodeVersion = version;
+
+        return true;
     }
 
     protected async Task ShowDaemonSyncProgressLegacyAsync(CancellationToken ct)
@@ -683,8 +686,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(validateAddressResponse is not {IsValid: true})
             throw new PoolStartupException($"Daemon reports pool-address '{poolConfig.Address}' as invalid", poolConfig.Id);
 
-        isPoS = poolConfig.Template is BitcoinTemplate {IsPseudoPoS: true} ||
-            (difficultyResponse.Values().Any(x => x.Path == "proof-of-stake" && !difficultyResponse.Values().Any(x => x.Path == "proof-of-work")));
+        isPoS = ResolveProofOfStakeMode(poolConfig.Template, difficultyResponse);
         
         forcePoolAddressDestinationWithPubKey = poolConfig.Template is BitcoinTemplate {ForcePoolAddressDestinationWithPubKey: true};
 
@@ -700,7 +702,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         else
         {
             logger.Info(()=> $"Interpreting pool address {poolConfig.Address} as raw public key");
-            poolAddressDestination = new PubKey(poolConfig.PubKey ?? validateAddressResponse.PubKey);
+            poolAddressDestination = ResolvePoolPublicKey(poolConfig,
+                validateAddressResponse);
         }
 
         // Payment-processing setup
@@ -798,9 +801,69 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
 
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
+        hasLegacyDaemon = ResolveLegacyDaemonMode(pc.Template,
+            extraPoolConfig?.HasLegacyDaemon);
 
         base.Configure(pc, cc);
+    }
+
+    internal static bool ResolveLegacyDaemonMode(CoinTemplate coin,
+        bool? configuredOverride)
+    {
+        return configuredOverride ??
+            (coin is BitcoinTemplate {RequiresLegacyDaemon: true});
+    }
+
+    internal static bool TryGetLegacyDaemonConnection(
+        RpcResponse<DaemonInfo> response, out string version)
+    {
+        version = null;
+
+        if(response?.Error != null || response?.Response == null ||
+            response.Response.Connections <= 0)
+            return false;
+
+        version = response.Response.Version;
+        return true;
+    }
+
+    internal static bool ResolveProofOfStakeMode(CoinTemplate coin,
+        JToken difficultyResponse)
+    {
+        if(coin is BitcoinTemplate {IsPseudoPoS: true})
+            return true;
+
+        var values = difficultyResponse?.Values().ToArray() ?? Array.Empty<JToken>();
+
+        return values.Any(x => x.Path == "proof-of-stake") &&
+            values.All(x => x.Path != "proof-of-work");
+    }
+
+    internal static PubKey ResolvePoolPublicKey(PoolConfig poolConfig,
+        ValidateAddressResponse validateAddressResponse)
+    {
+        var encoded = !string.IsNullOrWhiteSpace(poolConfig.PubKey)
+            ? poolConfig.PubKey.Trim()
+            : validateAddressResponse?.PubKey;
+
+        if(string.IsNullOrWhiteSpace(encoded))
+        {
+            throw new PoolStartupException(
+                $"Pool '{poolConfig.Id}' requires 'pubKey' because its raw public key " +
+                "was not returned by validateaddress",
+                poolConfig.Id);
+        }
+
+        try
+        {
+            return new PubKey(encoded);
+        }
+        catch(Exception ex)
+        {
+            throw new PoolStartupException(
+                $"Pool '{poolConfig.Id}' has an invalid 'pubKey' value",
+                poolConfig.Id, ex);
+        }
     }
 
     public virtual async Task<bool> ValidateAddressAsync(string address, CancellationToken ct)

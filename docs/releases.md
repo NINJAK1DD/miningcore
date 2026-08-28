@@ -42,6 +42,22 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased changes
+
+- Eleven researched Bitcoin-family Scrypt definitions add direct and hybrid daemon contracts.
+  Independent vectors pin Scrypt and XCCX block identity; serialization tests cover MWEB and the
+  timestamp/signature layout of hybrid chains. The
+  [Scrypt provenance guide](scrypt-coin-definitions.md) records immutable source revisions and the
+  deliberately withheld definitions. Non-Dogecoin AuxPoW support is tracked in
+  [issue #113](https://github.com/NINJAK1DD/miningcore/issues/113), while Quai Scrypt remains
+  excluded because it requires Quai's WorkObject/SOAP protocol rather than Bitcoin RPC; that work is
+  tracked in [issue #111](https://github.com/NINJAK1DD/miningcore/issues/111).
+
+- Dogecoin, Cyberyen, Bells and Namecoin now decline Stratum version-rolling negotiation so miners
+  cannot alter consensus-owned chain-ID bits. Existing Dogecoin and Namecoin operators may see
+  BIP310 clients fall back to ordinary non-rolling submissions; block-template versions remain
+  daemon-owned.
+
 ## RC.13 highlights
 
 `v0.1.0-rc.13` expands the audited configuration catalogue and restores concise source-build

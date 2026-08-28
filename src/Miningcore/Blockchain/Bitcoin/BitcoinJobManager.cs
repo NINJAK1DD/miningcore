@@ -32,18 +32,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     protected override object[] GetBlockTemplateParams()
     {
-        var result = base.GetBlockTemplateParams();
-        
-        if(coin.HasMWEB)
-        {
-            result = new object[]
-            {
-                new
-                {
-                    rules = new[] {"segwit", "mweb"},
-                }
-            };
-        }
+        var result = BuildBlockTemplateParams(coin);
 
         if(coin.BlockTemplateRpcExtraParams != null)
         {
@@ -54,6 +43,17 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         }
 
         return result;
+    }
+
+    internal static object[] BuildBlockTemplateParams(BitcoinTemplate coin)
+    {
+        return new object[]
+        {
+            new
+            {
+                rules = coin.HasMWEB ? new[] {"segwit", "mweb"} : new[] {"segwit"},
+            }
+        };
     }
     
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
@@ -223,8 +223,6 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
-
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
 
         base.Configure(pc, cc);
     }
