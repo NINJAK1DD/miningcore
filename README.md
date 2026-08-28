@@ -21,7 +21,8 @@ the original authors and contributors.
 ## Features
 
 - High-performance asynchronous Stratum servers.
-- Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json).
+- Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json)
+  and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
 - SOLO, PPLNS and PROP payout schemes where supported by the selected coin.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
@@ -90,6 +91,7 @@ replaced. The following sections walk through each step.
 | Deploy distributed Stratum/recorder roles | [Share-relay guide](docs/share-relays.md) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
+| Review newly added Scrypt daemon contracts | [Scrypt coin definitions](docs/scrypt-coin-definitions.md) |
 
 The complete [documentation index](docs/README.md) also links dependency, licensing and validation
 references.

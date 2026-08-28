@@ -42,6 +42,13 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased changes
+
+- Twenty-two researched Bitcoin-family Scrypt definitions add direct, hybrid and AuxPoW-capable
+  daemon contracts. Their hashing, MWEB, maturity and multi-algorithm behavior is pinned by tests
+  and recorded in the [Scrypt provenance guide](scrypt-coin-definitions.md). Quai Scrypt remains
+  excluded because it requires Quai's WorkObject/SOAP protocol rather than Bitcoin RPC.
+
 ## RC.13 highlights
 
 `v0.1.0-rc.13` expands the audited configuration catalogue and restores concise source-build

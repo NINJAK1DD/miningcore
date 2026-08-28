@@ -62,6 +62,12 @@ then follow the dedicated [share-relay guide](share-relays.md).
 Every enabled pool needs a unique `id`, a matching entry from `coins.json`, a pool wallet `address`,
 one or more daemon RPC endpoints and at least one Stratum port in `ports`.
 
+For the newer Scrypt definitions, consult the
+[source and compatibility record](scrypt-coin-definitions.md). A definition records a reviewed
+daemon contract; it does not make every Scrypt or AuxPoW protocol interchangeable. In particular,
+Quai Scrypt requires a dedicated non-Bitcoin job protocol and is intentionally not advertised by
+the bundled definitions.
+
 Every configured pool entry, including a disabled pool, must retain a non-null per-pool
 `paymentProcessing` object. Set that object's `enabled` value to `false` when the pool must not
 submit payouts; do not remove the object or replace it with JSON `null`. Normal startup rejects a

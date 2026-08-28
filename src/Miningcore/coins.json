@@ -6904,6 +6904,706 @@
         "explorerTxLink": "https://explorer.cryptix-network.org/txs/{0}",
         "explorerAccountLink": "https://explorer.cryptix-network.org/addresses/{0}"
     },
+    "blockchaincoinx": {
+        "name": "BlockChainCoinX",
+        "canonicalName": "BlockChainCoinX",
+        "symbol": "XCCX",
+        "family": "bitcoin",
+        "website": "https://blockchaincoin.dev/",
+        "github": "https://github.com/5erendipity/BlockChainCoinX",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "posBlockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "scrypt",
+                    "args": [
+                        1024,
+                        1
+                    ]
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://chainz.cryptoid.info/xccx/block.dws?$height$.htm",
+        "explorerTxLink": "https://chainz.cryptoid.info/xccx/tx.dws?{0}.htm",
+        "explorerAccountLink": "https://chainz.cryptoid.info/xccx/address.dws?{0}.htm"
+    },
+    "catcoin": {
+        "name": "Catcoin",
+        "canonicalName": "Catcoin",
+        "symbol": "CAT",
+        "family": "bitcoin",
+        "website": "https://www.catcoin2013.org/",
+        "github": "https://github.com/CatcoinCore/catcoincore",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://chainz.cryptoid.info/cat/block.dws?$height$.htm",
+        "explorerTxLink": "https://chainz.cryptoid.info/cat/tx.dws?{0}.htm",
+        "explorerAccountLink": "https://chainz.cryptoid.info/cat/address.dws?{0}.htm"
+    },
+    "cyberyen": {
+        "name": "Cyberyen",
+        "canonicalName": "Cyberyen",
+        "symbol": "CY",
+        "family": "bitcoin",
+        "website": "https://www.cyberyen.org/",
+        "github": "https://github.com/cyberyen/cyberyen",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "hasMWEB": true,
+        "shareMultiplier": 65536
+    },
+    "ferrite": {
+        "name": "Ferrite",
+        "canonicalName": "Ferrite",
+        "symbol": "FEC",
+        "family": "bitcoin",
+        "website": "https://ferritecoin.org/",
+        "github": "https://github.com/ferritecoin/ferritecoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "hasMWEB": true,
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://explorer.ferritecoin.org/block/$hash$",
+        "explorerTxLink": "https://explorer.ferritecoin.org/tx/{0}",
+        "explorerAccountLink": "https://explorer.ferritecoin.org/address/{0}"
+    },
+    "ibithub": {
+        "name": "iBitHub",
+        "canonicalName": "iBitHub",
+        "symbol": "IBH",
+        "family": "bitcoin",
+        "website": "https://www.ibithub.com/",
+        "github": "https://github.com/ibithub/ibithub",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://ibh-explorer.ibithub.com/block/$hash$",
+        "explorerTxLink": "https://ibh-explorer.ibithub.com/tx/{0}",
+        "explorerAccountLink": "https://ibh-explorer.ibithub.com/address/{0}"
+    },
+    "litecoin-ii": {
+        "name": "Litecoin II",
+        "canonicalName": "Litecoin II",
+        "symbol": "LC2",
+        "family": "bitcoin",
+        "website": "https://litecoinii.org/",
+        "github": "https://github.com/litecoinII-project/litecoinII",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "hasMWEB": true,
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://explorer.lc2.now/block/$hash$",
+        "explorerTxLink": "https://explorer.lc2.now/tx/{0}",
+        "explorerAccountLink": "https://explorer.lc2.now/address/{0}"
+    },
+    "mateablecoin-scrypt": {
+        "name": "MateableCoin Scrypt",
+        "canonicalName": "MateableCoin",
+        "symbol": "MTBC",
+        "family": "bitcoin",
+        "website": "https://coin.mateable.com/",
+        "github": "https://github.com/mateable/mateablecoin-24.x",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "posBlockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "scrypt",
+                    "args": [
+                        1024,
+                        1
+                    ]
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "blockTemplateRpcExtraParams": [
+            "scrypt"
+        ],
+        "explorerBlockLink": "https://explorer.mateable.com/block/$hash$",
+        "explorerTxLink": "https://explorer.mateable.com/tx/{0}",
+        "explorerAccountLink": "https://explorer.mateable.com/address/{0}"
+    },
+    "stohncoin": {
+        "name": "StohnCoin",
+        "canonicalName": "StohnCoin",
+        "symbol": "SOH",
+        "family": "bitcoin",
+        "website": "https://stohncoin.org/",
+        "github": "https://github.com/StohnCoin-Projects/StohnCoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://www.stohnexplorer.com/block/$hash$",
+        "explorerTxLink": "https://www.stohnexplorer.com/tx/{0}",
+        "explorerAccountLink": "https://www.stohnexplorer.com/address/{0}"
+    },
+    "theminerzcoin": {
+        "name": "TheMinerzCoin",
+        "canonicalName": "TheMinerzCoin",
+        "symbol": "TMC",
+        "family": "bitcoin",
+        "website": "https://theminerzcoin.eu/",
+        "github": "https://github.com/MrMiner-org/TheMinerzCoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "posBlockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "scrypt",
+                    "args": [
+                        1024,
+                        1
+                    ]
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://tmc.coinexplorer.space/block/$hash$",
+        "explorerTxLink": "https://tmc.coinexplorer.space/tx/{0}",
+        "explorerAccountLink": "https://tmc.coinexplorer.space/address/{0}"
+    },
+    "b1t": {
+        "name": "B1T",
+        "canonicalName": "B1T",
+        "symbol": "B1T",
+        "family": "bitcoin",
+        "website": "https://b1tcore.org/",
+        "github": "https://github.com/bittoshimoto/Bit",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251,
+        "explorerBlockLink": "https://b1texplorer.com/block/$hash$",
+        "explorerTxLink": "https://b1texplorer.com/tx/{0}",
+        "explorerAccountLink": "https://b1texplorer.com/address/{0}"
+    },
+    "bells": {
+        "name": "Bells",
+        "canonicalName": "Bells",
+        "symbol": "BEL",
+        "family": "bitcoin",
+        "website": "https://bellscoin.com/",
+        "github": "https://github.com/Nintondo/bellscoinV3",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://nintondo.io/explorer/block/$hash$",
+        "explorerTxLink": "https://nintondo.io/explorer/tx/{0}",
+        "explorerAccountLink": "https://nintondo.io/explorer/address/{0}"
+    },
+    "bonkcoin": {
+        "name": "BonkCoin",
+        "canonicalName": "BonkCoin",
+        "symbol": "BONC",
+        "family": "bitcoin",
+        "website": "https://bonkscoin.io/",
+        "github": "https://github.com/Bonkcoin/Bonkcoin-core",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251,
+        "explorerBlockLink": "https://explorer.bonkscoin.io/block/$hash$",
+        "explorerTxLink": "https://explorer.bonkscoin.io/tx/{0}",
+        "explorerAccountLink": "https://explorer.bonkscoin.io/address/{0}"
+    },
+    "craftcoin": {
+        "name": "Craftcoin",
+        "canonicalName": "Craftcoin",
+        "symbol": "CRC",
+        "family": "bitcoin",
+        "website": "http://craftcoin.net/",
+        "github": "https://github.com/craftcoin/craftcoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536
+    },
+    "dingocoin": {
+        "name": "Dingocoin",
+        "canonicalName": "Dingocoin",
+        "symbol": "DINGO",
+        "family": "bitcoin",
+        "website": "https://dingocoin.com/",
+        "github": "https://github.com/dingocoin/dingocoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251,
+        "explorerBlockLink": "https://explorer.dingocoin.com/block/$hash$",
+        "explorerTxLink": "https://explorer.dingocoin.com/tx/{0}",
+        "explorerAccountLink": "https://explorer.dingocoin.com/address/{0}"
+    },
+    "earthcoin": {
+        "name": "Earthcoin",
+        "canonicalName": "Earthcoin",
+        "symbol": "EAC",
+        "family": "bitcoin",
+        "website": "https://earthcoin.cc/",
+        "github": "https://github.com/Sandokaaan/Earthcoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://chainz.cryptoid.info/eac/block.dws?$height$.htm",
+        "explorerTxLink": "https://chainz.cryptoid.info/eac/tx.dws?{0}.htm",
+        "explorerAccountLink": "https://chainz.cryptoid.info/eac/address.dws?{0}.htm"
+    },
+    "flopcoin": {
+        "name": "Flopcoin",
+        "canonicalName": "Flopcoin",
+        "symbol": "FLOP",
+        "family": "bitcoin",
+        "website": "https://flopcoin.net/",
+        "github": "https://github.com/Flopcoin/Flopcoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251,
+        "explorerBlockLink": "https://explorer.flopcoin.net/block/$hash$",
+        "explorerTxLink": "https://explorer.flopcoin.net/tx/{0}",
+        "explorerAccountLink": "https://explorer.flopcoin.net/address/{0}"
+    },
+    "junkcoin": {
+        "name": "Junkcoin",
+        "canonicalName": "Junkcoin",
+        "symbol": "JKC",
+        "family": "bitcoin",
+        "website": "https://junk-coin.com/",
+        "github": "https://github.com/Junkcoin-Foundation/junkcoin-core",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://explorer.junk-coin.com/block/$hash$",
+        "explorerTxLink": "https://explorer.junk-coin.com/tx/{0}",
+        "explorerAccountLink": "https://explorer.junk-coin.com/address/{0}"
+    },
+    "luckycoin": {
+        "name": "Luckycoin",
+        "canonicalName": "Luckycoin",
+        "symbol": "LKY",
+        "family": "bitcoin",
+        "website": "https://luckycoinfoundation.org/",
+        "github": "https://github.com/LuckycoinFoundation/luckycoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://chainz.cryptoid.info/lky/block.dws?$height$.htm",
+        "explorerTxLink": "https://chainz.cryptoid.info/lky/tx.dws?{0}.htm",
+        "explorerAccountLink": "https://chainz.cryptoid.info/lky/address.dws?{0}.htm"
+    },
+    "newyorkcoin": {
+        "name": "NewYorkCoin",
+        "canonicalName": "NewYorkCoin",
+        "symbol": "NYC",
+        "family": "bitcoin",
+        "website": "https://paywith.nyc/",
+        "github": "https://github.com/jamesburrell2/newyorkcoin_v2",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "explorerBlockLink": "https://chainz.cryptoid.info/nyc/block.dws?$height$.htm",
+        "explorerTxLink": "https://chainz.cryptoid.info/nyc/tx.dws?{0}.htm",
+        "explorerAccountLink": "https://chainz.cryptoid.info/nyc/address.dws?{0}.htm"
+    },
+    "pepecoin": {
+        "name": "Pepecoin",
+        "canonicalName": "Pepecoin",
+        "symbol": "PEP",
+        "family": "bitcoin",
+        "website": "https://pepecoin.org/",
+        "github": "https://github.com/pepecoinppc/pepecoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251,
+        "explorerBlockLink": "https://pepeexplorer.com/block/$hash$",
+        "explorerTxLink": "https://pepeexplorer.com/tx/{0}",
+        "explorerAccountLink": "https://pepeexplorer.com/address/{0}"
+    },
+    "shibainucoin": {
+        "name": "Shiba Inu Coin",
+        "canonicalName": "Shiba Inu Coin",
+        "symbol": "SHIC",
+        "family": "bitcoin",
+        "website": "https://shibacoinshic.org/",
+        "github": "https://github.com/shibacoinppc/shibacoin",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251
+    },
+    "trumpow": {
+        "name": "Trumpow",
+        "canonicalName": "Trumpow",
+        "symbol": "TRMP",
+        "family": "bitcoin",
+        "website": "https://trumpow.meme/",
+        "github": "https://github.com/trumpowppc/trumpow",
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "scrypt",
+            "args": [
+                1024,
+                1
+            ]
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "shareMultiplier": 65536,
+        "coinbaseMinConfimations": 251,
+        "explorerBlockLink": "https://explorer.trumpow.meme/block/$hash$",
+        "explorerTxLink": "https://explorer.trumpow.meme/tx/{0}",
+        "explorerAccountLink": "https://explorer.trumpow.meme/address/{0}"
+    },
     "bitrae": {
         "name": "Bitrae",
         "canonicalName": "Bitrae",
