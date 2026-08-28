@@ -395,11 +395,8 @@ public class BitcoinJob
         var merkleRoot = mt.WithFirst(coinbaseHash.ToArray());
 
         // Build version
-        var version = BlockTemplate.Version;
-
-        // Overt-ASIC boost
-        if(versionMask.HasValue && versionBits.HasValue)
-            version = (version & ~versionMask.Value) | (versionBits.Value & versionMask.Value);
+        var version = ApplyVersionRolling(BlockTemplate.Version, versionMask,
+            versionBits);
 
 #pragma warning disable 618
         var blockHeader = new BlockHeader
@@ -414,6 +411,16 @@ public class BitcoinJob
         };
 
             return blockHeader.ToBytes();
+    }
+
+    internal static uint ApplyVersionRolling(uint templateVersion,
+        uint? versionMask, uint? versionBits)
+    {
+        if(!versionMask.HasValue || !versionBits.HasValue)
+            return templateVersion;
+
+        return (templateVersion & ~versionMask.Value) |
+            (versionBits.Value & versionMask.Value);
     }
 
     protected virtual (Share Share, string BlockHex) ProcessShareInternal(

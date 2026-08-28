@@ -46,7 +46,8 @@ copying a recovery command from the maintainer section.
 
 - Eleven researched Bitcoin-family Scrypt definitions add direct and hybrid daemon contracts.
   Independent vectors pin Scrypt and XCCX block identity; serialization tests cover MWEB and the
-  timestamp/signature layout of hybrid chains. The
+  timestamp/signature layout of hybrid chains. Dogecoin, Cyberyen and Bells decline version-rolling
+  negotiation so miners cannot alter their consensus-owned chain-ID bits. The
   [Scrypt provenance guide](scrypt-coin-definitions.md) records immutable source revisions and the
   deliberately withheld definitions. Non-Dogecoin AuxPoW support is tracked in
   [issue #113](https://github.com/NINJAK1DD/miningcore/issues/113), while Quai Scrypt remains

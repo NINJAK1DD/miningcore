@@ -163,10 +163,50 @@ public class ScryptCoinTemplateTests : TestBase
     [InlineData("theminerzcoin")]
     public void PseudoPosTemplate_SelectsRuntimePosFraming(string key)
     {
-        var difficulty = JObject.Parse("{\"proof-of-work\":1}");
+        var difficulty = JObject.Parse(
+            "{\"proof-of-work\":1,\"proof-of-stake\":1}");
 
         Assert.True(BitcoinJobManagerBase<BitcoinJob>
             .ResolveProofOfStakeMode(GetTemplate(key), difficulty));
+    }
+
+    [Fact]
+    public void OrdinaryTemplate_WithHybridDifficultyShape_RemainsProofOfWork()
+    {
+        var difficulty = JObject.Parse(
+            "{\"proof-of-work\":1,\"proof-of-stake\":1}");
+
+        Assert.False(BitcoinJobManagerBase<BitcoinJob>
+            .ResolveProofOfStakeMode(new BitcoinTemplate(), difficulty));
+    }
+
+    [Theory]
+    [InlineData("dogecoin", 0x00620004u)]
+    [InlineData("cyberyen", 0x10000004u)]
+    [InlineData("bells", 0x00100004u)]
+    public void StrictChainIdTemplate_DisablesVersionRollingAndPreservesVersion(
+        string key, uint templateVersion)
+    {
+        var template = GetTemplate(key);
+        var mask = BitcoinPool.ResolveVersionRollingMask(template,
+            BitcoinConstants.VersionRollingPoolMask);
+
+        Assert.True(template.DisableVersionRolling);
+        Assert.Null(mask);
+        Assert.Null(BitcoinPool.ResolveVersionRollingMask(template, 0));
+        Assert.Equal(templateVersion, BitcoinJob.ApplyVersionRolling(
+            templateVersion, mask, 0));
+        Assert.Equal(templateVersion, BitcoinJob.ApplyVersionRolling(
+            templateVersion, mask, uint.MaxValue));
+    }
+
+    [Fact]
+    public void OrdinaryTemplate_RetainsVersionRollingContract()
+    {
+        var mask = BitcoinPool.ResolveVersionRollingMask(new BitcoinTemplate(),
+            BitcoinConstants.VersionRollingPoolMask);
+
+        Assert.Equal(BitcoinConstants.VersionRollingPoolMask, mask);
     }
 
     [Fact]
@@ -190,9 +230,10 @@ public class ScryptCoinTemplateTests : TestBase
     }
 
     [Fact]
-    public void TheMinerzCoin_CurrentVersionUsesSha256dBlockIdentity()
+    public void TheMinerzCoin_SyntheticVersionSevenUsesSha256dBlockIdentity()
     {
-        // The daemon selects SHA-256d for block versions greater than six.
+        // This synthetic version-seven header pins the daemon's > 6 hasher branch;
+        // it is not represented as a captured TheMinerzCoin mainnet block.
         const string currentVersionHeader =
             "07000000" +
             "0000000000000000000000000000000000000000000000000000000000000000" +

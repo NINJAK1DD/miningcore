@@ -325,6 +325,11 @@ directory, validate every changed network and hashing field, and retest them aft
 Duplicate properties inside one file are rejected; an intentional definition in a later file can
 replace one loaded earlier.
 
+Bitcoin-family templates whose upper version bits contain consensus chain identifiers set
+`disableVersionRolling: true`. Miningcore then declines Stratum version-rolling negotiation for that
+coin and preserves the daemon-provided version exactly. Do not remove this capability merely to
+accommodate a miner; use a source-verified per-chain mask when that support is implemented.
+
 Native proof validation can consume substantial CPU and memory:
 
 - `cryptonightMaxThreads` limits cluster-wide CryptoNight validation concurrency.

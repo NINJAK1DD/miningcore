@@ -1016,6 +1016,7 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
         "shareMultiplier": 65536,
         "coinbaseMinConfimations": 251,
         "explorerBlockLink": "https://dogechain.info/block/$height$",
@@ -6997,6 +6998,7 @@
             ]
         },
         "hasMWEB": true,
+        "disableVersionRolling": true,
         "shareMultiplier": 65536
     },
     "ferrite": {
@@ -7219,6 +7221,7 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://nintondo.io/explorer/block/$hash$",
         "explorerTxLink": "https://nintondo.io/explorer/tx/{0}",

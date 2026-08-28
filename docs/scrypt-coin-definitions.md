@@ -18,14 +18,14 @@ marked as legacy daemons in the template because their reviewed RPC surfaces pre
 | --- | --- | --- | --- |
 | `blockchaincoinx` | XCCX | [BlockChainCoinX `90563808`](https://github.com/5erendipity/BlockChainCoinX/tree/90563808fe3449e2581f6881b054d92a30ab8cd8) | Community-maintained hybrid chain; transactions carry `nTime`, blocks carry a signature trailer, and Scrypt identifies blocks. Its legacy `validateaddress` response omits the raw key, so the pool must configure `pubKey` explicitly |
 | `catcoin` | CAT | [Catcoin Core `491a6ca1`](https://github.com/CatcoinCore/catcoincore/tree/491a6ca12bc301ec9aa5ab6fb3a4a120ae7d78de) | Requires the `mweb` client rule; serializes the extension when the daemon returns it |
-| `cyberyen` | CY | [Cyberyen `cfd5045c`](https://github.com/cyberyen/cyberyen/tree/cfd5045ca723497e49de1100c47feecf724d8356) | Requires MWEB support; its consensus parameters continue to allow direct PoW after AuxPoW activation |
+| `cyberyen` | CY | [Cyberyen `cfd5045c`](https://github.com/cyberyen/cyberyen/tree/cfd5045ca723497e49de1100c47feecf724d8356) | Requires MWEB support; its consensus parameters continue to allow direct PoW after AuxPoW activation. Version rolling is disabled to preserve its strict chain ID |
 | `ferrite` | FEC | [Ferrite Core `cfe3399f`](https://github.com/ferritecoin/ferritecoin/tree/cfe3399fa0cf8d61ec61fefe777283c93ce4931e) | MWEB-capable direct Scrypt template |
 | `ibithub` | IBH | [iBitHub `add7989d`](https://github.com/ibithub/ibithub/tree/add7989deb53981da9d6601458b700fad562cce2) | Legacy Bitcoin RPC surface; direct Scrypt only |
 | `litecoin-ii` | LC2 | [Litecoin II `47b7a37e`](https://github.com/litecoinII-project/litecoinII/tree/47b7a37eb8366019b43f028e91482d4fcc9a9ee2) | Requires the `mweb` client rule and template-driven extension serialization |
 | `mateablecoin-scrypt` | MTBC | [MateableCoin `c5ae7b33`](https://github.com/mateable/mateablecoin-24.x/tree/c5ae7b3302c7b44d82dc8d69211f2877ff0feacf) | Passes the daemon-required `"scrypt"` algorithm argument; no unverified PoS block hasher is declared |
 | `stohncoin` | SOH | [StohnCoin `87cb7eed`](https://github.com/StohnCoin-Projects/StohnCoin/tree/87cb7eed35560c894a6129c93e2e2853e454c8c9) | Direct Scrypt template |
 | `theminerzcoin` | TMC | [TheMinerzCoin `026cf2f9`](https://github.com/MrMiner-org/TheMinerzCoin/tree/026cf2f9702c62c6685f3f7b5b7141f03a4536c7) | Hybrid serialization with transaction `nTime` and a block-signature trailer; current block identity is SHA-256d |
-| `bells` | BEL | [Bells `92467bcd`](https://github.com/Nintondo/bellscoinV3/tree/92467bcd582aabade4f539c07dada4655d73bb18) | Community-maintained daemon; current consensus accepts direct non-AuxPoW blocks with the daemon-provided chain version |
+| `bells` | BEL | [Bells `92467bcd`](https://github.com/Nintondo/bellscoinV3/tree/92467bcd582aabade4f539c07dada4655d73bb18) | Community-maintained daemon; current consensus accepts direct non-AuxPoW blocks with the daemon-provided chain version. Version rolling is disabled to preserve its strict chain ID |
 | `newyorkcoin` | NYC | [NewYorkCoin `36ba3dfe`](https://github.com/jamesburrell2/newyorkcoin_v2/tree/36ba3dfef8df702cee992bd142ca7881025cec8d) | Community fork whose source still labels the unit `LTC`; Miningcore uses the network-facing `NYC` symbol and advertises MWEB capability |
 
 `hasMWEB` is a client-capability declaration, not an activation-height assertion. Capable daemons
@@ -33,6 +33,11 @@ require Miningcore to advertise both `segwit` and `mweb` when requesting work. B
 template has no MWEB payload and Miningcore emits an ordinary block. When the daemon returns a
 non-empty hexadecimal `mweb` field, Miningcore validates and appends that exact extension. Consensus
 height and deployment state therefore remain owned by the daemon.
+
+Dogecoin, Cyberyen and Bells reserve upper block-version bits for consensus chain identifiers.
+Miningcore therefore declines Stratum `version-rolling` negotiation for these templates instead of
+allowing a miner to clear or replace those bits. [Issue #114](https://github.com/NINJAK1DD/miningcore/issues/114)
+tracks source-verified nonzero masks for chains that can safely expose mutable version bits later.
 
 ## Definitions deliberately withheld
 

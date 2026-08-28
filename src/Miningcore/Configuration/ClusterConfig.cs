@@ -296,6 +296,13 @@ public partial class BitcoinTemplate : CoinTemplate
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
     public bool RequiresLegacyDaemon { get; set; }
 
+    /// <summary>
+    /// Refuse Stratum version-rolling negotiation when block-version bits are
+    /// consensus-owned by the coin.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool DisableVersionRolling { get; set; }
+
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
     public double? HashrateMultiplier { get; set; }
 
