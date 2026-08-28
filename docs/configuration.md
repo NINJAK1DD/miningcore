@@ -65,8 +65,9 @@ one or more daemon RPC endpoints and at least one Stratum port in `ports`.
 For the newer Scrypt definitions, consult the
 [source and compatibility record](scrypt-coin-definitions.md). A definition records a reviewed
 daemon contract; it does not make every Scrypt or AuxPoW protocol interchangeable. In particular,
-Quai Scrypt requires a dedicated non-Bitcoin job protocol and is intentionally not advertised by
-the bundled definitions.
+activated AuxPoW children are withheld unless Miningcore can serialize their child proofs, and Quai
+Scrypt requires a dedicated non-Bitcoin job protocol. Neither is advertised merely because the
+underlying proof-of-work function is Scrypt.
 
 Every configured pool entry, including a disabled pool, must retain a non-null per-pool
 `paymentProcessing` object. Set that object's `enabled` value to `false` when the pool must not

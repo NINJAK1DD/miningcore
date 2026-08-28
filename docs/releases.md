@@ -44,9 +44,12 @@ copying a recovery command from the maintainer section.
 
 ## Unreleased changes
 
-- Twenty-two researched Bitcoin-family Scrypt definitions add direct, hybrid and AuxPoW-capable
-  daemon contracts. Their hashing, MWEB, maturity and multi-algorithm behavior is pinned by tests
-  and recorded in the [Scrypt provenance guide](scrypt-coin-definitions.md). Quai Scrypt remains
+- Eleven researched Bitcoin-family Scrypt definitions add direct and hybrid daemon contracts.
+  Independent vectors pin Scrypt and XCCX block identity; serialization tests cover MWEB and the
+  timestamp/signature layout of hybrid chains. The
+  [Scrypt provenance guide](scrypt-coin-definitions.md) records immutable source revisions and the
+  deliberately withheld definitions. Non-Dogecoin AuxPoW support is tracked in
+  [issue #113](https://github.com/NINJAK1DD/miningcore/issues/113), while Quai Scrypt remains
   excluded because it requires Quai's WorkObject/SOAP protocol rather than Bitcoin RPC.
 
 ## RC.13 highlights

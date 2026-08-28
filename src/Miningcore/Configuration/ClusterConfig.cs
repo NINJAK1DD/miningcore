@@ -282,8 +282,19 @@ public partial class BitcoinTemplate : CoinTemplate
     [DefaultValue(1.0d)]
     public double ShareMultiplier { get; set; } = 1.0d;
 
+    /// <summary>
+    /// Advertise MWEB client capability. Extension serialization is driven by
+    /// the daemon's returned block-template payload.
+    /// </summary>
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
     public bool HasMWEB { get; set; }
+
+    /// <summary>
+    /// Use the legacy Bitcoin RPC surface when the daemon predates
+    /// getblockchaininfo/getnetworkinfo.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool RequiresLegacyDaemon { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
     public double? HashrateMultiplier { get; set; }

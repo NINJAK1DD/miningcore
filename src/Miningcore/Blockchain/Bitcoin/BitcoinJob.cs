@@ -29,6 +29,7 @@ public class BitcoinJob
     protected bool isPoS;
     protected string txComment;
     protected PayeeBlockTemplateExtra payeeParameters;
+    protected byte[] mwebPayload;
 
     protected Network network;
     protected IDestination poolAddressDestination;
@@ -522,16 +523,15 @@ public class BitcoinJob
             if(isPoS)
                 bs.ReadWrite((byte) 0);
 
-            // if pool supports MWEB, we have to append the MWEB data to the block
+            // MWEB-capable daemons require the client rule before activation but only
+            // return extension bytes for templates that must serialize them.
             // https://github.com/litecoin-project/litecoin/blob/0.21/doc/mweb/mining-changes.md
-            if(coin.HasMWEB)
+            if(mwebPayload != null)
             {
                 var separator = new byte[] { 0x01 };
-                var mweb = BlockTemplate.Extra.SafeExtensionDataAs<MwebBlockTemplateExtra>();
-                var mwebRaw = mweb.Mweb.HexToByteArray();
 
                 bs.ReadWrite(separator);
-                bs.ReadWrite(mwebRaw);
+                bs.ReadWrite(mwebPayload);
             }
 
             return stream.ToArray();
@@ -895,6 +895,7 @@ public class BitcoinJob
         this.poolAddressDestination = poolAddressDestination;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        mwebPayload = ParseMwebPayload(coin, blockTemplate);
 
         var coinbaseString = !string.IsNullOrEmpty(cc.PaymentProcessing?.CoinbaseString) ?
             cc.PaymentProcessing?.CoinbaseString.Trim() : "Miningcore";
@@ -989,6 +990,31 @@ public class BitcoinJob
             BlockTemplate.CurTime.ToStringHex8(),
             false
         };
+    }
+
+    internal static byte[] ParseMwebPayload(BitcoinTemplate coin, BlockTemplate blockTemplate)
+    {
+        if(!coin.HasMWEB || blockTemplate.Extra?.TryGetValue("mweb", out var value) != true)
+            return null;
+
+        var mweb = value switch
+        {
+            string text => text,
+            JValue { Type: JTokenType.String } token => token.Value<string>(),
+            _ => throw new InvalidDataException("Block template field 'mweb' must be a hexadecimal string")
+        };
+
+        if(string.IsNullOrWhiteSpace(mweb))
+            throw new InvalidDataException("Block template field 'mweb' must not be empty");
+
+        try
+        {
+            return Convert.FromHexString(mweb);
+        }
+        catch(FormatException ex)
+        {
+            throw new InvalidDataException("Block template field 'mweb' must be valid hexadecimal", ex);
+        }
     }
 
     public object GetJobParams(bool isNew)

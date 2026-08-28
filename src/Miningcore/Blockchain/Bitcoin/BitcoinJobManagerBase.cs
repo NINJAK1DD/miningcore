@@ -798,9 +798,15 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
 
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
+        var coin = pc.Template.As<BitcoinTemplate>();
+        hasLegacyDaemon = ResolveLegacyDaemonMode(coin, extraPoolConfig?.HasLegacyDaemon);
 
         base.Configure(pc, cc);
+    }
+
+    internal static bool ResolveLegacyDaemonMode(BitcoinTemplate coin, bool? configuredOverride)
+    {
+        return configuredOverride ?? coin.RequiresLegacyDaemon;
     }
 
     public virtual async Task<bool> ValidateAddressAsync(string address, CancellationToken ct)
