@@ -16,7 +16,7 @@ marked as legacy daemons in the template because their reviewed RPC surfaces pre
 
 | Miningcore key | Symbol | Reviewed daemon revision | Additional contract |
 | --- | --- | --- | --- |
-| `blockchaincoinx` | XCCX | [BlockChainCoinX `90563808`](https://github.com/5erendipity/BlockChainCoinX/tree/90563808fe3449e2581f6881b054d92a30ab8cd8) | Community-maintained hybrid chain; transactions carry `nTime`, blocks carry a signature trailer, and Scrypt identifies blocks |
+| `blockchaincoinx` | XCCX | [BlockChainCoinX `90563808`](https://github.com/5erendipity/BlockChainCoinX/tree/90563808fe3449e2581f6881b054d92a30ab8cd8) | Community-maintained hybrid chain; transactions carry `nTime`, blocks carry a signature trailer, and Scrypt identifies blocks. Its legacy `validateaddress` response omits the raw key, so the pool must configure `pubKey` explicitly |
 | `catcoin` | CAT | [Catcoin Core `491a6ca1`](https://github.com/CatcoinCore/catcoincore/tree/491a6ca12bc301ec9aa5ab6fb3a4a120ae7d78de) | Requires the `mweb` client rule; serializes the extension when the daemon returns it |
 | `cyberyen` | CY | [Cyberyen `cfd5045c`](https://github.com/cyberyen/cyberyen/tree/cfd5045ca723497e49de1100c47feecf724d8356) | Requires MWEB support; its consensus parameters continue to allow direct PoW after AuxPoW activation |
 | `ferrite` | FEC | [Ferrite Core `cfe3399f`](https://github.com/ferritecoin/ferritecoin/tree/cfe3399fa0cf8d61ec61fefe777283c93ce4931e) | MWEB-capable direct Scrypt template |
@@ -36,16 +36,21 @@ height and deployment state therefore remain owned by the daemon.
 
 ## Definitions deliberately withheld
 
-The following researched chains are not advertised because their mainnet consensus eventually
-requires AuxPoW blocks that Miningcore's ordinary Bitcoin serializer cannot construct:
+The following researched chains are not advertised because this review did not establish a complete,
+daemon-backed direct-block submission contract or a Miningcore AuxPoW child-chain contract across
+their activation states:
 
 `b1t`, `bonkcoin`, `dingocoin`, `earthcoin`, `flopcoin`, `junkcoin`, `luckycoin`, `pepecoin`,
 `shibainucoin`, and `trumpow`.
 
-An AuxPoW-capable coin definition does not itself enable merged mining. Miningcore's integrated
+Some of these daemons may accept a direct non-AuxPoW block whose template version carries the chain
+identifier. That possibility is not treated as proof of production support: each definition still
+needs synchronized-daemon template, submission, acceptance, maturity and payout evidence. An
+AuxPoW-capable coin definition also does not itself enable merged mining. Miningcore's integrated
 coordinator currently implements the reviewed Litecoin-parent/Dogecoin-child SOLO topology. Other
 child chains need explicit chain identifiers, coinbase commitments, serializers, submission RPCs,
-and daemon-backed tests before they can be safely bundled.
+and daemon-backed tests before they can be safely bundled. This work is tracked in
+[issue #113](https://github.com/NINJAK1DD/miningcore/issues/113).
 
 Craftcoin is also withheld. Its canonical daemon is unmaintained, lacks modern chain/network RPCs
 and `submitblock`, and has no currently verifiable explorer or daemon-backed submission evidence.
@@ -63,4 +68,5 @@ protocol boundary.
 Adding `QUAI` to `coins.json` with an ordinary Scrypt hasher would advertise a template that cannot
 construct or submit valid Quai work. Quai support requires a dedicated Miningcore coin family, job
 manager, serializer, submission path, and daemon-backed vectors; it must not be represented as a
-metadata-only coin addition.
+metadata-only coin addition. That implementation is tracked in
+[issue #111](https://github.com/NINJAK1DD/miningcore/issues/111).

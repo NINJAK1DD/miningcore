@@ -53,9 +53,11 @@ public static class MessageBusExtensions
         {
             // block explorer link
             var blockType = !string.IsNullOrEmpty(block.Type) ? block.Type : "block";
-            coin.ExplorerBlockLinks.TryGetValue(blockType, out var blockInfobaseUrl);
+            string blockInfobaseUrl = null;
+            coin.ExplorerBlockLinks?.TryGetValue(blockType, out blockInfobaseUrl);
 
-            if(string.IsNullOrEmpty(blockInfobaseUrl) && blockType != "block")
+            if(string.IsNullOrEmpty(blockInfobaseUrl) && blockType != "block" &&
+                coin.ExplorerBlockLinks != null)
                 coin.ExplorerBlockLinks.TryGetValue("block", out blockInfobaseUrl);
 
             if(!string.IsNullOrEmpty(blockInfobaseUrl))

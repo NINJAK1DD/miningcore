@@ -8,6 +8,7 @@ using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Extensions;
+using Miningcore.Mining;
 using Miningcore.Tests.Util;
 using NBitcoin;
 using Newtonsoft.Json.Linq;
@@ -157,6 +158,17 @@ public class ScryptCoinTemplateTests : TestBase
         Assert.Equal("aa01bb00", block.ToHexString());
     }
 
+    [Theory]
+    [InlineData("blockchaincoinx")]
+    [InlineData("theminerzcoin")]
+    public void PseudoPosTemplate_SelectsRuntimePosFraming(string key)
+    {
+        var difficulty = JObject.Parse("{\"proof-of-work\":1}");
+
+        Assert.True(BitcoinJobManagerBase<BitcoinJob>
+            .ResolveProofOfStakeMode(GetTemplate(key), difficulty));
+    }
+
     [Fact]
     public void BlockChainCoinX_GenesisUsesScryptBlockIdentity()
     {
@@ -178,10 +190,11 @@ public class ScryptCoinTemplateTests : TestBase
     }
 
     [Fact]
-    public void TheMinerzCoin_UsesSha256dBlockIdentity()
+    public void TheMinerzCoin_CurrentVersionUsesSha256dBlockIdentity()
     {
-        const string bitcoinGenesisHeader =
-            "01000000" +
+        // The daemon selects SHA-256d for block versions greater than six.
+        const string currentVersionHeader =
+            "07000000" +
             "0000000000000000000000000000000000000000000000000000000000000000" +
             "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a" +
             "29ab5f49" +
@@ -192,10 +205,45 @@ public class ScryptCoinTemplateTests : TestBase
             GetTemplate("theminerzcoin").PoSBlockHasherValue);
 
         Assert.IsType<Sha256D>(hasher.Upstream);
-        hasher.Digest(bitcoinGenesisHeader.HexToByteArray(), output);
+        hasher.Digest(currentVersionHeader.HexToByteArray(), output);
         Assert.Equal(
-            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            "6ffc18484ebcd9ef2cf5e5935eee3c4f06faef2718bcd54c44cd4310cf9dbaf5",
             output.ToHexString());
+    }
+
+    [Fact]
+    public void BlockChainCoinX_MissingPoolPublicKeyFailsWithNamedDiagnostic()
+    {
+        var pool = new PoolConfig
+        {
+            Id = "xccx-test",
+            Template = GetTemplate("blockchaincoinx"),
+        };
+
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            BitcoinJobManagerBase<BitcoinJob>.ResolvePoolPublicKey(pool,
+                new ValidateAddressResponse()));
+
+        Assert.Equal("xccx-test", ex.PoolId);
+        Assert.Contains("requires 'pubKey'", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BlockChainCoinX_ConfiguredPoolPublicKeyIsAccepted()
+    {
+        var expected = new Key().PubKey;
+        var pool = new PoolConfig
+        {
+            Id = "xccx-test",
+            PubKey = expected.ToHex(),
+            Template = GetTemplate("blockchaincoinx"),
+        };
+
+        var actual = BitcoinJobManagerBase<BitcoinJob>
+            .ResolvePoolPublicKey(pool, new ValidateAddressResponse());
+
+        Assert.Equal(expected.ToHex(), actual.ToHex());
     }
 
     [Fact]

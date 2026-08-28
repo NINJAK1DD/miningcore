@@ -50,7 +50,8 @@ copying a recovery command from the maintainer section.
   [Scrypt provenance guide](scrypt-coin-definitions.md) records immutable source revisions and the
   deliberately withheld definitions. Non-Dogecoin AuxPoW support is tracked in
   [issue #113](https://github.com/NINJAK1DD/miningcore/issues/113), while Quai Scrypt remains
-  excluded because it requires Quai's WorkObject/SOAP protocol rather than Bitcoin RPC.
+  excluded because it requires Quai's WorkObject/SOAP protocol rather than Bitcoin RPC; that work is
+  tracked in [issue #111](https://github.com/NINJAK1DD/miningcore/issues/111).
 
 ## RC.13 highlights
 

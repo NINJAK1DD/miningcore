@@ -65,9 +65,15 @@ one or more daemon RPC endpoints and at least one Stratum port in `ports`.
 For the newer Scrypt definitions, consult the
 [source and compatibility record](scrypt-coin-definitions.md). A definition records a reviewed
 daemon contract; it does not make every Scrypt or AuxPoW protocol interchangeable. In particular,
-activated AuxPoW children are withheld unless Miningcore can serialize their child proofs, and Quai
-Scrypt requires a dedicated non-Bitcoin job protocol. Neither is advertised merely because the
-underlying proof-of-work function is Scrypt.
+researched AuxPoW-capable definitions are withheld until daemon-backed direct submission or explicit
+child-proof support is verified, and Quai Scrypt requires a dedicated non-Bitcoin job protocol.
+Neither is advertised merely because the underlying proof-of-work function is Scrypt.
+
+Hybrid and proof-of-stake-derived Bitcoin-family daemons may require a raw compressed public key to
+construct the pool payout destination. Miningcore uses `pools[].pubKey` when configured and otherwise
+uses the `pubkey` returned by `validateaddress`. Set `pubKey` explicitly when the daemon omits that
+field. BlockChainCoinX requires this setting; startup fails with a pool-specific diagnostic if it is
+missing or malformed.
 
 Every configured pool entry, including a disabled pool, must retain a non-null per-pool
 `paymentProcessing` object. Set that object's `enabled` value to `false` when the pool must not

@@ -42,4 +42,29 @@ public class MessageBusExtensionsTests
                 x.BlockType == blockType),
             Arg.Any<string>());
     }
+
+    [Fact]
+    public void NotifyBlockUnlocked_WithoutExplorerLinks_StillSendsNotification()
+    {
+        var messageBus = Substitute.For<IMessageBus>();
+        var coin = new BitcoinTemplate
+        {
+            Symbol = "TEST",
+            Name = "Test Coin",
+        };
+        var block = new Block
+        {
+            BlockHeight = 100,
+            Hash = "block-hash",
+            Status = BlockStatus.Confirmed,
+        };
+
+        messageBus.NotifyBlockUnlocked("test-pool", block, coin);
+
+        messageBus.Received(1).SendMessage(
+            Arg.Is<BlockUnlockedNotification>(x =>
+                x.ExplorerLink == null &&
+                x.BlockHash == "block-hash"),
+            Arg.Any<string>());
+    }
 }
