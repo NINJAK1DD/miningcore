@@ -9,6 +9,24 @@ namespace Miningcore.Configuration;
 public static class CoinTemplateLoader
 {
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
+    private const string UnsupportedBlockSerializerProperty = "blockSerializer";
+
+    private static void RejectUnsupportedMetadata(string filename, string coinId,
+        JToken template)
+    {
+        var property = template.Children<JProperty>().FirstOrDefault(x =>
+            string.Equals(x.Name, UnsupportedBlockSerializerProperty,
+                StringComparison.OrdinalIgnoreCase));
+
+        if(property != null)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': property " +
+                $"'{property.Name}' is unsupported and has no runtime effect. Remove it only " +
+                "when the coin uses Miningcore's standard family serializer; a coin requiring " +
+                "non-standard block serialization needs a typed Miningcore implementation.");
+        }
+    }
 
     private static IEnumerable<KeyValuePair<string, CoinTemplate>> LoadTemplates(string filename, IComponentContext ctx)
     {
@@ -34,6 +52,8 @@ public static class CoinTemplateLoader
         {
             if(o.Value.Type != JTokenType.Object)
                 throw new PoolStartupException("Invalid coin-template file: dictionary of coin-templates expected");
+
+            RejectUnsupportedMetadata(filename, o.Key, o.Value);
 
             var value = o.Value[nameof(CoinTemplate.Family).ToLower()];
             if(value == null)

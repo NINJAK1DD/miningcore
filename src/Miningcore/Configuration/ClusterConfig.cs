@@ -321,9 +321,6 @@ public partial class BitcoinTemplate : CoinTemplate
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public int? CoinbaseMinConfimations { get; set; }
 
-    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
-    public string BlockSerializer { get; set; }
-
     /// <summary>
     /// Force the use of the raw public key of the specified poolAddress
     /// </summary>
