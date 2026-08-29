@@ -240,7 +240,7 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
         }
     }
 
-    private sealed class BitcoinCoreRegtestNode : IAsyncDisposable
+    internal sealed class BitcoinCoreRegtestNode : IAsyncDisposable
     {
         private const string RpcUser = "miningcore";
         private const string RpcPassword = "miningcore-regtest";

@@ -427,7 +427,11 @@ public class BitcoinPool : PoolBase
         if(coin is BitcoinTemplate {DisableVersionRolling: true})
             return null;
 
-        return BitcoinConstants.VersionRollingPoolMask & requestedMask;
+        var poolMask = (coin as BitcoinTemplate)?.VersionRollingMask ??
+            BitcoinConstants.VersionRollingPoolMask;
+        var negotiatedMask = poolMask & requestedMask;
+
+        return negotiatedMask == 0 ? null : negotiatedMask;
     }
 
     private void ConfigureMinimumDiff(StratumConnection connection, BitcoinWorkerContext context,

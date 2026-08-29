@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
 using AspNetCoreRateLimit;
+using Miningcore.Serialization;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
@@ -302,6 +303,23 @@ public partial class BitcoinTemplate : CoinTemplate
     /// </summary>
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
     public bool DisableVersionRolling { get; set; }
+
+    /// <summary>
+    /// Source-reviewed block-version bits that miners may change through BIP310.
+    /// When omitted, ordinary Bitcoin-family templates retain Miningcore's
+    /// default mask.
+    /// </summary>
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [JsonConverter(typeof(HexToIntegralTypeJsonConverter<uint?>))]
+    public uint? VersionRollingMask { get; set; }
+
+    /// <summary>
+    /// Block-version bits reserved by this coin's consensus implementation.
+    /// This documents and validates the boundary of VersionRollingMask.
+    /// </summary>
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [JsonConverter(typeof(HexToIntegralTypeJsonConverter<uint?>))]
+    public uint? VersionRollingConsensusMask { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
     public double? HashrateMultiplier { get; set; }

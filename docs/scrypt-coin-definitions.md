@@ -34,12 +34,12 @@ template has no MWEB payload and Miningcore emits an ordinary block. When the da
 non-empty hexadecimal `mweb` field, Miningcore validates and appends that exact extension. Consensus
 height and deployment state therefore remain owned by the daemon.
 
-Dogecoin, Cyberyen and Bells reserve upper block-version bits for consensus chain identifiers.
-Miningcore therefore declines Stratum `version-rolling` negotiation for these templates instead of
-allowing a miner to clear or replace those bits. The same shared template capability also protects
-Namecoin. [Issue #114](https://github.com/NINJAK1DD/miningcore/issues/114) tracks the remaining
-catalogue survey and source-verified nonzero masks for chains that can safely expose mutable version
-bits later.
+Dogecoin, Cyberyen, Bells, Namecoin and Lucky Bit reserve upper block-version bits for consensus
+chain identifiers, so Miningcore declines Stratum `version-rolling` negotiation for them. PepePow
+uses two overlapping bits for consensus algorithm selection and therefore exposes a reduced mask.
+PACcoin also remains disabled because no authoritative daemon source could be established. The
+[version-rolling audit](version-rolling.md) records the immutable revisions, guard placement and
+per-template decisions.
 
 ## Definitions deliberately withheld
 

@@ -332,12 +332,12 @@ instead of silently retaining or discarding it. Remove the field only when the c
 Miningcore's standard family serializer; a coin that requires different block framing needs an
 explicit typed implementation and serialization tests before it is safe to enable.
 
-Definitions whose reviewed daemons enforce consensus chain identifiers in upper version bits set
-`disableVersionRolling: true`. The current audited set is Dogecoin, Cyberyen, Bells and Namecoin.
-Miningcore then declines Stratum version-rolling negotiation and preserves the daemon-provided
-version exactly. Do not remove this capability merely to accommodate a miner; use a source-verified
-per-chain mask when that support is implemented. [Issue #114](https://github.com/NINJAK1DD/miningcore/issues/114)
-tracks the remaining catalogue survey and future safe-mask work.
+Bitcoin-family version rolling is a per-template capability. Strict-chain-ID templates set
+`disableVersionRolling: true`; reviewed ordinary templates may declare `versionRollingMask`, and
+`versionRollingConsensusMask` records bits that must never be miner-controlled. Miningcore
+validates these fields before opening listeners and intersects miner requests with the pool-owned
+mask. See
+[Bitcoin-family version rolling](version-rolling.md) before editing a custom template.
 
 Native proof validation can consume substantial CPU and memory:
 

@@ -56,6 +56,9 @@ An active process alone does not prove mining or payouts are healthy.
   first pool-specific error. Continue with [pool and daemon checks](#pool-and-daemon-checks).
 - **Miner connects but submits no accepted shares.** Confirm the port, coin, address format,
   password options and difficulty. Continue with [miner and share checks](#miner-and-share-checks).
+- **BIP310 version rolling is declined or a custom mask stops startup.** Do not widen the mask to
+  satisfy a miner. Check the per-chain audit and diagnostics in
+  [Bitcoin-family version rolling](version-rolling.md).
 - **Public API works but admin or metrics returns `404`.** Use the configured dedicated port;
   wrong-listener routes deliberately return `404`. See the [API listener matrix](api.md#configuration).
 - **Admin returns `401`, `403`, `429` or `503`.** Check authentication, source whitelist, rate

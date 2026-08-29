@@ -739,6 +739,7 @@
         "symbol": "DANE",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/danecoin/Danecoin",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -757,6 +758,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "explorerBlockLink": "https://explorer.danecoin.org/block/$hash$",
         "explorerTxLink": "https://explorer.danecoin.org/tx/{0}",
         "explorerAccountLink": "https://explorer.danecoin.org/address/{0}"
@@ -1017,6 +1019,7 @@
             ]
         },
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0000",
         "shareMultiplier": 65536,
         "coinbaseMinConfimations": 251,
         "explorerBlockLink": "https://dogechain.info/block/$height$",
@@ -1766,7 +1769,7 @@
         "symbol": "LUCKY",
         "family": "bitcoin",
         "website": "https://luckycoinfoundation.org/",
-        "github": "https://github.com/LuckyCoinProj/luckycoinV3",
+        "github": "https://github.com/LuckycoinFoundation/luckycoin",
         "market": "https://www.coingecko.com/en/coins/luckycoin",
         "twitter": "https://x.com/LuckyCoinProj",
         "telegram": "https://t.me/LuckyCoinProject",
@@ -1791,6 +1794,8 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0000",
         "shareMultiplier": 65536,
         "hasMasterNodes": true,
         "explorerBlockLink": "https://openchains.info/coin/luckybit/block/$hash$",
@@ -1930,6 +1935,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/moon/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/moon/tx.dws?{0}.htm",
@@ -1961,6 +1967,7 @@
             ]
         },
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0000",
         "explorerBlockLink": "https://explorer.namecoin.info/b/$height$",
         "explorerTxLink": "https://explorer.namecoin.info/tx/{0}",
         "explorerAccountLink": "https://explorer.namecoin.info/a/{0}"
@@ -2110,6 +2117,7 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
         "hasMasterNodes": true,
         "explorerBlockLink": "http://explorer.paccoin.net/block/$hash$",
         "explorerTxLink": "http://explorer.paccoin.net/tx/{0}",
@@ -3512,6 +3520,7 @@
         "symbol": "SUSU",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/susucoin-project/susucoin",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -3530,6 +3539,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "explorerBlockLink": "https://explore.susukino.com//block/$hash$",
         "explorerTxLink": "https://explore.susukino.com/tx/{0}",
         "explorerAccountLink": "https://explore.susukino.com/address/{0}"
@@ -4058,6 +4068,7 @@
         "symbol": "VIA",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/viacoin/viacoin",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -4092,6 +4103,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/via/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/via/tx.dws?{0}.htm",
@@ -4231,6 +4243,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/wdc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/wdc/tx.dws?{0}.htm",
@@ -6197,6 +6210,7 @@
         "symbol": "PEPEW",
         "family": "bitcoin",
         "website": "https://pepepow.org/",
+        "github": "https://github.com/MattF42/PePe-core",
         "market": "https://www.coingecko.com/en/coins/pepepow",
         "twitter": "https://x.com/PEPEWCommunity",
         "telegram": "https://t.me/pepewcommunity",
@@ -6215,6 +6229,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fff2000",
+        "versionRollingConsensusMask": "0x0000c000",
         "hasMasterNodes": true,
         "hasFoundation": true,
         "shareMultiplier": 65536,
@@ -6569,6 +6585,7 @@
         "symbol": "SKYDOGE",
         "family": "bitcoin",
         "website": "https://skydoge.net/",
+        "github": "https://github.com/skydogenet/mainchain",
         "market": "",
         "twitter": "https://twitter.com/skydogenet",
         "telegram": "https://t.me/skydoge_net",
@@ -6587,6 +6604,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "coinbaseTxVersion": 9,
         "explorerBlockLink": "https://explorer.skydoge.net/block/$hash$",
         "explorerTxLink": "https://explorer.skydoge.net/tx/{0}",
@@ -7000,6 +7018,7 @@
         },
         "hasMWEB": true,
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0000",
         "shareMultiplier": 65536
     },
     "ferrite": {
@@ -7223,6 +7242,7 @@
             ]
         },
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://nintondo.io/explorer/block/$hash$",
         "explorerTxLink": "https://nintondo.io/explorer/tx/{0}",
@@ -7254,6 +7274,7 @@
             ]
         },
         "hasMWEB": true,
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/nyc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/nyc/tx.dws?{0}.htm",

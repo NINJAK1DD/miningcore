@@ -44,6 +44,17 @@ copying a recovery command from the maintainer section.
 
 ## Unreleased changes
 
+### Source-verified Bitcoin-family version rolling
+
+Bitcoin-family templates can now declare an explicit source-reviewed `versionRollingMask` and a
+disjoint `versionRollingConsensusMask`. Template loading rejects malformed, zero, oversized,
+contradictory and overlapping masks before listeners open; miner requests can only narrow the
+pool-owned mask. Lucky Bit joins the strict-chain-ID disabled set, PepePow excludes its two
+consensus algorithm bits, PACcoin remains conservatively disabled because authoritative source is
+unavailable, and reviewed ordinary candidates retain the standard mask. A Bitcoin Core regtest
+integration test mines and submits a rolled header through the real daemon boundary. See the
+[version-rolling audit](version-rolling.md).
+
 ### Coin-template `blockSerializer` compatibility
 
 The public `BitcoinTemplate.BlockSerializer` property has been removed because no production code
