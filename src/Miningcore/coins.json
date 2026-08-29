@@ -71,6 +71,8 @@
         "canonicalName": "Auroracoin",
         "symbol": "AUR",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "http://auroracoin.is/",
         "github": "https://github.com/aurarad/auroracoin",
         "market": "https://coinmarketcap.com/currencies/auroracoin/",
@@ -103,6 +105,8 @@
         "canonicalName": "Auroracoin",
         "symbol": "AUR",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "http://auroracoin.is/",
         "github": "https://github.com/aurarad/auroracoin",
         "market": "https://coinmarketcap.com/currencies/auroracoin/",
@@ -140,6 +144,8 @@
         "canonicalName": "Auroracoin",
         "symbol": "AUR",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "http://auroracoin.is/",
         "github": "https://github.com/aurarad/auroracoin",
         "market": "https://coinmarketcap.com/currencies/auroracoin/",
@@ -172,6 +178,8 @@
         "canonicalName": "Auroracoin",
         "symbol": "AUR",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "http://auroracoin.is/",
         "github": "https://github.com/aurarad/auroracoin",
         "market": "https://coinmarketcap.com/currencies/auroracoin/",
@@ -204,6 +212,8 @@
         "canonicalName": "Auroracoin",
         "symbol": "AUR",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "http://auroracoin.is/",
         "github": "https://github.com/aurarad/auroracoin",
         "market": "https://coinmarketcap.com/currencies/auroracoin/",
@@ -627,6 +637,8 @@
         "canonicalName": "ButKoin",
         "symbol": "BUTK",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
         "website": "https://butcoin.tech/",
         "github": "https://github.com/ButKoin/but",
         "market": "",
@@ -661,6 +673,8 @@
         "canonicalName": "ButKoin",
         "symbol": "BUTK",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
         "website": "https://butcoin.tech/",
         "github": "https://github.com/ButKoin/but",
         "market": "",
@@ -739,6 +753,7 @@
         "symbol": "DANE",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/danecoin/Danecoin",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -757,6 +772,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "explorerBlockLink": "https://explorer.danecoin.org/block/$hash$",
         "explorerTxLink": "https://explorer.danecoin.org/tx/{0}",
         "explorerAccountLink": "https://explorer.danecoin.org/address/{0}"
@@ -826,6 +842,8 @@
         "canonicalName": "Digibyte",
         "symbol": "DGB",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "https://digibyte.org/",
         "github": "https://github.com/DigiByte-Core/digibyte",
         "market": "https://coinmarketcap.com/currencies/digibyte/",
@@ -858,6 +876,8 @@
         "canonicalName": "Digibyte",
         "symbol": "DGB",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "https://digibyte.org/",
         "github": "https://github.com/DigiByte-Core/digibyte",
         "market": "https://coinmarketcap.com/currencies/digibyte/",
@@ -895,6 +915,8 @@
         "canonicalName": "Digibyte",
         "symbol": "DGB",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "https://digibyte.org/",
         "github": "https://github.com/DigiByte-Core/digibyte",
         "market": "https://coinmarketcap.com/currencies/digibyte/",
@@ -927,6 +949,8 @@
         "canonicalName": "Digibyte",
         "symbol": "DGB",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "https://digibyte.org/",
         "github": "https://github.com/DigiByte-Core/digibyte",
         "market": "https://coinmarketcap.com/currencies/digibyte/",
@@ -959,6 +983,8 @@
         "canonicalName": "Digibyte",
         "symbol": "DGB",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000f00",
         "website": "https://digibyte.org/",
         "github": "https://github.com/DigiByte-Core/digibyte",
         "market": "https://coinmarketcap.com/currencies/digibyte/",
@@ -1017,6 +1043,7 @@
             ]
         },
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0100",
         "shareMultiplier": 65536,
         "coinbaseMinConfimations": 251,
         "explorerBlockLink": "https://dogechain.info/block/$height$",
@@ -1757,6 +1784,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://chainz.cryptoid.info/lcc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/lcc/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/lcc/address.dws?{0}.htm"
@@ -1766,7 +1795,7 @@
         "symbol": "LUCKY",
         "family": "bitcoin",
         "website": "https://luckycoinfoundation.org/",
-        "github": "https://github.com/LuckyCoinProj/luckycoinV3",
+        "github": "https://github.com/LuckycoinFoundation/luckycoin",
         "market": "https://www.coingecko.com/en/coins/luckycoin",
         "twitter": "https://x.com/LuckyCoinProj",
         "telegram": "https://t.me/LuckyCoinProject",
@@ -1791,6 +1820,8 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0100",
         "shareMultiplier": 65536,
         "hasMasterNodes": true,
         "explorerBlockLink": "https://openchains.info/coin/luckybit/block/$hash$",
@@ -1822,6 +1853,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://mazacha.in/block/$hash$",
         "explorerTxLink": "https://mazacha.in/tx/{0}",
         "explorerAccountLink": "https://mazacha.in/address/{0}"
@@ -1930,6 +1963,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/moon/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/moon/tx.dws?{0}.htm",
@@ -1961,6 +1995,7 @@
             ]
         },
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0100",
         "explorerBlockLink": "https://explorer.namecoin.info/b/$height$",
         "explorerTxLink": "https://explorer.namecoin.info/tx/{0}",
         "explorerAccountLink": "https://explorer.namecoin.info/a/{0}"
@@ -2110,6 +2145,7 @@
                 }
             ]
         },
+        "disableVersionRolling": true,
         "hasMasterNodes": true,
         "explorerBlockLink": "http://explorer.paccoin.net/block/$hash$",
         "explorerTxLink": "http://explorer.paccoin.net/tx/{0}",
@@ -2296,6 +2332,7 @@
         "symbol": "PYRK",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/pyrkcommunity/pyrk",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -2314,6 +2351,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
         "hasMasterNodes": true,
         "explorerBlockLink": "https://explorer.pyrk.org/blockheight/$height$",
         "explorerTxLink": "https://explorer.pyrk.org/tx/{0}",
@@ -2325,6 +2364,7 @@
         "symbol": "PYRK",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/pyrkcommunity/pyrk",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -2359,6 +2399,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
         "hasMasterNodes": true,
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://explorer.pyrk.org/blockheight/$height$",
@@ -2371,6 +2413,7 @@
         "symbol": "PYRK",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/pyrkcommunity/pyrk",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -2389,6 +2432,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
         "hasMasterNodes": true,
         "explorerBlockLink": "https://explorer.pyrk.org/blockheight/$height$",
         "explorerTxLink": "https://explorer.pyrk.org/tx/{0}",
@@ -3314,6 +3359,9 @@
         "canonicalName": "Smileycoin",
         "symbol": "SMLY",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
+        "github": "https://github.com/smileycoin/smileyCoin",
         "website": "",
         "market": "",
         "twitter": "",
@@ -3345,6 +3393,9 @@
         "canonicalName": "Smileycoin",
         "symbol": "SMLY",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
+        "github": "https://github.com/smileycoin/smileyCoin",
         "website": "",
         "market": "",
         "twitter": "",
@@ -3381,6 +3432,9 @@
         "canonicalName": "Smileycoin",
         "symbol": "SMLY",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
+        "github": "https://github.com/smileycoin/smileyCoin",
         "website": "",
         "market": "",
         "twitter": "",
@@ -3412,6 +3466,9 @@
         "canonicalName": "Smileycoin",
         "symbol": "SMLY",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
+        "github": "https://github.com/smileycoin/smileyCoin",
         "website": "",
         "market": "",
         "twitter": "",
@@ -3443,6 +3500,9 @@
         "canonicalName": "Smileycoin",
         "symbol": "SMLY",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
+        "github": "https://github.com/smileycoin/smileyCoin",
         "website": "",
         "market": "",
         "twitter": "",
@@ -3512,6 +3572,7 @@
         "symbol": "SUSU",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/susucoin-project/susucoin",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -3530,6 +3591,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "explorerBlockLink": "https://explore.susukino.com//block/$hash$",
         "explorerTxLink": "https://explore.susukino.com/tx/{0}",
         "explorerAccountLink": "https://explore.susukino.com/address/{0}"
@@ -3780,6 +3842,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fff0000",
+        "versionRollingConsensusMask": "0x0000ff00",
         "hasMasterNodes": true,
         "explorerBlockLink": "https://chainz.cryptoid.info/vls/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/vls/tx.dws?{0}.htm",
@@ -3826,6 +3890,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fff0000",
+        "versionRollingConsensusMask": "0x0000ff00",
         "shareMultiplier": 65536,
         "hasMasterNodes": true,
         "explorerBlockLink": "https://chainz.cryptoid.info/vls/block.dws?$height$.htm",
@@ -3837,6 +3903,8 @@
         "canonicalName": "Verge",
         "symbol": "XVG",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
         "website": "http://vergecurrency.com/",
         "github": "https://github.com/vergecurrency/verge",
         "market": "https://www.coingecko.com/en/coins/verge",
@@ -3875,12 +3943,14 @@
         "canonicalName": "Verge",
         "symbol": "XVG",
         "family": "bitcoin",
-        "website": "https://veles.network/",
-        "github": "https://github.com/velescore/veles",
-        "market": "",
-        "twitter": "https://twitter.com/velescore",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
+        "website": "http://vergecurrency.com/",
+        "github": "https://github.com/vergecurrency/VERGE",
+        "market": "https://www.coingecko.com/en/coins/verge",
+        "twitter": "https://twitter.com/vergecurrency",
         "telegram": "",
-        "discord": "https://discord.gg/P528fGg",
+        "discord": "https://discord.gg/vergecurrency",
         "coinbaseHasher": {
             "hash": "sha256d"
         },
@@ -3917,6 +3987,8 @@
         "canonicalName": "Verge",
         "symbol": "XVG",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
         "website": "http://vergecurrency.com/",
         "github": "https://github.com/vergecurrency/verge",
         "market": "https://www.coingecko.com/en/coins/verge",
@@ -3954,6 +4026,8 @@
         "canonicalName": "Verge",
         "symbol": "XVG",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
         "website": "http://vergecurrency.com/",
         "github": "https://github.com/vergecurrency/verge",
         "market": "https://www.coingecko.com/en/coins/verge",
@@ -3991,6 +4065,8 @@
         "canonicalName": "Verge",
         "symbol": "XVG",
         "family": "bitcoin",
+        "versionRollingMask": "0x1fff8000",
+        "versionRollingConsensusMask": "0x00007800",
         "website": "http://vergecurrency.com/",
         "github": "https://github.com/vergecurrency/verge",
         "market": "https://www.coingecko.com/en/coins/verge",
@@ -4058,6 +4134,7 @@
         "symbol": "VIA",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/viacoin/viacoin",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -4092,6 +4169,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/via/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/via/tx.dws?{0}.htm",
@@ -4231,6 +4309,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/wdc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/wdc/tx.dws?{0}.htm",
@@ -6113,6 +6192,7 @@
         "symbol": "LCC",
         "family": "bitcoin",
         "website": "https://litecoinca.sh/",
+        "github": "https://github.com/litecoincash-project/litecoincash",
         "market": "https://coinpaprika.com/coin/lch-litecoincash",
         "twitter": "https://x.com/litecoincash",
         "telegram": "",
@@ -6131,6 +6211,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://chainz.cryptoid.info/lcc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/lcc/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/lcc/address.dws?{0}.htm"
@@ -6141,6 +6223,7 @@
         "symbol": "MAZA",
         "family": "bitcoin",
         "website": "http://www.mazacoin.org/",
+        "github": "https://github.com/MazaCoin/maza",
         "market": "https://www.coingecko.com/en/coins/maza",
         "twitter": "https://x.com/MazaCoin",
         "telegram": "https://t.me/mazatribe",
@@ -6159,6 +6242,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://mazacha.in/block/$hash$",
         "explorerTxLink": "https://mazacha.in/tx/{0}",
         "explorerAccountLink": "https://mazacha.in/address/{0}"
@@ -6197,6 +6282,7 @@
         "symbol": "PEPEW",
         "family": "bitcoin",
         "website": "https://pepepow.org/",
+        "github": "https://github.com/MattF42/PePe-core",
         "market": "https://www.coingecko.com/en/coins/pepepow",
         "twitter": "https://x.com/PEPEWCommunity",
         "telegram": "https://t.me/pepewcommunity",
@@ -6215,6 +6301,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fff2000",
+        "versionRollingConsensusMask": "0x0000c000",
         "hasMasterNodes": true,
         "hasFoundation": true,
         "shareMultiplier": 65536,
@@ -6532,6 +6620,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "http://explorer.plexhive.com/block/$hash$",
         "explorerTxLink": "http://explorer.plexhive.com/tx/{0}",
         "explorerAccountLink": "http://explorer.plexhive.com/address/{0}"
@@ -6559,6 +6649,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "http://explorer.plexhive.com/block/$hash$",
         "explorerTxLink": "http://explorer.plexhive.com/tx/{0}",
         "explorerAccountLink": "http://explorer.plexhive.com/address/{0}"
@@ -6569,6 +6661,7 @@
         "symbol": "SKYDOGE",
         "family": "bitcoin",
         "website": "https://skydoge.net/",
+        "github": "https://github.com/skydogenet/mainchain",
         "market": "",
         "twitter": "https://twitter.com/skydogenet",
         "telegram": "https://t.me/skydoge_net",
@@ -6587,6 +6680,7 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
         "coinbaseTxVersion": 9,
         "explorerBlockLink": "https://explorer.skydoge.net/block/$hash$",
         "explorerTxLink": "https://explorer.skydoge.net/tx/{0}",
@@ -7000,6 +7094,7 @@
         },
         "hasMWEB": true,
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0100",
         "shareMultiplier": 65536
     },
     "ferrite": {
@@ -7223,6 +7318,7 @@
             ]
         },
         "disableVersionRolling": true,
+        "versionRollingConsensusMask": "0xffff0100",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://nintondo.io/explorer/block/$hash$",
         "explorerTxLink": "https://nintondo.io/explorer/tx/{0}",
@@ -7254,6 +7350,7 @@
             ]
         },
         "hasMWEB": true,
+        "versionRollingMask": "0x1fffe000",
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://chainz.cryptoid.info/nyc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/nyc/tx.dws?{0}.htm",

@@ -92,6 +92,7 @@ replaced. The following sections walk through each step.
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
 | Review newly added Scrypt daemon contracts | [Scrypt coin definitions](docs/scrypt-coin-definitions.md) |
+| Review Bitcoin-family BIP310 mask safety | [Version rolling](docs/version-rolling.md) |
 
 The complete [documentation index](docs/README.md) also links dependency, licensing and validation
 references.

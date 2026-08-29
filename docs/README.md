@@ -29,6 +29,7 @@ wallet balances or recovery files.
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
 | Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
+| Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
 | Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence and outstanding gates | [Mainnet validation record](mainnet-validation.md) |
 

@@ -184,7 +184,9 @@ public class ScryptCoinTemplateTests : TestBase
     [InlineData("dogecoin", 0x00620004u)]
     [InlineData("cyberyen", 0x10000004u)]
     [InlineData("bells", 0x00100004u)]
-    [InlineData("namecoin", 0x00010001u)]
+    // Namecoin's daemon combines chain ID 1 with base version 4.
+    [InlineData("namecoin", 0x00010004u)]
+    [InlineData("luckybit", 0x20130004u)]
     public void StrictChainIdTemplate_DisablesVersionRollingAndPreservesVersion(
         string key, uint templateVersion)
     {
@@ -204,7 +206,10 @@ public class ScryptCoinTemplateTests : TestBase
     [Fact]
     public void VersionRollingDisabledTemplates_MatchReviewedStrictChainIdSet()
     {
-        var expected = new[] { "bells", "cyberyen", "dogecoin", "namecoin" };
+        var expected = new[]
+        {
+            "bells", "cyberyen", "dogecoin", "luckybit", "namecoin", "paccoin",
+        };
         var actual = ModuleInitializer.CoinTemplates
             .Where(x => x.Value is BitcoinTemplate {DisableVersionRolling: true})
             .Select(x => x.Key)
@@ -221,6 +226,331 @@ public class ScryptCoinTemplateTests : TestBase
             BitcoinConstants.VersionRollingPoolMask);
 
         Assert.Equal(BitcoinConstants.VersionRollingPoolMask, mask);
+    }
+
+    [Fact]
+    public void UnauditedDefaultVersionRollingPolicy_IsOperatorVisible()
+    {
+        Assert.True(BitcoinPool.UsesUnauditedDefaultVersionRolling(
+            new BitcoinTemplate()));
+        Assert.False(BitcoinPool.UsesUnauditedDefaultVersionRolling(
+            new BitcoinTemplate
+            {
+                AllowedVersionRollingMask =
+                    BitcoinConstants.VersionRollingPoolMask,
+            }));
+        Assert.False(BitcoinPool.UsesUnauditedDefaultVersionRolling(
+            new BitcoinTemplate {DisableVersionRolling = true}));
+    }
+
+    [Fact]
+    public void Paccoin_DisablesVersionRollingWithoutClaimingSourceVerifiedBits()
+    {
+        var template = GetTemplate("paccoin");
+
+        Assert.True(template.DisableVersionRolling);
+        Assert.Null(template.AllowedVersionRollingMask);
+        Assert.Null(template.VersionRollingConsensusMask);
+    }
+
+    [Theory]
+    [InlineData("dogecoin")]
+    [InlineData("cyberyen")]
+    [InlineData("bells")]
+    [InlineData("namecoin")]
+    [InlineData("luckybit")]
+    public void SourceVerifiedStrictChainIdTemplate_RecordsConsensusOwnedBits(string key)
+    {
+        Assert.Equal(0xffff0100u, GetTemplate(key).VersionRollingConsensusMask);
+    }
+
+    [Theory]
+    [InlineData("auroracoin-sha256")]
+    [InlineData("auroracoin-scrypt")]
+    [InlineData("auroracoin-skein")]
+    [InlineData("auroracoin-qubit")]
+    [InlineData("auroracoin-groestl")]
+    [InlineData("danecoin")]
+    [InlineData("digibyte-sha256")]
+    [InlineData("digibyte-scrypt")]
+    [InlineData("digibyte-skein")]
+    [InlineData("digibyte-qubit")]
+    [InlineData("digibyte-groestl")]
+    [InlineData("mooncoin")]
+    [InlineData("newyorkcoin")]
+    [InlineData("pyrk-sha256")]
+    [InlineData("pyrk-scrypt")]
+    [InlineData("pyrk-x11")]
+    [InlineData("skydoge")]
+    [InlineData("smileycoin-sha256")]
+    [InlineData("smileycoin-scrypt")]
+    [InlineData("smileycoin-skein")]
+    [InlineData("smileycoin-qubit")]
+    [InlineData("smileycoin-groestl")]
+    [InlineData("susucoin")]
+    [InlineData("viacoin")]
+    [InlineData("worldcoin")]
+    public void ReviewedOrdinaryTemplate_RecordsDefaultSafeMask(string key)
+    {
+        var template = GetTemplate(key);
+
+        Assert.False(template.DisableVersionRolling);
+        Assert.Equal(BitcoinConstants.VersionRollingPoolMask,
+            template.AllowedVersionRollingMask);
+        Assert.Equal(BitcoinConstants.VersionRollingPoolMask,
+            BitcoinPool.ResolveVersionRollingMask(template, uint.MaxValue));
+    }
+
+    [Fact]
+    public void VersionRollingExplicitMaskTemplates_MatchSourceReviewedSet()
+    {
+        var expected = new[]
+        {
+            "auroracoin-groestl", "auroracoin-qubit", "auroracoin-scrypt",
+            "auroracoin-sha256", "auroracoin-skein", "butkoin-scrypt",
+            "butkoin-sha256", "danecoin", "digibyte-groestl",
+            "digibyte-qubit", "digibyte-scrypt", "digibyte-sha256",
+            "digibyte-skein", "litecoin-cash", "litecoin-cash-minotaurx",
+            "maza", "maza-minotaurx", "mooncoin", "newyorkcoin", "pepepow",
+            "plexhive", "plexhive-minotaurx", "pyrk-scrypt", "pyrk-sha256",
+            "pyrk-x11", "skydoge", "smileycoin-groestl", "smileycoin-qubit",
+            "smileycoin-scrypt", "smileycoin-sha256", "smileycoin-skein",
+            "susucoin", "veles-scrypt", "veles-sha256", "verge-blake",
+            "verge-groestl", "verge-lyra", "verge-scrypt", "verge-x17",
+            "viacoin", "worldcoin",
+        };
+        var actual = ModuleInitializer.CoinTemplates
+            .Where(x => x.Value is BitcoinTemplate
+                {AllowedVersionRollingMask: not null})
+            .Select(x => x.Key)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void PepePow_ExcludesConsensusOwnedAlgorithmBits()
+    {
+        var template = GetTemplate("pepepow");
+        const uint requestedMask = 0x0000e000;
+        const uint templateVersion = 0x0000c004;
+
+        Assert.Equal(0x0000c000u, template.VersionRollingConsensusMask);
+        Assert.Equal(0x1fff2000u, template.AllowedVersionRollingMask);
+        var negotiatedMask = BitcoinPool.ResolveVersionRollingMask(template,
+            requestedMask);
+
+        Assert.Equal(0x00002000u, negotiatedMask);
+        Assert.Equal(0x0000c000u, BitcoinJob.ApplyVersionRolling(
+            templateVersion, negotiatedMask, 0) & 0x0000c000u);
+        Assert.Equal(0x0000c000u, BitcoinJob.ApplyVersionRolling(
+            templateVersion, negotiatedMask, uint.MaxValue) & 0x0000c000u);
+    }
+
+    [Fact]
+    public void VersionRollingNegotiation_ClipsExpansionAndDeclinesDisjointMask()
+    {
+        var template = new BitcoinTemplate
+            {AllowedVersionRollingMask = 0x00006000};
+
+        Assert.Equal(0x00002000u,
+            BitcoinPool.ResolveVersionRollingMask(template, 0x20002000));
+        Assert.Null(BitcoinPool.ResolveVersionRollingMask(template, 0x00008000));
+    }
+
+    [Theory]
+    [InlineData("verge-scrypt")]
+    [InlineData("verge-groestl")]
+    [InlineData("verge-x17")]
+    [InlineData("verge-blake")]
+    [InlineData("verge-lyra")]
+    [InlineData("butkoin-scrypt")]
+    [InlineData("butkoin-sha256")]
+    public void MultiAlgorithmTemplate_ExcludesConsensusSelectorBits(string key)
+    {
+        var template = GetTemplate(key);
+
+        Assert.Equal(0x1fff8000u, template.AllowedVersionRollingMask);
+        Assert.Equal(0x00007800u, template.VersionRollingConsensusMask);
+        Assert.Equal(0u,
+            template.AllowedVersionRollingMask.Value &
+            template.VersionRollingConsensusMask.Value);
+        Assert.Null(
+            BitcoinPool.ResolveVersionRollingMask(template, 0x00006000));
+    }
+
+    [Theory]
+    [InlineData("veles-sha256", 0x1fff0000u, 0x0000ff00u)]
+    [InlineData("veles-scrypt", 0x1fff0000u, 0x0000ff00u)]
+    [InlineData("litecoin-cash", 0x1f00e000u, 0x00ff0000u)]
+    [InlineData("litecoin-cash-minotaurx", 0x1f00e000u, 0x00ff0000u)]
+    [InlineData("maza", 0x1f00e000u, 0x00ff0000u)]
+    [InlineData("maza-minotaurx", 0x1f00e000u, 0x00ff0000u)]
+    [InlineData("plexhive", 0x1f00e000u, 0x00ff0000u)]
+    [InlineData("plexhive-minotaurx", 0x1f00e000u, 0x00ff0000u)]
+    public void VersionSelectedPowTemplate_PreservesConsensusSelectorBits(
+        string key, uint allowedMask, uint consensusMask)
+    {
+        var template = GetTemplate(key);
+        var templateVersion = consensusMask | 4u;
+        var negotiatedMask = BitcoinPool.ResolveVersionRollingMask(template,
+            uint.MaxValue);
+
+        Assert.Equal(allowedMask, template.AllowedVersionRollingMask);
+        Assert.Equal(consensusMask, template.VersionRollingConsensusMask);
+        Assert.Equal(0u, allowedMask & consensusMask);
+        Assert.Null(BitcoinPool.ResolveVersionRollingMask(template,
+            consensusMask));
+        Assert.Equal(consensusMask, BitcoinJob.ApplyVersionRolling(
+            templateVersion, negotiatedMask, 0) & consensusMask);
+        Assert.Equal(consensusMask, BitcoinJob.ApplyVersionRolling(
+            templateVersion, negotiatedMask, uint.MaxValue) & consensusMask);
+    }
+
+    [Theory]
+    [InlineData("auroracoin-sha256", 0x00000f00u)]
+    [InlineData("auroracoin-scrypt", 0x00000f00u)]
+    [InlineData("auroracoin-skein", 0x00000f00u)]
+    [InlineData("auroracoin-qubit", 0x00000f00u)]
+    [InlineData("auroracoin-groestl", 0x00000f00u)]
+    [InlineData("digibyte-sha256", 0x00000f00u)]
+    [InlineData("digibyte-scrypt", 0x00000f00u)]
+    [InlineData("digibyte-skein", 0x00000f00u)]
+    [InlineData("digibyte-qubit", 0x00000f00u)]
+    [InlineData("digibyte-groestl", 0x00000f00u)]
+    [InlineData("smileycoin-sha256", 0x00000e00u)]
+    [InlineData("smileycoin-scrypt", 0x00000e00u)]
+    [InlineData("smileycoin-skein", 0x00000e00u)]
+    [InlineData("smileycoin-qubit", 0x00000e00u)]
+    [InlineData("smileycoin-groestl", 0x00000e00u)]
+    [InlineData("pyrk-sha256", 0x00000e00u)]
+    [InlineData("pyrk-scrypt", 0x00000e00u)]
+    [InlineData("pyrk-x11", 0x00000e00u)]
+    public void ReviewedLowSelectorTemplate_RecordsDisjointConsensusBits(
+        string key, uint consensusMask)
+    {
+        var template = GetTemplate(key);
+
+        Assert.Equal(BitcoinConstants.VersionRollingPoolMask,
+            template.AllowedVersionRollingMask);
+        Assert.Equal(consensusMask, template.VersionRollingConsensusMask);
+        Assert.Equal(0u,
+            template.AllowedVersionRollingMask.Value & consensusMask);
+    }
+
+    [Fact]
+    public void VergeScrypt_UsesAuthoritativeVergeSourceMetadata()
+    {
+        Assert.Equal("https://github.com/vergecurrency/VERGE",
+            GetTemplate("verge-scrypt").Github);
+    }
+
+    [Theory]
+    [InlineData("pyrk-sha256")]
+    [InlineData("pyrk-scrypt")]
+    [InlineData("pyrk-x11")]
+    public void PyrkTemplate_UsesReviewedSourceMetadata(string key)
+    {
+        Assert.Equal("https://github.com/pyrkcommunity/pyrk",
+            GetTemplate(key).Github);
+    }
+
+    [Theory]
+    [InlineData("1fffe000", 0x1fffe000u)]
+    [InlineData("1FFFE000", 0x1fffe000u)]
+    [InlineData("0x1fffe000", 0x1fffe000u)]
+    [InlineData("0X1FFFE000", 0x1fffe000u)]
+    public void MinerVersionRollingMask_AcceptsBip310AndDefensivePrefixForms(
+        string value, uint expected)
+    {
+        Assert.True(BitcoinPool.TryParseRequestedVersionRollingMask(
+            JValue.CreateString(value), out var actual));
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(123)]
+    [InlineData("0x1fffe00")]
+    [InlineData("0x1fffe00000")]
+    [InlineData("1fffe00z")]
+    public void MinerVersionRollingMask_DeclinesMalformedValues(object value)
+    {
+        var token = value == null ? JValue.CreateNull() : JToken.FromObject(value);
+        var result = BitcoinPool.NegotiateVersionRolling(new BitcoinTemplate(),
+            true, token);
+
+        Assert.Equal(BitcoinPool.VersionRollingNegotiationStatus.InvalidMinerMask,
+            result.Status);
+        Assert.Null(result.Mask);
+    }
+
+    [Fact]
+    public void VersionRollingNegotiation_AppliesFailClosedWireResults()
+    {
+        var disabled = BitcoinPool.NegotiateVersionRolling(new BitcoinTemplate
+        {
+            DisableVersionRolling = true,
+        }, true, new JObject());
+        var disjoint = BitcoinPool.NegotiateVersionRolling(new BitcoinTemplate
+        {
+            AllowedVersionRollingMask = 0x00002000,
+        }, true, JValue.CreateString("00004000"));
+        var enabled = BitcoinPool.NegotiateVersionRolling(new BitcoinTemplate
+        {
+            AllowedVersionRollingMask = 0x00002000,
+        }, true, JValue.CreateString("00006000"));
+        var invalid = BitcoinPool.NegotiateVersionRolling(new BitcoinTemplate(),
+            true, new JObject());
+
+        Assert.Equal(BitcoinPool.VersionRollingNegotiationStatus.TemplateDisabled,
+            disabled.Status);
+        Assert.Equal(BitcoinPool.VersionRollingNegotiationStatus.DisjointMask,
+            disjoint.Status);
+        Assert.Equal(BitcoinPool.VersionRollingNegotiationStatus.InvalidMinerMask,
+            invalid.Status);
+        Assert.Equal(BitcoinPool.VersionRollingNegotiationStatus.Enabled,
+            enabled.Status);
+        Assert.Equal(0x00002000u, enabled.Mask);
+
+        var context = new BitcoinWorkerContext
+            {VersionRollingMask = 0x1fffe000};
+        var wireResult = new Dictionary<string, object>
+        {
+            [BitcoinStratumExtensions.VersionRollingMask] = "1fffe000",
+        };
+
+        foreach(var declined in new[] {disabled, invalid, disjoint})
+        {
+            context.VersionRollingMask = 0x1fffe000;
+            wireResult[BitcoinStratumExtensions.VersionRollingMask] =
+                "1fffe000";
+
+            BitcoinPool.ApplyVersionRollingNegotiation(context, wireResult,
+                declined);
+
+            Assert.False(Assert.IsType<bool>(
+                wireResult[BitcoinStratumExtensions.VersionRolling]));
+            Assert.False(wireResult.ContainsKey(
+                BitcoinStratumExtensions.VersionRollingMask));
+            Assert.Null(context.VersionRollingMask);
+        }
+
+        BitcoinPool.ApplyVersionRollingNegotiation(context, wireResult,
+            enabled);
+
+        Assert.True(Assert.IsType<bool>(
+            wireResult[BitcoinStratumExtensions.VersionRolling]));
+        Assert.Equal("00002000",
+            wireResult[BitcoinStratumExtensions.VersionRollingMask]);
+        Assert.Equal(0x00002000u, context.VersionRollingMask);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            BitcoinPool.ApplyVersionRollingNegotiation(context, wireResult,
+                new BitcoinPool.VersionRollingNegotiation(
+                    BitcoinPool.VersionRollingNegotiationStatus.Enabled,
+                    null)));
     }
 
     [Fact]
