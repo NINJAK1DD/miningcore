@@ -971,19 +971,21 @@ WHERE accountingid IS NOT NULL
 GROUP BY poolid
 ORDER BY poolid;
 
-SELECT count(*) AS groups_with_partial_projection_sets
+SELECT count(*) AS groups_with_excess_projection_rows
 FROM share_accounting_groups groups
 WHERE (SELECT count(*) FROM shares
        WHERE shares.accountingid = groups.accountingid)
-      NOT IN (0, groups.projectioncount);
+      > groups.projectioncount;
 ```
 
 The accounting group and PPS credit tables are durable replay evidence and are not ordinary share
 retention tables. Settled PROP/PPLNS/PPS share rows may be deleted by payout cleanup, so a healthy
-group has either every original projection or no remaining projections. Miningcore accepts both
-states on a retry and fails closed on a partial set. Do not delete `share_accounting_groups` or
-`pps_share_credits` as part of routine share retention; those records prevent a delayed relay or
-recovery replay from creating a second liability.
+group may retain any subset of its original projections as the two pools cross independent payout
+boundaries. Miningcore authenticates every remaining projection against the original payload and
+accepts the subset on a retry. The group receipt proves the original projections were committed in
+one transaction; an excess or conflicting row still fails closed. Do not delete
+`share_accounting_groups` or `pps_share_credits` as part of routine share retention; those records
+prevent a delayed relay or recovery replay from creating a second liability.
 
 Use these queries for inspection only. Never repair balances or payments with ad-hoc SQL.
 

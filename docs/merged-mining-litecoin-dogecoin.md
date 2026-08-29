@@ -64,7 +64,9 @@ After proof validation:
 A slow or failed peer-chain path therefore cannot suppress ordinary accounting or move it beyond
 the parent effort boundary. The recorder commits both projections and any PPS liabilities in one
 PostgreSQL transaction. A duplicate envelope is authenticated by its durable UUID and payload hash,
-then suppressed; a conflicting or partial replay stops instead of crediting one side.
+then suppressed. A conflicting replay stops instead of crediting one side. A replay after one pool
+has independently pruned its settled projection is also suppressed safely: the durable group receipt
+proves the original pair was committed atomically, and every still-retained row is re-authenticated.
 
 The parent projection belongs to the Stratum username and the auxiliary projection belongs to the
 validated password address. They retain one timestamp, worker, session, source and achieved proof,

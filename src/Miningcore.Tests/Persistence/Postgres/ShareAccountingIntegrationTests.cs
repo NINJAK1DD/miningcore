@@ -146,8 +146,19 @@ public class ShareAccountingIntegrationTests
             await connection.ExecuteAsync(
                 "DELETE FROM shares WHERE accountingid=@id AND poolid='doge'",
                 new { id = prunedPair.AccountingId });
+            Assert.Equal(ShareAccountingInsertResult.AlreadyCommitted,
+                await InsertAsync(repository, connection, prunedPair));
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM shares WHERE accountingid=@id",
+                new { id = prunedPair.AccountingId }));
+            await connection.ExecuteAsync(
+                "UPDATE shares SET miner='tampered' WHERE accountingid=@id",
+                new { id = prunedPair.AccountingId });
             await Assert.ThrowsAsync<InvalidDataException>(() =>
                 InsertAsync(repository, connection, prunedPair));
+            await connection.ExecuteAsync(
+                "UPDATE shares SET miner='miner' WHERE accountingid=@id",
+                new { id = prunedPair.AccountingId });
             await connection.ExecuteAsync(
                 "DELETE FROM shares WHERE accountingid=@id",
                 new { id = prunedPair.AccountingId });

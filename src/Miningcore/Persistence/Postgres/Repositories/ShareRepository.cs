@@ -544,10 +544,12 @@ public class ShareRepository : IShareRepository
         var creditCount = await con.QuerySingleAsync<int>(new CommandDefinition(
             creditCountQuery, new { batch.AccountingId }, tx, cancellationToken: ct));
 
-        // Round-based payout schemes intentionally prune settled share rows while the
-        // accounting group remains as the durable replay receipt. A group can therefore have
-        // either every original projection or none; a partial set is corruption and must fail.
-        if((shareCount != 0 && shareCount != batch.Shares.Length) ||
+        // Each pool prunes settled share rows on its own payout boundary. A paired group may
+        // therefore retain any subset of its original projections. The group and all original
+        // rows were inserted in one transaction, so the durable payload hash is proof that a
+        // smaller current set is retention, not a partial initial commit. PPS credits are durable
+        // replay evidence and must remain complete.
+        if(shareCount > batch.Shares.Length ||
            creditCount != batch.PpsCredits.Length)
             throw new InvalidDataException(
                 $"Share accounting id {batch.AccountingId:N} is incomplete; preserve recovery evidence and stop");
@@ -560,11 +562,11 @@ public class ShareRepository : IShareRepository
                 new CommandDefinition(shareQuery, new { batch.AccountingId }, tx,
                     cancellationToken: ct))).ToArray();
 
-            foreach(var expected in batch.Shares)
+            foreach(var actual in committedShares)
             {
-                var actual = committedShares.SingleOrDefault(x =>
-                    string.Equals(x.PoolId, expected.PoolId, StringComparison.Ordinal));
-                if(actual == null || actual.AccountingId != expected.AccountingId ||
+                var expected = batch.Shares.SingleOrDefault(x =>
+                    string.Equals(x.PoolId, actual.PoolId, StringComparison.Ordinal));
+                if(expected == null || actual.AccountingId != expected.AccountingId ||
                    actual.BlockHeight < 0 ||
                    (ulong) actual.BlockHeight != expected.BlockHeight ||
                    !string.Equals(actual.Miner, expected.Miner, StringComparison.Ordinal) ||
