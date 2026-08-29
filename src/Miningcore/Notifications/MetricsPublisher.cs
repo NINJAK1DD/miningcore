@@ -2,6 +2,7 @@ using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using Miningcore.Blockchain;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -60,6 +61,11 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Counter auxiliaryTemplateFallbackCounter;
     private Gauge auxiliaryTemplateAvailableGauge;
     private Gauge auxiliaryTemplateDegradedGauge;
+    private Counter shareAccountingBatchCounter;
+    private Counter shareAccountingProjectionCounter;
+    private Counter ppsCreditCounter;
+    private Counter ppsLiabilityCounter;
+    private Counter mergedMiningAttributionRejectionCounter;
     private readonly object sharePersistenceOverflowPublishGate = new();
     private long publishedPrimaryOverflowCount;
     private long publishedEmergencyOverflowCount;
@@ -156,6 +162,32 @@ public class MetricsPublisher : StartupGatedBackgroundService
             "miningcore_auxiliary_template_degraded",
             "Whether parent mining is currently using a cached auxiliary template",
             new GaugeConfiguration { LabelNames = new[] { "pool", "aux_pool" } });
+        shareAccountingBatchCounter = metricFactory.CreateCounter(
+            "miningcore_share_accounting_batches_total",
+            "Durable correlated share-accounting groups by commit outcome",
+            new CounterConfiguration { LabelNames = new[] { "outcome" } });
+        shareAccountingProjectionCounter = metricFactory.CreateCounter(
+            "miningcore_share_accounting_projections_total",
+            "Durably committed share projections by pool, role, and commit outcome",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "pool", "role", "outcome" },
+            });
+        ppsCreditCounter = metricFactory.CreateCounter(
+            "miningcore_pps_share_credits_total",
+            "Durably committed PPS share liabilities by pool and commit outcome",
+            new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
+        ppsLiabilityCounter = metricFactory.CreateCounter(
+            "miningcore_pps_liability_coin_total",
+            "Exact calculated PPS liability in whole coin units before database balance rounding",
+            new CounterConfiguration { LabelNames = new[] { "pool" } });
+        mergedMiningAttributionRejectionCounter = metricFactory.CreateCounter(
+            "miningcore_merged_mining_attribution_rejections_total",
+            "Merged-mining logins rejected before accepting unattributed auxiliary work",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "pool", "aux_pool", "reason" },
+            });
     }
 
     private void PublishSharePersistenceMetrics()
@@ -267,6 +299,54 @@ public class MetricsPublisher : StartupGatedBackgroundService
                 msg.AuxiliaryPoolId).Inc();
     }
 
+    private void OnShareAccountingTelemetry(ShareAccountingTelemetryEvent msg)
+    {
+        var outcome = msg.Outcome switch
+        {
+            Persistence.Model.ShareAccountingInsertResult.Inserted => "inserted",
+            Persistence.Model.ShareAccountingInsertResult.AlreadyCommitted =>
+                "replay_suppressed",
+            _ => throw new ArgumentOutOfRangeException(nameof(msg.Outcome)),
+        };
+        shareAccountingBatchCounter.WithLabels(outcome).Inc();
+
+        foreach(var projection in msg.Projections)
+        {
+            var role = projection.Role switch
+            {
+                ShareAccountingRole.Single => "single",
+                ShareAccountingRole.Parent => "parent",
+                ShareAccountingRole.Auxiliary => "auxiliary",
+                _ => "invalid",
+            };
+            shareAccountingProjectionCounter.WithLabels(projection.PoolId,
+                role, outcome).Inc();
+        }
+
+        foreach(var credit in msg.PpsCredits)
+        {
+            ppsCreditCounter.WithLabels(credit.PoolId, outcome).Inc();
+            if(msg.Outcome == Persistence.Model.ShareAccountingInsertResult.Inserted)
+                ppsLiabilityCounter.WithLabels(credit.PoolId)
+                    .Inc(decimal.ToDouble(credit.Amount));
+        }
+    }
+
+    private void OnMergedMiningAttributionRejected(
+        MergedMiningAttributionRejectedTelemetryEvent msg)
+    {
+        var reason = msg.Reason switch
+        {
+            MergedMiningAttributionRejection.Missing => "missing",
+            MergedMiningAttributionRejection.Invalid => "invalid",
+            MergedMiningAttributionRejection.ValidationUnavailable =>
+                "validation_unavailable",
+            _ => throw new ArgumentOutOfRangeException(nameof(msg.Reason)),
+        };
+        mergedMiningAttributionRejectionCounter.WithLabels(msg.ParentPoolId,
+            msg.AuxiliaryPoolId, reason).Inc();
+    }
+
     internal static string GetAuxiliaryTemplateRpcOutcomeLabel(
         AuxiliaryTemplateRpcOutcome outcome) => outcome switch
     {
@@ -316,8 +396,23 @@ public class MetricsPublisher : StartupGatedBackgroundService
                     ex => logger.Error(ex.Message)))
                 .Select(_ => Unit.Default);
 
+            var shareAccountingTelemetry = messageBus
+                .Listen<ShareAccountingTelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x => Guard(() => OnShareAccountingTelemetry(x),
+                    ex => logger.Error(ex.Message)))
+                .Select(_ => Unit.Default);
+
+            var mergedMiningAttributionRejected = messageBus
+                .Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x => Guard(() => OnMergedMiningAttributionRejected(x),
+                    ex => logger.Error(ex.Message)))
+                .Select(_ => Unit.Default);
+
             var processing = Observable.Merge(telemetryEvents, hashrateNotifications,
-                    auxiliaryTemplateRpcTelemetry, auxiliaryTemplateStateTelemetry)
+                    auxiliaryTemplateRpcTelemetry, auxiliaryTemplateStateTelemetry,
+                    shareAccountingTelemetry, mergedMiningAttributionRejected)
                 .ToTask(ct);
             SignalStartupReady();
             return processing;

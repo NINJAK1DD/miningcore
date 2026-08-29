@@ -10,15 +10,21 @@ public interface IShareRepository
         IEnumerable<string> poolIds, CancellationToken ct);
     Task<bool> HasRecoveryImportSchemaAsync(IDbConnection con,
         CancellationToken ct);
+    Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
+        CancellationToken ct);
     Task<bool> HasMatchingRecoveryImportAsync(IDbConnection con,
         string fileHash, string filename, int recordCount,
         CancellationToken ct);
     Task BatchInsertAsync(IDbConnection con, IDbTransaction tx, IEnumerable<Share> shares, CancellationToken ct);
+    Task<ShareAccountingInsertResult> InsertAccountingBatchAsync(IDbConnection con,
+        IDbTransaction tx, ShareAccountingBatch batch, CancellationToken ct);
     Task<bool> TryRegisterRecoveryImportAsync(IDbConnection con, IDbTransaction tx,
         string fileHash, string filename, int recordCount, CancellationToken ct);
     Task<Share[]> ReadSharesBeforeAsync(IDbConnection con, string poolId, DateTime before, bool inclusive, int pageSize, CancellationToken ct);
     Task<long> CountSharesBeforeAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
+    Task<long> CountSharesBeforeInclusiveAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
     Task DeleteSharesBeforeAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
+    Task DeleteSharesBeforeInclusiveAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
     Task<long> CountSharesByMinerAsync(IDbConnection con, IDbTransaction tx, string poolId, string miner, CancellationToken ct);
     Task DeleteSharesByMinerAsync(IDbConnection con, IDbTransaction tx, string poolId, string miner, CancellationToken ct);
     Task<double?> GetAccumulatedShareDifficultyBetweenAsync(IDbConnection con, string poolId, DateTime start, DateTime end, CancellationToken ct);

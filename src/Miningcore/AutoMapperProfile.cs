@@ -20,7 +20,10 @@ public class AutoMapperProfile : Profile
         //////////////////////
         // outgoing mappings
 
-        CreateMap<Blockchain.Share, Persistence.Model.Share>();
+        CreateMap<Blockchain.Share, Persistence.Model.Share>()
+            .ForMember(dest => dest.AccountingId, opt => opt.Ignore())
+            .ForMember(dest => dest.AccountingRole, opt => opt.Ignore())
+            .ForMember(dest => dest.RewardBasisSatoshis, opt => opt.Ignore());
 
         CreateMap<Blockchain.Share, Block>()
             .ForMember(dest => dest.Reward, opt => opt.MapFrom(src => src.BlockReward))

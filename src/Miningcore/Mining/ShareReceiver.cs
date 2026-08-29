@@ -327,6 +327,20 @@ public class ShareReceiver : BackgroundService
 
                 break;
 
+            case ShareRelay.WireFormat.ProtocolBuffersAccounting:
+                using(var stream = new MemoryStream(data))
+                {
+                    share = Serializer.Deserialize<Share>(stream);
+                    share.BlockReward = (decimal) share.BlockRewardDouble;
+                    if(share.PairedShare != null)
+                    {
+                        share.PairedShare.BlockReward =
+                            (decimal) share.PairedShare.BlockRewardDouble;
+                    }
+                }
+
+                break;
+
             default:
                 logger.Error(() => $"Unsupported wire format {wireFormat} of share received from {url}/{topic} ");
                 break;
@@ -335,6 +349,39 @@ public class ShareReceiver : BackgroundService
         if(share == null)
         {
             logger.Error(() => $"Unable to deserialize share received from {url}/{topic}");
+            return;
+        }
+
+        if(wireFormat == ShareRelay.WireFormat.ProtocolBuffersAccounting)
+        {
+            if(!string.Equals(share.PoolId, topic, StringComparison.Ordinal) ||
+               string.IsNullOrEmpty(share.AccountingId))
+            {
+                logger.Error(() => $"Accounting share from {url}/{topic} has a mismatched topic or no accounting id");
+                return;
+            }
+
+            NormalizeCreatedTimestamp(share, clock.Now);
+            if(share.PairedShare != null)
+                NormalizeCreatedTimestamp(share.PairedShare, share.Created);
+
+            try
+            {
+                ShareAccounting.ValidateAndFlatten(share, pools.ToDictionary(
+                    x => x.Key, x => x.Value.Pool.Config,
+                    StringComparer.Ordinal));
+            }
+            catch(Exception ex) when(ex is InvalidDataException or ArgumentException)
+            {
+                logger.Error(ex, () =>
+                    $"Rejected malformed accounting share from {url}/{topic}");
+                return;
+            }
+        }
+        else if(!string.IsNullOrEmpty(share.AccountingId) || share.PairedShare != null)
+        {
+            logger.Error(() =>
+                $"Accounting share from {url}/{topic} used a legacy wire format");
             return;
         }
 

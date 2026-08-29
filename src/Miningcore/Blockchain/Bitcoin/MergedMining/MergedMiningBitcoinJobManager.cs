@@ -99,6 +99,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     private int candidatePreparations;
     private bool candidateOperationsQuiescing;
     private TaskCompletionSource<bool> candidateQuiescence;
+    private bool usesPairedAccounting;
 
     private bool MergedMiningEnabled => mergedMiningConfig?.Enabled == true;
 
@@ -116,8 +117,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(!string.Equals(parentCoin.Symbol, "LTC", StringComparison.OrdinalIgnoreCase))
             throw new PoolStartupException("Merged mining currently requires Litecoin as the parent chain", pc.Id);
 
-        if(pc.PaymentProcessing?.Enabled != true || pc.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO)
-            throw new PoolStartupException("Merged mining requires enabled SOLO payment processing on the parent pool", pc.Id);
+        EnsureSupportedMergedMiningPayout(pc, "parent");
 
         if(string.IsNullOrWhiteSpace(mergedMiningConfig.AuxPoolId))
             throw new PoolStartupException("mergedMining.auxPoolId is required", pc.Id);
@@ -141,9 +141,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(!string.Equals(auxiliaryCoin.Symbol, "DOGE", StringComparison.OrdinalIgnoreCase))
             throw new PoolStartupException("Merged mining currently requires Dogecoin as the auxiliary chain", pc.Id);
 
-        if(auxiliaryPoolConfig.PaymentProcessing?.Enabled != true ||
-            auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO)
-            throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' must use enabled SOLO payment processing", pc.Id);
+        EnsureSupportedMergedMiningPayout(auxiliaryPoolConfig, "auxiliary");
+        usesPairedAccounting = pc.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO ||
+            auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO;
 
         if(string.IsNullOrWhiteSpace(auxiliaryPoolConfig.Address))
             throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' requires a pool wallet address", pc.Id);
@@ -159,6 +159,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 "mergedMining.addressParameter must not be 'd' or contain ';' or '='",
                 pc.Id);
 
+        if(auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO &&
+           !mergedMiningConfig.RequireAuxAddress)
+            throw new PoolStartupException(
+                $"Auxiliary pool '{auxiliaryPoolConfig.Id}' uses {auxiliaryPoolConfig.PaymentProcessing.PayoutScheme}; mergedMining.requireAuxAddress must be true so every accepted proof has a payout beneficiary",
+                pc.Id);
+
         if(!mergedMiningConfig.RequireAuxAddress)
             logger.Warn(() => "Merged mining allows workers without a DOGE address; their auxiliary candidates will not be submitted because no SOLO beneficiary can be attributed");
 
@@ -170,6 +176,21 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         var serializerSettings = ctx.Resolve<JsonSerializerSettings>();
         auxiliaryRpc = new RpcClient(auxiliaryPoolConfig.Daemons.First(), serializerSettings,
             messageBus, auxiliaryPoolConfig.Id);
+    }
+
+    private static void EnsureSupportedMergedMiningPayout(PoolConfig pool,
+        string role)
+    {
+        if(pool.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                $"Merged-mining {role} pool '{pool.Id}' requires enabled payment processing",
+                pool.Id);
+
+        if(pool.PaymentProcessing.PayoutScheme is not (PayoutScheme.SOLO or
+               PayoutScheme.PPS or PayoutScheme.PROP or PayoutScheme.PPLNS))
+            throw new PoolStartupException(
+                $"Merged-mining {role} pool '{pool.Id}' must use SOLO, PPS, PROP or PPLNS payment processing",
+                pool.Id);
     }
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
@@ -639,6 +660,11 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             throw new StratumException(StratumError.Other, "invalid params");
 
         var context = worker.ContextAs<MergedMiningBitcoinWorkerContext>();
+        if(auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO &&
+           string.IsNullOrWhiteSpace(context.AuxiliaryMiner))
+            throw new StratumException(StratumError.UnauthorizedWorker,
+                "auxiliary payout address is required for pooled merged mining");
+
         var workerValue = (submitParams[0] as string)?.Trim();
         var jobId = submitParams[1] as string;
         var extraNonce2 = submitParams[2] as string;
@@ -674,6 +700,25 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         EnsureStatisticalShareSession(context, share, poolConfig.Id,
             share.IpAddress, now);
         share.Created = now;
+
+        // Preserve the established SOLO wire and database record exactly. The auxiliary
+        // beneficiary continues to live only on its independently durable block candidate.
+        if(usesPairedAccounting && !string.IsNullOrWhiteSpace(context.AuxiliaryMiner))
+        {
+            share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
+            share.AccountingRole = ShareAccountingRole.Parent;
+            share.PreserveCreated = true;
+            share.PairedShare = CreateAuxiliaryShareProjection(context, result,
+                share, now);
+        }
+        else if(usesPairedAccounting)
+        {
+            // Optional auxiliary attribution is retained only for legacy SOLO deployments.
+            // The parent still receives an idempotent single-chain accounting identity.
+            share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
+            share.AccountingRole = ShareAccountingRole.Single;
+            share.PreserveCreated = true;
+        }
 
         var hasCandidate = share.IsBlockCandidate || !string.IsNullOrEmpty(result.AuxPowHex);
         TaskCompletionSource<bool> candidateStart = null;
@@ -724,6 +769,55 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         MergedMiningBitcoinJob job, StratumConnection worker, string extraNonce2,
         string nTime, string nonce, string versionBits) =>
         job.ProcessShareMerged(worker, extraNonce2, nTime, nonce, versionBits);
+
+    internal Share CreateAuxiliaryShareProjection(
+        MergedMiningBitcoinWorkerContext context, MergedMiningShareResult result,
+        Share parent, DateTime created)
+    {
+        var parentMultiplier = parentCoin.ShareMultiplier;
+        var auxiliaryMultiplier = auxiliaryCoin.ShareMultiplier;
+        if(!double.IsFinite(parentMultiplier) || parentMultiplier <= 0 ||
+           !double.IsFinite(auxiliaryMultiplier) || auxiliaryMultiplier <= 0)
+            throw new InvalidDataException(
+                "Merged-mining templates require positive finite share multipliers");
+
+        decimal rewardSatoshis;
+        try
+        {
+            rewardSatoshis = result.AuxiliaryBlockTemplate.CoinbaseValue;
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Auxiliary reward basis exceeds the supported accounting range", ex);
+        }
+
+        if(rewardSatoshis <= 0 || rewardSatoshis != decimal.Truncate(rewardSatoshis) ||
+           rewardSatoshis > long.MaxValue)
+            throw new InvalidDataException(
+                "Auxiliary reward basis must be a positive whole-satoshi amount");
+
+        return new Share
+        {
+            PoolId = auxiliaryPoolConfig.Id,
+            Miner = context.AuxiliaryMiner,
+            Worker = parent.Worker,
+            UserAgent = parent.UserAgent,
+            IpAddress = parent.IpAddress,
+            Source = parent.Source,
+            Difficulty = parent.Difficulty * parentMultiplier / auxiliaryMultiplier,
+            ShareDifficulty = parent.ShareDifficulty,
+            ActualDifficulty = parent.ShareDifficulty / auxiliaryMultiplier,
+            SessionId = parent.SessionId,
+            PreserveCreated = true,
+            AccountingId = parent.AccountingId,
+            AccountingRole = ShareAccountingRole.Auxiliary,
+            RewardBasisSatoshis = (long) rewardSatoshis,
+            BlockHeight = result.AuxiliaryBlockTemplate.Height,
+            NetworkDifficulty = result.AuxiliaryDifficulty,
+            Created = created,
+        };
+    }
 
     internal CandidatePreparationLease BeginCandidatePreparation()
     {
@@ -1003,7 +1097,11 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             ShareDifficulty = share.ShareDifficulty,
             ActualDifficulty = share.ActualDifficulty,
             SessionId = share.SessionId,
-            PreserveCreated = share.IsBlockCandidate,
+            PreserveCreated = share.PreserveCreated || share.IsBlockCandidate,
+            AccountingId = share.AccountingId,
+            AccountingRole = share.AccountingRole,
+            RewardBasisSatoshis = share.RewardBasisSatoshis,
+            PairedShare = share.PairedShare,
             BlockHeight = share.BlockHeight,
             BlockReward = share.BlockReward,
             BlockRewardDouble = share.BlockRewardDouble,
@@ -1168,9 +1266,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         await blockCandidateRecorder.PersistBlockCandidateAsync(auxiliaryShare);
         if(uncertain)
-            logger.Warn(() => $"Auxiliary submission outcome for block {template.Height} [{template.Hash}] is uncertain; durable reconciliation queued for {context.AuxiliaryMiner}");
+            logger.Warn(() => $"Auxiliary submission outcome for block {template.Height} [{template.Hash}] is uncertain; durable reconciliation queued");
         else
-            logger.Info(() => $"Auxiliary daemon accepted block {template.Height} [{template.Hash}] submitted by {context.AuxiliaryMiner}; coinbase reconciliation queued");
+            logger.Info(() => $"Auxiliary daemon accepted block {template.Height} [{template.Hash}]; coinbase reconciliation queued");
 
         return accepted;
     }

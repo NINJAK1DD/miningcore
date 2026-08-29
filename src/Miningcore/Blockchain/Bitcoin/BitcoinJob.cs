@@ -874,6 +874,7 @@ public class BitcoinJob
 
     public BlockTemplate BlockTemplate { get; protected set; }
     public double Difficulty { get; protected set; }
+    public long RewardBasisSatoshis => rewardToPool.Satoshi;
 
     public string JobId { get; protected set; }
 

@@ -292,6 +292,15 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         share.Source = clusterConfig.ClusterName;
         share.Created = clock.Now;
 
+        if(poolConfig.PaymentProcessing?.Enabled == true &&
+           poolConfig.PaymentProcessing.PayoutScheme == PayoutScheme.PPS)
+        {
+            share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
+            share.AccountingRole = ShareAccountingRole.Single;
+            share.RewardBasisSatoshis = job.RewardBasisSatoshis;
+            share.PreserveCreated = true;
+        }
+
         // if block candidate, submit & check if accepted by network
         if(share.IsBlockCandidate)
         {

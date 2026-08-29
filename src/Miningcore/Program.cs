@@ -1170,7 +1170,10 @@ public class Program : ProcessStatusBackgroundService
 
             config.Validate(recoveryMode);
             if(!recoveryMode)
+            {
                 ValidateMergedMiningDeployment(config);
+                ValidatePpsDeployment(config);
+            }
 
             var listenerConflict = FindApiListenerStratumPortConflict(
                 config, recoveryMode);
@@ -1898,6 +1901,10 @@ public class Program : ProcessStatusBackgroundService
                 services.GetService<IBlockRepository>(), CancellationToken.None);
         }
 
+        await EnsureShareAccountingSchemaAsync(clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IShareRepository>(), CancellationToken.None);
+
         ZcashNetworks.Instance.EnsureRegistered();
 
         var messageBus = services.GetService<IMessageBus>();
@@ -2097,6 +2104,76 @@ public class Program : ProcessStatusBackgroundService
         return mergedMiningEnabled;
     }
 
+    internal static bool RequiresShareAccountingPersistence(ClusterConfig config)
+    {
+        if(config?.ShareRelay != null)
+            return false;
+
+        return config.Pools?.Any(pool => pool.Enabled &&
+            (MergedMiningUsesPooledAccounting(config, pool) ||
+             pool.PaymentProcessing?.Enabled == true &&
+             pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS)) == true;
+    }
+
+    private static bool MergedMiningUsesPooledAccounting(ClusterConfig config,
+        PoolConfig parent)
+    {
+        var merged = MergedMiningConfigLoader.GetNormalizedConfig(parent);
+        if(merged?.Enabled != true)
+            return false;
+
+        var auxiliary = config.Pools?.FirstOrDefault(pool =>
+            string.Equals(pool.Id, merged.AuxPoolId,
+                StringComparison.OrdinalIgnoreCase));
+        return parent.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO ||
+            auxiliary?.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO;
+    }
+
+    internal static void ValidatePpsDeployment(ClusterConfig config)
+    {
+        var ppsPools = config?.Pools?.Where(pool => pool.Enabled &&
+            pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS).ToArray() ??
+            Array.Empty<PoolConfig>();
+
+        foreach(var pool in ppsPools)
+        {
+            if(pool.Template?.Family != CoinFamily.Bitcoin)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS, which is currently supported only by the audited Bitcoin-family share and reward contract",
+                    pool.Id);
+
+            var recipients = pool.RewardRecipients ?? Array.Empty<RewardRecipient>();
+            if(recipients.Any(x => x == null || x.Percentage < 0))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS but contains a null or negative reward-recipient percentage",
+                    pool.Id);
+
+            decimal recipientPercent;
+            try
+            {
+                recipientPercent = recipients.Where(x => x.Percentage > 0)
+                    .Sum(x => x.Percentage);
+            }
+            catch(OverflowException ex)
+            {
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS but its reward-recipient percentages exceed the supported accounting range",
+                    pool.Id, ex);
+            }
+
+            if(recipientPercent >= 100)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS but reward recipients leave no positive operator-funded reward basis",
+                    pool.Id);
+        }
+
+        if(ppsPools.Length > 0 && config.ShareRelay == null &&
+           config.Persistence?.Postgres == null)
+            throw new PoolStartupException(
+                "PPS requires PostgreSQL so the share receipt, liability ledger, precision remainder and miner balance commit atomically.");
+    }
+
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
     {
         var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
@@ -2134,6 +2211,23 @@ public class Program : ProcessStatusBackgroundService
         if(!schemaReady)
             throw new PoolStartupException(
                 "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.");
+    }
+
+    internal static async Task EnsureShareAccountingSchemaAsync(ClusterConfig config,
+        IConnectionFactory cf, IShareRepository shareRepo, CancellationToken ct)
+    {
+        if(!RequiresShareAccountingPersistence(config))
+            return;
+
+        if(config.Persistence?.Postgres == null || cf == null || shareRepo == null)
+            throw new PoolStartupException(
+                "PPS and merged-mining pooled payouts require PostgreSQL share-accounting persistence.");
+
+        var schemaReady = await cf.Run(con =>
+            shareRepo.HasShareAccountingSchemaAsync(con, ct));
+        if(!schemaReady)
+            throw new PoolStartupException(
+                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql before enabling them.");
     }
 
     private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)

@@ -12,9 +12,16 @@ CREATE TABLE shares
 	worker TEXT NULL,
 	useragent TEXT NULL,
 	ipaddress TEXT NOT NULL,
-    source TEXT NULL,
+	source TEXT NULL,
 	sessionid TEXT NULL,
-	created TIMESTAMPTZ NOT NULL
+	accountingid UUID NULL,
+	accountingrole SMALLINT NULL,
+	rewardbasissatoshis BIGINT NULL,
+	created TIMESTAMPTZ NOT NULL,
+	CONSTRAINT CK_SHARES_ACCOUNTING_TUPLE CHECK(
+		(accountingid IS NULL AND accountingrole IS NULL AND rewardbasissatoshis IS NULL)
+		OR (accountingid IS NOT NULL AND accountingrole IN (1, 2, 3)
+			AND rewardbasissatoshis > 0))
 );
 
 CREATE INDEX IDX_SHARES_POOL_MINER on shares(poolid, miner);
@@ -25,6 +32,54 @@ CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SHAREDIFFICULTY on shares(poolid, mine
 CREATE INDEX IDX_SHARES_POOL_MINER_ACTUALDIFFICULTY on shares(poolid, miner, actualdifficulty);
 CREATE INDEX IDX_SHARES_POOL_MINER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,sessionid,actualdifficulty);
 CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,worker,sessionid,actualdifficulty);
+CREATE UNIQUE INDEX IDX_SHARES_POOL_ACCOUNTING ON shares(poolid, accountingid)
+    WHERE accountingid IS NOT NULL;
+
+CREATE TABLE share_accounting_groups
+(
+	accountingid UUID NOT NULL PRIMARY KEY,
+	projectioncount SMALLINT NOT NULL,
+	payloadhash CHAR(64) NOT NULL,
+	created TIMESTAMPTZ NOT NULL
+	,CONSTRAINT CK_SHARE_ACCOUNTING_PROJECTION_COUNT
+		CHECK(projectioncount IN (1, 2))
+	,CONSTRAINT CK_SHARE_ACCOUNTING_PAYLOAD_HASH
+		CHECK(payloadhash ~ '^[0-9A-F]{64}$')
+);
+
+ALTER TABLE shares ADD CONSTRAINT FK_SHARES_ACCOUNTING_GROUP
+	FOREIGN KEY(accountingid) REFERENCES share_accounting_groups(accountingid);
+
+CREATE TABLE pps_share_credits
+(
+	poolid TEXT NOT NULL,
+	accountingid UUID NOT NULL,
+	address TEXT NOT NULL,
+	calculatedamount DECIMAL(38,24) NOT NULL,
+	creditedamount DECIMAL(28,12) NOT NULL,
+	difficulty DOUBLE PRECISION NOT NULL,
+	networkdifficulty DOUBLE PRECISION NOT NULL,
+	rewardbasissatoshis BIGINT NOT NULL,
+	created TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY(poolid, accountingid),
+	FOREIGN KEY(accountingid) REFERENCES share_accounting_groups(accountingid),
+	CONSTRAINT CK_PPS_CALCULATED_AMOUNT CHECK(calculatedamount > 0),
+	CONSTRAINT CK_PPS_CREDITED_AMOUNT CHECK(creditedamount >= 0),
+	CONSTRAINT CK_PPS_DIFFICULTY CHECK(difficulty > 0),
+	CONSTRAINT CK_PPS_NETWORK_DIFFICULTY CHECK(networkdifficulty > 0),
+	CONSTRAINT CK_PPS_REWARD_BASIS CHECK(rewardbasissatoshis > 0)
+);
+
+CREATE TABLE pps_credit_remainders
+(
+	poolid TEXT NOT NULL,
+	address TEXT NOT NULL,
+	amount DECIMAL(38,24) NOT NULL,
+	updated TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY(poolid, address),
+	CONSTRAINT CK_PPS_REMAINDER_RANGE
+		CHECK(amount >= 0 AND amount < 0.000000000001)
+);
 
 CREATE TABLE share_recovery_imports
 (
