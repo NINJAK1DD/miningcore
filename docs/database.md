@@ -130,11 +130,14 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql
 ```
 
-The ownership migration assigns its three new tables to the owner of the current database. Confirm
-that this is the same role configured under `persistence.postgres.user` and inspect the resulting
-owners before restarting Miningcore:
+The ownership and share-accounting migrations assign their new tables to the owner of the current
+database. Confirm that this is the same role configured under `persistence.postgres.user` and
+inspect the resulting owners before restarting Miningcore:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore -c "
@@ -148,7 +151,10 @@ FROM pg_tables
 WHERE tablename IN (
   'share_recovery_imports',
   'payment_batches',
-  'payout_manager_ownership'
+  'payout_manager_ownership',
+  'share_accounting_groups',
+  'pps_share_credits',
+  'pps_credit_remainders'
 )
 ORDER BY schemaname, tablename;"
 ```
@@ -158,11 +164,24 @@ grant that application role the required table privileges before startup. Do not
 making the Miningcore runtime role a PostgreSQL superuser.
 
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
-recovery-only deployments using the `-rs` importer. The AuxPoW migration is required before enabling
-LTC/DOGE merged mining. Both scripts stop instead of guessing when legacy duplicates require manual
-review. Recovery mode validates the `share_recovery_imports` table, its required columns and its
+recovery-only deployments using the `-rs` importer. The AuxPoW and share-accounting migrations are
+required before enabling pooled LTC/DOGE merged mining; share accounting is not required by an
+unchanged SOLO/SOLO topology and is also required for direct Bitcoin-family PPS. All scripts stop
+instead of guessing when incompatible or duplicate state
+requires manual review. Recovery mode validates the `share_recovery_imports` table, its required columns and its
 immediate `filehash` primary key before scanning the journal, so a missing or stale migration fails
 early with an actionable message.
+
+`add_share_accounting.sql` is additive and transactional. Do not attempt a live rollback by dropping
+its tables or columns: they can contain PPS liabilities and replay evidence that are not reconstructible
+from blocks. To roll back the application, stop every writer and payout manager, preserve the current
+database, and restore the verified pre-migration backup into an isolated replacement database. Reconcile
+balances and any payments created after that backup before directing miners or wallets to the older
+version.
+
+The migration also adds a database check requiring accounting ID, role and reward basis to be
+either all absent or all valid, plus a foreign key from each identified share to its durable group
+manifest. This protects the pair even if a custom writer bypasses Miningcore's application checks.
 
 Merged-mining startup verifies its partial unique indexes. Payout processing uses PostgreSQL ownership
 and an idempotent payment ledger. Only a clean shutdown clears the durable owner token. After a crash:
@@ -937,7 +956,34 @@ SELECT poolid, address, amount, created
 FROM payments
 ORDER BY created DESC
 LIMIT 20;
+
+SELECT poolid, count(*) AS credits,
+       sum(calculatedamount) AS exact_pps_liability,
+       sum(creditedamount) AS posted_balance_amount
+FROM pps_share_credits
+GROUP BY poolid
+ORDER BY poolid;
+
+SELECT poolid, count(*) AS projected_shares,
+       count(DISTINCT accountingid) AS accounting_groups
+FROM shares
+WHERE accountingid IS NOT NULL
+GROUP BY poolid
+ORDER BY poolid;
+
+SELECT count(*) AS groups_with_partial_projection_sets
+FROM share_accounting_groups groups
+WHERE (SELECT count(*) FROM shares
+       WHERE shares.accountingid = groups.accountingid)
+      NOT IN (0, groups.projectioncount);
 ```
+
+The accounting group and PPS credit tables are durable replay evidence and are not ordinary share
+retention tables. Settled PROP/PPLNS/PPS share rows may be deleted by payout cleanup, so a healthy
+group has either every original projection or no remaining projections. Miningcore accepts both
+states on a retry and fails closed on a partial set. Do not delete `share_accounting_groups` or
+`pps_share_credits` as part of routine share retention; those records prevent a delayed relay or
+recovery replay from creating a second liability.
 
 Use these queries for inspection only. Never repair balances or payments with ad-hoc SQL.
 
@@ -1015,8 +1061,8 @@ RESET ROLE;
 ```
 
 Use your actual enabled pool IDs, not the examples. Create a partition before enabling any new
-pool later. An auxiliary DOGE block-only record does not create an ordinary share, but a DOGE pool
-that can accept direct miners still needs its own partition.
+pool later. Merged mining now creates one ordinary auxiliary projection for every attributed proof,
+so the auxiliary pool always needs a partition even when its direct Stratum listener is disabled.
 
 Miningcore now checks this during startup on direct recorder nodes, share-relay receivers and
 recovery imports. Normal startup checks enabled pool IDs; recovery checks every configured recovery

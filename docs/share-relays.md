@@ -11,6 +11,7 @@ guide before populating or deploying those files.
 ## Roles
 
 - A **relay sender** accepts miners and publishes validated ordinary shares through `shareRelay`.
+  Correlated merged-mining projections travel as one envelope, never two independent messages.
   It does not run the local ordinary-share recorder.
 - A **receiver/recorder** subscribes through `shareRelays`, writes ordinary shares to PostgreSQL and
   is normally the only payout/reconciliation owner.
@@ -36,6 +37,12 @@ The receiver's PostgreSQL queue and recovery journal protect shares only after t
 received them. Monitor the complete route and accept this loss boundary before using relays. Merged
 block candidates use separate synchronous PostgreSQL/recovery-journal persistence and are not
 delegated to ordinary PUB/SUB delivery.
+
+An accounting envelope is atomic only after the receiver commits it: transport loss can discard the
+whole envelope, but cannot commit one chain without the other. Upgrade and migrate receivers before
+senders, then stop old senders before enabling PPS or pooled merged mining. New senders use a new
+protobuf wire discriminator; old receivers reject it, and new receivers reject accounting fields in
+legacy frames. This is deliberately fail-closed rather than silently downgrading financial data.
 
 ## Recommended bind mode
 
@@ -119,8 +126,8 @@ startup. Database setup, migrations and recovery are covered by the [database gu
 5. Interrupt the relay port, verify monitoring detects the outage, restore it and confirm new shares
    resume without duplicates.
 6. Record explicitly that ordinary shares sent during the interruption were not replayed.
-7. If merged mining is enabled, separately verify synchronous parent/auxiliary block persistence and
-   the required database migrations.
+7. If merged mining is enabled, verify synchronous parent/auxiliary block persistence, one paired
+   ordinary envelope, the required migrations, and replay suppression at the receiver.
 
 The repository includes `scripts/regtest/validate-physical-relay.sh` for a final physical-path check.
 Its arguments and PostgreSQL environment variables are described in the

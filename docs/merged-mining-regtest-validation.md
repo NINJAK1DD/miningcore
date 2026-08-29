@@ -16,6 +16,22 @@ is not a promise that an arbitrary mainnet deployment is production-safe.
 The tests used distinct LTC and DOGE payout addresses and a real Scrypt GPU miner. Database checks
 were made against the same PostgreSQL instance used by the running payout manager.
 
+## Automated pooled-payout gate
+
+Current pull-request CI supplements the historical physical test with checksum-pinned official
+[Litecoin Core 0.21.5.5](https://download.litecoin.org/litecoin-0.21.5.5/) and
+[Dogecoin Core 1.14.9](https://github.com/dogecoin/dogecoin/releases/tag/v1.14.9) binaries. The
+workflow verifies SHA-256 before extraction, starts both real regtest daemons, mines independent
+coinbase rewards past each chain's maturity threshold, and derives the tested reward from the
+daemon's decoded coinbase transaction.
+
+`MergedMiningPayoutRegtestTests` then exercises SOLO, PROP and PPLNS balance creation for both mature
+rewards, commits direct Bitcoin-family PPS liabilities through the real PostgreSQL accounting
+ledger, replays each PPS identity, and verifies one credit plus a positive balance per pool. It also
+executes a mixed Litecoin PPLNS / Dogecoin PROP pairing. Focused proof-projection, candidate-outcome,
+relay, recovery and reorganisation tests cover the boundaries that do not require repeatedly mining
+another 220 daemon blocks.
+
 ## Results
 
 The evidence is listed by gate so each result remains readable on narrow screens. `Passed`

@@ -104,10 +104,14 @@
       "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 0.01,
-        "payoutScheme": "SOLO"
+        // Each chain independently supports SOLO, PPS, PROP or PPLNS.
+        "payoutScheme": "PPLNS",
+        "payoutSchemeConfig": {
+          "factor": 2.0
+        }
       },
-      // Before startup, apply add_auxpow_block_idempotency.sql and
-      // add_payout_manager_ownership.sql as documented in the merged-mining guide.
+      // Before startup, apply add_auxpow_block_idempotency.sql,
+      // add_payout_manager_ownership.sql and add_share_accounting.sql.
       "mergedMining": {
         "enabled": true,
         "auxPoolId": "dogecoin-solo",
@@ -154,7 +158,8 @@
       "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 1.0,
-        "payoutScheme": "SOLO"
+        // This intentionally differs from the parent to demonstrate independent ownership.
+        "payoutScheme": "PROP"
       }
     }
   ]

@@ -431,11 +431,13 @@ so concurrent producers cannot make the high-water mark miss a reached capacity.
 depth approaches capacity and on any increase in the overflow counter. A sustained non-zero
 emergency-journal depth requires investigation of PostgreSQL latency or primary-queue saturation.
 
-Litecoin-Dogecoin merged mining exports bounded RPC duration/outcome, fallback-episode, availability
-and degraded-state metrics. The authoritative metric contract, PromQL examples and timeout guidance
-are in the [merged-mining operations guide](merged-mining-litecoin-dogecoin.md#template-refresh).
-Review that guidance before changing `auxiliaryTemplatePollTimeoutMs`; increasing it can delay a
-new parent-chain job.
+Litecoin-Dogecoin merged mining exports bounded RPC duration/outcome, fallback-episode, availability,
+degraded-state, paired-projection, PPS liability, replay suppression and attribution-rejection
+metrics. Labels use configured pool IDs and fixed role/outcome values; they do not expose miner
+addresses or per-share accounting IDs. The authoritative metric contract, PromQL examples and timeout
+guidance are in the [merged-mining operations guide](merged-mining-litecoin-dogecoin.md#template-refresh).
+Review that guidance before changing `auxiliaryTemplatePollTimeoutMs`; increasing it can delay a new
+parent-chain job.
 
 ## Front ends and reverse proxies
 

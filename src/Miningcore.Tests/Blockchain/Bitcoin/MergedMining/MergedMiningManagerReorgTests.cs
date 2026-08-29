@@ -32,6 +32,80 @@ namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
 public class MergedMiningManagerReorgTests
 {
+    public static IEnumerable<object[]> SupportedPayoutPairs()
+    {
+        var schemes = new[]
+        {
+            PayoutScheme.SOLO,
+            PayoutScheme.PPS,
+            PayoutScheme.PROP,
+            PayoutScheme.PPLNS,
+        };
+
+        return from parent in schemes
+            from auxiliary in schemes
+            select new object[] { parent, auxiliary };
+    }
+
+    [Theory]
+    [MemberData(nameof(SupportedPayoutPairs))]
+    public void Configure_AcceptsEverySupportedIndependentPayoutPair(
+        PayoutScheme parentScheme, PayoutScheme auxiliaryScheme)
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var manager = new TestManager(container, Substitute.For<IMasterClock>(),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, auxiliary, cluster) = CreateConfig();
+        parent.PaymentProcessing.PayoutScheme = parentScheme;
+        auxiliary.PaymentProcessing.PayoutScheme = auxiliaryScheme;
+
+        manager.Configure(parent, cluster);
+    }
+
+    [Theory]
+    [InlineData(PayoutScheme.PPLNSBF)]
+    [InlineData(PayoutScheme.PPBS)]
+    public void Configure_RejectsUnreviewedMergedMiningPayoutSchemes(
+        PayoutScheme scheme)
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var manager = new TestManager(container, Substitute.For<IMasterClock>(),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, _, cluster) = CreateConfig();
+        parent.PaymentProcessing.PayoutScheme = scheme;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            manager.Configure(parent, cluster));
+
+        Assert.Contains("SOLO, PPS, PROP or PPLNS", error.Message);
+    }
+
+    [Fact]
+    public void Configure_NonSoloAuxiliaryRequiresAddressAttribution()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var manager = new TestManager(container, Substitute.For<IMasterClock>(),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, auxiliary, cluster) = CreateConfig();
+        auxiliary.PaymentProcessing.PayoutScheme = PayoutScheme.PPLNS;
+        ((IDictionary<string, object>) parent.Extra["mergedMining"])
+            ["requireAuxAddress"] = false;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            manager.Configure(parent, cluster));
+
+        Assert.Contains("requireAuxAddress must be true", error.Message);
+    }
+
     [Fact]
     public void StatisticalShare_IsClearedAndKeepsParentBoundaryTimestamp()
     {
@@ -119,6 +193,7 @@ public class MergedMiningManagerReorgTests
             Miner = validated.Miner,
             Worker = validated.Worker,
             UserAgent = "test-miner",
+            AuxiliaryMiner = "doge-miner",
         };
         var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
             "admission-job");
@@ -132,6 +207,11 @@ public class MergedMiningManagerReorgTests
         Assert.Same(validated, returned);
         Assert.NotSame(returned, published);
         Assert.True(returned.StatisticalRecordEmitted);
+        Assert.Null(returned.AccountingId);
+        Assert.Equal(ShareAccountingRole.None, returned.AccountingRole);
+        Assert.Null(returned.PairedShare);
+        Assert.Null(published.AccountingId);
+        Assert.Null(published.PairedShare);
         Assert.Same(admission.Task, returned.PersistenceAdmission);
         Assert.False(returned.PersistenceAdmission.IsCompleted);
         admission.TrySetResult();

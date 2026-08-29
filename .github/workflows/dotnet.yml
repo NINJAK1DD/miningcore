@@ -133,6 +133,37 @@ jobs:
 
         echo "MININGCORE_TEST_BITCOIND=$install_root/bin/bitcoind" >> "$GITHUB_ENV"
 
+    - name: Install pinned Litecoin and Dogecoin regtest dependencies
+      shell: bash
+      env:
+        LITECOIN_CORE_VERSION: 0.21.5.5
+        LITECOIN_CORE_SHA256: 623410d4f2695a68aa71332ae0672fee19276f41c1c63a531f97e24a50edde14
+        DOGECOIN_CORE_VERSION: 1.14.9
+        DOGECOIN_CORE_SHA256: 4f227117b411a7c98622c970986e27bcfc3f547a72bef65e7d9e82989175d4f8
+      run: |
+        set -euo pipefail
+
+        litecoin_archive="litecoin-${LITECOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz"
+        dogecoin_archive="dogecoin-${DOGECOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz"
+        litecoin_path="$RUNNER_TEMP/$litecoin_archive"
+        dogecoin_path="$RUNNER_TEMP/$dogecoin_archive"
+
+        curl --fail --location --retry 3 --output "$litecoin_path" \
+          "https://download.litecoin.org/litecoin-${LITECOIN_CORE_VERSION}/linux/$litecoin_archive"
+        curl --fail --location --retry 3 --output "$dogecoin_path" \
+          "https://github.com/dogecoin/dogecoin/releases/download/v${DOGECOIN_CORE_VERSION}/$dogecoin_archive"
+        echo "$LITECOIN_CORE_SHA256  $litecoin_path" | sha256sum --check --strict
+        echo "$DOGECOIN_CORE_SHA256  $dogecoin_path" | sha256sum --check --strict
+        tar -xzf "$litecoin_path" -C "$RUNNER_TEMP"
+        tar -xzf "$dogecoin_path" -C "$RUNNER_TEMP"
+
+        litecoind="$RUNNER_TEMP/litecoin-${LITECOIN_CORE_VERSION}/bin/litecoind"
+        dogecoind="$RUNNER_TEMP/dogecoin-${DOGECOIN_CORE_VERSION}/bin/dogecoind"
+        test -x "$litecoind"
+        test -x "$dogecoind"
+        echo "MININGCORE_TEST_LITECOIND=$litecoind" >> "$GITHUB_ENV"
+        echo "MININGCORE_TEST_DOGECOIND=$dogecoind" >> "$GITHUB_ENV"
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:

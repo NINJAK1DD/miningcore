@@ -45,7 +45,7 @@ public class SharePartitionIntegrationTests
                 SELECT count(*)
                 FROM pg_inherits
                 WHERE inhparent = to_regclass('shares')"));
-            Assert.Equal(7, await connection.ExecuteScalarAsync<int>(@"
+            Assert.Equal(8, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
                 FROM pg_indexes
                 WHERE schemaname = current_schema()

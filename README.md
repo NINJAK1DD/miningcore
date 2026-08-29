@@ -24,7 +24,7 @@ the original authors and contributors.
 - Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json)
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
-- SOLO, PPLNS and PROP payout schemes where supported by the selected coin.
+- SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
@@ -34,7 +34,8 @@ the original authors and contributors.
   and dedicated Prometheus listeners.
 - Typed public API projections that keep wallet credentials and listener secrets out of responses.
 - Integrated banning, TLS options, native log rotation and administrative notifications.
-- Litecoin parent-chain and Dogecoin AuxPoW merged mining for SOLO pools.
+- Litecoin parent-chain and Dogecoin AuxPoW merged mining with independently selected SOLO, PPS,
+  PROP or PPLNS accounting per pool.
 - Versioned Ubuntu release archives, non-root containers and source-build paths.
 
 ## Quick start
@@ -100,8 +101,10 @@ references.
 ## Litecoin–Dogecoin merged mining
 
 Merged mining exposes the Litecoin Stratum endpoint to miners and submits qualifying copies of the
-same Scrypt proof to Dogecoin. It is **SOLO-only**: both pools must be enabled, use `SOLO` payment
-processing, and have their own payout wallet address.
+same Scrypt proof to Dogecoin. Both pools must be enabled and have their own payout wallet address.
+Each independently selects `SOLO`, `PPS`, `PROP` or `PPLNS`; mixed combinations are supported.
+Non-SOLO Dogecoin accounting requires `requireAuxAddress: true`. PPS transfers block variance and
+liquidity risk to the operator, so read the reserve and migration guidance before enabling it.
 
 The Litecoin pool points to the Dogecoin pool with this block:
 
@@ -398,6 +401,12 @@ a remote database, use a dedicated backup role with read and lock access to ever
 > `add_payout_manager_ownership.sql` before starting the upgraded binary. Recovery-only nodes that
 > use `-rs` require the same migration. Missing ownership/idempotency schema fails startup with the
 > migration filename instead of running payouts without protection.
+
+Pooled merged-mining and direct Bitcoin-family PPS deployments also require
+`add_share_accounting.sql`. Existing SOLO/SOLO merged mining retains its established share record
+and does not require that additional migration.
+It creates the paired-share identity and PPS liability ledger; do not enable either feature until
+the migration and startup preflight succeed.
 
 For an existing database, stop writers and payout managers before applying the migrations required by
 the target release. The [database and upgrade guide](docs/database.md) gives the exact commands, restore

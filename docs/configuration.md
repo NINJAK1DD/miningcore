@@ -442,7 +442,8 @@ implementations.
 
 ## LTC/DOGE merged mining
 
-Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled and use `SOLO`. The parent
+Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled. Each independently uses
+one of `SOLO`, `PPS`, `PROP` or `PPLNS`; unsupported schemes fail before listeners open. The parent
 pool contains:
 
 ```json
@@ -457,8 +458,9 @@ pool contains:
 
 `auxPoolId` must exactly match the Dogecoin pool `id`. `addressParameter` controls the password name;
 the recommended default is `doge`. `requireAuxAddress: true` rejects miners that omit a DOGE payout
-address. The template poll timeout is milliseconds and may be raised for a healthy but slower local
-daemon.
+address and is mandatory whenever Dogecoin is not SOLO. The template poll timeout is milliseconds
+and may be raised for a healthy but slower local daemon. Apply the three migrations and read the
+[merged-mining accounting guide](merged-mining-litecoin-dogecoin.md) before enabling pooled payouts.
 
 Miner examples:
 

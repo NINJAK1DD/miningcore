@@ -44,6 +44,27 @@ copying a recovery command from the maintainer section.
 
 ## Unreleased changes
 
+### Pooled Litecoin–Dogecoin merged-mining accounting and PPS
+
+Litecoin/Dogecoin merged mining now supports independently selected `SOLO`, `PPS`, `PROP` and
+`PPLNS` schemes. One accepted proof is carried as a correlated parent/auxiliary envelope and
+committed transactionally, so cancellation, relay, recovery or database failure cannot credit only
+one chain. Unsupported `PPBS` and `PPLNSBF` combinations still fail before Stratum listeners open.
+
+A production Bitcoin-family PPS implementation creates `(1 - fee) * difficulty / networkDifficulty
+* spendableTemplateReward` liability at valid-share commit time. Exact 24-decimal credits,
+12-decimal posted balances and per-miner remainders are idempotent across retry and recovery.
+Confirmed blocks never double-credit PPS, while stale/orphaned blocks never reverse it; operators
+therefore assume block variance, reorg, wallet, liquidity and insolvency risk.
+
+Existing databases must apply `add_share_accounting.sql` in addition to the prior AuxPoW and payout
+ownership migrations before starting pooled merged mining or direct PPS. Existing SOLO/SOLO
+topologies retain their established one-share record and do not require this new migration.
+Receiver/recorder nodes must be
+upgraded and migrated before relay senders because paired accounting uses a new fail-closed wire
+format. See the [merged-mining guide](merged-mining-litecoin-dogecoin.md),
+[database runbook](database.md#upgrade-an-existing-database), and updated mixed-scheme example.
+
 ### Source-verified Bitcoin-family version rolling
 
 Bitcoin-family templates can now declare an explicit source-reviewed `versionRollingMask` and a

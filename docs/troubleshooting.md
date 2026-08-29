@@ -83,6 +83,19 @@ An active process alone does not prove mining or payouts are healthy.
   [Bitcoin-family payout reconciliation](database.md#reconcile-a-bitcoin-family-payout).
 - **`Auxiliary template update failed`.** Confirm whether recovery followed; inspect DOGE sync, RPC
   pressure and auxiliary metrics before changing the timeout. See [template refresh](merged-mining-litecoin-dogecoin.md#template-refresh).
+- **Startup says the share-accounting schema is missing or malformed.** Keep listeners offline,
+  verify the intended database/search path and apply `add_share_accounting.sql` during a maintenance
+  window. Do not create lookalike tables or disable preflight. See
+  [database upgrades](database.md#upgrade-an-existing-database).
+- **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
+  reason to edit balances. Check the reserve, exact PPS ledger, remainder table and bounded
+  liability/replay metrics. See [PPS liability contract](merged-mining-litecoin-dogecoin.md#pps-liability-contract).
+- **Merged miners are rejected for missing DOGE attribution.** Non-SOLO auxiliary pools require
+  `requireAuxAddress: true` and a daemon-validated `doge=` address. Check the bounded attribution
+  rejection metric; never substitute the pool wallet as a beneficiary.
+- **Accounting relay format is unsupported.** Upgrade and migrate receivers first, stop old senders,
+  then upgrade senders. Do not enable pooled merged mining during a mixed-version window. See
+  [relay database boundary](merged-mining-litecoin-dogecoin.md#relay-database-boundary).
 - **Relay receiver is unavailable.** Restore the route and receiver; ordinary PUB/SUB shares sent
   during the outage are not replayed. See [share-relay durability](share-relays.md#durability-boundary).
 - **Logs consume unexpected space.** Inspect Miningcore's native archives and remove conflicting
@@ -185,9 +198,11 @@ Preserve these identities privately before taking action:
 - payment-batch identity and abbreviated wallet transaction ID; and
 - the service-journal time range covering submission and persistence.
 
-Compare the wallet, `blocks`, `balances`, `payments`, `payment_batches` and
-`payout_manager_ownership` records through the documented reconciliation procedure. Never infer
-failure only from a missing HTTP response or email notification.
+Compare the wallet, `blocks`, `balances`, `payments`, `payment_batches`,
+`payout_manager_ownership`, `share_accounting_groups`, `pps_share_credits` and
+`pps_credit_remainders` records through the documented reconciliation procedure. Never infer
+failure only from a missing HTTP response or email notification. Do not delete an accounting group
+to retry it: its UUID and payload hash are the exactly-once evidence.
 
 ## Collecting shareable evidence
 
