@@ -382,6 +382,18 @@ public class BitcoinJobTests : TestBase
     }
 
     [Fact]
+    public void Process_CoinSpecificMaskRejectsClippedConsensusBits()
+    {
+        var (job, worker) = CreateJob(0.000000000001d);
+        worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x00002000;
+
+        var ex = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
+            "01000000", "63445774", "51036775", "00004000"));
+
+        Assert.Contains("rolling-version mask violation", ex.Message);
+    }
+
+    [Fact]
     public void Process_VersionRollingTreatsDifferentBitsAsDifferentWork()
     {
         var (job, worker) = CreateJob(0.000000000001d);
