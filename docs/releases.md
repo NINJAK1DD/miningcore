@@ -34,7 +34,7 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Existing RC.12 operator | [RC.13 highlights](#rc13-highlights) |
+| Existing release-candidate operator | [v0.1.0 highlights](#v010-highlights) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
@@ -42,7 +42,10 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Unreleased changes
+## v0.1.0 highlights
+
+`v0.1.0` is the first stable release of this fork. It includes the complete RC.13 baseline below,
+plus the audited Scrypt catalogue and chain-ID safeguards added during the final soak cycle.
 
 - Eleven researched Bitcoin-family Scrypt definitions add direct and hybrid daemon contracts.
   Independent vectors pin Scrypt and XCCX block identity; serialization tests cover MWEB and the
@@ -97,10 +100,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.1.0-rc.13`. Substitute the version you selected.
+The examples below use `v0.1.0`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.13
+export MININGCORE_VERSION=v0.1.0
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -374,7 +377,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.13  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.1.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1288,7 +1291,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0-rc.13  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.1.0  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1351,7 +1354,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.1.0-rc.13
+export TAG=v0.1.0
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

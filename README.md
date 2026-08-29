@@ -210,7 +210,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.1.0-rc.13  # Replace with the release you selected.
+MININGCORE_VERSION=v0.1.0  # Replace with the release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -220,7 +220,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 ```console
-MININGCORE_VERSION=v0.1.0-rc.13  # Replace with the release you selected.
+MININGCORE_VERSION=v0.1.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \
