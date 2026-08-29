@@ -74,7 +74,10 @@ jobs:
     # Docker supplies the Ubuntu 26.04 userspace under test. Stable orchestration
     # avoids coupling a generic container job to preview-runner capacity.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A clean source-container build can exceed 30 minutes when hosted-runner
+    # CPU allocation is constrained; retain a bounded budget without cancelling
+    # successful runtime checks during job cleanup.
+    timeout-minutes: 45
     permissions:
       contents: read
 
