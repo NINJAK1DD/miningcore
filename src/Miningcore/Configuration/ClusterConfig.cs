@@ -309,13 +309,14 @@ public partial class BitcoinTemplate : CoinTemplate
     /// When omitted, ordinary Bitcoin-family templates retain Miningcore's
     /// default mask.
     /// </summary>
-    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [JsonProperty("versionRollingMask",
+        NullValueHandling = NullValueHandling.Ignore)]
     [JsonConverter(typeof(HexToIntegralTypeJsonConverter<uint?>))]
-    public uint? VersionRollingMask { get; set; }
+    public uint? AllowedVersionRollingMask { get; set; }
 
     /// <summary>
     /// Block-version bits reserved by this coin's consensus implementation.
-    /// This documents and validates the boundary of VersionRollingMask.
+    /// This documents and validates the boundary of AllowedVersionRollingMask.
     /// </summary>
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     [JsonConverter(typeof(HexToIntegralTypeJsonConverter<uint?>))]

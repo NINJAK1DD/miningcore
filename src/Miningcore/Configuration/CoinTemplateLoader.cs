@@ -57,9 +57,16 @@ public static class CoinTemplateLoader
                 $"'{propertyName}'");
         }
 
+        if(property.Value.Type != JTokenType.String)
+        {
+            throw VersionRollingError(filename, coinId,
+                $"property '{propertyName}' must be an eight-digit hexadecimal " +
+                "string such as '0x1fffe000'");
+        }
+
         var value = property.Value.Value<string>();
 
-        if(property.Value.Type != JTokenType.String || value?.Length != 10 ||
+        if(value?.Length != 10 ||
            !value.StartsWith("0x", StringComparison.Ordinal) ||
            !uint.TryParse(value.AsSpan(2),
                System.Globalization.NumberStyles.AllowHexSpecifier,
@@ -74,7 +81,7 @@ public static class CoinTemplateLoader
     private static void ValidateVersionRollingContract(string filename,
         string coinId, BitcoinTemplate template)
     {
-        var allowedMask = template.VersionRollingMask;
+        var allowedMask = template.AllowedVersionRollingMask;
         var consensusMask = template.VersionRollingConsensusMask;
 
         if(template.DisableVersionRolling && allowedMask.HasValue)
@@ -154,32 +161,35 @@ public static class CoinTemplateLoader
             if(o.Value.Type != JTokenType.Object)
                 throw new PoolStartupException("Invalid coin-template file: dictionary of coin-templates expected");
 
-            RejectUnsupportedMetadata(filename, o.Key, o.Value);
-
             var templateObject = (JObject) o.Value;
-            ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
-                VersionRollingMaskProperty);
-            ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
-                VersionRollingConsensusMaskProperty);
+            RejectUnsupportedMetadata(filename, o.Key, templateObject);
 
             var value = o.Value[nameof(CoinTemplate.Family).ToLower()];
             if(value == null)
                 throw new PoolStartupException($"Invalid coin-template '{o.Key}': missing 'family' property");
 
             var family = value.ToObject<CoinFamily>();
-            var result = (CoinTemplate) o.Value.ToObject(CoinTemplate.Families[family]);
+            var hasVersionRollingMasks = templateObject.Properties().Any(x =>
+                string.Equals(x.Name, VersionRollingMaskProperty,
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(x.Name, VersionRollingConsensusMaskProperty,
+                    StringComparison.OrdinalIgnoreCase));
 
-            if(result is BitcoinTemplate bitcoinTemplate)
-                ValidateVersionRollingContract(filename, o.Key, bitcoinTemplate);
-            else if(templateObject.Properties().Any(x =>
-                        string.Equals(x.Name, VersionRollingMaskProperty,
-                            StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(x.Name, VersionRollingConsensusMaskProperty,
-                            StringComparison.OrdinalIgnoreCase)))
+            if(family != CoinFamily.Bitcoin && hasVersionRollingMasks)
             {
                 throw VersionRollingError(filename, o.Key,
                     "version-rolling masks are supported only by Bitcoin-family templates");
             }
+
+            ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
+                VersionRollingMaskProperty);
+            ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
+                VersionRollingConsensusMaskProperty);
+
+            var result = (CoinTemplate) o.Value.ToObject(CoinTemplate.Families[family]);
+
+            if(result is BitcoinTemplate bitcoinTemplate)
+                ValidateVersionRollingContract(filename, o.Key, bitcoinTemplate);
 
             ctx.InjectProperties(result);
 

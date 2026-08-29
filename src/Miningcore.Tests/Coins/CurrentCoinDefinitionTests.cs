@@ -175,7 +175,7 @@ public class CurrentCoinDefinitionTests : TestBase
                 ["versionRollingConsensusMask"] = "0x0000c000",
             }));
 
-        Assert.Equal(0x1fff2000u, template.VersionRollingMask);
+        Assert.Equal(0x1fff2000u, template.AllowedVersionRollingMask);
         Assert.Equal(0x0000c000u, template.VersionRollingConsensusMask);
     }
 
@@ -186,6 +186,8 @@ public class CurrentCoinDefinitionTests : TestBase
         null, null, "outside")]
     [InlineData("versionRollingMask", "0x00000000",
         null, null, "nonzero")]
+    [InlineData("versionRollingConsensusMask", "0x00000000",
+        "disableVersionRolling", "true", "nonzero")]
     [InlineData("versionRollingConsensusMask", "0x0000c000",
         null, null, "requires")]
     public void Loader_RejectsUnsafeVersionRollingContracts(string firstName,
@@ -195,7 +197,12 @@ public class CurrentCoinDefinitionTests : TestBase
         var properties = new JObject { [firstName] = firstValue };
 
         if(secondName != null)
-            properties[secondName] = secondValue;
+        {
+            properties[secondName] = bool.TryParse(secondValue,
+                out var booleanValue)
+                ? booleanValue
+                : secondValue;
+        }
 
         var ex = Assert.Throws<PoolStartupException>(() =>
             LoadVersionRollingTemplate(properties));
@@ -241,6 +248,47 @@ public class CurrentCoinDefinitionTests : TestBase
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("versionRollingMask", false)]
+    [InlineData("versionRollingMask", true)]
+    [InlineData("versionRollingConsensusMask", false)]
+    [InlineData("versionRollingConsensusMask", true)]
+    public void Loader_RejectsStructuredVersionRollingMaskWithNamedDiagnostic(
+        string propertyName, bool arrayValue)
+    {
+        var path = Path.GetTempFileName();
+        var template = new JObject
+        {
+            ["name"] = "Version Rolling Test",
+            ["symbol"] = "VRT",
+            ["family"] = "bitcoin",
+            [propertyName] = arrayValue ? new JArray() : new JObject(),
+        };
+
+        try
+        {
+            File.WriteAllText(path, new JObject
+            {
+                ["version-rolling-test"] = template,
+            }.ToString());
+
+            var ex = Assert.Throws<PoolStartupException>(() =>
+                CoinTemplateLoader.Load(container, new[] { path }));
+
+            Assert.Contains("version-rolling-test", ex.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(path, ex.Message, StringComparison.Ordinal);
+            Assert.Contains(propertyName, ex.Message, StringComparison.Ordinal);
+            Assert.Contains("eight-digit", ex.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.IsNotType<InvalidCastException>(ex.InnerException);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void Loader_RejectsCaseVariantVersionRollingMaskDuplicates()
     {
@@ -262,6 +310,19 @@ public class CurrentCoinDefinitionTests : TestBase
             LoadVersionRollingTemplate(new JObject
             {
                 ["versionRollingMask"] = "0x1fffe000",
+            }, "equihash"));
+
+        Assert.Contains("only by Bitcoin-family", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Loader_PrioritizesFamilyDiagnosticForStructuredForeignMask()
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadVersionRollingTemplate(new JObject
+            {
+                ["versionRollingMask"] = new JObject(),
             }, "equihash"));
 
         Assert.Contains("only by Bitcoin-family", ex.Message,

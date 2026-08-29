@@ -336,7 +336,8 @@ Bitcoin-family version rolling is a per-template capability. Strict-chain-ID tem
 `disableVersionRolling: true`; reviewed ordinary templates may declare `versionRollingMask`, and
 `versionRollingConsensusMask` records bits that must never be miner-controlled. Miningcore
 validates these fields before opening listeners and intersects miner requests with the pool-owned
-mask. See
+mask. The absence of all three fields retains the compatibility default; it is not evidence that a
+custom template has received a source audit. See
 [Bitcoin-family version rolling](version-rolling.md) before editing a custom template.
 
 Native proof validation can consume substantial CPU and memory:

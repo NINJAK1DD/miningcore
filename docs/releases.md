@@ -50,9 +50,12 @@ Bitcoin-family templates can now declare an explicit source-reviewed `versionRol
 disjoint `versionRollingConsensusMask`. Template loading rejects malformed, zero, oversized,
 contradictory and overlapping masks before listeners open; miner requests can only narrow the
 pool-owned mask. Lucky Bit joins the strict-chain-ID disabled set, PepePow excludes its two
-consensus algorithm bits, PACcoin remains conservatively disabled because authoritative source is
-unavailable, and reviewed ordinary candidates retain the standard mask. A Bitcoin Core regtest
-integration test mines and submits a rolled header through the real daemon boundary. See the
+consensus algorithm bits, and Verge and ButKoin exclude the upper two bits of their multi-algorithm
+selectors. DigiByte, Auroracoin and Smileycoin record selectors that remain entirely below the
+standard mask. PACcoin remains conservatively disabled because authoritative source is unavailable.
+Malformed miner masks now receive a BIP310 negotiation error rather than an unexplained disconnect.
+A Bitcoin Core regtest integration test preserves a restricted consensus bit while mining and
+submitting a rolled header through the real daemon boundary. See the
 [version-rolling audit](version-rolling.md).
 
 ### Coin-template `blockSerializer` compatibility
