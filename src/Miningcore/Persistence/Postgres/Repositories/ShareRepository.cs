@@ -86,7 +86,7 @@ public class ShareRepository : IShareRepository
                   AND index_record.indisready
                   AND index_record.indnkeyatts = 2
                   AND ARRAY(
-                      SELECT attribute.attname
+                      SELECT attribute.attname::text
                       FROM unnest(index_record.indkey)
                            WITH ORDINALITY key(attnum, position)
                       JOIN pg_attribute attribute

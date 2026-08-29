@@ -37,10 +37,21 @@ CREATE TABLE shares
 	CONSTRAINT CK_SHARES_ACCOUNTING_TUPLE CHECK(
 		(accountingid IS NULL AND accountingrole IS NULL AND rewardbasissatoshis IS NULL)
 		OR (accountingid IS NOT NULL AND accountingrole IN (1, 2, 3)
-			AND rewardbasissatoshis > 0)),
-	CONSTRAINT FK_SHARES_ACCOUNTING_GROUP FOREIGN KEY(accountingid)
-		REFERENCES share_accounting_groups(accountingid)
+			AND rewardbasissatoshis > 0))
 ) PARTITION BY LIST (poolid);
+
+-- The partition appendix remains usable by legacy SOLO installations that have not enabled
+-- share accounting. If the receipt table already exists, preserve the exact foreign-key contract;
+-- otherwise add_share_accounting.sql installs it later in the same transaction as the migration.
+DO $$
+BEGIN
+	IF to_regclass('share_accounting_groups') IS NOT NULL THEN
+		ALTER TABLE shares ADD CONSTRAINT FK_SHARES_ACCOUNTING_GROUP
+			FOREIGN KEY(accountingid)
+			REFERENCES share_accounting_groups(accountingid);
+	END IF;
+END
+$$;
 
 CREATE INDEX IDX_SHARES_CREATED ON shares(created);
 CREATE INDEX IDX_SHARES_MINER_DIFFICULTY ON shares(miner, difficulty);

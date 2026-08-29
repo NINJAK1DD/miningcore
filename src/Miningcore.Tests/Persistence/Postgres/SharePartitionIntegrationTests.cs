@@ -50,6 +50,21 @@ public class SharePartitionIntegrationTests
                 FROM pg_indexes
                 WHERE schemaname = current_schema()
                   AND tablename = 'shares'"));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(@"
+                SELECT count(*) FROM pg_constraint
+                WHERE conrelid = to_regclass('shares')
+                  AND conname = 'fk_shares_accounting_group'"));
+
+            await connection.ExecuteAsync(@"
+                CREATE TABLE share_accounting_groups(
+                    accountingid uuid PRIMARY KEY);
+            ");
+            await connection.ExecuteAsync(script);
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(@"
+                SELECT count(*) FROM pg_constraint
+                WHERE conrelid = to_regclass('shares')
+                  AND conname = 'fk_shares_accounting_group'
+                  AND contype = 'f' AND convalidated"));
         }
         finally
         {
