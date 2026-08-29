@@ -77,20 +77,20 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the RC.13 release example' \
-  'export MININGCORE_VERSION=v0.1.0-rc.13' "$document"
-assert_file_contains 'the RC.13 container example' \
-  'MININGCORE_VERSION=v0.1.0-rc.13' "$readme"
+assert_file_contains 'the stable release example' \
+  'export MININGCORE_VERSION=v0.1.0' "$document"
+assert_file_contains 'the stable container example' \
+  'MININGCORE_VERSION=v0.1.0' "$readme"
 assert_file_contains 'the concise source-build progress contract' \
   "Interactive builds retain .NET's concise progress and elapsed-time display" "$readme"
 assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the RC.13 recovery example' \
-  'export TAG=v0.1.0-rc.13'
-assert_contains 'the RC.13 tagging example' \
-  'NEXT_VERSION=v0.1.0-rc.13'
+assert_contains 'the stable recovery example' \
+  'export TAG=v0.1.0'
+assert_contains 'the stable tagging example' \
+  'NEXT_VERSION=v0.1.0'
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
@@ -268,6 +268,18 @@ for stale_version in v0.1.0-rc.9 v0.1.0-rc.10 v0.1.0-rc.11 v0.1.0-rc.12; do
     exit 1
   fi
 done
+
+if grep -Fq 'v0.1.0-rc.13' "$readme"; then
+  echo 'README still recommends the RC.13 candidate instead of the stable release' >&2
+  exit 1
+fi
+
+if grep -Eq \
+    '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.1\.0-rc\.13([[:space:]]|$)' \
+    "$document"; then
+  echo 'Release guide still contains a copy-paste RC.13 assignment' >&2
+  exit 1
+fi
 
 recovery_section=$(awk '
   /^### Recover an interrupted publication$/ { capture = 1 }
