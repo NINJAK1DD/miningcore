@@ -42,6 +42,21 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased changes
+
+### Coin-template `blockSerializer` compatibility
+
+The public `BitcoinTemplate.BlockSerializer` property has been removed because no production code
+or supported extension used it to select block serialization. Operator-supplied coin-template files
+that contain `blockSerializer`, including case variants, now fail startup with a targeted diagnostic
+instead of appearing to configure behavior that Miningcore ignores.
+
+This is a source-compatibility change for external code compiled directly against that property and
+a configuration-compatibility change for custom template files containing the stale key. Remove the
+field only when the coin uses Miningcore's standard family serializer. A coin that requires
+non-standard block framing needs a typed implementation with construction, submission and
+daemon-backed serialization tests; renaming or discarding the field is not a substitute.
+
 ## v0.1.0 highlights
 
 `v0.1.0` is the first stable release of this fork. It includes the complete RC.13 baseline below,

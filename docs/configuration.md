@@ -325,6 +325,13 @@ directory, validate every changed network and hashing field, and retest them aft
 Duplicate properties inside one file are rejected; an intentional definition in a later file can
 replace one loaded earlier.
 
+`blockSerializer` is not a supported coin-template field. Earlier releases exposed a public
+`BitcoinTemplate.BlockSerializer` property but no production path read it, so setting it never
+changed block wire serialization. Template loading now rejects the property case-insensitively
+instead of silently retaining or discarding it. Remove the field only when the coin uses
+Miningcore's standard family serializer; a coin that requires different block framing needs an
+explicit typed implementation and serialization tests before it is safe to enable.
+
 Definitions whose reviewed daemons enforce consensus chain identifiers in upper version bits set
 `disableVersionRolling: true`. The current audited set is Dogecoin, Cyberyen, Bells and Namecoin.
 Miningcore then declines Stratum version-rolling negotiation and preserves the daemon-provided

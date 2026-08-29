@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using Miningcore.Configuration;
@@ -112,6 +113,55 @@ public class CurrentCoinDefinitionTests : TestBase
         {
             File.Delete(path);
         }
+    }
+
+    [Theory]
+    [InlineData("blockSerializer", false)]
+    [InlineData("BlockSerializer", true)]
+    [InlineData("BLOCKSERIALIZER", false)]
+    public void Loader_RejectsInertBlockSerializerMetadata(string propertyName,
+        bool nullValue)
+    {
+        var path = Path.GetTempFileName();
+        var document = new JObject
+        {
+            ["inert-template"] = new JObject
+            {
+                ["name"] = "Inert Template",
+                ["symbol"] = "INERT",
+                ["family"] = "bitcoin",
+                [propertyName] = nullValue
+                    ? JValue.CreateNull()
+                    : JValue.CreateString("legacy"),
+            },
+        };
+
+        try
+        {
+            File.WriteAllText(path, document.ToString());
+
+            var ex = Assert.Throws<PoolStartupException>(() =>
+                CoinTemplateLoader.Load(container, new[] { path }));
+
+            Assert.Contains("inert-template", ex.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(path, ex.Message, StringComparison.Ordinal);
+            Assert.Contains(propertyName, ex.Message, StringComparison.Ordinal);
+            Assert.Contains("unsupported", ex.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("no runtime effect", ex.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void BitcoinTemplate_DoesNotExposeInertBlockSerializerProperty()
+    {
+        Assert.Null(typeof(BitcoinTemplate).GetProperty("BlockSerializer"));
     }
 
     [Fact]
