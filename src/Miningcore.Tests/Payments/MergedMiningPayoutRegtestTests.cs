@@ -119,7 +119,7 @@ public class MergedMiningPayoutRegtestTests
             .Returns(call =>
             {
                 credits.Add(call.ArgAt<decimal>(4));
-                return Task.CompletedTask;
+                return Task.FromResult(1);
             });
         shareRepository.CountSharesByMinerAsync(writeConnection, transaction,
                 poolId, block.Miner, Arg.Any<CancellationToken>())
