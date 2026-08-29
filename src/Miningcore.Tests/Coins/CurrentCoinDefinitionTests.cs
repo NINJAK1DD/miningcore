@@ -304,6 +304,76 @@ public class CurrentCoinDefinitionTests : TestBase
     }
 
     [Fact]
+    public void Loader_RejectsWrongCaseDisableVersionRolling()
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadVersionRollingTemplate(new JObject
+            {
+                ["DisableVersionRolling"] = true,
+            }));
+
+        Assert.Contains("exact casing", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DisableVersionRolling", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loader_RejectsCaseVariantDisableVersionRollingDuplicates()
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadVersionRollingTemplate(new JObject
+            {
+                ["disableVersionRolling"] = true,
+                ["DisableVersionRolling"] = false,
+            }));
+
+        Assert.Contains("ambiguous", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("disableVersionRolling", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData(1)]
+    [InlineData(null)]
+    public void Loader_RejectsNonBooleanDisableVersionRolling(object value)
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadVersionRollingTemplate(new JObject
+            {
+                ["disableVersionRolling"] = value == null
+                    ? JValue.CreateNull()
+                    : JToken.FromObject(value),
+            }));
+
+        Assert.Contains("disableVersionRolling", ex.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("JSON Boolean", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Loader_RejectsStructuredDisableVersionRolling(bool arrayValue)
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadVersionRollingTemplate(new JObject
+            {
+                ["disableVersionRolling"] = arrayValue
+                    ? new JArray()
+                    : new JObject(),
+            }));
+
+        Assert.Contains("disableVersionRolling", ex.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("JSON Boolean", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Loader_RejectsVersionRollingMaskOnOtherCoinFamilies()
     {
         var ex = Assert.Throws<PoolStartupException>(() =>

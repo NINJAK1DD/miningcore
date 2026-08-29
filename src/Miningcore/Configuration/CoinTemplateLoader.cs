@@ -80,6 +80,39 @@ public static class CoinTemplateLoader
         }
     }
 
+    private static void ValidateDisableVersionRollingSyntax(string filename,
+        string coinId, JObject template)
+    {
+        var properties = template.Properties().Where(x =>
+            string.Equals(x.Name, DisableVersionRollingProperty,
+                StringComparison.OrdinalIgnoreCase)).ToArray();
+
+        if(properties.Length == 0)
+            return;
+
+        if(properties.Length != 1)
+        {
+            throw VersionRollingError(filename, coinId,
+                $"property '{DisableVersionRollingProperty}' has ambiguous " +
+                "case-variant duplicates");
+        }
+
+        var property = properties[0];
+
+        if(property.Name != DisableVersionRollingProperty)
+        {
+            throw VersionRollingError(filename, coinId,
+                $"property '{property.Name}' must use the exact casing " +
+                $"'{DisableVersionRollingProperty}'");
+        }
+
+        if(property.Value.Type != JTokenType.Boolean)
+        {
+            throw VersionRollingError(filename, coinId,
+                $"property '{DisableVersionRollingProperty}' must be a JSON Boolean");
+        }
+    }
+
     private static void ValidateVersionRollingContract(string filename,
         string coinId, BitcoinTemplate template)
     {
@@ -190,6 +223,7 @@ public static class CoinTemplateLoader
                 VersionRollingMaskProperty);
             ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
                 VersionRollingConsensusMaskProperty);
+            ValidateDisableVersionRollingSyntax(filename, o.Key, templateObject);
 
             var result = (CoinTemplate) o.Value.ToObject(CoinTemplate.Families[family]);
 
