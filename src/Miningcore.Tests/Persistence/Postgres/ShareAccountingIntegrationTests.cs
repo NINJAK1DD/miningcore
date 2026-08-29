@@ -134,6 +134,20 @@ public class ShareAccountingIntegrationTests
                 "SELECT count(*) FROM pps_share_credits WHERE accountingid=@id",
                 new { id = partial.AccountingId }));
 
+            var oversized = CreateBatch(Guid.NewGuid(), 0.25m, 'E');
+            oversized = oversized with
+            {
+                Shares = new[]
+                {
+                    oversized.Shares[0] with { BlockHeight = ulong.MaxValue },
+                },
+            };
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                InsertAsync(repository, connection, oversized));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM share_accounting_groups WHERE accountingid=@id",
+                new { id = oversized.AccountingId }));
+
             await connection.ExecuteAsync(
                 "UPDATE shares SET miner='tampered' WHERE accountingid=@id",
                 new { id = first.AccountingId });

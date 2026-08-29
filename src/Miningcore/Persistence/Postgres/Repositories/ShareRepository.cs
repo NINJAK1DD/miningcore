@@ -392,7 +392,8 @@ public class ShareRepository : IShareRepository
 
         if(batch.AccountingId == Guid.Empty || batch.Shares is not { Length: 1 or 2 } ||
            batch.PpsCredits == null || batch.PayloadHash?.Length != 64 ||
-           !batch.PayloadHash.All(Uri.IsHexDigit))
+           !batch.PayloadHash.All(Uri.IsHexDigit) ||
+           batch.Shares.Any(x => x == null || x.BlockHeight > long.MaxValue))
             throw new InvalidDataException("Malformed share-accounting batch");
 
         const string register = @"INSERT INTO share_accounting_groups(
@@ -423,8 +424,30 @@ public class ShareRepository : IShareRepository
                 @RewardBasisSatoshis, @Created)";
 
         foreach(var share in batch.Shares)
-            await con.ExecuteAsync(new CommandDefinition(insertShare, share, tx,
-                cancellationToken: ct));
+        {
+            // PostgreSQL bigint is signed. Passing the model's ulong directly makes
+            // Dapper select DbType.UInt64, which Npgsql deliberately does not support.
+            // Validate the complete batch above, then bind the exact database type.
+            await con.ExecuteAsync(new CommandDefinition(insertShare, new
+            {
+                share.PoolId,
+                BlockHeight = checked((long) share.BlockHeight),
+                share.Difficulty,
+                share.NetworkDifficulty,
+                share.ShareDifficulty,
+                share.ActualDifficulty,
+                share.Miner,
+                share.Worker,
+                share.UserAgent,
+                share.IpAddress,
+                share.Source,
+                share.SessionId,
+                share.AccountingId,
+                share.AccountingRole,
+                share.RewardBasisSatoshis,
+                share.Created,
+            }, tx, cancellationToken: ct));
+        }
 
         foreach(var credit in batch.PpsCredits)
             await InsertPpsCreditAsync(con, tx, credit, ct);
