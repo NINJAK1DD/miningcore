@@ -1784,6 +1784,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://chainz.cryptoid.info/lcc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/lcc/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/lcc/address.dws?{0}.htm"
@@ -1851,6 +1853,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://mazacha.in/block/$hash$",
         "explorerTxLink": "https://mazacha.in/tx/{0}",
         "explorerAccountLink": "https://mazacha.in/address/{0}"
@@ -2328,6 +2332,7 @@
         "symbol": "PYRK",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/pyrkcommunity/pyrk",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -2346,6 +2351,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
         "hasMasterNodes": true,
         "explorerBlockLink": "https://explorer.pyrk.org/blockheight/$height$",
         "explorerTxLink": "https://explorer.pyrk.org/tx/{0}",
@@ -2357,6 +2364,7 @@
         "symbol": "PYRK",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/pyrkcommunity/pyrk",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -2391,6 +2399,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
         "hasMasterNodes": true,
         "shareMultiplier": 65536,
         "explorerBlockLink": "https://explorer.pyrk.org/blockheight/$height$",
@@ -2403,6 +2413,7 @@
         "symbol": "PYRK",
         "family": "bitcoin",
         "website": "",
+        "github": "https://github.com/pyrkcommunity/pyrk",
         "market": "",
         "twitter": "",
         "telegram": "",
@@ -2421,6 +2432,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fffe000",
+        "versionRollingConsensusMask": "0x00000e00",
         "hasMasterNodes": true,
         "explorerBlockLink": "https://explorer.pyrk.org/blockheight/$height$",
         "explorerTxLink": "https://explorer.pyrk.org/tx/{0}",
@@ -3829,6 +3842,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fff0000",
+        "versionRollingConsensusMask": "0x0000ff00",
         "hasMasterNodes": true,
         "explorerBlockLink": "https://chainz.cryptoid.info/vls/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/vls/tx.dws?{0}.htm",
@@ -3875,6 +3890,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1fff0000",
+        "versionRollingConsensusMask": "0x0000ff00",
         "shareMultiplier": 65536,
         "hasMasterNodes": true,
         "explorerBlockLink": "https://chainz.cryptoid.info/vls/block.dws?$height$.htm",
@@ -6175,6 +6192,7 @@
         "symbol": "LCC",
         "family": "bitcoin",
         "website": "https://litecoinca.sh/",
+        "github": "https://github.com/litecoincash-project/litecoincash",
         "market": "https://coinpaprika.com/coin/lch-litecoincash",
         "twitter": "https://x.com/litecoincash",
         "telegram": "",
@@ -6193,6 +6211,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://chainz.cryptoid.info/lcc/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/lcc/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/lcc/address.dws?{0}.htm"
@@ -6203,6 +6223,7 @@
         "symbol": "MAZA",
         "family": "bitcoin",
         "website": "http://www.mazacoin.org/",
+        "github": "https://github.com/MazaCoin/maza",
         "market": "https://www.coingecko.com/en/coins/maza",
         "twitter": "https://x.com/MazaCoin",
         "telegram": "https://t.me/mazatribe",
@@ -6221,6 +6242,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "https://mazacha.in/block/$hash$",
         "explorerTxLink": "https://mazacha.in/tx/{0}",
         "explorerAccountLink": "https://mazacha.in/address/{0}"
@@ -6597,6 +6620,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "http://explorer.plexhive.com/block/$hash$",
         "explorerTxLink": "http://explorer.plexhive.com/tx/{0}",
         "explorerAccountLink": "http://explorer.plexhive.com/address/{0}"
@@ -6624,6 +6649,8 @@
                 }
             ]
         },
+        "versionRollingMask": "0x1f00e000",
+        "versionRollingConsensusMask": "0x00ff0000",
         "explorerBlockLink": "http://explorer.plexhive.com/block/$hash$",
         "explorerTxLink": "http://explorer.plexhive.com/tx/{0}",
         "explorerAccountLink": "http://explorer.plexhive.com/address/{0}"

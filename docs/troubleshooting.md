@@ -59,6 +59,9 @@ An active process alone does not prove mining or payouts are healthy.
 - **BIP310 version rolling is declined or a custom mask stops startup.** Do not widen the mask to
   satisfy a miner. Check the per-chain audit and diagnostics in
   [Bitcoin-family version rolling](version-rolling.md).
+- **A miner shows nearly 100% rejected shares immediately after BIP310 configuration.** Check the
+  pool log for a declined version-rolling negotiation and update incompatible miner firmware. Do
+  not widen the template mask; consensus-owned version bits must remain daemon-controlled.
 - **Public API works but admin or metrics returns `404`.** Use the configured dedicated port;
   wrong-listener routes deliberately return `404`. See the [API listener matrix](api.md#configuration).
 - **Admin returns `401`, `403`, `429` or `503`.** Check authentication, source whitelist, rate

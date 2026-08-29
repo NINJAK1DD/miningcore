@@ -312,8 +312,35 @@ public class CurrentCoinDefinitionTests : TestBase
                 ["versionRollingMask"] = "0x1fffe000",
             }, "equihash"));
 
-        Assert.Contains("only by Bitcoin-family", ex.Message,
+        Assert.Contains("Bitcoin Stratum runtime", ex.Message,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("handshake")]
+    [InlineData("nexa")]
+    [InlineData("satoshicash")]
+    public void Loader_RejectsVersionRollingPolicyForSharedTemplateTypesWithoutRuntime(
+        string family)
+    {
+        var policies = new (string Name, JToken Value)[]
+        {
+            ("versionRollingMask", "0x1fffe000"),
+            ("versionRollingConsensusMask", "0x00000e00"),
+            ("disableVersionRolling", true),
+        };
+
+        foreach(var policy in policies)
+        {
+            var ex = Assert.Throws<PoolStartupException>(() =>
+                LoadVersionRollingTemplate(new JObject
+                {
+                    [policy.Name] = policy.Value,
+                }, family));
+
+            Assert.Contains("Bitcoin Stratum runtime", ex.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -325,7 +352,7 @@ public class CurrentCoinDefinitionTests : TestBase
                 ["versionRollingMask"] = new JObject(),
             }, "equihash"));
 
-        Assert.Contains("only by Bitcoin-family", ex.Message,
+        Assert.Contains("Bitcoin Stratum runtime", ex.Message,
             StringComparison.OrdinalIgnoreCase);
     }
 

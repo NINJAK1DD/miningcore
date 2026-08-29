@@ -49,9 +49,14 @@ The following possible chain-ID or consensus-bit candidates were reviewed on 29 
 | PepePow | [PepePow `5a9debca`](https://github.com/MattF42/PePe-core/tree/5a9debcab3b014a182e24316864d0a95bc06f129) | `src/validation.cpp`: version bits `0x00004000` and `0x00008000` select/enforce consensus algorithms | Reduced `0x1fff2000`; `0x0000c000` consensus-owned |
 | Verge (five algorithms) | [Verge `52b67120`](https://github.com/vergecurrency/VERGE/blob/52b67120b953aa4ef2dc897405ddd240e90bb5dd/src/primitives/block.h#L37-L44) | `BLOCK_VERSION_ALGO` owns `0x00007800`, including two bits in the default mask | Reduced `0x1fff8000`; `0x00007800` consensus-owned |
 | ButKoin (two algorithms) | [ButKoin `875c6cb1`](https://github.com/ButKoin/but/blob/875c6cb1c353e15593fa46fc94837d2155010e75/src/primitives/block.h#L32-L40) | `BLOCK_VERSION_ALGO` owns `0x00007800`, including two bits in the default mask | Reduced `0x1fff8000`; `0x00007800` consensus-owned |
+| Veles (two algorithms) | [Veles `c2215686`](https://github.com/velescore/veles/blob/c2215686c9f5b4c4734d4d8162a9b732bd9a0799/src/primitives/block.cpp#L33-L57) | `ALGO_VERSION_MASK` owns `0x0000ff00`; `GetPoWHash` dispatches from those bits | Reduced `0x1fff0000`; `0x0000ff00` consensus-owned |
+| Litecoin Cash (two algorithms) | [Litecoin Cash `cf67257a`](https://github.com/litecoincash-project/litecoincash/blob/cf67257a008252ed283de4538bb5e4582036aaab/src/primitives/block.cpp#L45-L68) | `GetPoWType` reads bits 16–23 and selects SHA-256d or MinotaurX | Reduced `0x1f00e000`; `0x00ff0000` consensus-owned |
+| Maza (two algorithms) | [Maza `326935b8`](https://github.com/MazaCoin/maza/blob/326935b8e0cbb7e1ed8a8affe04d9e40bad232d0/src/primitives/block.cpp#L45-L60) | `GetPoWType` reads bits 16–23 and selects SHA-256d or MinotaurX | Reduced `0x1f00e000`; `0x00ff0000` consensus-owned |
+| PlexHive (two algorithms) | [PlexHive `42f8a40e`](https://github.com/PlexHive/PlexHive/blob/42f8a40e6830ac166d2ca66cec16c84623f50663/src/primitives/block.cpp#L45-L62) | `GetPoWType` reads bits 16–23 and selects SHA-256d or MinotaurX | Reduced `0x1f00e000`; `0x00ff0000` consensus-owned |
 | DigiByte (five algorithms) | [DigiByte `16159311`](https://github.com/DigiByte-Core/digibyte/blob/16159311b34449cd970871bcd1532561b0d92cdd/src/primitives/block.h#L34-L40) | `BLOCK_VERSION_ALGO` owns `0x00000f00`, entirely below the pool mask | Standard `0x1fffe000`; `0x00000f00` consensus-owned |
 | Auroracoin (five algorithms) | [Auroracoin `150c14c8`](https://github.com/aurarad/auroracoin/blob/150c14c8975ff4110ad7aace214c7d1bd26ab540/src/primitives/block.h#L32-L38) | `BLOCK_VERSION_ALGO` owns `0x00000f00`, entirely below the pool mask | Standard `0x1fffe000`; `0x00000f00` consensus-owned |
 | Smileycoin (five algorithms) | [Smileycoin `204badcf`](https://github.com/smileycoin/smileyCoin/blob/204badcf54c9e2329b38fbf38d97d9803bb2fdfc/src/core.h#L33-L39) | `BLOCK_VERSION_ALGO` owns `0x00000e00`, entirely below the pool mask | Standard `0x1fffe000`; `0x00000e00` consensus-owned |
+| Pyrk (three algorithms) | [Pyrk `c8a9d9d0`](https://github.com/pyrkcommunity/pyrk/blob/c8a9d9d01a03c5c16cb281461fa752fea420ec3a/src/primitives/block.h#L27-L38) | `BLOCK_VERSION_ALGO` owns `0x00000e00`, entirely below the pool mask | Standard `0x1fffe000`; `0x00000e00` consensus-owned |
 | Mooncoin | [Mooncoin `9d7af8a1`](https://github.com/MooncoinCommunity/wallet/tree/9d7af8a1667bebbca2ee84386bd912807ef04e97) | No AuxPoW or chain-ID guard in the ordinary proof path | Standard `0x1fffe000` mask |
 | DaneCoin | [DaneCoin `73d21d33`](https://github.com/danecoin/Danecoin/tree/73d21d335c11a8966c995b7e8c520c2b55695c04) | No AuxPoW or chain-ID guard in the ordinary proof path | Standard `0x1fffe000` mask |
 | Susucoin | [Susucoin `af761617`](https://github.com/susucoin-project/susucoin/tree/af7616171f814313f8bdea43a3186ffaec9770f8) | No AuxPoW or chain-ID guard in the ordinary proof path | Standard `0x1fffe000` mask |
@@ -64,12 +69,16 @@ The PACcoin entry intentionally fails closed until an authoritative source and d
 submission contract can be reviewed. Its absence of a consensus mask means “unknown,” not “safe.”
 
 Before this audit, 46 bundled Bitcoin-family entries had no `github` source field. The five
-Smileycoin entries now identify the reviewed source, leaving 41 without that metadata. Missing
-metadata is not itself evidence that a daemon reserves version bits, so it is not safe to infer
-either a strict chain ID or a new mask from that absence. The survey classified the candidates with
-known Dogecoin/Luckycoin/AuxPoW lineage or consensus-version indicators; PACcoin was the sole unresolved
-candidate in that set and is disabled. Future catalogue work must add immutable provenance and
-repeat the proof-path review before assigning any other template an explicit mask.
+Smileycoin and three Pyrk entries now identify their reviewed sources, leaving 38 without that
+metadata. Missing metadata is not itself evidence that a daemon reserves version bits, so it is not
+safe to infer either a strict chain ID or a new mask from that absence. The survey classified
+candidates with known Dogecoin/Luckycoin/AuxPoW lineage; groups that expose multiple templates; and
+daemon code that selects consensus behavior from `nVersion`, including `BLOCK_VERSION_ALGO`,
+`ALGO_VERSION_MASK`,
+`GetPoWType`, and `GetPoWHash` dispatch. PACcoin is the unresolved candidate found by that review and
+is disabled, but the catalogue set remains open rather than claiming that no other selector shape
+exists. Future catalogue work must add immutable provenance and repeat the proof-path review before
+assigning any other template an explicit mask.
 
 ## Miner behavior and troubleshooting
 
@@ -78,11 +87,13 @@ uses that exact negotiated result when validating submissions and constructing h
 cannot restore clipped chain-ID or algorithm bits by submitting `version_bits` outside that mask.
 
 The BIP310 wire mask is an eight-digit, case-insensitive hexadecimal string. Miningcore also accepts
-an optional `0x` prefix defensively. Malformed values and disjoint masks return a descriptive string
-in the required `version-rolling` extension result instead of disconnecting the miner. A template
-that disables rolling returns `"version-rolling": false`. Most BIP310 clients then submit ordinary
-work. If a miner disconnects or refuses jobs, update its firmware or disable its requirement for
-version rolling; do not weaken the coin template. For custom templates, startup diagnostics name
+an optional `0x` prefix defensively. Malformed values, disjoint masks, and template-disabled rolling
+return `"version-rolling": false` without a `version-rolling.mask`; the server log records the
+specific reason. Returning a boolean avoids nonconforming clients treating a diagnostic string as a
+truthy success value and then hashing with an unnegotiated mask. Most BIP310 clients then submit
+ordinary work. If a miner disconnects or refuses jobs, update its firmware or disable its
+requirement for version rolling; do not weaken the coin template. For custom templates, startup
+diagnostics name
 malformed, contradictory, oversized, or overlapping masks. Correct the source-reviewed contract
 rather than bypassing the check.
 

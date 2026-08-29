@@ -37,9 +37,10 @@ height and deployment state therefore remain owned by the daemon.
 Dogecoin, Cyberyen, Bells, Namecoin and Lucky Bit reserve upper block-version bits for consensus
 chain identifiers, so Miningcore declines Stratum `version-rolling` negotiation for them. PepePow
 uses two overlapping bits for consensus algorithm selection and therefore exposes a reduced mask.
-Verge and ButKoin likewise expose reduced masks that exclude their multi-algorithm selectors, while
-DigiByte, Auroracoin and Smileycoin record lower selector bits that do not overlap the standard
-mask. PACcoin also remains disabled because no authoritative daemon source could be established. The
+Verge, ButKoin and Veles likewise expose reduced masks that exclude their multi-algorithm selectors.
+Litecoin Cash, Maza and PlexHive exclude their version-encoded PoW type, while DigiByte, Auroracoin,
+Smileycoin and Pyrk record lower selector bits that do not overlap the standard mask. PACcoin also
+remains disabled because no authoritative daemon source could be established. The
 [version-rolling audit](version-rolling.md) records the immutable revisions, guard placement and
 per-template decisions.
 

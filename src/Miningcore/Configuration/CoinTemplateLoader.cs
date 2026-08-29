@@ -14,6 +14,8 @@ public static class CoinTemplateLoader
     private const string VersionRollingMaskProperty = "versionRollingMask";
     private const string VersionRollingConsensusMaskProperty =
         "versionRollingConsensusMask";
+    private const string DisableVersionRollingProperty =
+        "disableVersionRolling";
 
     private static void RejectUnsupportedMetadata(string filename, string coinId,
         JToken template)
@@ -169,16 +171,19 @@ public static class CoinTemplateLoader
                 throw new PoolStartupException($"Invalid coin-template '{o.Key}': missing 'family' property");
 
             var family = value.ToObject<CoinFamily>();
-            var hasVersionRollingMasks = templateObject.Properties().Any(x =>
+            var hasVersionRollingPolicy = templateObject.Properties().Any(x =>
                 string.Equals(x.Name, VersionRollingMaskProperty,
                     StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(x.Name, VersionRollingConsensusMaskProperty,
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(x.Name, DisableVersionRollingProperty,
                     StringComparison.OrdinalIgnoreCase));
 
-            if(family != CoinFamily.Bitcoin && hasVersionRollingMasks)
+            if(family != CoinFamily.Bitcoin && hasVersionRollingPolicy)
             {
                 throw VersionRollingError(filename, o.Key,
-                    "version-rolling masks are supported only by Bitcoin-family templates");
+                    "version-rolling policy is supported only by templates " +
+                    "using the Bitcoin Stratum runtime");
             }
 
             ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
@@ -188,8 +193,16 @@ public static class CoinTemplateLoader
 
             var result = (CoinTemplate) o.Value.ToObject(CoinTemplate.Families[family]);
 
-            if(result is BitcoinTemplate bitcoinTemplate)
+            if(family == CoinFamily.Bitcoin)
+            {
+                if(result is not BitcoinTemplate bitcoinTemplate)
+                {
+                    throw VersionRollingError(filename, o.Key,
+                        "Bitcoin Stratum templates require BitcoinTemplate metadata");
+                }
+
                 ValidateVersionRollingContract(filename, o.Key, bitcoinTemplate);
+            }
 
             ctx.InjectProperties(result);
 

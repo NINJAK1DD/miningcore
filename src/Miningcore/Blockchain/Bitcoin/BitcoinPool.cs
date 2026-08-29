@@ -52,7 +52,7 @@ public class BitcoinPool : PoolBase
     }
 
     internal readonly record struct VersionRollingNegotiation(
-        VersionRollingNegotiationStatus Status, uint? Mask, object ExtensionResult);
+        VersionRollingNegotiationStatus Status, uint? Mask);
 
     protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
@@ -411,8 +411,7 @@ public class BitcoinPool : PoolBase
         var negotiation = NegotiateVersionRolling(poolConfig.Template,
             hasRequestedMask, requestedMaskValue);
 
-        context.VersionRollingMask = negotiation.Mask;
-        result[BitcoinStratumExtensions.VersionRolling] = negotiation.ExtensionResult;
+        ApplyVersionRollingNegotiation(context, result, negotiation);
 
         if(negotiation.Status != VersionRollingNegotiationStatus.Enabled)
         {
@@ -433,11 +432,32 @@ public class BitcoinPool : PoolBase
             return;
         }
 
-        result[BitcoinStratumExtensions.VersionRollingMask] =
-            context.VersionRollingMask.Value.ToStringHex8();
-
         logger.Info(() => $"[{connection.ConnectionId}] Using version-rolling " +
             $"mask {result[BitcoinStratumExtensions.VersionRollingMask]}");
+    }
+
+    internal static void ApplyVersionRollingNegotiation(
+        BitcoinWorkerContext context, IDictionary<string, object> result,
+        VersionRollingNegotiation negotiation)
+    {
+        var enabled =
+            negotiation.Status == VersionRollingNegotiationStatus.Enabled;
+
+        if(enabled && !negotiation.Mask.HasValue)
+        {
+            throw new InvalidOperationException(
+                "Enabled version rolling requires a negotiated mask");
+        }
+
+        context.VersionRollingMask = enabled ? negotiation.Mask : null;
+        result[BitcoinStratumExtensions.VersionRolling] = enabled;
+        result.Remove(BitcoinStratumExtensions.VersionRollingMask);
+
+        if(enabled)
+        {
+            result[BitcoinStratumExtensions.VersionRollingMask] =
+                negotiation.Mask.Value.ToStringHex8();
+        }
     }
 
     internal static VersionRollingNegotiation NegotiateVersionRolling(
@@ -446,12 +466,14 @@ public class BitcoinPool : PoolBase
         if(coin is BitcoinTemplate {DisableVersionRolling: true})
         {
             return new VersionRollingNegotiation(
-                VersionRollingNegotiationStatus.TemplateDisabled, null, false);
+                VersionRollingNegotiationStatus.TemplateDisabled, null);
         }
 
         // BIP310 defines an unprefixed, case-insensitive eight-digit TMask.
         // Accept an optional 0x prefix defensively, but reject every other shape
         // without tearing down the miner connection.
+        // An omitted miner mask means no miner-side narrowing. ResolveVersionRollingMask
+        // still applies the template mask and the global BIP310 envelope.
         var requestedMask = uint.MaxValue;
 
         if(hasRequestedMask &&
@@ -459,8 +481,7 @@ public class BitcoinPool : PoolBase
                out requestedMask))
         {
             return new VersionRollingNegotiation(
-                VersionRollingNegotiationStatus.InvalidMinerMask, null,
-                "invalid version-rolling.mask; expected eight hexadecimal digits");
+                VersionRollingNegotiationStatus.InvalidMinerMask, null);
         }
 
         // A merged pool evaluates its parent template here because rolling changes
@@ -469,10 +490,9 @@ public class BitcoinPool : PoolBase
 
         return mask.HasValue
             ? new VersionRollingNegotiation(
-                VersionRollingNegotiationStatus.Enabled, mask, true)
+                VersionRollingNegotiationStatus.Enabled, mask)
             : new VersionRollingNegotiation(
-                VersionRollingNegotiationStatus.DisjointMask, null,
-                "requested version-rolling.mask does not intersect the pool mask");
+                VersionRollingNegotiationStatus.DisjointMask, null);
     }
 
     internal static bool TryParseRequestedVersionRollingMask(JToken value,
@@ -576,7 +596,8 @@ public class BitcoinPool : PoolBase
 
         if(UsesUnauditedDefaultVersionRolling(coin))
         {
-            logger.Warn(() => $"Pool '{pc.Id}' coin template '{coin.Symbol}' uses " +
+            logger.Warn(() => $"Pool '{pc.Id}' coin template '{pc.Coin}' " +
+                $"({coin.Symbol}) uses " +
                 $"the compatibility BIP310 mask " +
                 $"0x{BitcoinConstants.VersionRollingPoolMask:x8} without a " +
                 "source-reviewed version-rolling policy");
