@@ -56,17 +56,21 @@ payout manager, take and verify a backup, then apply all three migrations in ord
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql
+  -f /opt/miningcore/migrations/add_auxpow_block_idempotency.sql
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
+  -f /opt/miningcore/migrations/add_payout_manager_ownership.sql
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql
+  -f /opt/miningcore/migrations/add_share_accounting.sql
 ```
 
 These migrations provide synchronous accepted-block idempotency, one durable payout owner, and the
 atomic receipt/credit/remainder ledger. Startup checks them before accepting PPS work. Do not create
 lookalike tables or indexes to bypass preflight; reapply the supplied migration while Miningcore is
 stopped if the diagnostic names a repairable contract.
+
+The commands use the stable symlink created by the prebuilt installation path. A source-build
+operator should substitute the checkout's
+`src/Miningcore/Persistence/Postgres/Scripts/` directory while preserving the same file order.
 
 Follow the complete [database upgrade procedure](database.md#upgrade-an-existing-database),
 including its owner/privilege query and rollback warning. The accounting migration is additive, but

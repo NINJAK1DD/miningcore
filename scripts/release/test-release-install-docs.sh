@@ -122,7 +122,8 @@ assert_file_contains 'the PPS reserve warning' \
   'separately controlled reserve' "$pps_document"
 for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
-  assert_file_contains "the PPS $migration migration" "$migration" "$pps_document"
+  assert_file_contains "the packaged PPS $migration migration" \
+    "/opt/miningcore/migrations/$migration" "$pps_document"
 done
 assert_file_contains 'the PPS receiver-before-sender rule' \
   'Upgrade and migrate relay receivers/recorders before senders' "$pps_document"
