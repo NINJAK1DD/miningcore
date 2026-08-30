@@ -6,6 +6,7 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
 pps_document="$repository_root/docs/pps.md"
+database_document="$repository_root/docs/database.md"
 licence_document="$repository_root/docs/lucky-penny-licence.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
@@ -187,6 +188,19 @@ for migration in add_auxpow_block_idempotency.sql \
   assert_file_contains "the packaged PPS $migration migration" \
     "/opt/miningcore/migrations/$migration" "$pps_document"
 done
+for migration in createdb.sql add_auxpow_block_idempotency.sql \
+    add_payout_manager_ownership.sql add_share_accounting.sql \
+    createdb_postgresql_11_appendix.sql; do
+  assert_file_contains "the database-runbook packaged $migration path" \
+    "/opt/miningcore/migrations/$migration" "$database_document"
+done
+assert_file_contains 'the database-runbook source-checkout alternative' \
+  '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$database_document"
+if grep -Eq '^[[:space:]]*-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
+    "$database_document"; then
+  echo 'Database runbook still has a repository-only executable migration path' >&2
+  exit 1
+fi
 assert_file_contains 'the PPS receiver-before-sender rule' \
   'Upgrade and migrate relay receivers/recorders before senders' "$pps_document"
 assert_file_contains 'the authoritative PPS ledger boundary' \

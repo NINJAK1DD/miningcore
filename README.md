@@ -275,7 +275,7 @@ fi
 Continue with partition creation only after the block prints `READY` and exports
 `MININGCORE_PARTITION_READY=1`. Any backup, validation, table-inspection or appendix failure leaves
 that latch empty and must be investigated before retrying. Rerunning this conversion against an
-already partitioned `shares` table is refused so existing child-partition definitions remain intact.
+already partitioned `shares` table is refused so its existing partition layout remains intact.
 
 Create one partition for every pool ID that the configuration can record. Replace the example table
 name and value; the value must exactly match `pools[].id`:
