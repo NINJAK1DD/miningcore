@@ -92,7 +92,8 @@ An active process alone does not prove mining or payouts are healthy.
   [database upgrades](database.md#upgrade-an-existing-database).
 - **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
   reason to edit balances. Check the reserve, exact PPS ledger, remainder table and bounded
-  liability/replay metrics. See [PPS liability contract](merged-mining-litecoin-dogecoin.md#pps-liability-contract).
+  liability/replay metrics. See
+  [PPS economic and support boundary](pps.md#economic-and-support-boundary).
 - **Merged miners are rejected for missing DOGE attribution.** Non-SOLO auxiliary pools require
   `requireAuxAddress: true` and a daemon-validated `doge=` address. Check the bounded attribution
   rejection metric; never substitute the pool wallet as a beneficiary.
@@ -241,5 +242,6 @@ Keep an unredacted copy in protected incident storage so the financial audit tra
 - [Database and recovery guide](database.md)
 - [Release installation and rollback](releases.md)
 - [API and monitoring](api.md)
+- [Pay Per Share operation](pps.md)
 - [Litecoin–Dogecoin merged mining](merged-mining-litecoin-dogecoin.md)
 - [Share relays](share-relays.md)

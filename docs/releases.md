@@ -34,7 +34,8 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Existing release-candidate operator | [v0.1.0 highlights](#v010-highlights) |
+| Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
+| Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
@@ -42,7 +43,32 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Unreleased changes
+## v0.2.0 highlights
+
+`v0.2.0` adds transactional Bitcoin-family PPS, independently selected pooled LTC/DOGE
+merged-mining schemes, source-verified version-rolling policy, and fail-closed removal of the inert
+coin-template `blockSerializer` setting. Review this section before replacing a v0.1.0 binary.
+
+### Upgrade boundary from v0.1.0
+
+- **Existing non-PPS pools and unchanged LTC/DOGE `SOLO`/`SOLO`:** no pooled-accounting feature is
+  required, but the canonical v0.2.0 upgrade still applies all three additive, idempotent migrations
+  so every upgraded database has the same reviewed schema. Preserve the backup and review custom
+  template compatibility.
+- **Direct Bitcoin-family PPS or pooled LTC/DOGE accounting:** stop all writers and payout managers,
+  verify a backup, and apply the candidate-idempotency, payout-ownership and share-accounting
+  migrations.
+- **PPS or pooled-accounting relay topology:** upgrade and migrate receivers/recorders before
+  senders; do not run mixed accounting wire versions.
+- **Custom Bitcoin-family coin templates:** remove inert `blockSerializer` fields and review any
+  version-rolling mask against authoritative daemon source.
+
+The new accounting migration is additive, but its liabilities and replay receipts are not
+reconstructible from blocks. Do not test rollback by dropping tables. Restore the verified
+pre-migration database in an isolated replacement and reconcile post-backup balances and payments
+before directing miners or wallets to an older application. Follow the
+[PPS guide](pps.md), [database upgrade runbook](database.md#upgrade-an-existing-database), and
+[release rollback procedure](#upgrade-or-roll-back).
 
 ### Pooled Litecoin–Dogecoin merged-mining accounting and PPS
 
@@ -50,6 +76,10 @@ Litecoin/Dogecoin merged mining now supports independently selected `SOLO`, `PPS
 `PPLNS` schemes. One accepted proof is carried as a correlated parent/auxiliary envelope and
 committed transactionally, so cancellation, relay, recovery or database failure cannot credit only
 one chain. Unsupported `PPBS` and `PPLNSBF` combinations still fail before Stratum listeners open.
+An enabled PPS pool requires both pool-level and cluster-level payment processing; startup fails
+before listeners open when either contract is disabled. Runtime administrative toggles cannot
+disable processing for an active PPS pool or activate PPS without the scheduler created at startup;
+make those changes through a reviewed configuration and controlled restart.
 
 A production Bitcoin-family PPS implementation creates `(1 - fee) * difficulty / networkDifficulty
 * spendableTemplateReward` liability at valid-share commit time. Exact 24-decimal credits,
@@ -172,8 +202,8 @@ before upgrading from an older release candidate.
 
 ## Choose a version
 
-Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying
-on them for real funds. A version without a suffix, such as `v0.1.0`, is a stable release and updates
+Versions containing a suffix such as `v0.2.0-rc.1` are release candidates. Test them before relying
+on them for real funds. A version without a suffix, such as `v0.2.0`, is a stable release and updates
 the `latest` container tag.
 
 Open the [releases page](https://github.com/NINJAK1DD/miningcore/releases), choose a version, and
@@ -183,10 +213,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.1.0`. Substitute the version you selected.
+The examples below use `v0.2.0`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0
+export MININGCORE_VERSION=v0.2.0
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -320,23 +350,25 @@ it:
 MININGCORE_INSTALL_READY=
 if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-  if (
-    set -e
-    id -u miningcore >/dev/null 2>&1 || \
-      sudo useradd --system --home-dir /var/lib/miningcore --shell /usr/sbin/nologin miningcore
-    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
-    sudo tar -xzf "$archive" -C /opt
-    test -d "$release_dir"
+  install_miningcore_release() {
+    { id -u miningcore >/dev/null 2>&1 ||
+      sudo useradd --system --home-dir /var/lib/miningcore \
+        --shell /usr/sbin/nologin miningcore; } || return
+    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore || return
+    sudo tar -xzf "$archive" -C /opt || return
+    test -d "$release_dir" || return
     if [ ! -e /etc/miningcore/config.json ]; then
-      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json
+      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json || return
     fi
-    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
-    sudo chown root:miningcore /etc/miningcore
-    sudo chown root:miningcore /etc/miningcore/config.json
-    sudo chmod 0750 /etc/miningcore
-    sudo chmod 0640 /etc/miningcore/config.json
-    sudo ln -sfnT "$release_dir" /opt/miningcore
-  ); then
+    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore || return
+    sudo chown root:miningcore /etc/miningcore || return
+    sudo chown root:miningcore /etc/miningcore/config.json || return
+    sudo chmod 0750 /etc/miningcore || return
+    sudo chmod 0640 /etc/miningcore/config.json || return
+    sudo ln -sfnT "$release_dir" /opt/miningcore || return
+  }
+
+  if install_miningcore_release; then
     MININGCORE_RELEASE_READY=
     if rm -f -- "$archive" "$checksum_file" &&
         rmdir -- "$MININGCORE_DOWNLOAD_DIR"; then
@@ -402,9 +434,35 @@ of source control.
 For a new database, use the packaged schema:
 
 ```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/createdb.sql
+MININGCORE_DATABASE_READY=
+role_exists=
+database_exists=
+if role_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname = 'miningcore';")" &&
+   database_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'miningcore';")"; then
+  if [ "$role_exists" = 1 ] || [ "$database_exists" = 1 ]; then
+    echo "STOP: the miningcore role or database already exists; use the upgrade runbook" >&2
+  elif sudo -u postgres createuser --pwprompt miningcore &&
+       sudo -u postgres createdb --owner=miningcore miningcore &&
+       sudo -u postgres psql --single-transaction -v ON_ERROR_STOP=1 \
+         -d miningcore -f /opt/miningcore/migrations/createdb.sql &&
+       psql -h 127.0.0.1 -U miningcore -d miningcore \
+         -c 'SELECT current_database(), current_user;'; then
+    export MININGCORE_DATABASE_READY=1
+    echo "READY: created and verified the miningcore database"
+  else
+    echo "STOP: database provisioning failed; inspect PostgreSQL before retrying" >&2
+  fi
+else
+  echo "STOP: unable to inspect existing PostgreSQL roles and databases" >&2
+fi
 ```
+
+On a successful fresh provision, the commands prompt for a new role password without placing it on
+the command line, the final query must report database and user `miningcore`, and the block exports
+`MININGCORE_DATABASE_READY=1`. If either object already exists, the block stops before creation or
+schema import; use the existing-database procedure below instead.
 
 For an existing database, stop all Miningcore writers and payout managers, take a tested backup,
 and apply the migrations required by the release before starting the new binary. Read the packaged
@@ -418,12 +476,12 @@ allows 90 seconds for the application's bounded clean shutdown and durable recov
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service
 sudo mkdir -p /etc/miningcore
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now miningcore
 sudo systemctl status miningcore
@@ -443,12 +501,76 @@ For a major-runtime upgrade from .NET 6, use the more detailed
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). The sequence below is the shorter
 procedure for routine upgrades after the deployment layout and runtime are already suitable.
 
-1. Back up PostgreSQL, the configuration, and recovery journal.
-2. Download and verify the new archive.
-3. Stop Miningcore and confirm no other payout manager owns the same pools/database.
-4. Apply release-specific database migrations.
-5. Extract the new version and change `/opt/miningcore` with `ln -sfn`.
-6. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
+1. Back up the configuration and recovery journal.
+2. Download and verify the new archive using [Choose a version](#choose-a-version).
+3. Extract and verify the candidate in its immutable versioned directory without changing
+   `/opt/miningcore`.
+4. Stop every Miningcore writer using the database, including share-relay senders, receivers,
+   recorders and recovery importers on every node, and confirm no other payout manager owns the same
+   pools/database.
+5. Back up PostgreSQL and prove the backup inventory is readable.
+6. Apply release-specific migrations from the candidate's `migrations` directory.
+7. Change `/opt/miningcore` only after every migration succeeds.
+8. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
+
+The `systemctl` command below stops only the supplied local `miningcore.service`. Before running the
+block, stop any differently named service or remote node that writes the same database, especially
+share-relay senders, receivers and recorders, recovery importers and payout managers. The block
+cannot verify or stop those external writers for you.
+
+Run this block in the same shell as the successful download-and-verification block. It consumes that
+block's readiness latch and archive path. Replace the migration list only when the target release
+notes explicitly require a different ordered set:
+
+```console
+umask 077
+MININGCORE_UPGRADE_READY=
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
+
+  stage_miningcore_candidate() {
+    if sudo test -e "$release_dir"; then
+      echo "STOP: candidate directory already exists; inspect it before retrying" >&2
+      return 1
+    fi
+    sudo mkdir -p /opt || return
+    sudo tar -xzf "$archive" -C /opt || return
+    test -d "$release_dir/migrations" || return
+    cat "$release_dir/BUILD-INFO" || return
+    LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
+  }
+
+  if stage_miningcore_candidate; then
+    if sudo systemctl stop miningcore &&
+       sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup" &&
+       pg_restore --list "$upgrade_backup" > /dev/null &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_share_accounting.sql" &&
+       sudo ln -sfnT "$release_dir" /opt/miningcore; then
+      MININGCORE_RELEASE_READY=
+      export MININGCORE_UPGRADE_READY=1
+      echo "READY: migrated the database and activated $release_dir"
+    else
+      echo "STOP: upgrade failed; /opt/miningcore was not changed" >&2
+      echo "Keep Miningcore stopped until the database and candidate are reconciled" >&2
+    fi
+  else
+    echo "STOP: candidate staging failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no verified release archive is available to upgrade" >&2
+fi
+```
+
+Start the service only when the block prints `READY` and exports
+`MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration
+failure. If a migration committed before a later step failed, do not restart the old binary merely
+because its symlink remains; follow the rollback boundary below or complete the reviewed upgrade.
 
 If application rollback is necessary, stop the service and repoint the symlink to the previous
 directory. Database migrations may not be reversible; restore the matching backup when the release
@@ -460,19 +582,19 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.2.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
   -o /etc/miningcore/config.json
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo chown 10001:10001 /var/lib/miningcore
 sudo docker pull "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
 sudo docker run -d \
@@ -1286,8 +1408,8 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.13` or
-`v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.2.0-rc.1` or
+`v0.2.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
@@ -1374,7 +1496,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.2.0  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1437,7 +1559,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.1.0
+export TAG=v0.2.0
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

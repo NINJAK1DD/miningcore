@@ -443,7 +443,9 @@ parent-chain job.
 Prometheus PPS liability totals are operational floating-point telemetry and can accumulate minor
 rounding drift over very large share counts. PostgreSQL `pps_share_credits.calculatedamount` and the
 balance ledger are the authoritative decimal financial record. Alert on unsupported relay-wire
-increments; they indicate a financially unsafe rollout order and rejected shares.
+increments; they indicate a financially unsafe rollout order and rejected shares. The
+[PPS operator guide](pps.md#pre-production-checklist) identifies the commissioning and reserve
+checks that must accompany these metrics.
 
 ## Front ends and reverse proxies
 

@@ -20,6 +20,12 @@ Start with [Troubleshooting](troubleshooting.md) when the failing boundary is no
 
 This guide expands the beginner database steps in the root README. Commands assume PostgreSQL is on
 the local Linux host; adjust host names and access controls for a private database server.
+Fresh-install and partitioning commands use the active prebuilt-release path under
+`/opt/miningcore/migrations/`. Upgrade commands are the deliberate exception: they use the verified
+candidate's immutable versioned directory so the old active release cannot supply stale SQL. A
+source-build operator should substitute the checkout's
+`src/Miningcore/Persistence/Postgres/Scripts/` directory while preserving each filename and the
+documented migration order.
 
 | Task | Section |
 | --- | --- |
@@ -47,11 +53,12 @@ CREATE DATABASE miningcore OWNER miningcore;
 \q
 ```
 
-Import the complete current schema from the repository root:
+Import the complete current schema from the installed migrations:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
+  --single-transaction \
+  -f /opt/miningcore/migrations/createdb.sql
 ```
 
 Confirm the application login works:
@@ -121,19 +128,31 @@ A backup is not proven until it has been restored and checked.
 > ownership migration is mandatory before starting any node with payment processing enabled, not
 > only an LTC/DOGE node. Treat this as a breaking upgrade and schedule a maintenance window.
 
-Stop Miningcore block writers, recovery importers and payout managers, take a verified backup, then
-apply the migrations with `ON_ERROR_STOP`:
+First extract and verify the selected candidate release without changing `/opt/miningcore`, following
+the [release upgrade procedure](releases.md#upgrade-or-roll-back). Stop Miningcore block writers,
+share-relay senders, receivers and recorders, recovery importers and payout managers on every node
+that uses the database, take a verified backup, then point this shell at that exact immutable
+candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql
+export MININGCORE_VERSION=v0.2.0
+export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
+export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+test -d "$MININGCORE_CANDIDATE_DIR/migrations"
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_manager_ownership.sql"
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_share_accounting.sql"
 ```
+
+Choose the candidate directory that exactly matches the verified version and host target. Never run
+upgrade migrations through the stable `/opt/miningcore` symlink: it must continue pointing to the
+old release until every required candidate migration succeeds.
 
 The ownership and share-accounting migrations assign their new tables to the owner of the current
 database. Confirm that this is the same role configured under `persistence.postgres.user` and
@@ -1084,11 +1103,10 @@ Miningcore's ordered maintenance transaction to do so after the same cutoff beco
 
 ## Advanced share-table partitioning
 
-The optional
-[`createdb_postgresql_11_appendix.sql`](../src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql)
-converts `shares` to a list-partitioned layout. This can improve a large multipool cluster because
-most Miningcore queries are scoped to one pool. It is not needed for a first installation or a
-small pool.
+The optional packaged `/opt/miningcore/migrations/createdb_postgresql_11_appendix.sql` converts
+`shares` to a list-partitioned layout. This can improve a large multipool cluster because most
+Miningcore queries are scoped to one pool. It is not needed for a first installation or a small
+pool.
 
 > [!CAUTION]
 > The appendix deletes and rebuilds `shares`. Stop every recorder and recovery importer first.
@@ -1117,11 +1135,11 @@ ORDER BY poolid;"
 
 ### 2. Convert the parent table
 
-From the repository root, with Miningcore stopped:
+With Miningcore stopped:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql
+  -f /opt/miningcore/migrations/createdb_postgresql_11_appendix.sql
 ```
 
 The script is transactional, but a successful run intentionally leaves the new parent empty and

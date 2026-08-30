@@ -17,6 +17,9 @@ authoritative procedures instead of duplicating recovery SQL or release commands
   The supplied systemd unit uses 90 seconds.
 - Verify a PostgreSQL backup and retain the previous immutable application directory or container
   before every upgrade.
+- Before enabling PPS, prove the candidate, payout-ownership and share-accounting migrations; fund
+  and monitor a liquidity reserve; and complete the
+  [PPS commissioning checklist](pps.md#pre-production-checklist).
 
 Use the [release guide](releases.md) for installation, the [configuration guide](configuration.md)
 for settings, and the [database guide](database.md) for backup and schema preparation.
@@ -67,6 +70,8 @@ Monitor at least:
 - pool connections, hashrate, accepted/rejected shares and last block time;
 - PostgreSQL health, transaction latency, backup age and free storage;
 - wallet balances, payout ownership and uncertain payment/block events;
+- exact PPS liabilities, precision remainders, reserve coverage and accounting-retention backlog
+  when any pool uses PPS;
 - Miningcore log growth and filesystem free bytes/inodes; and
 - primary and emergency persistence-queue depth, high-water mark, capacity and overflow count.
 

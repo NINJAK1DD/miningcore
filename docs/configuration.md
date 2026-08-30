@@ -26,6 +26,7 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
+| Enable direct Bitcoin-family PPS | [Bitcoin-family PPS](#bitcoin-family-pps) |
 | Enable Litecoin–Dogecoin merged mining | [LTC/DOGE merged mining](#ltcdoge-merged-mining) |
 | Protect emergency share persistence | [Share recovery storage](#share-recovery-storage) |
 | Validate an edited file | [Validate changes safely](#validate-changes-safely) |
@@ -422,6 +423,29 @@ Truncation can leave a residual after every payment. It is carried into a later 
 but can remain indefinitely when a miner stops before reaching the threshold again. When every
 selected balance is below the configured precision, Miningcore skips wallet submission and logs the
 active `payoutDecimalPlaces` value so the operator can review `minimumPayment`.
+
+## Bitcoin-family PPS
+
+Direct pools using an audited Bitcoin-family template may set pool-level
+`paymentProcessing.payoutScheme` to `PPS`. Both the cluster and pool payment-processing switches
+must be enabled. The direct examples deliberately remain `SOLO`; PPS creates a liability for every
+valid share and requires an operator-funded reserve, three database migrations, retention planning
+and pre-production accounting tests.
+
+```json
+"paymentProcessing": {
+  "enabled": true,
+  "minimumPayment": 0.001,
+  "payoutScheme": "PPS",
+  "ppsShareRetentionDays": 7
+}
+```
+
+The snippet replaces only the selected pool's payment-processing object. Cluster-level
+`paymentProcessing.shareAccountingRetentionDays` and `shareAccountingPruneBatchSize` control the
+replay/evidence horizon and bounded cleanup. Read the [PPS operator guide](pps.md) before enabling
+the scheme; it covers the economic contract, migrations, reserve, relay ordering, commissioning,
+monitoring and recovery.
 
 ## Kaspa multi-transaction payouts
 

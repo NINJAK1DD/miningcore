@@ -49,6 +49,11 @@ for the expected miner fleet before deployment.
 | [`litecoin_dogecoin_merged_mining_pool.json`](litecoin_dogecoin_merged_mining_pool.json) | Litecoin PPLNS parent with Dogecoin PROP AuxPoW accounting, demonstrating independent mixed schemes and two miner difficulty tiers |
 | [`litecoin_pool.json`](litecoin_pool.json) | Legacy full Litecoin PPLNS example |
 
+Direct Bitcoin-family examples remain `SOLO` by default. To commission PPS, start from the intended
+coin's reviewed direct example, apply the required migrations, and change only its payout contract
+after completing the [PPS operator guide](../docs/pps.md). There is intentionally no copy-first PPS
+example that silently accepts an operator liability without the reserve and ledger checks.
+
 Every example that opens an internal Stratum listener has named low- and high-difficulty tiers. A
 few protocols retain a useful medium or optional-TLS tier as well. Receiver-only share recorders and
 the auxiliary-only DOGE pool do not open miner listeners, so duplicating their dormant endpoint

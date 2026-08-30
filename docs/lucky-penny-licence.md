@@ -1,9 +1,18 @@
 # Configuring a Lucky Penny licence key
 
 Miningcore uses AutoMapper 16 and does not currently use MediatR. This guide applies when an operator
-has chosen a Lucky Penny licence for AutoMapper or a bundle that includes it. It does not determine
-which licence terms apply to a deployment; review the upstream terms and obtain independent advice
-when needed.
+has chosen a Lucky Penny licence for AutoMapper or a bundle that includes it. AutoMapper 16 is
+dual-licensed under RPL-1.5 or Lucky Penny commercial terms, including a free Community tier for
+qualifying users. Selecting and documenting the applicable path is not optional; configuring a key
+applies only to a path that provides one. This guide does not determine which terms apply to a
+deployment; review the upstream terms and obtain independent advice when needed.
+
+To obtain a key, review the official [AutoMapper licensing and pricing](https://automapper.io/)
+page, choose the applicable Community or paid plan, and
+[register a Lucky Penny account](https://luckypennysoftware.com/Identity/Account/Register). The
+[Lucky Penny licensing FAQ](https://luckypennysoftware.com/faq) explains eligibility, purchase
+channels and account administration. Miningcore cannot determine eligibility or select licence terms
+for an operator.
 
 ## Choose the environment variable
 

@@ -294,11 +294,17 @@ active/inactive lookup clears the episode.
 ### Required scripts
 
 For an existing PostgreSQL database, stop Miningcore block writers and payout managers or schedule a
-maintenance window. Apply all three scripts before enabling merged mining:
+maintenance window. Follow the canonical
+[database upgrade procedure](database.md#upgrade-an-existing-database); it applies these three
+candidate-version scripts in order before activating the new release:
 
-- `src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql`
-- `src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql`
-- `src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql`
+- `add_auxpow_block_idempotency.sql`
+- `add_payout_manager_ownership.sql`
+- `add_share_accounting.sql`
+
+Do not run release migrations through the active `/opt/miningcore` symlink, which still identifies
+the old release at this point. The database runbook is the sole copy-paste migration procedure and
+also covers source-build paths, backup validation, activation ordering, and rollback boundaries.
 
 The accounting migration is required for any PPS, PROP or PPLNS participant. An unchanged
 SOLO/SOLO topology retains its established one-share wire/database record and does not require it.
