@@ -23,13 +23,14 @@ whether it will find enough mature blocks to cover that liability. The operator 
 network-difficulty, block-luck, reorganisation, daemon, wallet, liquidity and insolvency risk.
 
 For assigned share difficulty `d`, network difficulty `D`, spendable template reward `B`, and the
-positive reward-recipient fraction `f`, Miningcore calculates:
+reward-recipient fraction `f`, Miningcore calculates:
 
 ```text
 (1 - f) × d ÷ D × B
 ```
 
 The assigned difficulty is used; an unusually lucky share does not receive a larger PPS credit.
+The fraction `f` may be zero, but must remain below one so the retained reward fraction is positive.
 The exact liability is retained at 24 decimal places, the payable balance is rounded down to 12
 decimal places, and the sub-unit remainder is carried per pool and miner.
 
@@ -40,7 +41,8 @@ Current support is deliberately narrow:
 | Direct audited `Bitcoin`-family pool | Supported |
 | Integrated LTC/DOGE | Supported independently on parent and auxiliary |
 | Non-Bitcoin-family pool | Rejected before listeners open |
-| `PPBS` or `PPLNSBF` | Not implemented by this contract |
+| `PPBS` | No production payout-scheme implementation |
+| `PPLNSBF` | Separate scheme; excluded from integrated LTC/DOGE pooled accounting |
 
 Do not enable PPS merely because the configuration accepts it.
 Maintain a separately controlled reserve. Size it for an extended unlucky period, expected
@@ -111,10 +113,20 @@ configuration. Keep the daemon, wallet, Stratum, banning and recovery settings f
 example. `minimumPayment` is denominated in the pool coin. Do not rename a pool after it has ledger
 history, because pool ID is part of the accounting and idempotency identity.
 
+Both payment-processing switches shown above are mandatory before the pool accepts work. Miningcore
+rejects an enabled PPS pool if either switch is off. Administrative payment-processing routes also
+reject disabling an active PPS pool or enabling PPS without the cluster scheduler established at
+startup; use a controlled stop, reviewed configuration change and restart instead.
+
 `ppsShareRetentionDays` controls statistical share rows only. It does not erase balances,
 precision remainders or liabilities when a block settles. `shareAccountingRetentionDays` is the
 maximum accepted relay/recovery replay age; keep the same value on every participating node and
 choose a period longer than the longest supported outage or incident-response window.
+
+Configuration validation accepts `ppsShareRetentionDays` from 1 through 365,
+`shareAccountingRetentionDays` from 1 through 3650, and `shareAccountingPruneBatchSize` from 1000
+through 100000. Choose values from measured share volume, storage and replay requirements; do not
+reduce a retention horizon merely to clear a backlog.
 
 ## Merged-mining PPS
 
@@ -160,8 +172,9 @@ labels are documented in [API and monitoring](api.md#metrics-and-administration)
 - A stale or orphaned block does not reverse a committed PPS liability. A confirmed block does not
   add a second PPS credit.
 - Do not edit balances, delete accounting groups or discard remainders to repair an incident.
-- Preserve the service journal, PostgreSQL state, normal recovery journal, quarantine evidence and
-  recovery-state directory before restarting.
+- Preserve the service journal, PostgreSQL state, normal recovery journal,
+  [quarantine evidence](configuration.md#share-recovery-storage) and recovery-state directory before
+  restarting.
 - Import only the normal manifested recovery journal through the documented `-rs` procedure. A
   quarantine file is evidence for manual reconciliation and must never be passed directly to `-rs`.
 - Treat an uncertain wallet submission as potentially paid until wallet and database evidence prove

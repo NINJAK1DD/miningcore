@@ -40,7 +40,7 @@ the original authors and contributors.
 
 ## Quick start
 
-This path installs the signed prebuilt release on a new **Ubuntu 26.04 x64** host, creates
+This path installs the verified prebuilt release on a new **Ubuntu 26.04 x64** host, creates
 PostgreSQL, prepares the configuration, and runs Miningcore under systemd. Run each block only after
 the preceding check succeeds. Ubuntu 22.04 uses its separately built compatibility archive and
 different runtime packages; Ubuntu 24.04 is a source-build target. Use the
@@ -81,6 +81,7 @@ Select the release and download it into private temporary storage:
 ```console
 export MININGCORE_VERSION=v0.2.0
 export MININGCORE_UBUNTU=26.04
+MININGCORE_QUICKSTART_READY=
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX")"
 archive_name="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
 release_url="https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}"
@@ -88,55 +89,103 @@ curl --fail --location --output "$download_dir/$archive_name" \
   "$release_url/$archive_name"
 curl --fail --location --output "$download_dir/SHA256SUMS" \
   "$release_url/SHA256SUMS"
-(cd "$download_dir" && \
-  sha256sum --ignore-missing --check --strict SHA256SUMS)
+if (cd "$download_dir" && \
+    sha256sum --ignore-missing --check --strict SHA256SUMS); then
+  export MININGCORE_QUICKSTART_READY=1
+  echo "READY: $archive_name is verified"
+else
+  echo "STOP: release download or checksum verification failed" >&2
+fi
 ```
 
 Do not continue unless the checksum command reports the selected archive as `OK`. If the GitHub CLI
 is installed, also verify the release provenance:
 
 ```console
-gh attestation verify "$download_dir/$archive_name" --repo NINJAK1DD/miningcore
+if [ "${MININGCORE_QUICKSTART_READY:-}" = 1 ]; then
+  gh attestation verify "$download_dir/$archive_name" --repo NINJAK1DD/miningcore
+else
+  echo "STOP: no release archive passed checksum verification" >&2
+fi
 ```
 
 ### 3. Install the versioned application
 
 ```console
-id -u miningcore >/dev/null 2>&1 || \
-  sudo useradd --system --home-dir /var/lib/miningcore --shell /usr/sbin/nologin miningcore
-release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-sudo mkdir -p /opt
-sudo tar -xzf "$download_dir/$archive_name" -C /opt
-test -d "$release_dir"
-sudo install -d -m 0750 -o root -g miningcore /etc/miningcore
-sudo install -d -m 0750 -o miningcore -g miningcore \
-  /var/lib/miningcore /var/log/miningcore
-sudo install -m 0640 -o root -g miningcore \
-  "$release_dir/config.example.json" /etc/miningcore/config.json
-sudo ln -sfnT "$release_dir" /opt/miningcore
-cat "$release_dir/BUILD-INFO"
-LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version
+MININGCORE_INSTALL_READY=
+if [ "${MININGCORE_QUICKSTART_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  install_miningcore_release() {
+    { id -u miningcore >/dev/null 2>&1 ||
+      sudo useradd --system --home-dir /var/lib/miningcore \
+        --shell /usr/sbin/nologin miningcore; } || return
+    sudo mkdir -p /opt || return
+    sudo tar -xzf "$download_dir/$archive_name" -C /opt || return
+    test -d "$release_dir" || return
+    sudo install -d -m 0750 -o root -g miningcore /etc/miningcore || return
+    sudo install -d -m 0750 -o miningcore -g miningcore \
+      /var/lib/miningcore /var/log/miningcore || return
+    if [ ! -e /etc/miningcore/config.json ]; then
+      sudo install -m 0640 -o root -g miningcore \
+        "$release_dir/config.example.json" /etc/miningcore/config.json || return
+    else
+      echo "Keeping existing /etc/miningcore/config.json"
+    fi
+    cat "$release_dir/BUILD-INFO" || return
+    LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
+    sudo ln -sfnT "$release_dir" /opt/miningcore || return
+  }
+
+  if install_miningcore_release; then
+    MININGCORE_QUICKSTART_READY=
+    export MININGCORE_INSTALL_READY=1
+    echo "READY: installed $release_dir and updated /opt/miningcore"
+  else
+    echo "STOP: installation failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no verified release archive is available to install" >&2
+fi
 ```
 
 The version output must match the selected tag and include its source commit. Keep
 `/opt/miningcore` as the stable symlink; future upgrades install another immutable versioned
-directory before changing that link.
+directory before changing that link. Continue only after the block prints `READY` and exports
+`MININGCORE_INSTALL_READY=1`; the verified-download latch is consumed after a successful install.
 
 ### 4. Create PostgreSQL and load the schema
 
 Create a dedicated role without putting its password on the command line:
 
 ```console
-sudo -u postgres createuser --pwprompt miningcore
-sudo -u postgres createdb --owner=miningcore miningcore
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/createdb.sql
-psql -h 127.0.0.1 -U miningcore -d miningcore \
-  -c 'SELECT current_database(), current_user;'
+MININGCORE_DATABASE_READY=
+role_exists=
+database_exists=
+if role_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname = 'miningcore';")" &&
+   database_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'miningcore';")"; then
+  if [ "$role_exists" = 1 ] || [ "$database_exists" = 1 ]; then
+    echo "STOP: the miningcore role or database already exists; use the upgrade runbook" >&2
+  elif sudo -u postgres createuser --pwprompt miningcore &&
+       sudo -u postgres createdb --owner=miningcore miningcore &&
+       sudo -u postgres psql --single-transaction -v ON_ERROR_STOP=1 \
+         -d miningcore -f /opt/miningcore/migrations/createdb.sql &&
+       psql -h 127.0.0.1 -U miningcore -d miningcore \
+         -c 'SELECT current_database(), current_user;'; then
+    export MININGCORE_DATABASE_READY=1
+    echo "READY: created and verified the miningcore database"
+  else
+    echo "STOP: database provisioning failed; inspect PostgreSQL before retrying" >&2
+  fi
+else
+  echo "STOP: unable to inspect existing PostgreSQL roles and databases" >&2
+fi
 ```
 
-The final command prompts for the new password and must report database/user `miningcore`. Existing
-database operators should stop here and follow the
+On a successful fresh provision, the verification command prompts for the new password, must report
+database/user `miningcore`, and the block exports `MININGCORE_DATABASE_READY=1`. Existing database
+operators should stop here and follow the
 [upgrade and migration runbook](docs/database.md#upgrade-an-existing-database) instead of running
 the new-database schema over live data.
 
@@ -178,8 +227,9 @@ production. Do not expose daemon RPC or wallet RPC to the internet.
 
 Coin-specific RPC, wallet and extension requirements vary. Start with the chosen file in the
 [example index](examples/README.md), then check the matching definition in
-[`coins.json`](src/Miningcore/coins.json) and the daemon's pinned/released documentation. Miningcore
-must not be started until every enabled pool's daemon and wallet endpoint is reachable using the
+the installed `/opt/miningcore/coins.json` file (repository
+[source](src/Miningcore/coins.json)) and the daemon's pinned/released documentation. Miningcore must
+not be started until every enabled pool's daemon and wallet endpoint is reachable using the
 credentials in `/etc/miningcore/config.json`.
 
 ### 7. Optional: partition the `shares` table
@@ -193,11 +243,30 @@ The appendix deletes and rebuilds `shares`, so first preserve even the empty bas
 
 ```console
 umask 077
-sudo -u postgres pg_dump -Fc -d miningcore > "$HOME/miningcore-before-partition.dump"
-pg_restore --list "$HOME/miningcore-before-partition.dump" > /dev/null
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/createdb_postgresql_11_appendix.sql
+MININGCORE_PARTITION_READY=
+partition_backup="$HOME/miningcore-before-partition.dump"
+share_count=
+if sudo -u postgres pg_dump -Fc -d miningcore > "$partition_backup" &&
+   pg_restore --list "$partition_backup" > /dev/null &&
+   share_count="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d miningcore -c 'SELECT count(*) FROM public.shares;')"; then
+  if [ "$share_count" != 0 ]; then
+    echo "STOP: shares is not empty; use the full partition migration runbook" >&2
+  elif sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+       -f /opt/miningcore/migrations/createdb_postgresql_11_appendix.sql; then
+    export MININGCORE_PARTITION_READY=1
+    echo "READY: rebuilt the empty shares table as a partitioned table"
+  else
+    echo "STOP: partition appendix failed; restore or investigate before continuing" >&2
+  fi
+else
+  echo "STOP: backup, backup validation or empty-table check failed; appendix not run" >&2
+fi
 ```
+
+Continue with partition creation only after the block prints `READY` and exports
+`MININGCORE_PARTITION_READY=1`. Any backup, validation, table-inspection or appendix failure leaves
+that latch empty and must be investigated before retrying.
 
 Create one partition for every pool ID that the configuration can record. Replace the example table
 name and value; the value must exactly match `pools[].id`:
@@ -224,12 +293,12 @@ Generate the administrative API token outside `config.json`, protect it, then in
 unit:
 
 ```console
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo cp /opt/miningcore/systemd/miningcore.service \
   /etc/systemd/system/miningcore.service
 sudo systemctl daemon-reload
@@ -240,6 +309,19 @@ sudo systemctl status miningcore --no-pager -l
 The unit runs as the unprivileged `miningcore` account, creates persistent state/log directories,
 allows Miningcore's bounded clean shutdown to finish, and prevents an unsafe automatic restart
 after dual persistence failure (exit status 74).
+
+#### Review AutoMapper licensing and configure an applicable Lucky Penny key
+
+AutoMapper 16 is dual-licensed under RPL-1.5 or Lucky Penny commercial terms, including a free
+Community tier for qualifying users. Determine and document the applicable path for your deployment;
+if that path provides a key, configure it now in a separate root-only environment file and systemd
+drop-in. Do not place the key in `config.json`, the packaged unit, shell history or source control.
+Obtain a key through the official
+[AutoMapper licensing and pricing page](https://automapper.io/) and
+[Lucky Penny registration](https://luckypennysoftware.com/Identity/Account/Register), then follow the
+[Lucky Penny licence-key guide](docs/lucky-penny-licence.md) for choosing the correct environment
+variable, secure installation, validation, rotation and Docker instructions. That guide helps you
+configure a key; it does not determine which licence terms apply to your deployment.
 
 Before starting a remotely hosted pool, configure the provider firewall and host firewall without
 locking out the administration path. Permit only the intended Stratum/TLS and public API ports.
@@ -279,6 +361,7 @@ and recovery requirements.
 | Back up and restore payout wallets | [Wallet backup runbook](docs/operations.md#wallet-backups) |
 | Use the API, WebSocket events or metrics | [API guide](docs/api.md) |
 | Secure and call administrative routes | [Administrative API security](docs/admin-api-security.md) |
+| Review AutoMapper licensing or configure a Lucky Penny key | [Lucky Penny licence-key guide](docs/lucky-penny-licence.md) |
 | Deploy distributed Stratum/recorder roles | [Share-relay guide](docs/share-relays.md) |
 | Enable direct Bitcoin-family PPS | [PPS operator guide](docs/pps.md) |
 | Validate a new deployment before miners | [Operator preflight](docs/operations.md#before-accepting-miners) |
@@ -441,12 +524,12 @@ sudo curl -fL \
   -o /etc/miningcore/config.json
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo chown 10001:10001 /var/lib/miningcore
 sudo docker network create --driver bridge \
   --subnet 172.30.56.0/24 --gateway 172.30.56.1 miningcore

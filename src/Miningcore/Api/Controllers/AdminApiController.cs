@@ -1,5 +1,6 @@
 using Autofac;
 using Microsoft.AspNetCore.Mvc;
+using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Mining;
 using Miningcore.Persistence.Repositories;
@@ -72,12 +73,12 @@ public class AdminApiController : ApiControllerBase
     [HttpPut("payment/processing/enable")]
     public ActionResult<string> EnablePoolsPaymentProcessing()
     {
-        var poolIdsUpdated = new List<string>();
-        foreach(var pool in pools.Values)
-        {
-            if(!pool.Config.Enabled)
-                continue;
+        var targetPools = pools.Values.Where(pool => pool.Config.Enabled).ToArray();
+        ValidatePaymentProcessingToggle(targetPools, true);
 
+        var poolIdsUpdated = new List<string>();
+        foreach(var pool in targetPools)
+        {
             poolIdsUpdated.Add(pool.Config.Id);
             pool.Config.PaymentProcessing.Enabled = true;
         }
@@ -92,12 +93,12 @@ public class AdminApiController : ApiControllerBase
     [HttpPut("payment/processing/disable")]
     public ActionResult<string> DisablePoolsPaymentProcessing()
     {
-        var poolIdsUpdated = new List<string>();
-        foreach(var pool in pools.Values)
-        {
-            if(!pool.Config.Enabled)
-                continue;
+        var targetPools = pools.Values.Where(pool => pool.Config.Enabled).ToArray();
+        ValidatePaymentProcessingToggle(targetPools, false);
 
+        var poolIdsUpdated = new List<string>();
+        foreach(var pool in targetPools)
+        {
             poolIdsUpdated.Add(pool.Config.Id);
             pool.Config.PaymentProcessing.Enabled = false;
         }
@@ -119,6 +120,7 @@ public class AdminApiController : ApiControllerBase
         if(poolInstance == null)
             return "-1";
 
+        ValidatePaymentProcessingToggle(new[] { poolInstance }, true);
         poolInstance.Config.PaymentProcessing.Enabled = true;
         logger.Info(()=> $"Enabled payment processing for pool {poolId}");
         return "Ok";
@@ -134,6 +136,7 @@ public class AdminApiController : ApiControllerBase
         if(poolInstance == null)
             return "-1";
 
+        ValidatePaymentProcessingToggle(new[] { poolInstance }, false);
         poolInstance.Config.PaymentProcessing.Enabled = false;
         logger.Info(()=> $"Disabled payment processing for pool {poolId}");
         return "Ok";
@@ -227,4 +230,28 @@ public class AdminApiController : ApiControllerBase
     }
 
     #endregion // Actions
+
+    private void ValidatePaymentProcessingToggle(IEnumerable<IMiningPool> targetPools,
+        bool enable)
+    {
+        var activePpsPool = targetPools.FirstOrDefault(pool =>
+            pool.Config.Enabled &&
+            pool.Config.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS);
+        if(activePpsPool == null)
+            return;
+
+        if(!enable)
+            throw new ApiException(
+                $"Cannot disable payment processing while PPS pool '{activePpsPool.Config.Id}' " +
+                "is accepting shares; stop Miningcore and make the change through a " +
+                "controlled restart",
+                HttpStatusCode.Conflict);
+
+        if(clusterConfig.PaymentProcessing?.Enabled != true)
+            throw new ApiException(
+                $"Cannot enable payment processing for PPS pool '{activePpsPool.Config.Id}' " +
+                "because cluster-level payment processing was not active at startup; use a " +
+                "controlled restart with a valid PPS configuration",
+                HttpStatusCode.Conflict);
+    }
 }

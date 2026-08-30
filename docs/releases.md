@@ -74,6 +74,10 @@ Litecoin/Dogecoin merged mining now supports independently selected `SOLO`, `PPS
 `PPLNS` schemes. One accepted proof is carried as a correlated parent/auxiliary envelope and
 committed transactionally, so cancellation, relay, recovery or database failure cannot credit only
 one chain. Unsupported `PPBS` and `PPLNSBF` combinations still fail before Stratum listeners open.
+An enabled PPS pool requires both pool-level and cluster-level payment processing; startup fails
+before listeners open when either contract is disabled. Runtime administrative toggles cannot
+disable processing for an active PPS pool or activate PPS without the scheduler created at startup;
+make those changes through a reviewed configuration and controlled restart.
 
 A production Bitcoin-family PPS implementation creates `(1 - fee) * difficulty / networkDifficulty
 * spendableTemplateReward` liability at valid-share commit time. Exact 24-decimal credits,
@@ -344,23 +348,25 @@ it:
 MININGCORE_INSTALL_READY=
 if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-  if (
-    set -e
-    id -u miningcore >/dev/null 2>&1 || \
-      sudo useradd --system --home-dir /var/lib/miningcore --shell /usr/sbin/nologin miningcore
-    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
-    sudo tar -xzf "$archive" -C /opt
-    test -d "$release_dir"
+  install_miningcore_release() {
+    { id -u miningcore >/dev/null 2>&1 ||
+      sudo useradd --system --home-dir /var/lib/miningcore \
+        --shell /usr/sbin/nologin miningcore; } || return
+    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore || return
+    sudo tar -xzf "$archive" -C /opt || return
+    test -d "$release_dir" || return
     if [ ! -e /etc/miningcore/config.json ]; then
-      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json
+      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json || return
     fi
-    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
-    sudo chown root:miningcore /etc/miningcore
-    sudo chown root:miningcore /etc/miningcore/config.json
-    sudo chmod 0750 /etc/miningcore
-    sudo chmod 0640 /etc/miningcore/config.json
-    sudo ln -sfnT "$release_dir" /opt/miningcore
-  ); then
+    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore || return
+    sudo chown root:miningcore /etc/miningcore || return
+    sudo chown root:miningcore /etc/miningcore/config.json || return
+    sudo chmod 0750 /etc/miningcore || return
+    sudo chmod 0640 /etc/miningcore/config.json || return
+    sudo ln -sfnT "$release_dir" /opt/miningcore || return
+  }
+
+  if install_miningcore_release; then
     MININGCORE_RELEASE_READY=
     if rm -f -- "$archive" "$checksum_file" &&
         rmdir -- "$MININGCORE_DOWNLOAD_DIR"; then
@@ -426,9 +432,35 @@ of source control.
 For a new database, use the packaged schema:
 
 ```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/createdb.sql
+MININGCORE_DATABASE_READY=
+role_exists=
+database_exists=
+if role_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname = 'miningcore';")" &&
+   database_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'miningcore';")"; then
+  if [ "$role_exists" = 1 ] || [ "$database_exists" = 1 ]; then
+    echo "STOP: the miningcore role or database already exists; use the upgrade runbook" >&2
+  elif sudo -u postgres createuser --pwprompt miningcore &&
+       sudo -u postgres createdb --owner=miningcore miningcore &&
+       sudo -u postgres psql --single-transaction -v ON_ERROR_STOP=1 \
+         -d miningcore -f /opt/miningcore/migrations/createdb.sql &&
+       psql -h 127.0.0.1 -U miningcore -d miningcore \
+         -c 'SELECT current_database(), current_user;'; then
+    export MININGCORE_DATABASE_READY=1
+    echo "READY: created and verified the miningcore database"
+  else
+    echo "STOP: database provisioning failed; inspect PostgreSQL before retrying" >&2
+  fi
+else
+  echo "STOP: unable to inspect existing PostgreSQL roles and databases" >&2
+fi
 ```
+
+On a successful fresh provision, the commands prompt for a new role password without placing it on
+the command line, the final query must report database and user `miningcore`, and the block exports
+`MININGCORE_DATABASE_READY=1`. If either object already exists, the block stops before creation or
+schema import; use the existing-database procedure below instead.
 
 For an existing database, stop all Miningcore writers and payout managers, take a tested backup,
 and apply the migrations required by the release before starting the new binary. Read the packaged
@@ -442,12 +474,12 @@ allows 90 seconds for the application's bounded clean shutdown and durable recov
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service
 sudo mkdir -p /etc/miningcore
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now miningcore
 sudo systemctl status miningcore
@@ -491,12 +523,12 @@ sudo curl -fL \
   -o /etc/miningcore/config.json
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo chown 10001:10001 /var/lib/miningcore
 sudo docker pull "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
 sudo docker run -d \

@@ -17,12 +17,12 @@ Generate exactly 32 unpredictable bytes encoded as 64 hexadecimal characters:
 
 ```console
 sudo mkdir -p /etc/miningcore
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 ```
 
 Miningcore accepts exactly 64 ASCII hexadecimal characters (`0-9`, `a-f` or `A-F`). It rejects
@@ -183,6 +183,12 @@ State-changing requests use explicit non-GET verbs:
 | `PUT` | `/api/admin/pools/{poolId}/miners/{address}/settings` | Replace miner settings |
 | `POST` | `/api/admin/forcegc` | Request an immediate garbage collection |
 
+Payment-processing toggles are validated atomically before any pool is changed. Miningcore rejects
+disabling payment processing while an enabled PPS pool is accepting shares, and enabling PPS when
+the cluster-level payout and retention scheduler was not active at startup. Stop Miningcore and make
+PPS contract changes through a reviewed configuration and controlled restart; see the
+[PPS operator guide](pps.md).
+
 Read-only administrative routes remain `GET`, but require the same bearer token and IP whitelist.
 The former public `POST /api/pools/{poolId}/miners/{address}/settings` route has been removed because
 a caller-supplied recent mining IP address is not adequate authorization. No unauthenticated
@@ -199,12 +205,12 @@ and firewall/reverse-proxy exposure before restoring administrative access.
 For systemd, replace the file and restart the service:
 
 ```console
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env.new
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env.new >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env.new
-sudo chmod 0600 /etc/miningcore/miningcore.env.new
 sudo mv /etc/miningcore/miningcore.env.new /etc/miningcore/miningcore.env
 sudo systemctl restart miningcore
 ```

@@ -58,6 +58,35 @@ public class PpsConfigurationTests
     }
 
     [Fact]
+    public void PpsWithoutClusterPaymentProcessing_FailsBeforeMiningStarts()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.PaymentProcessing.Enabled = false;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidatePpsDeployment(config));
+
+        Assert.Contains("PPS requires cluster-level payment processing", error.Message);
+        Assert.Contains("liabilities are paid", error.Message);
+        Assert.Contains("retention is maintained", error.Message);
+    }
+
+    [Fact]
+    public void PpsWithoutPoolPaymentProcessing_FailsBeforeMiningStarts()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].PaymentProcessing.Enabled = false;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidatePpsDeployment(config));
+
+        Assert.Equal(config.Pools[0].Id, error.PoolId);
+        Assert.Contains("uses PPS", error.Message);
+        Assert.Contains("must enable pool-level payment processing", error.Message);
+        Assert.Contains("before it can accept shares", error.Message);
+    }
+
+    [Fact]
     public void NonBitcoinPps_FailsBeforeMiningStarts()
     {
         var config = CreateConfig(CoinFamily.Ethereum);

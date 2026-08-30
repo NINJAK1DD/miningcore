@@ -2149,9 +2149,21 @@ public class Program : ProcessStatusBackgroundService
         bool requireAssignedTemplates = false)
     {
         var ppsPools = config?.Pools?.Where(pool => pool.Enabled &&
-            pool.PaymentProcessing?.Enabled == true &&
-            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS).ToArray() ??
+            pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS).ToArray() ??
             Array.Empty<PoolConfig>();
+
+        var paymentDisabledPool = ppsPools.FirstOrDefault(pool =>
+            pool.PaymentProcessing.Enabled != true);
+        if(paymentDisabledPool != null)
+            throw new PoolStartupException(
+                $"Pool '{paymentDisabledPool.Id}' uses PPS and must enable pool-level payment " +
+                "processing before it can accept shares",
+                paymentDisabledPool.Id);
+
+        if(ppsPools.Length > 0 && config.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                "PPS requires cluster-level payment processing so committed liabilities are paid " +
+                "and share-accounting retention is maintained.");
 
         foreach(var pool in ppsPools)
         {

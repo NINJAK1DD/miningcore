@@ -6,18 +6,24 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
 pps_document="$repository_root/docs/pps.md"
+licence_document="$repository_root/docs/lucky-penny-licence.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
 release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
 release_workflow="$repository_root/.github/workflows/release.yml"
 zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Program.cs"
 capability_dir=
+fixture_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
 
 cleanup() {
   if [[ -n "$capability_dir" ]]; then
     rm -f -- "$capability_dir/link"
     rmdir -- "$capability_dir/target" "$capability_dir" 2>/dev/null || true
+  fi
+
+  if [[ -n "$fixture_dir" ]]; then
+    rm -rf -- "$fixture_dir"
   fi
 }
 trap cleanup EXIT
@@ -42,6 +48,34 @@ verification_block=$(awk '
   capture && /^```$/ { exit }
   capture { print }
 ' "$document")
+readme_install_block=$(awk '
+  { sub(/\r$/, "") }
+  /^### 3\. Install the versioned application$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
+readme_database_block=$(awk '
+  { sub(/\r$/, "") }
+  /^### 4\. Create PostgreSQL and load the schema$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
+release_database_block=$(awk '
+  { sub(/\r$/, "") }
+  /^For a new database, use the packaged schema:$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$document")
+partition_block=$(awk '
+  { sub(/\r$/, "") }
+  /^### 7\. Optional: partition the `shares` table$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
 
 assert_contains() {
   local label=$1
@@ -84,8 +118,18 @@ assert_file_contains 'the v0.2.0 container example' \
   'MININGCORE_VERSION=v0.2.0' "$readme"
 assert_file_contains 'the quick-start Ubuntu 26.04 runtime package' \
   'aspnetcore-runtime-10.0' "$readme"
+assert_file_contains 'the quick-start checksum readiness latch' \
+  'export MININGCORE_QUICKSTART_READY=1' "$readme"
+assert_file_contains 'the quick-start guarded installation' \
+  'if [ "${MININGCORE_QUICKSTART_READY:-}" = 1 ]; then' "$readme"
+assert_file_contains 'the quick-start existing-config guard' \
+  'if [ ! -e /etc/miningcore/config.json ]; then' "$readme"
 assert_file_contains 'the quick-start PostgreSQL role creation' \
   'sudo -u postgres createuser --pwprompt miningcore' "$readme"
+assert_contains 'the packaged PostgreSQL role creation' \
+  'sudo -u postgres createuser --pwprompt miningcore'
+assert_contains 'the packaged PostgreSQL database creation' \
+  'sudo -u postgres createdb --owner=miningcore miningcore'
 assert_file_contains 'the quick-start packaged schema path' \
   '/opt/miningcore/migrations/createdb.sql' "$readme"
 assert_file_contains 'the quick-start advanced partitioning appendix' \
@@ -94,6 +138,8 @@ assert_file_contains 'the quick-start partition example' \
   'CREATE TABLE public.shares_bitcoin_solo' "$readme"
 assert_file_contains 'the quick-start daemon ownership boundary' \
   'Miningcore does not install or manage the full nodes' "$readme"
+assert_file_contains 'the installed coin-definition path' \
+  '/opt/miningcore/coins.json' "$readme"
 assert_file_contains 'the quick-start persistent logging path' \
   'logging.logBaseDirectory` to `/var/log/miningcore' "$readme"
 assert_file_contains 'the quick-start recovery state path' \
@@ -102,6 +148,22 @@ assert_file_contains 'the quick-start systemd unit path' \
   '/etc/systemd/system/miningcore.service' "$readme"
 assert_file_contains 'the quick-start service enablement' \
   'sudo systemctl enable --now miningcore' "$readme"
+assert_file_contains 'the quick-start AutoMapper licensing guidance' \
+  'Review AutoMapper licensing and configure an applicable Lucky Penny key' "$readme"
+assert_file_contains 'the quick-start Lucky Penny guide link' \
+  '[Lucky Penny licence-key guide](docs/lucky-penny-licence.md)' "$readme"
+assert_file_contains 'the Lucky Penny documentation-table entry' \
+  '| Review AutoMapper licensing or configure a Lucky Penny key |' "$readme"
+assert_file_contains 'the official AutoMapper licence acquisition link' \
+  'https://automapper.io/' "$readme"
+assert_file_contains 'the official Lucky Penny registration link' \
+  'https://luckypennysoftware.com/Identity/Account/Register' "$readme"
+assert_file_contains 'the licence guide acquisition route' \
+  'https://automapper.io/' "$licence_document"
+assert_file_contains 'the licence guide account-registration route' \
+  'https://luckypennysoftware.com/Identity/Account/Register' "$licence_document"
+assert_file_contains 'the neutral AutoMapper dual-licensing boundary' \
+  'dual-licensed under RPL-1.5 or Lucky Penny commercial terms' "$licence_document"
 assert_file_contains 'the quick-start private-service boundary' \
   'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
 assert_file_contains 'the quick-start placeholder gate' \
@@ -129,6 +191,16 @@ assert_file_contains 'the PPS receiver-before-sender rule' \
   'Upgrade and migrate relay receivers/recorders before senders' "$pps_document"
 assert_file_contains 'the authoritative PPS ledger boundary' \
   'are the financial record' "$pps_document"
+assert_file_contains 'the PPS share-retention range' \
+  'ppsShareRetentionDays` from 1 through 365' "$pps_document"
+assert_file_contains 'the PPS accounting-retention range' \
+  'shareAccountingRetentionDays` from 1 through 3650' "$pps_document"
+assert_file_contains 'the PPS prune-batch range' \
+  'shareAccountingPruneBatchSize` from 1000' "$pps_document"
+assert_file_contains 'the PPS two-level payment-processing requirement' \
+  'Both payment-processing switches shown above are mandatory' "$pps_document"
+assert_file_contains 'the PPS runtime-toggle safety boundary' \
+  'reject disabling an active PPS pool' "$pps_document"
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
@@ -300,6 +372,48 @@ assert_contains 'the CryptoNote exception-containment boundary' \
 assert_contains 'the path-filtered branch-protection warning' \
   'Do not configure it as a required'
 
+assert_secure_token_writes() {
+  local source=$1
+
+  if ! awk '
+    /^```/ {
+      in_code = !in_code
+      pending_install = 0
+      secure_live = 0
+      secure_new = 0
+      next
+    }
+    !in_code { next }
+    /sudo install -m 0600 -o root -g root \/dev\/null/ {
+      pending_install = 1
+      next
+    }
+    pending_install && /\/etc\/miningcore\/miningcore\.env\.new/ {
+      secure_new = 1
+      pending_install = 0
+      next
+    }
+    pending_install && /\/etc\/miningcore\/miningcore\.env/ {
+      secure_live = 1
+      pending_install = 0
+      next
+    }
+    /sudo tee \/etc\/miningcore\/miningcore\.env\.new/ && !secure_new {
+      unsafe = 1
+    }
+    /sudo tee \/etc\/miningcore\/miningcore\.env([^.]|$)/ && !secure_live {
+      unsafe = 1
+    }
+    END { exit unsafe ? 1 : 0 }
+  ' "$source"; then
+    echo "$source writes an administrative token before creating its root-only file" >&2
+    exit 1
+  fi
+}
+
+assert_secure_token_writes "$readme"
+assert_secure_token_writes "$document"
+
 for stale_version in v0.1.0-rc.9 v0.1.0-rc.10 v0.1.0-rc.11 v0.1.0-rc.12; do
   if grep -Fq "$stale_version" "$readme" "$document"; then
     echo "Release documentation still references stale version $stale_version" >&2
@@ -353,6 +467,43 @@ fi
 bash -n <<<"$selection_block"
 bash -n <<<"$install_block"
 bash -n <<<"$verification_block"
+bash -n <<<"$readme_install_block"
+bash -n <<<"$readme_database_block"
+bash -n <<<"$release_database_block"
+bash -n <<<"$partition_block"
+
+if [[ "$readme_database_block" != "$release_database_block" ]]; then
+  echo 'README and release-guide fresh-database procedures have drifted' >&2
+  exit 1
+fi
+
+for required in \
+  'MININGCORE_DATABASE_READY=' \
+  "SELECT 1 FROM pg_roles WHERE rolname = 'miningcore'" \
+  "SELECT 1 FROM pg_database WHERE datname = 'miningcore'" \
+  'sudo -u postgres createuser --pwprompt miningcore &&' \
+  'sudo -u postgres createdb --owner=miningcore miningcore &&' \
+  'psql --single-transaction -v ON_ERROR_STOP=1' \
+  'export MININGCORE_DATABASE_READY=1'; do
+  if ! grep -Fq "$required" <<<"$readme_database_block"; then
+    echo "Fresh-database block is missing: $required" >&2
+    exit 1
+  fi
+done
+
+for required in \
+  'MININGCORE_PARTITION_READY=' \
+  'pg_dump -Fc -d miningcore' \
+  'pg_restore --list "$partition_backup"' \
+  'SELECT count(*) FROM public.shares;' \
+  'if [ "$share_count" != 0 ]; then' \
+  'createdb_postgresql_11_appendix.sql' \
+  'export MININGCORE_PARTITION_READY=1'; do
+  if ! grep -Fq "$required" <<<"$partition_block"; then
+    echo "Quick-start partition block is missing: $required" >&2
+    exit 1
+  fi
+done
 
 for required in \
   'MININGCORE_HOST_RELEASE=' \
@@ -501,6 +652,174 @@ blocked_verification_output=$(
 )
 if ! grep -Fq 'no release from this installation run' <<<"$blocked_verification_output"; then
   echo 'The verification block did not reject stale or absent installation state' >&2
+  exit 1
+fi
+
+# Execute the documented blocks against hostile command fixtures. These checks
+# model an ordinary interactive shell, where a failed command does not imply a
+# global errexit policy.
+fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-install-docs.XXXXXXXX")
+mkdir -p "$fixture_dir/bin" "$fixture_dir/download" "$fixture_dir/home"
+trace="$fixture_dir/trace"
+
+cat > "$fixture_dir/bin/id" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$fixture_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOC_TEST_TRACE:?}"
+exit 0
+EOF
+chmod +x "$fixture_dir/bin/id" "$fixture_dir/bin/sudo"
+
+: > "$trace"
+failed_release_install=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_TRACE="$trace" \
+    MININGCORE_RELEASE_READY=1 MININGCORE_VERSION=v-doc-test-missing \
+    MININGCORE_UBUNTU=26.04 MININGCORE_DOWNLOAD_DIR="$fixture_dir/download" \
+    bash -c "$install_block" 2>&1
+)
+if ! grep -Fq 'installation failed; /opt/miningcore was not changed' \
+    <<<"$failed_release_install" || grep -Fq 'ln -sfnT' "$trace"; then
+  echo 'Release-guide installation can activate a missing extraction' >&2
+  exit 1
+fi
+
+: > "$trace"
+failed_readme_install=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_TRACE="$trace" \
+    MININGCORE_QUICKSTART_READY=1 MININGCORE_VERSION=v-doc-test-missing \
+    MININGCORE_UBUNTU=26.04 download_dir="$fixture_dir/download" \
+    archive_name=miningcore-missing.tar.gz bash -c "$readme_install_block" 2>&1
+)
+if ! grep -Fq 'installation failed; /opt/miningcore was not changed' \
+    <<<"$failed_readme_install" || grep -Fq 'ln -sfnT' "$trace"; then
+  echo 'README installation can activate a missing extraction' >&2
+  exit 1
+fi
+
+cat > "$fixture_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOC_TEST_TRACE:?}"
+case "$*" in
+  *"SELECT 1 FROM pg_roles"*)
+    printf '%s\n' "${DOC_TEST_ROLE_EXISTS:-}"
+    ;;
+  *"SELECT 1 FROM pg_database"*)
+    printf '%s\n' "${DOC_TEST_DATABASE_EXISTS:-}"
+    ;;
+  *createuser*)
+    exit "${DOC_TEST_CREATEUSER_STATUS:-0}"
+    ;;
+  *createdb.sql*)
+    exit "${DOC_TEST_SCHEMA_STATUS:-0}"
+    ;;
+  *createdb*)
+    exit "${DOC_TEST_CREATEDB_STATUS:-0}"
+    ;;
+esac
+exit 0
+EOF
+cat > "$fixture_dir/bin/psql" <<'EOF'
+#!/usr/bin/env bash
+printf 'verification %s\n' "$*" >> "${DOC_TEST_TRACE:?}"
+exit "${DOC_TEST_VERIFY_STATUS:-0}"
+EOF
+chmod +x "$fixture_dir/bin/sudo" "$fixture_dir/bin/psql"
+
+: > "$trace"
+existing_database_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_TRACE="$trace" \
+    DOC_TEST_ROLE_EXISTS=1 DOC_TEST_DATABASE_EXISTS= \
+    bash -c "$readme_database_block" 2>&1
+)
+if ! grep -Fq 'role or database already exists' <<<"$existing_database_output" ||
+    grep -Eq 'createuser|createdb.sql|verification ' "$trace"; then
+  echo 'Fresh-database block modifies or verifies a pre-existing deployment' >&2
+  exit 1
+fi
+
+: > "$trace"
+failed_database_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_TRACE="$trace" \
+    DOC_TEST_ROLE_EXISTS= DOC_TEST_DATABASE_EXISTS= DOC_TEST_CREATEDB_STATUS=1 \
+    bash -c "$readme_database_block" 2>&1
+)
+if ! grep -Fq 'database provisioning failed' <<<"$failed_database_output" ||
+    grep -Eq 'createdb.sql|verification ' "$trace"; then
+  echo 'Fresh-database block imports the schema after failed object creation' >&2
+  exit 1
+fi
+
+: > "$trace"
+successful_database_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_TRACE="$trace" \
+    DOC_TEST_ROLE_EXISTS= DOC_TEST_DATABASE_EXISTS= \
+    bash -c "$readme_database_block" 2>&1
+)
+if ! grep -Fq 'READY: created and verified the miningcore database' \
+    <<<"$successful_database_output" ||
+    ! grep -Fq -- '--single-transaction' "$trace" ||
+    ! grep -Fq 'verification ' "$trace"; then
+  echo 'Fresh-database block did not complete its guarded success path' >&2
+  exit 1
+fi
+
+cat > "$fixture_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOC_TEST_TRACE:?}"
+case "$*" in
+  *pg_dump*)
+    exit "${DOC_TEST_DUMP_STATUS:-0}"
+    ;;
+  *createdb_postgresql_11_appendix.sql*)
+    exit "${DOC_TEST_APPENDIX_STATUS:-0}"
+    ;;
+  *"SELECT count(*) FROM public.shares;"*)
+    printf '%s\n' "${DOC_TEST_SHARE_COUNT:-0}"
+    ;;
+esac
+exit 0
+EOF
+cat > "$fixture_dir/bin/pg_restore" <<'EOF'
+#!/usr/bin/env bash
+printf 'pg_restore %s\n' "$*" >> "${DOC_TEST_TRACE:?}"
+exit "${DOC_TEST_RESTORE_STATUS:-0}"
+EOF
+chmod +x "$fixture_dir/bin/sudo" "$fixture_dir/bin/pg_restore"
+
+: > "$trace"
+failed_backup_output=$(
+  env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
+    DOC_TEST_TRACE="$trace" DOC_TEST_DUMP_STATUS=1 bash -c "$partition_block" 2>&1
+)
+if ! grep -Fq 'appendix not run' <<<"$failed_backup_output" ||
+    grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
+  echo 'Partition appendix ran after a failed backup' >&2
+  exit 1
+fi
+
+: > "$trace"
+nonempty_shares_output=$(
+  env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
+    DOC_TEST_TRACE="$trace" DOC_TEST_SHARE_COUNT=1 bash -c "$partition_block" 2>&1
+)
+if ! grep -Fq 'shares is not empty' <<<"$nonempty_shares_output" ||
+    grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
+  echo 'Partition appendix ran against a non-empty shares table' >&2
+  exit 1
+fi
+
+: > "$trace"
+successful_partition_output=$(
+  env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
+    DOC_TEST_TRACE="$trace" DOC_TEST_SHARE_COUNT=0 bash -c "$partition_block" 2>&1
+)
+if ! grep -Fq 'READY: rebuilt the empty shares table' \
+    <<<"$successful_partition_output" ||
+    ! grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
+  echo 'Partition block did not complete its guarded success path' >&2
   exit 1
 fi
 
