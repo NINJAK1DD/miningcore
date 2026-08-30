@@ -230,6 +230,15 @@ assert_file_contains 'the merged-mining canonical database-upgrade delegation' \
 assert_file_contains 'the merged-mining active-symlink prohibition' \
   'Do not run release migrations through the active `/opt/miningcore` symlink' \
   "$merged_mining_document"
+assert_file_contains 'the database-upgrade relay-recorder stop boundary' \
+  'share-relay receivers/recorders, recovery importers and payout managers on every node' \
+  "$database_document"
+assert_file_contains 'the release-upgrade relay-recorder stop boundary' \
+  'share-relay receivers/recorders, recovery importers and payout managers' "$document"
+assert_file_contains 'the release-upgrade local-service scope warning' \
+  'stops only the supplied local `miningcore.service`' "$document"
+assert_file_contains 'the non-PPS schema-convergence clarification' \
+  'canonical v0.2.0 upgrade still applies all three additive, idempotent migrations' "$document"
 assert_file_contains 'the database-runbook transactional initial import' \
   '--single-transaction' "$database_document"
 assert_file_contains 'the quick-start existing-partition explanation' \

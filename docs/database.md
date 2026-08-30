@@ -130,8 +130,9 @@ A backup is not proven until it has been restored and checked.
 
 First extract and verify the selected candidate release without changing `/opt/miningcore`, following
 the [release upgrade procedure](releases.md#upgrade-or-roll-back). Stop Miningcore block writers,
-recovery importers and payout managers, take a verified backup, then point this shell at that exact
-immutable candidate and apply the migrations with `ON_ERROR_STOP`:
+share-relay receivers/recorders, recovery importers and payout managers on every node that uses the
+database, take a verified backup, then point this shell at that exact immutable candidate and apply
+the migrations with `ON_ERROR_STOP`:
 
 ```console
 export MININGCORE_VERSION=v0.2.0

@@ -51,8 +51,10 @@ coin-template `blockSerializer` setting. Review this section before replacing a 
 
 ### Upgrade boundary from v0.1.0
 
-- **Existing non-PPS pools and unchanged LTC/DOGE `SOLO`/`SOLO`:** no new share-accounting
-  migration. Preserve the backup and review custom template compatibility.
+- **Existing non-PPS pools and unchanged LTC/DOGE `SOLO`/`SOLO`:** no pooled-accounting feature is
+  required, but the canonical v0.2.0 upgrade still applies all three additive, idempotent migrations
+  so every upgraded database has the same reviewed schema. Preserve the backup and review custom
+  template compatibility.
 - **Direct Bitcoin-family PPS or pooled LTC/DOGE accounting:** stop all writers and payout managers,
   verify a backup, and apply the candidate-idempotency, payout-ownership and share-accounting
   migrations.
@@ -503,7 +505,9 @@ procedure for routine upgrades after the deployment layout and runtime are alrea
 2. Download and verify the new archive using [Choose a version](#choose-a-version).
 3. Extract and verify the candidate in its immutable versioned directory without changing
    `/opt/miningcore`.
-4. Stop Miningcore and confirm no other payout manager owns the same pools/database.
+4. Stop every Miningcore writer using the database, including separately deployed share-relay
+   receivers/recorders and recovery importers, and confirm no other payout manager owns the same
+   pools/database.
 5. Back up PostgreSQL and prove the backup inventory is readable.
 6. Apply release-specific migrations from the candidate's `migrations` directory.
 7. Change `/opt/miningcore` only after every migration succeeds.
@@ -512,6 +516,11 @@ procedure for routine upgrades after the deployment layout and runtime are alrea
 Run this block in the same shell as the successful download-and-verification block. It consumes that
 block's readiness latch and archive path. Replace the migration list only when the target release
 notes explicitly require a different ordered set:
+
+The `systemctl` command below stops only the supplied local `miningcore.service`. Before running the
+block, stop any differently named service or remote node that writes the same database, especially
+share-relay receivers/recorders, recovery importers and payout managers. The block cannot verify or
+stop those external writers for you.
 
 ```console
 umask 077
