@@ -232,7 +232,8 @@ internal static class ShareAccounting
                 throw new InvalidDataException(
                     $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
         }
-        else if(!RecoveryMaximumCoversCalculated(pool, share, calculated))
+        else if(!RecoveryMaximumCoversCalculated(pool, share, calculated,
+            sanitizedRecovery))
             throw new InvalidDataException(
                 $"Recovery PPS liability evidence for pool '{pool.Id}' exceeds the maximum independently derived from its immutable share inputs");
 
@@ -298,9 +299,9 @@ internal static class ShareAccounting
     }
 
     private static bool RecoveryMaximumCoversCalculated(PoolConfig pool,
-        Share share, decimal calculated)
+        Share share, decimal calculated, bool allowUnavailableTemplate)
     {
-        ValidatePpsTemplateContract(pool, true);
+        ValidatePpsTemplateContract(pool, allowUnavailableTemplate);
 
         decimal difficulty;
         decimal networkDifficulty;
