@@ -231,10 +231,12 @@ assert_file_contains 'the merged-mining active-symlink prohibition' \
   'Do not run release migrations through the active `/opt/miningcore` symlink' \
   "$merged_mining_document"
 assert_file_contains 'the database-upgrade relay-recorder stop boundary' \
-  'share-relay receivers/recorders, recovery importers and payout managers on every node' \
+  'share-relay senders, receivers and recorders, recovery importers and payout managers on every node' \
   "$database_document"
-assert_file_contains 'the release-upgrade relay-recorder stop boundary' \
-  'share-relay receivers/recorders, recovery importers and payout managers' "$document"
+assert_file_contains 'the release-upgrade numbered distributed-writer stop boundary' \
+  '4. Stop every Miningcore writer using the database, including share-relay senders,' "$document"
+assert_file_contains 'the release-upgrade relay-role inventory' \
+  'share-relay senders, receivers and recorders, recovery importers and payout managers' "$document"
 assert_file_contains 'the release-upgrade local-service scope warning' \
   'stops only the supplied local `miningcore.service`' "$document"
 assert_file_contains 'the non-PPS schema-convergence clarification' \

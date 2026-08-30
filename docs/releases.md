@@ -505,22 +505,22 @@ procedure for routine upgrades after the deployment layout and runtime are alrea
 2. Download and verify the new archive using [Choose a version](#choose-a-version).
 3. Extract and verify the candidate in its immutable versioned directory without changing
    `/opt/miningcore`.
-4. Stop every Miningcore writer using the database, including separately deployed share-relay
-   receivers/recorders and recovery importers, and confirm no other payout manager owns the same
+4. Stop every Miningcore writer using the database, including share-relay senders, receivers and
+   recorders and recovery importers on every node, and confirm no other payout manager owns the same
    pools/database.
 5. Back up PostgreSQL and prove the backup inventory is readable.
 6. Apply release-specific migrations from the candidate's `migrations` directory.
 7. Change `/opt/miningcore` only after every migration succeeds.
 8. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
 
+The `systemctl` command below stops only the supplied local `miningcore.service`. Before running the
+block, stop any differently named service or remote node that writes the same database, especially
+share-relay senders, receivers and recorders, recovery importers and payout managers. The block
+cannot verify or stop those external writers for you.
+
 Run this block in the same shell as the successful download-and-verification block. It consumes that
 block's readiness latch and archive path. Replace the migration list only when the target release
 notes explicitly require a different ordered set:
-
-The `systemctl` command below stops only the supplied local `miningcore.service`. Before running the
-block, stop any differently named service or remote node that writes the same database, especially
-share-relay receivers/recorders, recovery importers and payout managers. The block cannot verify or
-stop those external writers for you.
 
 ```console
 umask 077
