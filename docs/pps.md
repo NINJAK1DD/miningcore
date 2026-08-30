@@ -53,31 +53,25 @@ liquidity for already credited balances.
 ## Database prerequisites
 
 A new database created from the current `createdb.sql` already contains the required contracts. To
-upgrade an existing database, stop every Miningcore writer, relay recorder, recovery importer and
-payout manager, take and verify a backup, then apply all three migrations in order:
+upgrade an existing database, follow the canonical
+[database upgrade procedure](database.md#upgrade-an-existing-database). It stages and verifies the
+target release before downtime, takes a proven backup, applies these candidate-version migrations
+in order, and activates that candidate only after they all succeed:
 
-```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/add_auxpow_block_idempotency.sql
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/add_payout_manager_ownership.sql
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/add_share_accounting.sql
-```
+1. `add_auxpow_block_idempotency.sql`
+2. `add_payout_manager_ownership.sql`
+3. `add_share_accounting.sql`
 
 These migrations provide synchronous accepted-block idempotency, one durable payout owner, and the
 atomic receipt/credit/remainder ledger. Startup checks them before accepting PPS work. Do not create
 lookalike tables or indexes to bypass preflight; reapply the supplied migration while Miningcore is
 stopped if the diagnostic names a repairable contract.
 
-The commands use the stable symlink created by the prebuilt installation path. A source-build
-operator should substitute the checkout's
-`src/Miningcore/Persistence/Postgres/Scripts/` directory while preserving the same file order.
-
-Follow the complete [database upgrade procedure](database.md#upgrade-an-existing-database),
-including its owner/privilege query and rollback warning. The accounting migration is additive, but
-its liabilities and replay evidence are not reconstructible from blocks. Dropping its tables is not
-a rollback.
+Do not run these upgrade migrations through the active `/opt/miningcore` symlink: it deliberately
+continues to identify the old release until the candidate migrations succeed. The canonical
+procedure supplies the only copy-paste commands and includes the owner/privilege query, source-build
+alternative, and rollback warning. The accounting migration is additive, but its liabilities and
+replay evidence are not reconstructible from blocks. Dropping its tables is not a rollback.
 
 ## Direct configuration
 

@@ -193,8 +193,10 @@ assert_file_contains 'the PPS reserve warning' \
   'separately controlled reserve' "$pps_document"
 for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
-  assert_file_contains "the packaged PPS $migration migration" \
-    "/opt/miningcore/migrations/$migration" "$pps_document"
+  assert_file_contains "the PPS $migration migration requirement" \
+    "$migration" "$pps_document"
+  assert_file_contains "the merged-mining $migration migration requirement" \
+    "$migration" "$merged_mining_document"
 done
 for migration in createdb.sql createdb_postgresql_11_appendix.sql; do
   assert_file_contains "the database-runbook packaged $migration path" \
@@ -204,18 +206,30 @@ for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
   assert_file_contains "the database-runbook candidate $migration path" \
     "\$MININGCORE_CANDIDATE_DIR/migrations/$migration" "$database_document"
-  assert_file_contains "the merged-mining packaged $migration path" \
-    "/opt/miningcore/migrations/$migration" "$merged_mining_document"
 done
 assert_file_contains 'the database-runbook source-checkout alternative' \
   '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$database_document"
-assert_file_contains 'the merged-mining source-checkout alternative' \
-  '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$merged_mining_document"
 if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
-    "$database_document" "$merged_mining_document"; then
-  echo 'Database runbook still has a repository-only executable migration path' >&2
+    "$database_document" "$pps_document" "$merged_mining_document"; then
+  echo 'An existing-database guide has a repository-only executable migration path' >&2
   exit 1
 fi
+if grep -REq --include='*.md' \
+    '/opt/miningcore/migrations/add_(auxpow_block_idempotency|payout_manager_ownership|share_accounting)\.sql' \
+    "$readme" "$repository_root/docs"; then
+  echo 'User documentation reads release migrations through the active symlink' >&2
+  exit 1
+fi
+assert_file_contains 'the PPS canonical database-upgrade delegation' \
+  '[database upgrade procedure](database.md#upgrade-an-existing-database)' "$pps_document"
+assert_file_contains 'the PPS active-symlink prohibition' \
+  'Do not run these upgrade migrations through the active `/opt/miningcore` symlink' "$pps_document"
+assert_file_contains 'the merged-mining canonical database-upgrade delegation' \
+  '[database upgrade procedure](database.md#upgrade-an-existing-database)' \
+  "$merged_mining_document"
+assert_file_contains 'the merged-mining active-symlink prohibition' \
+  'Do not run release migrations through the active `/opt/miningcore` symlink' \
+  "$merged_mining_document"
 assert_file_contains 'the database-runbook transactional initial import' \
   '--single-transaction' "$database_document"
 assert_file_contains 'the quick-start existing-partition explanation' \
