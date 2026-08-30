@@ -14,6 +14,9 @@ public sealed record ShareAccountingTelemetryEvent(
     ShareAccountingProjectionTelemetry[] Projections,
     ShareAccountingPpsTelemetry[] PpsCredits);
 
+public sealed record UnsupportedShareRelayWireFormatTelemetryEvent(
+    string RelayUrl, int WireFormat);
+
 public enum MergedMiningAttributionRejection
 {
     Missing,

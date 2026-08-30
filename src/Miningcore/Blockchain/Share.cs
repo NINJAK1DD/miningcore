@@ -138,6 +138,14 @@ public class Share
     public Share PairedShare { get; set; }
 
     /// <summary>
+    /// Immutable PPS liability calculated by the accepting pool before the share can enter a
+    /// relay or recovery journal. Recovery deliberately does not load live payout settings, so
+    /// this evidence must travel with the accepted proof rather than be reconstructed later.
+    /// </summary>
+    [ProtoMember(27)]
+    public decimal? PpsCalculatedAmount { get; set; }
+
+    /// <summary>
     /// Runtime-only guard used when a job manager has already published the ordinary statistical
     /// copy. This is deliberately not serialized on the relay wire.
     /// </summary>

@@ -314,13 +314,18 @@ public class ShareRepository : IShareRepository
 
         const string query = @"COPY shares (poolid, blockheight, difficulty,
             networkdifficulty, sharedifficulty, actualdifficulty, miner, worker, useragent, ipaddress, source, sessionid,
-            accountingid, accountingrole, rewardbasissatoshis, created)
+            created)
             FROM STDIN (FORMAT BINARY)";
 
         await using(var writer = await pgCon.BeginBinaryImportAsync(query, ct))
         {
             foreach(var share in shares)
             {
+                if(share.AccountingId.HasValue || share.AccountingRole.HasValue ||
+                   share.RewardBasisSatoshis.HasValue)
+                    throw new InvalidDataException(
+                        "Ordinary share COPY must not receive accounting projections");
+
                 await writer.StartRowAsync(ct);
 
                 await writer.WriteAsync(share.PoolId, ct);
@@ -362,21 +367,6 @@ public class ShareRepository : IShareRepository
                 else
                     await writer.WriteAsync(share.SessionId, ct);
 
-                if(share.AccountingId.HasValue)
-                    await writer.WriteAsync(share.AccountingId.Value, NpgsqlDbType.Uuid, ct);
-                else
-                    await writer.WriteNullAsync(ct);
-
-                if(share.AccountingRole.HasValue)
-                    await writer.WriteAsync(share.AccountingRole.Value, NpgsqlDbType.Smallint, ct);
-                else
-                    await writer.WriteNullAsync(ct);
-
-                if(share.RewardBasisSatoshis.HasValue)
-                    await writer.WriteAsync(share.RewardBasisSatoshis.Value, NpgsqlDbType.Bigint, ct);
-                else
-                    await writer.WriteNullAsync(ct);
-
                 await writer.WriteAsync(share.Created, NpgsqlDbType.TimestampTz, ct);
             }
 
@@ -388,158 +378,245 @@ public class ShareRepository : IShareRepository
         IDbConnection con, IDbTransaction tx, ShareAccountingBatch batch,
         CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(batch);
+        var results = await InsertAccountingBatchesAsync(con, tx,
+            new[] { batch }, ct);
+        return results[0];
+    }
 
-        if(batch.AccountingId == Guid.Empty || batch.Shares is not { Length: 1 or 2 } ||
-           batch.PpsCredits == null || batch.PayloadHash?.Length != 64 ||
-           !batch.PayloadHash.All(Uri.IsHexDigit) ||
-           batch.Shares.Any(x => x == null || x.BlockHeight > long.MaxValue))
-            throw new InvalidDataException("Malformed share-accounting batch");
+    public async Task<ShareAccountingInsertResult[]> InsertAccountingBatchesAsync(
+        IDbConnection con, IDbTransaction tx,
+        IReadOnlyList<ShareAccountingBatch> batches, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(batches);
+        if(batches.Count == 0)
+            return Array.Empty<ShareAccountingInsertResult>();
+
+        foreach(var batch in batches)
+            ValidateAccountingBatch(batch);
+
+        if(batches.Select(x => x.AccountingId).Distinct().Count() != batches.Count)
+            throw new InvalidDataException(
+                "One persistence batch contains duplicate share-accounting ids");
 
         const string register = @"INSERT INTO share_accounting_groups(
                 accountingid, projectioncount, payloadhash, created)
-            VALUES(@AccountingId, @ProjectionCount, @PayloadHash, @Created)
-            ON CONFLICT(accountingid) DO NOTHING";
-        var inserted = await con.ExecuteAsync(new CommandDefinition(register, new
-        {
-            batch.AccountingId,
-            ProjectionCount = (short) batch.Shares.Length,
-            batch.PayloadHash,
-            batch.Created,
-        }, tx, cancellationToken: ct)) > 0;
+            SELECT * FROM unnest(@AccountingIds::uuid[],
+                @ProjectionCounts::smallint[], @PayloadHashes::text[],
+                @CreatedValues::timestamptz[])
+            ON CONFLICT(accountingid) DO NOTHING
+            RETURNING accountingid";
+        var insertedIds = (await con.QueryAsync<Guid>(new CommandDefinition(
+            register, new
+            {
+                AccountingIds = batches.Select(x => x.AccountingId).ToArray(),
+                ProjectionCounts = batches.Select(x =>
+                    checked((short) x.Shares.Length)).ToArray(),
+                PayloadHashes = batches.Select(x => x.PayloadHash).ToArray(),
+                CreatedValues = batches.Select(x => x.Created).ToArray(),
+            }, tx, cancellationToken: ct))).ToHashSet();
 
-        if(!inserted)
-        {
+        foreach(var batch in batches.Where(x => !insertedIds.Contains(
+                    x.AccountingId)))
             await VerifyCommittedAccountingBatchAsync(con, tx, batch, ct);
-            return ShareAccountingInsertResult.AlreadyCommitted;
+
+        var insertedBatches = batches.Where(x => insertedIds.Contains(
+                x.AccountingId)).ToArray();
+        if(insertedBatches.Length > 0)
+        {
+            await InsertAccountingSharesAsync(con, tx, insertedBatches, ct);
+            await InsertPpsCreditsAsync(con, tx, insertedBatches, ct);
         }
 
-        const string insertShare = @"INSERT INTO shares(poolid, blockheight,
+        return batches.Select(x => insertedIds.Contains(x.AccountingId)
+            ? ShareAccountingInsertResult.Inserted
+            : ShareAccountingInsertResult.AlreadyCommitted).ToArray();
+    }
+
+    private static void ValidateAccountingBatch(ShareAccountingBatch batch)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+
+        if(batch.AccountingId == Guid.Empty ||
+           batch.Shares is not { Length: 1 or 2 } ||
+           batch.PpsCredits == null || batch.PayloadHash?.Length != 64 ||
+           !batch.PayloadHash.All(x => x is >= '0' and <= '9' or >= 'A' and <= 'F') ||
+           batch.Shares.Any(x => x == null || x.BlockHeight > long.MaxValue) ||
+           batch.PpsCredits.Any(x => x == null ||
+               x.AccountingId != batch.AccountingId ||
+               string.IsNullOrWhiteSpace(x.PoolId) ||
+               string.IsNullOrWhiteSpace(x.Address) || x.CalculatedAmount <= 0 ||
+               !double.IsFinite(x.Difficulty) || x.Difficulty <= 0 ||
+               !double.IsFinite(x.NetworkDifficulty) || x.NetworkDifficulty <= 0 ||
+               x.RewardBasisSatoshis <= 0))
+            throw new InvalidDataException("Malformed share-accounting batch");
+    }
+
+    private static async Task InsertAccountingSharesAsync(IDbConnection con,
+        IDbTransaction tx, IReadOnlyList<ShareAccountingBatch> batches,
+        CancellationToken ct)
+    {
+        var shares = batches.SelectMany(x => x.Shares).ToArray();
+        const string query = @"INSERT INTO shares(poolid, blockheight,
                 difficulty, networkdifficulty, sharedifficulty, actualdifficulty,
                 miner, worker, useragent, ipaddress, source, sessionid,
                 accountingid, accountingrole, rewardbasissatoshis, created)
-            VALUES(@PoolId, @BlockHeight, @Difficulty, @NetworkDifficulty,
-                @ShareDifficulty, @ActualDifficulty, @Miner, @Worker, @UserAgent,
-                @IpAddress, @Source, @SessionId, @AccountingId, @AccountingRole,
-                @RewardBasisSatoshis, @Created)";
-
-        foreach(var share in batch.Shares)
+            SELECT * FROM unnest(@PoolIds::text[], @BlockHeights::bigint[],
+                @Difficulties::double precision[],
+                @NetworkDifficulties::double precision[],
+                @ShareDifficulties::double precision[],
+                @ActualDifficulties::double precision[], @Miners::text[],
+                @Workers::text[], @UserAgents::text[], @IpAddresses::text[],
+                @Sources::text[], @SessionIds::text[], @AccountingIds::uuid[],
+                @AccountingRoles::smallint[], @RewardBases::bigint[],
+                @CreatedValues::timestamptz[])";
+        await con.ExecuteAsync(new CommandDefinition(query, new
         {
-            // PostgreSQL bigint is signed. Passing the model's ulong directly makes
-            // Dapper select DbType.UInt64, which Npgsql deliberately does not support.
-            // Validate the complete batch above, then bind the exact database type.
-            await con.ExecuteAsync(new CommandDefinition(insertShare, new
-            {
-                share.PoolId,
-                BlockHeight = checked((long) share.BlockHeight),
-                share.Difficulty,
-                share.NetworkDifficulty,
-                share.ShareDifficulty,
-                share.ActualDifficulty,
-                share.Miner,
-                share.Worker,
-                share.UserAgent,
-                share.IpAddress,
-                share.Source,
-                share.SessionId,
-                share.AccountingId,
-                share.AccountingRole,
-                share.RewardBasisSatoshis,
-                share.Created,
-            }, tx, cancellationToken: ct));
-        }
-
-        foreach(var credit in batch.PpsCredits)
-            await InsertPpsCreditAsync(con, tx, credit, ct);
-
-        return ShareAccountingInsertResult.Inserted;
+            PoolIds = shares.Select(x => x.PoolId).ToArray(),
+            BlockHeights = shares.Select(x => checked((long) x.BlockHeight)).ToArray(),
+            Difficulties = shares.Select(x => x.Difficulty).ToArray(),
+            NetworkDifficulties = shares.Select(x => x.NetworkDifficulty).ToArray(),
+            ShareDifficulties = shares.Select(x => x.ShareDifficulty).ToArray(),
+            ActualDifficulties = shares.Select(x => x.ActualDifficulty).ToArray(),
+            Miners = shares.Select(x => x.Miner).ToArray(),
+            Workers = shares.Select(x => x.Worker).ToArray(),
+            UserAgents = shares.Select(x => x.UserAgent).ToArray(),
+            IpAddresses = shares.Select(x => x.IpAddress).ToArray(),
+            Sources = shares.Select(x => x.Source).ToArray(),
+            SessionIds = shares.Select(x => x.SessionId).ToArray(),
+            AccountingIds = shares.Select(x => x.AccountingId.Value).ToArray(),
+            AccountingRoles = shares.Select(x => x.AccountingRole.Value).ToArray(),
+            RewardBases = shares.Select(x => x.RewardBasisSatoshis.Value).ToArray(),
+            CreatedValues = shares.Select(x => x.Created).ToArray(),
+        }, tx, cancellationToken: ct));
     }
 
-    private static async Task InsertPpsCreditAsync(IDbConnection con,
-        IDbTransaction tx, PpsShareCredit credit, CancellationToken ct)
+    private static async Task InsertPpsCreditsAsync(IDbConnection con,
+        IDbTransaction tx, IReadOnlyList<ShareAccountingBatch> batches,
+        CancellationToken ct)
     {
-        if(credit.AccountingId == Guid.Empty || string.IsNullOrWhiteSpace(credit.PoolId) ||
-           string.IsNullOrWhiteSpace(credit.Address) || credit.CalculatedAmount <= 0 ||
-           !double.IsFinite(credit.Difficulty) || credit.Difficulty <= 0 ||
-           !double.IsFinite(credit.NetworkDifficulty) || credit.NetworkDifficulty <= 0 ||
-           credit.RewardBasisSatoshis <= 0)
-            throw new InvalidDataException("Malformed PPS share credit");
-
-        const string seedRemainder = @"INSERT INTO pps_credit_remainders(
-                poolid, address, amount, updated)
-            VALUES(@PoolId, @Address, 0, @Created)
-            ON CONFLICT(poolid, address) DO NOTHING";
-        await con.ExecuteAsync(new CommandDefinition(seedRemainder, credit, tx,
-            cancellationToken: ct));
-
-        const string lockRemainder = @"SELECT amount
-            FROM pps_credit_remainders
-            WHERE poolid = @PoolId AND address = @Address
-            FOR UPDATE";
-        var remainder = await con.QuerySingleAsync<decimal>(new CommandDefinition(
-            lockRemainder, credit, tx, cancellationToken: ct));
-        var accumulated = checked(remainder + credit.CalculatedAmount);
-        var credited = decimal.Truncate(accumulated * 1_000_000_000_000m) /
-            1_000_000_000_000m;
-        remainder = accumulated - credited;
-
-        const string updateRemainder = @"UPDATE pps_credit_remainders
-            SET amount = @remainder, updated = @Created
-            WHERE poolid = @PoolId AND address = @Address";
-        await con.ExecuteAsync(new CommandDefinition(updateRemainder, new
-        {
-            credit.PoolId,
-            credit.Address,
-            credit.Created,
-            remainder,
-        }, tx, cancellationToken: ct));
-
-        const string insertCredit = @"INSERT INTO pps_share_credits(poolid,
-                accountingid, address, calculatedamount, creditedamount,
-                difficulty, networkdifficulty, rewardbasissatoshis, created)
-            VALUES(@PoolId, @AccountingId, @Address, @CalculatedAmount, @credited,
-                @Difficulty, @NetworkDifficulty, @RewardBasisSatoshis, @Created)";
-        await con.ExecuteAsync(new CommandDefinition(insertCredit, new
-        {
-            credit.PoolId,
-            credit.AccountingId,
-            credit.Address,
-            credit.CalculatedAmount,
-            credited,
-            credit.Difficulty,
-            credit.NetworkDifficulty,
-            credit.RewardBasisSatoshis,
-            credit.Created,
-        }, tx, cancellationToken: ct));
-
-        if(credited <= 0)
+        var credits = batches.SelectMany(x => x.PpsCredits)
+            .OrderBy(x => x.PoolId, StringComparer.Ordinal)
+            .ThenBy(x => x.Address, StringComparer.Ordinal)
+            .ThenBy(x => x.Created)
+            .ThenBy(x => x.AccountingId)
+            .ToArray();
+        if(credits.Length == 0)
             return;
 
-        var tag = $"pps-share:{credit.AccountingId:N}";
-        const string insertChange = @"INSERT INTO balance_changes(poolid, address,
-                amount, usage, tags, created)
-            VALUES(@PoolId, @Address, @credited, 'PPS share credit', @tags, @Created)";
-        await con.ExecuteAsync(new CommandDefinition(insertChange, new
+        const string seed = @"INSERT INTO pps_credit_remainders(
+                poolid, address, amount, updated)
+            SELECT poolid, address, 0, min(created)
+            FROM unnest(@PoolIds::text[], @Addresses::text[],
+                @CreatedValues::timestamptz[]) AS input(poolid, address, created)
+            GROUP BY poolid, address
+            ON CONFLICT(poolid, address) DO NOTHING";
+        await con.ExecuteAsync(new CommandDefinition(seed, new
         {
-            credit.PoolId,
-            credit.Address,
-            credited,
-            tags = new[] { "pps", tag },
-            credit.Created,
+            PoolIds = credits.Select(x => x.PoolId).ToArray(),
+            Addresses = credits.Select(x => x.Address).ToArray(),
+            CreatedValues = credits.Select(x => x.Created).ToArray(),
         }, tx, cancellationToken: ct));
 
-        const string updateBalance = @"INSERT INTO balances(poolid, address, amount,
-                created, updated)
-            VALUES(@PoolId, @Address, @credited, @Created, @Created)
-            ON CONFLICT(poolid, address) DO UPDATE
-            SET amount = balances.amount + EXCLUDED.amount,
-                updated = EXCLUDED.updated";
-        await con.ExecuteAsync(new CommandDefinition(updateBalance, new
+        // Lock recipients in one stable order. This prevents deadlocks between recorder batches
+        // while reducing the normal 250-share path to a bounded number of database round trips.
+        const string lockRemainders = @"WITH recipients AS MATERIALIZED (
+                SELECT DISTINCT poolid, address
+                FROM unnest(@PoolIds::text[], @Addresses::text[])
+                    AS input(poolid, address)
+            )
+            SELECT remainder.poolid
+            FROM pps_credit_remainders remainder
+            JOIN recipients USING(poolid, address)
+            ORDER BY remainder.poolid, remainder.address
+            FOR UPDATE OF remainder";
+        _ = (await con.QueryAsync<string>(new CommandDefinition(lockRemainders,
+            new
+            {
+                PoolIds = credits.Select(x => x.PoolId).ToArray(),
+                Addresses = credits.Select(x => x.Address).ToArray(),
+            }, tx, cancellationToken: ct))).AsList();
+
+        const string apply = @"WITH input AS (
+                SELECT *
+                FROM unnest(@PoolIds::text[], @AccountingIds::uuid[],
+                    @Addresses::text[], @CalculatedAmounts::numeric[],
+                    @Difficulties::double precision[],
+                    @NetworkDifficulties::double precision[],
+                    @RewardBases::bigint[], @CreatedValues::timestamptz[])
+                AS value(poolid, accountingid, address, calculatedamount,
+                    difficulty, networkdifficulty, rewardbasissatoshis, created)
+            ), running AS (
+                SELECT input.*, remainder.amount +
+                        sum(calculatedamount) OVER recipient_window AS accumulated,
+                    remainder.amount + COALESCE(sum(calculatedamount) OVER (
+                        PARTITION BY input.poolid, input.address
+                        ORDER BY input.created, input.accountingid
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
+                        AS previous
+                FROM input
+                JOIN pps_credit_remainders remainder USING(poolid, address)
+                WINDOW recipient_window AS (PARTITION BY input.poolid, input.address
+                    ORDER BY input.created, input.accountingid
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            ), calculated AS (
+                SELECT running.*,
+                    trunc(accumulated, 12) - trunc(previous, 12) AS creditedamount
+                FROM running
+            ), inserted_credits AS (
+                INSERT INTO pps_share_credits(poolid, accountingid, address,
+                    calculatedamount, creditedamount, difficulty,
+                    networkdifficulty, rewardbasissatoshis, created)
+                SELECT poolid, accountingid, address, calculatedamount,
+                    creditedamount, difficulty, networkdifficulty,
+                    rewardbasissatoshis, created
+                FROM calculated
+                RETURNING *
+            ), inserted_changes AS (
+                INSERT INTO balance_changes(poolid, address, amount, usage,
+                    tags, created)
+                SELECT poolid, address, creditedamount, 'PPS share credit',
+                    ARRAY['pps', 'pps-share:' || replace(accountingid::text, '-', '')],
+                    created
+                FROM inserted_credits WHERE creditedamount > 0
+                RETURNING poolid, address, amount, created
+            ), balance_totals AS (
+                SELECT poolid, address, sum(amount) AS amount,
+                    min(created) AS created, max(created) AS updated
+                FROM inserted_changes GROUP BY poolid, address
+            ), updated_balances AS (
+                INSERT INTO balances(poolid, address, amount, created, updated)
+                SELECT poolid, address, amount, created, updated
+                FROM balance_totals ORDER BY poolid, address
+                ON CONFLICT(poolid, address) DO UPDATE
+                SET amount = balances.amount + EXCLUDED.amount,
+                    updated = EXCLUDED.updated
+                RETURNING poolid
+            ), final_remainders AS (
+                SELECT poolid, address,
+                    max(accumulated) - trunc(max(accumulated), 12) AS amount,
+                    max(created) AS updated
+                FROM running GROUP BY poolid, address
+            ), updated_remainders AS (
+                UPDATE pps_credit_remainders remainder
+                SET amount = final.amount, updated = final.updated
+                FROM final_remainders final
+                WHERE remainder.poolid = final.poolid
+                  AND remainder.address = final.address
+                RETURNING remainder.poolid
+            )
+            SELECT (SELECT count(*) FROM inserted_credits) +
+                (SELECT count(*) FROM updated_remainders) +
+                (SELECT count(*) FROM updated_balances)";
+        await con.ExecuteScalarAsync<int>(new CommandDefinition(apply, new
         {
-            credit.PoolId,
-            credit.Address,
-            credited,
-            credit.Created,
+            PoolIds = credits.Select(x => x.PoolId).ToArray(),
+            AccountingIds = credits.Select(x => x.AccountingId).ToArray(),
+            Addresses = credits.Select(x => x.Address).ToArray(),
+            CalculatedAmounts = credits.Select(x => x.CalculatedAmount).ToArray(),
+            Difficulties = credits.Select(x => x.Difficulty).ToArray(),
+            NetworkDifficulties = credits.Select(x => x.NetworkDifficulty).ToArray(),
+            RewardBases = credits.Select(x => x.RewardBasisSatoshis).ToArray(),
+            CreatedValues = credits.Select(x => x.Created).ToArray(),
         }, tx, cancellationToken: ct));
     }
 
@@ -708,6 +785,44 @@ public class ShareRepository : IShareRepository
 
         await con.ExecuteAsync(new CommandDefinition(query, new { poolId, before }, tx,
             cancellationToken: ct));
+    }
+
+    public Task<int> PruneShareAccountingEvidenceBeforeAsync(IDbConnection con,
+        IDbTransaction tx, DateTime before, CancellationToken ct)
+    {
+        // The replay-age check rejects old relay and recovery records before persistence. Once
+        // that horizon passes, detailed liabilities and compact group receipts may be pruned
+        // without allowing a duplicate credit. Operators that require longer audit retention
+        // archive these rows first using the documented database procedure. Keep remainder rows:
+        // they are one per recipient and preserve exact sub-unit carry across retention windows.
+        const string query = @"WITH deleted AS (
+                DELETE FROM balance_changes
+                WHERE usage = 'PPS share credit' AND created <= @before
+                RETURNING 1)
+            SELECT count(*)::int FROM deleted;
+            WITH deleted AS (
+                DELETE FROM pps_share_credits WHERE created <= @before
+                RETURNING 1)
+            SELECT count(*)::int FROM deleted;
+            WITH deleted AS (
+                DELETE FROM share_accounting_groups accounting
+                WHERE accounting.created <= @before
+                  AND NOT EXISTS (SELECT 1 FROM shares
+                      WHERE shares.accountingid = accounting.accountingid)
+                  AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
+                      WHERE credits.accountingid = accounting.accountingid)
+                RETURNING 1)
+            SELECT count(*)::int FROM deleted";
+        return PruneAsync();
+
+        async Task<int> PruneAsync()
+        {
+            using var grid = await con.QueryMultipleAsync(new CommandDefinition(
+                query, new { before }, tx, cancellationToken: ct));
+            return await grid.ReadSingleAsync<int>() +
+                await grid.ReadSingleAsync<int>() +
+                await grid.ReadSingleAsync<int>();
+        }
     }
 
     public Task<double?> GetAccumulatedShareDifficultyBetweenAsync(IDbConnection con, string poolId, DateTime start, DateTime end, CancellationToken ct)

@@ -47,6 +47,8 @@ public class ShareReceiver : BackgroundService
         this.clusterConfig = clusterConfig;
         this.clock = clock;
         this.messageBus = messageBus;
+        accountingPools = (clusterConfig.Pools ?? Array.Empty<PoolConfig>())
+            .ToDictionary(x => x.Id, StringComparer.Ordinal);
         this.receiveTimeout = receiveTimeout;
         this.reconnectTimeout = reconnectTimeout;
     }
@@ -55,10 +57,13 @@ public class ShareReceiver : BackgroundService
     private readonly IMasterClock clock;
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
+    private readonly IReadOnlyDictionary<string, PoolConfig> accountingPools;
     private readonly TimeSpan receiveTimeout;
     private readonly TimeSpan reconnectTimeout;
     private readonly CompositeDisposable disposables = new();
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
+    private readonly ConcurrentDictionary<string, byte> offlineAccountingWarnings =
+        new(StringComparer.Ordinal);
     private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
     internal int AttachedPoolCount => pools.Count;
 
@@ -343,6 +348,9 @@ public class ShareReceiver : BackgroundService
 
             default:
                 logger.Error(() => $"Unsupported wire format {wireFormat} of share received from {url}/{topic} ");
+                messageBus.SendMessage(
+                    new UnsupportedShareRelayWireFormatTelemetryEvent(url,
+                        (int) wireFormat));
                 break;
         }
 
@@ -367,9 +375,21 @@ public class ShareReceiver : BackgroundService
 
             try
             {
-                ShareAccounting.ValidateAndFlatten(share, pools.ToDictionary(
-                    x => x.Key, x => x.Value.Pool.Config,
-                    StringComparer.Ordinal));
+                ShareAccounting.ValidateReplayHorizon(share, clock.Now,
+                    clusterConfig.PaymentProcessing?
+                        .ShareAccountingRetentionDays ?? 30);
+                var projections = ShareAccounting.ValidateAndFlatten(share,
+                    accountingPools);
+
+                foreach(var projection in projections)
+                {
+                    if(pools.ContainsKey(projection.PoolId) ||
+                       !offlineAccountingWarnings.TryAdd(projection.PoolId, 0))
+                        continue;
+
+                    logger.Warn(() =>
+                        $"Accounting projection for configured pool '{projection.PoolId}' arrived before that pool was online; preserving its financial evidence while share telemetry remains gated by the online topic pool");
+                }
             }
             catch(Exception ex) when(ex is InvalidDataException or ArgumentException)
             {

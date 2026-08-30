@@ -24,7 +24,7 @@ public sealed class PPSPaymentScheme : IPayoutScheme
     {
         // PPS transfers network variance to the operator. Confirmed, orphaned and stale block
         // outcomes do not alter credits already committed for valid work.
-        await shareRepo.DeleteSharesBeforeAsync(con, tx, pool.Config.Id,
+        await shareRepo.DeleteSharesBeforeInclusiveAsync(con, tx, pool.Config.Id,
             block.Created, ct);
     }
 }

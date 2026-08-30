@@ -462,6 +462,16 @@ address and is mandatory whenever Dogecoin is not SOLO. The template poll timeou
 and may be raised for a healthy but slower local daemon. Apply the three migrations and read the
 [merged-mining accounting guide](merged-mining-litecoin-dogecoin.md) before enabling pooled payouts.
 
+PPS liabilities are calculated at the accepting node and embedded in the authenticated share
+envelope. Recovery therefore does not depend on payout settings that are deliberately removed by
+`-rs` configuration sanitisation. `paymentProcessing.ppsShareRetentionDays` (default `7`) controls
+statistical `shares` retention for each PPS pool independently of finding a block.
+`paymentProcessing.shareAccountingRetentionDays` at cluster scope (default `30`) is the maximum
+accepted relay/recovery replay age and the retention horizon for per-share accounting receipts.
+Choose a horizon longer than the maximum time an emergency journal or disconnected relay can remain
+unreconciled. Evidence outside it fails closed and must be reconciled manually; see the
+[database sizing and archival procedure](database.md#share-accounting-retention-and-sizing).
+
 Miner examples:
 
 ```text
@@ -501,6 +511,13 @@ exhausts its retries. Configure an absolute path so service working-directory ch
 the journal difficult to locate. Miningcore logs the resolved path when the Share Recorder starts.
 Restrict the file and its parent directory to the service account because share records are
 financial accounting data.
+
+If deterministic validation rejects one accounting record in a recorder batch, Miningcore commits
+valid siblings independently and writes only the rejected record to a sibling
+`*.quarantine-<UTC>-<UUID>` checksum-chained evidence file before fail-stopping. The normal recovery
+journal therefore remains importable without hand-editing. Never pass a quarantine file directly to
+`-rs`; preserve it and reconcile the named accounting evidence, configuration and database state
+manually. A quarantine write failure is treated as dual-durability failure and retains status 74.
 
 ### Ownership and path safety
 

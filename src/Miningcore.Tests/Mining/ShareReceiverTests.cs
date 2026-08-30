@@ -116,25 +116,29 @@ public class ShareReceiverTests
         var receiver = new ShareReceiver(new ClusterConfig
         {
             ShareRelays = new[] { new ShareRelayEndpointConfig { Url = url } },
+            Pools = new[]
+            {
+                new PoolConfig { Id = "ltc" },
+                new PoolConfig { Id = "doge" },
+            },
         }, new MockMasterClock { CurrentTime = created.AddSeconds(1) },
             receiverBus, TimeSpan.FromMilliseconds(50),
             TimeSpan.FromMilliseconds(150));
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
         await receiver.StartAsync(CancellationToken.None);
-        foreach(var poolId in new[] { "ltc", "doge" })
+        // Only the topic/parent pool is online. The configured auxiliary projection must still
+        // survive asynchronous startup because relay delivery has no replay facility.
+        var pool = Substitute.For<IMiningPool>();
+        pool.Config.Returns(new PoolConfig { Id = "ltc" });
+        pool.NetworkStats.Returns(new BlockchainStats());
+        pool.ShareMultiplier.Returns(1d);
+        receiverBus.SendMessage(new PoolStatusNotification
         {
-            var pool = Substitute.For<IMiningPool>();
-            pool.Config.Returns(new PoolConfig { Id = poolId });
-            pool.NetworkStats.Returns(new BlockchainStats());
-            pool.ShareMultiplier.Returns(1d);
-            receiverBus.SendMessage(new PoolStatusNotification
-            {
-                Pool = pool,
-                Status = PoolStatus.Online,
-            });
-        }
-        await WaitUntilAsync(() => receiver.AttachedPoolCount == 2, stop.Token);
+            Pool = pool,
+            Status = PoolStatus.Online,
+        });
+        await WaitUntilAsync(() => receiver.AttachedPoolCount == 1, stop.Token);
 
         var started = await StartRelayAsync(url);
         try

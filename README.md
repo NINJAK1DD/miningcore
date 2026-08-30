@@ -104,7 +104,9 @@ Merged mining exposes the Litecoin Stratum endpoint to miners and submits qualif
 same Scrypt proof to Dogecoin. Both pools must be enabled and have their own payout wallet address.
 Each independently selects `SOLO`, `PPS`, `PROP` or `PPLNS`; mixed combinations are supported.
 Non-SOLO Dogecoin accounting requires `requireAuxAddress: true`. PPS transfers block variance and
-liquidity risk to the operator, so read the reserve and migration guidance before enabling it.
+liquidity risk to the operator, so read the reserve and migration guidance before enabling it. PPS
+statistical shares default to seven-day retention and exactly-once accounting receipts to a 30-day
+replay horizon; size or archive them using the [database guide](docs/database.md#share-accounting-retention-and-sizing).
 
 The Litecoin pool points to the Dogecoin pool with this block:
 

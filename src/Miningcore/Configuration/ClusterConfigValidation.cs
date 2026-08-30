@@ -301,6 +301,13 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 $"Pool '{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}': " +
                 "paymentProcessing configuration missing; keep the object and " +
                 "set enabled=false to disable payouts");
+
+        RuleFor(j => j.PaymentProcessing.PpsShareRetentionDays)
+            .InclusiveBetween(1, 365)
+            .When(j => !recoveryMode && j.PaymentProcessing?.Enabled == true &&
+                j.PaymentProcessing.PayoutScheme == PayoutScheme.PPS)
+            .WithMessage(pool =>
+                $"Pool '{pool.Id}': paymentProcessing.ppsShareRetentionDays must be between 1 and 365");
     }
 }
 
@@ -330,6 +337,12 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .NotNull()
             .When(_ => !recoveryMode)
             .WithMessage("Cluster paymentProcessing configuration missing");
+
+        RuleFor(j => j.PaymentProcessing.ShareAccountingRetentionDays)
+            .InclusiveBetween(1, 3650)
+            .When(j => j.PaymentProcessing != null)
+            .WithMessage(
+                "Cluster paymentProcessing.shareAccountingRetentionDays must be between 1 and 3650");
 
         RuleFor(j => j.Persistence)
             .NotNull()

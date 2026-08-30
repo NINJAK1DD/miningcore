@@ -57,6 +57,15 @@ A production Bitcoin-family PPS implementation creates `(1 - fee) * difficulty /
 Confirmed blocks never double-credit PPS, while stale/orphaned blocks never reverse it; operators
 therefore assume block variance, reorg, wallet, liquidity and insolvency risk.
 
+PPS liability evidence is embedded in the accepted envelope so sanitized `-rs` recovery recreates
+the exact credits, remainders, balance changes and balances. Accounting persistence is set-based for
+normal 250-share batches; legacy ordinary-share COPY remains compatible before the optional
+accounting migration. PPS statistical shares and exactly-once receipts now have independent,
+documented time-based retention. Invalid accounting records are isolated from valid batch siblings
+and written to a checksum-chained quarantine file for manual reconciliation instead of poisoning the
+recoverable journal. Relay receivers validate auxiliary projections against configured pools during
+asynchronous startup and expose unsupported wire formats as a bounded Prometheus counter.
+
 Existing databases must apply `add_share_accounting.sql` in addition to the prior AuxPoW and payout
 ownership migrations before starting pooled merged mining or direct PPS. Existing SOLO/SOLO
 topologies retain their established one-share record and do not require this new migration.

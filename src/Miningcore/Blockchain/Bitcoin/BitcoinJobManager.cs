@@ -299,6 +299,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             share.AccountingRole = ShareAccountingRole.Single;
             share.RewardBasisSatoshis = job.RewardBasisSatoshis;
             share.PreserveCreated = true;
+            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                poolConfig, share);
         }
 
         // if block candidate, submit & check if accepted by network

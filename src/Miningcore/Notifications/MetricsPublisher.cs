@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -66,6 +67,7 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Counter ppsCreditCounter;
     private Counter ppsLiabilityCounter;
     private Counter mergedMiningAttributionRejectionCounter;
+    private Counter unsupportedShareRelayWireFormatCounter;
     private readonly object sharePersistenceOverflowPublishGate = new();
     private long publishedPrimaryOverflowCount;
     private long publishedEmergencyOverflowCount;
@@ -187,6 +189,13 @@ public class MetricsPublisher : StartupGatedBackgroundService
             new CounterConfiguration
             {
                 LabelNames = new[] { "pool", "aux_pool", "reason" },
+            });
+        unsupportedShareRelayWireFormatCounter = metricFactory.CreateCounter(
+            "miningcore_share_relay_unsupported_wire_format_total",
+            "Rejected share-relay messages using an unsupported financial wire format",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "relay", "format" },
             });
     }
 
@@ -347,6 +356,13 @@ public class MetricsPublisher : StartupGatedBackgroundService
             msg.AuxiliaryPoolId, reason).Inc();
     }
 
+    private void OnUnsupportedShareRelayWireFormat(
+        UnsupportedShareRelayWireFormatTelemetryEvent msg)
+    {
+        unsupportedShareRelayWireFormatCounter.WithLabels(msg.RelayUrl,
+            msg.WireFormat.ToString(CultureInfo.InvariantCulture)).Inc();
+    }
+
     internal static string GetAuxiliaryTemplateRpcOutcomeLabel(
         AuxiliaryTemplateRpcOutcome outcome) => outcome switch
     {
@@ -410,9 +426,17 @@ public class MetricsPublisher : StartupGatedBackgroundService
                     ex => logger.Error(ex.Message)))
                 .Select(_ => Unit.Default);
 
+            var unsupportedShareRelayWireFormat = messageBus
+                .Listen<UnsupportedShareRelayWireFormatTelemetryEvent>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x => Guard(() => OnUnsupportedShareRelayWireFormat(x),
+                    ex => logger.Error(ex.Message)))
+                .Select(_ => Unit.Default);
+
             var processing = Observable.Merge(telemetryEvents, hashrateNotifications,
                     auxiliaryTemplateRpcTelemetry, auxiliaryTemplateStateTelemetry,
-                    shareAccountingTelemetry, mergedMiningAttributionRejected)
+                    shareAccountingTelemetry, mergedMiningAttributionRejected,
+                    unsupportedShareRelayWireFormat)
                 .ToTask(ct);
             SignalStartupReady();
             return processing;

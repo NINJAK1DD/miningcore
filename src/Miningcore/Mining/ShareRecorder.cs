@@ -33,6 +33,9 @@ namespace Miningcore.Mining;
 public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder,
     ISharePersistenceQueueMetricsProvider
 {
+    private const string InvalidQueuedShareIdsKey = "Miningcore.InvalidQueuedShareIds";
+    private const string AccountingQuarantinePathKey = "Miningcore.AccountingQuarantinePath";
+
     // Test-only compatibility constructor. Production DI must provide the fail-stop handler;
     // this sentinel throws if a test unexpectedly reaches the dual-durability-loss path.
     internal ShareRecorder(IConnectionFactory cf,
@@ -526,10 +529,22 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         if(ordinary.Count > 0)
             await shareRepo.BatchInsertAsync(con, tx, ordinary, ct);
 
-        foreach(var batch in accounted)
+        var outcomes = accounted.Count switch
         {
-            var outcome = await shareRepo.InsertAccountingBatchAsync(con, tx,
-                batch, ct);
+            0 => Array.Empty<ShareAccountingInsertResult>(),
+            1 => new[]
+            {
+                await shareRepo.InsertAccountingBatchAsync(con, tx,
+                    accounted[0], ct),
+            },
+            _ => await shareRepo.InsertAccountingBatchesAsync(con, tx,
+                accounted, ct),
+        };
+
+        for(var index = 0; index < accounted.Count; index++)
+        {
+            var batch = accounted[index];
+            var outcome = outcomes[index];
             accounting.Add(new ShareAccountingTelemetryEvent(
                 batch.AccountingId,
                 outcome,
@@ -612,16 +627,6 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     internal static bool IsUncertainBlockType(string type)
     {
         return !string.IsNullOrEmpty(type) && UncertainBlockTypes.Contains(type);
-    }
-
-    internal static IEnumerable<Share> GetSharesForPersistence(IEnumerable<Share> shares)
-    {
-        ArgumentNullException.ThrowIfNull(shares);
-
-        return shares.Where(x => !x.BlockOnly)
-            .SelectMany(x => x.PairedShare == null
-                ? new[] { x }
-                : new[] { x, x.PairedShare });
     }
 
     private static void OnPolicyRetry(Exception ex, TimeSpan timeSpan, int retry, object context)
@@ -2081,6 +2086,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             {
                 try
                 {
+                    ShareAccounting.ValidateReplayHorizon(share,
+                        DateTime.UtcNow, clusterConfig.PaymentProcessing?
+                            .ShareAccountingRetentionDays ?? 30);
                     ShareAccounting.ValidateAndFlatten(share, pools);
                 }
                 catch(Exception ex) when(ex is InvalidDataException or
@@ -2604,6 +2612,42 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             await PersistSharesAsync(queued.Select(x => x.Share).ToArray(), ct);
         }
+        catch(InvalidDataException ex)
+        {
+            if(queued.Count == 1)
+            {
+                ex.Data[InvalidQueuedShareIdsKey] = new[] { queued.Single().Id };
+                throw;
+            }
+
+            // Isolate deterministic accounting/configuration failures so one hostile or corrupt
+            // record cannot strand the other records in a valid persistence batch. Successful
+            // siblings are committed and removed normally; only rejected evidence is quarantined.
+            var rejected = new List<long>();
+            var failures = new List<Exception>();
+            foreach(var item in queued.OrderBy(x => x.Id))
+            {
+                try
+                {
+                    await PersistQueuedSharesAsync(new[] { item }, ct);
+                }
+                catch(InvalidDataException itemError)
+                {
+                    rejected.Add(item.Id);
+                    failures.Add(itemError);
+                }
+            }
+
+            if(rejected.Count == 0)
+                throw;
+
+            var isolated = new InvalidDataException(
+                $"Rejected {rejected.Count} invalid share-accounting record(s); " +
+                "valid siblings were committed independently",
+                new AggregateException(failures));
+            isolated.Data[InvalidQueuedShareIdsKey] = rejected.ToArray();
+            throw isolated;
+        }
         catch(TransactionCommittedCleanupException)
         {
             // Commit completed before provider cleanup failed. Remove this exact batch before
@@ -2647,6 +2691,57 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
+    private async Task<string> WriteAccountingQuarantineAsync(IList<Share> shares)
+    {
+        if(shares.Count == 0)
+            throw new ArgumentException("A quarantine must contain evidence", nameof(shares));
+
+        var directory = Path.GetDirectoryName(recoveryFilename)!;
+        var quarantine = Path.Combine(directory,
+            $"{Path.GetFileName(recoveryFilename)}.quarantine-" +
+            $"{DateTime.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}");
+        var temporary = $"{quarantine}.tmp";
+
+        try
+        {
+            await using(var stream = recoveryPathOwnership.OpenRecoveryEntry(
+                temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None,
+                FileOptions.Asynchronous | FileOptions.WriteThrough,
+                "Share-accounting quarantine temporary"))
+            {
+                var payload = BuildRecoveryJournalPayload(shares, true, 1,
+                    EmptyFrameDigest);
+                await AppendRecoveryJournalAsync(stream, payload.Bytes,
+                    RecoveryJournalFlush);
+                stream.Position = 0;
+                _ = ValidateRecoveryJournalDetailed(stream, temporary);
+            }
+
+            MoveRecoveryEntry(recoveryPathOwnership, temporary, quarantine);
+            SyncRecoveryDirectory(recoveryPathOwnership, directory);
+            return quarantine;
+        }
+        finally
+        {
+            try
+            {
+                recoveryPathOwnership.DeleteRecoveryEntry(temporary);
+            }
+            catch
+            {
+                // Preserve the original durability failure.
+            }
+        }
+    }
+
+    private static HashSet<long> GetInvalidQueuedShareIds(Exception error)
+    {
+        if(error.Data[InvalidQueuedShareIdsKey] is IEnumerable<long> values)
+            return values.ToHashSet();
+
+        return new HashSet<long>();
+    }
+
     private async Task JournalUnresolvedSharesAfterPipelineFailureAsync(
         Exception pipelineError)
     {
@@ -2660,7 +2755,34 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         try
         {
-            await WriteRecoveryJournalAsync(unresolved);
+            var rejectedIds = GetInvalidQueuedShareIds(pipelineError);
+            if(rejectedIds.Count > 0)
+            {
+                var rejected = unresolvedShares.Values
+                    .Where(x => rejectedIds.Contains(x.Id))
+                    .OrderBy(x => x.Id)
+                    .ToArray();
+                if(rejected.Length > 0)
+                {
+                    var quarantine = await WriteAccountingQuarantineAsync(
+                        rejected.Select(x => x.Share).ToArray());
+                    pipelineError.Data[AccountingQuarantinePathKey] = quarantine;
+                    logger.Error(() =>
+                        $"Quarantined {rejected.Length} invalid share-accounting " +
+                        $"record(s) in {quarantine}; preserve this evidence for " +
+                        "manual reconciliation");
+
+                    foreach(var item in rejected)
+                    {
+                        unresolvedShares.TryRemove(item.Id, out _);
+                        item.JournalCompletion?.TrySetResult();
+                    }
+                }
+            }
+
+            var recoverable = SnapshotUnresolvedShares();
+            if(recoverable.Length > 0)
+                await WriteRecoveryJournalAsync(recoverable);
             NotifyAdminOnPolicyFallbackSafely();
 
             foreach(var item in unresolvedShares.ToArray())

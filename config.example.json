@@ -123,6 +123,9 @@
     "enabled": true,
     // Seconds between payment-processing cycles.
     "interval": 600,
+    // Keep exactly-once share-accounting receipts for this many days. Delayed relay
+    // or recovery evidence older than this horizon is rejected for manual reconciliation.
+    "shareAccountingRetentionDays": 30,
     // Optional text included in supported coinbase transactions.
     "coinbaseString": "Miningcore"
   },
@@ -320,7 +323,7 @@
       // This object is required even when the pool is disabled; set enabled=false
       // instead of removing it or replacing it with null.
       "paymentProcessing": {
-        // Must be true for this merged-mining SOLO parent pool.
+        // Must be true for this example's merged-mining parent pool.
         // When this pool pays transaction fees, fund this exact wallet with a confirmed
         // reserve; minersPayTxFees covers normal sendmany fees but per-recipient fallback
         // submissions can still require additional spendable input.
@@ -328,8 +331,10 @@
         "enabled": true,
         // Smallest LTC balance paid automatically, denominated in whole LTC.
         "minimumPayment": 0.01,
-        // LTC/DOGE merged mining currently requires SOLO on both pools.
+        // This baseline uses SOLO; each chain may independently use SOLO, PPS, PROP or PPLNS.
         "payoutScheme": "SOLO"
+        // For PPS, optionally retain statistical share rows independently of block luck:
+        // "ppsShareRetentionDays": 7
       },
       // Link this Litecoin parent pool to the Dogecoin auxiliary pool below.
       "mergedMining": {

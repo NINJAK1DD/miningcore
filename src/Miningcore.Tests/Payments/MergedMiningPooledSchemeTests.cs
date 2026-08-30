@@ -143,7 +143,7 @@ public class MergedMiningPooledSchemeTests
             Substitute.For<IPayoutHandler>(), block, 50m,
             CancellationToken.None);
 
-        await shareRepository.Received(1).DeleteSharesBeforeAsync(connection,
+        await shareRepository.Received(1).DeleteSharesBeforeInclusiveAsync(connection,
             transaction, "ltc", block.Created, CancellationToken.None);
     }
 

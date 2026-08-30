@@ -46,6 +46,120 @@ public class ShareAccountingTests
             actual.PairedShare.AccountingRole);
     }
 
+    [Fact]
+    public void PpsEvidence_RoundTripsAndSurvivesSanitizedRecoveryConfiguration()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        var acceptingPool = CreatePool("ltc", PayoutScheme.PPS);
+        ShareAccounting.AttachPpsCreditEvidence(acceptingPool, share);
+        var expected = share.PpsCalculatedAmount;
+
+        using var stream = new MemoryStream();
+        Serializer.Serialize(stream, share);
+        stream.Position = 0;
+        var recovered = Serializer.Deserialize<Share>(stream);
+        var sanitizedPool = new PoolConfig
+        {
+            Id = "ltc",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+        };
+
+        var credit = ShareAccounting.CreatePpsCredit(sanitizedPool, recovered);
+
+        Assert.Equal(expected, recovered.PpsCalculatedAmount);
+        Assert.Equal(expected, credit.CalculatedAmount);
+        Assert.Equal(share.Difficulty, credit.Difficulty);
+        Assert.Equal(share.NetworkDifficulty, credit.NetworkDifficulty);
+        Assert.Equal(share.RewardBasisSatoshis, credit.RewardBasisSatoshis);
+    }
+
+    [Fact]
+    public void PpsEvidence_RejectsMissingOrConflictingLiveCalculation()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        var pool = CreatePool("ltc", PayoutScheme.PPS);
+
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(pool, share));
+
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
+        share.PpsCalculatedAmount += 0.000000000000000000000001m;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(pool, share));
+    }
+
+    [Fact]
+    public void PpsCredit_RejectsArithmeticOverflowAndMoreThanOneReward()
+    {
+        var pool = CreatePool("ltc", PayoutScheme.PPS);
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        share.Difficulty = double.MaxValue;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.AttachPpsCreditEvidence(pool, share));
+
+        share.Difficulty = 101;
+        share.NetworkDifficulty = 100;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.AttachPpsCreditEvidence(pool, share));
+    }
+
+    [Fact]
+    public void ReplayHorizon_RejectsExpiredAndFutureAccountingEvidence()
+    {
+        var now = new DateTime(2026, 8, 30, 12, 0, 0, DateTimeKind.Utc);
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        share.Created = now.AddDays(-30);
+
+        ShareAccounting.ValidateReplayHorizon(share, now, 30);
+
+        share.Created = now.AddDays(-30).AddTicks(-1);
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.ValidateReplayHorizon(share, now, 30));
+
+        share.Created = now.AddMinutes(5).AddTicks(1);
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.ValidateReplayHorizon(share, now, 30));
+    }
+
+    [Fact]
+    public void PayloadHash_BindsEveryPpsLiabilityInput()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        var pool = CreatePool("ltc", PayoutScheme.PPS);
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
+        var credit = ShareAccounting.CreatePpsCredit(pool, share);
+        var id = ShareAccounting.ParseCanonicalId(share.AccountingId);
+        var persisted = new[] { ShareAccounting.ToPersistenceShare(share) };
+        var expected = ShareAccounting.ComputePayloadHash(id, persisted,
+            new[] { credit });
+
+        foreach(var changed in new[]
+                {
+                    credit with { Difficulty = credit.Difficulty + 1 },
+                    credit with
+                    {
+                        NetworkDifficulty = credit.NetworkDifficulty + 1,
+                    },
+                    credit with
+                    {
+                        RewardBasisSatoshis = credit.RewardBasisSatoshis + 1,
+                    },
+                    credit with { Created = credit.Created.AddTicks(1) },
+                })
+            Assert.NotEqual(expected, ShareAccounting.ComputePayloadHash(id,
+                persisted, new[] { changed }));
+    }
+
     [Theory]
     [InlineData("different-id")]
     [InlineData("nested")]
@@ -94,6 +208,7 @@ public class ShareAccountingTests
             new RewardRecipient { Address = "fee", Percentage = 2m },
         };
 
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
         var credit = ShareAccounting.CreatePpsCredit(pool, share);
 
         Assert.Equal(1.96m, credit.CalculatedAmount);
@@ -112,8 +227,9 @@ public class ShareAccountingTests
         share.NetworkDifficulty = 100;
         share.RewardBasisSatoshis = 5_000_000_000;
 
-        var credit = ShareAccounting.CreatePpsCredit(
-            CreatePool("ltc", PayoutScheme.PPS), share);
+        var pool = CreatePool("ltc", PayoutScheme.PPS);
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
+        var credit = ShareAccounting.CreatePpsCredit(pool, share);
 
         Assert.Equal(0.5m, credit.CalculatedAmount);
     }
@@ -153,6 +269,7 @@ public class ShareAccountingTests
             }
             : Array.Empty<RewardRecipient>();
 
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
         var credit = ShareAccounting.CreatePpsCredit(pool, share);
 
         Assert.Equal(expected, credit.CalculatedAmount);

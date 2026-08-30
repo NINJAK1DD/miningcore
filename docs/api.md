@@ -422,6 +422,7 @@ Share-accounting backlog monitoring uses three gauges and one counter with a fix
 | `miningcore_share_persistence_queue_high_watermark` | Largest queue depth observed since process start |
 | `miningcore_share_persistence_queue_capacity` | Configured bounded capacity |
 | `miningcore_share_persistence_queue_overflow_total` | Writes rejected because the queue was full or concurrently completed |
+| `miningcore_share_relay_unsupported_wire_format_total` | Relay frames rejected because sender and receiver accounting wire versions differ |
 
 The `queue` label is `primary` for the normal PostgreSQL persistence queue and
 `emergency_journal` for the overflow writer that force-flushes shares to `shareRecoveryFile`.
@@ -438,6 +439,11 @@ addresses or per-share accounting IDs. The authoritative metric contract, PromQL
 guidance are in the [merged-mining operations guide](merged-mining-litecoin-dogecoin.md#template-refresh).
 Review that guidance before changing `auxiliaryTemplatePollTimeoutMs`; increasing it can delay a new
 parent-chain job.
+
+Prometheus PPS liability totals are operational floating-point telemetry and can accumulate minor
+rounding drift over very large share counts. PostgreSQL `pps_share_credits.calculatedamount` and the
+balance ledger are the authoritative decimal financial record. Alert on unsupported relay-wire
+increments; they indicate a financially unsafe rollout order and rejected shares.
 
 ## Front ends and reverse proxies
 

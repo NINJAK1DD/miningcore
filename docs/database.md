@@ -978,16 +978,70 @@ WHERE (SELECT count(*) FROM shares
       > groups.projectioncount;
 ```
 
-The accounting group and PPS credit tables are durable replay evidence and are not ordinary share
+The accounting group and PPS credit tables are replay evidence and are not ordinary share
 retention tables. Settled PROP/PPLNS/PPS share rows may be deleted by payout cleanup, so a healthy
 group may retain any subset of its original projections as the two pools cross independent payout
 boundaries. Miningcore authenticates every remaining projection against the original payload and
 accepts the subset on a retry. The group receipt proves the original projections were committed in
-one transaction; an excess or conflicting row still fails closed. Do not delete
-`share_accounting_groups` or `pps_share_credits` as part of routine share retention; those records
-prevent a delayed relay or recovery replay from creating a second liability.
+one transaction; an excess or conflicting row still fails closed. Do not delete these records with
+an independent shares-retention job. Miningcore retires them only after the configured replay
+horizon has passed and rejects older evidence before it can create another liability.
 
 Use these queries for inspection only. Never repair balances or payments with ad-hoc SQL.
+
+## Share-accounting retention and sizing
+
+`paymentProcessing.shareAccountingRetentionDays` defaults to 30 days. It must exceed the longest
+supported relay outage, recovery-journal retention and incident-response window. Once the horizon
+passes, Miningcore rejects the old envelope and its payout-manager maintenance pass prunes the
+corresponding `pps_share_credits`, PPS `balance_changes`, and orphaned
+`share_accounting_groups`. Per-recipient `pps_credit_remainders` remain because they carry exact
+sub-unit value and grow with recipients, not shares. PPS statistical rows use the separate per-pool
+`ppsShareRetentionDays` setting (default 7) and are pruned even when the pool finds no block.
+
+Approximate row creation at 20 accepted accounting envelopes per second is:
+
+| Evidence | Rows/day | Rows at 30 days |
+| --- | ---: | ---: |
+| Accounting groups | 1,728,000 | 51,840,000 |
+| PPS credits, one PPS projection | 1,728,000 | 51,840,000 |
+| PPS balance changes, upper bound | 1,728,000 | 51,840,000 |
+| PPS credits/changes, two PPS projections | 3,456,000 each | 103,680,000 each |
+
+Actual disk cost depends on addresses, indexes, PostgreSQL settings and vacuum state. Measure it:
+
+```sql
+SELECT relname,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+       n_live_tup
+FROM pg_stat_user_tables
+WHERE relname IN ('share_accounting_groups', 'pps_share_credits',
+                  'pps_credit_remainders', 'balance_changes', 'shares')
+ORDER BY pg_total_relation_size(relid) DESC;
+```
+
+If policy requires audit retention beyond the live replay horizon, stop Miningcore at a planned
+boundary, take and verify the normal custom-format database backup, and export the expiring rows
+before restarting. Record the UTC cutoff and archive checksum with the backup:
+
+```console
+cutoff='2026-08-01T00:00:00Z'
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --csv -c "SELECT * FROM share_accounting_groups WHERE created <= '$cutoff' ORDER BY created, accountingid" \
+  > share-accounting-groups.csv
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --csv -c "SELECT * FROM pps_share_credits WHERE created <= '$cutoff' ORDER BY created, accountingid, poolid" \
+  > pps-share-credits.csv
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --csv -c "SELECT * FROM balance_changes WHERE usage='PPS share credit' AND created <= '$cutoff' ORDER BY created, id" \
+  > pps-balance-changes.csv
+sha256sum share-accounting-groups.csv pps-share-credits.csv \
+  pps-balance-changes.csv > share-accounting-archive.sha256
+sha256sum --check share-accounting-archive.sha256
+```
+
+Keep the files protected like wallet/accounting data. Do not manually delete the live rows; allow
+Miningcore's ordered maintenance transaction to do so after the same cutoff becomes eligible.
 
 ## Advanced share-table partitioning
 

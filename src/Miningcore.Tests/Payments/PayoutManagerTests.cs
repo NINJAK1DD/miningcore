@@ -482,6 +482,64 @@ public class PayoutManagerTests
         await fixture.PayoutLease.Received(1).DisposeAsync();
     }
 
+    [Fact]
+    public async Task PpsRetention_IsIndependentOfBlockDiscovery()
+    {
+        var context = Substitute.For<IComponentContext>();
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var shareRepository = Substitute.For<IShareRepository>();
+        var config = new ClusterConfig
+        {
+            PaymentProcessing = new ClusterPaymentProcessingConfig
+            {
+                Enabled = true,
+                ShareAccountingRetentionDays = 30,
+            },
+            Pools = new[]
+            {
+                new PoolConfig
+                {
+                    Id = "pps",
+                    Enabled = true,
+                    Template = new BitcoinTemplate
+                    {
+                        Family = CoinFamily.Bitcoin,
+                    },
+                    PaymentProcessing = new PoolPaymentProcessingConfig
+                    {
+                        Enabled = true,
+                        PayoutScheme = PayoutScheme.PPS,
+                        PpsShareRetentionDays = 7,
+                    },
+                },
+            },
+        };
+        connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        var manager = new PayoutManager(context, connectionFactory,
+            Substitute.For<IBlockRepository>(), shareRepository,
+            Substitute.For<IBalanceRepository>(), config,
+            Substitute.For<IMessageBus>(), Substitute.For<IPayoutManagerLease>(),
+            new ProcessStatus());
+        var before = DateTime.UtcNow;
+
+        await manager.MaintainShareAccountingRetentionAsync(
+            CancellationToken.None);
+
+        var after = DateTime.UtcNow;
+        await shareRepository.Received(1).DeleteSharesBeforeInclusiveAsync(
+            connection, transaction, "pps",
+            Arg.Is<DateTime>(value => value >= before.AddDays(-7) &&
+                value <= after.AddDays(-7)), Arg.Any<CancellationToken>());
+        await shareRepository.Received(1).PruneShareAccountingEvidenceBeforeAsync(
+            connection, transaction,
+            Arg.Is<DateTime>(value => value >= before.AddDays(-30) &&
+                value <= after.AddDays(-30)), Arg.Any<CancellationToken>());
+        transaction.Received(1).Commit();
+    }
+
     private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending,
         Func<CancellationToken, Task> executeOverride = null,
         IMessageBus messageBusOverride = null)

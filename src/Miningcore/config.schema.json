@@ -253,6 +253,10 @@
         },
         "interval": {
           "type": "integer"
+        },
+        "shareAccountingRetentionDays": {
+          "type": "integer",
+          "default": 30
         }
       }
     },
@@ -545,7 +549,11 @@
             "PPLNSBF"
           ]
         },
-        "payoutSchemeConfig": {}
+        "payoutSchemeConfig": {},
+        "ppsShareRetentionDays": {
+          "type": "integer",
+          "default": 7
+        }
       }
     },
     "PoolShareBasedBanningConfig": {

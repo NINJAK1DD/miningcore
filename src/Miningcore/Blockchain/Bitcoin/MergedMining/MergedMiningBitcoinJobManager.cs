@@ -710,6 +710,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             share.PreserveCreated = true;
             share.PairedShare = CreateAuxiliaryShareProjection(context, result,
                 share, now);
+            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                poolConfig, share);
+            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                auxiliaryPoolConfig, share.PairedShare);
         }
         else if(usesPairedAccounting)
         {
@@ -718,6 +722,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
             share.AccountingRole = ShareAccountingRole.Single;
             share.PreserveCreated = true;
+            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                poolConfig, share);
         }
 
         var hasCandidate = share.IsBlockCandidate || !string.IsNullOrEmpty(result.AuxPowHex);
@@ -781,16 +787,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             throw new InvalidDataException(
                 "Merged-mining templates require positive finite share multipliers");
 
-        decimal rewardSatoshis;
-        try
-        {
-            rewardSatoshis = result.AuxiliaryBlockTemplate.CoinbaseValue;
-        }
-        catch(OverflowException ex)
-        {
-            throw new InvalidDataException(
-                "Auxiliary reward basis exceeds the supported accounting range", ex);
-        }
+        // The supported LTC/DOGE contract has no auxiliary consensus deductions, so DOGE's raw
+        // coinbase value is its spendable pool reward basis. Any future #113 generalisation must
+        // supply a typed post-deduction basis rather than reusing this DOGE-specific assumption.
+        var rewardSatoshis = result.AuxiliaryBlockTemplate.CoinbaseValue;
 
         if(rewardSatoshis <= 0 || rewardSatoshis != decimal.Truncate(rewardSatoshis) ||
            rewardSatoshis > long.MaxValue)
@@ -1101,6 +1101,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             AccountingId = share.AccountingId,
             AccountingRole = share.AccountingRole,
             RewardBasisSatoshis = share.RewardBasisSatoshis,
+            PpsCalculatedAmount = share.PpsCalculatedAmount,
             PairedShare = share.PairedShare,
             BlockHeight = share.BlockHeight,
             BlockReward = share.BlockReward,

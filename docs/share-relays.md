@@ -43,6 +43,11 @@ whole envelope, but cannot commit one chain without the other. Upgrade and migra
 senders, then stop old senders before enabling PPS or pooled merged mining. New senders use a new
 protobuf wire discriminator; old receivers reject it, and new receivers reject accounting fields in
 legacy frames. This is deliberately fail-closed rather than silently downgrading financial data.
+The receiver validates paired projections against every configured pool, not only pools whose daemon
+startup has completed, so a slow auxiliary daemon cannot make a valid envelope disappear during
+receiver startup. The topic pool must still be online for normal telemetry attribution. Monitor
+`miningcore_share_relay_unsupported_wire_format_total`; any increase means a sender/receiver version
+mismatch is rejecting frames and requires immediate rollout correction.
 
 ## Recommended bind mode
 

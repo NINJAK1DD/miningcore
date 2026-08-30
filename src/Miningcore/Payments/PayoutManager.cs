@@ -216,6 +216,41 @@ public class PayoutManager : ProcessStatusBackgroundService
                 logger.Error(ex, () => $"[{poolConfig.Id}] Payment processing failed");
             }
         }
+
+        await MaintainShareAccountingRetentionAsync(ct);
+    }
+
+    internal async Task MaintainShareAccountingRetentionAsync(
+        CancellationToken ct)
+    {
+        if(!Program.RequiresShareAccountingPersistence(clusterConfig))
+            return;
+
+        var now = DateTime.UtcNow;
+        var ppsPools = clusterConfig.Pools.Where(pool => pool.Enabled &&
+            pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS).ToArray();
+        var replayDays = clusterConfig.PaymentProcessing?
+            .ShareAccountingRetentionDays ?? 30;
+
+        var pruned = await cf.RunTx(async (con, tx) =>
+        {
+            foreach(var pool in ppsPools)
+            {
+                var cutoff = now.AddDays(-pool.PaymentProcessing
+                    .PpsShareRetentionDays);
+                await shareRepo.DeleteSharesBeforeInclusiveAsync(con, tx,
+                    pool.Id, cutoff, ct);
+            }
+
+            return await shareRepo.PruneShareAccountingEvidenceBeforeAsync(
+                con, tx, now.AddDays(-replayDays), ct);
+        }, ct: ct);
+
+        if(pruned > 0)
+            logger.Info(() =>
+                $"Pruned {pruned} expired share-accounting evidence row(s) beyond " +
+                $"the configured {replayDays}-day replay horizon");
     }
 
     private static CoinFamily HandleFamilyOverride(CoinFamily family, PoolConfig pool)

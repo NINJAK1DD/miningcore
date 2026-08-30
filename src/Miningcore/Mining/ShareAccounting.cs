@@ -43,7 +43,8 @@ internal static class ShareAccounting
         {
             if(envelope.PairedShare != null ||
                envelope.AccountingRole != ShareAccountingRole.None ||
-               envelope.RewardBasisSatoshis != 0)
+               envelope.RewardBasisSatoshis != 0 ||
+               envelope.PpsCalculatedAmount.HasValue)
                 throw new InvalidDataException(
                     "Unidentified shares must not carry partial accounting data");
 
@@ -95,6 +96,28 @@ internal static class ShareAccounting
         return new[] { envelope, auxiliary };
     }
 
+    internal static void ValidateReplayHorizon(Share envelope, DateTime nowUtc,
+        int retentionDays)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+        if(string.IsNullOrEmpty(envelope.AccountingId))
+            return;
+        if(retentionDays <= 0)
+            throw new ArgumentOutOfRangeException(nameof(retentionDays));
+
+        nowUtc = nowUtc.Kind == DateTimeKind.Utc
+            ? nowUtc
+            : nowUtc.ToUniversalTime();
+        var oldest = nowUtc.AddDays(-retentionDays);
+        var newest = nowUtc.AddMinutes(5);
+        if(envelope.Created < oldest)
+            throw new InvalidDataException(
+                $"Share accounting evidence is older than the configured {retentionDays}-day replay horizon; preserve it for manual financial reconciliation");
+        if(envelope.Created > newest)
+            throw new InvalidDataException(
+                "Share accounting evidence is more than five minutes in the future");
+    }
+
     private static void RequireSame(bool mismatch, string field)
     {
         if(mismatch)
@@ -117,7 +140,8 @@ internal static class ShareAccounting
            !double.IsFinite(share.ShareDifficulty) || share.ShareDifficulty <= 0 ||
            !double.IsFinite(share.ActualDifficulty) || share.ActualDifficulty <= 0 ||
            !double.IsFinite(share.NetworkDifficulty) || share.NetworkDifficulty <= 0 ||
-           share.RewardBasisSatoshis <= 0)
+           share.RewardBasisSatoshis <= 0 ||
+           share.PpsCalculatedAmount is <= 0)
             throw new InvalidDataException(
                 $"Accounting share for pool '{share.PoolId}' is incomplete or non-finite");
     }
@@ -149,11 +173,74 @@ internal static class ShareAccounting
         };
     }
 
-    internal static PpsShareCredit CreatePpsCredit(PoolConfig pool, Share share)
+    internal static void AttachPpsCreditEvidence(PoolConfig pool, Share share)
     {
+        ArgumentNullException.ThrowIfNull(pool);
+        ArgumentNullException.ThrowIfNull(share);
+
         if(pool.PaymentProcessing?.Enabled != true ||
            pool.PaymentProcessing.PayoutScheme != PayoutScheme.PPS)
+        {
+            share.PpsCalculatedAmount = null;
+            return;
+        }
+
+        share.PpsCalculatedAmount = CalculatePpsAmount(pool, share);
+    }
+
+    internal static PpsShareCredit CreatePpsCredit(PoolConfig pool, Share share)
+    {
+        ArgumentNullException.ThrowIfNull(pool);
+        ArgumentNullException.ThrowIfNull(share);
+
+        var configuredPps = pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS;
+
+        if(!share.PpsCalculatedAmount.HasValue)
+        {
+            if(configuredPps)
+                throw new InvalidDataException(
+                    $"PPS share for pool '{pool.Id}' is missing immutable liability evidence");
+
             return null;
+        }
+
+        if(pool.PaymentProcessing?.Enabled == true && !configuredPps)
+            throw new InvalidDataException(
+                $"Non-PPS pool '{pool.Id}' received unexpected PPS liability evidence");
+        if(pool.Template?.Family != CoinFamily.Bitcoin)
+            throw new InvalidDataException(
+                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
+
+        var calculated = share.PpsCalculatedAmount.Value;
+        if(configuredPps)
+        {
+            var expected = CalculatePpsAmount(pool, share);
+            if(calculated != expected)
+                throw new InvalidDataException(
+                    $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
+        }
+
+        var rawReward = share.RewardBasisSatoshis / 100_000_000m;
+        if(calculated <= 0 || calculated > rawReward)
+            throw new InvalidDataException(
+                $"PPS liability evidence for pool '{pool.Id}' exceeds its share reward basis");
+
+        return new PpsShareCredit
+        {
+            PoolId = pool.Id,
+            AccountingId = ParseCanonicalId(share.AccountingId),
+            Address = share.Miner,
+            CalculatedAmount = calculated,
+            Difficulty = share.Difficulty,
+            NetworkDifficulty = share.NetworkDifficulty,
+            RewardBasisSatoshis = share.RewardBasisSatoshis,
+            Created = share.Created,
+        };
+    }
+
+    private static decimal CalculatePpsAmount(PoolConfig pool, Share share)
+    {
         if(pool.Template?.Family != CoinFamily.Bitcoin)
             throw new InvalidDataException(
                 $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
@@ -180,39 +267,35 @@ internal static class ShareAccounting
             throw new InvalidDataException(
                 $"Pool '{pool.Id}' must retain a positive reward fraction for PPS");
 
-        var reward = share.RewardBasisSatoshis / 100_000_000m;
-        var retainedReward = reward * (1m - recipientPercent / 100m);
-        decimal difficulty;
-        decimal networkDifficulty;
+        decimal retainedReward;
+        decimal calculated;
 
         try
         {
-            difficulty = (decimal) share.Difficulty;
-            networkDifficulty = (decimal) share.NetworkDifficulty;
+            checked
+            {
+                var reward = share.RewardBasisSatoshis / 100_000_000m;
+                retainedReward = reward * (1m - recipientPercent / 100m);
+                var difficulty = (decimal) share.Difficulty;
+                var networkDifficulty = (decimal) share.NetworkDifficulty;
+                calculated = retainedReward * difficulty / networkDifficulty;
+            }
         }
         catch(OverflowException ex)
         {
             throw new InvalidDataException(
-                $"PPS difficulty for pool '{pool.Id}' exceeds decimal accounting range", ex);
+                $"PPS liability for pool '{pool.Id}' exceeds the supported decimal accounting range", ex);
         }
 
-        var calculated = retainedReward * difficulty / networkDifficulty;
         calculated = decimal.Round(calculated, 24, MidpointRounding.ToZero);
         if(calculated <= 0)
             throw new InvalidDataException(
                 $"PPS credit for pool '{pool.Id}' is below the supported 24-decimal liability precision");
+        if(calculated > retainedReward)
+            throw new InvalidDataException(
+                $"PPS credit for pool '{pool.Id}' exceeds the retained reward for one accepted proof; review assigned and network difficulty");
 
-        return new PpsShareCredit
-        {
-            PoolId = pool.Id,
-            AccountingId = ParseCanonicalId(share.AccountingId),
-            Address = share.Miner,
-            CalculatedAmount = calculated,
-            Difficulty = share.Difficulty,
-            NetworkDifficulty = share.NetworkDifficulty,
-            RewardBasisSatoshis = share.RewardBasisSatoshis,
-            Created = share.Created,
-        };
+        return calculated;
     }
 
     internal static string ComputePayloadHash(Guid accountingId,
@@ -241,7 +324,11 @@ internal static class ShareAccounting
         {
             builder.Append("pps|").Append(credit.PoolId).Append('|')
                 .Append(credit.Address).Append('|')
-                .Append(credit.CalculatedAmount.ToString(CultureInfo.InvariantCulture))
+                .Append(credit.CalculatedAmount.ToString(CultureInfo.InvariantCulture)).Append('|')
+                .Append(credit.Difficulty.ToString("R", CultureInfo.InvariantCulture)).Append('|')
+                .Append(credit.NetworkDifficulty.ToString("R", CultureInfo.InvariantCulture)).Append('|')
+                .Append(credit.RewardBasisSatoshis).Append('|')
+                .Append(credit.Created.ToUniversalTime().Ticks)
                 .Append('\n');
         }
 

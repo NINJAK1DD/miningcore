@@ -3280,6 +3280,7 @@ public class ShareRecorderTests
             NetworkDifficulty = 100,
             BlockHeight = 200,
             RewardBasisSatoshis = 5_000_000_000,
+            PpsCalculatedAmount = 0.8m,
             AccountingId = accountingId,
             AccountingRole = ShareAccountingRole.Parent,
         };
@@ -3299,6 +3300,7 @@ public class ShareRecorderTests
             NetworkDifficulty = 10_000,
             BlockHeight = 300,
             RewardBasisSatoshis = 1_000_000_000_000_000,
+            PpsCalculatedAmount = 200_000m,
             AccountingId = accountingId,
             AccountingRole = ShareAccountingRole.Auxiliary,
         };
@@ -3320,7 +3322,13 @@ public class ShareRecorderTests
                     batch.Shares.Any(x => x.PoolId == "ltc-solo" &&
                         x.AccountingRole == (short) ShareAccountingRole.Parent) &&
                     batch.Shares.Any(x => x.PoolId == "doge-solo" &&
-                        x.AccountingRole == (short) ShareAccountingRole.Auxiliary)),
+                        x.AccountingRole == (short) ShareAccountingRole.Auxiliary) &&
+                    batch.PpsCredits.Length == 2 &&
+                    batch.PpsCredits.Any(x => x.PoolId == "ltc-solo" &&
+                        x.Address == "ltc-miner" && x.CalculatedAmount == 0.8m) &&
+                    batch.PpsCredits.Any(x => x.PoolId == "doge-solo" &&
+                        x.Address == "doge-miner" &&
+                        x.CalculatedAmount == 200_000m)),
                 Arg.Any<CancellationToken>());
             await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
                 fixture.Connection, fixture.Transaction,
@@ -3593,28 +3601,6 @@ public class ShareRecorderTests
                 activeRecoveryFilename);
             Directory.Delete(directory, true);
         }
-    }
-
-    [Fact]
-    public void GetSharesForPersistence_ExcludesBlockOnlyCandidates()
-    {
-        var regularShare = new Share { PoolId = "ltc-solo" };
-        var parentBlockCandidate = new Share { PoolId = "ltc-solo", IsBlockCandidate = true };
-        var auxiliaryBlockCandidate = new Share
-        {
-            PoolId = "doge-solo",
-            IsBlockCandidate = true,
-            BlockOnly = true,
-        };
-
-        var result = ShareRecorder.GetSharesForPersistence(new[]
-        {
-            regularShare,
-            parentBlockCandidate,
-            auxiliaryBlockCandidate,
-        }).ToArray();
-
-        Assert.Equal(new[] { regularShare, parentBlockCandidate }, result);
     }
 
     [Fact]
@@ -7892,12 +7878,22 @@ public class ShareRecorderTests
         var dogecoinPool = new PoolConfig
         {
             Id = "doge-solo",
-            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "DOGE",
+                Name = "Dogecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
         var litecoinPool = new PoolConfig
         {
             Id = "ltc-solo",
-            Template = new BitcoinTemplate { Symbol = "LTC", Name = "Litecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "LTC",
+                Name = "Litecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));

@@ -1,6 +1,7 @@
 using System;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
@@ -13,6 +14,57 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class ShareAccountingIntegrationTests
 {
+    [PostgresIntegrationFact]
+    public async Task OrdinaryBatch_RemainsCompatibleWithLegacySharesTable()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_legacy_share_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, public;
+                CREATE TABLE shares(
+                    poolid text NOT NULL, blockheight bigint NOT NULL,
+                    difficulty double precision NOT NULL,
+                    networkdifficulty double precision NOT NULL,
+                    sharedifficulty double precision NULL,
+                    actualdifficulty double precision NULL,
+                    miner text NOT NULL, worker text NULL, useragent text NULL,
+                    ipaddress text NOT NULL, source text NULL, sessionid text NULL,
+                    created timestamptz NOT NULL);");
+
+            var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
+            await using var transaction = await connection.BeginTransactionAsync();
+            await repository.BatchInsertAsync(connection, transaction, new[]
+            {
+                new Share
+                {
+                    PoolId = "solo",
+                    BlockHeight = 42,
+                    Difficulty = 1,
+                    NetworkDifficulty = 100,
+                    Miner = "miner",
+                    IpAddress = "127.0.0.1",
+                    Created = DateTime.UtcNow,
+                },
+            }, CancellationToken.None);
+            await transaction.CommitAsync();
+
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM shares WHERE poolid='solo'"));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("ROLLBACK; SET search_path TO public");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
     [PostgresIntegrationFact]
     public async Task AccountingBatch_IsAtomicIdempotentAndCarriesSubUnitRemainders()
     {
@@ -178,6 +230,90 @@ public class ShareAccountingIntegrationTests
                 new { id = prunedPair.AccountingId });
             Assert.Equal(ShareAccountingInsertResult.AlreadyCommitted,
                 await InsertAsync(repository, connection, prunedPair));
+
+            var bulk = Enumerable.Range(0, 250).Select(index =>
+            {
+                var candidate = CreateBatch(Guid.NewGuid(), 0.001m, 'E');
+                var share = candidate.Shares[0] with { Miner = "load-miner" };
+                var credit = candidate.PpsCredits[0] with
+                {
+                    Address = "load-miner",
+                };
+                return candidate with
+                {
+                    Shares = new[] { share },
+                    PpsCredits = new[] { credit },
+                };
+            }).ToArray();
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var outcomes = await repository.InsertAccountingBatchesAsync(
+                    connection, transaction, bulk, CancellationToken.None);
+                Assert.All(outcomes, outcome => Assert.Equal(
+                    ShareAccountingInsertResult.Inserted, outcome));
+                await transaction.CommitAsync();
+            }
+            Assert.Equal(250, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM pps_share_credits WHERE address='load-miner'"));
+            Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT amount FROM balances WHERE poolid='ltc' AND address='load-miner'"));
+
+            var retained = CreateBatch(Guid.NewGuid(), 0.25m, 'F');
+            var retainedCreated = new DateTime(2026, 8, 28, 12, 0, 0,
+                DateTimeKind.Utc);
+            retained = retained with
+            {
+                Created = retainedCreated,
+                Shares = new[]
+                {
+                    retained.Shares[0] with
+                    {
+                        Miner = "retention-miner",
+                        Created = retainedCreated,
+                    },
+                },
+                PpsCredits = new[]
+                {
+                    retained.PpsCredits[0] with
+                    {
+                        Address = "retention-miner",
+                        Created = retainedCreated,
+                    },
+                },
+            };
+            Assert.Equal(ShareAccountingInsertResult.Inserted,
+                await InsertAsync(repository, connection, retained));
+            await connection.ExecuteAsync(
+                "DELETE FROM shares WHERE accountingid=@id",
+                new { id = retained.AccountingId });
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                Assert.Equal(3,
+                    await repository.PruneShareAccountingEvidenceBeforeAsync(
+                        connection, transaction, retained.Created.AddSeconds(1),
+                        CancellationToken.None));
+                await transaction.CommitAsync();
+            }
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM share_accounting_groups WHERE accountingid=@id",
+                new { id = retained.AccountingId }));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM pps_share_credits WHERE accountingid=@id",
+                new { id = retained.AccountingId }));
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM pps_credit_remainders " +
+                "WHERE poolid='ltc' AND address='retention-miner'"));
+
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var outcomes = await repository.InsertAccountingBatchesAsync(
+                    connection, transaction, bulk, CancellationToken.None);
+                Assert.All(outcomes, outcome => Assert.Equal(
+                    ShareAccountingInsertResult.AlreadyCommitted, outcome));
+                await transaction.CommitAsync();
+            }
+            Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT amount FROM balances WHERE poolid='ltc' AND address='load-miner'"));
 
             await connection.ExecuteAsync(@"
                 ALTER TABLE pps_credit_remainders
