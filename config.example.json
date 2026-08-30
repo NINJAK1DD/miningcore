@@ -335,6 +335,7 @@
         // Smallest LTC balance paid automatically, denominated in whole LTC.
         "minimumPayment": 0.01,
         // This baseline uses SOLO; each chain may independently use SOLO, PPS, PROP or PPLNS.
+        // Read docs/pps.md before enabling PPS: it requires reserve, migration and ledger checks.
         "payoutScheme": "SOLO"
         // For PPS, optionally retain statistical share rows independently of block luck:
         // "ppsShareRetentionDays": 7
@@ -429,6 +430,7 @@
     {
       // Ordinary Bitcoin SOLO starter. See examples/bitcoin_pool.json for separate
       // low/high difficulty ports and a smaller standalone configuration.
+      // Keep SOLO unless the migrations, reserve and docs/pps.md checklist are complete.
       "id": "bitcoin-solo",
       "enabled": false,
       "coin": "bitcoin",

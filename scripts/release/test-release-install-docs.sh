@@ -5,6 +5,7 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
+pps_document="$repository_root/docs/pps.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
 release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
@@ -77,20 +78,56 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the stable release example' \
-  'export MININGCORE_VERSION=v0.1.0' "$document"
-assert_file_contains 'the stable container example' \
-  'MININGCORE_VERSION=v0.1.0' "$readme"
+assert_file_contains 'the v0.2.0 release example' \
+  'export MININGCORE_VERSION=v0.2.0' "$document"
+assert_file_contains 'the v0.2.0 container example' \
+  'MININGCORE_VERSION=v0.2.0' "$readme"
+assert_file_contains 'the quick-start Ubuntu 26.04 runtime package' \
+  'aspnetcore-runtime-10.0' "$readme"
+assert_file_contains 'the quick-start PostgreSQL role creation' \
+  'sudo -u postgres createuser --pwprompt miningcore' "$readme"
+assert_file_contains 'the quick-start packaged schema path' \
+  '/opt/miningcore/migrations/createdb.sql' "$readme"
+assert_file_contains 'the quick-start advanced partitioning appendix' \
+  '/opt/miningcore/migrations/createdb_postgresql_11_appendix.sql' "$readme"
+assert_file_contains 'the quick-start partition example' \
+  'CREATE TABLE public.shares_bitcoin_solo' "$readme"
+assert_file_contains 'the quick-start daemon ownership boundary' \
+  'Miningcore does not install or manage the full nodes' "$readme"
+assert_file_contains 'the quick-start persistent logging path' \
+  'logging.logBaseDirectory` to `/var/log/miningcore' "$readme"
+assert_file_contains 'the quick-start recovery state path' \
+  'shareRecoveryStateDirectory` to `/var/lib/miningcore' "$readme"
+assert_file_contains 'the quick-start systemd unit path' \
+  '/etc/systemd/system/miningcore.service' "$readme"
+assert_file_contains 'the quick-start service enablement' \
+  'sudo systemctl enable --now miningcore' "$readme"
+assert_file_contains 'the quick-start private-service boundary' \
+  'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
+assert_file_contains 'the quick-start placeholder gate' \
+  "sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json" "$readme"
 assert_file_contains 'the concise source-build progress contract' \
   "Interactive builds retain .NET's concise progress and elapsed-time display" "$readme"
 assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the stable recovery example' \
-  'export TAG=v0.1.0'
-assert_contains 'the stable tagging example' \
-  'NEXT_VERSION=v0.1.0'
+assert_contains 'the v0.2.0 recovery example' \
+  'export TAG=v0.2.0'
+assert_contains 'the v0.2.0 tagging example' \
+  'NEXT_VERSION=v0.2.0'
+assert_file_contains 'the direct PPS Bitcoin-family boundary' \
+  'Direct audited `Bitcoin`-family pool' "$pps_document"
+assert_file_contains 'the PPS reserve warning' \
+  'separately controlled reserve' "$pps_document"
+for migration in add_auxpow_block_idempotency.sql \
+    add_payout_manager_ownership.sql add_share_accounting.sql; do
+  assert_file_contains "the PPS $migration migration" "$migration" "$pps_document"
+done
+assert_file_contains 'the PPS receiver-before-sender rule' \
+  'Upgrade and migrate relay receivers/recorders before senders' "$pps_document"
+assert_file_contains 'the authoritative PPS ledger boundary' \
+  'are the financial record' "$pps_document"
 assert_contains 'the interactive-shell safety explanation' \
   'instead of closing an SSH session'
 assert_contains 'the successful verification marker' \
@@ -278,6 +315,23 @@ if grep -Eq \
     '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.1\.0-rc\.13([[:space:]]|$)' \
     "$document"; then
   echo 'Release guide still contains a copy-paste RC.13 assignment' >&2
+  exit 1
+fi
+
+if grep -Eh \
+    '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
+    "$readme" "$document" |
+    grep -Ev \
+      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.2\.0([[:space:]]|$)'; then
+  echo 'README or release guide contains a stale copy-paste release assignment' >&2
+  exit 1
+fi
+
+if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.2\.0([[:space:]]|$)' "$readme") -ne 3 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.2\.0([[:space:]]|$)' "$document") -ne 2 ]] ||
+    [[ $(grep -Ec '^NEXT_VERSION=v0\.2\.0([[:space:]]|$)' "$document") -ne 1 ]] ||
+    [[ $(grep -Ec '^export TAG=v0\.2\.0([[:space:]]|$)' "$document") -ne 1 ]]; then
+  echo 'The v0.2.0 copy-paste assignment inventory is incomplete or duplicated' >&2
   exit 1
 fi
 

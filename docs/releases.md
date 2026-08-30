@@ -34,7 +34,8 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Existing release-candidate operator | [v0.1.0 highlights](#v010-highlights) |
+| Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
+| Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
@@ -42,7 +43,30 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Unreleased changes
+## v0.2.0 highlights
+
+`v0.2.0` adds transactional Bitcoin-family PPS, independently selected pooled LTC/DOGE
+merged-mining schemes, source-verified version-rolling policy, and fail-closed removal of the inert
+coin-template `blockSerializer` setting. Review this section before replacing a v0.1.0 binary.
+
+### Upgrade boundary from v0.1.0
+
+- **Existing non-PPS pools and unchanged LTC/DOGE `SOLO`/`SOLO`:** no new share-accounting
+  migration. Preserve the backup and review custom template compatibility.
+- **Direct Bitcoin-family PPS or pooled LTC/DOGE accounting:** stop all writers and payout managers,
+  verify a backup, and apply the candidate-idempotency, payout-ownership and share-accounting
+  migrations.
+- **PPS or pooled-accounting relay topology:** upgrade and migrate receivers/recorders before
+  senders; do not run mixed accounting wire versions.
+- **Custom Bitcoin-family coin templates:** remove inert `blockSerializer` fields and review any
+  version-rolling mask against authoritative daemon source.
+
+The new accounting migration is additive, but its liabilities and replay receipts are not
+reconstructible from blocks. Do not test rollback by dropping tables. Restore the verified
+pre-migration database in an isolated replacement and reconcile post-backup balances and payments
+before directing miners or wallets to an older application. Follow the
+[PPS guide](pps.md), [database upgrade runbook](database.md#upgrade-an-existing-database), and
+[release rollback procedure](#upgrade-or-roll-back).
 
 ### Pooled Litecoin–Dogecoin merged-mining accounting and PPS
 
@@ -172,8 +196,8 @@ before upgrading from an older release candidate.
 
 ## Choose a version
 
-Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying
-on them for real funds. A version without a suffix, such as `v0.1.0`, is a stable release and updates
+Versions containing a suffix such as `v0.2.0-rc.1` are release candidates. Test them before relying
+on them for real funds. A version without a suffix, such as `v0.2.0`, is a stable release and updates
 the `latest` container tag.
 
 Open the [releases page](https://github.com/NINJAK1DD/miningcore/releases), choose a version, and
@@ -183,10 +207,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.1.0`. Substitute the version you selected.
+The examples below use `v0.2.0`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0
+export MININGCORE_VERSION=v0.2.0
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -460,7 +484,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.2.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1286,8 +1310,8 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.13` or
-`v0.1.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.2.0-rc.1` or
+`v0.2.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
@@ -1374,7 +1398,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.2.0  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1437,7 +1461,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.1.0
+export TAG=v0.2.0
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 
