@@ -506,7 +506,7 @@ procedure for routine upgrades after the deployment layout and runtime are alrea
 3. Extract and verify the candidate in its immutable versioned directory without changing
    `/opt/miningcore`.
 4. Stop every Miningcore writer using the database, including share-relay senders, receivers and
-   recorders and recovery importers on every node, and confirm no other payout manager owns the same
+   recorders, recovery importers on every node, and confirm no other payout manager owns the same
    pools/database.
 5. Back up PostgreSQL and prove the backup inventory is readable.
 6. Apply release-specific migrations from the candidate's `migrations` directory.
