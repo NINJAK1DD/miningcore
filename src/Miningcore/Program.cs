@@ -544,6 +544,7 @@ public class Program : ProcessStatusBackgroundService
             // Configuration parsing runs before coin templates are loaded. Recheck the
             // template-dependent PPS family contract here, after production has assigned the
             // templates but before any Stratum listener is reserved or pool is started.
+            // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);

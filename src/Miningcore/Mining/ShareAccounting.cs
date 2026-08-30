@@ -221,9 +221,8 @@ internal static class ShareAccounting
         if(!hasPaymentConfiguration && !allowMissingPpsConfiguration)
             throw new InvalidDataException(
                 $"Pool '{pool.Id}' received PPS liability evidence without an explicit PPS payout contract");
-        if(pool.Template?.Family != CoinFamily.Bitcoin)
-            throw new InvalidDataException(
-                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
+        var sanitizedRecovery = allowMissingPpsConfiguration && !hasPaymentConfiguration;
+        ValidatePpsTemplateContract(pool, sanitizedRecovery);
 
         var calculated = share.PpsCalculatedAmount.Value;
         ValidatePpsCalculatedAmount(pool.Id, calculated, true);
@@ -252,9 +251,7 @@ internal static class ShareAccounting
 
     private static decimal CalculatePpsAmount(PoolConfig pool, Share share)
     {
-        if(pool.Template?.Family != CoinFamily.Bitcoin)
-            throw new InvalidDataException(
-                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
+        ValidatePpsTemplateContract(pool, false);
 
         var recipients = pool.RewardRecipients ?? Array.Empty<RewardRecipient>();
         if(recipients.Any(x => x == null || x.Percentage < 0))
@@ -303,9 +300,7 @@ internal static class ShareAccounting
     private static bool RecoveryMaximumCoversCalculated(PoolConfig pool,
         Share share, decimal calculated)
     {
-        if(pool.Template?.Family != CoinFamily.Bitcoin)
-            throw new InvalidDataException(
-                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
+        ValidatePpsTemplateContract(pool, true);
 
         decimal difficulty;
         decimal networkDifficulty;
@@ -344,6 +339,19 @@ internal static class ShareAccounting
             right *= BigInteger.Pow(10, leftScale - rightScale);
 
         return left <= right;
+    }
+
+    private static void ValidatePpsTemplateContract(PoolConfig pool,
+        bool allowUnavailableTemplate)
+    {
+        // Recovery may continue after optional template enrichment fails. A present template
+        // remains authoritative, and live/configured PPS admission always requires Bitcoin.
+        if(pool.Template == null && allowUnavailableTemplate)
+            return;
+
+        if(pool.Template?.Family != CoinFamily.Bitcoin)
+            throw new InvalidDataException(
+                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
     }
 
     private static (BigInteger Value, int Scale) GetDecimalParts(decimal value)

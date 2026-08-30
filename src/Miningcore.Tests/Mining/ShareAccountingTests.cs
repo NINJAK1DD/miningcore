@@ -77,6 +77,41 @@ public class ShareAccountingTests
     }
 
     [Fact]
+    public void PpsEvidence_SanitizedRecoveryAllowsUnavailableTemplateOnly()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        var acceptingPool = CreatePool("ltc", PayoutScheme.PPS);
+        ShareAccounting.AttachPpsCreditEvidence(acceptingPool, share);
+
+        using var stream = new MemoryStream();
+        Serializer.Serialize(stream, share);
+        stream.Position = 0;
+        var recovered = Serializer.Deserialize<Share>(stream);
+        var sanitizedPool = new PoolConfig { Id = "ltc" };
+
+        var credit = ShareAccounting.CreatePpsCredit(sanitizedPool, recovered,
+            allowMissingPpsConfiguration: true);
+
+        Assert.Equal(share.PpsCalculatedAmount, credit.CalculatedAmount);
+
+        sanitizedPool.PaymentProcessing = acceptingPool.PaymentProcessing;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(sanitizedPool, recovered,
+                allowMissingPpsConfiguration: true));
+
+        sanitizedPool.PaymentProcessing = null;
+        sanitizedPool.Template = new EquihashCoinTemplate
+        {
+            Family = CoinFamily.Equihash,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(sanitizedPool, recovered,
+                allowMissingPpsConfiguration: true));
+    }
+
+    [Fact]
     public void PpsEvidence_SanitizedRecoveryAcceptsStorableFeeAdjustedLiabilityAtZeroFeeCeiling()
     {
         var share = CreatePair();
