@@ -496,6 +496,7 @@ public class PayoutManagerTests
             {
                 Enabled = true,
                 ShareAccountingRetentionDays = 30,
+                ShareAccountingPruneBatchSize = 25_000,
             },
             Pools = new[]
             {
@@ -542,13 +543,13 @@ public class PayoutManagerTests
             connection, transaction, "pps",
             Arg.Is<DateTime>(value => value >= before.AddDays(-7) &&
                 value <= after.AddDays(-7)),
-            PayoutManager.ShareAccountingPruneBatchSize,
+            25_000,
             Arg.Any<CancellationToken>());
         await shareRepository.Received(1).PruneShareAccountingEvidenceBeforeAsync(
             connection, transaction,
             Arg.Is<DateTime>(value => value >= before.AddDays(-31) &&
                 value <= after.AddDays(-31)),
-            PayoutManager.ShareAccountingPruneBatchSize,
+            25_000,
             Arg.Any<CancellationToken>());
         transaction.Received(1).Commit();
     }

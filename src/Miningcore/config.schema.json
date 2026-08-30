@@ -254,6 +254,10 @@
         "interval": {
           "type": "integer"
         },
+        "shareAccountingPruneBatchSize": {
+          "type": "integer",
+          "default": 50000
+        },
         "shareAccountingRetentionDays": {
           "type": "integer",
           "default": 30

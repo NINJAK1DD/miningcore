@@ -123,6 +123,9 @@
     "enabled": true,
     // Seconds between payment-processing cycles.
     "interval": 600,
+    // Maximum rows examined or removed from each accounting table per cycle.
+    // The 50000 default keeps ahead of the documented 20-envelope/s merged-PPS baseline.
+    "shareAccountingPruneBatchSize": 50000,
     // Keep exactly-once share-accounting receipts for this many days. Delayed relay
     // or recovery evidence older than this horizon is rejected for manual reconciliation.
     "shareAccountingRetentionDays": 30,

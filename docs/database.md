@@ -181,6 +181,11 @@ database, and restore the verified pre-migration backup into an isolated replace
 balances and any payments created after that backup before directing miners or wallets to the older
 version.
 
+The migration also seeds the required `share_accounting_prune_state` singleton and recreates the
+composite `(created, accountingid)` pruning index. Startup verifies both the exact index contract and
+the singleton row before accepting pooled/PPS financial work. Reapplying the migration repairs a
+missing singleton or stale same-named pruning index while Miningcore is stopped.
+
 The migration also adds a database check requiring accounting ID, role and reward basis to be
 either all absent or all valid, plus a foreign key from each identified share to its durable group
 manifest. This protects the pair even if a custom writer bypasses Miningcore's application checks.
@@ -1003,7 +1008,8 @@ PROP/PPLNS or long-retention rows and wraps after reaching the expiry tail. Pinn
 remain protected without permanently starving later eligible receipts. Registration also enforces the
 replay cutoff inside the accounting transaction: an expired new ID is rejected, while a retained
 receipt can still prove an already committed replay. Statistical-share and evidence deletes are
-index-supported and limited to 10,000 rows per pool/table per payout cycle; a warning means an
+index-supported and limited by `paymentProcessing.shareAccountingPruneBatchSize` per pool/table and
+payout cycle. The default is 50,000 rows and startup permits 1,000 through 100,000; a warning means an
 unexamined expiry window remains and later cycles will continue scanning it. Referenced rows at
 the scanned tail do not produce a false backlog warning. Per-recipient `pps_credit_remainders`
 remain because they carry exact
@@ -1032,6 +1038,19 @@ WHERE relname IN ('share_accounting_groups', 'share_accounting_prune_state',
                   'balance_changes', 'shares')
 ORDER BY pg_total_relation_size(relid) DESC;
 ```
+
+At the default 600-second payout interval, a 50,000-row batch can retire 7.2 million rows per table
+per day. That exceeds the table-specific 3.456-million-row upper bound in the two-PPS-projection
+example above. For another interval or workload, choose at least:
+
+```text
+peak rows created per second in the busiest pruned table × paymentProcessing.interval
+```
+
+and retain operational headroom for catch-up after downtime. Keep the value bounded rather than
+turning retention into one unbounded transaction. A persistent backlog warning means creation is
+outpacing the selected capacity or referenced rows are still being swept; inspect table counts and
+the cursor before increasing the batch.
 
 If policy requires audit retention beyond the live replay horizon, stop Miningcore at a planned
 boundary, take and verify the normal custom-format database backup, and export the expiring rows

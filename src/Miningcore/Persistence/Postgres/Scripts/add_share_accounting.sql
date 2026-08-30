@@ -24,9 +24,15 @@ CREATE TABLE IF NOT EXISTS share_accounting_groups
     ,CONSTRAINT CK_SHARE_ACCOUNTING_PAYLOAD_HASH
         CHECK(payloadhash ~ '^[0-9A-F]{64}$')
 );
-CREATE INDEX IF NOT EXISTS IDX_SHARE_ACCOUNTING_GROUPS_CREATED
-    ON share_accounting_groups(created);
-CREATE INDEX IF NOT EXISTS IDX_SHARE_ACCOUNTING_GROUPS_PRUNE
+DO $index_cleanup$
+BEGIN
+    EXECUTE format('DROP INDEX IF EXISTS %I.%I', current_schema(),
+        'idx_share_accounting_groups_prune');
+    EXECUTE format('DROP INDEX IF EXISTS %I.%I', current_schema(),
+        'idx_share_accounting_groups_created');
+END
+$index_cleanup$;
+CREATE INDEX IDX_SHARE_ACCOUNTING_GROUPS_PRUNE
     ON share_accounting_groups(created, accountingid);
 
 CREATE TABLE IF NOT EXISTS share_accounting_prune_state

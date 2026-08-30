@@ -85,7 +85,9 @@ An active process alone does not prove mining or payouts are healthy.
   pressure and auxiliary metrics before changing the timeout. See [template refresh](merged-mining-litecoin-dogecoin.md#template-refresh).
 - **Startup says the share-accounting schema is missing or malformed.** Keep listeners offline,
   verify the intended database/search path and apply `add_share_accounting.sql` during a maintenance
-  window. Do not create lookalike tables or disable preflight. See
+  window. The preflight includes the required `share_accounting_prune_state` singleton and exact
+  composite pruning index; rerunning the migration safely restores either one. Do not create
+  lookalike tables or disable preflight. See
   [database upgrades](database.md#upgrade-an-existing-database).
 - **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
   reason to edit balances. Check the reserve, exact PPS ledger, remainder table and bounded

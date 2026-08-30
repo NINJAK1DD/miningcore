@@ -41,6 +41,10 @@
   "paymentProcessing": {
     "enabled": true,
     "interval": 600,
+    // Bound each retention transaction while keeping ahead of the documented
+    // 20-envelope/s, two-PPS-projection sizing baseline.
+    "shareAccountingPruneBatchSize": 50000,
+    "shareAccountingRetentionDays": 30,
     "coinbaseString": "Miningcore"
   },
   "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",

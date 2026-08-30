@@ -344,6 +344,12 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .WithMessage(
                 "Cluster paymentProcessing.shareAccountingRetentionDays must be between 1 and 3650");
 
+        RuleFor(j => j.PaymentProcessing.ShareAccountingPruneBatchSize)
+            .InclusiveBetween(1_000, 100_000)
+            .When(j => j.PaymentProcessing != null)
+            .WithMessage(
+                "Cluster paymentProcessing.shareAccountingPruneBatchSize must be between 1000 and 100000");
+
         RuleFor(j => j.Persistence)
             .NotNull()
             .When(x => !recoveryMode &&

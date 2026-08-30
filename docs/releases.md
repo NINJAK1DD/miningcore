@@ -69,7 +69,12 @@ cursor advances each bounded accounting-group anti-join window past still-refere
 one pool's retained shares cannot starve eligible cleanup for another. PPS liabilities are rejected
 before admission at PostgreSQL's exact `NUMERIC(38,24)` upper boundary instead of failing later in
 the recorder. Sanitized recovery validates the embedded liability against that boundary while
-allowing its independently derived zero-fee comparison ceiling to exceed the storage limit. Invalid
+allowing its independently derived zero-fee comparison ceiling to exceed the storage limit.
+The cursor is locked and read separately so its bound values produce a composite-index seek rather
+than repeatedly filtering the already visited prefix. Startup now verifies the mandatory cursor row,
+and the migration repairs it if missing. The configurable, bounded retention batch defaults to
+50,000 rows per table and cycle, keeping ahead of the documented two-PPS-projection workload at the
+default payout interval without turning cleanup into an unlimited transaction. Invalid
 accounting records are isolated from valid batch siblings and written to a checksum-chained
 quarantine file for manual reconciliation instead of
 poisoning the recoverable journal; critical notifications distinguish importable and quarantined

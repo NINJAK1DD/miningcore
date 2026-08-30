@@ -90,7 +90,6 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly CompositeDisposable disposables = new();
     internal static readonly TimeSpan MergedParentShareSettlementDelay =
         TimeSpan.FromMinutes(1);
-    internal const int ShareAccountingPruneBatchSize = 10_000;
     internal int AttachedPoolCount => pools.Count;
 
 #if !DEBUG
@@ -233,6 +232,8 @@ public class PayoutManager : ProcessStatusBackgroundService
             pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS).ToArray();
         var replayDays = clusterConfig.PaymentProcessing?
             .ShareAccountingRetentionDays ?? 30;
+        var pruneBatchSize = clusterConfig.PaymentProcessing?
+            .ShareAccountingPruneBatchSize ?? 50_000;
 
         var pruneResult = await cf.RunTx(async (con, tx) =>
         {
@@ -243,7 +244,7 @@ public class PayoutManager : ProcessStatusBackgroundService
                 var cutoff = now.AddDays(-pool.PaymentProcessing
                     .PpsShareRetentionDays);
                 var result = await shareRepo.PruneSharesBeforeInclusiveAsync(
-                    con, tx, pool.Id, cutoff, ShareAccountingPruneBatchSize, ct);
+                    con, tx, pool.Id, cutoff, pruneBatchSize, ct);
                 prunedShares += result.PrunedRows;
                 shareBacklog |= result.HasMore;
             }
@@ -251,7 +252,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             var evidence = await shareRepo.PruneShareAccountingEvidenceBeforeAsync(
                 con, tx, now.AddDays(-replayDays) -
                     ShareAccounting.EvidencePruneSafetyMargin,
-                ShareAccountingPruneBatchSize, ct);
+                pruneBatchSize, ct);
             return (Evidence: evidence, PrunedShares: prunedShares,
                 ShareBacklog: shareBacklog);
         }, ct: ct);

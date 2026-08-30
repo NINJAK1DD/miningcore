@@ -48,10 +48,8 @@ CREATE TABLE share_accounting_groups
 	,CONSTRAINT CK_SHARE_ACCOUNTING_PAYLOAD_HASH
 		CHECK(payloadhash ~ '^[0-9A-F]{64}$')
 );
-CREATE INDEX IDX_SHARE_ACCOUNTING_GROUPS_CREATED
-    ON share_accounting_groups(created);
 CREATE INDEX IDX_SHARE_ACCOUNTING_GROUPS_PRUNE
-	ON share_accounting_groups(created, accountingid);
+    ON share_accounting_groups(created, accountingid);
 
 CREATE TABLE share_accounting_prune_state
 (

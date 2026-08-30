@@ -100,8 +100,23 @@ public class ShareAccountingIntegrationTests
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);
+            var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
+            Assert.False(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
             await connection.ExecuteAsync(migration);
             await connection.ExecuteAsync(migration);
+
+            Assert.True(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+            Assert.Equal(1, await connection.ExecuteAsync(
+                "DELETE FROM share_accounting_prune_state WHERE singletonid=1"));
+            Assert.False(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM share_accounting_prune_state WHERE singletonid=1"));
 
             Assert.Equal(4, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
@@ -288,6 +303,36 @@ public class ShareAccountingIntegrationTests
                 created = new DateTime(2020, 1, 1, 0, 0, 0,
                     DateTimeKind.Utc),
             });
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                await connection.ExecuteAsync("SET LOCAL enable_seqscan=off",
+                    transaction: transaction);
+                var plan = (await connection.QueryAsync<string>(
+                    new CommandDefinition(@"EXPLAIN (COSTS OFF)
+                        SELECT accountingid, created
+                        FROM share_accounting_groups
+                        WHERE created <= @before
+                          AND (created, accountingid) >
+                              (@cursorCreated, @cursorAccountingId)
+                        ORDER BY created, accountingid
+                        LIMIT @candidateScanSize", new
+                    {
+                        before = new DateTime(2020, 1, 2, 0, 0, 0,
+                            DateTimeKind.Utc),
+                        cursorCreated = new DateTime(2020, 1, 1, 0, 0, 0,
+                            DateTimeKind.Utc),
+                        cursorAccountingId = referencedFirst,
+                        candidateScanSize = 3,
+                    }, transaction))).ToArray();
+                Assert.Contains(plan, line => line.Contains(
+                    "idx_share_accounting_groups_prune",
+                    StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(plan, line => line.Contains("Index Cond:",
+                    StringComparison.Ordinal));
+                Assert.DoesNotContain(plan, line => line.Contains("Join Filter:",
+                    StringComparison.Ordinal));
+                await transaction.RollbackAsync();
+            }
             await using(var transaction = await connection.BeginTransactionAsync())
             {
                 var prune = await repository.PruneShareAccountingEvidenceBeforeAsync(

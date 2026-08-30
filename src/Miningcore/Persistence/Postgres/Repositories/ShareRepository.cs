@@ -44,7 +44,13 @@ public class ShareRepository : IShareRepository
         public int CursorRows { get; set; }
     }
 
-    public Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
+    private sealed class AccountingGroupPruneCursor
+    {
+        public DateTime? CursorCreated { get; set; }
+        public Guid? CursorAccountingId { get; set; }
+    }
+
+    public async Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
         CancellationToken ct)
     {
         const string query = @"WITH required_columns(
@@ -197,11 +203,35 @@ public class ShareRepository : IShareRepository
                 WHERE conrelid = to_regclass('share_accounting_prune_state')
                   AND conname = 'ck_share_accounting_prune_cursor'
                   AND contype = 'c' AND convalidated)
+            AND EXISTS (
+                SELECT 1
+                FROM pg_class index_relation
+                JOIN pg_namespace namespace
+                  ON namespace.oid = index_relation.relnamespace
+                JOIN pg_index index_record
+                  ON index_record.indexrelid = index_relation.oid
+                WHERE namespace.nspname = current_schema()
+                  AND index_relation.relname = 'idx_share_accounting_groups_prune'
+                  AND index_record.indrelid =
+                      to_regclass('share_accounting_groups')
+                  AND index_record.indisvalid
+                  AND index_record.indisready
+                  AND NOT index_record.indisunique
+                  AND index_record.indnkeyatts = 2
+                  AND index_record.indpred IS NULL
+                  AND ARRAY(
+                      SELECT attribute.attname::text
+                      FROM unnest(index_record.indkey)
+                           WITH ORDINALITY key(attnum, position)
+                      JOIN pg_attribute attribute
+                        ON attribute.attrelid = index_record.indrelid
+                       AND attribute.attnum = key.attnum
+                      WHERE key.position <= index_record.indnkeyatts
+                      ORDER BY key.position) = ARRAY['created', 'accountingid'])
             AND NOT EXISTS (
                 SELECT required.name
                 FROM (VALUES
                     ('idx_shares_accounting'),
-                    ('idx_share_accounting_groups_created'),
                     ('idx_share_accounting_groups_prune'),
                     ('idx_pps_share_credits_accounting'),
                     ('idx_pps_share_credits_created'),
@@ -218,8 +248,21 @@ public class ShareRepository : IShareRepository
                       AND index_record.indisvalid
                       AND index_record.indisready))";
 
-        return con.QuerySingleAsync<bool>(new CommandDefinition(query,
-            cancellationToken: ct));
+        var structureReady = await con.QuerySingleAsync<bool>(
+            new CommandDefinition(query, cancellationToken: ct));
+        if(!structureReady)
+            return false;
+
+        // Keep this as a second query. Referencing the table directly in the structural query
+        // would make a completely missing migration fail during PostgreSQL parse analysis rather
+        // than returning the false preflight result expected by startup diagnostics.
+        const string pruneStateQuery = @"SELECT EXISTS(
+                SELECT 1 FROM share_accounting_prune_state
+                WHERE singletonid = 1
+                  AND ((cursorcreated IS NULL AND cursoraccountingid IS NULL)
+                    OR (cursorcreated IS NOT NULL AND cursoraccountingid IS NOT NULL)))";
+        return await con.QuerySingleAsync<bool>(new CommandDefinition(
+            pruneStateQuery, cancellationToken: ct));
     }
 
     public async Task<string[]> GetMissingSharePartitionsAsync(IDbConnection con,
@@ -885,7 +928,7 @@ public class ShareRepository : IShareRepository
             await grid.ReadSingleAsync<int>(), await grid.ReadSingleAsync<bool>());
     }
 
-    public Task<ShareAccountingPruneResult> PruneShareAccountingEvidenceBeforeAsync(
+    public async Task<ShareAccountingPruneResult> PruneShareAccountingEvidenceBeforeAsync(
         IDbConnection con, IDbTransaction tx, DateTime before, int batchSize,
         CancellationToken ct)
     {
@@ -897,7 +940,23 @@ public class ShareRepository : IShareRepository
         if(batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize));
 
-        const string query = @"WITH candidates AS (
+        const string cursorQuery = @"SELECT cursorcreated, cursoraccountingid
+            FROM share_accounting_prune_state
+            WHERE singletonid = 1
+            FOR UPDATE";
+        var cursor = await con.QuerySingleOrDefaultAsync<AccountingGroupPruneCursor>(
+            new CommandDefinition(cursorQuery, transaction: tx,
+                cancellationToken: ct));
+        if(cursor == null || cursor.CursorCreated.HasValue !=
+            cursor.CursorAccountingId.HasValue)
+            throw new InvalidDataException(
+                "Share-accounting retention cursor is missing or invalid; reapply add_share_accounting.sql");
+
+        var afterCursorPredicate = cursor.CursorCreated.HasValue
+            ? @"AND (accounting.created, accounting.accountingid) >
+                    (@cursorCreated, @cursorAccountingId)"
+            : string.Empty;
+        var query = @"WITH candidates AS (
                 SELECT id FROM balance_changes
                 WHERE usage = 'PPS share credit' AND created <= @before
                 ORDER BY created, id LIMIT @batchSize), deleted AS (
@@ -915,18 +974,11 @@ public class ShareRepository : IShareRepository
                   AND credits.accountingid = candidates.accountingid
                 RETURNING 1)
             SELECT count(*)::int FROM deleted;
-            WITH prune_state AS MATERIALIZED (
-                SELECT cursorcreated, cursoraccountingid
-                FROM share_accounting_prune_state
-                WHERE singletonid = 1
-                FOR UPDATE), after_cursor AS MATERIALIZED (
+            WITH after_cursor AS MATERIALIZED (
                 SELECT accounting.accountingid, accounting.created
                 FROM share_accounting_groups accounting
-                CROSS JOIN prune_state state
                 WHERE accounting.created <= @before
-                  AND (state.cursorcreated IS NULL OR
-                       (accounting.created, accounting.accountingid) >
-                       (state.cursorcreated, state.cursoraccountingid))
+                  " + afterCursorPredicate + @"
                 ORDER BY accounting.created, accounting.accountingid
                 LIMIT @candidateScanSize), scan_window AS MATERIALIZED (
                 SELECT accountingid, created FROM after_cursor
@@ -974,28 +1026,25 @@ public class ShareRepository : IShareRepository
                     WHERE usage = 'PPS share credit' AND created <= @before)
                 OR EXISTS(SELECT 1 FROM pps_share_credits
                     WHERE created <= @before)";
-        return PruneAsync();
-
-        async Task<ShareAccountingPruneResult> PruneAsync()
-        {
-            using var grid = await con.QueryMultipleAsync(new CommandDefinition(
-                query, new
-                {
-                    before,
-                    batchSize,
-                    candidateScanSize = (long) batchSize + 1,
-                }, tx, cancellationToken: ct));
-            var pruned = await grid.ReadSingleAsync<int>() +
-                await grid.ReadSingleAsync<int>();
-            var groupResult = await grid.ReadSingleAsync<AccountingGroupPruneRow>();
-            if(groupResult.CursorRows != 1)
-                throw new InvalidDataException(
-                    "Share-accounting retention cursor is missing or invalid; reapply add_share_accounting.sql");
-            pruned += groupResult.PrunedRows;
-            var tableHasMore = await grid.ReadSingleAsync<bool>();
-            var hasMore = groupResult.HasMore || tableHasMore;
-            return new ShareAccountingPruneResult(pruned, hasMore);
-        }
+        using var grid = await con.QueryMultipleAsync(new CommandDefinition(
+            query, new
+            {
+                before,
+                batchSize,
+                candidateScanSize = (long) batchSize + 1,
+                cursorCreated = cursor.CursorCreated,
+                cursorAccountingId = cursor.CursorAccountingId,
+            }, tx, cancellationToken: ct));
+        var pruned = await grid.ReadSingleAsync<int>() +
+            await grid.ReadSingleAsync<int>();
+        var groupResult = await grid.ReadSingleAsync<AccountingGroupPruneRow>();
+        if(groupResult.CursorRows != 1)
+            throw new InvalidDataException(
+                "Share-accounting retention cursor is missing or invalid; reapply add_share_accounting.sql");
+        pruned += groupResult.PrunedRows;
+        var tableHasMore = await grid.ReadSingleAsync<bool>();
+        var hasMore = groupResult.HasMore || tableHasMore;
+        return new ShareAccountingPruneResult(pruned, hasMore);
     }
 
     private sealed class PpsApplyCounts

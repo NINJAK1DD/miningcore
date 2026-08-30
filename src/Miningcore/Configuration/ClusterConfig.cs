@@ -1179,6 +1179,15 @@ public partial class ClusterPaymentProcessingConfig
     public int Interval { get; set; }
 
     /// <summary>
+    /// Maximum rows examined or removed from each share-accounting table by one payout-manager
+    /// retention pass. Keep this bounded to limit transaction size while sizing it above the
+    /// number of records that can expire during one payment-processing interval.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(50_000)]
+    public int ShareAccountingPruneBatchSize { get; set; } = 50_000;
+
+    /// <summary>
     /// Maximum supported relay/recovery replay age for share-accounting evidence. Older records
     /// fail closed and may be pruned by the payout-manager maintenance pass after optional
     /// operator archival.

@@ -471,8 +471,15 @@ accepted relay/recovery replay age. Miningcore rechecks that boundary when Postg
 create a new accounting receipt, so time spent in the recorder queue cannot reopen an expired
 liability. Detailed evidence and receipts are physically retained for an additional one-day safety
 margin and pruned in bounded batches. Choose a horizon longer than the maximum time an emergency
-journal or disconnected relay can remain unreconciled. Configure the same value on every sender,
-receiver, recorder and payout owner in the topology. Evidence outside it fails closed and must be
+journal or disconnected relay can remain unreconciled.
+
+`paymentProcessing.shareAccountingPruneBatchSize` controls the bounded rows examined or deleted
+per affected table and payout cycle. Its default is `50000`, and startup accepts values from `1000`
+through `100000`. Size it above the peak rows that can expire during one payment-processing
+interval, including both projections when parent and auxiliary pools use PPS. A remaining-backlog
+warning means the configured batch needs review if it persists after catch-up. Configure the same
+retention horizon on every sender, receiver, recorder and payout owner in the topology. Evidence
+outside it fails closed and must be
 reconciled manually; see the
 [database sizing and archival procedure](database.md#share-accounting-retention-and-sizing).
 
