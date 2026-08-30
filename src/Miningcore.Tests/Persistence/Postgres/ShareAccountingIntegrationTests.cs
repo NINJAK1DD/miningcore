@@ -66,6 +66,62 @@ public class ShareAccountingIntegrationTests
     }
 
     [PostgresIntegrationFact]
+    public async Task AccountingMigration_DoesNotRequireBlockSchema()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_accounting_migration_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, public;
+                CREATE TABLE shares(
+                    poolid text NOT NULL, blockheight bigint NOT NULL,
+                    difficulty double precision NOT NULL,
+                    networkdifficulty double precision NOT NULL,
+                    sharedifficulty double precision NULL,
+                    actualdifficulty double precision NULL,
+                    miner text NOT NULL, worker text NULL, useragent text NULL,
+                    ipaddress text NOT NULL, source text NULL, sessionid text NULL,
+                    created timestamptz NOT NULL);
+                CREATE TABLE balance_changes(
+                    id bigserial PRIMARY KEY, poolid text NOT NULL,
+                    address text NOT NULL, amount decimal(28,12) NOT NULL,
+                    usage text NULL, tags text[] NULL,
+                    created timestamptz NOT NULL);
+            ");
+
+            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migration = (await File.ReadAllTextAsync(migrationPath))
+                .Replace("\\set ON_ERROR_STOP on", string.Empty,
+                    StringComparison.Ordinal);
+            await connection.ExecuteAsync(migration);
+
+            Assert.Equal(3, await connection.ExecuteScalarAsync<int>(@"
+                SELECT count(*)
+                FROM pg_tables
+                WHERE schemaname = current_schema()
+                  AND tablename IN ('share_accounting_groups',
+                      'pps_share_credits', 'pps_credit_remainders')"));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(@"
+                SELECT count(*)
+                FROM pg_tables
+                WHERE schemaname = current_schema()
+                  AND tablename = 'blocks'"));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("ROLLBACK; SET search_path TO public");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task AccountingBatch_IsAtomicIdempotentAndCarriesSubUnitRemainders()
     {
         var connectionString = Environment.GetEnvironmentVariable(
@@ -99,6 +155,8 @@ public class ShareAccountingIntegrationTests
                     usage text NULL, tags text[] NULL, created timestamptz NOT NULL);
                 CREATE TABLE blocks(
                     poolid text NOT NULL, hash text NOT NULL, type text NULL);
+                CREATE UNIQUE INDEX idx_blocks_bitcoin_direct_pool_hash
+                    ON blocks(poolid, hash) WHERE type = 'bitcoin-direct';
             ");
 
             var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,

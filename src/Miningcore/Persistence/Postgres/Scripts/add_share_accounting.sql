@@ -76,8 +76,6 @@ CREATE INDEX IF NOT EXISTS IDX_PPS_SHARE_CREDITS_CREATED
     ON pps_share_credits(created);
 CREATE INDEX IF NOT EXISTS IDX_BALANCE_CHANGES_PPS_CREATED
     ON balance_changes(created) WHERE usage = 'PPS share credit';
-CREATE UNIQUE INDEX IF NOT EXISTS IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH
-    ON blocks(poolid, hash) WHERE type = 'bitcoin-direct';
 
 CREATE TABLE IF NOT EXISTS pps_credit_remainders
 (
