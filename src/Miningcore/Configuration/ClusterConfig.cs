@@ -1159,6 +1159,14 @@ public partial class PoolPaymentProcessingConfig
     public JToken PayoutSchemeConfig { get; set; }
 
     /// <summary>
+    /// Time-based statistical-share retention for PPS pools. PPS liabilities are journaled at
+    /// acceptance and do not depend on finding a block, so cleanup must not depend on pool luck.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(7)]
+    public int PpsShareRetentionDays { get; set; } = 7;
+
+    /// <summary>
     /// Arbitrary extension data
     /// </summary>
     [JsonExtensionData]
@@ -1169,6 +1177,24 @@ public partial class ClusterPaymentProcessingConfig
 {
     public bool Enabled { get; set; }
     public int Interval { get; set; }
+
+    /// <summary>
+    /// Maximum rows examined or removed from each share-accounting table by one payout-manager
+    /// retention pass. Keep this bounded to limit transaction size while sizing it above the
+    /// number of records that can expire during one payment-processing interval.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(50_000)]
+    public int ShareAccountingPruneBatchSize { get; set; } = 50_000;
+
+    /// <summary>
+    /// Maximum supported relay/recovery replay age for share-accounting evidence. Older records
+    /// fail closed and may be pruned by the payout-manager maintenance pass after optional
+    /// operator archival.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(30)]
+    public int ShareAccountingRetentionDays { get; set; } = 30;
 
     /// <summary>
     /// Indentifier used in coinbase transactions to identify the pool

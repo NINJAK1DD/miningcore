@@ -38,7 +38,8 @@ public class ShareRelay : IHostedService
     public enum WireFormat
     {
         Json = 1,
-        ProtocolBuffers = 2
+        ProtocolBuffers = 2,
+        ProtocolBuffersAccounting = 3,
     }
 
     public const int WireFormatMask = 0xF;
@@ -52,10 +53,18 @@ public class ShareRelay : IHostedService
             {
                 share.Source = clusterConfig.ClusterName;
                 share.BlockRewardDouble = (double) share.BlockReward;
+                if(share.PairedShare != null)
+                {
+                    share.PairedShare.Source = clusterConfig.ClusterName;
+                    share.PairedShare.BlockRewardDouble =
+                        (double) share.PairedShare.BlockReward;
+                }
 
                 try
                 {
-                    const int flags = (int) WireFormat.ProtocolBuffers;
+                    var flags = (int) (string.IsNullOrEmpty(share.AccountingId)
+                        ? WireFormat.ProtocolBuffers
+                        : WireFormat.ProtocolBuffersAccounting);
 
                     using(var msg = new ZMessage())
                     {

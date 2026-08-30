@@ -11,6 +11,7 @@ guide before populating or deploying those files.
 ## Roles
 
 - A **relay sender** accepts miners and publishes validated ordinary shares through `shareRelay`.
+  Correlated merged-mining projections travel as one envelope, never two independent messages.
   It does not run the local ordinary-share recorder.
 - A **receiver/recorder** subscribes through `shareRelays`, writes ordinary shares to PostgreSQL and
   is normally the only payout/reconciliation owner.
@@ -36,6 +37,26 @@ The receiver's PostgreSQL queue and recovery journal protect shares only after t
 received them. Monitor the complete route and accept this loss boundary before using relays. Merged
 block candidates use separate synchronous PostgreSQL/recovery-journal persistence and are not
 delegated to ordinary PUB/SUB delivery.
+
+An accounting envelope is atomic only after the receiver commits it: transport loss can discard the
+whole envelope, but cannot commit one chain without the other. Upgrade and migrate receivers before
+senders, then stop old senders before enabling PPS or pooled merged mining. New senders use a new
+protobuf wire discriminator; old receivers reject it, and new receivers reject accounting fields in
+legacy frames. This is deliberately fail-closed rather than silently downgrading financial data.
+The receiver validates paired projections against every configured pool, not only pools whose daemon
+startup has completed, so a slow auxiliary daemon cannot make a valid envelope disappear during
+receiver startup. The topic pool must still be online for normal telemetry attribution. Monitor
+`miningcore_share_relay_unsupported_wire_format_total`; any increase means a sender/receiver version
+mismatch is rejecting frames and requires immediate rollout correction.
+
+All hosts participating in accounting must use synchronized UTC clocks. Evidence more than five
+minutes in the future is rejected, and the recorder re-evaluates the replay horizon immediately
+before its database transaction. Keep
+`paymentProcessing.shareAccountingRetentionDays` identical on senders, receivers, recorders and the
+payout owner; mismatched values can cause one host to reject evidence another still considers live.
+Every PPS sender also requires PostgreSQL and both candidate/accounting migrations. Ordinary shares
+still travel through the relay, but an accepted direct block is synchronously persisted on its
+submitting node and falls back to that node's protected recovery journal if PostgreSQL fails.
 
 ## Recommended bind mode
 
@@ -119,8 +140,8 @@ startup. Database setup, migrations and recovery are covered by the [database gu
 5. Interrupt the relay port, verify monitoring detects the outage, restore it and confirm new shares
    resume without duplicates.
 6. Record explicitly that ordinary shares sent during the interruption were not replayed.
-7. If merged mining is enabled, separately verify synchronous parent/auxiliary block persistence and
-   the required database migrations.
+7. If merged mining is enabled, verify synchronous parent/auxiliary block persistence, one paired
+   ordinary envelope, the required migrations, and replay suppression at the receiver.
 
 The repository includes `scripts/regtest/validate-physical-relay.sh` for a final physical-path check.
 Its arguments and PostgreSQL environment variables are described in the

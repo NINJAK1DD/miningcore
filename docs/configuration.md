@@ -442,7 +442,8 @@ implementations.
 
 ## LTC/DOGE merged mining
 
-Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled and use `SOLO`. The parent
+Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled. Each independently uses
+one of `SOLO`, `PPS`, `PROP` or `PPLNS`; unsupported schemes fail before listeners open. The parent
 pool contains:
 
 ```json
@@ -457,8 +458,32 @@ pool contains:
 
 `auxPoolId` must exactly match the Dogecoin pool `id`. `addressParameter` controls the password name;
 the recommended default is `doge`. `requireAuxAddress: true` rejects miners that omit a DOGE payout
-address. The template poll timeout is milliseconds and may be raised for a healthy but slower local
-daemon.
+address and is mandatory whenever Dogecoin is not SOLO. The template poll timeout is milliseconds
+and may be raised for a healthy but slower local daemon. Apply the three migrations and read the
+[merged-mining accounting guide](merged-mining-litecoin-dogecoin.md) before enabling pooled payouts.
+
+PPS liabilities are calculated at the accepting node and embedded in the authenticated share
+envelope. Recovery therefore does not depend on payout settings that are deliberately removed by
+`-rs` configuration sanitisation. `paymentProcessing.ppsShareRetentionDays` (default `7`) controls
+statistical `shares` retention for each PPS pool independently of finding a block.
+`paymentProcessing.shareAccountingRetentionDays` at cluster scope (default `30`) is the maximum
+accepted relay/recovery replay age. Miningcore rechecks that boundary when PostgreSQL attempts to
+create a new accounting receipt, so time spent in the recorder queue cannot reopen an expired
+liability. Detailed evidence and receipts are physically retained for an additional one-day safety
+margin and pruned in bounded batches. Choose a horizon longer than the maximum time an emergency
+journal or disconnected relay can remain unreconciled.
+
+`paymentProcessing.shareAccountingPruneBatchSize` controls the bounded rows examined or deleted
+per affected table and payout cycle. Its default is `50000`, and startup accepts values from `1000`
+through `100000`. Size it above the peak rows that can expire during one payment-processing
+interval, including both projections when parent and auxiliary pools use PPS. A remaining-backlog
+warning means the configured batch needs review if it persists after catch-up. The limit is per
+pool/table, but one maintenance transaction can process that limit for every PPS pool plus the
+global evidence tables. Account for the number of PPS pools before raising it so the transaction
+does not become unnecessarily long or delay vacuum progress. Configure the same retention horizon
+on every sender, receiver, recorder and payout owner in the topology. Evidence outside it fails
+closed and must be reconciled manually; see the
+[database sizing and archival procedure](database.md#share-accounting-retention-and-sizing).
 
 Miner examples:
 
@@ -499,6 +524,13 @@ exhausts its retries. Configure an absolute path so service working-directory ch
 the journal difficult to locate. Miningcore logs the resolved path when the Share Recorder starts.
 Restrict the file and its parent directory to the service account because share records are
 financial accounting data.
+
+If deterministic validation rejects one accounting record in a recorder batch, Miningcore commits
+valid siblings independently and writes only the rejected record to a sibling
+`*.quarantine-<UTC>-<UUID>` checksum-chained evidence file before fail-stopping. The normal recovery
+journal therefore remains importable without hand-editing. Never pass a quarantine file directly to
+`-rs`; preserve it and reconcile the named accounting evidence, configuration and database state
+manually. A quarantine write failure is treated as dual-durability failure and retains status 74.
 
 ### Ownership and path safety
 

@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
@@ -84,6 +87,96 @@ public class BitcoinJobManagerBaseTests
         Assert.Equal("v1.2.3", version);
     }
 
+    [Fact]
+    public async Task AcceptedCandidate_PersistsWhenPpsEvidenceConstructionFails()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "btc-pps",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.PPS,
+            },
+        };
+        var accepted = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "miner",
+            Difficulty = double.MaxValue,
+            NetworkDifficulty = 1,
+            RewardBasisSatoshis = 625_000_000,
+            IsBlockCandidate = true,
+            BlockHash = new string('a', 64),
+            TransactionConfirmationData = "coinbase",
+            Created = DateTime.UtcNow,
+        };
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            manager.AttachEvidence(pool, accepted));
+
+        Assert.True(manager.Persisted);
+        Assert.True(accepted.BlockRecordEmitted);
+        Assert.True(manager.PersistedCandidate.IsBlockCandidate);
+        Assert.True(manager.PersistedCandidate.BlockOnly);
+        Assert.Equal("bitcoin-direct", manager.PersistedCandidate.BlockType);
+        Assert.Null(manager.PersistedCandidate.AccountingId);
+        Assert.Null(manager.PersistedCandidate.PpsCalculatedAmount);
+        Assert.Equal(accepted.BlockHash, manager.PersistedCandidate.BlockHash);
+    }
+
+    [Fact]
+    public async Task AcceptedCandidate_PersistsBeforeSuccessfulPpsEvidence()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "btc-pps",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.PPS,
+            },
+        };
+        var accepted = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "miner",
+            Difficulty = 1,
+            NetworkDifficulty = 100,
+            RewardBasisSatoshis = 625_000_000,
+            IsBlockCandidate = true,
+            BlockHash = new string('b', 64),
+            TransactionConfirmationData = "coinbase",
+            Created = DateTime.UtcNow,
+        };
+
+        await manager.AttachEvidence(pool, accepted);
+
+        Assert.True(manager.Persisted);
+        Assert.True(accepted.BlockRecordEmitted);
+        Assert.Equal(0.0625m, accepted.PpsCalculatedAmount);
+        Assert.True(manager.PersistedCandidate.BlockOnly);
+        Assert.Equal("bitcoin-direct", manager.PersistedCandidate.BlockType);
+        Assert.Null(manager.PersistedCandidate.AccountingId);
+        Assert.Null(manager.PersistedCandidate.PpsCalculatedAmount);
+
+        // A downstream accounting rejection cannot erase the independent candidate copy.
+        accepted.PpsCalculatedAmount += 0.000000000000000000000001m;
+        Assert.Throws<InvalidDataException>(() =>
+            Miningcore.Mining.ShareAccounting.CreatePpsCredit(pool, accepted));
+        Assert.Equal(accepted.BlockHash, manager.PersistedCandidate.BlockHash);
+    }
+
     private static IContainer BuildContainer()
     {
         var builder = new ContainerBuilder();
@@ -102,5 +195,28 @@ public class BitcoinJobManagerBaseTests
         }
 
         public bool LegacyDaemonEnabled => hasLegacyDaemon;
+    }
+
+    private sealed class TestBitcoinJobManager : BitcoinJobManager
+    {
+        public TestBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
+            IMessageBus messageBus, IExtraNonceProvider extraNonceProvider) :
+            base(ctx, clock, messageBus, extraNonceProvider)
+        {
+        }
+
+        public bool Persisted { get; private set; }
+        public Share PersistedCandidate { get; private set; }
+
+        public Task AttachEvidence(PoolConfig pool, Share share) =>
+            AttachPpsEvidencePreservingAcceptedCandidateAsync(pool, share);
+
+        protected override Task PersistAcceptedCandidateWithoutAccountingAsync(
+            Share share)
+        {
+            Persisted = true;
+            PersistedCandidate = CreateAcceptedCandidateWithoutAccounting(share);
+            return Task.CompletedTask;
+        }
     }
 }

@@ -1223,6 +1223,8 @@ public class PoolApiControllerTests
     [Theory]
     [InlineData(true, PayoutScheme.SOLO, false)]
     [InlineData(true, PayoutScheme.SOLO, true)]
+    [InlineData(true, PayoutScheme.PPS, false)]
+    [InlineData(true, PayoutScheme.PPS, true)]
     [InlineData(false, PayoutScheme.PPLNSBF, false)]
     [InlineData(false, PayoutScheme.PPLNSBF, true)]
     public void PoolResponses_PreservePresentPaymentProcessing(

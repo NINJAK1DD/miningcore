@@ -14,5 +14,8 @@ public class Share
     public string IpAddress { get; set; }
     public string Source { get; set; }
     public string SessionId { get; set; }
+    public Guid? AccountingId { get; set; }
+    public short? AccountingRole { get; set; }
+    public long? RewardBasisSatoshis { get; set; }
     public DateTime Created { get; set; }
 }

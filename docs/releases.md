@@ -44,6 +44,59 @@ copying a recovery command from the maintainer section.
 
 ## Unreleased changes
 
+### Pooled Litecoin–Dogecoin merged-mining accounting and PPS
+
+Litecoin/Dogecoin merged mining now supports independently selected `SOLO`, `PPS`, `PROP` and
+`PPLNS` schemes. One accepted proof is carried as a correlated parent/auxiliary envelope and
+committed transactionally, so cancellation, relay, recovery or database failure cannot credit only
+one chain. Unsupported `PPBS` and `PPLNSBF` combinations still fail before Stratum listeners open.
+
+A production Bitcoin-family PPS implementation creates `(1 - fee) * difficulty / networkDifficulty
+* spendableTemplateReward` liability at valid-share commit time. Exact 24-decimal credits,
+12-decimal posted balances and per-miner remainders are idempotent across retry and recovery.
+Confirmed blocks never double-credit PPS, while stale/orphaned blocks never reverse it; operators
+therefore assume block variance, reorg, wallet, liquidity and insolvency risk.
+
+PPS liability evidence is embedded in the accepted envelope so sanitized `-rs` recovery recreates
+the exact credits, remainders, balance changes and balances. Accounting persistence is set-based for
+normal 250-share batches; legacy ordinary-share COPY remains compatible before the optional
+accounting migration. PPS statistical shares and exactly-once receipts now have independent,
+documented time-based retention. Block settlement does not truncate the PPS statistical window;
+indexed evidence pruning is batch-bounded and retains receipts for one day beyond the accepted
+replay horizon. PostgreSQL independently rejects an expired new accounting ID at registration,
+closing the relay-queue/pruning race. Candidate selection is partition-safe and a persistent keyset
+cursor advances each bounded accounting-group anti-join window past still-referenced receipts, so
+one pool's retained shares cannot starve eligible cleanup for another. PPS liabilities are rejected
+before admission at PostgreSQL's exact `NUMERIC(38,24)` upper boundary instead of failing later in
+the recorder. Sanitized recovery validates the embedded liability against that boundary while
+allowing its independently derived zero-fee comparison ceiling to exceed the storage limit.
+The cursor is locked and read separately so its bound values produce a composite-index seek rather
+than repeatedly filtering the already visited prefix. Startup now verifies the mandatory cursor row
+and the exact ascending B-tree index contract, rejecting same-named indexes with an incompatible
+access method, ordering, expression, predicate, included column or operator class. The migration
+repairs either contract while Miningcore is stopped; repairing the index rebuilds it and can require
+a substantial maintenance window on a large accounting table. The configurable, bounded retention
+batch defaults to 50,000 rows per table and cycle, keeping ahead of the documented
+two-PPS-projection workload at the default payout interval without turning cleanup into an unlimited
+transaction. Operators with multiple PPS pools must account for that multiplier before increasing
+the batch because the complete maintenance pass is one transaction. Invalid accounting records are
+isolated from valid batch siblings and written to a checksum-chained quarantine file for manual
+reconciliation instead of
+poisoning the recoverable journal; critical notifications distinguish importable and quarantined
+evidence and explicitly forbid `-rs` import of quarantine files. Relay receivers validate auxiliary
+projections against configured pools during asynchronous startup and expose unsupported wire formats
+as a bounded Prometheus counter. Every daemon-accepted direct PPS candidate is synchronously
+persisted as an idempotent block-only record before liability construction or relay publication;
+direct and merged candidate durability therefore remains independent of accounting success.
+
+Existing databases must apply `add_share_accounting.sql` in addition to the prior AuxPoW and payout
+ownership migrations before starting pooled merged mining or direct PPS. Existing SOLO/SOLO
+topologies retain their established one-share record and do not require this new migration.
+Receiver/recorder nodes must be
+upgraded and migrated before relay senders because paired accounting uses a new fail-closed wire
+format. See the [merged-mining guide](merged-mining-litecoin-dogecoin.md),
+[database runbook](database.md#upgrade-an-existing-database), and updated mixed-scheme example.
+
 ### Source-verified Bitcoin-family version rolling
 
 Bitcoin-family templates can now declare an explicit source-reviewed `versionRollingMask` and a

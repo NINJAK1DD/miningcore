@@ -41,12 +41,16 @@
   "paymentProcessing": {
     "enabled": true,
     "interval": 600,
+    // Bound each retention transaction while keeping ahead of the documented
+    // 20-envelope/s, two-PPS-projection sizing baseline.
+    "shareAccountingPruneBatchSize": 50000,
+    "shareAccountingRetentionDays": 30,
     "coinbaseString": "Miningcore"
   },
   "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
   "pools": [
     {
-      "id": "litecoin-solo",
+      "id": "litecoin-pplns",
       "enabled": true,
       "coin": "litecoin",
       "address": "CHANGE_ME_LITECOIN_POOL_WALLET_ADDRESS",
@@ -104,13 +108,17 @@
       "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 0.01,
-        "payoutScheme": "SOLO"
+        // Each chain independently supports SOLO, PPS, PROP or PPLNS.
+        "payoutScheme": "PPLNS",
+        "payoutSchemeConfig": {
+          "factor": 2.0
+        }
       },
-      // Before startup, apply add_auxpow_block_idempotency.sql and
-      // add_payout_manager_ownership.sql as documented in the merged-mining guide.
+      // Before startup, apply add_auxpow_block_idempotency.sql,
+      // add_payout_manager_ownership.sql and add_share_accounting.sql.
       "mergedMining": {
         "enabled": true,
-        "auxPoolId": "dogecoin-solo",
+        "auxPoolId": "dogecoin-prop",
         // Miner password example: d=65536;doge=DOGE_MINER_ADDRESS
         "addressParameter": "doge",
         "requireAuxAddress": true,
@@ -119,7 +127,7 @@
       }
     },
     {
-      "id": "dogecoin-solo",
+      "id": "dogecoin-prop",
       "enabled": true,
       "coin": "dogecoin",
       "address": "CHANGE_ME_DOGECOIN_POOL_WALLET_ADDRESS",
@@ -154,7 +162,8 @@
       "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 1.0,
-        "payoutScheme": "SOLO"
+        // This intentionally differs from the parent to demonstrate independent ownership.
+        "payoutScheme": "PROP"
       }
     }
   ]

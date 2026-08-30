@@ -17,13 +17,14 @@ For incident-first routing, use [Troubleshooting](troubleshooting.md).
 
 ## Requirements and miner login
 
-This version is limited to SOLO. The required relationship is:
+The required relationship is:
 
 - Litecoin and Dogecoin are separate enabled pools with unique IDs.
-- Both pools use `SOLO` payment processing.
+- Each pool independently uses `SOLO`, `PPS`, `PROP` or `PPLNS`; mixed schemes are supported.
 - Direct and relay receiver/recorder nodes set cluster-level `paymentProcessing.enabled` to `true`.
 - Dogecoin supplies its daemon, wallet address, block classification and payout pipeline.
 - Litecoin references that Dogecoin pool through `mergedMining`.
+- Non-SOLO Dogecoin pools set `requireAuxAddress: true`.
 
 ```json
 "mergedMining": {
@@ -41,8 +42,8 @@ Connect miners only to the Litecoin Stratum endpoint.
 - Password: `d=65536;doge=DOGE_ADDRESS`
 
 The Dogecoin daemon mines rewards to the configured Dogecoin pool wallet. Miningcore records the
-password-supplied Dogecoin address as the SOLO beneficiary and pays it through the existing
-Dogecoin payout processor after maturity.
+password-supplied Dogecoin address as the auxiliary beneficiary. SOLO pays that address when its
+candidate matures; pooled schemes use the auxiliary projection in Dogecoin's own accounting history.
 
 ## Share and block accounting
 
@@ -53,15 +54,42 @@ against both targets.
 
 After proof validation:
 
-1. Miningcore publishes one cleared ordinary statistical share before either daemon submission.
+1. Miningcore publishes one authoritative envelope containing correlated Litecoin and Dogecoin
+   accounting projections before either daemon submission.
 2. Litecoin and Dogecoin submissions run independently.
 3. Each accepted or transport-uncertain block is synchronously persisted as a block-only candidate
    when its own submission completes.
 4. Block candidates do not wait for the ordinary five-second share batch or ZeroMQ relay.
 
-A slow or failed peer-chain path therefore cannot suppress the statistical share or move it beyond
-the parent effort boundary. Miningcore does not publish the original proof twice and does not add a
-synthetic Dogecoin share row.
+A slow or failed peer-chain path therefore cannot suppress ordinary accounting or move it beyond
+the parent effort boundary. The recorder commits both projections and any PPS liabilities in one
+PostgreSQL transaction. A duplicate envelope is authenticated by its durable UUID and payload hash,
+then suppressed. A conflicting replay stops instead of crediting one side. A replay after one pool
+has independently pruned its settled projection is also suppressed safely: the durable group receipt
+proves the original pair was committed atomically, and every still-retained row is re-authenticated.
+
+The parent projection belongs to the Stratum username and the auxiliary projection belongs to the
+validated password address. They retain one timestamp, worker, session, source and achieved proof,
+but use their own pool ID, normalized assigned/actual difficulty, network difficulty, template
+height and spendable template reward. PROP therefore reads only its pool's round, and PPLNS builds
+each window from that pool's projected shares and network difficulty.
+
+### PPS liability contract
+
+PPS becomes a liability when the accepted share envelope and balance update commit—not when a block
+is found. For assigned difficulty `d`, chain network difficulty `D`, spendable template reward `B`,
+and positive reward-recipient fraction `f`, the exact calculated liability is `(1 - f) * d / D * B`,
+following the PPS contract in Meni Rosenfeld's
+[Analysis of Bitcoin Pooled Mining Reward Systems](https://arxiv.org/abs/1112.4980).
+Miningcore records it at 24 decimal places, rounds the payable balance down to the database's 12
+decimal places, and carries the remainder per pool and miner. Actual above-target luck does not
+increase the credit.
+
+Rejected, stale and orphaned blocks do not reverse PPS credits; confirmed blocks do not add them a
+second time. This transfers variance, reorg, daemon, wallet, liquidity and insolvency risk to the
+operator. Maintain a separately monitored reserve able to cover miner balances during an extended
+unlucky period. Reward recipients remain chain-local and reduce the PPS miner basis before the
+liability is created.
 
 ### Block states and notifications
 
@@ -114,10 +142,10 @@ When `requireAuxAddress` is true:
 The cache is not persisted and is empty after restart. Keep the Dogecoin pool enabled so its normal
 classifier, maturity checks and payout processor can handle auxiliary blocks.
 
-When `requireAuxAddress` is false, a worker that omits `doge=` mines Litecoin only. Miningcore does
-not submit an otherwise qualifying DOGE candidate because no miner-supplied SOLO beneficiary can be
-attributed. It does not credit a fallback or pool address. This avoids unattributed funds at the
-cost of discarding that candidate; production pools should normally require the auxiliary address.
+When `requireAuxAddress` is false, a worker that omits `doge=` mines Litecoin only. This is allowed
+only when Dogecoin is SOLO. Miningcore does not submit an otherwise qualifying DOGE candidate or
+credit a fallback address. Pooled Dogecoin accounting refuses this configuration at startup because
+accepted unattributed work would create an unowned liability.
 
 ### Pool configuration safeguards
 
@@ -176,6 +204,19 @@ cancelled:
   template and `0` when no combined job can be constructed.
 - `miningcore_auxiliary_template_degraded` is `1` while the parent uses a cached template from the
   named auxiliary pool; otherwise it is `0`.
+
+Accounting metrics are bounded by configured pool IDs and fixed outcome/role values; no miner
+address or per-share UUID is a label:
+
+- `miningcore_share_accounting_batches_total{outcome}` distinguishes inserted groups from
+  authenticated `replay_suppressed` groups.
+- `miningcore_share_accounting_projections_total{pool,role,outcome}` distinguishes parent,
+  auxiliary and direct single-chain projections.
+- `miningcore_pps_share_credits_total{pool,outcome}` counts PPS liabilities and suppressed replays.
+- `miningcore_pps_liability_coin_total{pool}` accumulates the exact 24-decimal calculated liability
+  before the 12-decimal balance boundary.
+- `miningcore_merged_mining_attribution_rejections_total{pool,aux_pool,reason}` counts missing,
+  invalid and temporarily unverifiable auxiliary payout attribution.
 
 Separate parent-pool labels prevent a healthy parent from clearing another parent's degraded state
 when both reference the same auxiliary pool. Separate phase labels keep ten-second startup probes
@@ -253,10 +294,14 @@ active/inactive lookup clears the episode.
 ### Required scripts
 
 For an existing PostgreSQL database, stop Miningcore block writers and payout managers or schedule a
-maintenance window. Apply both scripts before enabling merged mining:
+maintenance window. Apply all three scripts before enabling merged mining:
 
 - `src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql`
 - `src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql`
+- `src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql`
+
+The accounting migration is required for any PPS, PROP or PPLNS participant. An unchanged
+SOLO/SOLO topology retains its established one-share wire/database record and does not require it.
 
 The ownership migration is required for every payment-processing cluster in this release series,
 including clusters without merged mining. It is also required for recorder/recovery-only deployments
@@ -264,7 +309,7 @@ that use the `-rs` importer.
 
 ### Migration guarantees
 
-Both migrations are transactional, so failed validation or index creation rolls back the changes.
+All migrations are transactional, so failed validation or index creation rolls back the changes.
 The AuxPoW migration uses regular `CREATE INDEX` within its transaction. It resolves the schema of
 the active `blocks` relation before dropping obsolete indexes, detects legacy uncertain or duplicate
 merged-mining rows, and stops for manual review rather than selecting a claimant. It then recreates
@@ -274,6 +319,11 @@ The ownership migration adds the durable single-manager token, idempotent paymen
 recovery-file import manifest. Schema preflight resolves the unqualified `blocks` relation selected
 by the application role's active `search_path`; unrelated same-named indexes cannot satisfy it.
 
+The share-accounting migration adds a unique `(poolid, accountingid)` projection identity, a
+correlated-group manifest, the immutable PPS credit journal and a locked precision-remainder table.
+Startup verifies column types/nullability, exact primary/foreign keys, checks, and the partial unique
+index. A same-named but structurally different object does not satisfy preflight.
+
 Every merged-mining sender, direct recorder, relay receiver/recorder and database-connected payout
 node refuses to continue when the required schema is absent or malformed.
 
@@ -282,12 +332,16 @@ node refuses to continue when the required schema is absent or malformed.
 ### Relay database boundary
 
 Every merged-mining relay sender needs access to the shared PostgreSQL database and merged-mining
-indexes. It persists financially significant block-only records synchronously; ZeroMQ carries only
-ordinary shares. The paired parent share keeps its sender timestamp through current receivers.
+block indexes. It persists financially significant block-only records synchronously. ZeroMQ carries
+the one paired ordinary-accounting envelope, whose projections keep the sender timestamp. The
+receiver commits the pair and PPS liability.
 
-Upgrade every relay receiver before its sender or before enabling merged mining. Older receivers do
-not understand timestamp preservation and can place a winning share after its effort boundary. A
-database-free relay sender remains supported for non-merged pools.
+Upgrade and migrate every relay receiver before upgrading senders, then stop old senders before
+enabling pooled merged mining or PPS. The accounting envelope uses a new wire-format discriminator;
+an old receiver drops it as unsupported, while a new receiver rejects accounting fields carried in
+a legacy frame. This fail-closed behavior prevents a partial pair but means a mixed-version rollout
+can intentionally lose shares if the order is ignored. A database-free relay sender remains
+supported for non-merged, non-PPS pools.
 
 ### Payout ownership
 
@@ -315,10 +369,9 @@ before balance resets commit.
 
 ### Ordinary shares and block candidates
 
-ZeroMQ PUB/SUB is not an acknowledged durable queue for ordinary shares. A disconnect can lose
-in-flight statistical shares even though reconnect behavior is tested. Merged-mining candidates do
-not share that window: the submitting manager waits for PostgreSQL block persistence before
-returning.
+ZeroMQ PUB/SUB is not an acknowledged durable queue. A disconnect can lose an entire in-flight
+accounting envelope, but cannot commit only one projection. Merged-mining candidates do not share
+that window: the submitting manager waits for PostgreSQL block persistence before returning.
 
 A recognised retryable database failure uses the write-through recovery journal and can continue
 once the candidate is safe. An unexpected database or application failure also attempts the journal,
@@ -365,11 +418,14 @@ The automated suite covers:
 - AuxPoW layout, password parsing and old/new relay compatibility;
 - bounded recovery hashing and independent task draining;
 - Alephium sweep identities and manager-level reorganisations; and
-- accepted auxiliary candidates without synthetic share rows.
+- correlated parent/auxiliary projections, independent payout vectors, PPS idempotency and accepted
+  auxiliary candidates without duplicate publication.
 
-CI also launches PostgreSQL 17 to verify exact indexes under custom schemas, reject mutated
-expressions/order/predicates, and include delayed direct and relay winning shares in effort. It does
-not launch Litecoin Core or Dogecoin Core.
+CI also launches PostgreSQL 17 to verify exact indexes and PPS ledger contracts under custom
+schemas, reject mutated constraints, expressions, order and predicates, and include delayed direct
+and relay winning shares in effort. Checksum-pinned Litecoin Core 0.21.5.5 and Dogecoin Core 1.14.9
+regtest processes mine rewards through maturity; all four supported schemes and a mixed pairing
+then create balances from that daemon evidence.
 
 Live results for the reference Windows/WSL regtest environment are tracked in
 [merged-mining-regtest-validation.md](merged-mining-regtest-validation.md). Items marked outstanding
@@ -379,18 +435,19 @@ Before enabling mainnet traffic, run a daemon-backed regtest with real `litecoin
 processes:
 
 1. Create and fund/mature regtest wallets on both nodes, then configure distinct enabled LTC and
-   DOGE SOLO pools.
+   DOGE pools. Exercise SOLO, PPS, PROP, PPLNS and at least one mixed pairing.
 2. Connect a Scrypt miner only to the LTC Stratum port using
    `d=<difficulty>;doge=<address>`.
 3. Advance only the Dogecoin tip and confirm Miningcore broadcasts a fresh combined job without
    waiting for the Litecoin tip to change.
 4. Submit an auxiliary-only solution. Confirm `submitauxblock` accepts it, attribution matches the
-   active block's `auxpow.parentblock`, one pending DOGE row is created, and no synthetic DOGE share
-   is inserted.
+   active block's `auxpow.parentblock`, one pending DOGE row is created, and exactly one correlated
+   DOGE projection is inserted.
 5. Interrupt Dogecoin RPC before the `submitauxblock` response arrives. Confirm the uncertain row
    records the submitted parent header, survives, and resolves only when the active block's
    `auxpow.parentblock` matches.
-6. Mature the DOGE coinbase and confirm the normal DOGE classifier credits and pays the password-supplied beneficiary.
+6. Mature the DOGE coinbase and confirm the normal DOGE classifier credits the correct beneficiary.
+   For PPS, confirm the balance existed before maturity and did not change because of maturity.
 7. Repeat with a parent-only solution and a solution meeting both targets; confirm LTC and DOGE
    submissions run independently.
 8. Trigger a same-height Dogecoin template refresh and confirm a clean Stratum job without a false

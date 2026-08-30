@@ -15,6 +15,7 @@ using Miningcore.Mining;
 using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
+using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Tests.Util;
 using NSubstitute;
@@ -72,11 +73,16 @@ public class HostedServiceStartupTests
         var hashrates = new Subject<HashrateNotification>();
         var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
         var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var accounting = new Subject<ShareAccountingTelemetryEvent>();
+        var attribution = new Subject<MergedMiningAttributionRejectedTelemetryEvent>();
         var messageBus = Substitute.For<IMessageBus>();
         messageBus.Listen<TelemetryEvent>().Returns(telemetry);
         messageBus.Listen<HashrateNotification>().Returns(hashrates);
         messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
         messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        messageBus.Listen<ShareAccountingTelemetryEvent>().Returns(accounting);
+        messageBus.Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+            .Returns(attribution);
         using var publisher = new MetricsPublisher(messageBus);
         using var timeout = new CancellationTokenSource(
             TimeSpan.FromSeconds(30));
@@ -88,6 +94,8 @@ public class HostedServiceStartupTests
         Assert.True(hashrates.HasObservers);
         Assert.True(auxiliaryRpc.HasObservers);
         Assert.True(auxiliaryState.HasObservers);
+        Assert.True(accounting.HasObservers);
+        Assert.True(attribution.HasObservers);
         telemetry.OnNext(new TelemetryEvent("pool", TelemetryCategory.Share,
             TimeSpan.Zero, true));
         hashrates.OnNext(new HashrateNotification { PoolId = "pool", Hashrate = 1 });
@@ -98,6 +106,8 @@ public class HostedServiceStartupTests
         Assert.False(hashrates.HasObservers);
         Assert.False(auxiliaryRpc.HasObservers);
         Assert.False(auxiliaryState.HasObservers);
+        Assert.False(accounting.HasObservers);
+        Assert.False(attribution.HasObservers);
     }
 
     [Fact]
@@ -107,11 +117,16 @@ public class HostedServiceStartupTests
         var hashrates = new Subject<HashrateNotification>();
         var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
         var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var accounting = new Subject<ShareAccountingTelemetryEvent>();
+        var attribution = new Subject<MergedMiningAttributionRejectedTelemetryEvent>();
         var messageBus = Substitute.For<IMessageBus>();
         messageBus.Listen<TelemetryEvent>().Returns(telemetry);
         messageBus.Listen<HashrateNotification>().Returns(hashrates);
         messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
         messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        messageBus.Listen<ShareAccountingTelemetryEvent>().Returns(accounting);
+        messageBus.Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+            .Returns(attribution);
         var registry = Metrics.NewCustomRegistry();
         using var publisher = new MetricsPublisher(messageBus, null,
             Metrics.WithCustomRegistry(registry), registry);
@@ -169,6 +184,68 @@ public class HostedServiceStartupTests
         Assert.Contains(
             "miningcore_auxiliary_template_fallback_total{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 1",
             recovered);
+        await publisher.StopAsync(timeout.Token);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_ExportsBoundedShareAccountingOutcomes()
+    {
+        var telemetry = new Subject<TelemetryEvent>();
+        var hashrates = new Subject<HashrateNotification>();
+        var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
+        var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var accounting = new Subject<ShareAccountingTelemetryEvent>();
+        var attribution = new Subject<MergedMiningAttributionRejectedTelemetryEvent>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<TelemetryEvent>().Returns(telemetry);
+        messageBus.Listen<HashrateNotification>().Returns(hashrates);
+        messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
+        messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        messageBus.Listen<ShareAccountingTelemetryEvent>().Returns(accounting);
+        messageBus.Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+            .Returns(attribution);
+        var registry = Metrics.NewCustomRegistry();
+        using var publisher = new MetricsPublisher(messageBus, null,
+            Metrics.WithCustomRegistry(registry), registry);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await publisher.StartAsync(CancellationToken.None)
+            .WaitAsync(timeout.Token);
+
+        accounting.OnNext(new ShareAccountingTelemetryEvent(Guid.NewGuid(),
+            ShareAccountingInsertResult.Inserted,
+            new[]
+            {
+                new ShareAccountingProjectionTelemetry("ltc",
+                    ShareAccountingRole.Parent),
+                new ShareAccountingProjectionTelemetry("doge",
+                    ShareAccountingRole.Auxiliary),
+            },
+            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m) }));
+        attribution.OnNext(new MergedMiningAttributionRejectedTelemetryEvent(
+            "ltc", "doge", MergedMiningAttributionRejection.Missing));
+        accounting.OnNext(new ShareAccountingTelemetryEvent(Guid.NewGuid(),
+            ShareAccountingInsertResult.AlreadyCommitted,
+            new[]
+            {
+                new ShareAccountingProjectionTelemetry("ltc",
+                    ShareAccountingRole.Parent),
+                new ShareAccountingProjectionTelemetry("doge",
+                    ShareAccountingRole.Auxiliary),
+            },
+            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m) }));
+
+        var metrics = await WaitForMetricsAsync(registry, text =>
+            text.Contains("miningcore_share_accounting_batches_total{outcome=\"inserted\"} 1") &&
+            text.Contains("miningcore_share_accounting_batches_total{outcome=\"replay_suppressed\"} 1") &&
+            text.Contains("miningcore_share_accounting_projections_total{pool=\"ltc\",role=\"parent\",outcome=\"inserted\"} 1") &&
+            text.Contains("miningcore_share_accounting_projections_total{pool=\"doge\",role=\"auxiliary\",outcome=\"inserted\"} 1") &&
+            text.Contains("miningcore_pps_share_credits_total{pool=\"doge\",outcome=\"replay_suppressed\"} 1") &&
+            text.Contains("miningcore_pps_liability_coin_total{pool=\"doge\"} 0.125") &&
+            text.Contains("miningcore_merged_mining_attribution_rejections_total{pool=\"ltc\",aux_pool=\"doge\",reason=\"missing\"} 1"),
+            timeout.Token);
+
+        Assert.DoesNotContain("accounting_id", metrics,
+            StringComparison.OrdinalIgnoreCase);
         await publisher.StopAsync(timeout.Token);
     }
 

@@ -216,6 +216,63 @@ public class PayoutManager : ProcessStatusBackgroundService
                 logger.Error(ex, () => $"[{poolConfig.Id}] Payment processing failed");
             }
         }
+
+        await MaintainShareAccountingRetentionAsync(ct);
+    }
+
+    internal async Task MaintainShareAccountingRetentionAsync(
+        CancellationToken ct)
+    {
+        if(!Program.RequiresShareAccountingPersistence(clusterConfig))
+            return;
+
+        var now = DateTime.UtcNow;
+        var ppsPools = clusterConfig.Pools.Where(pool => pool.Enabled &&
+            pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS).ToArray();
+        var replayDays = clusterConfig.PaymentProcessing?
+            .ShareAccountingRetentionDays ?? 30;
+        var pruneBatchSize = clusterConfig.PaymentProcessing?
+            .ShareAccountingPruneBatchSize ?? 50_000;
+
+        var pruneResult = await cf.RunTx(async (con, tx) =>
+        {
+            var prunedShares = 0;
+            var shareBacklog = false;
+            foreach(var pool in ppsPools)
+            {
+                var cutoff = now.AddDays(-pool.PaymentProcessing
+                    .PpsShareRetentionDays);
+                var result = await shareRepo.PruneSharesBeforeInclusiveAsync(
+                    con, tx, pool.Id, cutoff, pruneBatchSize, ct);
+                prunedShares += result.PrunedRows;
+                shareBacklog |= result.HasMore;
+            }
+
+            var evidence = await shareRepo.PruneShareAccountingEvidenceBeforeAsync(
+                con, tx, now.AddDays(-replayDays) -
+                    ShareAccounting.EvidencePruneSafetyMargin,
+                pruneBatchSize, ct);
+            return (Evidence: evidence, PrunedShares: prunedShares,
+                ShareBacklog: shareBacklog);
+        }, ct: ct);
+
+        if(pruneResult.PrunedShares > 0)
+            logger.Info(() =>
+                $"Pruned {pruneResult.PrunedShares} expired PPS statistical share row(s)");
+        if(pruneResult.ShareBacklog)
+            logger.Warn(() =>
+                "Expired PPS statistical shares remain after the bounded retention pass; " +
+                "the backlog will continue draining during later payout cycles");
+        if(pruneResult.Evidence.PrunedRows > 0)
+            logger.Info(() =>
+                $"Pruned {pruneResult.Evidence.PrunedRows} expired share-accounting evidence " +
+                $"row(s) beyond the configured {replayDays}-day replay horizon plus " +
+                $"the {ShareAccounting.EvidencePruneSafetyMargin.TotalDays:0}-day safety margin");
+        if(pruneResult.Evidence.HasMore)
+            logger.Warn(() =>
+                "Expired share-accounting evidence remains after the bounded retention pass; " +
+                "the backlog will continue draining during later payout cycles");
     }
 
     private static CoinFamily HandleFamilyOverride(CoinFamily family, PoolConfig pool)

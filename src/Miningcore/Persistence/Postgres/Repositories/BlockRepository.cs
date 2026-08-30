@@ -268,7 +268,11 @@ public class BlockRepository : IBlockRepository
                     ('idx_blocks_merged_parent_pool_hash', ARRAY[
                         'poolid',
                         'hash'
-                    ], 'type = any (array[''merged-parent''::text, ''merged-parent-uncertain''::text])')
+                    ], 'type = any (array[''merged-parent''::text, ''merged-parent-uncertain''::text])'),
+                    ('idx_blocks_bitcoin_direct_pool_hash', ARRAY[
+                        'poolid',
+                        'hash'
+                    ], 'type = ''bitcoin-direct''::text')
             ),
             actual AS (
                 SELECT lower(index_class.relname) AS name,
@@ -295,7 +299,7 @@ public class BlockRepository : IBlockRepository
                   -- This excludes stale same-named indexes in every other schema.
                   AND i.indrelid = to_regclass('blocks')
             )
-            SELECT COUNT(*) = 3
+            SELECT COUNT(*) = 4
             FROM expected e
             JOIN actual a ON a.name = e.name
             WHERE a.indisunique

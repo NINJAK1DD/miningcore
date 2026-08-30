@@ -2,6 +2,14 @@ using ProtoBuf;
 
 namespace Miningcore.Blockchain;
 
+public enum ShareAccountingRole
+{
+    None = 0,
+    Single = 1,
+    Parent = 2,
+    Auxiliary = 3,
+}
+
 [ProtoContract]
 public class Share
 {
@@ -103,6 +111,39 @@ public class Share
     /// </summary>
     [ProtoMember(22)]
     public bool PreserveCreated { get; set; }
+
+    /// <summary>
+    /// Stable, lowercase UUID (without separators) for exactly-once financial accounting.
+    /// A merged-mining proof uses the same identifier for both chain projections.
+    /// </summary>
+    [ProtoMember(23)]
+    public string AccountingId { get; set; }
+
+    [ProtoMember(24)]
+    public ShareAccountingRole AccountingRole { get; set; }
+
+    /// <summary>
+    /// Chain-specific amount available to the pool before configured reward-recipient
+    /// percentages, expressed in satoshis. Integer wire representation avoids floating-point
+    /// changes between a submitting node, relay receiver and recovery import.
+    /// </summary>
+    [ProtoMember(25)]
+    public long RewardBasisSatoshis { get; set; }
+
+    /// <summary>
+    /// Auxiliary-chain projection of the same accepted proof. Only a parent projection may
+    /// contain this member; nesting beyond one level is rejected by the recorder and receiver.
+    /// </summary>
+    [ProtoMember(26)]
+    public Share PairedShare { get; set; }
+
+    /// <summary>
+    /// Immutable PPS liability calculated by the accepting pool before the share can enter a
+    /// relay or recovery journal. Recovery deliberately does not load live payout settings, so
+    /// this evidence must travel with the accepted proof rather than be reconstructed later.
+    /// </summary>
+    [ProtoMember(27)]
+    public decimal? PpsCalculatedAmount { get; set; }
 
     /// <summary>
     /// Runtime-only guard used when a job manager has already published the ordinary statistical

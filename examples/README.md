@@ -46,7 +46,7 @@ for the expected miner fleet before deployment.
 | [`bitcoin_bitcoin_cash_pool.json`](bitcoin_bitcoin_cash_pool.json) | Independent Bitcoin and Bitcoin Cash pools with separate daemon and Stratum ports |
 | [`dogecoin_pool.json`](dogecoin_pool.json) | One direct Dogecoin SOLO pool with low- and high-difficulty ports |
 | [`bitcoin_dogecoin_pool.json`](bitcoin_dogecoin_pool.json) | Independent Bitcoin and Dogecoin pools managed by one Miningcore process |
-| [`litecoin_dogecoin_merged_mining_pool.json`](litecoin_dogecoin_merged_mining_pool.json) | Litecoin parent mining with Dogecoin AuxPoW rewards and two miner difficulty tiers |
+| [`litecoin_dogecoin_merged_mining_pool.json`](litecoin_dogecoin_merged_mining_pool.json) | Litecoin PPLNS parent with Dogecoin PROP AuxPoW accounting, demonstrating independent mixed schemes and two miner difficulty tiers |
 | [`litecoin_pool.json`](litecoin_pool.json) | Legacy full Litecoin PPLNS example |
 
 Every example that opens an internal Stratum listener has named low- and high-difficulty tiers. A

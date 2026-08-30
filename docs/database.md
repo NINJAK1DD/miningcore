@@ -130,11 +130,14 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql
 ```
 
-The ownership migration assigns its three new tables to the owner of the current database. Confirm
-that this is the same role configured under `persistence.postgres.user` and inspect the resulting
-owners before restarting Miningcore:
+The ownership and share-accounting migrations assign their new tables to the owner of the current
+database. Confirm that this is the same role configured under `persistence.postgres.user` and
+inspect the resulting owners before restarting Miningcore:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore -c "
@@ -148,7 +151,11 @@ FROM pg_tables
 WHERE tablename IN (
   'share_recovery_imports',
   'payment_batches',
-  'payout_manager_ownership'
+  'payout_manager_ownership',
+  'share_accounting_groups',
+  'share_accounting_prune_state',
+  'pps_share_credits',
+  'pps_credit_remainders'
 )
 ORDER BY schemaname, tablename;"
 ```
@@ -158,11 +165,34 @@ grant that application role the required table privileges before startup. Do not
 making the Miningcore runtime role a PostgreSQL superuser.
 
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
-recovery-only deployments using the `-rs` importer. The AuxPoW migration is required before enabling
-LTC/DOGE merged mining. Both scripts stop instead of guessing when legacy duplicates require manual
-review. Recovery mode validates the `share_recovery_imports` table, its required columns and its
+recovery-only deployments using the `-rs` importer. The AuxPoW and share-accounting migrations are
+required before enabling pooled LTC/DOGE merged mining or direct Bitcoin-family PPS, including a PPS
+share-relay sender: it relays ordinary accounting evidence but still persists accepted block
+candidates synchronously and owns an emergency candidate journal. Share accounting is not required
+by an unchanged SOLO/SOLO topology. All scripts stop instead of guessing when incompatible or duplicate state
+requires manual review. Recovery mode validates the `share_recovery_imports` table, its required columns and its
 immediate `filehash` primary key before scanning the journal, so a missing or stale migration fails
 early with an actionable message.
+
+`add_share_accounting.sql` is additive and transactional. Do not attempt a live rollback by dropping
+its tables or columns: they can contain PPS liabilities and replay evidence that are not reconstructible
+from blocks. To roll back the application, stop every writer and payout manager, preserve the current
+database, and restore the verified pre-migration backup into an isolated replacement database. Reconcile
+balances and any payments created after that backup before directing miners or wallets to the older
+version.
+
+The migration also seeds the required `share_accounting_prune_state` singleton and recreates the
+composite `(created, accountingid)` pruning index. Startup requires that index to be a two-key,
+ascending B-tree with the standard `timestamptz` and UUID operator classes; a same-named BRIN,
+descending, expression, partial or covering index is not an equivalent contract. It also verifies
+the singleton row before accepting pooled/PPS financial work. Reapplying the migration repairs a
+missing singleton or stale same-named pruning index while Miningcore is stopped. Reapplication drops
+and rebuilds this index, so on a large accounting table allow enough maintenance time for the rebuild
+instead of rerunning the migration speculatively during a short service window.
+
+The migration also adds a database check requiring accounting ID, role and reward basis to be
+either all absent or all valid, plus a foreign key from each identified share to its durable group
+manifest. This protects the pair even if a custom writer bypasses Miningcore's application checks.
 
 Merged-mining startup verifies its partial unique indexes. Payout processing uses PostgreSQL ownership
 and an idempotent payment ledger. Only a clean shutdown clears the durable owner token. After a crash:
@@ -331,8 +361,8 @@ before restarting the pool.
 
 Recovery checks a partition for every configured pool ID even though all sanitized pools are
 disabled. Once the complete journal has passed integrity and semantic validation, Miningcore also
-requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses `auxpow`,
-`auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
+requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses
+`bitcoin-direct`, `auxpow`, `auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
 recovery evidence itself rather than discarded live merged-mining settings, and it is checked before
 the import transaction begins.
 
@@ -937,9 +967,120 @@ SELECT poolid, address, amount, created
 FROM payments
 ORDER BY created DESC
 LIMIT 20;
+
+SELECT poolid, count(*) AS credits,
+       sum(calculatedamount) AS exact_pps_liability,
+       sum(creditedamount) AS posted_balance_amount
+FROM pps_share_credits
+GROUP BY poolid
+ORDER BY poolid;
+
+SELECT poolid, count(*) AS projected_shares,
+       count(DISTINCT accountingid) AS accounting_groups
+FROM shares
+WHERE accountingid IS NOT NULL
+GROUP BY poolid
+ORDER BY poolid;
+
+SELECT count(*) AS groups_with_excess_projection_rows
+FROM share_accounting_groups groups
+WHERE (SELECT count(*) FROM shares
+       WHERE shares.accountingid = groups.accountingid)
+      > groups.projectioncount;
 ```
 
+The accounting group and PPS credit tables are replay evidence and are not ordinary share
+retention tables. Settled PROP/PPLNS/PPS share rows may be deleted by payout cleanup, so a healthy
+group may retain any subset of its original projections as the two pools cross independent payout
+boundaries. Miningcore authenticates every remaining projection against the original payload and
+accepts the subset on a retry. The group receipt proves the original projections were committed in
+one transaction; an excess or conflicting row still fails closed. Do not delete these records with
+an independent shares-retention job. Miningcore retires them only after the configured replay
+horizon has passed and rejects older evidence before it can create another liability.
+
 Use these queries for inspection only. Never repair balances or payments with ad-hoc SQL.
+
+## Share-accounting retention and sizing
+
+`paymentProcessing.shareAccountingRetentionDays` defaults to 30 days. It must exceed the longest
+supported relay outage, recovery-journal retention and incident-response window. Once the horizon
+passes, Miningcore rejects the old envelope and its payout-manager maintenance pass prunes the
+corresponding `pps_share_credits`, PPS `balance_changes`, and orphaned
+`share_accounting_groups` after an additional one-day safety margin. A transaction-locked
+`share_accounting_prune_state` keyset cursor advances the bounded group scan past still-referenced
+PROP/PPLNS or long-retention rows and wraps after reaching the expiry tail. Pinned groups therefore
+remain protected without permanently starving later eligible receipts. Registration also enforces the
+replay cutoff inside the accounting transaction: an expired new ID is rejected, while a retained
+receipt can still prove an already committed replay. Statistical-share and evidence deletes are
+index-supported and limited by `paymentProcessing.shareAccountingPruneBatchSize` per pool/table and
+payout cycle. The default is 50,000 rows and startup permits 1,000 through 100,000; a warning means an
+unexamined expiry window remains and later cycles will continue scanning it. Referenced rows at
+the scanned tail do not produce a false backlog warning. One maintenance transaction can process the
+configured limit for each PPS pool and each global evidence table, so multiply the possible work by
+the number of PPS pools before increasing the setting. An oversized multi-pool transaction can hold
+back vacuum progress even though every individual delete is bounded. Per-recipient
+`pps_credit_remainders` remain because they carry exact
+sub-unit value and grow with recipients, not shares. PPS statistical rows use the separate per-pool
+`ppsShareRetentionDays` setting (default 7) and are pruned even when the pool finds blocks; block
+settlement never shortens that statistical window.
+
+Approximate row creation at 20 accepted accounting envelopes per second is:
+
+| Evidence | Rows/day | Rows at 30 days |
+| --- | ---: | ---: |
+| Accounting groups | 1,728,000 | 51,840,000 |
+| PPS credits, one PPS projection | 1,728,000 | 51,840,000 |
+| PPS balance changes, upper bound | 1,728,000 | 51,840,000 |
+| PPS credits/changes, two PPS projections | 3,456,000 each | 103,680,000 each |
+
+Actual disk cost depends on addresses, indexes, PostgreSQL settings and vacuum state. Measure it:
+
+```sql
+SELECT relname,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+       n_live_tup
+FROM pg_stat_user_tables
+WHERE relname IN ('share_accounting_groups', 'share_accounting_prune_state',
+                  'pps_share_credits', 'pps_credit_remainders',
+                  'balance_changes', 'shares')
+ORDER BY pg_total_relation_size(relid) DESC;
+```
+
+At the default 600-second payout interval, a 50,000-row batch can retire 7.2 million rows per table
+per day. That exceeds the table-specific 3.456-million-row upper bound in the two-PPS-projection
+example above. For another interval or workload, choose at least:
+
+```text
+peak rows created per second in the busiest pruned table × paymentProcessing.interval
+```
+
+and retain operational headroom for catch-up after downtime. Keep the value bounded rather than
+turning retention into one unbounded transaction. A persistent backlog warning means creation is
+outpacing the selected capacity or referenced rows are still being swept; inspect table counts and
+the cursor before increasing the batch.
+
+If policy requires audit retention beyond the live replay horizon, stop Miningcore at a planned
+boundary, take and verify the normal custom-format database backup, and export the expiring rows
+before restarting. Record the UTC cutoff and archive checksum with the backup:
+
+```console
+cutoff='2026-08-01T00:00:00Z'
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --csv -c "SELECT * FROM share_accounting_groups WHERE created <= '$cutoff' ORDER BY created, accountingid" \
+  > share-accounting-groups.csv
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --csv -c "SELECT * FROM pps_share_credits WHERE created <= '$cutoff' ORDER BY created, accountingid, poolid" \
+  > pps-share-credits.csv
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --csv -c "SELECT * FROM balance_changes WHERE usage='PPS share credit' AND created <= '$cutoff' ORDER BY created, id" \
+  > pps-balance-changes.csv
+sha256sum share-accounting-groups.csv pps-share-credits.csv \
+  pps-balance-changes.csv > share-accounting-archive.sha256
+sha256sum --check share-accounting-archive.sha256
+```
+
+Keep the files protected like wallet/accounting data. Do not manually delete the live rows; allow
+Miningcore's ordered maintenance transaction to do so after the same cutoff becomes eligible.
 
 ## Advanced share-table partitioning
 
@@ -1015,8 +1156,8 @@ RESET ROLE;
 ```
 
 Use your actual enabled pool IDs, not the examples. Create a partition before enabling any new
-pool later. An auxiliary DOGE block-only record does not create an ordinary share, but a DOGE pool
-that can accept direct miners still needs its own partition.
+pool later. Merged mining now creates one ordinary auxiliary projection for every attributed proof,
+so the auxiliary pool always needs a partition even when its direct Stratum listener is disabled.
 
 Miningcore now checks this during startup on direct recorder nodes, share-relay receivers and
 recovery imports. Normal startup checks enabled pool IDs; recovery checks every configured recovery

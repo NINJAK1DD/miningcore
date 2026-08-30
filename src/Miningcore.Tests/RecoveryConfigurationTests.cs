@@ -632,6 +632,39 @@ public class RecoveryConfigurationTests
     }
 
     [Theory]
+    [InlineData(999)]
+    [InlineData(100_001)]
+    public void Startup_RejectsUnsafeShareAccountingPruneBatchSize(int batchSize)
+    {
+        var config = CreateRecoveryConfig();
+        config.PaymentProcessing.ShareAccountingPruneBatchSize = batchSize;
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName ==
+            "PaymentProcessing.ShareAccountingPruneBatchSize");
+        Assert.Equal(
+            "Cluster paymentProcessing.shareAccountingPruneBatchSize must be between 1000 and 100000",
+            error.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData(1_000)]
+    [InlineData(100_000)]
+    public void Startup_AcceptsBoundedShareAccountingPruneBatchSize(int batchSize)
+    {
+        var config = CreateRecoveryConfig();
+        config.PaymentProcessing.ShareAccountingPruneBatchSize = batchSize;
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName ==
+            "PaymentProcessing.ShareAccountingPruneBatchSize");
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void NormalStartup_MissingPoolPaymentProcessingIdentifiesPool(

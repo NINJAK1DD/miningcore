@@ -7,6 +7,7 @@ using Miningcore.Crypto;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -23,12 +24,15 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         IComponentContext ctx,
         IMasterClock clock,
         IMessageBus messageBus,
-        IExtraNonceProvider extraNonceProvider) :
+        IExtraNonceProvider extraNonceProvider,
+        IBlockCandidateRecorder blockCandidateRecorder = null) :
         base(ctx, clock, messageBus, extraNonceProvider)
     {
+        this.blockCandidateRecorder = blockCandidateRecorder;
     }
 
     private BitcoinTemplate coin;
+    private readonly IBlockCandidateRecorder blockCandidateRecorder;
 
     protected override object[] GetBlockTemplateParams()
     {
@@ -320,7 +324,80 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             }
         }
 
+        if(poolConfig.PaymentProcessing?.Enabled == true &&
+           poolConfig.PaymentProcessing.PayoutScheme == PayoutScheme.PPS)
+        {
+            share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
+            share.AccountingRole = ShareAccountingRole.Single;
+            share.RewardBasisSatoshis = job.RewardBasisSatoshis;
+            share.PreserveCreated = true;
+
+            await AttachPpsEvidencePreservingAcceptedCandidateAsync(poolConfig,
+                share);
+        }
+
         return share;
+    }
+
+    protected virtual async Task PersistAcceptedCandidateWithoutAccountingAsync(
+        Share share)
+    {
+        if(blockCandidateRecorder == null)
+            throw new InvalidOperationException(
+                "A synchronous block-candidate recorder is required for PPS");
+
+        var candidate = CreateAcceptedCandidateWithoutAccounting(share);
+        await blockCandidateRecorder.PersistBlockCandidateAsync(candidate);
+    }
+
+    protected internal virtual async Task
+        AttachPpsEvidencePreservingAcceptedCandidateAsync(PoolConfig pool,
+            Share share)
+    {
+        // Daemon acceptance is already conclusive. Persist the accepted block and its
+        // ordinary statistical proof before constructing or publishing any PPS evidence so
+        // relay loss, process failure, or a later accounting rejection cannot suppress the
+        // only durable candidate record.
+        if(share.IsBlockCandidate && !share.BlockRecordEmitted)
+        {
+            await PersistAcceptedCandidateWithoutAccountingAsync(share);
+            share.BlockRecordEmitted = true;
+        }
+
+        Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(pool, share);
+    }
+
+    internal static Share CreateAcceptedCandidateWithoutAccounting(Share share)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        if(!share.IsBlockCandidate)
+            throw new ArgumentException("An accepted block candidate is required",
+                nameof(share));
+
+        return new Share
+        {
+            PoolId = share.PoolId,
+            Miner = share.Miner,
+            Worker = share.Worker,
+            UserAgent = share.UserAgent,
+            IpAddress = share.IpAddress,
+            Source = share.Source,
+            Difficulty = share.Difficulty,
+            ShareDifficulty = share.ShareDifficulty,
+            ActualDifficulty = share.ActualDifficulty,
+            SessionId = share.SessionId,
+            BlockHeight = share.BlockHeight,
+            BlockReward = share.BlockReward,
+            BlockRewardDouble = share.BlockRewardDouble,
+            BlockHash = share.BlockHash,
+            BlockType = "bitcoin-direct",
+            BlockOnly = true,
+            IsBlockCandidate = true,
+            TransactionConfirmationData = share.TransactionConfirmationData,
+            NetworkDifficulty = share.NetworkDifficulty,
+            PreserveCreated = true,
+            Created = share.Created,
+        };
     }
 
     public double ShareMultiplier => coin.ShareMultiplier;

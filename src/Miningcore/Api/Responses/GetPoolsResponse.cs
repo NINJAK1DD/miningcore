@@ -53,6 +53,7 @@ public class ApiPoolPaymentProcessingConfig
     public decimal MinimumPayment { get; set; } // in pool-base-currency (ie. Bitcoin, not Satoshis)
     public string PayoutScheme { get; set; }
     public ApiPoolPayoutSchemeConfig PayoutSchemeConfig { get; set; }
+    public int PpsShareRetentionDays { get; set; }
     public ApiPoolPaymentProcessingExtra Extra { get; set; }
 }
 

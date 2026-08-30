@@ -78,14 +78,18 @@ public class PROPPaymentScheme : IPayoutScheme
         // delete discarded shares
         if(shareCutOffDate.HasValue)
         {
-            var cutOffCount = await shareRepo.CountSharesBeforeAsync(con, tx, poolConfig.Id, shareCutOffDate.Value, ct);
+            // PROP rounds are disjoint. The winning share belongs to this round and must be
+            // consumed with every earlier share so an immediate consecutive block cannot reuse it.
+            var cutOffCount = await shareRepo.CountSharesBeforeInclusiveAsync(con, tx,
+                poolConfig.Id, shareCutOffDate.Value, ct);
 
             if(cutOffCount > 0)
             {
                 await LogDiscardedSharesAsync(ct, poolConfig, block, shareCutOffDate.Value);
 
-                logger.Info(() => $"Deleting {cutOffCount} discarded shares before {shareCutOffDate.Value:O}");
-                await shareRepo.DeleteSharesBeforeAsync(con, tx, poolConfig.Id, shareCutOffDate.Value, ct);
+                logger.Info(() => $"Deleting {cutOffCount} settled PROP shares through {shareCutOffDate.Value:O}");
+                await shareRepo.DeleteSharesBeforeInclusiveAsync(con, tx, poolConfig.Id,
+                    shareCutOffDate.Value, ct);
             }
         }
 

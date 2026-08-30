@@ -140,6 +140,7 @@ public class MergedMiningBitcoinJob : BitcoinJob
             ShareDifficulty = shareDiff,
             ActualDifficulty = shareDiff / shareMultiplier,
             IsBlockCandidate = isParentBlockCandidate,
+            RewardBasisSatoshis = rewardToPool.Satoshi,
         };
 
         string parentBlockHex = null;

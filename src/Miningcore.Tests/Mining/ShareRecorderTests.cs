@@ -33,6 +33,8 @@ using Polly.CircuitBreaker;
 using ProtoBuf;
 using Xunit;
 using Block = Miningcore.Persistence.Model.Block;
+using ShareAccountingBatch = Miningcore.Persistence.Model.ShareAccountingBatch;
+using ShareAccountingInsertResult = Miningcore.Persistence.Model.ShareAccountingInsertResult;
 using PersistedShare = Miningcore.Persistence.Model.Share;
 
 namespace Miningcore.Tests.Mining;
@@ -40,6 +42,31 @@ namespace Miningcore.Tests.Mining;
 [Collection(ShareRecoveryLoggingCollection.Name)]
 public class ShareRecorderTests
 {
+    [Fact]
+    public async Task PairedAccounting_RetryCommitsOneAuthenticatedGroup()
+    {
+        var fixture = CreateRecoveryFixture();
+        var pair = CreateAccountingPair();
+        fixture.ShareRepository.InsertAccountingBatchAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<ShareAccountingBatch>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<ShareAccountingInsertResult>(
+                    new TimeoutException("injected retry")),
+                Task.FromResult(ShareAccountingInsertResult.Inserted));
+
+        await fixture.Recorder.PersistSharesAsync(new[] { pair });
+
+        await fixture.ShareRepository.Received(2).InsertAccountingBatchAsync(
+            fixture.Connection, fixture.Transaction,
+            Arg.Is<ShareAccountingBatch>(batch => batch.Shares.Length == 2),
+            Arg.Any<CancellationToken>());
+        fixture.Transaction.Received(1).Commit();
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<ShareAccountingTelemetryEvent>(x =>
+                x.Outcome == ShareAccountingInsertResult.Inserted),
+            Arg.Any<string>());
+    }
+
     [Fact]
     public async Task StartAsync_ReceivesImmediateShareAndDisposesSubscription()
     {
@@ -3232,6 +3259,93 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoverSharesAsync_PairedAccountingRemainsOneTransactionalEnvelope()
+    {
+        var fixture = CreateRecoveryFixture();
+        var accountingId = ShareAccounting.CreateId();
+        var created = new DateTime(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+        var parent = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "ltc-miner",
+            Worker = "rig-1",
+            UserAgent = "miner/1.0",
+            IpAddress = "192.0.2.1",
+            Source = "direct",
+            SessionId = "session-1",
+            Created = created,
+            Difficulty = 16,
+            ActualDifficulty = 18,
+            ShareDifficulty = 16,
+            NetworkDifficulty = 100,
+            BlockHeight = 200,
+            RewardBasisSatoshis = 5_000_000_000,
+            PpsCalculatedAmount = 8m,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Parent,
+        };
+        parent.PairedShare = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "doge-miner",
+            Worker = parent.Worker,
+            UserAgent = parent.UserAgent,
+            IpAddress = parent.IpAddress,
+            Source = parent.Source,
+            SessionId = parent.SessionId,
+            Created = created,
+            Difficulty = 2_000,
+            ActualDifficulty = 2_250,
+            ShareDifficulty = parent.ShareDifficulty,
+            NetworkDifficulty = 10_000,
+            BlockHeight = 300,
+            RewardBasisSatoshis = 1_000_000_000_000_000,
+            PpsCalculatedAmount = 2_000_000m,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Auxiliary,
+        };
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            JsonConvert.SerializeObject(parent),
+        });
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+
+            await fixture.ShareRepository.Received(1).InsertAccountingBatchAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Is<ShareAccountingBatch>(batch =>
+                    batch.AccountingId == Guid.ParseExact(accountingId, "N") &&
+                    batch.Shares.Length == 2 &&
+                    batch.Shares.Any(x => x.PoolId == "ltc-solo" &&
+                        x.AccountingRole == (short) ShareAccountingRole.Parent) &&
+                    batch.Shares.Any(x => x.PoolId == "doge-solo" &&
+                        x.AccountingRole == (short) ShareAccountingRole.Auxiliary) &&
+                    batch.PpsCredits.Length == 2 &&
+                    batch.PpsCredits.Any(x => x.PoolId == "ltc-solo" &&
+                        x.Address == "ltc-miner" && x.CalculatedAmount == 8m) &&
+                    batch.PpsCredits.Any(x => x.PoolId == "doge-solo" &&
+                        x.Address == "doge-miner" &&
+                        x.CalculatedAmount == 2_000_000m)),
+                Arg.Any<CancellationToken>());
+            await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>());
+            fixture.Transaction.Received(1).Commit();
+            Assert.True(File.Exists(archiveFilename));
+        }
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
     public async Task RecoverSharesAsync_SuccessfulOrdinaryReplay_IsRetiredWithoutReinsert()
     {
         var fixture = CreateRecoveryFixture();
@@ -3487,28 +3601,6 @@ public class ShareRecorderTests
                 activeRecoveryFilename);
             Directory.Delete(directory, true);
         }
-    }
-
-    [Fact]
-    public void GetSharesForPersistence_ExcludesBlockOnlyCandidates()
-    {
-        var regularShare = new Share { PoolId = "ltc-solo" };
-        var parentBlockCandidate = new Share { PoolId = "ltc-solo", IsBlockCandidate = true };
-        var auxiliaryBlockCandidate = new Share
-        {
-            PoolId = "doge-solo",
-            IsBlockCandidate = true,
-            BlockOnly = true,
-        };
-
-        var result = ShareRecorder.GetSharesForPersistence(new[]
-        {
-            regularShare,
-            parentBlockCandidate,
-            auxiliaryBlockCandidate,
-        }).ToArray();
-
-        Assert.Equal(new[] { regularShare, parentBlockCandidate }, result);
     }
 
     [Fact]
@@ -6158,6 +6250,49 @@ public class ShareRecorderTests
             Arg.Any<CancellationToken>());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ShareRecoveryFailureHandler_DistinguishesRecoveryAndQuarantine(
+        bool hasRecoverableShare)
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() => notificationSender),
+            Substitute.For<IShareRecoveryFatalState>());
+        var recoveryFile = Path.Combine(Path.GetTempPath(),
+            $"recovery-{Guid.NewGuid():N}.txt");
+        var quarantineFile = $"{recoveryFile}.quarantine-test";
+        var recoverable = hasRecoverableShare
+            ? new[] { new Share { PoolId = "ltc", Miner = "recoverable" } }
+            : Array.Empty<Share>();
+        var quarantined = new[]
+        {
+            new Share { PoolId = "doge", Miner = "quarantined" },
+        };
+
+        await handler.StopClusterAfterJournalAsync(recoverable, recoveryFile,
+            quarantined, quarantineFile,
+            new InvalidDataException("invalid accounting evidence"));
+
+        await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Message.Contains(quarantineFile) &&
+                notification.Message.Contains("must not be imported with -rs") &&
+                notification.Message.Contains("manual financial reconciliation") &&
+                (hasRecoverableShare
+                    ? notification.Message.Contains(recoveryFile) &&
+                      notification.Message.Contains("Import and verify only")
+                    : notification.Message.Contains(
+                          "No importable recovery-journal records remained") &&
+                      notification.Message.Contains(
+                          "Do not run -rs against a quarantine file"))),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task ShareRecoveryFailureHandler_NotificationFailureStillStops()
     {
@@ -7786,12 +7921,22 @@ public class ShareRecorderTests
         var dogecoinPool = new PoolConfig
         {
             Id = "doge-solo",
-            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "DOGE",
+                Name = "Dogecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
         var litecoinPool = new PoolConfig
         {
             Id = "ltc-solo",
-            Template = new BitcoinTemplate { Symbol = "LTC", Name = "Litecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "LTC",
+                Name = "Litecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
@@ -7864,6 +8009,51 @@ public class ShareRecorderTests
                 ? $"auxpow-block:doge-block-{index}"
                 : null,
         });
+    }
+
+    private static Share CreateAccountingPair()
+    {
+        var accountingId = ShareAccounting.CreateId();
+        var created = new DateTime(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+        var parent = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "ltc-miner",
+            Worker = "rig-1",
+            UserAgent = "miner/1.0",
+            IpAddress = "192.0.2.1",
+            Source = "direct",
+            SessionId = "session-1",
+            Created = created,
+            Difficulty = 16,
+            ActualDifficulty = 18,
+            ShareDifficulty = 16,
+            NetworkDifficulty = 100,
+            BlockHeight = 200,
+            RewardBasisSatoshis = 5_000_000_000,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Parent,
+        };
+        parent.PairedShare = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "doge-miner",
+            Worker = parent.Worker,
+            UserAgent = parent.UserAgent,
+            IpAddress = parent.IpAddress,
+            Source = parent.Source,
+            SessionId = parent.SessionId,
+            Created = created,
+            Difficulty = 2_000,
+            ActualDifficulty = 2_250,
+            ShareDifficulty = parent.ShareDifficulty,
+            NetworkDifficulty = 10_000,
+            BlockHeight = 300,
+            RewardBasisSatoshis = 1_000_000_000_000_000,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Auxiliary,
+        };
+        return parent;
     }
 
     private static async Task<string> WriteRecoveryFileAsync(

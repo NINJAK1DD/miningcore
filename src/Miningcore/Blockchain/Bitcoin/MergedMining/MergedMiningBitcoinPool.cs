@@ -7,6 +7,7 @@ using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Nicehash;
+using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Stratum;
@@ -79,18 +80,28 @@ public class MergedMiningBitcoinPool : BitcoinPool
             mergedMiningConfig.AddressParameter);
 
         if(string.IsNullOrWhiteSpace(auxiliaryAddress) && mergedMiningConfig.RequireAuxAddress)
+        {
+            PublishAttributionRejection(MergedMiningAttributionRejection.Missing);
             return false;
+        }
 
         if(!string.IsNullOrWhiteSpace(auxiliaryAddress))
         {
             var validation = await mergedManager.ValidateAuxiliaryAddressAsync(auxiliaryAddress, ct);
 
             if(validation == AuxiliaryAddressValidation.Invalid)
+            {
+                PublishAttributionRejection(MergedMiningAttributionRejection.Invalid);
                 return false;
+            }
 
             if(validation == AuxiliaryAddressValidation.Unavailable)
+            {
+                PublishAttributionRejection(
+                    MergedMiningAttributionRejection.ValidationUnavailable);
                 throw new StratumException(StratumError.Other,
                     "auxiliary payout-address validation is temporarily unavailable");
+            }
         }
 
         if(context is not MergedMiningBitcoinWorkerContext mergedContext)
@@ -99,4 +110,9 @@ public class MergedMiningBitcoinPool : BitcoinPool
         mergedContext.AuxiliaryMiner = auxiliaryAddress;
         return true;
     }
+
+    private void PublishAttributionRejection(
+        MergedMiningAttributionRejection reason) =>
+        messageBus.SendMessage(new MergedMiningAttributionRejectedTelemetryEvent(
+            poolConfig.Id, mergedMiningConfig.AuxPoolId, reason));
 }
