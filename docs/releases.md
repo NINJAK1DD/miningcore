@@ -499,12 +499,69 @@ For a major-runtime upgrade from .NET 6, use the more detailed
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). The sequence below is the shorter
 procedure for routine upgrades after the deployment layout and runtime are already suitable.
 
-1. Back up PostgreSQL, the configuration, and recovery journal.
-2. Download and verify the new archive.
-3. Stop Miningcore and confirm no other payout manager owns the same pools/database.
-4. Apply release-specific database migrations.
-5. Extract the new version and change `/opt/miningcore` with `ln -sfn`.
-6. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
+1. Back up the configuration and recovery journal.
+2. Download and verify the new archive using [Choose a version](#choose-a-version).
+3. Extract and verify the candidate in its immutable versioned directory without changing
+   `/opt/miningcore`.
+4. Stop Miningcore and confirm no other payout manager owns the same pools/database.
+5. Back up PostgreSQL and prove the backup inventory is readable.
+6. Apply release-specific migrations from the candidate's `migrations` directory.
+7. Change `/opt/miningcore` only after every migration succeeds.
+8. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
+
+Run this block in the same shell as the successful download-and-verification block. It consumes that
+block's readiness latch and archive path. Replace the migration list only when the target release
+notes explicitly require a different ordered set:
+
+```console
+umask 077
+MININGCORE_UPGRADE_READY=
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
+
+  stage_miningcore_candidate() {
+    if sudo test -e "$release_dir"; then
+      echo "STOP: candidate directory already exists; inspect it before retrying" >&2
+      return 1
+    fi
+    sudo mkdir -p /opt || return
+    sudo tar -xzf "$archive" -C /opt || return
+    test -d "$release_dir/migrations" || return
+    cat "$release_dir/BUILD-INFO" || return
+    LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
+  }
+
+  if stage_miningcore_candidate; then
+    if sudo systemctl stop miningcore &&
+       sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup" &&
+       pg_restore --list "$upgrade_backup" > /dev/null &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_share_accounting.sql" &&
+       sudo ln -sfnT "$release_dir" /opt/miningcore; then
+      MININGCORE_RELEASE_READY=
+      export MININGCORE_UPGRADE_READY=1
+      echo "READY: migrated the database and activated $release_dir"
+    else
+      echo "STOP: upgrade failed; /opt/miningcore was not changed" >&2
+      echo "Keep Miningcore stopped until the database and candidate are reconciled" >&2
+    fi
+  else
+    echo "STOP: candidate staging failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no verified release archive is available to upgrade" >&2
+fi
+```
+
+Start the service only when the block prints `READY` and exports
+`MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration
+failure. If a migration committed before a later step failed, do not restart the old binary merely
+because its symlink remains; follow the rollback boundary below or complete the reviewed upgrade.
 
 If application rollback is necessary, stop the service and repoint the symlink to the previous
 directory. Database migrations may not be reversible; restore the matching backup when the release

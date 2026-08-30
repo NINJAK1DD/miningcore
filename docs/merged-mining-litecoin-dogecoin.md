@@ -296,9 +296,12 @@ active/inactive lookup clears the episode.
 For an existing PostgreSQL database, stop Miningcore block writers and payout managers or schedule a
 maintenance window. Apply all three scripts before enabling merged mining:
 
-- `src/Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql`
-- `src/Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql`
-- `src/Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql`
+- `/opt/miningcore/migrations/add_auxpow_block_idempotency.sql`
+- `/opt/miningcore/migrations/add_payout_manager_ownership.sql`
+- `/opt/miningcore/migrations/add_share_accounting.sql`
+
+These are the prebuilt-release paths. A source-build operator should substitute the checkout's
+`src/Miningcore/Persistence/Postgres/Scripts/` directory while preserving the same file order.
 
 The accounting migration is required for any PPS, PROP or PPLNS participant. An unchanged
 SOLO/SOLO topology retains its established one-share wire/database record and does not require it.

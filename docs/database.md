@@ -20,8 +20,10 @@ Start with [Troubleshooting](troubleshooting.md) when the failing boundary is no
 
 This guide expands the beginner database steps in the root README. Commands assume PostgreSQL is on
 the local Linux host; adjust host names and access controls for a private database server.
-Commands that invoke supplied SQL use the stable prebuilt-release path under
-`/opt/miningcore/migrations/`. A source-build operator should substitute the checkout's
+Fresh-install and partitioning commands use the active prebuilt-release path under
+`/opt/miningcore/migrations/`. Upgrade commands are the deliberate exception: they use the verified
+candidate's immutable versioned directory so the old active release cannot supply stale SQL. A
+source-build operator should substitute the checkout's
 `src/Miningcore/Persistence/Postgres/Scripts/` directory while preserving each filename and the
 documented migration order.
 
@@ -55,6 +57,7 @@ Import the complete current schema from the installed migrations:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --single-transaction \
   -f /opt/miningcore/migrations/createdb.sql
 ```
 
@@ -125,19 +128,30 @@ A backup is not proven until it has been restored and checked.
 > ownership migration is mandatory before starting any node with payment processing enabled, not
 > only an LTC/DOGE node. Treat this as a breaking upgrade and schedule a maintenance window.
 
-Stop Miningcore block writers, recovery importers and payout managers, take a verified backup, then
-apply the migrations with `ON_ERROR_STOP`:
+First extract and verify the selected candidate release without changing `/opt/miningcore`, following
+the [release upgrade procedure](releases.md#upgrade-or-roll-back). Stop Miningcore block writers,
+recovery importers and payout managers, take a verified backup, then point this shell at that exact
+immutable candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/add_auxpow_block_idempotency.sql
+export MININGCORE_VERSION=v0.2.0
+export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
+export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+test -d "$MININGCORE_CANDIDATE_DIR/migrations"
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/add_payout_manager_ownership.sql
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/add_share_accounting.sql
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_manager_ownership.sql"
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_share_accounting.sql"
 ```
+
+Choose the candidate directory that exactly matches the verified version and host target. Never run
+upgrade migrations through the stable `/opt/miningcore` symlink: it must continue pointing to the
+old release until every required candidate migration succeeds.
 
 The ownership and share-accounting migrations assign their new tables to the owner of the current
 database. Confirm that this is the same role configured under `persistence.postgres.user` and

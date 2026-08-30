@@ -7,6 +7,7 @@ document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
 pps_document="$repository_root/docs/pps.md"
 database_document="$repository_root/docs/database.md"
+merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
 licence_document="$repository_root/docs/lucky-penny-licence.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
@@ -77,12 +78,19 @@ partition_block=$(awk '
   capture && /^```$/ { exit }
   capture { print }
 ' "$readme")
+upgrade_block=$(awk '
+  { sub(/\r$/, "") }
+  /^## Upgrade or roll back$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$document")
 
 assert_contains() {
   local label=$1
   local expected=$2
 
-  if ! grep -Fq "$expected" "$document"; then
+  if ! grep -Fq -- "$expected" "$document"; then
     echo "Release installation guide is missing $label" >&2
     exit 1
   fi
@@ -93,7 +101,7 @@ assert_file_contains() {
   local expected=$2
   local source=$3
 
-  if ! grep -Fq "$expected" "$source"; then
+  if ! grep -Fq -- "$expected" "$source"; then
     echo "$source is missing $label" >&2
     exit 1
   fi
@@ -103,7 +111,7 @@ assert_prose_contains() {
   local label=$1
   local expected=$2
 
-  if ! grep -Fq "$expected" <<<"$normalized_document"; then
+  if ! grep -Fq -- "$expected" <<<"$normalized_document"; then
     echo "Release installation guide is missing $label" >&2
     exit 1
   fi
@@ -188,19 +196,31 @@ for migration in add_auxpow_block_idempotency.sql \
   assert_file_contains "the packaged PPS $migration migration" \
     "/opt/miningcore/migrations/$migration" "$pps_document"
 done
-for migration in createdb.sql add_auxpow_block_idempotency.sql \
-    add_payout_manager_ownership.sql add_share_accounting.sql \
-    createdb_postgresql_11_appendix.sql; do
+for migration in createdb.sql createdb_postgresql_11_appendix.sql; do
   assert_file_contains "the database-runbook packaged $migration path" \
     "/opt/miningcore/migrations/$migration" "$database_document"
 done
+for migration in add_auxpow_block_idempotency.sql \
+    add_payout_manager_ownership.sql add_share_accounting.sql; do
+  assert_file_contains "the database-runbook candidate $migration path" \
+    "\$MININGCORE_CANDIDATE_DIR/migrations/$migration" "$database_document"
+  assert_file_contains "the merged-mining packaged $migration path" \
+    "/opt/miningcore/migrations/$migration" "$merged_mining_document"
+done
 assert_file_contains 'the database-runbook source-checkout alternative' \
   '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$database_document"
-if grep -Eq '^[[:space:]]*-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
-    "$database_document"; then
+assert_file_contains 'the merged-mining source-checkout alternative' \
+  '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$merged_mining_document"
+if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
+    "$database_document" "$merged_mining_document"; then
   echo 'Database runbook still has a repository-only executable migration path' >&2
   exit 1
 fi
+assert_file_contains 'the database-runbook transactional initial import' \
+  '--single-transaction' "$database_document"
+assert_file_contains 'the quick-start existing-partition explanation' \
+  'already partitioned `shares` table is refused so its existing partition layout remains intact.' \
+  "$readme"
 assert_file_contains 'the PPS receiver-before-sender rule' \
   'Upgrade and migrate relay receivers/recorders before senders' "$pps_document"
 assert_file_contains 'the authoritative PPS ledger boundary' \
@@ -485,6 +505,7 @@ bash -n <<<"$readme_install_block"
 bash -n <<<"$readme_database_block"
 bash -n <<<"$release_database_block"
 bash -n <<<"$partition_block"
+bash -n <<<"$upgrade_block"
 
 if [[ "$readme_database_block" != "$release_database_block" ]]; then
   echo 'README and release-guide fresh-database procedures have drifted' >&2
@@ -504,6 +525,30 @@ for required in \
     exit 1
   fi
 done
+
+for required in \
+  'MININGCORE_UPGRADE_READY=' \
+  'if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then' \
+  'release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"' \
+  'stage_miningcore_candidate()' \
+  'sudo tar -xzf "$archive" -C /opt' \
+  'pg_restore --list "$upgrade_backup"' \
+  '"$release_dir/migrations/add_auxpow_block_idempotency.sql"' \
+  '"$release_dir/migrations/add_payout_manager_ownership.sql"' \
+  '"$release_dir/migrations/add_share_accounting.sql"' \
+  'sudo ln -sfnT "$release_dir" /opt/miningcore' \
+  'export MININGCORE_UPGRADE_READY=1' \
+  'STOP: upgrade failed; /opt/miningcore was not changed'; do
+  if ! grep -Fq "$required" <<<"$upgrade_block"; then
+    echo "Release upgrade block is missing: $required" >&2
+    exit 1
+  fi
+done
+
+if grep -Fq '/opt/miningcore/migrations/' <<<"$upgrade_block"; then
+  echo 'Release upgrade block reads migrations through the old active symlink' >&2
+  exit 1
+fi
 
 for required in \
   'MININGCORE_PARTITION_READY=' \
@@ -646,6 +691,46 @@ if [[ "$symlink_line" -le "$directory_guard_line" ||
     "$release_consumed_line" -le "$symlink_line" ||
     "$cleanup_line" -le "$release_consumed_line" ]]; then
   echo 'The stable symlink, readiness reset and cleanup operations are not safely ordered' >&2
+  exit 1
+fi
+
+upgrade_extract_line=$(
+  find_unique_line upgrade-extraction 'sudo tar -xzf "$archive" -C /opt' "$upgrade_block"
+)
+upgrade_stop_line=$(
+  find_unique_line upgrade-stop 'if sudo systemctl stop miningcore &&' "$upgrade_block"
+)
+upgrade_backup_line=$(
+  find_unique_line upgrade-backup 'sudo -u postgres pg_dump -Fc -d miningcore' "$upgrade_block"
+)
+upgrade_restore_check_line=$(
+  find_unique_line upgrade-backup-check 'pg_restore --list "$upgrade_backup"' "$upgrade_block"
+)
+upgrade_auxpow_line=$(
+  find_unique_line upgrade-auxpow-migration \
+    '"$release_dir/migrations/add_auxpow_block_idempotency.sql"' "$upgrade_block"
+)
+upgrade_ownership_line=$(
+  find_unique_line upgrade-ownership-migration \
+    '"$release_dir/migrations/add_payout_manager_ownership.sql"' "$upgrade_block"
+)
+upgrade_accounting_line=$(
+  find_unique_line upgrade-accounting-migration \
+    '"$release_dir/migrations/add_share_accounting.sql"' "$upgrade_block"
+)
+upgrade_symlink_line=$(
+  find_unique_line upgrade-stable-symlink \
+    'sudo ln -sfnT "$release_dir" /opt/miningcore' "$upgrade_block"
+)
+
+if [[ "$upgrade_stop_line" -le "$upgrade_extract_line" ||
+    "$upgrade_backup_line" -le "$upgrade_stop_line" ||
+    "$upgrade_restore_check_line" -le "$upgrade_backup_line" ||
+    "$upgrade_auxpow_line" -le "$upgrade_restore_check_line" ||
+    "$upgrade_ownership_line" -le "$upgrade_auxpow_line" ||
+    "$upgrade_accounting_line" -le "$upgrade_ownership_line" ||
+    "$upgrade_symlink_line" -le "$upgrade_accounting_line" ]]; then
+  echo 'Candidate staging, backup, migrations and stable-symlink activation are not safely ordered' >&2
   exit 1
 fi
 
@@ -859,6 +944,72 @@ if ! grep -Fq 'READY: rebuilt the empty shares table' \
     <<<"$successful_partition_output" ||
     ! grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
   echo 'Partition block did not complete its guarded success path' >&2
+  exit 1
+fi
+
+# Exercise the routine-upgrade block with its versioned directory redirected
+# into the private fixture. The production path assignment is asserted above;
+# only the filesystem root changes here so an unprivileged test can create the
+# candidate binary and migration inventory.
+candidate_dir="$fixture_dir/candidate-release"
+upgrade_fixture_block=$(
+  sed 's#^  release_dir=.*#  release_dir="${DOC_TEST_RELEASE_DIR}"#' \
+    <<<"$upgrade_block"
+)
+cat > "$fixture_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOC_TEST_TRACE:?}"
+case "$*" in
+  test\ -e*)
+    exit 1
+    ;;
+  tar\ -xzf*)
+    mkdir -p "${DOC_TEST_RELEASE_DIR:?}/migrations"
+    printf '%s\n' 'fixture build identity' > "$DOC_TEST_RELEASE_DIR/BUILD-INFO"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$DOC_TEST_RELEASE_DIR/Miningcore"
+    chmod +x "$DOC_TEST_RELEASE_DIR/Miningcore"
+    ;;
+  *pg_dump*)
+    printf '%s\n' 'fixture database backup'
+    ;;
+  *add_share_accounting.sql*)
+    exit "${DOC_TEST_SHARE_MIGRATION_STATUS:-0}"
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$fixture_dir/bin/sudo"
+
+: > "$trace"
+failed_upgrade_output=$(
+  env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
+    DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
+    DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 \
+    MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
+    archive="$fixture_dir/download/candidate.tar.gz" \
+    bash -c "$upgrade_fixture_block" 2>&1
+)
+if ! grep -Fq 'upgrade failed; /opt/miningcore was not changed' \
+    <<<"$failed_upgrade_output" || grep -Fq 'ln -sfnT' "$trace" ||
+    [[ $(grep -Fc "$candidate_dir/migrations/" "$trace") -ne 3 ]]; then
+  echo 'Release upgrade can activate a candidate after a migration failure or use stale SQL' >&2
+  exit 1
+fi
+
+rm -rf -- "$candidate_dir"
+: > "$trace"
+successful_upgrade_output=$(
+  env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
+    DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
+    DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 \
+    MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
+    archive="$fixture_dir/download/candidate.tar.gz" \
+    bash -c "$upgrade_fixture_block" 2>&1
+)
+if ! grep -Fq "READY: migrated the database and activated $candidate_dir" \
+    <<<"$successful_upgrade_output" ||
+    ! grep -Fq "ln -sfnT $candidate_dir /opt/miningcore" "$trace"; then
+  echo 'Release upgrade did not activate the verified candidate after all migrations succeeded' >&2
   exit 1
 fi
 
