@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Blockchain;
@@ -225,11 +226,14 @@ internal static class ShareAccounting
                 $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
 
         var calculated = share.PpsCalculatedAmount.Value;
-        var maximum = CalculatePpsAmount(pool, share);
-        if(hasPaymentConfiguration && calculated != maximum)
-            throw new InvalidDataException(
-                $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
-        if(!hasPaymentConfiguration && (calculated <= 0 || calculated > maximum))
+        ValidatePpsCalculatedAmount(pool.Id, calculated, true);
+        if(hasPaymentConfiguration)
+        {
+            if(calculated != CalculatePpsAmount(pool, share))
+                throw new InvalidDataException(
+                    $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
+        }
+        else if(!RecoveryMaximumCoversCalculated(pool, share, calculated))
             throw new InvalidDataException(
                 $"Recovery PPS liability evidence for pool '{pool.Id}' exceeds the maximum independently derived from its immutable share inputs");
 
@@ -292,13 +296,81 @@ internal static class ShareAccounting
         }
 
         calculated = decimal.Round(calculated, 24, MidpointRounding.ToZero);
+        ValidatePpsCalculatedAmount(pool.Id, calculated, true);
+        return calculated;
+    }
+
+    private static bool RecoveryMaximumCoversCalculated(PoolConfig pool,
+        Share share, decimal calculated)
+    {
+        if(pool.Template?.Family != CoinFamily.Bitcoin)
+            throw new InvalidDataException(
+                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
+
+        decimal difficulty;
+        decimal networkDifficulty;
+        try
+        {
+            difficulty = (decimal) share.Difficulty;
+            networkDifficulty = (decimal) share.NetworkDifficulty;
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                $"Recovery PPS liability inputs for pool '{pool.Id}' exceed the supported decimal accounting range",
+                ex);
+        }
+
+        var reward = share.RewardBasisSatoshis / 100_000_000m;
+        if(reward <= 0 || difficulty <= 0 || networkDifficulty <= 0)
+            throw new InvalidDataException(
+                $"Recovery PPS liability inputs for pool '{pool.Id}' must be positive");
+
+        // Compare calculated * networkDifficulty <= reward * difficulty as exact
+        // decimal rationals. This avoids overflowing merely because the sanitized
+        // zero-fee ceiling is above NUMERIC(38,24); the embedded liability itself
+        // was range-checked before this comparison.
+        var (calculatedValue, calculatedScale) = GetDecimalParts(calculated);
+        var (networkValue, networkScale) = GetDecimalParts(networkDifficulty);
+        var (rewardValue, rewardScale) = GetDecimalParts(reward);
+        var (difficultyValue, difficultyScale) = GetDecimalParts(difficulty);
+        var left = calculatedValue * networkValue;
+        var right = rewardValue * difficultyValue;
+        var leftScale = calculatedScale + networkScale;
+        var rightScale = rewardScale + difficultyScale;
+        if(leftScale < rightScale)
+            left *= BigInteger.Pow(10, rightScale - leftScale);
+        else if(rightScale < leftScale)
+            right *= BigInteger.Pow(10, leftScale - rightScale);
+
+        return left <= right;
+    }
+
+    private static (BigInteger Value, int Scale) GetDecimalParts(decimal value)
+    {
+        var bits = decimal.GetBits(value);
+        var magnitude = new BigInteger((uint) bits[0]);
+        magnitude |= new BigInteger((uint) bits[1]) << 32;
+        magnitude |= new BigInteger((uint) bits[2]) << 64;
+        var scale = (bits[3] >> 16) & 0x7F;
+        if((bits[3] & int.MinValue) != 0)
+            magnitude = -magnitude;
+        return (magnitude, scale);
+    }
+
+    private static void ValidatePpsCalculatedAmount(string poolId,
+        decimal calculated, bool enforceStorageRange)
+    {
         if(calculated <= 0)
             throw new InvalidDataException(
-                $"PPS credit for pool '{pool.Id}' is below the supported 24-decimal liability precision");
-        if(calculated >= PpsCalculatedAmountExclusiveUpperBound)
+                $"PPS credit for pool '{poolId}' is below the supported 24-decimal liability precision");
+        if(decimal.Round(calculated, 24, MidpointRounding.ToZero) != calculated)
             throw new InvalidDataException(
-                $"PPS liability for pool '{pool.Id}' exceeds the PostgreSQL NUMERIC(38,24) storage range");
-        return calculated;
+                $"PPS liability for pool '{poolId}' exceeds the supported 24-decimal liability precision");
+        if(enforceStorageRange &&
+           calculated >= PpsCalculatedAmountExclusiveUpperBound)
+            throw new InvalidDataException(
+                $"PPS liability for pool '{poolId}' exceeds the PostgreSQL NUMERIC(38,24) storage range");
     }
 
     internal static string ComputePayloadHash(Guid accountingId,

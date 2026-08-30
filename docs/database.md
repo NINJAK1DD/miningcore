@@ -153,6 +153,7 @@ WHERE tablename IN (
   'payment_batches',
   'payout_manager_ownership',
   'share_accounting_groups',
+  'share_accounting_prune_state',
   'pps_share_credits',
   'pps_credit_remainders'
 )
@@ -996,11 +997,16 @@ Use these queries for inspection only. Never repair balances or payments with ad
 supported relay outage, recovery-journal retention and incident-response window. Once the horizon
 passes, Miningcore rejects the old envelope and its payout-manager maintenance pass prunes the
 corresponding `pps_share_credits`, PPS `balance_changes`, and orphaned
-`share_accounting_groups` after an additional one-day safety margin. Registration also enforces the
+`share_accounting_groups` after an additional one-day safety margin. A transaction-locked
+`share_accounting_prune_state` keyset cursor advances the bounded group scan past still-referenced
+PROP/PPLNS or long-retention rows and wraps after reaching the expiry tail. Pinned groups therefore
+remain protected without permanently starving later eligible receipts. Registration also enforces the
 replay cutoff inside the accounting transaction: an expired new ID is rejected, while a retained
 receipt can still prove an already committed replay. Statistical-share and evidence deletes are
-index-supported and limited to 10,000 rows per pool/table per payout cycle; a warning means a
-backlog remains and later cycles will continue draining it. Per-recipient `pps_credit_remainders` remain because they carry exact
+index-supported and limited to 10,000 rows per pool/table per payout cycle; a warning means an
+unexamined expiry window remains and later cycles will continue scanning it. Referenced rows at
+the scanned tail do not produce a false backlog warning. Per-recipient `pps_credit_remainders`
+remain because they carry exact
 sub-unit value and grow with recipients, not shares. PPS statistical rows use the separate per-pool
 `ppsShareRetentionDays` setting (default 7) and are pruned even when the pool finds blocks; block
 settlement never shortens that statistical window.
@@ -1021,8 +1027,9 @@ SELECT relname,
        pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
        n_live_tup
 FROM pg_stat_user_tables
-WHERE relname IN ('share_accounting_groups', 'pps_share_credits',
-                  'pps_credit_remainders', 'balance_changes', 'shares')
+WHERE relname IN ('share_accounting_groups', 'share_accounting_prune_state',
+                  'pps_share_credits', 'pps_credit_remainders',
+                  'balance_changes', 'shares')
 ORDER BY pg_total_relation_size(relid) DESC;
 ```
 

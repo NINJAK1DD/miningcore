@@ -26,6 +26,21 @@ CREATE TABLE IF NOT EXISTS share_accounting_groups
 );
 CREATE INDEX IF NOT EXISTS IDX_SHARE_ACCOUNTING_GROUPS_CREATED
     ON share_accounting_groups(created);
+CREATE INDEX IF NOT EXISTS IDX_SHARE_ACCOUNTING_GROUPS_PRUNE
+    ON share_accounting_groups(created, accountingid);
+
+CREATE TABLE IF NOT EXISTS share_accounting_prune_state
+(
+    singletonid SMALLINT NOT NULL PRIMARY KEY,
+    cursorcreated TIMESTAMPTZ NULL,
+    cursoraccountingid UUID NULL,
+    CONSTRAINT CK_SHARE_ACCOUNTING_PRUNE_SINGLETON CHECK(singletonid = 1),
+    CONSTRAINT CK_SHARE_ACCOUNTING_PRUNE_CURSOR CHECK(
+        (cursorcreated IS NULL AND cursoraccountingid IS NULL)
+        OR (cursorcreated IS NOT NULL AND cursoraccountingid IS NOT NULL))
+);
+INSERT INTO share_accounting_prune_state(singletonid) VALUES(1)
+ON CONFLICT(singletonid) DO NOTHING;
 
 DO $$
 BEGIN
@@ -107,6 +122,7 @@ BEGIN
 
     FOREACH relation_name IN ARRAY ARRAY[
         'share_accounting_groups'::NAME,
+        'share_accounting_prune_state'::NAME,
         'pps_share_credits'::NAME,
         'pps_credit_remainders'::NAME
     ]

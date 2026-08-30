@@ -2,6 +2,7 @@
 DROP TABLE share_recovery_imports;
 DROP TABLE pps_share_credits;
 DROP TABLE pps_credit_remainders;
+DROP TABLE share_accounting_prune_state;
 DROP TABLE share_accounting_groups;
 DROP TABLE blocks;
 DROP TABLE balances;

@@ -50,6 +50,20 @@ CREATE TABLE share_accounting_groups
 );
 CREATE INDEX IDX_SHARE_ACCOUNTING_GROUPS_CREATED
     ON share_accounting_groups(created);
+CREATE INDEX IDX_SHARE_ACCOUNTING_GROUPS_PRUNE
+	ON share_accounting_groups(created, accountingid);
+
+CREATE TABLE share_accounting_prune_state
+(
+	singletonid SMALLINT NOT NULL PRIMARY KEY,
+	cursorcreated TIMESTAMPTZ NULL,
+	cursoraccountingid UUID NULL,
+	CONSTRAINT CK_SHARE_ACCOUNTING_PRUNE_SINGLETON CHECK(singletonid = 1),
+	CONSTRAINT CK_SHARE_ACCOUNTING_PRUNE_CURSOR CHECK(
+		(cursorcreated IS NULL AND cursoraccountingid IS NULL)
+		OR (cursorcreated IS NOT NULL AND cursoraccountingid IS NOT NULL))
+);
+INSERT INTO share_accounting_prune_state(singletonid) VALUES(1);
 
 ALTER TABLE shares ADD CONSTRAINT FK_SHARES_ACCOUNTING_GROUP
 	FOREIGN KEY(accountingid) REFERENCES share_accounting_groups(accountingid);

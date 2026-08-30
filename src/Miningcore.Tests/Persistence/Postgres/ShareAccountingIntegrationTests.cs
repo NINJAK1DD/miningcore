@@ -101,13 +101,15 @@ public class ShareAccountingIntegrationTests
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);
             await connection.ExecuteAsync(migration);
+            await connection.ExecuteAsync(migration);
 
-            Assert.Equal(3, await connection.ExecuteScalarAsync<int>(@"
+            Assert.Equal(4, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
                 FROM pg_tables
                 WHERE schemaname = current_schema()
                   AND tablename IN ('share_accounting_groups',
-                      'pps_share_credits', 'pps_credit_remainders')"));
+                      'share_accounting_prune_state', 'pps_share_credits',
+                      'pps_credit_remainders')"));
             Assert.Equal(0, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
                 FROM pg_tables
@@ -242,12 +244,13 @@ public class ShareAccountingIntegrationTests
             Assert.Equal(0, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*) FROM pg_tables
                 WHERE schemaname = current_schema() AND tablename = 'blocks'"));
-            Assert.Equal(3, await connection.ExecuteScalarAsync<int>(@"
+            Assert.Equal(4, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
                 FROM pg_tables
                 WHERE schemaname = current_schema()
                   AND tablename IN ('share_accounting_groups',
-                      'pps_share_credits', 'pps_credit_remainders')
+                      'share_accounting_prune_state', 'pps_share_credits',
+                      'pps_credit_remainders')
                   AND tableowner = (SELECT pg_get_userbyid(datdba)
                       FROM pg_database WHERE datname = current_database())"));
 
@@ -257,24 +260,28 @@ public class ShareAccountingIntegrationTests
                     created) VALUES('ltc', 1, 1, 1, 'miner', '127.0.0.1',
                     @id, now())", new { id = Guid.NewGuid() }));
 
-            var referenced = Guid.NewGuid();
-            var removableFirst = Guid.NewGuid();
-            var removableSecond = Guid.NewGuid();
+            var referencedFirst = Guid.NewGuid();
+            var referencedSecond = Guid.NewGuid();
+            var removable = Guid.NewGuid();
             await connection.ExecuteAsync(@"
                 INSERT INTO share_accounting_groups(accountingid,
                     projectioncount, payloadhash, created) VALUES
-                    (@referenced, 1, @firstHash, @created),
-                    (@removableFirst, 1, @secondHash, @created + interval '1 second'),
-                    (@removableSecond, 1, @thirdHash, @created + interval '2 seconds');
+                    (@referencedFirst, 1, @firstHash, @created),
+                    (@referencedSecond, 1, @secondHash, @created + interval '1 second'),
+                    (@removable, 1, @thirdHash, @created + interval '2 seconds');
                 INSERT INTO shares(poolid, blockheight, difficulty,
                     networkdifficulty, miner, ipaddress, accountingid,
                     accountingrole, rewardbasissatoshis, created)
-                VALUES('ltc', 1, 1, 1, 'retained-miner', '127.0.0.1',
-                    @referenced, 1, 100000000, @created);", new
+                VALUES
+                    ('ltc', 1, 1, 1, 'retained-first', '127.0.0.1',
+                        @referencedFirst, 1, 100000000, @created),
+                    ('ltc', 1, 1, 1, 'retained-second', '127.0.0.1',
+                        @referencedSecond, 1, 100000000,
+                        @created + interval '1 second');", new
             {
-                referenced,
-                removableFirst,
-                removableSecond,
+                referencedFirst,
+                referencedSecond,
+                removable,
                 firstHash = new string('1', 64),
                 secondHash = new string('2', 64),
                 thirdHash = new string('3', 64),
@@ -287,13 +294,38 @@ public class ShareAccountingIntegrationTests
                     connection, transaction,
                     new DateTime(2020, 1, 2, 0, 0, 0, DateTimeKind.Utc), 2,
                     CancellationToken.None);
-                Assert.Equal(1, prune.PrunedRows);
+                Assert.Equal(0, prune.PrunedRows);
                 Assert.True(prune.HasMore);
                 await transaction.CommitAsync();
             }
+            Assert.Equal(referencedSecond,
+                await connection.ExecuteScalarAsync<Guid?>(
+                    "SELECT cursoraccountingid FROM share_accounting_prune_state " +
+                    "WHERE singletonid=1"));
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var prune = await repository.PruneShareAccountingEvidenceBeforeAsync(
+                    connection, transaction,
+                    new DateTime(2020, 1, 2, 0, 0, 0, DateTimeKind.Utc), 2,
+                    CancellationToken.None);
+                Assert.Equal(1, prune.PrunedRows);
+                Assert.False(prune.HasMore);
+                await transaction.CommitAsync();
+            }
+            Assert.Null(await connection.ExecuteScalarAsync<Guid?>(
+                "SELECT cursoraccountingid FROM share_accounting_prune_state " +
+                "WHERE singletonid=1"));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM share_accounting_groups " +
+                "WHERE accountingid=@removable", new { removable }));
+            Assert.Equal(2, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM share_accounting_groups " +
+                "WHERE accountingid IN (@referencedFirst, @referencedSecond)",
+                new { referencedFirst, referencedSecond }));
+
             await connection.ExecuteAsync(
-                "DELETE FROM shares WHERE accountingid=@referenced",
-                new { referenced });
+                "DELETE FROM shares WHERE accountingid IN (@referencedFirst, @referencedSecond)",
+                new { referencedFirst, referencedSecond });
             await using(var transaction = await connection.BeginTransactionAsync())
             {
                 var prune = await repository.PruneShareAccountingEvidenceBeforeAsync(

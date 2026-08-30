@@ -77,6 +77,39 @@ public class ShareAccountingTests
     }
 
     [Fact]
+    public void PpsEvidence_SanitizedRecoveryAcceptsStorableFeeAdjustedLiabilityAtZeroFeeCeiling()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        share.RewardBasisSatoshis = 100_000_000;
+        share.NetworkDifficulty = 1;
+        share.Difficulty = 100_000_000_000_000;
+        var acceptingPool = CreatePool("ltc", PayoutScheme.PPS);
+        acceptingPool.RewardRecipients = new[]
+        {
+            new RewardRecipient { Address = "operator-fee", Percentage = 2m },
+        };
+        ShareAccounting.AttachPpsCreditEvidence(acceptingPool, share);
+        Assert.Equal(98_000_000_000_000m, share.PpsCalculatedAmount);
+
+        using var stream = new MemoryStream();
+        Serializer.Serialize(stream, share);
+        stream.Position = 0;
+        var recovered = Serializer.Deserialize<Share>(stream);
+        var sanitizedPool = new PoolConfig
+        {
+            Id = "ltc",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+        };
+
+        var credit = ShareAccounting.CreatePpsCredit(sanitizedPool, recovered,
+            allowMissingPpsConfiguration: true);
+
+        Assert.Equal(98_000_000_000_000m, credit.CalculatedAmount);
+    }
+
+    [Fact]
     public void PpsEvidence_RejectsMissingOrConflictingLiveCalculation()
     {
         var share = CreatePair();
@@ -175,6 +208,36 @@ public class ShareAccountingTests
         share.Difficulty = 100_000_000_000_001;
         Assert.Throws<InvalidDataException>(() =>
             ShareAccounting.AttachPpsCreditEvidence(pool, share));
+    }
+
+    [Fact]
+    public void PpsCredit_SanitizedRecoveryEnforcesEmbeddedPostgresNumericBoundary()
+    {
+        var pool = new PoolConfig
+        {
+            Id = "ltc",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+        };
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        share.RewardBasisSatoshis = 100_000_000;
+        share.NetworkDifficulty = 1;
+        share.Difficulty = 100_000_000_000_001;
+
+        share.PpsCalculatedAmount = 99_999_999_999_999m;
+        Assert.NotNull(ShareAccounting.CreatePpsCredit(pool, share,
+            allowMissingPpsConfiguration: true));
+
+        share.PpsCalculatedAmount = 100_000_000_000_000m;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(pool, share,
+                allowMissingPpsConfiguration: true));
+
+        share.PpsCalculatedAmount = 100_000_000_000_001m;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(pool, share,
+                allowMissingPpsConfiguration: true));
     }
 
     [Fact]

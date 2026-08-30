@@ -41,6 +41,7 @@ public class ShareRepository : IShareRepository
     {
         public int PrunedRows { get; set; }
         public bool HasMore { get; set; }
+        public int CursorRows { get; set; }
     }
 
     public Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
@@ -56,6 +57,9 @@ public class ShareRepository : IShareRepository
                 ('share_accounting_groups', 'projectioncount', 'int2', false, NULL, NULL),
                 ('share_accounting_groups', 'payloadhash', 'bpchar', false, NULL, NULL),
                 ('share_accounting_groups', 'created', 'timestamptz', false, NULL, NULL),
+                ('share_accounting_prune_state', 'singletonid', 'int2', false, NULL, NULL),
+                ('share_accounting_prune_state', 'cursorcreated', 'timestamptz', true, NULL, NULL),
+                ('share_accounting_prune_state', 'cursoraccountingid', 'uuid', true, NULL, NULL),
                 ('pps_share_credits', 'poolid', 'text', false, NULL, NULL),
                 ('pps_share_credits', 'accountingid', 'uuid', false, NULL, NULL),
                 ('pps_share_credits', 'address', 'text', false, NULL, NULL),
@@ -127,6 +131,12 @@ public class ShareRepository : IShareRepository
                       'PRIMARY KEY (poolid, address)')
             AND EXISTS (
                 SELECT 1 FROM pg_constraint
+                WHERE conrelid = to_regclass('share_accounting_prune_state')
+                  AND contype = 'p' AND convalidated
+                  AND pg_get_constraintdef(oid) =
+                      'PRIMARY KEY (singletonid)')
+            AND EXISTS (
+                SELECT 1 FROM pg_constraint
                 WHERE conrelid = to_regclass('share_accounting_groups')
                   AND conname = 'ck_share_accounting_projection_count'
                   AND contype = 'c' AND convalidated)
@@ -177,11 +187,22 @@ public class ShareRepository : IShareRepository
                 WHERE conrelid = to_regclass('pps_credit_remainders')
                   AND conname = 'ck_pps_remainder_range'
                   AND contype = 'c' AND convalidated)
+            AND EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = to_regclass('share_accounting_prune_state')
+                  AND conname = 'ck_share_accounting_prune_singleton'
+                  AND contype = 'c' AND convalidated)
+            AND EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = to_regclass('share_accounting_prune_state')
+                  AND conname = 'ck_share_accounting_prune_cursor'
+                  AND contype = 'c' AND convalidated)
             AND NOT EXISTS (
                 SELECT required.name
                 FROM (VALUES
                     ('idx_shares_accounting'),
                     ('idx_share_accounting_groups_created'),
+                    ('idx_share_accounting_groups_prune'),
                     ('idx_pps_share_credits_accounting'),
                     ('idx_pps_share_credits_created'),
                     ('idx_balance_changes_pps_created')) AS required(name)
@@ -894,29 +915,61 @@ public class ShareRepository : IShareRepository
                   AND credits.accountingid = candidates.accountingid
                 RETURNING 1)
             SELECT count(*)::int FROM deleted;
-            WITH expiring AS MATERIALIZED (
-                SELECT accounting.accountingid,
-                    row_number() OVER (ORDER BY accounting.created,
-                        accounting.accountingid) AS position
+            WITH prune_state AS MATERIALIZED (
+                SELECT cursorcreated, cursoraccountingid
+                FROM share_accounting_prune_state
+                WHERE singletonid = 1
+                FOR UPDATE), after_cursor AS MATERIALIZED (
+                SELECT accounting.accountingid, accounting.created
                 FROM share_accounting_groups accounting
+                CROSS JOIN prune_state state
                 WHERE accounting.created <= @before
+                  AND (state.cursorcreated IS NULL OR
+                       (accounting.created, accounting.accountingid) >
+                       (state.cursorcreated, state.cursoraccountingid))
                 ORDER BY accounting.created, accounting.accountingid
-                LIMIT @candidateScanSize), candidates AS (
-                SELECT expiring.accountingid
-                FROM expiring
-                WHERE expiring.position <= @batchSize
-                  AND NOT EXISTS (SELECT 1 FROM shares
-                      WHERE shares.accountingid = expiring.accountingid)
+                LIMIT @candidateScanSize), scan_window AS MATERIALIZED (
+                SELECT accountingid, created FROM after_cursor
+                UNION ALL
+                (SELECT accounting.accountingid, accounting.created
+                 FROM share_accounting_groups accounting
+                 WHERE accounting.created <= @before
+                   AND NOT EXISTS(SELECT 1 FROM after_cursor)
+                 ORDER BY accounting.created, accounting.accountingid
+                 LIMIT @candidateScanSize)), numbered AS MATERIALIZED (
+                SELECT accountingid, created,
+                    row_number() OVER (ORDER BY created, accountingid) AS position
+                FROM scan_window), examined AS MATERIALIZED (
+                SELECT accountingid, created, position
+                FROM numbered WHERE position <= @batchSize), candidates AS (
+                SELECT examined.accountingid
+                FROM examined
+                WHERE NOT EXISTS (SELECT 1 FROM shares
+                      WHERE shares.accountingid = examined.accountingid)
                   AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
-                      WHERE credits.accountingid = expiring.accountingid)),
+                      WHERE credits.accountingid = examined.accountingid)),
+            cursor_update AS (
+                UPDATE share_accounting_prune_state state SET
+                    cursorcreated = CASE WHEN EXISTS(
+                        SELECT 1 FROM numbered WHERE position > @batchSize)
+                        THEN (SELECT created FROM examined
+                            ORDER BY position DESC LIMIT 1)
+                        ELSE NULL END,
+                    cursoraccountingid = CASE WHEN EXISTS(
+                        SELECT 1 FROM numbered WHERE position > @batchSize)
+                        THEN (SELECT accountingid FROM examined
+                            ORDER BY position DESC LIMIT 1)
+                        ELSE NULL END
+                WHERE state.singletonid = 1
+                RETURNING 1),
             deleted AS (
                 DELETE FROM share_accounting_groups accounting USING candidates
                 WHERE accounting.accountingid = candidates.accountingid
                 RETURNING accounting.accountingid)
             SELECT (SELECT count(*)::int FROM deleted) AS PrunedRows,
-                EXISTS(SELECT 1 FROM expiring
-                    LEFT JOIN deleted USING(accountingid)
-                    WHERE deleted.accountingid IS NULL) AS HasMore;
+                EXISTS(SELECT 1 FROM numbered
+                    WHERE position > @batchSize) AS HasMore,
+                (SELECT count(*)::int FROM cursor_update) AS CursorRows;
             SELECT EXISTS(SELECT 1 FROM balance_changes
                     WHERE usage = 'PPS share credit' AND created <= @before)
                 OR EXISTS(SELECT 1 FROM pps_share_credits
@@ -935,6 +988,9 @@ public class ShareRepository : IShareRepository
             var pruned = await grid.ReadSingleAsync<int>() +
                 await grid.ReadSingleAsync<int>();
             var groupResult = await grid.ReadSingleAsync<AccountingGroupPruneRow>();
+            if(groupResult.CursorRows != 1)
+                throw new InvalidDataException(
+                    "Share-accounting retention cursor is missing or invalid; reapply add_share_accounting.sql");
             pruned += groupResult.PrunedRows;
             var tableHasMore = await grid.ReadSingleAsync<bool>();
             var hasMore = groupResult.HasMore || tableHasMore;

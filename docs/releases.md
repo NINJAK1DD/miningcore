@@ -64,9 +64,12 @@ accounting migration. PPS statistical shares and exactly-once receipts now have 
 documented time-based retention. Block settlement does not truncate the PPS statistical window;
 indexed evidence pruning is batch-bounded and retains receipts for one day beyond the accepted
 replay horizon. PostgreSQL independently rejects an expired new accounting ID at registration,
-closing the relay-queue/pruning race. Candidate selection is partition-safe and accounting-group
-anti-joins examine only a bounded expiry window. PPS liabilities are rejected before admission at
-PostgreSQL's exact `NUMERIC(38,24)` upper boundary instead of failing later in the recorder. Invalid
+closing the relay-queue/pruning race. Candidate selection is partition-safe and a persistent keyset
+cursor advances each bounded accounting-group anti-join window past still-referenced receipts, so
+one pool's retained shares cannot starve eligible cleanup for another. PPS liabilities are rejected
+before admission at PostgreSQL's exact `NUMERIC(38,24)` upper boundary instead of failing later in
+the recorder. Sanitized recovery validates the embedded liability against that boundary while
+allowing its independently derived zero-fee comparison ceiling to exceed the storage limit. Invalid
 accounting records are isolated from valid batch siblings and written to a checksum-chained
 quarantine file for manual reconciliation instead of
 poisoning the recoverable journal; critical notifications distinguish importable and quarantined

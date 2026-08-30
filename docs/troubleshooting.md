@@ -199,8 +199,9 @@ Preserve these identities privately before taking action:
 - the service-journal time range covering submission and persistence.
 
 Compare the wallet, `blocks`, `balances`, `payments`, `payment_batches`,
-`payout_manager_ownership`, `share_accounting_groups`, `pps_share_credits` and
-`pps_credit_remainders` records through the documented reconciliation procedure. Never infer
+`payout_manager_ownership`, `share_accounting_groups`, `share_accounting_prune_state`,
+`pps_share_credits` and `pps_credit_remainders` records through the documented reconciliation
+procedure. Never infer
 failure only from a missing HTTP response or email notification. Do not delete an accounting group
 to retry it: its UUID and payload hash are the exactly-once evidence.
 
