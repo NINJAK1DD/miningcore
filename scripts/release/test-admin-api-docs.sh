@@ -117,5 +117,7 @@ assert_prose_contains "active PPS disable prohibition" \
   'rejects[[:space:]]+disabling[[:space:]]+payment[[:space:]]+processing[[:space:]]+while[[:space:]]+an[[:space:]]+enabled[[:space:]]+PPS[[:space:]]+pool[[:space:]]+is[[:space:]]+accepting[[:space:]]+shares'
 assert_prose_contains "PPS controlled-restart requirement" \
   'make[[:space:]]+PPS[[:space:]]+contract[[:space:]]+changes[[:space:]]+through[[:space:]]+a[[:space:]]+reviewed[[:space:]]+configuration[[:space:]]+and[[:space:]]+controlled[[:space:]]+restart'
+assert_prose_contains "non-PPS per-pool toggle fallback" \
+  'If[[:space:]]+a[[:space:]]+bulk[[:space:]]+disable[[:space:]]+is[[:space:]]+rejected,[[:space:]]+non-PPS[[:space:]]+pools[[:space:]]+remain[[:space:]]+individually[[:space:]]+controllable[[:space:]]+through[[:space:]]+their[[:space:]]+per-pool[[:space:]]+routes'
 
 echo "Administrative API documentation invariants are present"

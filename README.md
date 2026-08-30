@@ -246,12 +246,19 @@ umask 077
 MININGCORE_PARTITION_READY=
 partition_backup="$HOME/miningcore-before-partition.dump"
 share_count=
+partitioned_share_table_count=
 if sudo -u postgres pg_dump -Fc -d miningcore > "$partition_backup" &&
    pg_restore --list "$partition_backup" > /dev/null &&
    share_count="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
-     -d miningcore -c 'SELECT count(*) FROM public.shares;')"; then
+     -d miningcore -c 'SELECT count(*) FROM public.shares;')" &&
+   partitioned_share_table_count="$(sudo -u postgres psql -X -A -t \
+     -v ON_ERROR_STOP=1 -d miningcore \
+     -c "SELECT count(*) FROM pg_partitioned_table WHERE partrelid = \
+       'public.shares'::regclass;")"; then
   if [ "$share_count" != 0 ]; then
     echo "STOP: shares is not empty; use the full partition migration runbook" >&2
+  elif [ "$partitioned_share_table_count" != 0 ]; then
+    echo "STOP: shares is already partitioned; keep its existing child partitions" >&2
   elif sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
        -f /opt/miningcore/migrations/createdb_postgresql_11_appendix.sql; then
     export MININGCORE_PARTITION_READY=1
@@ -260,13 +267,14 @@ if sudo -u postgres pg_dump -Fc -d miningcore > "$partition_backup" &&
     echo "STOP: partition appendix failed; restore or investigate before continuing" >&2
   fi
 else
-  echo "STOP: backup, backup validation or empty-table check failed; appendix not run" >&2
+  echo "STOP: backup or shares-table inspection failed; appendix not run" >&2
 fi
 ```
 
 Continue with partition creation only after the block prints `READY` and exports
 `MININGCORE_PARTITION_READY=1`. Any backup, validation, table-inspection or appendix failure leaves
-that latch empty and must be investigated before retrying.
+that latch empty and must be investigated before retrying. Rerunning this conversion against an
+already partitioned `shares` table is refused so existing child-partition definitions remain intact.
 
 Create one partition for every pool ID that the configuration can record. Replace the example table
 name and value; the value must exactly match `pools[].id`:

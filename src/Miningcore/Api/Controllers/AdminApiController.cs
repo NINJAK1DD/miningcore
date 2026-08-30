@@ -244,7 +244,8 @@ public class AdminApiController : ApiControllerBase
             throw new ApiException(
                 $"Cannot disable payment processing while PPS pool '{activePpsPool.Config.Id}' " +
                 "is accepting shares; stop Miningcore and make the change through a " +
-                "controlled restart",
+                "controlled restart. Non-PPS pools remain individually controllable through " +
+                "their per-pool routes",
                 HttpStatusCode.Conflict);
 
         if(clusterConfig.PaymentProcessing?.Enabled != true)

@@ -44,6 +44,7 @@ public class AdminApiPaymentProcessingTests
         Assert.Equal(409, error.ResponseStatusCode);
         Assert.Contains("Cannot disable payment processing while PPS pool 'pps'",
             error.Message);
+        Assert.Contains("Non-PPS pools remain individually controllable", error.Message);
         Assert.True(pps.PaymentProcessing.Enabled);
         Assert.True(ordinary.PaymentProcessing.Enabled);
     }

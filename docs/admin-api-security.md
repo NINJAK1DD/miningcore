@@ -186,7 +186,8 @@ State-changing requests use explicit non-GET verbs:
 Payment-processing toggles are validated atomically before any pool is changed. Miningcore rejects
 disabling payment processing while an enabled PPS pool is accepting shares, and enabling PPS when
 the cluster-level payout and retention scheduler was not active at startup. Stop Miningcore and make
-PPS contract changes through a reviewed configuration and controlled restart; see the
+PPS contract changes through a reviewed configuration and controlled restart. If a bulk disable is
+rejected, non-PPS pools remain individually controllable through their per-pool routes; see the
 [PPS operator guide](pps.md).
 
 Read-only administrative routes remain `GET`, but require the same bearer token and IP whitelist.

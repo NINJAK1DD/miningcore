@@ -496,7 +496,9 @@ for required in \
   'pg_dump -Fc -d miningcore' \
   'pg_restore --list "$partition_backup"' \
   'SELECT count(*) FROM public.shares;' \
+  'SELECT count(*) FROM pg_partitioned_table WHERE partrelid =' \
   'if [ "$share_count" != 0 ]; then' \
+  'elif [ "$partitioned_share_table_count" != 0 ]; then' \
   'createdb_postgresql_11_appendix.sql' \
   'export MININGCORE_PARTITION_READY=1'; do
   if ! grep -Fq "$required" <<<"$partition_block"; then
@@ -565,7 +567,7 @@ capability_dir=
 for required in \
   'MININGCORE_INSTALL_READY=' \
   'if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then' \
-  'test -d "$release_dir"' \
+  'test -d "$release_dir" || return' \
   'if [ ! -e /etc/miningcore/config.json ]; then' \
   'sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json' \
   'sudo ln -sfnT "$release_dir" /opt/miningcore' \
@@ -579,6 +581,11 @@ for required in \
     exit 1
   fi
 done
+
+if ! grep -Fq 'test -d "$release_dir" || return' <<<"$readme_install_block"; then
+  echo 'README installation directory guard does not propagate failure explicitly' >&2
+  exit 1
+fi
 
 if grep -Fq 'sudo cp /opt/miningcore/config.example.json' <<<"$install_block"; then
   echo "Release installation block reads configuration through the old live symlink" >&2
@@ -776,6 +783,9 @@ case "$*" in
   *createdb_postgresql_11_appendix.sql*)
     exit "${DOC_TEST_APPENDIX_STATUS:-0}"
     ;;
+  *"SELECT count(*) FROM pg_partitioned_table"*)
+    printf '%s\n' "${DOC_TEST_PARTITIONED_SHARE_TABLE_COUNT:-0}"
+    ;;
   *"SELECT count(*) FROM public.shares;"*)
     printf '%s\n' "${DOC_TEST_SHARE_COUNT:-0}"
     ;;
@@ -808,6 +818,18 @@ nonempty_shares_output=$(
 if ! grep -Fq 'shares is not empty' <<<"$nonempty_shares_output" ||
     grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
   echo 'Partition appendix ran against a non-empty shares table' >&2
+  exit 1
+fi
+
+: > "$trace"
+partitioned_shares_output=$(
+  env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
+    DOC_TEST_TRACE="$trace" DOC_TEST_SHARE_COUNT=0 \
+    DOC_TEST_PARTITIONED_SHARE_TABLE_COUNT=1 bash -c "$partition_block" 2>&1
+)
+if ! grep -Fq 'shares is already partitioned' <<<"$partitioned_shares_output" ||
+    grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
+  echo 'Partition appendix discarded an existing empty partition layout' >&2
   exit 1
 fi
 
