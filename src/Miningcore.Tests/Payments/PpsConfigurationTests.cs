@@ -69,6 +69,33 @@ public class PpsConfigurationTests
     }
 
     [Fact]
+    public void PpsTemplateFamily_IsCheckedAfterProductionAssignment()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].Coin = "litecoin";
+        config.Pools[0].Template = null;
+
+        // ReadAndValidateConfig reaches this boundary before LoadCoinTemplates. Template-
+        // independent financial checks must still run without rejecting every real PPS config.
+        Program.ValidatePpsDeployment(config);
+
+        var missing = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidatePpsDeployment(config, requireAssignedTemplates: true));
+        Assert.Contains("coin template was not assigned", missing.Message);
+
+        Program.AssignPoolTemplates(config.Pools,
+            new Dictionary<string, CoinTemplate>
+            {
+                ["litecoin"] = new BitcoinTemplate
+                {
+                    Family = CoinFamily.Bitcoin,
+                },
+            });
+
+        Program.ValidatePpsDeployment(config, requireAssignedTemplates: true);
+    }
+
+    [Fact]
     public void PpsWithNoRetainedReward_FailsBeforeMiningStarts()
     {
         var config = CreateConfig(CoinFamily.Bitcoin);

@@ -541,6 +541,10 @@ public class Program : ProcessStatusBackgroundService
             AssignPoolTemplatesAndLogPaymentExtraOmissions(enabledPools,
                 coinTemplates, PaymentProcessingExtraDiagnostics.
                     CreateLogger());
+            // Configuration parsing runs before coin templates are loaded. Recheck the
+            // template-dependent PPS family contract here, after production has assigned the
+            // templates but before any Stratum listener is reserved or pool is started.
+            ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(
@@ -2140,7 +2144,8 @@ public class Program : ProcessStatusBackgroundService
             auxiliary?.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO;
     }
 
-    internal static void ValidatePpsDeployment(ClusterConfig config)
+    internal static void ValidatePpsDeployment(ClusterConfig config,
+        bool requireAssignedTemplates = false)
     {
         var ppsPools = config?.Pools?.Where(pool => pool.Enabled &&
             pool.PaymentProcessing?.Enabled == true &&
@@ -2149,9 +2154,18 @@ public class Program : ProcessStatusBackgroundService
 
         foreach(var pool in ppsPools)
         {
-            if(pool.Template?.Family != CoinFamily.Bitcoin)
+            if(pool.Template == null)
+            {
+                if(requireAssignedTemplates)
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' uses PPS but its coin template was not assigned " +
+                        "before the PPS runtime contract was checked",
+                        pool.Id);
+            }
+            else if(pool.Template.Family != CoinFamily.Bitcoin)
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' uses PPS, which is currently supported only by the audited Bitcoin-family share and reward contract",
+                    $"Pool '{pool.Id}' uses PPS, which is currently supported only by the " +
+                    "audited Bitcoin-family share and reward contract",
                     pool.Id);
 
             var recipients = pool.RewardRecipients ?? Array.Empty<RewardRecipient>();
