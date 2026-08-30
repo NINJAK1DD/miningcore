@@ -118,6 +118,26 @@ public class ShareAccountingIntegrationTests
             Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
                 "SELECT count(*) FROM share_accounting_prune_state WHERE singletonid=1"));
 
+            await connection.ExecuteAsync(@"
+                DROP INDEX idx_share_accounting_groups_prune;
+                CREATE INDEX idx_share_accounting_groups_prune
+                    ON share_accounting_groups USING brin(created, accountingid);");
+            Assert.False(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                DROP INDEX idx_share_accounting_groups_prune;
+                CREATE INDEX idx_share_accounting_groups_prune
+                    ON share_accounting_groups(created DESC, accountingid ASC);");
+            Assert.False(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasShareAccountingSchemaAsync(connection,
+                CancellationToken.None));
+
             Assert.Equal(4, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
                 FROM pg_tables

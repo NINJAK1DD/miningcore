@@ -208,16 +208,21 @@ public class ShareRepository : IShareRepository
                 FROM pg_class index_relation
                 JOIN pg_namespace namespace
                   ON namespace.oid = index_relation.relnamespace
+                JOIN pg_am access_method
+                  ON access_method.oid = index_relation.relam
                 JOIN pg_index index_record
                   ON index_record.indexrelid = index_relation.oid
                 WHERE namespace.nspname = current_schema()
                   AND index_relation.relname = 'idx_share_accounting_groups_prune'
                   AND index_record.indrelid =
                       to_regclass('share_accounting_groups')
+                  AND access_method.amname = 'btree'
                   AND index_record.indisvalid
                   AND index_record.indisready
                   AND NOT index_record.indisunique
                   AND index_record.indnkeyatts = 2
+                  AND index_record.indnatts = 2
+                  AND index_record.indexprs IS NULL
                   AND index_record.indpred IS NULL
                   AND ARRAY(
                       SELECT attribute.attname::text
@@ -227,7 +232,22 @@ public class ShareRepository : IShareRepository
                         ON attribute.attrelid = index_record.indrelid
                        AND attribute.attnum = key.attnum
                       WHERE key.position <= index_record.indnkeyatts
-                      ORDER BY key.position) = ARRAY['created', 'accountingid'])
+                      ORDER BY key.position) = ARRAY['created', 'accountingid']
+                  AND ARRAY(
+                      SELECT option_value::int
+                      FROM unnest(index_record.indoption)
+                           WITH ORDINALITY sort_option(option_value, position)
+                      WHERE sort_option.position <= index_record.indnkeyatts
+                      ORDER BY sort_option.position) = ARRAY[0, 0]
+                  AND ARRAY(
+                      SELECT operator_class.opcname::text
+                      FROM unnest(index_record.indclass)
+                           WITH ORDINALITY key(operator_class_oid, position)
+                      JOIN pg_opclass operator_class
+                        ON operator_class.oid = key.operator_class_oid
+                      WHERE key.position <= index_record.indnkeyatts
+                      ORDER BY key.position) =
+                      ARRAY['timestamptz_ops', 'uuid_ops'])
             AND NOT EXISTS (
                 SELECT required.name
                 FROM (VALUES

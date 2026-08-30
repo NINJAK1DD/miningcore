@@ -477,10 +477,12 @@ journal or disconnected relay can remain unreconciled.
 per affected table and payout cycle. Its default is `50000`, and startup accepts values from `1000`
 through `100000`. Size it above the peak rows that can expire during one payment-processing
 interval, including both projections when parent and auxiliary pools use PPS. A remaining-backlog
-warning means the configured batch needs review if it persists after catch-up. Configure the same
-retention horizon on every sender, receiver, recorder and payout owner in the topology. Evidence
-outside it fails closed and must be
-reconciled manually; see the
+warning means the configured batch needs review if it persists after catch-up. The limit is per
+pool/table, but one maintenance transaction can process that limit for every PPS pool plus the
+global evidence tables. Account for the number of PPS pools before raising it so the transaction
+does not become unnecessarily long or delay vacuum progress. Configure the same retention horizon
+on every sender, receiver, recorder and payout owner in the topology. Evidence outside it fails
+closed and must be reconciled manually; see the
 [database sizing and archival procedure](database.md#share-accounting-retention-and-sizing).
 
 Miner examples:

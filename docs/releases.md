@@ -71,12 +71,17 @@ before admission at PostgreSQL's exact `NUMERIC(38,24)` upper boundary instead o
 the recorder. Sanitized recovery validates the embedded liability against that boundary while
 allowing its independently derived zero-fee comparison ceiling to exceed the storage limit.
 The cursor is locked and read separately so its bound values produce a composite-index seek rather
-than repeatedly filtering the already visited prefix. Startup now verifies the mandatory cursor row,
-and the migration repairs it if missing. The configurable, bounded retention batch defaults to
-50,000 rows per table and cycle, keeping ahead of the documented two-PPS-projection workload at the
-default payout interval without turning cleanup into an unlimited transaction. Invalid
-accounting records are isolated from valid batch siblings and written to a checksum-chained
-quarantine file for manual reconciliation instead of
+than repeatedly filtering the already visited prefix. Startup now verifies the mandatory cursor row
+and the exact ascending B-tree index contract, rejecting same-named indexes with an incompatible
+access method, ordering, expression, predicate, included column or operator class. The migration
+repairs either contract while Miningcore is stopped; repairing the index rebuilds it and can require
+a substantial maintenance window on a large accounting table. The configurable, bounded retention
+batch defaults to 50,000 rows per table and cycle, keeping ahead of the documented
+two-PPS-projection workload at the default payout interval without turning cleanup into an unlimited
+transaction. Operators with multiple PPS pools must account for that multiplier before increasing
+the batch because the complete maintenance pass is one transaction. Invalid accounting records are
+isolated from valid batch siblings and written to a checksum-chained quarantine file for manual
+reconciliation instead of
 poisoning the recoverable journal; critical notifications distinguish importable and quarantined
 evidence and explicitly forbid `-rs` import of quarantine files. Relay receivers validate auxiliary
 projections against configured pools during asynchronous startup and expose unsupported wire formats

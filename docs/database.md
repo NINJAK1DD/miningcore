@@ -182,9 +182,13 @@ balances and any payments created after that backup before directing miners or w
 version.
 
 The migration also seeds the required `share_accounting_prune_state` singleton and recreates the
-composite `(created, accountingid)` pruning index. Startup verifies both the exact index contract and
+composite `(created, accountingid)` pruning index. Startup requires that index to be a two-key,
+ascending B-tree with the standard `timestamptz` and UUID operator classes; a same-named BRIN,
+descending, expression, partial or covering index is not an equivalent contract. It also verifies
 the singleton row before accepting pooled/PPS financial work. Reapplying the migration repairs a
-missing singleton or stale same-named pruning index while Miningcore is stopped.
+missing singleton or stale same-named pruning index while Miningcore is stopped. Reapplication drops
+and rebuilds this index, so on a large accounting table allow enough maintenance time for the rebuild
+instead of rerunning the migration speculatively during a short service window.
 
 The migration also adds a database check requiring accounting ID, role and reward basis to be
 either all absent or all valid, plus a foreign key from each identified share to its durable group
@@ -1011,8 +1015,11 @@ receipt can still prove an already committed replay. Statistical-share and evide
 index-supported and limited by `paymentProcessing.shareAccountingPruneBatchSize` per pool/table and
 payout cycle. The default is 50,000 rows and startup permits 1,000 through 100,000; a warning means an
 unexamined expiry window remains and later cycles will continue scanning it. Referenced rows at
-the scanned tail do not produce a false backlog warning. Per-recipient `pps_credit_remainders`
-remain because they carry exact
+the scanned tail do not produce a false backlog warning. One maintenance transaction can process the
+configured limit for each PPS pool and each global evidence table, so multiply the possible work by
+the number of PPS pools before increasing the setting. An oversized multi-pool transaction can hold
+back vacuum progress even though every individual delete is bounded. Per-recipient
+`pps_credit_remainders` remain because they carry exact
 sub-unit value and grow with recipients, not shares. PPS statistical rows use the separate per-pool
 `ppsShareRetentionDays` setting (default 7) and are pruned even when the pool finds blocks; block
 settlement never shortens that statistical window.

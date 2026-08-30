@@ -86,7 +86,8 @@ An active process alone does not prove mining or payouts are healthy.
 - **Startup says the share-accounting schema is missing or malformed.** Keep listeners offline,
   verify the intended database/search path and apply `add_share_accounting.sql` during a maintenance
   window. The preflight includes the required `share_accounting_prune_state` singleton and exact
-  composite pruning index; rerunning the migration safely restores either one. Do not create
+  ascending B-tree pruning index; rerunning the migration safely restores either one but rebuilds
+  the index, which can take significant maintenance time on a large accounting table. Do not create
   lookalike tables or disable preflight. See
   [database upgrades](database.md#upgrade-an-existing-database).
 - **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
