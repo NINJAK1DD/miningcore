@@ -354,31 +354,17 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         AttachPpsEvidencePreservingAcceptedCandidateAsync(PoolConfig pool,
             Share share)
     {
-        try
+        // Daemon acceptance is already conclusive. Persist the accepted block and its
+        // ordinary statistical proof before constructing or publishing any PPS evidence so
+        // relay loss, process failure, or a later accounting rejection cannot suppress the
+        // only durable candidate record.
+        if(share.IsBlockCandidate && !share.BlockRecordEmitted)
         {
-            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(pool,
-                share);
+            await PersistAcceptedCandidateWithoutAccountingAsync(share);
+            share.BlockRecordEmitted = true;
         }
-        catch(Exception accountingError) when(share.IsBlockCandidate)
-        {
-            // Proof validation and daemon acceptance are already conclusive. Persist the
-            // accepted block and its ordinary statistical proof without financial fields
-            // before surfacing the accounting failure; a malformed PPS projection must
-            // never suppress a network-valid candidate.
-            try
-            {
-                await PersistAcceptedCandidateWithoutAccountingAsync(share);
-                share.BlockRecordEmitted = true;
-            }
-            catch(Exception persistenceError)
-            {
-                throw new AggregateException(
-                    "PPS evidence construction failed after an accepted block, and independent candidate persistence also failed",
-                    accountingError, persistenceError);
-            }
 
-            throw;
-        }
+        Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(pool, share);
     }
 
     internal static Share CreateAcceptedCandidateWithoutAccounting(Share share)

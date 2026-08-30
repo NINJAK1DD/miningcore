@@ -62,6 +62,8 @@ CREATE INDEX IDX_SHARES_POOL_MINER_SESSION_CREATED ON shares(poolid, miner, sess
 CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SESSION_CREATED ON shares(poolid, miner, worker, sessionid, created DESC);
 CREATE UNIQUE INDEX IDX_SHARES_POOL_ACCOUNTING ON shares(poolid, accountingid)
     WHERE accountingid IS NOT NULL;
+CREATE INDEX IDX_SHARES_ACCOUNTING ON shares(accountingid)
+    WHERE accountingid IS NOT NULL;
 
 RESET ROLE;
 

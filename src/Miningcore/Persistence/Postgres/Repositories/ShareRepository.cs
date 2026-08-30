@@ -37,6 +37,12 @@ public class ShareRepository : IShareRepository
         public DateTime Created { get; set; }
     }
 
+    private sealed class AccountingGroupPruneRow
+    {
+        public int PrunedRows { get; set; }
+        public bool HasMore { get; set; }
+    }
+
     public Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
         CancellationToken ct)
     {
@@ -178,8 +184,7 @@ public class ShareRepository : IShareRepository
                     ('idx_share_accounting_groups_created'),
                     ('idx_pps_share_credits_accounting'),
                     ('idx_pps_share_credits_created'),
-                    ('idx_balance_changes_pps_created'),
-                    ('idx_blocks_bitcoin_direct_pool_hash')) AS required(name)
+                    ('idx_balance_changes_pps_created')) AS required(name)
                 WHERE NOT EXISTS (
                     SELECT 1
                     FROM pg_class index_relation
@@ -848,7 +853,8 @@ public class ShareRepository : IShareRepository
                 WHERE poolid = @poolId AND created <= @before
                 ORDER BY created, ctid LIMIT @batchSize), deleted AS (
                 DELETE FROM shares value USING candidates
-                WHERE value.ctid = candidates.ctid RETURNING 1)
+                WHERE value.poolid = @poolId
+                  AND value.ctid = candidates.ctid RETURNING 1)
             SELECT count(*)::int FROM deleted;
             SELECT EXISTS(SELECT 1 FROM shares
                 WHERE poolid = @poolId AND created <= @before)";
@@ -888,40 +894,50 @@ public class ShareRepository : IShareRepository
                   AND credits.accountingid = candidates.accountingid
                 RETURNING 1)
             SELECT count(*)::int FROM deleted;
-            WITH candidates AS (
-                SELECT accounting.accountingid
+            WITH expiring AS MATERIALIZED (
+                SELECT accounting.accountingid,
+                    row_number() OVER (ORDER BY accounting.created,
+                        accounting.accountingid) AS position
                 FROM share_accounting_groups accounting
                 WHERE accounting.created <= @before
-                  AND NOT EXISTS (SELECT 1 FROM shares
-                      WHERE shares.accountingid = accounting.accountingid)
-                  AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
-                      WHERE credits.accountingid = accounting.accountingid)
                 ORDER BY accounting.created, accounting.accountingid
-                LIMIT @batchSize), deleted AS (
+                LIMIT @candidateScanSize), candidates AS (
+                SELECT expiring.accountingid
+                FROM expiring
+                WHERE expiring.position <= @batchSize
+                  AND NOT EXISTS (SELECT 1 FROM shares
+                      WHERE shares.accountingid = expiring.accountingid)
+                  AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
+                      WHERE credits.accountingid = expiring.accountingid)),
+            deleted AS (
                 DELETE FROM share_accounting_groups accounting USING candidates
                 WHERE accounting.accountingid = candidates.accountingid
-                RETURNING 1)
-            SELECT count(*)::int FROM deleted;
+                RETURNING accounting.accountingid)
+            SELECT (SELECT count(*)::int FROM deleted) AS PrunedRows,
+                EXISTS(SELECT 1 FROM expiring
+                    LEFT JOIN deleted USING(accountingid)
+                    WHERE deleted.accountingid IS NULL) AS HasMore;
             SELECT EXISTS(SELECT 1 FROM balance_changes
                     WHERE usage = 'PPS share credit' AND created <= @before)
                 OR EXISTS(SELECT 1 FROM pps_share_credits
-                    WHERE created <= @before)
-                OR EXISTS(SELECT 1 FROM share_accounting_groups accounting
-                    WHERE accounting.created <= @before
-                      AND NOT EXISTS (SELECT 1 FROM shares
-                          WHERE shares.accountingid = accounting.accountingid)
-                      AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
-                          WHERE credits.accountingid = accounting.accountingid))";
+                    WHERE created <= @before)";
         return PruneAsync();
 
         async Task<ShareAccountingPruneResult> PruneAsync()
         {
             using var grid = await con.QueryMultipleAsync(new CommandDefinition(
-                query, new { before, batchSize }, tx, cancellationToken: ct));
+                query, new
+                {
+                    before,
+                    batchSize,
+                    candidateScanSize = (long) batchSize + 1,
+                }, tx, cancellationToken: ct));
             var pruned = await grid.ReadSingleAsync<int>() +
-                await grid.ReadSingleAsync<int>() +
                 await grid.ReadSingleAsync<int>();
-            var hasMore = await grid.ReadSingleAsync<bool>();
+            var groupResult = await grid.ReadSingleAsync<AccountingGroupPruneRow>();
+            pruned += groupResult.PrunedRows;
+            var tableHasMore = await grid.ReadSingleAsync<bool>();
+            var hasMore = groupResult.HasMore || tableHasMore;
             return new ShareAccountingPruneResult(pruned, hasMore);
         }
     }

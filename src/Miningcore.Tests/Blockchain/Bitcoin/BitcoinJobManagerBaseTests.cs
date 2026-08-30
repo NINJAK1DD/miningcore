@@ -130,6 +130,53 @@ public class BitcoinJobManagerBaseTests
         Assert.Equal(accepted.BlockHash, manager.PersistedCandidate.BlockHash);
     }
 
+    [Fact]
+    public async Task AcceptedCandidate_PersistsBeforeSuccessfulPpsEvidence()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "btc-pps",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.PPS,
+            },
+        };
+        var accepted = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "miner",
+            Difficulty = 1,
+            NetworkDifficulty = 100,
+            RewardBasisSatoshis = 625_000_000,
+            IsBlockCandidate = true,
+            BlockHash = new string('b', 64),
+            TransactionConfirmationData = "coinbase",
+            Created = DateTime.UtcNow,
+        };
+
+        await manager.AttachEvidence(pool, accepted);
+
+        Assert.True(manager.Persisted);
+        Assert.True(accepted.BlockRecordEmitted);
+        Assert.Equal(0.0625m, accepted.PpsCalculatedAmount);
+        Assert.True(manager.PersistedCandidate.BlockOnly);
+        Assert.Equal("bitcoin-direct", manager.PersistedCandidate.BlockType);
+        Assert.Null(manager.PersistedCandidate.AccountingId);
+        Assert.Null(manager.PersistedCandidate.PpsCalculatedAmount);
+
+        // A downstream accounting rejection cannot erase the independent candidate copy.
+        accepted.PpsCalculatedAmount += 0.000000000000000000000001m;
+        Assert.Throws<InvalidDataException>(() =>
+            Miningcore.Mining.ShareAccounting.CreatePpsCredit(pool, accepted));
+        Assert.Equal(accepted.BlockHash, manager.PersistedCandidate.BlockHash);
+    }
+
     private static IContainer BuildContainer()
     {
         var builder = new ContainerBuilder();

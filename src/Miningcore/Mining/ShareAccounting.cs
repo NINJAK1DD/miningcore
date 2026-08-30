@@ -12,6 +12,10 @@ internal static class ShareAccounting
 {
     internal static readonly TimeSpan EvidencePruneSafetyMargin =
         TimeSpan.FromDays(1);
+    // NUMERIC(38,24) reserves 24 fractional digits and therefore permits fewer
+    // than 10^14 whole coins. Reject unsupported liabilities before admission.
+    internal const decimal PpsCalculatedAmountExclusiveUpperBound =
+        100_000_000_000_000m;
 
     internal static string CreateId() => Guid.NewGuid().ToString("N");
 
@@ -291,6 +295,9 @@ internal static class ShareAccounting
         if(calculated <= 0)
             throw new InvalidDataException(
                 $"PPS credit for pool '{pool.Id}' is below the supported 24-decimal liability precision");
+        if(calculated >= PpsCalculatedAmountExclusiveUpperBound)
+            throw new InvalidDataException(
+                $"PPS liability for pool '{pool.Id}' exceeds the PostgreSQL NUMERIC(38,24) storage range");
         return calculated;
     }
 

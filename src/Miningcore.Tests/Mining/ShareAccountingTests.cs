@@ -155,6 +155,29 @@ public class ShareAccountingTests
     }
 
     [Fact]
+    public void PpsCredit_EnforcesPostgresNumericBoundaryBeforeAdmission()
+    {
+        var pool = CreatePool("ltc", PayoutScheme.PPS);
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        share.RewardBasisSatoshis = 100_000_000;
+        share.NetworkDifficulty = 1;
+
+        share.Difficulty = 99_999_999_999_999;
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
+        Assert.Equal(99_999_999_999_999m, share.PpsCalculatedAmount);
+
+        share.Difficulty = 100_000_000_000_000;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.AttachPpsCreditEvidence(pool, share));
+
+        share.Difficulty = 100_000_000_000_001;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.AttachPpsCreditEvidence(pool, share));
+    }
+
+    [Fact]
     public void ReplayHorizon_RejectsExpiredAndFutureAccountingEvidence()
     {
         var now = new DateTime(2026, 8, 30, 12, 0, 0, DateTimeKind.Utc);

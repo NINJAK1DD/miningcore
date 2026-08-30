@@ -122,6 +122,80 @@ public class ShareAccountingIntegrationTests
     }
 
     [PostgresIntegrationFact]
+    public async Task PpsCalculatedAmount_UsesExactNumeric3824Boundary()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_pps_numeric_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, public;
+                CREATE TABLE shares(
+                    poolid text NOT NULL, blockheight bigint NOT NULL,
+                    difficulty double precision NOT NULL,
+                    networkdifficulty double precision NOT NULL,
+                    sharedifficulty double precision NULL,
+                    actualdifficulty double precision NULL,
+                    miner text NOT NULL, worker text NULL, useragent text NULL,
+                    ipaddress text NOT NULL, source text NULL, sessionid text NULL,
+                    created timestamptz NOT NULL);
+                CREATE TABLE balance_changes(
+                    id bigserial PRIMARY KEY, poolid text NOT NULL,
+                    address text NOT NULL, amount decimal(28,12) NOT NULL,
+                    usage text NULL, tags text[] NULL,
+                    created timestamptz NOT NULL);
+            ");
+            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migration = (await File.ReadAllTextAsync(migrationPath))
+                .Replace("\\set ON_ERROR_STOP on", string.Empty,
+                    StringComparison.Ordinal);
+            await connection.ExecuteAsync(migration);
+
+            const string insert = @"WITH accounting AS (
+                    INSERT INTO share_accounting_groups(accountingid,
+                        projectioncount, payloadhash, created)
+                    VALUES(@id, 1, @hash, now()))
+                INSERT INTO pps_share_credits(poolid, accountingid, address,
+                    calculatedamount, creditedamount, difficulty,
+                    networkdifficulty, rewardbasissatoshis, created)
+                VALUES('ltc', @id, 'miner', @amount, 0, 1, 1, 100000000,
+                    now())";
+
+            await connection.ExecuteAsync(insert, new
+            {
+                id = Guid.NewGuid(),
+                hash = new string('A', 64),
+                amount = 99_999_999_999_999m,
+            });
+            await Assert.ThrowsAsync<PostgresException>(() =>
+                connection.ExecuteAsync(insert, new
+                {
+                    id = Guid.NewGuid(),
+                    hash = new string('B', 64),
+                    amount = 100_000_000_000_000m,
+                }));
+            await Assert.ThrowsAsync<PostgresException>(() =>
+                connection.ExecuteAsync(insert, new
+                {
+                    id = Guid.NewGuid(),
+                    hash = new string('C', 64),
+                    amount = 100_000_000_000_001m,
+                }));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("ROLLBACK; SET search_path TO public");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task AccountingBatch_IsAtomicIdempotentAndCarriesSubUnitRemainders()
     {
         var connectionString = Environment.GetEnvironmentVariable(
@@ -153,10 +227,6 @@ public class ShareAccountingIntegrationTests
                     id bigserial PRIMARY KEY, poolid text NOT NULL,
                     address text NOT NULL, amount decimal(28,12) NOT NULL,
                     usage text NULL, tags text[] NULL, created timestamptz NOT NULL);
-                CREATE TABLE blocks(
-                    poolid text NOT NULL, hash text NOT NULL, type text NULL);
-                CREATE UNIQUE INDEX idx_blocks_bitcoin_direct_pool_hash
-                    ON blocks(poolid, hash) WHERE type = 'bitcoin-direct';
             ");
 
             var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
@@ -169,6 +239,9 @@ public class ShareAccountingIntegrationTests
             var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
             Assert.True(await repository.HasShareAccountingSchemaAsync(connection,
                 CancellationToken.None));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(@"
+                SELECT count(*) FROM pg_tables
+                WHERE schemaname = current_schema() AND tablename = 'blocks'"));
             Assert.Equal(3, await connection.ExecuteScalarAsync<int>(@"
                 SELECT count(*)
                 FROM pg_tables
@@ -183,6 +256,54 @@ public class ShareAccountingIntegrationTests
                     difficulty, networkdifficulty, miner, ipaddress, accountingid,
                     created) VALUES('ltc', 1, 1, 1, 'miner', '127.0.0.1',
                     @id, now())", new { id = Guid.NewGuid() }));
+
+            var referenced = Guid.NewGuid();
+            var removableFirst = Guid.NewGuid();
+            var removableSecond = Guid.NewGuid();
+            await connection.ExecuteAsync(@"
+                INSERT INTO share_accounting_groups(accountingid,
+                    projectioncount, payloadhash, created) VALUES
+                    (@referenced, 1, @firstHash, @created),
+                    (@removableFirst, 1, @secondHash, @created + interval '1 second'),
+                    (@removableSecond, 1, @thirdHash, @created + interval '2 seconds');
+                INSERT INTO shares(poolid, blockheight, difficulty,
+                    networkdifficulty, miner, ipaddress, accountingid,
+                    accountingrole, rewardbasissatoshis, created)
+                VALUES('ltc', 1, 1, 1, 'retained-miner', '127.0.0.1',
+                    @referenced, 1, 100000000, @created);", new
+            {
+                referenced,
+                removableFirst,
+                removableSecond,
+                firstHash = new string('1', 64),
+                secondHash = new string('2', 64),
+                thirdHash = new string('3', 64),
+                created = new DateTime(2020, 1, 1, 0, 0, 0,
+                    DateTimeKind.Utc),
+            });
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var prune = await repository.PruneShareAccountingEvidenceBeforeAsync(
+                    connection, transaction,
+                    new DateTime(2020, 1, 2, 0, 0, 0, DateTimeKind.Utc), 2,
+                    CancellationToken.None);
+                Assert.Equal(1, prune.PrunedRows);
+                Assert.True(prune.HasMore);
+                await transaction.CommitAsync();
+            }
+            await connection.ExecuteAsync(
+                "DELETE FROM shares WHERE accountingid=@referenced",
+                new { referenced });
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var prune = await repository.PruneShareAccountingEvidenceBeforeAsync(
+                    connection, transaction,
+                    new DateTime(2020, 1, 2, 0, 0, 0, DateTimeKind.Utc), 2,
+                    CancellationToken.None);
+                Assert.Equal(2, prune.PrunedRows);
+                Assert.False(prune.HasMore);
+                await transaction.CommitAsync();
+            }
 
             var first = CreateBatch(Guid.NewGuid(), 0.0000000000006m, 'A');
             Assert.Equal(ShareAccountingInsertResult.Inserted,
