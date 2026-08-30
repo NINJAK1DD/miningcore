@@ -499,6 +499,7 @@ for required in \
   'SELECT count(*) FROM pg_partitioned_table WHERE partrelid =' \
   'if [ "$share_count" != 0 ]; then' \
   'elif [ "$partitioned_share_table_count" != 0 ]; then' \
+  'shares is already partitioned; keep its current layout or use the full' \
   'createdb_postgresql_11_appendix.sql' \
   'export MININGCORE_PARTITION_READY=1'; do
   if ! grep -Fq "$required" <<<"$partition_block"; then
@@ -827,7 +828,9 @@ partitioned_shares_output=$(
     DOC_TEST_TRACE="$trace" DOC_TEST_SHARE_COUNT=0 \
     DOC_TEST_PARTITIONED_SHARE_TABLE_COUNT=1 bash -c "$partition_block" 2>&1
 )
-if ! grep -Fq 'shares is already partitioned' <<<"$partitioned_shares_output" ||
+partitioned_stop='shares is already partitioned; keep its current layout or use the full'
+partitioned_stop+=' partition migration runbook'
+if ! grep -Fq "$partitioned_stop" <<<"$partitioned_shares_output" ||
     grep -Fq 'createdb_postgresql_11_appendix.sql' "$trace"; then
   echo 'Partition appendix discarded an existing empty partition layout' >&2
   exit 1

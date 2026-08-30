@@ -258,7 +258,8 @@ if sudo -u postgres pg_dump -Fc -d miningcore > "$partition_backup" &&
   if [ "$share_count" != 0 ]; then
     echo "STOP: shares is not empty; use the full partition migration runbook" >&2
   elif [ "$partitioned_share_table_count" != 0 ]; then
-    echo "STOP: shares is already partitioned; keep its existing child partitions" >&2
+    echo "STOP: shares is already partitioned; keep its current layout or use the full" \
+      "partition migration runbook" >&2
   elif sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
        -f /opt/miningcore/migrations/createdb_postgresql_11_appendix.sql; then
     export MININGCORE_PARTITION_READY=1
