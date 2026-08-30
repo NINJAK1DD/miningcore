@@ -11,6 +11,9 @@ public interface IShareRecoveryFailureHandler
         Exception databaseError, Exception journalError);
     Task StopClusterAfterJournalAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception pipelineError);
+    Task StopClusterAfterJournalAsync(IReadOnlyCollection<Share> recoverableShares,
+        string recoveryFilename, IReadOnlyCollection<Share> quarantinedShares,
+        string quarantineFilename, Exception pipelineError);
     Task StopClusterAfterCommittedCleanupAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception cleanupError);
     Task StopClusterForUncertainCommitAsync(IReadOnlyCollection<Share> shares,
@@ -116,15 +119,39 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         IReadOnlyCollection<Share> shares, string recoveryFilename,
         Exception pipelineError)
     {
-        ArgumentNullException.ThrowIfNull(shares);
+        await StopClusterAfterJournalAsync(shares, recoveryFilename,
+            Array.Empty<Share>(), null, pipelineError);
+    }
+
+    public async Task StopClusterAfterJournalAsync(
+        IReadOnlyCollection<Share> recoverableShares, string recoveryFilename,
+        IReadOnlyCollection<Share> quarantinedShares, string quarantineFilename,
+        Exception pipelineError)
+    {
+        ArgumentNullException.ThrowIfNull(recoverableShares);
+        ArgumentNullException.ThrowIfNull(quarantinedShares);
         ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        if(quarantinedShares.Count > 0)
+            ArgumentException.ThrowIfNullOrWhiteSpace(quarantineFilename);
         failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+        var absoluteQuarantineFilename = quarantinedShares.Count > 0
+            ? Path.GetFullPath(quarantineFilename)
+            : null;
+
+        var recoverableSummary = recoverableShares.Count > 0
+            ? $"{recoverableShares.Count} recoverable share(s) were force-flushed to " +
+              $"{absoluteRecoveryFilename}"
+            : "No importable recovery-journal records remained";
+        var quarantineSummary = quarantinedShares.Count > 0
+            ? $" {quarantinedShares.Count} rejected share(s) were written to quarantine " +
+              $"{absoluteQuarantineFilename}; that file must not be imported with -rs and " +
+              "requires manual financial reconciliation."
+            : string.Empty;
 
         logger.Fatal(pipelineError,
             "Stopping cluster after an unexpected share-persistence pipeline failure. " +
-            "The complete unresolved set of {0} share(s) was force-flushed to {1}.",
-            shares.Count, absoluteRecoveryFilename);
+            "{0}.{1}", recoverableSummary, quarantineSummary);
 
         if(!TryClaimNotificationSeverity(1))
             return;
@@ -132,9 +159,10 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var notification = new AdminNotification(
             "Share persistence pipeline stopped",
             $"Miningcore is stopping with exit status {ProcessExitCodes.GeneralFailure} after " +
-            $"an unexpected accounting-pipeline failure. All {shares.Count} unresolved share(s) " +
-            $"were force-flushed to {absoluteRecoveryFilename}. Import and verify that journal " +
-            "before resuming normal operation.");
+            $"an unexpected accounting-pipeline failure. {recoverableSummary}." +
+            quarantineSummary + (recoverableShares.Count > 0
+                ? " Import and verify only the recovery journal before resuming normal operation."
+                : " Do not run -rs against a quarantine file."));
         await SendCriticalNotificationSafelyAsync(notification);
     }
 

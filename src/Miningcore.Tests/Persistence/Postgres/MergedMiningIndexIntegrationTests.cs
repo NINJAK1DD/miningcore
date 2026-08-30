@@ -206,6 +206,8 @@ public class MergedMiningIndexIntegrationTests
                     ON {shadowSchema}.unrelated(poolid, hash, transactionconfirmationdata);
                 CREATE INDEX idx_blocks_merged_parent_pool_hash
                     ON {shadowSchema}.unrelated(hash, poolid);
+                CREATE INDEX idx_blocks_bitcoin_direct_pool_hash
+                    ON {shadowSchema}.unrelated(poolid, hash);
 
                 CREATE TABLE {targetSchema}.blocks(
                     poolid text NOT NULL,
@@ -218,6 +220,8 @@ public class MergedMiningIndexIntegrationTests
                     ON {targetSchema}.blocks(poolid, transactionconfirmationdata);
                 CREATE INDEX idx_blocks_merged_parent_pool_hash
                     ON {targetSchema}.blocks(hash);
+                CREATE INDEX idx_blocks_bitcoin_direct_pool_hash
+                    ON {targetSchema}.blocks(hash, poolid);
                 SET search_path TO {shadowSchema}, {targetSchema}, public;
             ");
 
@@ -235,6 +239,7 @@ public class MergedMiningIndexIntegrationTests
                         "idx_blocks_auxpow_pool_hash",
                         "idx_blocks_auxpow_claim",
                         "idx_blocks_merged_parent_pool_hash",
+                        "idx_blocks_bitcoin_direct_pool_hash",
                     })
             {
                 Assert.NotNull(await connection.ExecuteScalarAsync<uint?>($@"
@@ -294,6 +299,9 @@ public class MergedMiningIndexIntegrationTests
                 CREATE UNIQUE INDEX idx_blocks_merged_parent_pool_hash
                     ON {validSchema}.blocks(poolid, hash)
                     WHERE type IN ('merged-parent', 'merged-parent-uncertain');
+                CREATE UNIQUE INDEX idx_blocks_bitcoin_direct_pool_hash
+                    ON {validSchema}.blocks(poolid, hash)
+                    WHERE type = 'bitcoin-direct';
 
                 CREATE TABLE {staleSchema}.blocks(
                     poolid text NOT NULL,
@@ -307,6 +315,8 @@ public class MergedMiningIndexIntegrationTests
                 CREATE INDEX idx_blocks_auxpow_claim
                     ON {staleSchema}.blocks(poolid, hash, transactionconfirmationdata);
                 CREATE INDEX idx_blocks_merged_parent_pool_hash
+                    ON {staleSchema}.blocks(poolid, hash);
+                CREATE INDEX idx_blocks_bitcoin_direct_pool_hash
                     ON {staleSchema}.blocks(poolid, hash);
             ");
 

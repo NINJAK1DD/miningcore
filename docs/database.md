@@ -165,9 +165,10 @@ making the Miningcore runtime role a PostgreSQL superuser.
 
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
 recovery-only deployments using the `-rs` importer. The AuxPoW and share-accounting migrations are
-required before enabling pooled LTC/DOGE merged mining; share accounting is not required by an
-unchanged SOLO/SOLO topology and is also required for direct Bitcoin-family PPS. All scripts stop
-instead of guessing when incompatible or duplicate state
+required before enabling pooled LTC/DOGE merged mining or direct Bitcoin-family PPS, including a PPS
+share-relay sender: it relays ordinary accounting evidence but still persists accepted block
+candidates synchronously and owns an emergency candidate journal. Share accounting is not required
+by an unchanged SOLO/SOLO topology. All scripts stop instead of guessing when incompatible or duplicate state
 requires manual review. Recovery mode validates the `share_recovery_imports` table, its required columns and its
 immediate `filehash` primary key before scanning the journal, so a missing or stale migration fails
 early with an actionable message.
@@ -350,8 +351,8 @@ before restarting the pool.
 
 Recovery checks a partition for every configured pool ID even though all sanitized pools are
 disabled. Once the complete journal has passed integrity and semantic validation, Miningcore also
-requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses `auxpow`,
-`auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
+requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses
+`bitcoin-direct`, `auxpow`, `auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
 recovery evidence itself rather than discarded live merged-mining settings, and it is checked before
 the import transaction begins.
 
@@ -995,9 +996,14 @@ Use these queries for inspection only. Never repair balances or payments with ad
 supported relay outage, recovery-journal retention and incident-response window. Once the horizon
 passes, Miningcore rejects the old envelope and its payout-manager maintenance pass prunes the
 corresponding `pps_share_credits`, PPS `balance_changes`, and orphaned
-`share_accounting_groups`. Per-recipient `pps_credit_remainders` remain because they carry exact
+`share_accounting_groups` after an additional one-day safety margin. Registration also enforces the
+replay cutoff inside the accounting transaction: an expired new ID is rejected, while a retained
+receipt can still prove an already committed replay. Statistical-share and evidence deletes are
+index-supported and limited to 10,000 rows per pool/table per payout cycle; a warning means a
+backlog remains and later cycles will continue draining it. Per-recipient `pps_credit_remainders` remain because they carry exact
 sub-unit value and grow with recipients, not shares. PPS statistical rows use the separate per-pool
-`ppsShareRetentionDays` setting (default 7) and are pruned even when the pool finds no block.
+`ppsShareRetentionDays` setting (default 7) and are pruned even when the pool finds blocks; block
+settlement never shortens that statistical window.
 
 Approximate row creation at 20 accepted accounting envelopes per second is:
 

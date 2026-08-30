@@ -219,6 +219,76 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task CandidatePersistence_SurvivesPpsEvidenceConstructionFailure()
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        recorder.PersistBlockCandidateAsync(Arg.Any<Share>())
+            .Returns(Task.CompletedTask);
+        var manager = new TestManager(container, clock, new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder);
+        var (parent, _, cluster) = CreateConfig();
+        parent.PaymentProcessing.PayoutScheme = PayoutScheme.PPS;
+        manager.Configure(parent, cluster);
+        var candidate = new Share
+        {
+            PoolId = parent.Id,
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            Difficulty = double.MaxValue,
+            NetworkDifficulty = 1,
+            RewardBasisSatoshis = 625_000_000,
+            BlockHeight = 123,
+            BlockHash = new string('b', 64),
+            IsBlockCandidate = true,
+        };
+        manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
+        {
+            Share = candidate,
+            ParentBlockHex = "parent-block",
+        };
+        manager.SubmitCandidatePathsHandler = async _ =>
+        {
+            await recorder.PersistBlockCandidateAsync(new Share
+            {
+                PoolId = parent.Id,
+                BlockHash = candidate.BlockHash,
+                BlockType = "merged-parent",
+                BlockOnly = true,
+                IsBlockCandidate = true,
+            });
+            return new[] { true };
+        };
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "pps-evidence-failure",
+            false);
+        var context = new MergedMiningBitcoinWorkerContext
+        {
+            Miner = candidate.Miner,
+            Worker = candidate.Worker,
+            UserAgent = "test-miner",
+        };
+        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+            "pps-evidence-job");
+        context.AddJob(job, 4);
+        worker.SetContext(context);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            manager.SubmitShareAsync(worker, new object[]
+            {
+                "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000",
+            }, CancellationToken.None).AsTask());
+
+        await recorder.Received(1).PersistBlockCandidateAsync(
+            Arg.Is<Share>(x => x.BlockOnly && x.IsBlockCandidate &&
+                x.BlockHash == candidate.BlockHash));
+    }
+
+    [Fact]
     public void FirstValidStatisticalShare_CreatesAndCopiesWorkerSession()
     {
         var suffix = Guid.NewGuid().ToString("N");

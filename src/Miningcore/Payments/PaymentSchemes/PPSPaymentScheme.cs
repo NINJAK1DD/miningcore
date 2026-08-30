@@ -13,18 +13,16 @@ public sealed class PPSPaymentScheme : IPayoutScheme
 {
     public PPSPaymentScheme(IShareRepository shareRepo)
     {
-        this.shareRepo = shareRepo ?? throw new ArgumentNullException(nameof(shareRepo));
+        ArgumentNullException.ThrowIfNull(shareRepo);
     }
 
-    private readonly IShareRepository shareRepo;
-
-    public async Task UpdateBalancesAsync(IDbConnection con, IDbTransaction tx,
+    public Task UpdateBalancesAsync(IDbConnection con, IDbTransaction tx,
         IMiningPool pool, IPayoutHandler payoutHandler, Block block,
         decimal blockReward, CancellationToken ct)
     {
         // PPS transfers network variance to the operator. Confirmed, orphaned and stale block
-        // outcomes do not alter credits already committed for valid work.
-        await shareRepo.DeleteSharesBeforeInclusiveAsync(con, tx, pool.Config.Id,
-            block.Created, ct);
+        // outcomes do not alter credits already committed for valid work. Statistical shares are
+        // retained solely by PayoutManager's age-based PPS retention pass, independently of luck.
+        return Task.CompletedTask;
     }
 }

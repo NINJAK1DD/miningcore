@@ -524,19 +524,32 @@ public class PayoutManagerTests
             Substitute.For<IMessageBus>(), Substitute.For<IPayoutManagerLease>(),
             new ProcessStatus());
         var before = DateTime.UtcNow;
+        shareRepository.PruneShareAccountingEvidenceBeforeAsync(
+                Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+                Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new ShareAccountingPruneResult(0, false));
+        shareRepository.PruneSharesBeforeInclusiveAsync(
+                Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+                Arg.Any<string>(), Arg.Any<DateTime>(), Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ShareAccountingPruneResult(0, false));
 
         await manager.MaintainShareAccountingRetentionAsync(
             CancellationToken.None);
 
         var after = DateTime.UtcNow;
-        await shareRepository.Received(1).DeleteSharesBeforeInclusiveAsync(
+        await shareRepository.Received(1).PruneSharesBeforeInclusiveAsync(
             connection, transaction, "pps",
             Arg.Is<DateTime>(value => value >= before.AddDays(-7) &&
-                value <= after.AddDays(-7)), Arg.Any<CancellationToken>());
+                value <= after.AddDays(-7)),
+            PayoutManager.ShareAccountingPruneBatchSize,
+            Arg.Any<CancellationToken>());
         await shareRepository.Received(1).PruneShareAccountingEvidenceBeforeAsync(
             connection, transaction,
-            Arg.Is<DateTime>(value => value >= before.AddDays(-30) &&
-                value <= after.AddDays(-30)), Arg.Any<CancellationToken>());
+            Arg.Is<DateTime>(value => value >= before.AddDays(-31) &&
+                value <= after.AddDays(-31)),
+            PayoutManager.ShareAccountingPruneBatchSize,
+            Arg.Any<CancellationToken>());
         transaction.Received(1).Commit();
     }
 

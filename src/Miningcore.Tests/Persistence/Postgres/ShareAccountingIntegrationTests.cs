@@ -97,6 +97,8 @@ public class ShareAccountingIntegrationTests
                     id bigserial PRIMARY KEY, poolid text NOT NULL,
                     address text NOT NULL, amount decimal(28,12) NOT NULL,
                     usage text NULL, tags text[] NULL, created timestamptz NOT NULL);
+                CREATE TABLE blocks(
+                    poolid text NOT NULL, hash text NOT NULL, type text NULL);
             ");
 
             var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
@@ -258,6 +260,35 @@ public class ShareAccountingIntegrationTests
             Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
                 "SELECT amount FROM balances WHERE poolid='ltc' AND address='load-miner'"));
 
+            // Two recorder transactions contending for the same recipient must serialize on
+            // the remainder row without deadlocking or losing either liability.
+            await using(var secondConnection = new NpgsqlConnection(connectionString))
+            {
+                await secondConnection.OpenAsync();
+                await secondConnection.ExecuteAsync(
+                    $"SET search_path TO {schema}, public");
+                var concurrentFirst = CreateBatch(Guid.NewGuid(), 0.01m, 'A');
+                var concurrentSecond = CreateBatch(Guid.NewGuid(), 0.02m, 'B');
+                await using var firstTransaction =
+                    await connection.BeginTransactionAsync();
+                await using var secondTransaction =
+                    await secondConnection.BeginTransactionAsync();
+                Assert.Equal(ShareAccountingInsertResult.Inserted,
+                    await repository.InsertAccountingBatchAsync(connection,
+                        firstTransaction, concurrentFirst,
+                        CancellationToken.None));
+                var contending = repository.InsertAccountingBatchAsync(
+                    secondConnection, secondTransaction, concurrentSecond,
+                    CancellationToken.None);
+                await Task.Delay(100);
+                Assert.False(contending.IsCompleted);
+                await firstTransaction.CommitAsync();
+                Assert.Equal(ShareAccountingInsertResult.Inserted,
+                    await contending.WaitAsync(TimeSpan.FromSeconds(5)));
+                await secondTransaction.CommitAsync();
+            }
+            Assert.Equal(0.280000000001m, await GetBalanceAsync(connection));
+
             var retained = CreateBatch(Guid.NewGuid(), 0.25m, 'F');
             var retainedCreated = new DateTime(2026, 8, 28, 12, 0, 0,
                 DateTimeKind.Utc);
@@ -288,10 +319,12 @@ public class ShareAccountingIntegrationTests
                 new { id = retained.AccountingId });
             await using(var transaction = await connection.BeginTransactionAsync())
             {
-                Assert.Equal(3,
+                var prune =
                     await repository.PruneShareAccountingEvidenceBeforeAsync(
                         connection, transaction, retained.Created.AddSeconds(1),
-                        CancellationToken.None));
+                        100, CancellationToken.None);
+                Assert.Equal(3, prune.PrunedRows);
+                Assert.False(prune.HasMore);
                 await transaction.CommitAsync();
             }
             Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
@@ -304,6 +337,15 @@ public class ShareAccountingIntegrationTests
                 "SELECT count(*) FROM pps_credit_remainders " +
                 "WHERE poolid='ltc' AND address='retention-miner'"));
 
+            var expiredReplay = retained with
+            {
+                NewReceiptNotBefore = retained.Created.AddSeconds(1),
+            };
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                InsertAsync(repository, connection, expiredReplay));
+            Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT amount FROM balances WHERE poolid='ltc' AND address='retention-miner'"));
+
             await using(var transaction = await connection.BeginTransactionAsync())
             {
                 var outcomes = await repository.InsertAccountingBatchesAsync(
@@ -314,6 +356,32 @@ public class ShareAccountingIntegrationTests
             }
             Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
                 "SELECT amount FROM balances WHERE poolid='ltc' AND address='load-miner'"));
+
+            await connection.ExecuteAsync(@"
+                INSERT INTO shares(poolid, blockheight, difficulty,
+                    networkdifficulty, miner, ipaddress, created)
+                SELECT 'pps-retention', value, 1, 1, 'miner', '127.0.0.1',
+                    @created
+                FROM generate_series(1, 3) value",
+                new { created = DateTime.UtcNow.AddDays(-10) });
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var prune = await repository.PruneSharesBeforeInclusiveAsync(
+                    connection, transaction, "pps-retention", DateTime.UtcNow,
+                    2, CancellationToken.None);
+                Assert.Equal(2, prune.PrunedRows);
+                Assert.True(prune.HasMore);
+                await transaction.CommitAsync();
+            }
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var prune = await repository.PruneSharesBeforeInclusiveAsync(
+                    connection, transaction, "pps-retention", DateTime.UtcNow,
+                    2, CancellationToken.None);
+                Assert.Equal(1, prune.PrunedRows);
+                Assert.False(prune.HasMore);
+                await transaction.CommitAsync();
+            }
 
             await connection.ExecuteAsync(@"
                 ALTER TABLE pps_credit_remainders

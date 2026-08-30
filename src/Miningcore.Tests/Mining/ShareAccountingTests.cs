@@ -66,7 +66,8 @@ public class ShareAccountingTests
             Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
         };
 
-        var credit = ShareAccounting.CreatePpsCredit(sanitizedPool, recovered);
+        var credit = ShareAccounting.CreatePpsCredit(sanitizedPool, recovered,
+            allowMissingPpsConfiguration: true);
 
         Assert.Equal(expected, recovered.PpsCalculatedAmount);
         Assert.Equal(expected, credit.CalculatedAmount);
@@ -93,7 +94,51 @@ public class ShareAccountingTests
     }
 
     [Fact]
-    public void PpsCredit_RejectsArithmeticOverflowAndMoreThanOneReward()
+    public void PpsEvidence_DisabledConfigurationStillAuthorizesOnlyPpsAndRecomputes()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        var pool = CreatePool("ltc", PayoutScheme.PPS);
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
+        pool.PaymentProcessing.Enabled = false;
+
+        Assert.NotNull(ShareAccounting.CreatePpsCredit(pool, share));
+
+        share.PpsCalculatedAmount += 0.000000000000000000000001m;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(pool, share));
+
+        pool.PaymentProcessing.PayoutScheme = PayoutScheme.PROP;
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(pool, share));
+    }
+
+    [Fact]
+    public void PpsEvidence_SanitizedRecoveryCannotExceedImmutableZeroFeeMaximum()
+    {
+        var share = CreatePair();
+        share.PairedShare = null;
+        share.AccountingRole = ShareAccountingRole.Single;
+        var acceptingPool = CreatePool("ltc", PayoutScheme.PPS);
+        ShareAccounting.AttachPpsCreditEvidence(acceptingPool, share);
+        var sanitizedPool = new PoolConfig
+        {
+            Id = "ltc",
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+        };
+
+        share.PpsCalculatedAmount = share.RewardBasisSatoshis / 100_000_000m *
+            (decimal) share.Difficulty / (decimal) share.NetworkDifficulty +
+            0.000000000000000000000001m;
+
+        Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.CreatePpsCredit(sanitizedPool, share,
+                allowMissingPpsConfiguration: true));
+    }
+
+    [Fact]
+    public void PpsCredit_RejectsArithmeticOverflowButAllowsHighAssignedDifficulty()
     {
         var pool = CreatePool("ltc", PayoutScheme.PPS);
         var share = CreatePair();
@@ -105,8 +150,8 @@ public class ShareAccountingTests
 
         share.Difficulty = 101;
         share.NetworkDifficulty = 100;
-        Assert.Throws<InvalidDataException>(() =>
-            ShareAccounting.AttachPpsCreditEvidence(pool, share));
+        ShareAccounting.AttachPpsCreditEvidence(pool, share);
+        Assert.Equal(6.3125m, share.PpsCalculatedAmount);
     }
 
     [Fact]

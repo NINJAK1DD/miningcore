@@ -61,10 +61,16 @@ PPS liability evidence is embedded in the accepted envelope so sanitized `-rs` r
 the exact credits, remainders, balance changes and balances. Accounting persistence is set-based for
 normal 250-share batches; legacy ordinary-share COPY remains compatible before the optional
 accounting migration. PPS statistical shares and exactly-once receipts now have independent,
-documented time-based retention. Invalid accounting records are isolated from valid batch siblings
-and written to a checksum-chained quarantine file for manual reconciliation instead of poisoning the
-recoverable journal. Relay receivers validate auxiliary projections against configured pools during
-asynchronous startup and expose unsupported wire formats as a bounded Prometheus counter.
+documented time-based retention. Block settlement does not truncate the PPS statistical window;
+indexed evidence pruning is batch-bounded and retains receipts for one day beyond the accepted
+replay horizon. PostgreSQL independently rejects an expired new accounting ID at registration,
+closing the relay-queue/pruning race. Invalid accounting records are isolated from valid batch
+siblings and written to a checksum-chained quarantine file for manual reconciliation instead of
+poisoning the recoverable journal; critical notifications distinguish importable and quarantined
+evidence and explicitly forbid `-rs` import of quarantine files. Relay receivers validate auxiliary
+projections against configured pools during asynchronous startup and expose unsupported wire formats
+as a bounded Prometheus counter. Direct and merged candidate submission/persistence also remain
+independent of PPS evidence construction, so an accounting error cannot suppress a valid block.
 
 Existing databases must apply `add_share_accounting.sql` in addition to the prior AuxPoW and payout
 ownership migrations before starting pooled merged mining or direct PPS. Existing SOLO/SOLO

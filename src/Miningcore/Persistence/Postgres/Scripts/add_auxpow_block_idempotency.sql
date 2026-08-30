@@ -53,6 +53,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Duplicate merged parent rows require manual review before migration';
     END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM blocks
+        WHERE type = 'bitcoin-direct'
+        GROUP BY poolid, hash
+        HAVING COUNT(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'Duplicate direct Bitcoin-family candidate rows require manual review before migration';
+    END IF;
 END $$;
 
 -- Recreate every index so rerunning this migration repairs stale same-named indexes
@@ -77,7 +86,8 @@ BEGIN
     FOREACH index_name IN ARRAY ARRAY[
         'idx_blocks_auxpow_pool_hash',
         'idx_blocks_auxpow_claim',
-        'idx_blocks_merged_parent_pool_hash'
+        'idx_blocks_merged_parent_pool_hash',
+        'idx_blocks_bitcoin_direct_pool_hash'
     ]
     LOOP
         EXECUTE format('DROP INDEX IF EXISTS %I.%I', blocks_schema, index_name);
@@ -97,5 +107,9 @@ CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM
 CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH
     ON blocks(poolid, hash)
     WHERE type IN ('merged-parent', 'merged-parent-uncertain');
+
+CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH
+    ON blocks(poolid, hash)
+    WHERE type = 'bitcoin-direct';
 
 COMMIT;

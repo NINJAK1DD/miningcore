@@ -143,8 +143,9 @@ public class MergedMiningPooledSchemeTests
             Substitute.For<IPayoutHandler>(), block, 50m,
             CancellationToken.None);
 
-        await shareRepository.Received(1).DeleteSharesBeforeInclusiveAsync(connection,
-            transaction, "ltc", block.Created, CancellationToken.None);
+        await shareRepository.DidNotReceiveWithAnyArgs()
+            .DeleteSharesBeforeInclusiveAsync(default, default, default,
+                default, default);
     }
 
     private static Fixture CreateFixture()

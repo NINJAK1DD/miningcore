@@ -28,8 +28,12 @@ public interface IShareRepository
     Task<long> CountSharesBeforeInclusiveAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
     Task DeleteSharesBeforeAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
     Task DeleteSharesBeforeInclusiveAsync(IDbConnection con, IDbTransaction tx, string poolId, DateTime before, CancellationToken ct);
-    Task<int> PruneShareAccountingEvidenceBeforeAsync(IDbConnection con,
-        IDbTransaction tx, DateTime before, CancellationToken ct);
+    Task<ShareAccountingPruneResult> PruneSharesBeforeInclusiveAsync(
+        IDbConnection con, IDbTransaction tx, string poolId, DateTime before,
+        int batchSize, CancellationToken ct);
+    Task<ShareAccountingPruneResult> PruneShareAccountingEvidenceBeforeAsync(
+        IDbConnection con, IDbTransaction tx, DateTime before, int batchSize,
+        CancellationToken ct);
     Task<long> CountSharesByMinerAsync(IDbConnection con, IDbTransaction tx, string poolId, string miner, CancellationToken ct);
     Task DeleteSharesByMinerAsync(IDbConnection con, IDbTransaction tx, string poolId, string miner, CancellationToken ct);
     Task<double?> GetAccumulatedShareDifficultyBetweenAsync(IDbConnection con, string poolId, DateTime start, DateTime end, CancellationToken ct);

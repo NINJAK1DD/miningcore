@@ -170,7 +170,27 @@ public class ShareRepository : IShareRepository
                 SELECT 1 FROM pg_constraint
                 WHERE conrelid = to_regclass('pps_credit_remainders')
                   AND conname = 'ck_pps_remainder_range'
-                  AND contype = 'c' AND convalidated)";
+                  AND contype = 'c' AND convalidated)
+            AND NOT EXISTS (
+                SELECT required.name
+                FROM (VALUES
+                    ('idx_shares_accounting'),
+                    ('idx_share_accounting_groups_created'),
+                    ('idx_pps_share_credits_accounting'),
+                    ('idx_pps_share_credits_created'),
+                    ('idx_balance_changes_pps_created'),
+                    ('idx_blocks_bitcoin_direct_pool_hash')) AS required(name)
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM pg_class index_relation
+                    JOIN pg_namespace namespace
+                      ON namespace.oid = index_relation.relnamespace
+                    JOIN pg_index index_record
+                      ON index_record.indexrelid = index_relation.oid
+                    WHERE namespace.nspname = current_schema()
+                      AND index_relation.relname = required.name
+                      AND index_record.indisvalid
+                      AND index_record.indisready))";
 
         return con.QuerySingleAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));
@@ -400,9 +420,13 @@ public class ShareRepository : IShareRepository
 
         const string register = @"INSERT INTO share_accounting_groups(
                 accountingid, projectioncount, payloadhash, created)
-            SELECT * FROM unnest(@AccountingIds::uuid[],
+            SELECT accountingid, projectioncount, payloadhash, created
+            FROM unnest(@AccountingIds::uuid[],
                 @ProjectionCounts::smallint[], @PayloadHashes::text[],
-                @CreatedValues::timestamptz[])
+                @CreatedValues::timestamptz[], @ReceiptCutoffs::timestamptz[])
+                AS candidate(accountingid, projectioncount, payloadhash, created,
+                    receiptcutoff)
+            WHERE created >= receiptcutoff
             ON CONFLICT(accountingid) DO NOTHING
             RETURNING accountingid";
         var insertedIds = (await con.QueryAsync<Guid>(new CommandDefinition(
@@ -413,6 +437,8 @@ public class ShareRepository : IShareRepository
                     checked((short) x.Shares.Length)).ToArray(),
                 PayloadHashes = batches.Select(x => x.PayloadHash).ToArray(),
                 CreatedValues = batches.Select(x => x.Created).ToArray(),
+                ReceiptCutoffs = batches.Select(x =>
+                    x.NewReceiptNotBefore).ToArray(),
             }, tx, cancellationToken: ct))).ToHashSet();
 
         foreach(var batch in batches.Where(x => !insertedIds.Contains(
@@ -441,6 +467,9 @@ public class ShareRepository : IShareRepository
            batch.PpsCredits == null || batch.PayloadHash?.Length != 64 ||
            !batch.PayloadHash.All(x => x is >= '0' and <= '9' or >= 'A' and <= 'F') ||
            batch.Shares.Any(x => x == null || x.BlockHeight > long.MaxValue) ||
+           batch.Created.Kind != DateTimeKind.Utc ||
+           (batch.NewReceiptNotBefore != DateTime.MinValue &&
+               batch.NewReceiptNotBefore.Kind != DateTimeKind.Utc) ||
            batch.PpsCredits.Any(x => x == null ||
                x.AccountingId != batch.AccountingId ||
                string.IsNullOrWhiteSpace(x.PoolId) ||
@@ -505,10 +534,13 @@ public class ShareRepository : IShareRepository
 
         const string seed = @"INSERT INTO pps_credit_remainders(
                 poolid, address, amount, updated)
-            SELECT poolid, address, 0, min(created)
-            FROM unnest(@PoolIds::text[], @Addresses::text[],
-                @CreatedValues::timestamptz[]) AS input(poolid, address, created)
-            GROUP BY poolid, address
+            SELECT poolid, address, 0, created
+            FROM (SELECT poolid, address, min(created) AS created
+                FROM unnest(@PoolIds::text[], @Addresses::text[],
+                    @CreatedValues::timestamptz[])
+                    AS input(poolid, address, created)
+                GROUP BY poolid, address) recipients
+            ORDER BY poolid, address
             ON CONFLICT(poolid, address) DO NOTHING";
         await con.ExecuteAsync(new CommandDefinition(seed, new
         {
@@ -529,12 +561,17 @@ public class ShareRepository : IShareRepository
             JOIN recipients USING(poolid, address)
             ORDER BY remainder.poolid, remainder.address
             FOR UPDATE OF remainder";
-        _ = (await con.QueryAsync<string>(new CommandDefinition(lockRemainders,
+        var lockedRecipients = (await con.QueryAsync<string>(new CommandDefinition(lockRemainders,
             new
             {
                 PoolIds = credits.Select(x => x.PoolId).ToArray(),
                 Addresses = credits.Select(x => x.Address).ToArray(),
             }, tx, cancellationToken: ct))).AsList();
+        var recipientCount = credits.Select(x => (x.PoolId, x.Address))
+            .Distinct().Count();
+        if(lockedRecipients.Count != recipientCount)
+            throw new InvalidDataException(
+                "PPS remainder locking did not cover every credit recipient");
 
         const string apply = @"WITH input AS (
                 SELECT *
@@ -604,10 +641,11 @@ public class ShareRepository : IShareRepository
                   AND remainder.address = final.address
                 RETURNING remainder.poolid
             )
-            SELECT (SELECT count(*) FROM inserted_credits) +
-                (SELECT count(*) FROM updated_remainders) +
-                (SELECT count(*) FROM updated_balances)";
-        await con.ExecuteScalarAsync<int>(new CommandDefinition(apply, new
+            SELECT (SELECT count(*) FROM inserted_credits) AS creditcount,
+                (SELECT count(*) FROM updated_remainders) AS remaindercount,
+                (SELECT count(*) FROM updated_balances) AS balancecount";
+        var applied = await con.QuerySingleAsync<PpsApplyCounts>(
+            new CommandDefinition(apply, new
         {
             PoolIds = credits.Select(x => x.PoolId).ToArray(),
             AccountingIds = credits.Select(x => x.AccountingId).ToArray(),
@@ -618,6 +656,11 @@ public class ShareRepository : IShareRepository
             RewardBases = credits.Select(x => x.RewardBasisSatoshis).ToArray(),
             CreatedValues = credits.Select(x => x.Created).ToArray(),
         }, tx, cancellationToken: ct));
+        if(applied.CreditCount != credits.Length ||
+           applied.RemainderCount != recipientCount ||
+           applied.BalanceCount > recipientCount)
+            throw new InvalidDataException(
+                "PPS credit application did not update the complete batch");
     }
 
     private static async Task VerifyCommittedAccountingBatchAsync(IDbConnection con,
@@ -632,8 +675,14 @@ public class ShareRepository : IShareRepository
         if(group == null || group.ProjectionCount != batch.Shares.Length ||
            !string.Equals(group.PayloadHash, batch.PayloadHash,
                StringComparison.Ordinal))
+        {
+            if(group == null && batch.Created < batch.NewReceiptNotBefore)
+                throw new InvalidDataException(
+                    $"Share accounting id {batch.AccountingId:N} is older than the transactional replay horizon and has no retained receipt; preserve it for manual financial reconciliation");
+
             throw new InvalidDataException(
                 $"Share accounting id {batch.AccountingId:N} conflicts with committed evidence");
+        }
 
         const string shareCountQuery = @"SELECT count(*) FROM shares
             WHERE accountingid = @AccountingId";
@@ -787,42 +836,101 @@ public class ShareRepository : IShareRepository
             cancellationToken: ct));
     }
 
-    public Task<int> PruneShareAccountingEvidenceBeforeAsync(IDbConnection con,
-        IDbTransaction tx, DateTime before, CancellationToken ct)
+    public async Task<ShareAccountingPruneResult> PruneSharesBeforeInclusiveAsync(
+        IDbConnection con, IDbTransaction tx, string poolId, DateTime before,
+        int batchSize, CancellationToken ct)
+    {
+        if(batchSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(batchSize));
+
+        const string query = @"WITH candidates AS (
+                SELECT ctid FROM shares
+                WHERE poolid = @poolId AND created <= @before
+                ORDER BY created, ctid LIMIT @batchSize), deleted AS (
+                DELETE FROM shares value USING candidates
+                WHERE value.ctid = candidates.ctid RETURNING 1)
+            SELECT count(*)::int FROM deleted;
+            SELECT EXISTS(SELECT 1 FROM shares
+                WHERE poolid = @poolId AND created <= @before)";
+        using var grid = await con.QueryMultipleAsync(new CommandDefinition(query,
+            new { poolId, before, batchSize }, tx, cancellationToken: ct));
+        return new ShareAccountingPruneResult(
+            await grid.ReadSingleAsync<int>(), await grid.ReadSingleAsync<bool>());
+    }
+
+    public Task<ShareAccountingPruneResult> PruneShareAccountingEvidenceBeforeAsync(
+        IDbConnection con, IDbTransaction tx, DateTime before, int batchSize,
+        CancellationToken ct)
     {
         // The replay-age check rejects old relay and recovery records before persistence. Once
         // that horizon passes, detailed liabilities and compact group receipts may be pruned
         // without allowing a duplicate credit. Operators that require longer audit retention
         // archive these rows first using the documented database procedure. Keep remainder rows:
         // they are one per recipient and preserve exact sub-unit carry across retention windows.
-        const string query = @"WITH deleted AS (
-                DELETE FROM balance_changes
+        if(batchSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(batchSize));
+
+        const string query = @"WITH candidates AS (
+                SELECT id FROM balance_changes
                 WHERE usage = 'PPS share credit' AND created <= @before
+                ORDER BY created, id LIMIT @batchSize), deleted AS (
+                DELETE FROM balance_changes changes USING candidates
+                WHERE changes.id = candidates.id
                 RETURNING 1)
             SELECT count(*)::int FROM deleted;
-            WITH deleted AS (
-                DELETE FROM pps_share_credits WHERE created <= @before
+            WITH candidates AS (
+                SELECT poolid, accountingid FROM pps_share_credits
+                WHERE created <= @before
+                ORDER BY created, poolid, accountingid LIMIT @batchSize),
+            deleted AS (
+                DELETE FROM pps_share_credits credits USING candidates
+                WHERE credits.poolid = candidates.poolid
+                  AND credits.accountingid = candidates.accountingid
                 RETURNING 1)
             SELECT count(*)::int FROM deleted;
-            WITH deleted AS (
-                DELETE FROM share_accounting_groups accounting
+            WITH candidates AS (
+                SELECT accounting.accountingid
+                FROM share_accounting_groups accounting
                 WHERE accounting.created <= @before
                   AND NOT EXISTS (SELECT 1 FROM shares
                       WHERE shares.accountingid = accounting.accountingid)
                   AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
                       WHERE credits.accountingid = accounting.accountingid)
+                ORDER BY accounting.created, accounting.accountingid
+                LIMIT @batchSize), deleted AS (
+                DELETE FROM share_accounting_groups accounting USING candidates
+                WHERE accounting.accountingid = candidates.accountingid
                 RETURNING 1)
-            SELECT count(*)::int FROM deleted";
+            SELECT count(*)::int FROM deleted;
+            SELECT EXISTS(SELECT 1 FROM balance_changes
+                    WHERE usage = 'PPS share credit' AND created <= @before)
+                OR EXISTS(SELECT 1 FROM pps_share_credits
+                    WHERE created <= @before)
+                OR EXISTS(SELECT 1 FROM share_accounting_groups accounting
+                    WHERE accounting.created <= @before
+                      AND NOT EXISTS (SELECT 1 FROM shares
+                          WHERE shares.accountingid = accounting.accountingid)
+                      AND NOT EXISTS (SELECT 1 FROM pps_share_credits credits
+                          WHERE credits.accountingid = accounting.accountingid))";
         return PruneAsync();
 
-        async Task<int> PruneAsync()
+        async Task<ShareAccountingPruneResult> PruneAsync()
         {
             using var grid = await con.QueryMultipleAsync(new CommandDefinition(
-                query, new { before }, tx, cancellationToken: ct));
-            return await grid.ReadSingleAsync<int>() +
+                query, new { before, batchSize }, tx, cancellationToken: ct));
+            var pruned = await grid.ReadSingleAsync<int>() +
                 await grid.ReadSingleAsync<int>() +
                 await grid.ReadSingleAsync<int>();
+            var hasMore = await grid.ReadSingleAsync<bool>();
+            return new ShareAccountingPruneResult(pruned, hasMore);
         }
+    }
+
+    private sealed class PpsApplyCounts
+    {
+        public int CreditCount { get; init; }
+        public int RemainderCount { get; init; }
+        public int BalanceCount { get; init; }
     }
 
     public Task<double?> GetAccumulatedShareDifficultyBetweenAsync(IDbConnection con, string poolId, DateTime start, DateTime end, CancellationToken ct)

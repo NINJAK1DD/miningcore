@@ -467,9 +467,13 @@ envelope. Recovery therefore does not depend on payout settings that are deliber
 `-rs` configuration sanitisation. `paymentProcessing.ppsShareRetentionDays` (default `7`) controls
 statistical `shares` retention for each PPS pool independently of finding a block.
 `paymentProcessing.shareAccountingRetentionDays` at cluster scope (default `30`) is the maximum
-accepted relay/recovery replay age and the retention horizon for per-share accounting receipts.
-Choose a horizon longer than the maximum time an emergency journal or disconnected relay can remain
-unreconciled. Evidence outside it fails closed and must be reconciled manually; see the
+accepted relay/recovery replay age. Miningcore rechecks that boundary when PostgreSQL attempts to
+create a new accounting receipt, so time spent in the recorder queue cannot reopen an expired
+liability. Detailed evidence and receipts are physically retained for an additional one-day safety
+margin and pruned in bounded batches. Choose a horizon longer than the maximum time an emergency
+journal or disconnected relay can remain unreconciled. Configure the same value on every sender,
+receiver, recorder and payout owner in the topology. Evidence outside it fails closed and must be
+reconciled manually; see the
 [database sizing and archival procedure](database.md#share-accounting-retention-and-sizing).
 
 Miner examples:

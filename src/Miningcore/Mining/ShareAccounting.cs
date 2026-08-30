@@ -10,6 +10,9 @@ namespace Miningcore.Mining;
 
 internal static class ShareAccounting
 {
+    internal static readonly TimeSpan EvidencePruneSafetyMargin =
+        TimeSpan.FromDays(1);
+
     internal static string CreateId() => Guid.NewGuid().ToString("N");
 
     internal static Guid ParseCanonicalId(string value)
@@ -188,13 +191,15 @@ internal static class ShareAccounting
         share.PpsCalculatedAmount = CalculatePpsAmount(pool, share);
     }
 
-    internal static PpsShareCredit CreatePpsCredit(PoolConfig pool, Share share)
+    internal static PpsShareCredit CreatePpsCredit(PoolConfig pool, Share share,
+        bool allowMissingPpsConfiguration = false)
     {
         ArgumentNullException.ThrowIfNull(pool);
         ArgumentNullException.ThrowIfNull(share);
 
-        var configuredPps = pool.PaymentProcessing?.Enabled == true &&
-            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS;
+        var hasPaymentConfiguration = pool.PaymentProcessing != null;
+        var configuredPps = pool.PaymentProcessing?.PayoutScheme ==
+            PayoutScheme.PPS;
 
         if(!share.PpsCalculatedAmount.HasValue)
         {
@@ -205,26 +210,24 @@ internal static class ShareAccounting
             return null;
         }
 
-        if(pool.PaymentProcessing?.Enabled == true && !configuredPps)
+        if(hasPaymentConfiguration && !configuredPps)
             throw new InvalidDataException(
                 $"Non-PPS pool '{pool.Id}' received unexpected PPS liability evidence");
+        if(!hasPaymentConfiguration && !allowMissingPpsConfiguration)
+            throw new InvalidDataException(
+                $"Pool '{pool.Id}' received PPS liability evidence without an explicit PPS payout contract");
         if(pool.Template?.Family != CoinFamily.Bitcoin)
             throw new InvalidDataException(
                 $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
 
         var calculated = share.PpsCalculatedAmount.Value;
-        if(configuredPps)
-        {
-            var expected = CalculatePpsAmount(pool, share);
-            if(calculated != expected)
-                throw new InvalidDataException(
-                    $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
-        }
-
-        var rawReward = share.RewardBasisSatoshis / 100_000_000m;
-        if(calculated <= 0 || calculated > rawReward)
+        var maximum = CalculatePpsAmount(pool, share);
+        if(hasPaymentConfiguration && calculated != maximum)
             throw new InvalidDataException(
-                $"PPS liability evidence for pool '{pool.Id}' exceeds its share reward basis");
+                $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
+        if(!hasPaymentConfiguration && (calculated <= 0 || calculated > maximum))
+            throw new InvalidDataException(
+                $"Recovery PPS liability evidence for pool '{pool.Id}' exceeds the maximum independently derived from its immutable share inputs");
 
         return new PpsShareCredit
         {
@@ -272,14 +275,11 @@ internal static class ShareAccounting
 
         try
         {
-            checked
-            {
-                var reward = share.RewardBasisSatoshis / 100_000_000m;
-                retainedReward = reward * (1m - recipientPercent / 100m);
-                var difficulty = (decimal) share.Difficulty;
-                var networkDifficulty = (decimal) share.NetworkDifficulty;
-                calculated = retainedReward * difficulty / networkDifficulty;
-            }
+            var reward = share.RewardBasisSatoshis / 100_000_000m;
+            retainedReward = reward * (1m - recipientPercent / 100m);
+            var difficulty = (decimal) share.Difficulty;
+            var networkDifficulty = (decimal) share.NetworkDifficulty;
+            calculated = retainedReward * difficulty / networkDifficulty;
         }
         catch(OverflowException ex)
         {
@@ -291,10 +291,6 @@ internal static class ShareAccounting
         if(calculated <= 0)
             throw new InvalidDataException(
                 $"PPS credit for pool '{pool.Id}' is below the supported 24-decimal liability precision");
-        if(calculated > retainedReward)
-            throw new InvalidDataException(
-                $"PPS credit for pool '{pool.Id}' exceeds the retained reward for one accepted proof; review assigned and network difficulty");
-
         return calculated;
     }
 

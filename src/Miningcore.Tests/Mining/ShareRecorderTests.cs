@@ -3280,7 +3280,7 @@ public class ShareRecorderTests
             NetworkDifficulty = 100,
             BlockHeight = 200,
             RewardBasisSatoshis = 5_000_000_000,
-            PpsCalculatedAmount = 0.8m,
+            PpsCalculatedAmount = 8m,
             AccountingId = accountingId,
             AccountingRole = ShareAccountingRole.Parent,
         };
@@ -3300,7 +3300,7 @@ public class ShareRecorderTests
             NetworkDifficulty = 10_000,
             BlockHeight = 300,
             RewardBasisSatoshis = 1_000_000_000_000_000,
-            PpsCalculatedAmount = 200_000m,
+            PpsCalculatedAmount = 2_000_000m,
             AccountingId = accountingId,
             AccountingRole = ShareAccountingRole.Auxiliary,
         };
@@ -3325,10 +3325,10 @@ public class ShareRecorderTests
                         x.AccountingRole == (short) ShareAccountingRole.Auxiliary) &&
                     batch.PpsCredits.Length == 2 &&
                     batch.PpsCredits.Any(x => x.PoolId == "ltc-solo" &&
-                        x.Address == "ltc-miner" && x.CalculatedAmount == 0.8m) &&
+                        x.Address == "ltc-miner" && x.CalculatedAmount == 8m) &&
                     batch.PpsCredits.Any(x => x.PoolId == "doge-solo" &&
                         x.Address == "doge-miner" &&
-                        x.CalculatedAmount == 200_000m)),
+                        x.CalculatedAmount == 2_000_000m)),
                 Arg.Any<CancellationToken>());
             await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
                 fixture.Connection, fixture.Transaction,
@@ -6247,6 +6247,49 @@ public class ShareRecorderTests
         await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject == "Share persistence pipeline stopped"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ShareRecoveryFailureHandler_DistinguishesRecoveryAndQuarantine(
+        bool hasRecoverableShare)
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() => notificationSender),
+            Substitute.For<IShareRecoveryFatalState>());
+        var recoveryFile = Path.Combine(Path.GetTempPath(),
+            $"recovery-{Guid.NewGuid():N}.txt");
+        var quarantineFile = $"{recoveryFile}.quarantine-test";
+        var recoverable = hasRecoverableShare
+            ? new[] { new Share { PoolId = "ltc", Miner = "recoverable" } }
+            : Array.Empty<Share>();
+        var quarantined = new[]
+        {
+            new Share { PoolId = "doge", Miner = "quarantined" },
+        };
+
+        await handler.StopClusterAfterJournalAsync(recoverable, recoveryFile,
+            quarantined, quarantineFile,
+            new InvalidDataException("invalid accounting evidence"));
+
+        await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Message.Contains(quarantineFile) &&
+                notification.Message.Contains("must not be imported with -rs") &&
+                notification.Message.Contains("manual financial reconciliation") &&
+                (hasRecoverableShare
+                    ? notification.Message.Contains(recoveryFile) &&
+                      notification.Message.Contains("Import and verify only")
+                    : notification.Message.Contains(
+                          "No importable recovery-journal records remained") &&
+                      notification.Message.Contains(
+                          "Do not run -rs against a quarantine file"))),
             Arg.Any<CancellationToken>());
     }
 

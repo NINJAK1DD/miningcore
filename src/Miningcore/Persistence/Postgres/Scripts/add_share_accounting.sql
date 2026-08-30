@@ -10,6 +10,8 @@ ALTER TABLE shares ADD COLUMN IF NOT EXISTS rewardbasissatoshis BIGINT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS IDX_SHARES_POOL_ACCOUNTING
     ON shares(poolid, accountingid) WHERE accountingid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS IDX_SHARES_ACCOUNTING
+    ON shares(accountingid) WHERE accountingid IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS share_accounting_groups
 (
@@ -22,6 +24,8 @@ CREATE TABLE IF NOT EXISTS share_accounting_groups
     ,CONSTRAINT CK_SHARE_ACCOUNTING_PAYLOAD_HASH
         CHECK(payloadhash ~ '^[0-9A-F]{64}$')
 );
+CREATE INDEX IF NOT EXISTS IDX_SHARE_ACCOUNTING_GROUPS_CREATED
+    ON share_accounting_groups(created);
 
 DO $$
 BEGIN
@@ -66,6 +70,14 @@ CREATE TABLE IF NOT EXISTS pps_share_credits
     CONSTRAINT CK_PPS_NETWORK_DIFFICULTY CHECK(networkdifficulty > 0),
     CONSTRAINT CK_PPS_REWARD_BASIS CHECK(rewardbasissatoshis > 0)
 );
+CREATE INDEX IF NOT EXISTS IDX_PPS_SHARE_CREDITS_ACCOUNTING
+    ON pps_share_credits(accountingid);
+CREATE INDEX IF NOT EXISTS IDX_PPS_SHARE_CREDITS_CREATED
+    ON pps_share_credits(created);
+CREATE INDEX IF NOT EXISTS IDX_BALANCE_CHANGES_PPS_CREATED
+    ON balance_changes(created) WHERE usage = 'PPS share credit';
+CREATE UNIQUE INDEX IF NOT EXISTS IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH
+    ON blocks(poolid, hash) WHERE type = 'bitcoin-direct';
 
 CREATE TABLE IF NOT EXISTS pps_credit_remainders
 (

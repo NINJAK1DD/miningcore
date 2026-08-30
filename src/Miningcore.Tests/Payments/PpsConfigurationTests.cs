@@ -32,14 +32,29 @@ public class PpsConfigurationTests
     }
 
     [Fact]
-    public void RelaySender_DefersPpsAccountingToReceiver()
+    public void RelaySender_RequiresLocalCandidateAndAccountingSchema()
     {
         var config = CreateConfig(CoinFamily.Bitcoin);
         config.ShareRelay = new ShareRelayConfig();
 
         Program.ValidatePpsDeployment(config);
 
-        Assert.False(Program.RequiresShareAccountingPersistence(config));
+        Assert.True(Program.RequiresShareAccountingPersistence(config));
+        Assert.True(Program.RequiresSynchronousBlockCandidatePersistence(config));
+        Assert.True(Program.UsesLocalShareRecoveryPath(false, config));
+    }
+
+    [Fact]
+    public void RelaySenderWithoutPostgres_RejectsPpsBeforeMiningStarts()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.ShareRelay = new ShareRelayConfig();
+        config.Persistence = null;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidatePpsDeployment(config));
+
+        Assert.Contains("Every PPS accepting node requires PostgreSQL", error.Message);
     }
 
     [Fact]

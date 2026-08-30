@@ -49,6 +49,15 @@ receiver startup. The topic pool must still be online for normal telemetry attri
 `miningcore_share_relay_unsupported_wire_format_total`; any increase means a sender/receiver version
 mismatch is rejecting frames and requires immediate rollout correction.
 
+All hosts participating in accounting must use synchronized UTC clocks. Evidence more than five
+minutes in the future is rejected, and the recorder re-evaluates the replay horizon immediately
+before its database transaction. Keep
+`paymentProcessing.shareAccountingRetentionDays` identical on senders, receivers, recorders and the
+payout owner; mismatched values can cause one host to reject evidence another still considers live.
+Every PPS sender also requires PostgreSQL and both candidate/accounting migrations. Ordinary shares
+still travel through the relay, but an accepted direct block is synchronously persisted on its
+submitting node and falls back to that node's protected recovery journal if PostgreSQL fails.
+
 ## Recommended bind mode
 
 In the usual topology, each sender binds one protected relay endpoint and the central recorder

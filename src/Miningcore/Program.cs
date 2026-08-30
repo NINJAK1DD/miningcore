@@ -1894,7 +1894,7 @@ public class Program : ProcessStatusBackgroundService
         if(isShareRecoveryMode)
             return;
 
-        if(RequiresMergedMiningPersistence(clusterConfig))
+        if(RequiresSynchronousBlockCandidatePersistence(clusterConfig))
         {
             await EnsureMergedMiningSchemaAsync(clusterConfig,
                 services.GetService<IConnectionFactory>(),
@@ -1997,7 +1997,7 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(config);
         return recoveryMode || config.ShareRelay == null ||
-            RequiresMergedMiningPersistence(config);
+            RequiresSynchronousBlockCandidatePersistence(config);
     }
 
     internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,
@@ -2104,8 +2104,19 @@ public class Program : ProcessStatusBackgroundService
         return mergedMiningEnabled;
     }
 
+    internal static bool RequiresSynchronousBlockCandidatePersistence(
+        ClusterConfig config) => RequiresMergedMiningPersistence(config) ||
+        config?.Pools?.Any(pool => pool.Enabled &&
+            pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS) == true;
+
     internal static bool RequiresShareAccountingPersistence(ClusterConfig config)
     {
+        if(config?.Pools?.Any(pool => pool.Enabled &&
+               pool.PaymentProcessing?.Enabled == true &&
+               pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS) == true)
+            return true;
+
         if(config?.ShareRelay != null)
             return false;
 
@@ -2168,10 +2179,9 @@ public class Program : ProcessStatusBackgroundService
                     pool.Id);
         }
 
-        if(ppsPools.Length > 0 && config.ShareRelay == null &&
-           config.Persistence?.Postgres == null)
+        if(ppsPools.Length > 0 && config.Persistence?.Postgres == null)
             throw new PoolStartupException(
-                "PPS requires PostgreSQL so the share receipt, liability ledger, precision remainder and miner balance commit atomically.");
+                "Every PPS accepting node requires PostgreSQL so accepted block candidates persist synchronously and the share receipt, liability ledger, precision remainder and miner balance commit atomically.");
     }
 
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
@@ -2202,7 +2212,7 @@ public class Program : ProcessStatusBackgroundService
     internal static async Task EnsureMergedMiningSchemaAsync(ClusterConfig config,
         IConnectionFactory cf, IBlockRepository blockRepo, CancellationToken ct)
     {
-        if(!RequiresMergedMiningPersistence(config))
+        if(!RequiresSynchronousBlockCandidatePersistence(config))
             return;
 
         var schemaReady = await cf.Run(con =>
@@ -2210,7 +2220,7 @@ public class Program : ProcessStatusBackgroundService
 
         if(!schemaReady)
             throw new PoolStartupException(
-                "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.");
+                "Synchronous merged-mining and direct-PPS block persistence requires the block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining or direct Bitcoin-family PPS.");
     }
 
     internal static async Task EnsureShareAccountingSchemaAsync(ClusterConfig config,

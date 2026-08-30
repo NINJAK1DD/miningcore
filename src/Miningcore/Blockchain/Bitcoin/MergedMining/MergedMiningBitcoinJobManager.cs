@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -67,7 +68,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
     public MergedMiningBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
         IMessageBus messageBus, IExtraNonceProvider extraNonceProvider,
         IBlockCandidateRecorder blockCandidateRecorder) :
-        base(ctx, clock, messageBus, extraNonceProvider)
+        base(ctx, clock, messageBus, extraNonceProvider,
+            blockCandidateRecorder)
     {
         Contract.RequiresNonNull(blockCandidateRecorder);
         this.blockCandidateRecorder = blockCandidateRecorder;
@@ -701,31 +703,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             share.IpAddress, now);
         share.Created = now;
 
-        // Preserve the established SOLO wire and database record exactly. The auxiliary
-        // beneficiary continues to live only on its independently durable block candidate.
-        if(usesPairedAccounting && !string.IsNullOrWhiteSpace(context.AuxiliaryMiner))
-        {
-            share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
-            share.AccountingRole = ShareAccountingRole.Parent;
-            share.PreserveCreated = true;
-            share.PairedShare = CreateAuxiliaryShareProjection(context, result,
-                share, now);
-            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
-                poolConfig, share);
-            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
-                auxiliaryPoolConfig, share.PairedShare);
-        }
-        else if(usesPairedAccounting)
-        {
-            // Optional auxiliary attribution is retained only for legacy SOLO deployments.
-            // The parent still receives an idempotent single-chain accounting identity.
-            share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
-            share.AccountingRole = ShareAccountingRole.Single;
-            share.PreserveCreated = true;
-            Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
-                poolConfig, share);
-        }
-
         var hasCandidate = share.IsBlockCandidate || !string.IsNullOrEmpty(result.AuxPowHex);
         TaskCompletionSource<bool> candidateStart = null;
         Task<bool[]> candidateOperation = null;
@@ -748,16 +725,43 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 candidatePreparation, candidateStart.Task);
         }
 
-        // The proof has passed all share validation. Publish a cleared statistical copy before
-        // either daemon submission begins so a slow or failed peer-chain path cannot suppress
-        // the ordinary share or move it past the parent block's effort boundary. BitcoinPool
-        // observes the runtime-only guard and does not publish the returned object a second time.
+        Exception statisticalError = null;
         try
         {
+            // Preserve the established SOLO wire and database record exactly. Candidate
+            // ownership has already been registered above, so any accounting-construction
+            // failure can no longer suppress parent or auxiliary submission and persistence.
+            if(usesPairedAccounting && !string.IsNullOrWhiteSpace(context.AuxiliaryMiner))
+            {
+                share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
+                share.AccountingRole = ShareAccountingRole.Parent;
+                share.PreserveCreated = true;
+                share.PairedShare = CreateAuxiliaryShareProjection(context, result,
+                    share, now);
+                Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                    poolConfig, share);
+                Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                    auxiliaryPoolConfig, share.PairedShare);
+            }
+            else if(usesPairedAccounting)
+            {
+                share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
+                share.AccountingRole = ShareAccountingRole.Single;
+                share.PreserveCreated = true;
+                Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
+                    poolConfig, share);
+            }
+
+            // Publish a cleared statistical copy before daemon submission begins so a slow peer
+            // path cannot move an ordinary proof past the parent block's effort boundary.
             var statisticalShare = CreateStatisticalShare(share);
             messageBus.SendMessage(statisticalShare);
             share.SetPersistenceAdmission(statisticalShare.PersistenceAdmission);
             share.StatisticalRecordEmitted = true;
+        }
+        catch(Exception ex)
+        {
+            statisticalError = ex;
         }
         finally
         {
@@ -765,8 +769,20 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             candidateStart?.TrySetResult(true);
         }
 
-        if(candidateOperation != null)
-            await candidateOperation;
+        try
+        {
+            if(candidateOperation != null)
+                await candidateOperation;
+        }
+        catch(Exception candidateError) when(statisticalError != null)
+        {
+            throw new AggregateException(
+                "Merged-mining accounting failed and an independent candidate path also failed",
+                statisticalError, candidateError);
+        }
+
+        if(statisticalError != null)
+            ExceptionDispatchInfo.Capture(statisticalError).Throw();
 
         return share;
     }

@@ -18,6 +18,7 @@ using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Time;
 using Newtonsoft.Json;
 using NLog;
 using Polly;
@@ -119,7 +120,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         IShareRecoveryFailureHandler recoveryFailureHandler,
         IMiningFailStopCoordinator failStopCoordinator,
         IShareRecoveryPathOwnership recoveryPathOwnership,
-        ICandidatePersistenceFailureHandler candidateFailureHandler = null)
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null,
+        IMasterClock clock = null)
     {
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(mapper);
@@ -141,6 +143,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this.failStopCoordinator = failStopCoordinator;
         this.recoveryPathOwnership = recoveryPathOwnership;
         this.clusterConfig = clusterConfig;
+        this.clock = clock ?? new StandardClock();
 
         this.shareRepo = shareRepo;
         this.blockRepo = blockRepo;
@@ -170,6 +173,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly IShareRecoveryPathOwnership recoveryPathOwnership;
     private readonly ClusterConfig clusterConfig;
+    private readonly IMasterClock clock;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
 
@@ -486,7 +490,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     private async Task<ShareBatchPersistenceResult> PersistSharesBatchAsync(
         IDbConnection con, IDbTransaction tx, IList<Share> shares,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool allowMissingPpsConfiguration = false)
     {
         var blocks = new List<(string PoolId, Block Block)>();
         var accounting = new List<ShareAccountingTelemetryEvent>();
@@ -510,7 +515,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             var mapped = projections.Select(ShareAccounting.ToPersistenceShare)
                 .ToArray();
             var credits = projections
-                .Select(x => ShareAccounting.CreatePpsCredit(pools[x.PoolId], x))
+                .Select(x => ShareAccounting.CreatePpsCredit(pools[x.PoolId], x,
+                    allowMissingPpsConfiguration))
                 .Where(x => x != null)
                 .ToArray();
             var accountingId = ShareAccounting.ParseCanonicalId(
@@ -523,6 +529,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 Shares = mapped,
                 PpsCredits = credits,
                 Created = envelope.Created,
+                NewReceiptNotBefore = clock.Now.AddDays(-(
+                    clusterConfig.PaymentProcessing?
+                        .ShareAccountingRetentionDays ?? 30)),
             });
         }
 
@@ -1395,6 +1404,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidOperationException(
                 "A required share-recovery failure handler was not supplied");
 
+        public Task StopClusterAfterJournalAsync(
+            IReadOnlyCollection<Share> recoverableShares, string recoveryFilename,
+            IReadOnlyCollection<Share> quarantinedShares,
+            string quarantineFilename, Exception pipelineError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
         public Task StopClusterAfterCommittedCleanupAsync(
             IReadOnlyCollection<Share> shares, string recoveryFilename,
             Exception cleanupError) =>
@@ -1691,7 +1707,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                             {
                                 importHash.Append(shares);
                                 var persisted = await PersistSharesBatchAsync(con, tx,
-                                    shares);
+                                    shares, allowMissingPpsConfiguration: true);
                                 result.AddRange(persisted.Blocks);
                                 accounting.AddRange(persisted.Accounting);
                             });
@@ -2087,7 +2103,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 try
                 {
                     ShareAccounting.ValidateReplayHorizon(share,
-                        DateTime.UtcNow, clusterConfig.PaymentProcessing?
+                        clock.Now, clusterConfig.PaymentProcessing?
                             .ShareAccountingRetentionDays ?? 30);
                     ShareAccounting.ValidateAndFlatten(share, pools);
                 }
@@ -2638,8 +2654,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 }
             }
 
+            // A batch-level constraint can disappear after deterministic one-record replay
+            // (for example, ordering around a concurrently committed idempotency receipt). If
+            // every record then commits successfully, the original batch error is resolved and
+            // must not trigger a false fail-stop with nothing left to journal.
             if(rejected.Count == 0)
-                throw;
+                return;
 
             var isolated = new InvalidDataException(
                 $"Rejected {rejected.Count} invalid share-accounting record(s); " +
@@ -2756,6 +2776,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             var rejectedIds = GetInvalidQueuedShareIds(pipelineError);
+            Share[] quarantinedShares = Array.Empty<Share>();
+            string quarantineFilename = null;
             if(rejectedIds.Count > 0)
             {
                 var rejected = unresolvedShares.Values
@@ -2764,12 +2786,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     .ToArray();
                 if(rejected.Length > 0)
                 {
-                    var quarantine = await WriteAccountingQuarantineAsync(
-                        rejected.Select(x => x.Share).ToArray());
-                    pipelineError.Data[AccountingQuarantinePathKey] = quarantine;
+                    quarantinedShares = rejected.Select(x => x.Share).ToArray();
+                    quarantineFilename = await WriteAccountingQuarantineAsync(
+                        quarantinedShares);
+                    pipelineError.Data[AccountingQuarantinePathKey] =
+                        quarantineFilename;
                     logger.Error(() =>
                         $"Quarantined {rejected.Length} invalid share-accounting " +
-                        $"record(s) in {quarantine}; preserve this evidence for " +
+                        $"record(s) in {quarantineFilename}; preserve this evidence for " +
                         "manual reconciliation");
 
                     foreach(var item in rejected)
@@ -2791,8 +2815,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     removed.JournalCompletion?.TrySetResult();
             }
 
-            await recoveryFailureHandler.StopClusterAfterJournalAsync(
-                unresolved, recoveryFilename, pipelineError);
+            if(quarantinedShares.Length > 0)
+                await recoveryFailureHandler.StopClusterAfterJournalAsync(
+                    recoverable, recoveryFilename, quarantinedShares,
+                    quarantineFilename, pipelineError);
+            else
+                await recoveryFailureHandler.StopClusterAfterJournalAsync(
+                    recoverable, recoveryFilename, pipelineError);
         }
         catch(Exception journalError)
         {

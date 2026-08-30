@@ -22,6 +22,7 @@ public class BlockRepositoryTests
     {
         var expectedTypes = new[]
         {
+            "bitcoin-direct",
             "auxpow",
             "auxpow-claim",
             "merged-parent",
@@ -240,6 +241,8 @@ public class BlockRepositoryTests
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("idx_blocks_merged_parent_pool_hash", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("idx_blocks_bitcoin_direct_pool_hash", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pg_index", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("indisunique", connection.CommandText,
@@ -339,6 +342,7 @@ public class BlockRepositoryTests
             "IDX_BLOCKS_AUXPOW_POOL_HASH",
             "IDX_BLOCKS_AUXPOW_CLAIM",
             "IDX_BLOCKS_MERGED_PARENT_POOL_HASH",
+            "IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH",
         };
 
         Assert.Contains("BEGIN;", script, StringComparison.OrdinalIgnoreCase);

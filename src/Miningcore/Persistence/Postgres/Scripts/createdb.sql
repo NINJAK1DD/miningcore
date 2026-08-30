@@ -34,6 +34,8 @@ CREATE INDEX IDX_SHARES_POOL_MINER_SESSION_ACTUALDIFFICULTY on shares(poolid,min
 CREATE INDEX IDX_SHARES_POOL_MINER_WORKER_SESSION_ACTUALDIFFICULTY on shares(poolid,miner,worker,sessionid,actualdifficulty);
 CREATE UNIQUE INDEX IDX_SHARES_POOL_ACCOUNTING ON shares(poolid, accountingid)
     WHERE accountingid IS NOT NULL;
+CREATE INDEX IDX_SHARES_ACCOUNTING ON shares(accountingid)
+    WHERE accountingid IS NOT NULL;
 
 CREATE TABLE share_accounting_groups
 (
@@ -46,6 +48,8 @@ CREATE TABLE share_accounting_groups
 	,CONSTRAINT CK_SHARE_ACCOUNTING_PAYLOAD_HASH
 		CHECK(payloadhash ~ '^[0-9A-F]{64}$')
 );
+CREATE INDEX IDX_SHARE_ACCOUNTING_GROUPS_CREATED
+    ON share_accounting_groups(created);
 
 ALTER TABLE shares ADD CONSTRAINT FK_SHARES_ACCOUNTING_GROUP
 	FOREIGN KEY(accountingid) REFERENCES share_accounting_groups(accountingid);
@@ -69,6 +73,10 @@ CREATE TABLE pps_share_credits
 	CONSTRAINT CK_PPS_NETWORK_DIFFICULTY CHECK(networkdifficulty > 0),
 	CONSTRAINT CK_PPS_REWARD_BASIS CHECK(rewardbasissatoshis > 0)
 );
+CREATE INDEX IDX_PPS_SHARE_CREDITS_ACCOUNTING
+    ON pps_share_credits(accountingid);
+CREATE INDEX IDX_PPS_SHARE_CREDITS_CREATED
+    ON pps_share_credits(created);
 
 CREATE TABLE pps_credit_remainders
 (
@@ -113,6 +121,7 @@ CREATE INDEX IDX_BLOCKS_POOL_BLOCK_TYPE on blocks(poolid, blockheight, type);
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH on blocks(poolid, hash) WHERE type = 'auxpow';
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM on blocks(poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim';
 CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain');
+CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
 
 CREATE TABLE balances
 (
@@ -138,6 +147,8 @@ CREATE TABLE balance_changes
 
 CREATE INDEX IDX_BALANCE_CHANGES_POOL_ADDRESS_CREATED on balance_changes(poolid, address, created desc);
 CREATE INDEX IDX_BALANCE_CHANGES_POOL_TAGS on balance_changes USING gin (tags);
+CREATE INDEX IDX_BALANCE_CHANGES_PPS_CREATED ON balance_changes(created)
+    WHERE usage = 'PPS share credit';
 
 CREATE TABLE miner_settings
 (
