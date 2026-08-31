@@ -12,6 +12,7 @@ libmeowpow.so
 libmerakipow.so
 libmultihash.so
 libnexapow.so
+libodocrypt.so
 libpanthera.so
 libphihash.so
 libprogpowz.so

@@ -16,8 +16,11 @@ if [[ ! -d "$source_root" || ! -f "$manifest" || ! -r "$manifest" ]]; then
 fi
 
 verified=0
+normalized_crlf=0
 
 while IFS= read -r entry || [[ -n "$entry" ]]; do
+  entry=${entry%$'\r'}
+
   if [[ ! "$entry" =~ ^([a-f0-9]{64})[[:space:]][[:space:]]([A-Za-z0-9._/-]+)$ ]]; then
     echo "Pinned source manifest contains a malformed entry" >&2
     exit 70
@@ -41,8 +44,14 @@ while IFS= read -r entry || [[ -n "$entry" ]]; do
   actual=$(sha256sum -- "$source_file" | awk '{print $1}')
 
   if [[ "$actual" != "$expected" ]]; then
-    echo "Pinned source file identity mismatch: $relative_path" >&2
-    exit 1
+    canonical_actual=$(sed 's/\r$//' "$source_file" | sha256sum | awk '{print $1}')
+
+    if [[ "$canonical_actual" != "$expected" ]]; then
+      echo "Pinned source file identity mismatch: $relative_path" >&2
+      exit 1
+    fi
+
+    normalized_crlf=$((normalized_crlf + 1))
   fi
 
   verified=$((verified + 1))
@@ -53,4 +62,9 @@ if [[ "$verified" -eq 0 ]]; then
   exit 70
 fi
 
-echo "Pinned source identity verified for $verified file(s)"
+if [[ "$normalized_crlf" -gt 0 ]]; then
+  printf 'Pinned source identity verified for %d file(s) after canonicalizing CRLF in %d text file(s)\n' \
+    "$verified" "$normalized_crlf"
+else
+  echo "Pinned source identity verified for $verified file(s)"
+fi

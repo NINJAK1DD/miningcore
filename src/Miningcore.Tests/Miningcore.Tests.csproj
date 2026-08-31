@@ -80,6 +80,12 @@
     </None>
   </ItemGroup>
 
+  <!-- Do not let a previous source-built runtime mask the explicit managed-only opt-out. -->
+  <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"
+          Condition="'$(IsWindows)' == 'true' and '$(BuildOdoCryptWindows)' == 'false'">
+    <Delete Files="$(TargetDir)libodocrypt.dll" />
+  </Target>
+
   <!-- Copy Linux native libs from Miningcore output into test output -->
   <Target Name="CopyLibsLinux" AfterTargets="Build" Condition="'$(IsLinux)' == 'true'">
     <ItemGroup>

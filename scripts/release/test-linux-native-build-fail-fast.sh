@@ -112,6 +112,16 @@ done
 )
 bash "$source_verifier" "$work_dir/panthera" "$work_dir/panthera.sha256"
 
+cp "$work_dir/randomx/CMakeLists.txt" "$work_dir/randomx/CMakeLists.txt.lf"
+sed 's/$/\r/' "$work_dir/randomx/CMakeLists.txt.lf" \
+  > "$work_dir/randomx/CMakeLists.txt"
+sed 's/$/\r/' "$work_dir/randomx.sha256" \
+  > "$work_dir/randomx-crlf.sha256"
+bash "$source_verifier" "$work_dir/randomx" \
+  "$work_dir/randomx-crlf.sha256"
+mv "$work_dir/randomx/CMakeLists.txt.lf" \
+  "$work_dir/randomx/CMakeLists.txt"
+
 mkdir "$work_dir/manifest-directory"
 set +e
 bash "$source_verifier" "$work_dir/randomx" "$work_dir/manifest-directory" \
@@ -189,7 +199,9 @@ if [[ $(grep -Fxc $'\tfor (i = 0; i < Klen && i < 64; i++)' \
 fi
 
 mkdir -p \
+  "$work_dir/scripts/release" \
   "$work_dir/src/Miningcore" \
+  "$work_dir/src/Native/libodocrypt" \
   "$work_dir/src/Native/libmultihash" \
   "$work_dir/src/Native/libbeamhash" \
   "$work_dir/bin" \
@@ -197,6 +209,16 @@ mkdir -p \
 : > "$work_dir/trace"
 
 cp "$driver" "$work_dir/src/Miningcore/build-libs-linux.sh"
+cp "$source_verifier" \
+  "$work_dir/scripts/release/verify-pinned-source-files.sh"
+cp "$repository_root/src/Native/libodocrypt/upstream.sha256" \
+  "$work_dir/src/Native/libodocrypt/upstream.sha256"
+for pinned_source in \
+    odocrypt.cpp odocrypt.h KeccakP-800-reference.c KeccakP-800-SnP.h \
+    brg_endian.h; do
+  cp "$repository_root/src/Native/libmultihash/$pinned_source" \
+    "$work_dir/src/Native/libmultihash/$pinned_source"
+done
 
 cat > "$work_dir/src/Native/check_cpu.sh" <<'SH'
 #!/usr/bin/env sh

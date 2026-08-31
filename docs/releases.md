@@ -44,6 +44,21 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Post-v0.2.1 development
+
+**Breaking DigiByte template rename:** `digibyte-groestl` is removed rather than redirected to a
+different proof of work. Operators must stop that pool and explicitly select a supported current
+algorithm; current-mainnet support adds `digibyte-odocrypt` in its place.
+
+DigiByte current-mainnet support replaces the retired Myriad-Groestl catalogue entry with
+activation- and schedule-aware Odocrypt. The Odocrypt cipher is pinned to DigiByte Core v9.26.5;
+network-specific activation and schedule metadata is validated before startup, template `odokey`
+is checked against template time, submitted shares derive their key from submitted header time,
+and native known-answer, symbol, relocation and source-built Windows checks protect the packaged
+implementation. Windows source builds compile Odocrypt from the reviewed pinned inputs instead of
+loading an opaque repository binary. Existing DigiByte SHA-256d, Scrypt, Skein and Qubit templates
+remain available. See the [DigiByte operator guide](digibyte.md).
+
 ## v0.2.1 hotfix
 
 `v0.2.1` corrects a `v0.2.0` regression affecting Litecoin/Dogecoin merged mining when both pools

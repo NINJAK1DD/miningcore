@@ -1,11 +1,18 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Tasks;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Extensions;
+using Miningcore.Native;
+using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using Xunit;
 
@@ -608,6 +615,218 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("79fd64cd7f4b9e59ea469c6dbfdfb6388c912240ab0b6065d65d21fcda3618ce", result);
+    }
+
+    [Fact]
+    public void OdoCrypt_ScheduleKeyUsesConsensusIntervalBoundary()
+    {
+        const uint interval = 864000;
+
+        Assert.Equal(0u, OdoCrypt.DeriveKey(interval - 1, interval));
+        Assert.Equal(interval, OdoCrypt.DeriveKey(interval, interval));
+        Assert.Equal(interval, OdoCrypt.DeriveKey(interval * 2 - 1, interval));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            OdoCrypt.DeriveKey(1, 0));
+    }
+
+    [Fact]
+    public void OdoCrypt_HashMatchesPinnedDigiByteImplementation()
+    {
+        // DigiByte mainnet activation block 9,112,320. The expected PoW hash
+        // was independently reproduced by dgbminer 91297fd's cipher and
+        // Keccak implementation with the reviewed ten-day network schedule.
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        var header = "020e0020ca8f5c98bc0e0c77cd4dddc76a1a6ac0b9b015a6d5e7cfd40500000000000000d6feb064acf05aaf278fd135479d0028b0aecfbac4a722c5c9fecaa260e7a673a60a355dffff001cc8acfc25".HexToByteArray();
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 9112320,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        const uint nTime = 1563757222;
+        var blockTemplate = new BlockTemplate
+        {
+            Height = 9112320,
+            CurTime = nTime,
+            OdoKey = OdoCrypt.DeriveKey(nTime, 864000),
+        };
+        OdoCrypt.ValidateJobContract(blockTemplate, network);
+        hasher.Digest(header, hash, (ulong) nTime, blockTemplate, null, network);
+
+        Assert.Equal(
+            "8fe8946b1339262591dc2a437c29d42edb02c8c902caea06729dcd0000000000",
+            hash.ToHexString());
+    }
+
+    [Fact]
+    public void OdoCrypt_RegtestJobContractRejectsHeight600AndAccepts601()
+    {
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(new BlockTemplate
+            {
+                Height = 600,
+                CurTime = 0,
+                OdoKey = 0,
+            }, network));
+
+        Assert.Contains("not active", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        OdoCrypt.ValidateJobContract(new BlockTemplate
+        {
+            Height = 601,
+            CurTime = 0,
+            OdoKey = 0,
+        }, network);
+    }
+
+    [Fact]
+    public void OdoCrypt_JobContractRejectsMissingOrInvalidConsensusMetadata()
+    {
+        var blockTemplate = new BlockTemplate
+        {
+            Height = 601,
+            CurTime = 0,
+            OdoKey = 0,
+        };
+
+        var missingActivation = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(blockTemplate, missingActivation));
+
+        var missingSchedule = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(blockTemplate, missingSchedule));
+
+        var validNetwork = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        var missingDaemonKey = new BlockTemplate { Height = 601, CurTime = 0 };
+        var missingKeyError = Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(missingDaemonKey, validNetwork));
+        Assert.Contains("algo=odo", missingKeyError.Message,
+            StringComparison.Ordinal);
+
+        var mismatchedDaemonKey = new BlockTemplate
+        {
+            Height = 601,
+            CurTime = 864000,
+            OdoKey = 1,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(mismatchedDaemonKey, validNetwork));
+    }
+
+    [Fact]
+    public void OdoCrypt_ShareTimeCanCrossTemplateScheduleBoundary()
+    {
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        const uint interval = 864000;
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = interval,
+        };
+        var blockTemplate = new BlockTemplate
+        {
+            Height = 601,
+            CurTime = interval - 1,
+            OdoKey = 0,
+        };
+
+        OdoCrypt.ValidateJobContract(blockTemplate, network);
+        hasher.Digest(testValue2, hash, (ulong) interval, blockTemplate, null,
+            network);
+
+        Assert.Contains(hash, value => value != 0);
+    }
+
+    [Fact]
+    public void OdoCrypt_PerShareContractFailuresUseStratumErrors()
+    {
+        var hasher = new OdoCrypt();
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        var ex = Assert.Throws<StratumException>(() => hasher.Digest(testValue2,
+            new byte[32], (ulong) uint.MaxValue + 1, null, null, network));
+
+        Assert.Equal(StratumError.Other, ex.Code);
+
+        network.OdoCryptShapeChangeInterval = null;
+        ex = Assert.Throws<StratumException>(() => hasher.Digest(testValue2,
+            new byte[32], 0UL, null, null, network));
+
+        Assert.Equal(StratumError.Other, ex.Code);
+    }
+
+    [Fact]
+    public void OdoCrypt_CachedSchedulesAreThreadSafeAcrossKeys()
+    {
+        var hasher = new OdoCrypt();
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 1,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        // Exercise more keys than the bounded native cache can retain so replacement
+        // remains safe as well as concurrent lookup.
+        var keys = Enumerable.Range(0, 12)
+            .Select(x => (uint) x * 864000)
+            .ToArray();
+        var expected = keys.ToDictionary(key => key, key =>
+        {
+            var result = new byte[32];
+            hasher.Digest(testValue2, result, (ulong) key, null, null, network);
+            return result.ToHexString();
+        });
+
+        Parallel.For(0, 64, iteration =>
+        {
+            var key = keys[iteration % keys.Length];
+            var result = new byte[32];
+            hasher.Digest(testValue2, result, (ulong) key, null, null, network);
+            Assert.Equal(expected[key], result.ToHexString());
+        });
+    }
+
+    [Fact]
+    public void OdoCrypt_NativeBoundaryRejectsMalformedBuffers()
+    {
+        var input = Marshal.AllocHGlobal(80);
+        var output = Marshal.AllocHGlobal(32);
+
+        try
+        {
+            Assert.Equal(0, OdoCryptNative.Hash(IntPtr.Zero, output, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, IntPtr.Zero, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, output, 79, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, output, 81, 0));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input);
+            Marshal.FreeHGlobal(output);
+        }
     }
 
     [Fact]

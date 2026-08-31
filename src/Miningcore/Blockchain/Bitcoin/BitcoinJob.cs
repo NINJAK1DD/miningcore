@@ -903,6 +903,9 @@ public class BitcoinJob
         this.poolAddressDestination = poolAddressDestination;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        if(headerHasher is OdoCrypt)
+            OdoCrypt.ValidateJobContract(blockTemplate, networkParams);
+
         mwebPayload = ParseMwebPayload(coin, blockTemplate);
 
         var coinbaseString = !string.IsNullOrEmpty(cc.PaymentProcessing?.CoinbaseString) ?

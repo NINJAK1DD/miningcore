@@ -376,6 +376,7 @@ and recovery requirements.
 | Validate a new deployment before miners | [Operator preflight](docs/operations.md#before-accepting-miners) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
+| Configure and commission DigiByte direct mining | [DigiByte guide](docs/digibyte.md) |
 | Review newly added Scrypt daemon contracts | [Scrypt coin definitions](docs/scrypt-coin-definitions.md) |
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](docs/version-rolling.md) |
 
@@ -499,8 +500,9 @@ terminal compatibility and log-processing requirements.
 Windows is supported for development and testing, not recommended for hosting a production pool.
 
 1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
-2. Optionally install [Visual Studio 2026](https://visualstudio.microsoft.com/vs/) with the
-   **.NET desktop build tools** and **Desktop development with C++** workloads.
+2. Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the
+   **Desktop development with C++** workload and the v143 toolset. Windows builds compile the
+   pinned Odocrypt runtime from source and fail closed when this toolchain is unavailable.
 3. Clone the repository and open [Miningcore.sln](src/Miningcore.sln), or run:
 
 ```dosbatch
@@ -508,6 +510,13 @@ build-windows.bat
 ```
 
 The published files are written to `build`.
+
+For managed-only development on a machine without the C++ workload, `dotnet build` and unrelated
+tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
+output: Odocrypt tests and runtime use will fail, and Windows publish always requires the verified
+source build. For local toolchain-compatibility testing, an installed alternative can be selected
+with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
+toolset is actually exercised. Release CI remains pinned to v143.
 
 ### Docker Engine
 

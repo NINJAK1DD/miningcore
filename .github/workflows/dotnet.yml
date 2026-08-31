@@ -55,6 +55,10 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
+    - name: Validate Odocrypt native source inventory
+      shell: bash
+      run: bash scripts/release/test-odocrypt-source-inventory.sh
+
     - name: Lint Linux native and build-audit scripts
       shell: bash
       run: >-
@@ -68,6 +72,8 @@ jobs:
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-linux-package-targets.sh
         scripts/release/test-msbuild-warning-file-logger.sh
+        scripts/release/test-odocrypt-source-inventory.sh
+        scripts/release/test-odocrypt-source-verifiers.sh
         scripts/release/test-ubuntu-source-build.sh
 
     - name: Test Linux native symbol contracts
@@ -322,6 +328,101 @@ jobs:
       with:
         dotnet-version: 10.0.x
 
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+      with:
+        msbuild-architecture: x64
+
+    - name: Verify pinned Odocrypt sources
+      shell: bash
+      run: >-
+        bash scripts/release/verify-pinned-source-files.sh
+        src/Native
+        src/Native/libodocrypt/upstream.sha256
+
+    - name: Test Odocrypt source-verifier parity
+      shell: bash
+      run: bash scripts/release/test-odocrypt-source-verifiers.sh
+
+    - name: Restore Windows native tests
+      run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
+
+    - name: Reject opaque checked-in Windows Odocrypt runtime
+      shell: pwsh
+      run: |
+        if(Test-Path 'libs\runtimes\win-x64\libodocrypt.dll') {
+          throw 'Windows Odocrypt must be built from reviewed source, not checked in'
+        }
+
+    - name: Test source-built Windows Odocrypt runtime
+      shell: pwsh
+      run: |
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
+
+    - name: Test Windows Odocrypt toolset override boundary
+      shell: pwsh
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        try {
+          $env:MININGCORE_WINDOWS_PLATFORM_TOOLSET = 'v143'
+          $toolsetOutput = dotnet build src/Miningcore/Miningcore.csproj `
+            --no-restore `
+            --configuration Release `
+            --framework net10.0 2>&1
+          if($LASTEXITCODE -ne 0) {
+            $toolsetStatus = $LASTEXITCODE
+            $toolsetOutput | Write-Host
+            throw "Windows Odocrypt toolset-override build failed with exit status $toolsetStatus"
+          }
+          if(($toolsetOutput | Out-String) -notmatch `
+              'Building reviewed Windows Odocrypt runtime') {
+            $toolsetOutput | Write-Host
+            throw 'Windows Odocrypt toolset override did not force the native build target'
+          }
+        }
+        finally {
+          Remove-Item Env:MININGCORE_WINDOWS_PLATFORM_TOOLSET -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+        }
+
+    - name: Test managed-only Windows opt-out boundaries
+      shell: pwsh
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          -p:BuildOdoCryptWindows=false `
+          --filter "FullyQualifiedName~Miningcore.Tests.Coins.CurrentCoinDefinitionTests"
+        if($LASTEXITCODE -ne 0) {
+          exit $LASTEXITCODE
+        }
+        if((Test-Path 'src\Miningcore\bin\Release\net10.0\libodocrypt.dll') -or `
+            (Test-Path 'src\Miningcore.Tests\bin\Release\net10.0\libodocrypt.dll')) {
+          throw 'Managed-only build retained a stale Odocrypt runtime'
+        }
+
+        $publishOutput = dotnet publish src/Miningcore/Miningcore.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          --output build/windows-managed-only-publish `
+          -p:BuildOdoCryptWindows=false 2>&1
+        if($LASTEXITCODE -eq 0) {
+          throw 'Windows publish unexpectedly accepted BuildOdoCryptWindows=false'
+        }
+        if(($publishOutput | Out-String) -notmatch `
+            'Windows publish requires BuildOdoCryptWindows=true') {
+          $publishOutput | Write-Host
+          throw 'Windows publish opt-out failed without its targeted diagnostic'
+        }
+        $global:LASTEXITCODE = 0
+
     - name: Restore dependencies
       run: dotnet restore src/Miningcore/Miningcore.csproj --runtime win-x64
 
@@ -336,10 +437,12 @@ jobs:
         --output build/windows-x64
 
     - name: Smoke-test Windows build
-      run: .\build\windows-x64\Miningcore.exe --version
-
-    - name: Restore Windows native smoke test
-      run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
+      shell: pwsh
+      run: |
+        if(!(Test-Path 'build\windows-x64\libodocrypt.dll' -PathType Leaf)) {
+          throw 'Published Windows build is missing the source-built Odocrypt runtime'
+        }
+        .\build\windows-x64\Miningcore.exe --version
 
     - name: Test Windows share recovery safety
       run: >-

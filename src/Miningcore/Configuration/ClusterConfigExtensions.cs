@@ -53,6 +53,8 @@ public partial class BeamCoinTemplate
 
 public partial class BitcoinTemplate
 {
+    private static readonly ChainName SignetChain = new("Signet");
+
     public BitcoinTemplate()
     {
         merkleTreeHasherValue = new Lazy<IHashAlgorithm>(() =>
@@ -95,14 +97,29 @@ public partial class BitcoinTemplate
         if(Networks == null || Networks.Count == 0)
             return null;
 
-        if(chain == ChainName.Mainnet)
-            return Networks["main"];
-        else if(chain == ChainName.Testnet)
-            return Networks["test"];
-        else if(chain == ChainName.Regtest)
-            return Networks["regtest"];
+        string networkName;
 
-        throw new NotSupportedException("unsupported network type");
+        if(chain == ChainName.Mainnet)
+            networkName = "main";
+        else if(chain == ChainName.Testnet)
+            networkName = "test";
+        else if(chain == SignetChain)
+            networkName = "signet";
+        else if(chain == ChainName.Regtest)
+            networkName = "regtest";
+        else
+        {
+            throw new NotSupportedException(
+                $"Coin template '{Name}' does not support daemon network " +
+                $"'{chain}'");
+        }
+
+        if(Networks.TryGetValue(networkName, out var result))
+            return result;
+
+        throw new NotSupportedException(
+            $"Coin template '{Name}' does not define required network " +
+            $"metadata for '{networkName}'");
     }
 
     #region Overrides of CoinTemplate
