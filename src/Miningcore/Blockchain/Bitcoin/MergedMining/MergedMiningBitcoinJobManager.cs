@@ -735,6 +735,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             {
                 share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
                 share.AccountingRole = ShareAccountingRole.Parent;
+                share.RewardBasisSatoshis = job.RewardBasisSatoshis;
                 share.PreserveCreated = true;
                 share.PairedShare = CreateAuxiliaryShareProjection(context, result,
                     share, now);
@@ -747,9 +748,20 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             {
                 share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
                 share.AccountingRole = ShareAccountingRole.Single;
+                share.RewardBasisSatoshis = job.RewardBasisSatoshis;
                 share.PreserveCreated = true;
                 Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
                     poolConfig, share);
+            }
+            else
+            {
+                // SOLO/SOLO proofs are ordinary statistical shares. Normalize every
+                // accounting-only field defensively before crossing the persistence boundary.
+                share.AccountingId = null;
+                share.AccountingRole = ShareAccountingRole.None;
+                share.RewardBasisSatoshis = 0;
+                share.PpsCalculatedAmount = null;
+                share.PairedShare = null;
             }
 
             // Publish a cleared statistical copy before daemon submission begins so a slow peer

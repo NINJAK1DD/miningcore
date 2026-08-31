@@ -121,10 +121,16 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.2.0 release example' \
-  'export MININGCORE_VERSION=v0.2.0' "$document"
-assert_file_contains 'the v0.2.0 container example' \
-  'MININGCORE_VERSION=v0.2.0' "$readme"
+assert_file_contains 'the v0.2.1 release example' \
+  'export MININGCORE_VERSION=v0.2.1' "$document"
+assert_file_contains 'the v0.2.1 container example' \
+  'MININGCORE_VERSION=v0.2.1' "$readme"
+assert_file_contains 'the v0.2.1 database migration example' \
+  'export MININGCORE_VERSION=v0.2.1' "$database_document"
+assert_file_contains 'the v0.2.1 hotfix task route' \
+  '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
+assert_file_contains 'the v0.2.1 troubleshooting route' \
+  '[v0.2.1 hotfix](releases.md#v021-hotfix)' "$repository_root/docs/troubleshooting.md"
 assert_file_contains 'the quick-start Ubuntu 26.04 runtime package' \
   'aspnetcore-runtime-10.0' "$readme"
 assert_file_contains 'the quick-start checksum readiness latch' \
@@ -183,10 +189,10 @@ assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.2.0 recovery example' \
-  'export TAG=v0.2.0'
-assert_contains 'the v0.2.0 tagging example' \
-  'NEXT_VERSION=v0.2.0'
+assert_contains 'the v0.2.1 recovery example' \
+  'export TAG=v0.2.1'
+assert_contains 'the v0.2.1 tagging example' \
+  'NEXT_VERSION=v0.2.1'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
@@ -494,18 +500,19 @@ fi
 
 if grep -Eh \
     '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
-    "$readme" "$document" |
+    "$readme" "$document" "$database_document" |
     grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.2\.0([[:space:]]|$)'; then
-  echo 'README or release guide contains a stale copy-paste release assignment' >&2
+      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.2\.1([[:space:]]|$)'; then
+  echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
   exit 1
 fi
 
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.2\.0([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.2\.0([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.2\.0([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.2\.0([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.2.0 copy-paste assignment inventory is incomplete or duplicated' >&2
+if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.2\.1([[:space:]]|$)' "$readme") -ne 3 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.2\.1([[:space:]]|$)' "$document") -ne 2 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.2\.1([[:space:]]|$)' "$database_document") -ne 1 ]] ||
+    [[ $(grep -Ec '^NEXT_VERSION=v0\.2\.1([[:space:]]|$)' "$document") -ne 1 ]] ||
+    [[ $(grep -Ec '^export TAG=v0\.2\.1([[:space:]]|$)' "$document") -ne 1 ]]; then
+  echo 'The v0.2.1 copy-paste assignment inventory is incomplete or duplicated' >&2
   exit 1
 fi
 

@@ -135,7 +135,7 @@ that uses the database, take a verified backup, then point this shell at that ex
 candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-export MININGCORE_VERSION=v0.2.0
+export MININGCORE_VERSION=v0.2.1
 export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
 export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
 test -d "$MININGCORE_CANDIDATE_DIR/migrations"

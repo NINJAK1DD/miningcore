@@ -40,7 +40,9 @@ internal static class ShareAccounting
         if(envelope.BlockOnly)
         {
             if(envelope.PairedShare != null || !string.IsNullOrEmpty(envelope.AccountingId) ||
-               envelope.AccountingRole != ShareAccountingRole.None)
+               envelope.AccountingRole != ShareAccountingRole.None ||
+               envelope.RewardBasisSatoshis != 0 ||
+               envelope.PpsCalculatedAmount.HasValue)
                 throw new InvalidDataException(
                     "Block-only records must not carry ordinary share-accounting data");
 
