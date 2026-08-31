@@ -46,11 +46,16 @@ copying a recovery command from the maintainer section.
 
 ## Post-v0.2.1 development
 
+**Breaking DigiByte template rename:** `digibyte-groestl` is removed rather than redirected to a
+different proof of work. Operators must stop that pool and explicitly select a supported current
+algorithm; current-mainnet support adds `digibyte-odocrypt` in its place.
+
 DigiByte current-mainnet support replaces the retired Myriad-Groestl catalogue entry with
 activation- and schedule-aware Odocrypt. The Odocrypt cipher is pinned to DigiByte Core v9.26.5;
-network-specific activation and schedule metadata is validated before startup, and native
-known-answer, symbol and relocation checks protect the packaged implementation. Existing DigiByte
-SHA-256d, Scrypt, Skein and Qubit templates remain available. See the
+network-specific activation and schedule metadata is validated before startup, template `odokey`
+is checked against template time, submitted shares derive their key from submitted header time,
+and native known-answer, symbol, relocation and rebuilt-Windows checks protect the packaged
+implementation. Existing DigiByte SHA-256d, Scrypt, Skein and Qubit templates remain available. See the
 [DigiByte operator guide](digibyte.md).
 
 ## v0.2.1 hotfix

@@ -36,12 +36,10 @@
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <DisableSpecificWarnings>4244;4267;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <LanguageStandard>stdcpp14</LanguageStandard>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
@@ -60,7 +58,12 @@
   <ItemGroup>
     <ClCompile Include="exports.cpp" />
     <ClCompile Include="..\libmultihash\KeccakP-800-reference.c" />
-    <ClCompile Include="..\libmultihash\odocrypt.cpp" />
+    <ClCompile Include="..\libmultihash\odocrypt.cpp">
+      <!-- The byte-pinned DigiByte source uses range-bounded size conversions.
+           Keep this exception scoped to that immutable file; Miningcore's
+           adapter remains warning-clean under /W4 /WX. -->
+      <DisableSpecificWarnings>4244;4267;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Makefile" />

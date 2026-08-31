@@ -1,7 +1,9 @@
+using System.IO;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Native;
+using Miningcore.Stratum;
 
 namespace Miningcore.Crypto.Hashing.Algorithms;
 
@@ -20,6 +22,54 @@ public unsafe class OdoCrypt : IHashAlgorithm
         return nTime - nTime % shapeChangeInterval;
     }
 
+    internal static void ValidateJobContract(BlockTemplate blockTemplate,
+        BitcoinTemplate.BitcoinNetworkParams network)
+    {
+        ArgumentNullException.ThrowIfNull(blockTemplate);
+        ArgumentNullException.ThrowIfNull(network);
+
+        var activationHeight = network.OdoCryptActivationHeight;
+
+        if(!activationHeight.HasValue || activationHeight.Value == 0)
+        {
+            throw new InvalidDataException(
+                "Odocrypt requires a nonzero network activation height");
+        }
+
+        if(blockTemplate.Height < activationHeight.Value)
+        {
+            throw new InvalidDataException(
+                $"Odocrypt is not active at height {blockTemplate.Height}; " +
+                $"activation is {activationHeight.Value}");
+        }
+
+        var interval = network.OdoCryptShapeChangeInterval;
+
+        if(!interval.HasValue || interval.Value == 0)
+        {
+            throw new InvalidDataException(
+                "Odocrypt requires a nonzero network shape-change interval");
+        }
+
+        if(!blockTemplate.OdoKey.HasValue)
+        {
+            throw new InvalidDataException(
+                "Odocrypt requires the daemon's 'odokey' getblocktemplate field. " +
+                "Use a compatible DigiByte Core daemon and request templates " +
+                "with the Odocrypt algorithm parameter (algo=odo)");
+        }
+
+        var templateKey = DeriveKey(blockTemplate.CurTime, interval.Value);
+
+        if(blockTemplate.OdoKey.Value != templateKey)
+        {
+            throw new InvalidDataException(
+                $"Odocrypt daemon key {blockTemplate.OdoKey.Value} does not " +
+                $"match the key {templateKey} derived from template time " +
+                $"{blockTemplate.CurTime}");
+        }
+    }
+
     public void Digest(ReadOnlySpan<byte> data, Span<byte> result,
         params object[] extra)
     {
@@ -31,8 +81,6 @@ public unsafe class OdoCrypt : IHashAlgorithm
             $"{nameof(extra)} must contain the block time and network parameters");
         Contract.Requires<ArgumentException>(extra[0] is ulong,
             $"{nameof(extra)} block time must be an unsigned 64-bit value");
-        Contract.Requires<ArgumentException>(extra[1] is BlockTemplate,
-            $"{nameof(extra)} must contain a Bitcoin block template");
         Contract.Requires<ArgumentException>(
             extra[3] is BitcoinTemplate.BitcoinNetworkParams,
             $"{nameof(extra)} must contain Bitcoin network parameters");
@@ -40,54 +88,31 @@ public unsafe class OdoCrypt : IHashAlgorithm
         var nTime64 = (ulong) extra[0];
 
         if(nTime64 > uint.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(extra),
-                "Odocrypt block time exceeds the 32-bit header field");
+        {
+            throw new StratumException(StratumError.Other,
+                "Odocrypt share time exceeds the 32-bit header field");
+        }
 
-        var blockTemplate = (BlockTemplate) extra[1];
         var network = (BitcoinTemplate.BitcoinNetworkParams) extra[3];
-        var activationHeight = network.OdoCryptActivationHeight;
         var interval = network.OdoCryptShapeChangeInterval;
-
-        if(!activationHeight.HasValue || activationHeight.Value == 0)
-        {
-            throw new InvalidOperationException(
-                "Odocrypt requires a nonzero network activation height");
-        }
-
-        if(blockTemplate.Height < activationHeight.Value)
-        {
-            throw new InvalidOperationException(
-                $"Odocrypt is not active at height {blockTemplate.Height}; " +
-                $"activation is {activationHeight.Value}");
-        }
 
         if(!interval.HasValue || interval.Value == 0)
         {
-            throw new InvalidOperationException(
-                "Odocrypt requires a nonzero network shape-change interval");
+            throw new StratumException(StratumError.Other,
+                "Odocrypt job has no valid shape-change interval");
         }
 
         var key = DeriveKey((uint) nTime64, interval.Value);
-
-        if(!blockTemplate.OdoKey.HasValue)
-        {
-            throw new InvalidOperationException(
-                "Odocrypt requires the daemon's odokey template field");
-        }
-
-        if(blockTemplate.OdoKey.Value != key)
-        {
-            throw new InvalidOperationException(
-                $"Odocrypt daemon key {blockTemplate.OdoKey.Value} does not " +
-                $"match derived key {key}");
-        }
 
         fixed(byte* input = data)
         fixed(byte* output = result)
         {
             if(OdoCryptNative.Hash((IntPtr) input, (IntPtr) output,
                    (uint) data.Length, key) != 1)
-                throw new InvalidOperationException("Native Odocrypt hashing failed");
+            {
+                throw new StratumException(StratumError.Other,
+                    "Native Odocrypt share hashing failed");
+            }
         }
     }
 }

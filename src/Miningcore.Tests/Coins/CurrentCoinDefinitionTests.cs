@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Miningcore.Blockchain.Bitcoin;
@@ -48,7 +49,7 @@ public class CurrentCoinDefinitionTests : TestBase
             template.Networks["test"].OdoCryptActivationHeight);
         Assert.Equal(86400u,
             template.Networks["test"].OdoCryptShapeChangeInterval);
-        Assert.Equal(600u,
+        Assert.Equal(20001u,
             template.Networks["signet"].OdoCryptActivationHeight);
         Assert.Equal(86400u,
             template.Networks["signet"].OdoCryptShapeChangeInterval);
@@ -87,6 +88,64 @@ public class CurrentCoinDefinitionTests : TestBase
 
         Assert.Contains("requires typed network activation", ex.Message,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("HeaderHasher")]
+    [InlineData("HEADERHASHER")]
+    public void Loader_RejectsNonCanonicalOdoCryptHeaderHasherProperty(
+        string propertyName)
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadOdoCryptTemplate(CreateOdoCryptNetworks(),
+                headerHasherProperty: propertyName));
+
+        Assert.Contains(propertyName, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("exact casing 'headerHasher'", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loader_RejectsCaseVariantOdoCryptHeaderHasherDuplicates()
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadOdoCryptTemplate(CreateOdoCryptNetworks(),
+                extraTemplateProperty: new JProperty("HeaderHasher",
+                    new JObject { ["hash"] = "odocrypt" })));
+
+        Assert.Contains("ambiguous case-variant duplicates", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loader_RejectsOdoCryptOnNonBitcoinFamily()
+    {
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadOdoCryptTemplate(CreateOdoCryptNetworks(), family: "equihash"));
+
+        Assert.Contains("Bitcoin Stratum runtime", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetNetwork_ReportsMissingSignetMetadata()
+    {
+        var template = new BitcoinTemplate
+        {
+            Name = "Missing Signet Test",
+            Networks = new Dictionary<string,
+                BitcoinTemplate.BitcoinNetworkParams>
+            {
+                ["main"] = new(),
+            },
+        };
+
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            template.GetNetwork(new ChainName("signet")));
+
+        Assert.Contains("Missing Signet Test", ex.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("signet", ex.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -713,7 +772,7 @@ public class CurrentCoinDefinitionTests : TestBase
         },
         ["signet"] = new JObject
         {
-            ["odoCryptActivationHeight"] = 600,
+            ["odoCryptActivationHeight"] = 20001,
             ["odoCryptShapeChangeInterval"] = 86400,
         },
         ["regtest"] = new JObject
@@ -725,7 +784,9 @@ public class CurrentCoinDefinitionTests : TestBase
 
     private CoinTemplate LoadOdoCryptTemplate(JObject networks,
         string headerHasher = "odocrypt",
-        JProperty extraTemplateProperty = null)
+        JProperty extraTemplateProperty = null,
+        string headerHasherProperty = "headerHasher",
+        string family = "bitcoin")
     {
         var path = Path.GetTempFileName();
 
@@ -735,8 +796,8 @@ public class CurrentCoinDefinitionTests : TestBase
             {
                 ["name"] = "Odocrypt Test",
                 ["symbol"] = "ODO",
-                ["family"] = "bitcoin",
-                ["headerHasher"] = new JObject
+                ["family"] = family,
+                [headerHasherProperty] = new JObject
                 {
                     ["hash"] = headerHasher,
                 },

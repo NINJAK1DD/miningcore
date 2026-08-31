@@ -77,10 +77,10 @@ HAVE_AVX512F=$("$NativeDir/check_cpu.sh" avx512f && echo -DHAVE_AVX512F || echo)
 
 export HAVE_FEATURE="$HAVE_AES $HAVE_SSE2 $HAVE_SSE3 $HAVE_SSSE3 $HAVE_PCLMUL $HAVE_AVX $HAVE_AVX2 $HAVE_AVX512F"
 
-build_native_library libmultihash libmultihash.so \
-  CPU_FLAGS="$CPU_FLAGS" HAVE_FEATURE="$HAVE_FEATURE"
 bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
   "$NativeDir" "$NativeDir/libodocrypt/upstream.sha256"
+build_native_library libmultihash libmultihash.so \
+  CPU_FLAGS="$CPU_FLAGS" HAVE_FEATURE="$HAVE_FEATURE"
 build_native_library libodocrypt libodocrypt.so
 build_native_library libbeamhash libbeamhash.so
 build_native_library libetchash libetchash.so

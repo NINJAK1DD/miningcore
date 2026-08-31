@@ -17,6 +17,9 @@ public static class CoinTemplateLoader
     private const string DisableVersionRollingProperty =
         "disableVersionRolling";
     private const string OdoCryptHasher = "odocrypt";
+    private const string HeaderHasherProperty = "headerHasher";
+    private const string HasherNameProperty = "hash";
+    private const string NetworksProperty = "networks";
     private const string OdoCryptActivationProperty =
         "odoCryptActivationHeight";
     private const string OdoCryptIntervalProperty =
@@ -172,13 +175,57 @@ public static class CoinTemplateLoader
         }
     }
 
-    private static void ValidateOdoCryptContract(string filename, string coinId,
-        JObject template)
+    private static JProperty GetSingleProperty(JObject parent,
+        string propertyName, string filename, string coinId, bool required)
     {
-        var headerHasher = template["headerHasher"] as JObject;
-        var isOdoCrypt = string.Equals(headerHasher?["hash"]?.Value<string>(),
-            OdoCryptHasher, StringComparison.OrdinalIgnoreCase);
-        var networks = template["networks"] as JObject;
+        var properties = parent.Properties().Where(x => string.Equals(x.Name,
+            propertyName, StringComparison.OrdinalIgnoreCase)).ToArray();
+
+        if(properties.Length == 0)
+        {
+            if(required)
+            {
+                throw new PoolStartupException(
+                    $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                    $"missing required property '{propertyName}'");
+            }
+
+            return null;
+        }
+
+        if(properties.Length != 1)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"property '{propertyName}' has ambiguous case-variant duplicates");
+        }
+
+        if(properties[0].Name != propertyName)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"property '{properties[0].Name}' must use the exact casing " +
+                $"'{propertyName}'");
+        }
+
+        return properties[0];
+    }
+
+    private static void ValidateOdoCryptContract(string filename, string coinId,
+        CoinFamily family, JObject template)
+    {
+        var headerHasherProperties = template.Properties().Where(x =>
+            string.Equals(x.Name, HeaderHasherProperty,
+                StringComparison.OrdinalIgnoreCase)).ToArray();
+        var isOdoCrypt = headerHasherProperties
+            .Select(x => x.Value as JObject)
+            .Where(x => x != null)
+            .SelectMany(x => x.Properties())
+            .Where(x => string.Equals(x.Name, HasherNameProperty,
+                StringComparison.OrdinalIgnoreCase))
+            .Any(x => x.Value.Type == JTokenType.String && string.Equals(
+                x.Value.Value<string>(), OdoCryptHasher,
+                StringComparison.OrdinalIgnoreCase));
         var contractProperties = new[]
         {
             OdoCryptActivationProperty,
@@ -202,6 +249,41 @@ public static class CoinTemplateLoader
 
             return;
         }
+
+        if(family != CoinFamily.Bitcoin)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                "Odocrypt is supported only by templates using the Bitcoin " +
+                "Stratum runtime");
+        }
+
+        var canonicalHeaderHasher = GetSingleProperty(template,
+            HeaderHasherProperty, filename, coinId, true);
+
+        if(canonicalHeaderHasher.Value is not JObject canonicalHasherObject)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"property '{HeaderHasherProperty}' must be a JSON object");
+        }
+
+        var canonicalHash = GetSingleProperty(canonicalHasherObject,
+            HasherNameProperty, filename, coinId, true);
+
+        if(canonicalHash.Value.Type != JTokenType.String ||
+           !string.Equals(canonicalHash.Value.Value<string>(), OdoCryptHasher,
+               StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"property '{HeaderHasherProperty}.{HasherNameProperty}' must " +
+                $"name the '{OdoCryptHasher}' hasher");
+        }
+
+        var networksProperty = GetSingleProperty(template, NetworksProperty,
+            filename, coinId, true);
+        var networks = networksProperty.Value as JObject;
 
         if(networks == null)
         {
@@ -259,19 +341,29 @@ public static class CoinTemplateLoader
 
                 var value = properties[0].Value;
 
-                if(value.Type != JTokenType.Integer ||
-                   !ulong.TryParse(value.ToString(), out var parsed) ||
-                   parsed == 0 || parsed > uint.MaxValue)
+                if(value.Type != JTokenType.Integer)
                 {
-                    var unit = propertyName == OdoCryptIntervalProperty
-                        ? " number of seconds"
-                        : string.Empty;
-
                     throw new PoolStartupException(
                         $"Invalid coin-template '{coinId}' in file '{filename}': " +
                         $"network '{requiredNetwork}' property " +
-                        $"'{propertyName}' must be a nonzero unsigned 32-bit integer" +
-                        unit);
+                        $"'{propertyName}' must be a JSON integer");
+                }
+
+                if(!ulong.TryParse(value.ToString(), out var parsed) ||
+                   parsed > uint.MaxValue)
+                {
+                    throw new PoolStartupException(
+                        $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                        $"network '{requiredNetwork}' property " +
+                        $"'{propertyName}' must be an unsigned 32-bit integer");
+                }
+
+                if(parsed == 0)
+                {
+                    throw new PoolStartupException(
+                        $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                        $"network '{requiredNetwork}' property " +
+                        $"'{propertyName}' must be nonzero");
                 }
             }
         }
@@ -334,7 +426,7 @@ public static class CoinTemplateLoader
             ValidateVersionRollingMaskSyntax(filename, o.Key, templateObject,
                 VersionRollingConsensusMaskProperty);
             ValidateDisableVersionRollingSyntax(filename, o.Key, templateObject);
-            ValidateOdoCryptContract(filename, o.Key, templateObject);
+            ValidateOdoCryptContract(filename, o.Key, family, templateObject);
 
             var result = (CoinTemplate) o.Value.ToObject(CoinTemplate.Families[family]);
 

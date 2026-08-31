@@ -118,10 +118,9 @@
       "paymentProcessing": {
         "enabled": true,
         "minimumPayment": 0.5,
-        "payoutScheme": "PPLNS",
-        "payoutSchemeConfig": {
-          "factor": 2.0
-        }
+        // Start with SOLO while commissioning daemon, miner and payout paths.
+        // Move to a pooled scheme only after the validation checklist passes.
+        "payoutScheme": "SOLO"
       }
     }]
 }
