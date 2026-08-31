@@ -238,11 +238,14 @@ public class MergedMiningManagerReorgTests
     }
 
     [Theory]
-    [InlineData(PayoutScheme.PPS, true)]
-    [InlineData(PayoutScheme.PROP, false)]
-    [InlineData(PayoutScheme.PPLNS, false)]
+    [InlineData(PayoutScheme.PPS, true, false)]
+    [InlineData(PayoutScheme.PPS, true, true)]
+    [InlineData(PayoutScheme.PROP, false, false)]
+    [InlineData(PayoutScheme.PROP, false, true)]
+    [InlineData(PayoutScheme.PPLNS, false, false)]
+    [InlineData(PayoutScheme.PPLNS, false, true)]
     public async Task PooledParentStatisticalShare_PreservesAccountingEvidence(
-        PayoutScheme payoutScheme, bool expectsPpsCredit)
+        PayoutScheme payoutScheme, bool expectsPpsCredit, bool createPairedProjection)
     {
         var builder = new ContainerBuilder();
         builder.RegisterInstance(new JsonSerializerSettings());
@@ -259,6 +262,8 @@ public class MergedMiningManagerReorgTests
             Substitute.For<IBlockCandidateRecorder>());
         var (parent, auxiliary, cluster) = CreateConfig();
         parent.PaymentProcessing.PayoutScheme = payoutScheme;
+        if(createPairedProjection)
+            auxiliary.PaymentProcessing.PayoutScheme = payoutScheme;
         manager.Configure(parent, cluster);
         var validated = new Share
         {
@@ -271,9 +276,16 @@ public class MergedMiningManagerReorgTests
             NetworkDifficulty = 100,
             RewardBasisSatoshis = 1,
         };
+        var auxiliaryTemplate = new AuxBlockTemplate
+        {
+            Height = 200,
+            CoinbaseValue = 1_000_000_000,
+        };
         manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
         {
             Share = validated,
+            AuxiliaryBlockTemplate = auxiliaryTemplate,
+            AuxiliaryDifficulty = 200,
         };
         var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
             new RecyclableMemoryStreamManager(), clock, "merged-pps-accounting",
@@ -283,11 +295,12 @@ public class MergedMiningManagerReorgTests
             Miner = validated.Miner,
             Worker = validated.Worker,
             UserAgent = "test-miner",
+            AuxiliaryMiner = createPairedProjection ? "doge-miner" : null,
         };
         var job = TestJob.Create(new BlockTemplate
             {
                 CoinbaseValue = 625_000_000,
-            }, new AuxBlockTemplate(),
+            }, auxiliaryTemplate,
             "pps-accounting-job");
         context.AddJob(job, 4);
         worker.SetContext(context);
@@ -301,12 +314,30 @@ public class MergedMiningManagerReorgTests
         Assert.Same(validated, returned);
         Assert.NotNull(published);
         Assert.False(string.IsNullOrEmpty(returned.AccountingId));
-        Assert.Equal(ShareAccountingRole.Single, returned.AccountingRole);
+        Assert.Equal(createPairedProjection
+            ? ShareAccountingRole.Parent
+            : ShareAccountingRole.Single, returned.AccountingRole);
         Assert.Equal(625_000_000, returned.RewardBasisSatoshis);
         if(expectsPpsCredit)
             Assert.True(returned.PpsCalculatedAmount > 0);
         else
             Assert.Null(returned.PpsCalculatedAmount);
+        if(createPairedProjection)
+        {
+            Assert.NotNull(returned.PairedShare);
+            Assert.Equal(ShareAccountingRole.Auxiliary,
+                returned.PairedShare.AccountingRole);
+            Assert.Equal(1_000_000_000,
+                returned.PairedShare.RewardBasisSatoshis);
+            Assert.Equal(returned.AccountingId,
+                returned.PairedShare.AccountingId);
+            if(expectsPpsCredit)
+                Assert.True(returned.PairedShare.PpsCalculatedAmount > 0);
+            else
+                Assert.Null(returned.PairedShare.PpsCalculatedAmount);
+        }
+        else
+            Assert.Null(returned.PairedShare);
         Assert.Equal(returned.AccountingId, published.AccountingId);
         Assert.Equal(returned.RewardBasisSatoshis,
             published.RewardBasisSatoshis);
@@ -315,13 +346,22 @@ public class MergedMiningManagerReorgTests
         // The synthetic connection is not backed by a socket, so the manager
         // cannot populate the otherwise-required remote endpoint.
         published.IpAddress = IPAddress.Loopback.ToString();
-        Assert.Same(published, Assert.Single(
-            ShareAccounting.ValidateAndFlatten(published,
-                new Dictionary<string, PoolConfig>(StringComparer.OrdinalIgnoreCase)
-                {
-                    [parent.Id] = parent,
-                    [auxiliary.Id] = auxiliary,
-                })));
+        if(published.PairedShare != null)
+            published.PairedShare.IpAddress = published.IpAddress;
+        var projections = ShareAccounting.ValidateAndFlatten(published,
+            new Dictionary<string, PoolConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                [parent.Id] = parent,
+                [auxiliary.Id] = auxiliary,
+            });
+        Assert.Same(published, projections[0]);
+        if(createPairedProjection)
+        {
+            Assert.Equal(2, projections.Length);
+            Assert.Same(published.PairedShare, projections[1]);
+        }
+        else
+            Assert.Single(projections);
     }
 
     [Fact]
