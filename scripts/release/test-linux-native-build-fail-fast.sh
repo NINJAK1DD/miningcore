@@ -189,7 +189,9 @@ if [[ $(grep -Fxc $'\tfor (i = 0; i < Klen && i < 64; i++)' \
 fi
 
 mkdir -p \
+  "$work_dir/scripts/release" \
   "$work_dir/src/Miningcore" \
+  "$work_dir/src/Native/libodocrypt" \
   "$work_dir/src/Native/libmultihash" \
   "$work_dir/src/Native/libbeamhash" \
   "$work_dir/bin" \
@@ -197,6 +199,15 @@ mkdir -p \
 : > "$work_dir/trace"
 
 cp "$driver" "$work_dir/src/Miningcore/build-libs-linux.sh"
+cp "$source_verifier" \
+  "$work_dir/scripts/release/verify-pinned-source-files.sh"
+cp "$repository_root/src/Native/libodocrypt/upstream.sha256" \
+  "$work_dir/src/Native/libodocrypt/upstream.sha256"
+for pinned_source in \
+    odocrypt.cpp odocrypt.h KeccakP-800-reference.c KeccakP-800-SnP.h; do
+  cp "$repository_root/src/Native/libmultihash/$pinned_source" \
+    "$work_dir/src/Native/libmultihash/$pinned_source"
+done
 
 cat > "$work_dir/src/Native/check_cpu.sh" <<'SH'
 #!/usr/bin/env sh
