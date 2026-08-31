@@ -68,9 +68,9 @@ The implementation is based on immutable DigiByte sources:
 
 The cross-implementation vector uses the real mainnet activation block at height `9,112,320` and
 timestamp `1,563,757,222`. Its ten-day key is `1,562,976,000`, while an incorrect one-day miner
-uses `1,563,753,600`. The reviewed 80-byte header hashes to
-`8fe8946b1339262591dc2a437c29d42edb02c8c902caea06729dcd0000000000` through DigiByte's pinned
-cipher-plus-Keccak implementation. Linux and Windows execute that vector through Miningcore's
+uses `1,563,753,600`. The reviewed 80-byte header's Odocrypt digest (not SHA-256) is
+`8fe8946b1339262591dc2a437c29d42edb02c8c902caea06729dcd0000000000` (not SHA-256) through DigiByte's
+pinned cipher-plus-Keccak implementation. Linux and Windows execute that vector through Miningcore's
 actual C ABI; the Windows lane first rebuilds `libodocrypt.dll` from the reviewed sources rather
 than trusting the checked release binary.
 
