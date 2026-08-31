@@ -67,6 +67,10 @@ public class MergedMiningManagerReorgTests
             yield return new object[] { parent, PayoutScheme.SOLO, false };
     }
 
+    public static IEnumerable<object[]> MissingAuxiliaryAddressCases() =>
+        SupportedPayoutPairs()
+            .Where(x => (PayoutScheme) x[1] != PayoutScheme.SOLO);
+
     [Theory]
     [MemberData(nameof(SupportedPayoutPairs))]
     public void Configure_AcceptsEverySupportedIndependentPayoutPair(
@@ -124,6 +128,46 @@ public class MergedMiningManagerReorgTests
             manager.Configure(parent, cluster));
 
         Assert.Contains("requireAuxAddress must be true", error.Message);
+    }
+
+    [Theory]
+    [MemberData(nameof(MissingAuxiliaryAddressCases))]
+    public async Task SubmitShare_PooledAuxiliaryWithoutAddressFailsClosedBeforeAccounting(
+        PayoutScheme parentScheme, PayoutScheme auxiliaryScheme)
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var manager = new TestManager(container, clock, new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, auxiliary, cluster) = CreateConfig();
+        parent.PaymentProcessing.PayoutScheme = parentScheme;
+        auxiliary.PaymentProcessing.PayoutScheme = auxiliaryScheme;
+        manager.Configure(parent, cluster);
+        manager.ProcessMergedShareHandler = () => throw new InvalidOperationException(
+            "share processing must not run without auxiliary attribution");
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "missing-auxiliary-address",
+            false);
+        worker.SetContext(new MergedMiningBitcoinWorkerContext
+        {
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            UserAgent = "test-miner",
+        });
+
+        var error = await Assert.ThrowsAsync<StratumException>(() =>
+            manager.SubmitShareAsync(worker, new object[]
+            {
+                "ltc-miner.rig01", "unused-job", "00", "00000000", "00000000",
+            }, CancellationToken.None).AsTask());
+
+        Assert.Equal(StratumError.UnauthorizedWorker, error.Code);
+        Assert.Equal("auxiliary payout address is required for pooled merged mining",
+            error.Message);
     }
 
     [Fact]
