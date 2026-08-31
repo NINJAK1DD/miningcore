@@ -47,6 +47,26 @@ public class MergedMiningManagerReorgTests
             select new object[] { parent, auxiliary };
     }
 
+    public static IEnumerable<object[]> AccountingSubmissionCases()
+    {
+        foreach(var pair in SupportedPayoutPairs())
+        {
+            var parent = (PayoutScheme) pair[0];
+            var auxiliary = (PayoutScheme) pair[1];
+
+            if(parent != PayoutScheme.SOLO || auxiliary != PayoutScheme.SOLO)
+                yield return new object[] { parent, auxiliary, true };
+        }
+
+        foreach(var parent in new[]
+                {
+                    PayoutScheme.PPS,
+                    PayoutScheme.PROP,
+                    PayoutScheme.PPLNS,
+                })
+            yield return new object[] { parent, PayoutScheme.SOLO, false };
+    }
+
     [Theory]
     [MemberData(nameof(SupportedPayoutPairs))]
     public void Configure_AcceptsEverySupportedIndependentPayoutPair(
@@ -238,14 +258,10 @@ public class MergedMiningManagerReorgTests
     }
 
     [Theory]
-    [InlineData(PayoutScheme.PPS, true, false)]
-    [InlineData(PayoutScheme.PPS, true, true)]
-    [InlineData(PayoutScheme.PROP, false, false)]
-    [InlineData(PayoutScheme.PROP, false, true)]
-    [InlineData(PayoutScheme.PPLNS, false, false)]
-    [InlineData(PayoutScheme.PPLNS, false, true)]
-    public async Task PooledParentStatisticalShare_PreservesAccountingEvidence(
-        PayoutScheme payoutScheme, bool expectsPpsCredit, bool createPairedProjection)
+    [MemberData(nameof(AccountingSubmissionCases))]
+    public async Task MergedAccountingSubmission_PreservesIndependentEvidence(
+        PayoutScheme parentScheme, PayoutScheme auxiliaryScheme,
+        bool supplyAuxiliaryAddress)
     {
         var builder = new ContainerBuilder();
         builder.RegisterInstance(new JsonSerializerSettings());
@@ -261,9 +277,8 @@ public class MergedMiningManagerReorgTests
             Substitute.For<IExtraNonceProvider>(),
             Substitute.For<IBlockCandidateRecorder>());
         var (parent, auxiliary, cluster) = CreateConfig();
-        parent.PaymentProcessing.PayoutScheme = payoutScheme;
-        if(createPairedProjection)
-            auxiliary.PaymentProcessing.PayoutScheme = payoutScheme;
+        parent.PaymentProcessing.PayoutScheme = parentScheme;
+        auxiliary.PaymentProcessing.PayoutScheme = auxiliaryScheme;
         manager.Configure(parent, cluster);
         var validated = new Share
         {
@@ -295,7 +310,7 @@ public class MergedMiningManagerReorgTests
             Miner = validated.Miner,
             Worker = validated.Worker,
             UserAgent = "test-miner",
-            AuxiliaryMiner = createPairedProjection ? "doge-miner" : null,
+            AuxiliaryMiner = supplyAuxiliaryAddress ? "doge-miner" : null,
         };
         var job = TestJob.Create(new BlockTemplate
             {
@@ -314,15 +329,15 @@ public class MergedMiningManagerReorgTests
         Assert.Same(validated, returned);
         Assert.NotNull(published);
         Assert.False(string.IsNullOrEmpty(returned.AccountingId));
-        Assert.Equal(createPairedProjection
+        Assert.Equal(supplyAuxiliaryAddress
             ? ShareAccountingRole.Parent
             : ShareAccountingRole.Single, returned.AccountingRole);
         Assert.Equal(625_000_000, returned.RewardBasisSatoshis);
-        if(expectsPpsCredit)
+        if(parentScheme == PayoutScheme.PPS)
             Assert.True(returned.PpsCalculatedAmount > 0);
         else
             Assert.Null(returned.PpsCalculatedAmount);
-        if(createPairedProjection)
+        if(supplyAuxiliaryAddress)
         {
             Assert.NotNull(returned.PairedShare);
             Assert.Equal(ShareAccountingRole.Auxiliary,
@@ -331,7 +346,7 @@ public class MergedMiningManagerReorgTests
                 returned.PairedShare.RewardBasisSatoshis);
             Assert.Equal(returned.AccountingId,
                 returned.PairedShare.AccountingId);
-            if(expectsPpsCredit)
+            if(auxiliaryScheme == PayoutScheme.PPS)
                 Assert.True(returned.PairedShare.PpsCalculatedAmount > 0);
             else
                 Assert.Null(returned.PairedShare.PpsCalculatedAmount);
@@ -348,20 +363,37 @@ public class MergedMiningManagerReorgTests
         published.IpAddress = IPAddress.Loopback.ToString();
         if(published.PairedShare != null)
             published.PairedShare.IpAddress = published.IpAddress;
-        var projections = ShareAccounting.ValidateAndFlatten(published,
-            new Dictionary<string, PoolConfig>(StringComparer.OrdinalIgnoreCase)
-            {
-                [parent.Id] = parent,
-                [auxiliary.Id] = auxiliary,
-            });
+        var pools = new Dictionary<string, PoolConfig>(StringComparer.OrdinalIgnoreCase)
+        {
+            [parent.Id] = parent,
+            [auxiliary.Id] = auxiliary,
+        };
+        var projections = ShareAccounting.ValidateAndFlatten(published, pools);
         Assert.Same(published, projections[0]);
-        if(createPairedProjection)
+        if(supplyAuxiliaryAddress)
         {
             Assert.Equal(2, projections.Length);
             Assert.Same(published.PairedShare, projections[1]);
         }
         else
             Assert.Single(projections);
+
+        foreach(var projection in projections)
+        {
+            var credit = ShareAccounting.CreatePpsCredit(
+                pools[projection.PoolId], projection);
+            if(pools[projection.PoolId].PaymentProcessing.PayoutScheme ==
+               PayoutScheme.PPS)
+            {
+                Assert.NotNull(credit);
+                Assert.Equal(projection.PpsCalculatedAmount,
+                    credit.CalculatedAmount);
+                Assert.Equal(projection.AccountingId,
+                    credit.AccountingId.ToString("N"));
+            }
+            else
+                Assert.Null(credit);
+        }
     }
 
     [Fact]
