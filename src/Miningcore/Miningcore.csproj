@@ -13,6 +13,7 @@
         <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
         <IsLinux Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' == 'true'">true</IsLinux>
         <IsOSX Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">true</IsOSX>
+        <OdoCryptWindowsRuntime Condition="'$(IsWindows)' == 'true'">$(ProjectDir)..\Native\libodocrypt\bin\x64\Release\libodocrypt.dll</OdoCryptWindowsRuntime>
     </PropertyGroup>
 
     <ItemGroup>
@@ -128,11 +129,17 @@
         </None>
     </ItemGroup>
 
-    <!-- Reference pre-built library binaries on Windows  -->
+    <!-- Reference legacy pre-built library binaries on Windows. Odocrypt is deliberately absent
+         from this directory and is built from its reviewed, pinned sources below. -->
     <ItemGroup Condition="'$(IsWindows)' == 'true'">
-        <NativeLibs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll" />
+        <NativeLibs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll"
+                    Exclude="$(ProjectDir)..\..\libs\runtimes\win-x64\libodocrypt.dll" />
         <None Include="@(NativeLibs)" Visible="False">
             <Link>%(RecursiveDir)%(FileName)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Include="$(OdoCryptWindowsRuntime)" Visible="False">
+            <Link>libodocrypt.dll</Link>
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
     </ItemGroup>
@@ -154,11 +161,25 @@
         <Exec Command="(cd $(ProjectDir) &amp;&amp; bash build-libs-linux.sh $(OutDir))" />
     </Target>
 
-    <!-- Include library binaries in publish on Windows -->
-    <Target Name="NativeLibsPublishIncludeWin" BeforeTargets="PrepareForPublish" Condition="'$(IsWindows)' == 'true'">
+    <!-- Fail closed before every ordinary Windows build or publish: verify the immutable native
+         inputs and compile Odocrypt locally instead of trusting an opaque checked-in DLL. -->
+    <Target Name="BuildOdoCryptWindows" BeforeTargets="PrepareForBuild"
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+        <Error Condition="Exists('$(ProjectDir)..\..\libs\runtimes\win-x64\libodocrypt.dll')"
+               Text="Remove the opaque checked-in libs\runtimes\win-x64\libodocrypt.dll; Windows Odocrypt must be built from reviewed source." />
+        <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\..\scripts\release\build-windows-odocrypt.ps1&quot;" />
+        <Error Condition="!Exists('$(OdoCryptWindowsRuntime)')"
+               Text="The reviewed Windows Odocrypt build did not produce $(OdoCryptWindowsRuntime)." />
+    </Target>
+
+    <!-- Include legacy binaries plus the source-built Odocrypt runtime in Windows publishes. -->
+    <Target Name="NativeLibsPublishIncludeWin" BeforeTargets="PrepareForPublish"
+            DependsOnTargets="BuildOdoCryptWindows" Condition="'$(IsWindows)' == 'true'">
         <ItemGroup>
-            <Libs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll" />
+            <Libs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll"
+                  Exclude="$(ProjectDir)..\..\libs\runtimes\win-x64\libodocrypt.dll" />
             <ContentWithTargetPath Include="@(Libs->'%(FullPath)')" RelativePath="%(Libs.Identity)" TargetPath="%(Libs.Filename)%(Libs.Extension)" CopyToPublishDirectory="PreserveNewest" />
+            <ContentWithTargetPath Include="$(OdoCryptWindowsRuntime)" RelativePath="$(OdoCryptWindowsRuntime)" TargetPath="libodocrypt.dll" CopyToPublishDirectory="PreserveNewest" />
         </ItemGroup>
     </Target>
 

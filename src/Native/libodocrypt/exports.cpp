@@ -17,7 +17,9 @@ extern "C" {
 
 namespace
 {
-    const std::size_t cache_size = 4;
+    // Eight entries cover the built-in main/test/signet/regtest schedules for two
+    // concurrently configured DigiByte deployments while keeping memory bounded.
+    const std::size_t cache_size = 8;
 
     struct cache_entry
     {

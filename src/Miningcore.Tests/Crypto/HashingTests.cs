@@ -788,7 +788,9 @@ public class HashingTests : TestBase
             OdoCryptActivationHeight = 1,
             OdoCryptShapeChangeInterval = 864000,
         };
-        var keys = Enumerable.Range(0, 8)
+        // Exercise more keys than the bounded native cache can retain so replacement
+        // remains safe as well as concurrent lookup.
+        var keys = Enumerable.Range(0, 12)
             .Select(x => (uint) x * 864000)
             .ToArray();
         var expected = keys.ToDictionary(key => key, key =>

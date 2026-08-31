@@ -54,9 +54,10 @@ DigiByte current-mainnet support replaces the retired Myriad-Groestl catalogue e
 activation- and schedule-aware Odocrypt. The Odocrypt cipher is pinned to DigiByte Core v9.26.5;
 network-specific activation and schedule metadata is validated before startup, template `odokey`
 is checked against template time, submitted shares derive their key from submitted header time,
-and native known-answer, symbol, relocation and rebuilt-Windows checks protect the packaged
-implementation. Existing DigiByte SHA-256d, Scrypt, Skein and Qubit templates remain available. See the
-[DigiByte operator guide](digibyte.md).
+and native known-answer, symbol, relocation and source-built Windows checks protect the packaged
+implementation. Windows source builds compile Odocrypt from the reviewed pinned inputs instead of
+loading an opaque repository binary. Existing DigiByte SHA-256d, Scrypt, Skein and Qubit templates
+remain available. See the [DigiByte operator guide](digibyte.md).
 
 ## v0.2.1 hotfix
 

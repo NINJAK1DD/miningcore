@@ -337,33 +337,21 @@ jobs:
     - name: Restore Windows native tests
       run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
 
-    - name: Test committed Windows Odocrypt runtime
+    - name: Reject opaque checked-in Windows Odocrypt runtime
       shell: pwsh
       run: |
-        $committed = 'libs\runtimes\win-x64\libodocrypt.dll'
-        Write-Host "Committed DLL SHA-256: $((Get-FileHash $committed -Algorithm SHA256).Hash)"
+        if(Test-Path 'libs\runtimes\win-x64\libodocrypt.dll') {
+          throw 'Windows Odocrypt must be built from reviewed source, not checked in'
+        }
+
+    - name: Test source-built Windows Odocrypt runtime
+      shell: pwsh
+      run: |
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
           --no-restore `
           --configuration Release `
           --framework net10.0 `
           --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
-
-    - name: Build reviewed Windows Odocrypt runtime
-      shell: pwsh
-      run: |
-        msbuild src\Native\libodocrypt\libodocrypt.sln `
-          /m /p:Configuration=Release /p:Platform=x64
-        $rebuilt = (Resolve-Path `
-          src\Native\libodocrypt\bin\x64\Release\libodocrypt.dll).Path
-        Copy-Item $rebuilt libs\runtimes\win-x64\libodocrypt.dll -Force
-        $testCopies = @(Get-ChildItem `
-          src\Miningcore.Tests\bin\Release -Recurse -Filter libodocrypt.dll)
-        if($testCopies.Count -eq 0) {
-          throw 'Committed Odocrypt test did not produce a native runtime copy'
-        }
-        foreach($copy in $testCopies) {
-          Copy-Item $rebuilt $copy.FullName -Force
-        }
 
     - name: Restore dependencies
       run: dotnet restore src/Miningcore/Miningcore.csproj --runtime win-x64
@@ -380,15 +368,6 @@ jobs:
 
     - name: Smoke-test Windows build
       run: .\build\windows-x64\Miningcore.exe --version
-
-    - name: Test rebuilt Windows Odocrypt runtime
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --no-build
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
 
     - name: Test Windows share recovery safety
       run: >-

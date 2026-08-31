@@ -500,8 +500,9 @@ terminal compatibility and log-processing requirements.
 Windows is supported for development and testing, not recommended for hosting a production pool.
 
 1. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
-2. Optionally install [Visual Studio 2026](https://visualstudio.microsoft.com/vs/) with the
-   **.NET desktop build tools** and **Desktop development with C++** workloads.
+2. Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the
+   **Desktop development with C++** workload and the v143 toolset. Windows builds compile the
+   pinned Odocrypt runtime from source and fail closed when this toolchain is unavailable.
 3. Clone the repository and open [Miningcore.sln](src/Miningcore.sln), or run:
 
 ```dosbatch

@@ -73,13 +73,14 @@ timestamp `1,563,757,222`. Its ten-day key is `1,562,976,000`, while an incorrec
 uses `1,563,753,600`. The reviewed 80-byte header's Odocrypt digest is
 `8fe8946b1339262591dc2a437c29d42edb02c8c902caea06729dcd0000000000` (not SHA-256) through DigiByte's
 pinned cipher-plus-Keccak implementation. Linux and Windows execute that vector through Miningcore's
-actual C ABI; the Windows lane first rebuilds `libodocrypt.dll` from the reviewed sources rather
-than trusting the checked release binary.
+actual C ABI. The Windows build and publish path verifies the pinned inputs and compiles
+`libodocrypt.dll` from reviewed source; Miningcore no longer carries a checked-in Odocrypt DLL.
 
-For a reproducible Windows build, verify `src/Native/libodocrypt/upstream.sha256`, build
-`src/Native/libodocrypt/libodocrypt.sln` as `Release|x64` with Visual Studio 2022 Build Tools, and
-use `src/Native/libodocrypt/bin/x64/Release/libodocrypt.dll`. The project keeps `/W4 /WX` enabled;
-the only conversion-warning exception is scoped to the byte-pinned upstream cipher source.
+Windows source builds require Visual Studio Build Tools with the **Desktop development with C++**
+workload and v143 toolset. An ordinary `dotnet build`, `dotnet test`, or `dotnet publish` locates
+MSBuild, verifies `src/Native/libodocrypt/upstream.sha256`, builds `Release|x64`, and stages the
+resulting runtime automatically. The native project keeps `/W4 /WX` enabled; the only
+conversion-warning exception is scoped to the byte-pinned upstream cipher source.
 
 Current DigiByte mainnet accepts SHA-256d, Scrypt, Skein, Qubit and Odocrypt. Odocrypt replaced
 Myriad-Groestl; current AlgoLock rules reject the retired algorithm. Do not restore a
