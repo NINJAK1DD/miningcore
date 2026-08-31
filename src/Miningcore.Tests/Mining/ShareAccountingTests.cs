@@ -454,6 +454,27 @@ public class ShareAccountingTests
                 CreatePools(PayoutScheme.PROP, PayoutScheme.PPLNS)));
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void BlockOnlyShare_CannotSmuggleAccountingEvidence(
+        bool includeRewardBasis, bool includePpsAmount)
+    {
+        var share = new Share
+        {
+            BlockOnly = true,
+            RewardBasisSatoshis = includeRewardBasis ? 1 : 0,
+            PpsCalculatedAmount = includePpsAmount ? 0.000000000000000000000001m : null,
+        };
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            ShareAccounting.ValidateAndFlatten(share,
+                CreatePools(PayoutScheme.PROP, PayoutScheme.PPLNS)));
+
+        Assert.Equal("Block-only records must not carry ordinary share-accounting data",
+            error.Message);
+    }
+
     private static Share CreatePair()
     {
         var id = ShareAccounting.CreateId();

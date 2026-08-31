@@ -74,9 +74,10 @@ An active process alone does not prove mining or payouts are healthy.
   before acknowledgement. Follow [fatal-state recovery](database.md#reconcile-fatal-share-recovery-state).
 - **`Unidentified shares must not carry partial accounting data` on v0.2.0 `SOLO`/`SOLO`
   merged mining.** Stop the restart loop and preserve the normal recovery journal, every quarantine
-  file, the recovery-state directory and PostgreSQL state. Upgrade to v0.2.1 or later before
-  resuming merged mining. Import only a verified normal recovery journal through `-rs`; quarantine
-  files require manual financial reconciliation and must never be imported.
+  file, the recovery-state directory and PostgreSQL state. Upgrade to the
+  [v0.2.1 hotfix](releases.md#v021-hotfix) or later before resuming merged mining. Import only a
+  verified normal recovery journal through `-rs`; quarantine files require manual financial
+  reconciliation and must never be imported.
 - **The recovery journal contains records.** Preserve the source and use the manifested one-shot
   importer. Follow [recovery-journal import](database.md#inspect-and-import-a-recovery-journal).
 - **Another payout manager owns the database.** Prove the previous process and PostgreSQL backend

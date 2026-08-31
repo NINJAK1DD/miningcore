@@ -35,6 +35,7 @@ Use this guide by task:
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
 | Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
+| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
@@ -49,11 +50,13 @@ copying a recovery command from the maintainer section.
 use `SOLO`. The merged job calculated a parent reward basis before the manager applied the configured
 payout policy, then published that value without the accounting identifier required for pooled
 accounting. The recorder failed closed with `Unidentified shares must not carry partial accounting
-data`, quarantined the rejected statistical share and stopped the cluster. The hotfix clears this
-internal calculation before a `SOLO`/`SOLO` proof crosses the persistence boundary; PPS, PROP and
-PPLNS accounting evidence is unchanged. Operators running `v0.2.0` with `SOLO`/`SOLO` merged mining
-should stop the restart loop, preserve every recovery and quarantine artifact, and deploy `v0.2.1`
-before resuming merged mining. Never import a quarantine file with `-rs`.
+data`, quarantined the rejected statistical share and stopped the cluster. The hotfix attaches the
+parent reward basis only when pooled accounting is selected and defensively clears all accounting
+evidence before a `SOLO`/`SOLO` proof crosses the persistence boundary; PPS, PROP and PPLNS
+accounting evidence is unchanged. No schema migration or configuration change is required from
+`v0.2.0`. Operators running `v0.2.0` with `SOLO`/`SOLO` merged mining should stop the restart loop,
+preserve every recovery and quarantine artifact, and deploy `v0.2.1` before resuming merged mining.
+Never import a quarantine file with `-rs`.
 
 ## v0.2.0 highlights
 
@@ -225,10 +228,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.2.0`. Substitute the version you selected.
+The examples below use `v0.2.1`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.2.0
+export MININGCORE_VERSION=v0.2.1
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -594,7 +597,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.2.0  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.2.1  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1508,7 +1511,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.2.0  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.2.1  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1571,7 +1574,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.2.0
+export TAG=v0.2.1
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

@@ -735,6 +735,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             {
                 share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
                 share.AccountingRole = ShareAccountingRole.Parent;
+                share.RewardBasisSatoshis = job.RewardBasisSatoshis;
                 share.PreserveCreated = true;
                 share.PairedShare = CreateAuxiliaryShareProjection(context, result,
                     share, now);
@@ -747,16 +748,15 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             {
                 share.AccountingId = Miningcore.Mining.ShareAccounting.CreateId();
                 share.AccountingRole = ShareAccountingRole.Single;
+                share.RewardBasisSatoshis = job.RewardBasisSatoshis;
                 share.PreserveCreated = true;
                 Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
                     poolConfig, share);
             }
             else
             {
-                // MergedMiningBitcoinJob calculates the parent reward basis before the
-                // manager knows whether either chain uses pooled accounting. SOLO/SOLO
-                // proofs are ordinary statistical shares and must not publish that
-                // otherwise-partial accounting evidence without an accounting id.
+                // SOLO/SOLO proofs are ordinary statistical shares. Normalize every
+                // accounting-only field defensively before crossing the persistence boundary.
                 share.AccountingId = null;
                 share.AccountingRole = ShareAccountingRole.None;
                 share.RewardBasisSatoshis = 0;

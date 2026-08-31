@@ -79,7 +79,7 @@ sudo systemctl is-active postgresql
 Select the release and download it into private temporary storage:
 
 ```console
-export MININGCORE_VERSION=v0.2.0
+export MININGCORE_VERSION=v0.2.1
 export MININGCORE_UBUNTU=26.04
 MININGCORE_QUICKSTART_READY=
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX")"
@@ -516,7 +516,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.2.0  # Replace with the release you selected.
+MININGCORE_VERSION=v0.2.1  # Replace with the release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -526,7 +526,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 ```console
-MININGCORE_VERSION=v0.2.0  # Replace with the release you selected.
+MININGCORE_VERSION=v0.2.1  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \

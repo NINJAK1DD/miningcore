@@ -150,8 +150,11 @@ public class MergedMiningManagerReorgTests
         Assert.Equal("merged-parent", candidate.BlockType);
     }
 
-    [Fact]
-    public async Task SoloSoloStatisticalShare_ClearsInternalRewardBasisAndPassesRecorderValidation()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SoloSoloStatisticalShare_ClearsAccountingEvidenceAndPassesRecorderValidation(
+        bool supplyAuxiliaryAddress)
     {
         var builder = new ContainerBuilder();
         builder.RegisterInstance(new JsonSerializerSettings());
@@ -183,8 +186,8 @@ public class MergedMiningManagerReorgTests
             ShareDifficulty = 1,
             ActualDifficulty = 1,
             NetworkDifficulty = 100,
-            // The merged job calculates this before the manager applies the
-            // configured parent/auxiliary payout policy.
+            // Simulate the partial evidence emitted by v0.2.0 and prove that
+            // the manager also defends against another stale producer.
             RewardBasisSatoshis = 625_000_000,
         };
         manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
@@ -198,7 +201,7 @@ public class MergedMiningManagerReorgTests
             Miner = validated.Miner,
             Worker = validated.Worker,
             UserAgent = "test-miner",
-            AuxiliaryMiner = "doge-miner",
+            AuxiliaryMiner = supplyAuxiliaryAddress ? "doge-miner" : null,
         };
         var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
             "admission-job");
@@ -266,7 +269,7 @@ public class MergedMiningManagerReorgTests
             ShareDifficulty = 1,
             ActualDifficulty = 1,
             NetworkDifficulty = 100,
-            RewardBasisSatoshis = 625_000_000,
+            RewardBasisSatoshis = 1,
         };
         manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
         {
@@ -281,7 +284,10 @@ public class MergedMiningManagerReorgTests
             Worker = validated.Worker,
             UserAgent = "test-miner",
         };
-        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+        var job = TestJob.Create(new BlockTemplate
+            {
+                CoinbaseValue = 625_000_000,
+            }, new AuxBlockTemplate(),
             "pps-accounting-job");
         context.AddJob(job, 4);
         worker.SetContext(context);
@@ -372,16 +378,21 @@ public class MergedMiningManagerReorgTests
             Worker = candidate.Worker,
             UserAgent = "test-miner",
         };
-        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+        var job = TestJob.Create(new BlockTemplate
+            {
+                CoinbaseValue = 625_000_000,
+            }, new AuxBlockTemplate(),
             "pps-evidence-job");
         context.AddJob(job, 4);
         worker.SetContext(context);
 
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
             manager.SubmitShareAsync(worker, new object[]
             {
                 "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000",
             }, CancellationToken.None).AsTask());
+        Assert.Contains("exceeds the supported decimal accounting range",
+            error.Message);
 
         await recorder.Received(1).PersistBlockCandidateAsync(
             Arg.Is<Share>(x => x.BlockOnly && x.IsBlockCandidate &&
@@ -1744,6 +1755,8 @@ public class MergedMiningManagerReorgTests
                 JobId = id,
                 Difficulty = 1,
             };
+            job.rewardToPool = new NBitcoin.Money(parent.CoinbaseValue,
+                NBitcoin.MoneyUnit.Satoshi);
             job.jobParams = new object[]
             {
                 id, parent.PreviousBlockhash, "", "", Array.Empty<string>(),
