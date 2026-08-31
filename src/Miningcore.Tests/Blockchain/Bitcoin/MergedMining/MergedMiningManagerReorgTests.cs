@@ -151,7 +151,7 @@ public class MergedMiningManagerReorgTests
     }
 
     [Fact]
-    public async Task NonCandidateStatisticalShare_PropagatesPublishedCloneAdmission()
+    public async Task SoloSoloStatisticalShare_ClearsInternalRewardBasisAndPassesRecorderValidation()
     {
         var builder = new ContainerBuilder();
         builder.RegisterInstance(new JsonSerializerSettings());
@@ -180,7 +180,12 @@ public class MergedMiningManagerReorgTests
             Miner = "ltc-miner",
             Worker = "rig01",
             Difficulty = 1,
+            ShareDifficulty = 1,
+            ActualDifficulty = 1,
             NetworkDifficulty = 100,
+            // The merged job calculates this before the manager applies the
+            // configured parent/auxiliary payout policy.
+            RewardBasisSatoshis = 625_000_000,
         };
         manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
         {
@@ -209,13 +214,108 @@ public class MergedMiningManagerReorgTests
         Assert.True(returned.StatisticalRecordEmitted);
         Assert.Null(returned.AccountingId);
         Assert.Equal(ShareAccountingRole.None, returned.AccountingRole);
+        Assert.Equal(0, returned.RewardBasisSatoshis);
+        Assert.Null(returned.PpsCalculatedAmount);
         Assert.Null(returned.PairedShare);
         Assert.Null(published.AccountingId);
+        Assert.Equal(ShareAccountingRole.None, published.AccountingRole);
+        Assert.Equal(0, published.RewardBasisSatoshis);
+        Assert.Null(published.PpsCalculatedAmount);
         Assert.Null(published.PairedShare);
+        Assert.Same(published, Assert.Single(
+            ShareAccounting.ValidateAndFlatten(published,
+                new Dictionary<string, PoolConfig>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [parent.Id] = parent,
+                })));
         Assert.Same(admission.Task, returned.PersistenceAdmission);
         Assert.False(returned.PersistenceAdmission.IsCompleted);
         admission.TrySetResult();
         await returned.PersistenceAdmission;
+    }
+
+    [Theory]
+    [InlineData(PayoutScheme.PPS, true)]
+    [InlineData(PayoutScheme.PROP, false)]
+    [InlineData(PayoutScheme.PPLNS, false)]
+    public async Task PooledParentStatisticalShare_PreservesAccountingEvidence(
+        PayoutScheme payoutScheme, bool expectsPpsCredit)
+    {
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        using var container = builder.Build();
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var messageBus = new MessageBus();
+        Share published = null;
+        using var subscription = messageBus.Listen<Share>()
+            .Where(x => x != null)
+            .Subscribe(x => published = x);
+        var manager = new TestManager(container, clock, messageBus,
+            Substitute.For<IExtraNonceProvider>(),
+            Substitute.For<IBlockCandidateRecorder>());
+        var (parent, auxiliary, cluster) = CreateConfig();
+        parent.PaymentProcessing.PayoutScheme = payoutScheme;
+        manager.Configure(parent, cluster);
+        var validated = new Share
+        {
+            PoolId = parent.Id,
+            Miner = "ltc-miner",
+            Worker = "rig01",
+            Difficulty = 1,
+            ShareDifficulty = 1,
+            ActualDifficulty = 1,
+            NetworkDifficulty = 100,
+            RewardBasisSatoshis = 625_000_000,
+        };
+        manager.ProcessMergedShareHandler = () => new MergedMiningShareResult
+        {
+            Share = validated,
+        };
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "merged-pps-accounting",
+            false);
+        var context = new MergedMiningBitcoinWorkerContext
+        {
+            Miner = validated.Miner,
+            Worker = validated.Worker,
+            UserAgent = "test-miner",
+        };
+        var job = TestJob.Create(new BlockTemplate(), new AuxBlockTemplate(),
+            "pps-accounting-job");
+        context.AddJob(job, 4);
+        worker.SetContext(context);
+
+        var returned = await manager.SubmitShareAsync(worker,
+            new object[]
+            {
+                "ltc-miner.rig01", job.JobId, "00", "00000000", "00000000",
+            }, CancellationToken.None);
+
+        Assert.Same(validated, returned);
+        Assert.NotNull(published);
+        Assert.False(string.IsNullOrEmpty(returned.AccountingId));
+        Assert.Equal(ShareAccountingRole.Single, returned.AccountingRole);
+        Assert.Equal(625_000_000, returned.RewardBasisSatoshis);
+        if(expectsPpsCredit)
+            Assert.True(returned.PpsCalculatedAmount > 0);
+        else
+            Assert.Null(returned.PpsCalculatedAmount);
+        Assert.Equal(returned.AccountingId, published.AccountingId);
+        Assert.Equal(returned.RewardBasisSatoshis,
+            published.RewardBasisSatoshis);
+        Assert.Equal(returned.PpsCalculatedAmount,
+            published.PpsCalculatedAmount);
+        // The synthetic connection is not backed by a socket, so the manager
+        // cannot populate the otherwise-required remote endpoint.
+        published.IpAddress = IPAddress.Loopback.ToString();
+        Assert.Same(published, Assert.Single(
+            ShareAccounting.ValidateAndFlatten(published,
+                new Dictionary<string, PoolConfig>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [parent.Id] = parent,
+                    [auxiliary.Id] = auxiliary,
+                })));
     }
 
     [Fact]
@@ -1502,7 +1602,12 @@ public class MergedMiningManagerReorgTests
                 Enabled = true,
                 PayoutScheme = PayoutScheme.SOLO,
             },
-            Template = new BitcoinTemplate { Symbol = "LTC", Name = "Litecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "LTC",
+                Name = "Litecoin",
+                Family = CoinFamily.Bitcoin,
+            },
             Extra = new Dictionary<string, object>
             {
                 ["btStream"] = new Dictionary<string, object>
@@ -1539,7 +1644,12 @@ public class MergedMiningManagerReorgTests
                 Enabled = true,
                 PayoutScheme = PayoutScheme.SOLO,
             },
-            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "DOGE",
+                Name = "Dogecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
         var cluster = new ClusterConfig
         {

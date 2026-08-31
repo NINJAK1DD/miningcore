@@ -751,6 +751,18 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(
                     poolConfig, share);
             }
+            else
+            {
+                // MergedMiningBitcoinJob calculates the parent reward basis before the
+                // manager knows whether either chain uses pooled accounting. SOLO/SOLO
+                // proofs are ordinary statistical shares and must not publish that
+                // otherwise-partial accounting evidence without an accounting id.
+                share.AccountingId = null;
+                share.AccountingRole = ShareAccountingRole.None;
+                share.RewardBasisSatoshis = 0;
+                share.PpsCalculatedAmount = null;
+                share.PairedShare = null;
+            }
 
             // Publish a cleared statistical copy before daemon submission begins so a slow peer
             // path cannot move an ordinary proof past the parent block's effort boundary.

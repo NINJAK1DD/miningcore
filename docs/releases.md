@@ -43,6 +43,18 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## v0.2.1 hotfix
+
+`v0.2.1` corrects a `v0.2.0` regression affecting Litecoin/Dogecoin merged mining when both pools
+use `SOLO`. The merged job calculated a parent reward basis before the manager applied the configured
+payout policy, then published that value without the accounting identifier required for pooled
+accounting. The recorder failed closed with `Unidentified shares must not carry partial accounting
+data`, quarantined the rejected statistical share and stopped the cluster. The hotfix clears this
+internal calculation before a `SOLO`/`SOLO` proof crosses the persistence boundary; PPS, PROP and
+PPLNS accounting evidence is unchanged. Operators running `v0.2.0` with `SOLO`/`SOLO` merged mining
+should stop the restart loop, preserve every recovery and quarantine artifact, and deploy `v0.2.1`
+before resuming merged mining. Never import a quarantine file with `-rs`.
+
 ## v0.2.0 highlights
 
 `v0.2.0` adds transactional Bitcoin-family PPS, independently selected pooled LTC/DOGE
