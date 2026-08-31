@@ -214,7 +214,8 @@ cp "$source_verifier" \
 cp "$repository_root/src/Native/libodocrypt/upstream.sha256" \
   "$work_dir/src/Native/libodocrypt/upstream.sha256"
 for pinned_source in \
-    odocrypt.cpp odocrypt.h KeccakP-800-reference.c KeccakP-800-SnP.h; do
+    odocrypt.cpp odocrypt.h KeccakP-800-reference.c KeccakP-800-SnP.h \
+    brg_endian.h; do
   cp "$repository_root/src/Native/libmultihash/$pinned_source" \
     "$work_dir/src/Native/libmultihash/$pinned_source"
 done

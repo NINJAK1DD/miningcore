@@ -55,6 +55,10 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
+    - name: Validate Odocrypt native source inventory
+      shell: bash
+      run: bash scripts/release/test-odocrypt-source-inventory.sh
+
     - name: Lint Linux native and build-audit scripts
       shell: bash
       run: >-
@@ -68,6 +72,7 @@ jobs:
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-linux-package-targets.sh
         scripts/release/test-msbuild-warning-file-logger.sh
+        scripts/release/test-odocrypt-source-inventory.sh
         scripts/release/test-odocrypt-source-verifiers.sh
         scripts/release/test-ubuntu-source-build.sh
 
@@ -358,9 +363,36 @@ jobs:
           --framework net10.0 `
           --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
 
+    - name: Test Windows Odocrypt toolset override boundary
+      shell: pwsh
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        try {
+          $env:MININGCORE_WINDOWS_PLATFORM_TOOLSET = 'v143'
+          $toolsetOutput = dotnet build src/Miningcore/Miningcore.csproj `
+            --no-restore `
+            --configuration Release `
+            --framework net10.0 2>&1
+          if($LASTEXITCODE -ne 0) {
+            $toolsetStatus = $LASTEXITCODE
+            $toolsetOutput | Write-Host
+            throw "Windows Odocrypt toolset-override build failed with exit status $toolsetStatus"
+          }
+          if(($toolsetOutput | Out-String) -notmatch `
+              'Building reviewed Windows Odocrypt runtime') {
+            $toolsetOutput | Write-Host
+            throw 'Windows Odocrypt toolset override did not force the native build target'
+          }
+        }
+        finally {
+          Remove-Item Env:MININGCORE_WINDOWS_PLATFORM_TOOLSET -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+        }
+
     - name: Test managed-only Windows opt-out boundaries
       shell: pwsh
       run: |
+        $PSNativeCommandUseErrorActionPreference = $false
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
           --no-restore `
           --configuration Release `
@@ -405,7 +437,12 @@ jobs:
         --output build/windows-x64
 
     - name: Smoke-test Windows build
-      run: .\build\windows-x64\Miningcore.exe --version
+      shell: pwsh
+      run: |
+        if(!(Test-Path 'build\windows-x64\libodocrypt.dll' -PathType Leaf)) {
+          throw 'Published Windows build is missing the source-built Odocrypt runtime'
+        }
+        .\build\windows-x64\Miningcore.exe --version
 
     - name: Test Windows share recovery safety
       run: >-

@@ -52,6 +52,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\libmultihash\KeccakP-800-SnP.h" />
+    <ClInclude Include="..\libmultihash\brg_endian.h" />
     <ClInclude Include="..\libmultihash\odocrypt.h" />
   </ItemGroup>
   <ItemGroup>

@@ -9,7 +9,7 @@ the same algorithm. These are direct-mining paths; DigiByte is not presented as 
 | Capability | Current status |
 | --- | --- |
 | Template present | All five active mainnet algorithms |
-| Source reviewed | DigiByte Core v9.26.5 at commit `05b50e229db5a3d1fb316c77f3f6c62efa879b96` |
+| Source reviewed | Odocrypt cipher from DigiByte Core v9.26.5 at commit `05b50e229db5a3d1fb316c77f3f6c62efa879b96`; Keccak-p[800] inputs from official dgbminer commit `91297fdfc42284c743d8a4d174973b50ec5e73d2` |
 | Odocrypt native implementation | Pinned upstream cipher, activation- and schedule-aware wrapper, bounded thread-safe schedule cache, and rebuilt Windows/Linux known-answer tests |
 | Daemon-backed boundary | DigiByte Core v9.26.5 regtest activation, daemon `odokey`, Stratum work, accepted share and daemon-accepted block verified with the pinned official miner revision plus the reviewed network-schedule patch described below |
 | Direct Stratum mining | Implemented through the Bitcoin-family runtime |
@@ -31,7 +31,8 @@ soak.
 
 ## Reviewed consensus contract
 
-The implementation is based on immutable DigiByte sources:
+The implementation combines two immutable official DigiByte source sets: the Odocrypt cipher from
+DigiByte Core and the Keccak-p[800] implementation used by the reviewed official miner.
 
 - [DigiByte Core v9.26.5](https://github.com/DigiByte-Core/digibyte/releases/tag/v9.26.5),
   commit [`05b50e2`](https://github.com/DigiByte-Core/digibyte/commit/05b50e229db5a3d1fb316c77f3f6c62efa879b96).
@@ -53,9 +54,11 @@ The implementation is based on immutable DigiByte sources:
   and [`odocrypt.h`](https://github.com/DigiByte-Core/digibyte/blob/05b50e229db5a3d1fb316c77f3f6c62efa879b96/src/crypto/odocrypt.h)
   are byte-for-byte copies of that revision. Miningcore's checked wrapper in `libodocrypt/exports.cpp`
   exposes the cipher-plus-Keccak operation through the bounded C ABI and reuses immutable schedules.
-- The Keccak-p[800] reference implementation and header used by the adapter are included in the
-  same build-time SHA-256 manifest, so any change to the complete native input set fails before
-  compilation.
+- The Keccak-p[800] reference implementation, permutation header and `brg_endian.h` platform-byte-
+  order header are content-identical to official dgbminer revision `91297fd`. All three are included
+  with the Core-derived cipher files in the build-time SHA-256 manifest, so any change to the
+  complete consensus-relevant native input set fails before compilation. Linux Make and both layers
+  of the Windows build also track the endian header as an explicit dependency.
 - Official miner revision
   [`91297fd`](https://github.com/DigiByte-Core/dgbminer/tree/91297fdfc42284c743d8a4d174973b50ec5e73d2)
   [names the algorithm `odo`](https://github.com/DigiByte-Core/dgbminer/blob/91297fdfc42284c743d8a4d174973b50ec5e73d2/algo-gate-api.c#L248),
@@ -86,7 +89,8 @@ The Windows source build is mandatory for publish and enabled by default for bui
 managed-only contributor may pass `-p:BuildOdoCryptWindows=false` to omit Odocrypt from local build
 and unrelated-test output, but that output cannot run Odocrypt and cannot be published. The
 `MININGCORE_WINDOWS_PLATFORM_TOOLSET` environment variable may select an installed compatible
-toolset for local compatibility testing; release CI uses v143.
+toolset for local compatibility testing. Setting the override deliberately forces the native target
+to rebuild so the requested toolset cannot be hidden by an existing DLL; release CI uses v143.
 
 Current DigiByte mainnet accepts SHA-256d, Scrypt, Skein, Qubit and Odocrypt. Odocrypt replaced
 Myriad-Groestl; current AlgoLock rules reject the retired algorithm. Do not restore a

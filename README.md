@@ -515,7 +515,8 @@ For managed-only development on a machine without the C++ workload, `dotnet buil
 tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
 output: Odocrypt tests and runtime use will fail, and Windows publish always requires the verified
 source build. For local toolchain-compatibility testing, an installed alternative can be selected
-with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; release CI remains pinned to v143.
+with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
+toolset is actually exercised. Release CI remains pinned to v143.
 
 ### Docker Engine
 

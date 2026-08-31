@@ -18,16 +18,23 @@ trap cleanup EXIT
 
 mkdir -p "$fixture_root/libodocrypt" "$fixture_root/libmultihash"
 
+if command -v cygpath >/dev/null 2>&1; then
+  windows_path_converter=cygpath
+elif command -v wslpath >/dev/null 2>&1; then
+  windows_path_converter=wslpath
+else
+  echo "A Windows path converter is required for verifier parity tests" >&2
+  exit 70
+fi
+
+if ! command -v powershell.exe >/dev/null 2>&1; then
+  echo "Windows PowerShell is required for verifier parity tests" >&2
+  exit 70
+fi
+
 to_windows_path()
 {
-  if command -v cygpath >/dev/null 2>&1; then
-    cygpath -w "$1"
-  elif command -v wslpath >/dev/null 2>&1; then
-    wslpath -w "$1"
-  else
-    echo "A Windows path converter is required for verifier parity tests" >&2
-    exit 70
-  fi
+  "$windows_path_converter" -w "$1"
 }
 
 run_powershell_verifier()

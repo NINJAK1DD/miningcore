@@ -16,7 +16,7 @@ exports.o: exports.cpp ../libmultihash/odocrypt.h ../libmultihash/KeccakP-800-Sn
 odocrypt.o: ../libmultihash/odocrypt.cpp ../libmultihash/odocrypt.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-KeccakP-800-reference.o: ../libmultihash/KeccakP-800-reference.c ../libmultihash/KeccakP-800-SnP.h
+KeccakP-800-reference.o: ../libmultihash/KeccakP-800-reference.c ../libmultihash/KeccakP-800-SnP.h ../libmultihash/brg_endian.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 .PHONY: clean

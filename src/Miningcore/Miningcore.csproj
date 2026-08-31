@@ -27,6 +27,7 @@
         <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\odocrypt.h" />
         <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\KeccakP-800-reference.c" />
         <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\KeccakP-800-SnP.h" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\brg_endian.h" />
     </ItemGroup>
 
     <ItemGroup>
@@ -193,7 +194,7 @@
     <Target Name="CompileOdoCryptWindows" BeforeTargets="PrepareForBuild"
             DependsOnTargets="GuardOdoCryptWindows"
             Inputs="@(OdoCryptWindowsBuildInputs)" Outputs="$(OdoCryptWindowsRuntime)"
-            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildOdoCryptWindows)' == 'true'">
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildOdoCryptWindows)' == 'true' and '$(MININGCORE_WINDOWS_PLATFORM_TOOLSET)' == ''">
         <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\..\scripts\release\build-windows-odocrypt.ps1&quot;" />
         <Error Condition="!Exists('$(OdoCryptWindowsRuntime)')"
                Text="The reviewed Windows Odocrypt build did not produce $(OdoCryptWindowsRuntime)." />
@@ -202,9 +203,19 @@
         <Touch Files="$(OdoCryptWindowsRuntime)" />
     </Target>
 
+    <!-- A compatibility-toolset override is an input that cannot be represented by a source-file
+         timestamp. Rebuild unconditionally so changing it always reaches native MSBuild. -->
+    <Target Name="CompileOdoCryptWindowsWithToolsetOverride" BeforeTargets="PrepareForBuild"
+            DependsOnTargets="GuardOdoCryptWindows"
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildOdoCryptWindows)' == 'true' and '$(MININGCORE_WINDOWS_PLATFORM_TOOLSET)' != ''">
+        <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\..\scripts\release\build-windows-odocrypt.ps1&quot;" />
+        <Error Condition="!Exists('$(OdoCryptWindowsRuntime)')"
+               Text="The reviewed Windows Odocrypt build did not produce $(OdoCryptWindowsRuntime)." />
+    </Target>
+
     <!-- Include legacy binaries plus the source-built Odocrypt runtime in Windows publishes. -->
     <Target Name="NativeLibsPublishIncludeWin" BeforeTargets="PrepareForPublish"
-            DependsOnTargets="GuardOdoCryptWindows;CompileOdoCryptWindows" Condition="'$(IsWindows)' == 'true'">
+            DependsOnTargets="GuardOdoCryptWindows;CompileOdoCryptWindows;CompileOdoCryptWindowsWithToolsetOverride" Condition="'$(IsWindows)' == 'true'">
         <Error Condition="'$(BuildOdoCryptWindows)' != 'true'"
                Text="Windows publish requires BuildOdoCryptWindows=true so Odocrypt is compiled from reviewed source." />
         <ItemGroup>
