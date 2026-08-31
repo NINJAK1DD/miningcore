@@ -89,6 +89,9 @@ public unsafe class OdoCrypt : IHashAlgorithm
 
         if(nTime64 > uint.MaxValue)
         {
+            // Digest executes inside the Stratum share path. Keep share-variable
+            // failures inside its protocol error boundary instead of allowing an
+            // InvalidOperationException to silently disconnect the miner.
             throw new StratumException(StratumError.Other,
                 "Odocrypt share time exceeds the 32-bit header field");
         }

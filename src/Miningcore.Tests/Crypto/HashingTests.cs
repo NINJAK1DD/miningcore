@@ -660,18 +660,18 @@ public class HashingTests : TestBase
     }
 
     [Fact]
-    public void OdoCrypt_JobContractRejectsPreActivationAndAcceptsBoundary()
+    public void OdoCrypt_RegtestJobContractRejectsHeight600AndAccepts601()
     {
         var network = new BitcoinTemplate.BitcoinNetworkParams
         {
-            OdoCryptActivationHeight = 600,
+            OdoCryptActivationHeight = 601,
             OdoCryptShapeChangeInterval = 864000,
         };
 
         var ex = Assert.Throws<InvalidDataException>(() =>
             OdoCrypt.ValidateJobContract(new BlockTemplate
             {
-                Height = 599,
+                Height = 600,
                 CurTime = 0,
                 OdoKey = 0,
             }, network));
@@ -681,7 +681,7 @@ public class HashingTests : TestBase
 
         OdoCrypt.ValidateJobContract(new BlockTemplate
         {
-            Height = 600,
+            Height = 601,
             CurTime = 0,
             OdoKey = 0,
         }, network);
@@ -692,7 +692,7 @@ public class HashingTests : TestBase
     {
         var blockTemplate = new BlockTemplate
         {
-            Height = 600,
+            Height = 601,
             CurTime = 0,
             OdoKey = 0,
         };
@@ -706,17 +706,17 @@ public class HashingTests : TestBase
 
         var missingSchedule = new BitcoinTemplate.BitcoinNetworkParams
         {
-            OdoCryptActivationHeight = 600,
+            OdoCryptActivationHeight = 601,
         };
         Assert.Throws<InvalidDataException>(() =>
             OdoCrypt.ValidateJobContract(blockTemplate, missingSchedule));
 
         var validNetwork = new BitcoinTemplate.BitcoinNetworkParams
         {
-            OdoCryptActivationHeight = 600,
+            OdoCryptActivationHeight = 601,
             OdoCryptShapeChangeInterval = 864000,
         };
-        var missingDaemonKey = new BlockTemplate { Height = 600, CurTime = 0 };
+        var missingDaemonKey = new BlockTemplate { Height = 601, CurTime = 0 };
         var missingKeyError = Assert.Throws<InvalidDataException>(() =>
             OdoCrypt.ValidateJobContract(missingDaemonKey, validNetwork));
         Assert.Contains("algo=odo", missingKeyError.Message,
@@ -724,7 +724,7 @@ public class HashingTests : TestBase
 
         var mismatchedDaemonKey = new BlockTemplate
         {
-            Height = 600,
+            Height = 601,
             CurTime = 864000,
             OdoKey = 1,
         };
@@ -740,12 +740,12 @@ public class HashingTests : TestBase
         const uint interval = 864000;
         var network = new BitcoinTemplate.BitcoinNetworkParams
         {
-            OdoCryptActivationHeight = 600,
+            OdoCryptActivationHeight = 601,
             OdoCryptShapeChangeInterval = interval,
         };
         var blockTemplate = new BlockTemplate
         {
-            Height = 600,
+            Height = 601,
             CurTime = interval - 1,
             OdoKey = 0,
         };
@@ -758,17 +758,23 @@ public class HashingTests : TestBase
     }
 
     [Fact]
-    public void OdoCrypt_PerShareFailuresUseStratumErrors()
+    public void OdoCrypt_PerShareContractFailuresUseStratumErrors()
     {
         var hasher = new OdoCrypt();
         var network = new BitcoinTemplate.BitcoinNetworkParams
         {
-            OdoCryptActivationHeight = 600,
+            OdoCryptActivationHeight = 601,
             OdoCryptShapeChangeInterval = 864000,
         };
 
         var ex = Assert.Throws<StratumException>(() => hasher.Digest(testValue2,
             new byte[32], (ulong) uint.MaxValue + 1, null, null, network));
+
+        Assert.Equal(StratumError.Other, ex.Code);
+
+        network.OdoCryptShapeChangeInterval = null;
+        ex = Assert.Throws<StratumException>(() => hasher.Digest(testValue2,
+            new byte[32], 0UL, null, null, network));
 
         Assert.Equal(StratumError.Other, ex.Code);
     }

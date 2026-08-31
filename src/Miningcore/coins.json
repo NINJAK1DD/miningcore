@@ -1011,7 +1011,7 @@
                 "odoCryptShapeChangeInterval": 864000
             },
             "test": {
-                "odoCryptActivationHeight": 500,
+                "odoCryptActivationHeight": 501,
                 "odoCryptShapeChangeInterval": 86400
             },
             "signet": {
@@ -1019,7 +1019,7 @@
                 "odoCryptShapeChangeInterval": 86400
             },
             "regtest": {
-                "odoCryptActivationHeight": 600,
+                "odoCryptActivationHeight": 601,
                 "odoCryptShapeChangeInterval": 864000
             }
         },

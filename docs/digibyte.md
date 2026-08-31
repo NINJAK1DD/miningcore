@@ -21,8 +21,9 @@ The presence of a template is not a guarantee that an arbitrary daemon or miner 
 compatible. Use the reviewed daemon release, stage the pool privately, and complete the operational
 checks below before accepting public miners.
 
-The daemon-backed verification crossed activation at regtest height 600 and used a timestamp where
-the one-day and ten-day schedule keys differ. The official miner revision was patched to select the
+The daemon-backed verification crossed the effective regtest activation boundary at height 601,
+accepted blocks 602 and 603, and used a timestamp where the one-day and ten-day schedule keys differ.
+The official miner revision was patched to select the
 regtest ten-day schedule explicitly; an unmodified build is not valid evidence for mainnet or
 regtest. This test does not replace the remaining deployment checks for PostgreSQL persistence,
 stale/invalid-share rejection, reconnect behavior, maturity, payouts or a sustained public-network
@@ -38,19 +39,20 @@ The implementation is based on immutable DigiByte sources:
   derive the cipher key as `nTime - (nTime % nOdoShapechangeInterval)` and hash the complete
   serialized 80-byte header.
 - [`chainparams.cpp`](https://github.com/DigiByte-Core/digibyte/blob/05b50e229db5a3d1fb316c77f3f6c62efa879b96/src/kernel/chainparams.cpp)
-  sets the Odocrypt activation heights to `9,112,320` (mainnet), `500` (testnet), and `600`
-  (regtest). Signet has `OdoHeight=600`, but its algorithm-swap target is height `20,000`, so the
-  first reachable Odocrypt template is `20,001`. Mainnet and regtest use a ten-day shape-change
-  schedule; testnet and signet use one day. Miningcore treats these effective values as typed
-  network contracts and refuses pre-activation jobs.
+  records raw `OdoHeight` values of `9,112,320` (mainnet), `500` (testnet), and `600` (signet and
+  regtest). Consensus also evaluates the candidate's parent against `algoSwapChangeTarget`, so the
+  effective first Odocrypt block is `max(OdoHeight, algoSwapChangeTarget + 1)`: `9,112,320`, `501`,
+  `20,001`, and `601`, respectively. Mainnet and regtest use a ten-day shape-change schedule;
+  testnet and signet use one day. Miningcore stores these effective boundaries as typed network
+  contracts and refuses earlier jobs.
 - At job construction, Miningcore requires the daemon's `odokey` and verifies it against the key
   derived from the template's `curtime`. For each submitted share it derives the consensus key from
   that share's submitted header `nTime`. This distinction is intentional: a still-valid job may be
   submitted just across a shape-change boundary, and consensus hashes the submitted header time.
 - The vendored [`odocrypt.cpp`](https://github.com/DigiByte-Core/digibyte/blob/05b50e229db5a3d1fb316c77f3f6c62efa879b96/src/crypto/odocrypt.cpp)
   and [`odocrypt.h`](https://github.com/DigiByte-Core/digibyte/blob/05b50e229db5a3d1fb316c77f3f6c62efa879b96/src/crypto/odocrypt.h)
-  are byte-for-byte copies of that revision. Miningcore's small `hashodo.h` adapter replaces the
-  daemon's `uint256` return type without changing the cipher-plus-Keccak operation.
+  are byte-for-byte copies of that revision. Miningcore's checked wrapper in `libodocrypt/exports.cpp`
+  exposes the cipher-plus-Keccak operation through the bounded C ABI and reuses immutable schedules.
 - The Keccak-p[800] reference implementation and header used by the adapter are included in the
   same build-time SHA-256 manifest, so any change to the complete native input set fails before
   compilation.
@@ -68,7 +70,7 @@ The implementation is based on immutable DigiByte sources:
 
 The cross-implementation vector uses the real mainnet activation block at height `9,112,320` and
 timestamp `1,563,757,222`. Its ten-day key is `1,562,976,000`, while an incorrect one-day miner
-uses `1,563,753,600`. The reviewed 80-byte header's Odocrypt digest (not SHA-256) is
+uses `1,563,753,600`. The reviewed 80-byte header's Odocrypt digest is
 `8fe8946b1339262591dc2a437c29d42edb02c8c902caea06729dcd0000000000` (not SHA-256) through DigiByte's
 pinned cipher-plus-Keccak implementation. Linux and Windows execute that vector through Miningcore's
 actual C ABI; the Windows lane first rebuilds `libodocrypt.dll` from the reviewed sources rather
@@ -89,7 +91,8 @@ multiplier. Scrypt remains the separate DigiByte algorithm that uses `65,536` sc
 
 ## Daemon baseline
 
-Use a dedicated, fully synchronized DigiByte Core v9.26.5-or-newer node. Keep RPC bound to a private
+Use a dedicated, fully synchronized DigiByte Core v9.26.5 node, or a later release whose Odocrypt
+consensus contract has been revalidated against this implementation. Keep RPC bound to a private
 interface and restrict it to the Miningcore host. A minimal mainnet fragment is:
 
 ```ini
@@ -158,7 +161,7 @@ submission behavior has been re-established.
 | Symptom | Check |
 | --- | --- |
 | `Invalid coin-template ... odocrypt` at startup | Do not override the built-in activation or schedule values. Custom Odocrypt templates require canonical nonzero activation heights and intervals for main, test, signet and regtest. |
-| Daemon rejects the GBT algorithm | Confirm DigiByte Core v9.26.5 or newer, `algo=odo`, and that the endpoint is the intended DigiByte node. |
+| Daemon rejects the GBT algorithm | Confirm DigiByte Core v9.26.5 (or a revalidated later release), `algo=odo`, and that the endpoint is the intended DigiByte node. |
 | Every submitted share is invalid | Confirm the miner is actually using Odocrypt, uses the correct one-day or ten-day network schedule, the Stratum port belongs to the Odocrypt pool, and system clocks are sane. The unmodified pinned `dgbminer` is one-day only. |
 | Blocks are rejected although shares pass | Stop public mining; preserve the job/header/submission logs and verify daemon version, algorithm selector, schedule and block identity before resuming. |
 | Old configuration references `digibyte-groestl` | Replace it with a supported active algorithm. There is no compatibility alias because silently mining a retired consensus algorithm is unsafe. |

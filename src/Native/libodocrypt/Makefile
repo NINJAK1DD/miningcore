@@ -10,7 +10,7 @@ all: $(TARGET)
 $(TARGET): $(OBJECTS)
 	$(CXX) $(LDFLAGS) -o $@ $^
 
-exports.o: exports.cpp ../libmultihash/hashodo.h ../libmultihash/odocrypt.h ../libmultihash/KeccakP-800-SnP.h
+exports.o: exports.cpp ../libmultihash/odocrypt.h ../libmultihash/KeccakP-800-SnP.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 odocrypt.o: ../libmultihash/odocrypt.cpp ../libmultihash/odocrypt.h

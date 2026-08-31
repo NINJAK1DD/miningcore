@@ -45,7 +45,7 @@ public class CurrentCoinDefinitionTests : TestBase
             template.Networks["main"].OdoCryptActivationHeight);
         Assert.Equal(864000u,
             template.Networks["main"].OdoCryptShapeChangeInterval);
-        Assert.Equal(500u,
+        Assert.Equal(501u,
             template.Networks["test"].OdoCryptActivationHeight);
         Assert.Equal(86400u,
             template.Networks["test"].OdoCryptShapeChangeInterval);
@@ -53,12 +53,31 @@ public class CurrentCoinDefinitionTests : TestBase
             template.Networks["signet"].OdoCryptActivationHeight);
         Assert.Equal(86400u,
             template.Networks["signet"].OdoCryptShapeChangeInterval);
-        Assert.Equal(600u,
+        Assert.Equal(601u,
             template.Networks["regtest"].OdoCryptActivationHeight);
         Assert.Equal(864000u,
             template.Networks["regtest"].OdoCryptShapeChangeInterval);
         Assert.Same(template.Networks["signet"],
             template.GetNetwork(new ChainName("signet")));
+    }
+
+    [Theory]
+    [InlineData("main", 9112320, 9100000, 9112320)]
+    [InlineData("test", 500, 500, 501)]
+    [InlineData("signet", 600, 20000, 20001)]
+    [InlineData("regtest", 600, 600, 601)]
+    public void DigiByteOdoCryptActivation_UsesEffectiveConsensusBoundary(
+        string network, int odoHeight, int algoSwapChangeTarget,
+        int expectedFirstBlock)
+    {
+        var template = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["digibyte-odocrypt"]);
+        var effectiveFirstBlock = Math.Max(odoHeight,
+            checked(algoSwapChangeTarget + 1));
+
+        Assert.Equal(expectedFirstBlock, effectiveFirstBlock);
+        Assert.Equal((uint) effectiveFirstBlock,
+            template.Networks[network].OdoCryptActivationHeight);
     }
 
     [Fact]
@@ -767,7 +786,7 @@ public class CurrentCoinDefinitionTests : TestBase
         },
         ["test"] = new JObject
         {
-            ["odoCryptActivationHeight"] = 500,
+            ["odoCryptActivationHeight"] = 501,
             ["odoCryptShapeChangeInterval"] = 86400,
         },
         ["signet"] = new JObject
@@ -777,7 +796,7 @@ public class CurrentCoinDefinitionTests : TestBase
         },
         ["regtest"] = new JObject
         {
-            ["odoCryptActivationHeight"] = 600,
+            ["odoCryptActivationHeight"] = 601,
             ["odoCryptShapeChangeInterval"] = 864000,
         },
     };

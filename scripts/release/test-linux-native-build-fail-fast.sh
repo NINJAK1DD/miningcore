@@ -112,6 +112,16 @@ done
 )
 bash "$source_verifier" "$work_dir/panthera" "$work_dir/panthera.sha256"
 
+cp "$work_dir/randomx/CMakeLists.txt" "$work_dir/randomx/CMakeLists.txt.lf"
+sed 's/$/\r/' "$work_dir/randomx/CMakeLists.txt.lf" \
+  > "$work_dir/randomx/CMakeLists.txt"
+sed 's/$/\r/' "$work_dir/randomx.sha256" \
+  > "$work_dir/randomx-crlf.sha256"
+bash "$source_verifier" "$work_dir/randomx" \
+  "$work_dir/randomx-crlf.sha256"
+mv "$work_dir/randomx/CMakeLists.txt.lf" \
+  "$work_dir/randomx/CMakeLists.txt"
+
 mkdir "$work_dir/manifest-directory"
 set +e
 bash "$source_verifier" "$work_dir/randomx" "$work_dir/manifest-directory" \

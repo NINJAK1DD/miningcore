@@ -1,5 +1,5 @@
 {
-    // DigiByte Odocrypt mainnet baseline for DigiByte Core v9.26.5 or newer.
+    // DigiByte Odocrypt mainnet baseline for reviewed DigiByte Core v9.26.5.
     // Configure the daemon with algo=odo and RPC restricted to this host.
     // Replace every CHANGE_ME value and review ../docs/digibyte.md before use.
     "logging": {

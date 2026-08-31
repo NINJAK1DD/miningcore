@@ -51,7 +51,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\libmultihash\hashodo.h" />
     <ClInclude Include="..\libmultihash\KeccakP-800-SnP.h" />
     <ClInclude Include="..\libmultihash\odocrypt.h" />
   </ItemGroup>
