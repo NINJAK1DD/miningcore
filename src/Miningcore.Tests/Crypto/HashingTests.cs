@@ -721,18 +721,22 @@ public class HashingTests : TestBase
     }
 
     [Fact]
-    public unsafe void OdoCrypt_NativeBoundaryRejectsMalformedBuffers()
+    public void OdoCrypt_NativeBoundaryRejectsMalformedBuffers()
     {
-        var input = new byte[80];
-        var output = new byte[32];
+        var input = Marshal.AllocHGlobal(80);
+        var output = Marshal.AllocHGlobal(32);
 
-        fixed(byte* inputPtr = input)
-        fixed(byte* outputPtr = output)
+        try
         {
-            Assert.Equal(0, OdoCryptNative.Hash(null, outputPtr, 80, 0));
-            Assert.Equal(0, OdoCryptNative.Hash(inputPtr, null, 80, 0));
-            Assert.Equal(0, OdoCryptNative.Hash(inputPtr, outputPtr, 79, 0));
-            Assert.Equal(0, OdoCryptNative.Hash(inputPtr, outputPtr, 81, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(IntPtr.Zero, output, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, IntPtr.Zero, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, output, 79, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, output, 81, 0));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input);
+            Marshal.FreeHGlobal(output);
         }
     }
 

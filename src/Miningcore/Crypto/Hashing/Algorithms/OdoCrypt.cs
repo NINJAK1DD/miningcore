@@ -85,7 +85,8 @@ public unsafe class OdoCrypt : IHashAlgorithm
         fixed(byte* input = data)
         fixed(byte* output = result)
         {
-            if(OdoCryptNative.Hash(input, output, (uint) data.Length, key) != 1)
+            if(OdoCryptNative.Hash((IntPtr) input, (IntPtr) output,
+                   (uint) data.Length, key) != 1)
                 throw new InvalidOperationException("Native Odocrypt hashing failed");
         }
     }

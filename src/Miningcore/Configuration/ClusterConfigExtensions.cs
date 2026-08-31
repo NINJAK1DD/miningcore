@@ -53,6 +53,8 @@ public partial class BeamCoinTemplate
 
 public partial class BitcoinTemplate
 {
+    private static readonly ChainName SignetChain = new("Signet");
+
     public BitcoinTemplate()
     {
         merkleTreeHasherValue = new Lazy<IHashAlgorithm>(() =>
@@ -99,6 +101,8 @@ public partial class BitcoinTemplate
             return Networks["main"];
         else if(chain == ChainName.Testnet)
             return Networks["test"];
+        else if(chain == SignetChain)
+            return Networks["signet"];
         else if(chain == ChainName.Regtest)
             return Networks["regtest"];
 

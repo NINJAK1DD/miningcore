@@ -177,7 +177,7 @@ public static class CoinTemplateLoader
     {
         var headerHasher = template["headerHasher"] as JObject;
         var isOdoCrypt = string.Equals(headerHasher?["hash"]?.Value<string>(),
-            OdoCryptHasher, StringComparison.Ordinal);
+            OdoCryptHasher, StringComparison.OrdinalIgnoreCase);
         var networks = template["networks"] as JObject;
         var contractProperties = new[]
         {

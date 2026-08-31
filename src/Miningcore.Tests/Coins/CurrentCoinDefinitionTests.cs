@@ -6,6 +6,7 @@ using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Extensions;
 using Miningcore.Mining;
+using NBitcoin;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -55,6 +56,8 @@ public class CurrentCoinDefinitionTests : TestBase
             template.Networks["regtest"].OdoCryptActivationHeight);
         Assert.Equal(864000u,
             template.Networks["regtest"].OdoCryptShapeChangeInterval);
+        Assert.Same(template.Networks["signet"],
+            template.GetNetwork(new ChainName("signet")));
     }
 
     [Fact]
@@ -69,6 +72,21 @@ public class CurrentCoinDefinitionTests : TestBase
             template.Networks["main"].OdoCryptActivationHeight);
         Assert.Equal(86400u,
             template.Networks["test"].OdoCryptShapeChangeInterval);
+    }
+
+    [Fact]
+    public void Loader_RecognizesMixedCaseOdoCryptHasherAndRequiresContract()
+    {
+        var template = Assert.IsType<BitcoinTemplate>(
+            LoadOdoCryptTemplate(CreateOdoCryptNetworks(), "OdoCrypt"));
+
+        Assert.IsType<OdoCrypt>(template.HeaderHasherValue);
+
+        var ex = Assert.Throws<PoolStartupException>(() =>
+            LoadOdoCryptTemplate(null, "OdoCrypt"));
+
+        Assert.Contains("requires typed network activation", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
