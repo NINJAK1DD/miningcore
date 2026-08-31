@@ -511,6 +511,12 @@ build-windows.bat
 
 The published files are written to `build`.
 
+For managed-only development on a machine without the C++ workload, `dotnet build` and unrelated
+tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
+output: Odocrypt tests and runtime use will fail, and Windows publish always requires the verified
+source build. For local toolchain-compatibility testing, an installed alternative can be selected
+with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; release CI remains pinned to v143.
+
 ### Docker Engine
 
 Install [Docker Engine for your Linux distribution](https://docs.docker.com/engine/install/) and

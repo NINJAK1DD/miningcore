@@ -1,11 +1,19 @@
 [CmdletBinding()]
-param()
+param(
+    [string] $SourceRoot,
+    [switch] $VerifyOnly
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$nativeRoot = Join-Path $repositoryRoot 'src\Native'
+$nativeRoot = if([string]::IsNullOrWhiteSpace($SourceRoot)) {
+    Join-Path $repositoryRoot 'src\Native'
+}
+else {
+    [System.IO.Path]::GetFullPath($SourceRoot)
+}
 $projectPath = Join-Path $nativeRoot 'libodocrypt\libodocrypt.vcxproj'
 $manifestPath = Join-Path $nativeRoot 'libodocrypt\upstream.sha256'
 $outputPath = Join-Path $nativeRoot 'libodocrypt\bin\x64\Release\libodocrypt.dll'
@@ -19,10 +27,11 @@ function Get-CanonicalTextSha256 {
     try {
         for($index = 0; $index -lt $bytes.Length; $index++) {
             if($bytes[$index] -eq 13 -and
-                $index + 1 -lt $bytes.Length -and
-                $bytes[$index + 1] -eq 10) {
-                $canonical.WriteByte(10)
-                $index++
+                ($index + 1 -eq $bytes.Length -or $bytes[$index + 1] -eq 10)) {
+                if($index + 1 -lt $bytes.Length) {
+                    $canonical.WriteByte(10)
+                    $index++
+                }
             }
             else {
                 $canonical.WriteByte($bytes[$index])
@@ -146,6 +155,10 @@ function Find-MSBuild {
 }
 
 Test-PinnedSources
+if($VerifyOnly) {
+    return
+}
+
 $msbuild = Find-MSBuild
 $arguments = @(
     $projectPath,
@@ -163,7 +176,9 @@ if($env:MININGCORE_WINDOWS_PLATFORM_TOOLSET) {
 Write-Host "Building reviewed Windows Odocrypt runtime with $msbuild"
 & $msbuild @arguments
 if($LASTEXITCODE -ne 0) {
-    throw "Windows Odocrypt build failed with exit status $LASTEXITCODE"
+    throw ("Windows Odocrypt build failed with exit status $LASTEXITCODE. " +
+        'Install the v143 C++ toolset, or set MININGCORE_WINDOWS_PLATFORM_TOOLSET ' +
+        'to an installed compatible toolset for local compatibility testing.')
 }
 
 if(-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {

@@ -82,6 +82,12 @@ MSBuild, verifies `src/Native/libodocrypt/upstream.sha256`, builds `Release|x64`
 resulting runtime automatically. The native project keeps `/W4 /WX` enabled; the only
 conversion-warning exception is scoped to the byte-pinned upstream cipher source.
 
+The Windows source build is mandatory for publish and enabled by default for build and test. A
+managed-only contributor may pass `-p:BuildOdoCryptWindows=false` to omit Odocrypt from local build
+and unrelated-test output, but that output cannot run Odocrypt and cannot be published. The
+`MININGCORE_WINDOWS_PLATFORM_TOOLSET` environment variable may select an installed compatible
+toolset for local compatibility testing; release CI uses v143.
+
 Current DigiByte mainnet accepts SHA-256d, Scrypt, Skein, Qubit and Odocrypt. Odocrypt replaced
 Myriad-Groestl; current AlgoLock rules reject the retired algorithm. Do not restore a
 `digibyte-groestl` template or point an old Groestl configuration at current mainnet.

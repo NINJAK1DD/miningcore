@@ -68,6 +68,7 @@ jobs:
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-linux-package-targets.sh
         scripts/release/test-msbuild-warning-file-logger.sh
+        scripts/release/test-odocrypt-source-verifiers.sh
         scripts/release/test-ubuntu-source-build.sh
 
     - name: Test Linux native symbol contracts
@@ -334,6 +335,10 @@ jobs:
         src/Native
         src/Native/libodocrypt/upstream.sha256
 
+    - name: Test Odocrypt source-verifier parity
+      shell: bash
+      run: bash scripts/release/test-odocrypt-source-verifiers.sh
+
     - name: Restore Windows native tests
       run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
 
@@ -352,6 +357,39 @@ jobs:
           --configuration Release `
           --framework net10.0 `
           --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
+
+    - name: Test managed-only Windows opt-out boundaries
+      shell: pwsh
+      run: |
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          -p:BuildOdoCryptWindows=false `
+          --filter "FullyQualifiedName~Miningcore.Tests.Coins.CurrentCoinDefinitionTests"
+        if($LASTEXITCODE -ne 0) {
+          exit $LASTEXITCODE
+        }
+        if((Test-Path 'src\Miningcore\bin\Release\net10.0\libodocrypt.dll') -or `
+            (Test-Path 'src\Miningcore.Tests\bin\Release\net10.0\libodocrypt.dll')) {
+          throw 'Managed-only build retained a stale Odocrypt runtime'
+        }
+
+        $publishOutput = dotnet publish src/Miningcore/Miningcore.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          --output build/windows-managed-only-publish `
+          -p:BuildOdoCryptWindows=false 2>&1
+        if($LASTEXITCODE -eq 0) {
+          throw 'Windows publish unexpectedly accepted BuildOdoCryptWindows=false'
+        }
+        if(($publishOutput | Out-String) -notmatch `
+            'Windows publish requires BuildOdoCryptWindows=true') {
+          $publishOutput | Write-Host
+          throw 'Windows publish opt-out failed without its targeted diagnostic'
+        }
+        $global:LASTEXITCODE = 0
 
     - name: Restore dependencies
       run: dotnet restore src/Miningcore/Miningcore.csproj --runtime win-x64
