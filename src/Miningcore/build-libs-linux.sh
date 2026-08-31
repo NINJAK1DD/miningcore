@@ -79,6 +79,9 @@ export HAVE_FEATURE="$HAVE_AES $HAVE_SSE2 $HAVE_SSE3 $HAVE_SSSE3 $HAVE_PCLMUL $H
 
 build_native_library libmultihash libmultihash.so \
   CPU_FLAGS="$CPU_FLAGS" HAVE_FEATURE="$HAVE_FEATURE"
+bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
+  "$NativeDir" "$NativeDir/libodocrypt/upstream.sha256"
+build_native_library libodocrypt libodocrypt.so
 build_native_library libbeamhash libbeamhash.so
 build_native_library libetchash libetchash.so
 build_native_library libethhash libethhash.so

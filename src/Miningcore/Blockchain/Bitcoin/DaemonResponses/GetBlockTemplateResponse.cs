@@ -73,6 +73,12 @@ public class BlockTemplate
     public uint Height { get; set; }
 
     /// <summary>
+    /// DigiByte Odocrypt key derived by the daemon for this template.
+    /// </summary>
+    [JsonProperty("odokey", NullValueHandling = NullValueHandling.Ignore)]
+    public uint? OdoKey { get; set; }
+
+    /// <summary>
     /// Contents of non-coinbase transactions that should be included in the next block
     /// </summary>
     public BitcoinBlockTransaction[] Transactions { get; set; }

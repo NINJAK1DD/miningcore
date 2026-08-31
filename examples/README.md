@@ -122,6 +122,7 @@ compatibility can change independently of a Miningcore release.
 | Dash without polling | [`dash_pool_no_polling.json`](dash_pool_no_polling.json) |
 | DigiByte Scrypt | [`digibyte_scrypt_pool.json`](digibyte_scrypt_pool.json) |
 | DigiByte SHA-256 | [`digibyte_sha256_pool.json`](digibyte_sha256_pool.json) |
+| DigiByte Odocrypt | [`digibyte_odocrypt_pool.json`](digibyte_odocrypt_pool.json) |
 | Ethereum | [`ethereum_pool.json`](ethereum_pool.json) |
 | Ethereum Classic | [`ethereumclassic_pool.json`](ethereumclassic_pool.json) |
 | Firo | [`firo_pool.json`](firo_pool.json) |

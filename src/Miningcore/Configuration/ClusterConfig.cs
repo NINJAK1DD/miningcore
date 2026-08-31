@@ -208,6 +208,22 @@ public partial class BitcoinTemplate : CoinTemplate
     public class BitcoinNetworkParams
     {
         /// <summary>
+        /// Consensus height at which Odocrypt becomes available. The Odocrypt
+        /// hasher refuses pre-activation templates instead of relying on an
+        /// operator-selected coin definition to imply activation.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public uint? OdoCryptActivationHeight { get; set; }
+
+        /// <summary>
+        /// Consensus Odocrypt shape-change interval, in seconds. The active
+        /// schedule is network-specific and the Odocrypt hasher refuses to run
+        /// when this value is absent or zero.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public uint? OdoCryptShapeChangeInterval { get; set; }
+
+        /// <summary>
         /// Arbitrary extension data
         /// </summary>
         [JsonExtensionData]

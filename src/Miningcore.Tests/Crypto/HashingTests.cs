@@ -3,9 +3,12 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Extensions;
+using Miningcore.Native;
 using Miningcore.Tests.Util;
 using Xunit;
 
@@ -608,6 +611,129 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("79fd64cd7f4b9e59ea469c6dbfdfb6388c912240ab0b6065d65d21fcda3618ce", result);
+    }
+
+    [Fact]
+    public void OdoCrypt_ScheduleKeyUsesConsensusIntervalBoundary()
+    {
+        const uint interval = 864000;
+
+        Assert.Equal(0u, OdoCrypt.DeriveKey(interval - 1, interval));
+        Assert.Equal(interval, OdoCrypt.DeriveKey(interval, interval));
+        Assert.Equal(interval, OdoCrypt.DeriveKey(interval * 2 - 1, interval));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            OdoCrypt.DeriveKey(1, 0));
+    }
+
+    [Fact]
+    public void OdoCrypt_HashMatchesPinnedDigiByteImplementation()
+    {
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 9112320,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        var nTime = 0x59ef86f2u;
+        hasher.Digest(testValue2, hash, (ulong) nTime,
+            new BlockTemplate
+            {
+                Height = 9112320,
+                OdoKey = OdoCrypt.DeriveKey(nTime, 864000),
+            }, null, network);
+
+        Assert.Equal(
+            "93164a82a79fba784dcf04c0b0f8537cc43821e7518bf513f296de50aefee4cf",
+            hash.ToHexString());
+    }
+
+    [Fact]
+    public void OdoCrypt_RejectsPreActivationTemplateAndAcceptsBoundary()
+    {
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 600,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            hasher.Digest(testValue2, hash, 0UL,
+                new BlockTemplate { Height = 599, OdoKey = 0 }, null, network));
+
+        Assert.Contains("not active", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        hasher.Digest(testValue2, hash, 0UL,
+            new BlockTemplate { Height = 600, OdoKey = 0 }, null, network);
+
+        Assert.Contains(hash, value => value != 0);
+    }
+
+    [Fact]
+    public void OdoCrypt_RejectsMissingOrInvalidRuntimeConsensusMetadata()
+    {
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        var blockTemplate = new BlockTemplate { Height = 600, OdoKey = 0 };
+
+        var missingActivation = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        Assert.Throws<InvalidOperationException>(() =>
+            hasher.Digest(testValue2, hash, 0UL, blockTemplate, null,
+                missingActivation));
+
+        var missingSchedule = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 600,
+        };
+        Assert.Throws<InvalidOperationException>(() =>
+            hasher.Digest(testValue2, hash, 0UL, blockTemplate, null,
+                missingSchedule));
+
+        var validNetwork = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 600,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            hasher.Digest(testValue2, hash, (ulong) uint.MaxValue + 1,
+                blockTemplate, null, validNetwork));
+
+        var missingDaemonKey = new BlockTemplate { Height = 600 };
+        Assert.Throws<InvalidOperationException>(() =>
+            hasher.Digest(testValue2, hash, 0UL, missingDaemonKey, null,
+                validNetwork));
+
+        var mismatchedDaemonKey = new BlockTemplate
+        {
+            Height = 600,
+            OdoKey = 1,
+        };
+        Assert.Throws<InvalidOperationException>(() =>
+            hasher.Digest(testValue2, hash, 0UL, mismatchedDaemonKey, null,
+                validNetwork));
+    }
+
+    [Fact]
+    public unsafe void OdoCrypt_NativeBoundaryRejectsMalformedBuffers()
+    {
+        var input = new byte[80];
+        var output = new byte[32];
+
+        fixed(byte* inputPtr = input)
+        fixed(byte* outputPtr = output)
+        {
+            Assert.Equal(0, OdoCryptNative.Hash(null, outputPtr, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(inputPtr, null, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(inputPtr, outputPtr, 79, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(inputPtr, outputPtr, 81, 0));
+        }
     }
 
     [Fact]

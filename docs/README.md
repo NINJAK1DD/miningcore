@@ -29,6 +29,7 @@ wallet balances or recovery files.
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Configure and operate Bitcoin-family PPS | [PPS](pps.md) |
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
+| Configure and commission DigiByte direct mining | [DigiByte](digibyte.md) |
 | Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
 | Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |

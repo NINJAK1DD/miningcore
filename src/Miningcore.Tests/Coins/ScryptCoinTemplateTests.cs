@@ -275,7 +275,7 @@ public class ScryptCoinTemplateTests : TestBase
     [InlineData("digibyte-scrypt")]
     [InlineData("digibyte-skein")]
     [InlineData("digibyte-qubit")]
-    [InlineData("digibyte-groestl")]
+    [InlineData("digibyte-odocrypt")]
     [InlineData("mooncoin")]
     [InlineData("newyorkcoin")]
     [InlineData("pyrk-sha256")]
@@ -308,7 +308,7 @@ public class ScryptCoinTemplateTests : TestBase
         {
             "auroracoin-groestl", "auroracoin-qubit", "auroracoin-scrypt",
             "auroracoin-sha256", "auroracoin-skein", "butkoin-scrypt",
-            "butkoin-sha256", "danecoin", "digibyte-groestl",
+            "butkoin-sha256", "danecoin", "digibyte-odocrypt",
             "digibyte-qubit", "digibyte-scrypt", "digibyte-sha256",
             "digibyte-skein", "litecoin-cash", "litecoin-cash-minotaurx",
             "maza", "maza-minotaurx", "mooncoin", "newyorkcoin", "pepepow",
@@ -418,7 +418,7 @@ public class ScryptCoinTemplateTests : TestBase
     [InlineData("digibyte-scrypt", 0x00000f00u)]
     [InlineData("digibyte-skein", 0x00000f00u)]
     [InlineData("digibyte-qubit", 0x00000f00u)]
-    [InlineData("digibyte-groestl", 0x00000f00u)]
+    [InlineData("digibyte-odocrypt", 0x00000f00u)]
     [InlineData("smileycoin-sha256", 0x00000e00u)]
     [InlineData("smileycoin-scrypt", 0x00000e00u)]
     [InlineData("smileycoin-skein", 0x00000e00u)]

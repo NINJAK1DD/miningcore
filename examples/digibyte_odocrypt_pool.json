@@ -1,0 +1,127 @@
+{
+    // DigiByte Odocrypt mainnet baseline for DigiByte Core v9.26.5 or newer.
+    // Configure the daemon with algo=odo and RPC restricted to this host.
+    // Replace every CHANGE_ME value and review ../docs/digibyte.md before use.
+    "logging": {
+        "level": "info",
+        "enableConsoleLog": true,
+        "enableConsoleColors": true,
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
+        "perPoolLogFile": false
+    },
+    "banning": {
+        "manager": "Integrated",
+        "banOnJunkReceive": true,
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
+    },
+    "notifications": {
+        "enabled": false,
+        "email": {
+            "host": "smtp.example.com",
+            "port": 587,
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
+        },
+        "admin": {
+            "enabled": false,
+            "emailAddress": "user@example.com",
+            "notifyBlockFound": true
+        }
+    },
+    "persistence": {
+        "postgres": {
+            "host": "127.0.0.1",
+            "port": 5432,
+            "user": "miningcore",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
+            "database": "miningcore"
+        }
+    },
+    "paymentProcessing": {
+        "enabled": true,
+        "interval": 600,
+        "coinbaseString": "Miningcore"
+    },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+    "api": {
+        "enabled": true,
+        "listenAddress": "127.0.0.1",
+        "port": 4000,
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
+        "rateLimiting": {
+            "disabled": true
+        }
+    },
+    "pools": [{
+      "id": "dgb-odocrypt-1",
+      "enabled": true,
+      "coin": "digibyte-odocrypt",
+      "address": "CHANGE_ME_DIGIBYTE_POOL_WALLET_ADDRESS",
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_DIGIBYTE_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 500,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
+      "banning": {
+        "enabled": true,
+        "time": 600,
+        "invalidPercent": 50,
+        "checkThreshold": 50
+      },
+      "ports": {
+        "3062": {
+          "name": "DGB-ODOCRYPT-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 256,
+          "varDiff": {
+            "minDiff": 128,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3063": {
+          "name": "DGB-ODOCRYPT-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 16384,
+          "varDiff": {
+            "minDiff": 8192,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 14022,
+          "user": "CHANGE_ME_DAEMON_RPC_USER",
+          "password": "CHANGE_ME_DAEMON_RPC_PASSWORD"
+        }
+      ],
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.5,
+        "payoutScheme": "PPLNS",
+        "payoutSchemeConfig": {
+          "factor": 2.0
+        }
+      }
+    }]
+}

@@ -978,8 +978,8 @@
         "explorerTxLink": "https://chainz.cryptoid.info/dgb/tx.dws?{0}.htm",
         "explorerAccountLink": "https://chainz.cryptoid.info/dgb/address.dws?{0}.htm"
     },
-    "digibyte-groestl": {
-        "name": "Digibyte Groestl",
+    "digibyte-odocrypt": {
+        "name": "DigiByte Odocrypt",
         "canonicalName": "Digibyte",
         "symbol": "DGB",
         "family": "bitcoin",
@@ -992,10 +992,10 @@
         "telegram": "https://t.me/DigiByteCoin",
         "discord": "",
         "coinbaseHasher": {
-            "hash": "sha256s"
+            "hash": "sha256d"
         },
         "headerHasher": {
-            "hash": "groestl-myriad"
+            "hash": "odocrypt"
         },
         "blockHasher": {
             "hash": "reverse",
@@ -1005,9 +1005,26 @@
                 }
             ]
         },
-        "shareMultiplier": 256,
+        "networks": {
+            "main": {
+                "odoCryptActivationHeight": 9112320,
+                "odoCryptShapeChangeInterval": 864000
+            },
+            "test": {
+                "odoCryptActivationHeight": 500,
+                "odoCryptShapeChangeInterval": 86400
+            },
+            "signet": {
+                "odoCryptActivationHeight": 600,
+                "odoCryptShapeChangeInterval": 86400
+            },
+            "regtest": {
+                "odoCryptActivationHeight": 600,
+                "odoCryptShapeChangeInterval": 864000
+            }
+        },
         "blockTemplateRpcExtraParams": [
-            "groestl"
+            "odo"
         ],
         "explorerBlockLink": "https://chainz.cryptoid.info/dgb/block.dws?$height$.htm",
         "explorerTxLink": "https://chainz.cryptoid.info/dgb/tx.dws?{0}.htm",
