@@ -21,7 +21,7 @@ The presence of a template is not a guarantee that an arbitrary daemon or miner 
 compatible. Use the reviewed daemon release, stage the pool privately, and complete the operational
 checks below before accepting public miners.
 
-The daemon-backed verification crossed the effective regtest activation boundary at height 601,
+The daemon-backed verification ran beyond the effective regtest activation boundary of height 601,
 accepted blocks 602 and 603, and used a timestamp where the one-day and ten-day schedule keys differ.
 The official miner revision was patched to select the
 regtest ten-day schedule explicitly; an unmodified build is not valid evidence for mainnet or
