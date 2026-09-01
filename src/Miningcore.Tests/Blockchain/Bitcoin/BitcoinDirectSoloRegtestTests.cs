@@ -145,6 +145,12 @@ public class BitcoinDirectSoloRegtestTests : TestBase
                 candidate.Share.DirectMinerScriptPubKey,
             DirectRecipientOutputs =
                 candidate.Share.DirectRecipientOutputs,
+            DirectSubmissionState =
+                BitcoinDirectSubmission.ObservedActive,
+            DirectSubmissionBlock = candidate.BlockHex,
+            DirectSubmissionAttempts = 1,
+            DirectSubmissionDefinitiveMisses = 0,
+            DirectSubmissionLastAttempt = DateTime.UtcNow,
             Created = DateTime.UtcNow,
         };
         var miningPool = Substitute.For<Miningcore.Mining.IMiningPool>();
