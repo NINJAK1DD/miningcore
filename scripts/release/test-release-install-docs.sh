@@ -219,6 +219,15 @@ assert_file_contains 'the direct-SOLO journal rollback boundary' \
   "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO dedicated block identity' \
   '`bitcoin-coinbase-direct` block type' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO final block-weight gate' \
+  "Bitcoin's 4,000,000-weight-unit consensus" "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO pre-submission durability boundary' \
+  'synchronously stored before its block is submitted' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO bounded terminal reconciliation depth' \
+  'within 4,032 blocks of the reported chain tip' "$bitcoin_direct_document"
+assert_file_contains 'the pre-release direct-journal quarantine boundary' \
+  'Earlier draft builds wrote direct evidence under the historical' \
+  "$bitcoin_direct_document"
 assert_file_contains 'the release-level direct-SOLO downgrade prohibition' \
   'not roll the binary back below the release containing this feature when' \
   "$document"

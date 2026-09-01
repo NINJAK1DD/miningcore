@@ -16,8 +16,8 @@ public interface IBlockRepository
     Task<Block[]> PageMinerBlocksAsync(IDbConnection con, string poolId, string address, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> GetPendingBlocksForPoolAsync(IDbConnection con, string poolId);
     Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
-        IDbConnection con, string poolId, DateTime checkedBefore, int pageSize,
-        CancellationToken ct);
+        IDbConnection con, string poolId, long minimumBlockHeight,
+        DateTime checkedBefore, int pageSize, CancellationToken ct);
     Task<bool> TouchBitcoinDirectReconciliationAsync(IDbConnection con,
         IDbTransaction tx, long id, DateTime checkedAt,
         CancellationToken ct = default);

@@ -23,6 +23,11 @@ public class BitcoinBlockTransaction
     /// The amount of the fee in BTC
     /// </summary>
     public decimal Fee { get; set; }
+
+    /// <summary>
+    /// Transaction weight as calculated by the daemon
+    /// </summary>
+    public long? Weight { get; set; }
 }
 
 public class CoinbaseAux
@@ -32,6 +37,9 @@ public class CoinbaseAux
 
 public class BlockTemplate
 {
+    [JsonIgnore]
+    internal long? ValidatedTransactionWeight { get; set; }
+
     /// <summary>
     /// The preferred block version
     /// </summary>

@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -577,6 +578,10 @@ public class BitcoinJobTests : TestBase
             Network.RegTest);
         var transactionB = Transaction.Parse(coinbaseB.ToHexString(),
             Network.RegTest);
+        Span<byte> coinbaseHashA = stackalloc byte[32];
+        coin.CoinbaseHasherValue.Digest(coinbaseA, coinbaseHashA);
+        Assert.Equal(transactionA.GetHash().ToString(),
+            new uint256(coinbaseHashA).ToString());
         Assert.NotEqual(transactionA.GetHash(), transactionB.GetHash());
         Assert.NotEqual(transactionA.GetHash().ToString(),
             transactionB.GetHash().ToString());
@@ -625,6 +630,140 @@ public class BitcoinJobTests : TestBase
         context.SetDirectPayoutAuthorization(minerB.ToString(), minerB);
         Assert.Equal(minerA.ToString(), jobA.DirectPayoutAddress);
         Assert.Null(context.GetJob(jobA.JobId));
+    }
+
+    [Fact]
+    public void DirectSoloJob_RejectsNearFullTemplateWhenFinalBlockIsOverweight()
+    {
+        var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["bitcoin"];
+        var pc = new PoolConfig { Template = coin };
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+        var miner = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+        var configuredRecipients = Enumerable.Range(0,
+                BitcoinDirectCoinbase.MaximumRecipientOutputs)
+            .Select(_ => new Key().PubKey.GetAddress(
+                ScriptPubKeyType.Segwit, Network.RegTest))
+            .Select(address => new RewardRecipient
+            {
+                Address = address.ToString(),
+                Percentage = 0.01m,
+            })
+            .ToArray();
+        var recipients = BitcoinDirectCoinbase.ValidateRecipients(
+            configuredRecipients,
+            value => BitcoinAddress.Create(value, Network.RegTest));
+        var directTemplate = new BitcoinDirectCoinbaseTemplate
+        {
+            MinerAddress = miner.ToString(),
+            MinerDestination = miner,
+            MinerScriptPubKey = miner.ScriptPubKey.ToHex(),
+            Recipients = recipients,
+        };
+
+        Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate Template(
+            params Miningcore.Blockchain.Bitcoin.DaemonResponses.BitcoinBlockTransaction[]
+                transactions) => new()
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 101,
+            Transactions = transactions,
+            DefaultWitnessCommitment =
+                "6a24aa21a9ed" + new string('0', 64),
+        };
+
+        DirectSerializationBitcoinJob Create(
+            Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate template,
+            string id)
+        {
+            var job = new DirectSerializationBitcoinJob();
+            job.InitDirect(template, id, pc, null, new ClusterConfig(), clock,
+                pool, Network.RegTest, false, coin.ShareMultiplier,
+                coin.CoinbaseHasherValue, coin.HeaderHasherValue,
+                coin.BlockHasherValue, directTemplate);
+            return job;
+        }
+
+        var coinbaseOnly = Create(Template(), "weight-baseline");
+        var availableTransactionWeight =
+            BitcoinJob.BitcoinConsensusMaxBlockWeight -
+            coinbaseOnly.DirectBlockWeight!.Value;
+        Transaction CreateTransaction(int scriptLength, int discriminator)
+        {
+            var transaction = Transaction.Create(Network.RegTest);
+            transaction.Inputs.Add(new TxIn(new OutPoint(
+                new uint256(discriminator.ToString("x64")), 0)));
+            transaction.Outputs.Add(Money.Zero,
+                new Script(new byte[scriptLength]));
+            return transaction;
+        }
+
+        Miningcore.Blockchain.Bitcoin.DaemonResponses.BitcoinBlockTransaction
+            Describe(Transaction transaction, long? weight = null) => new()
+            {
+                Data = Convert.ToHexString(transaction.ToBytes())
+                    .ToLowerInvariant(),
+                TxId = transaction.GetHash().ToString(),
+                Hash = transaction.GetWitHash().ToString(),
+                Weight = weight ?? checked(transaction.ToBytes().Length * 4L),
+            };
+
+        var largeTransaction = CreateTransaction(
+            checked((int) (availableTransactionWeight / 4) - 100), 1);
+        var large = Describe(largeTransaction);
+        while(large.Weight > availableTransactionWeight)
+        {
+            var excessBytes = checked((int)
+                ((large.Weight.Value - availableTransactionWeight + 3) / 4));
+            largeTransaction = CreateTransaction(
+                largeTransaction.Outputs[0].ScriptPubKey.Length - excessBytes,
+                1);
+            large = Describe(largeTransaction);
+        }
+        while(availableTransactionWeight - large.Weight >= 4)
+        {
+            var additionalBytes = checked((int)
+                ((availableTransactionWeight - large.Weight.Value) / 4));
+            largeTransaction = CreateTransaction(
+                largeTransaction.Outputs[0].ScriptPubKey.Length +
+                additionalBytes, 1);
+            large = Describe(largeTransaction);
+        }
+
+        var nearLimit = Create(Template(large), "weight-near-limit");
+        Assert.InRange(nearLimit.DirectBlockWeight!.Value,
+            BitcoinJob.BitcoinConsensusMaxBlockWeight - 3,
+            BitcoinJob.BitcoinConsensusMaxBlockWeight);
+        var second = Describe(CreateTransaction(1, 2));
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Create(Template(large, second),
+                "weight-over-limit"));
+        Assert.Contains("exceeds Bitcoin's", error.Message);
+        var missing = Describe(largeTransaction, 1);
+        missing.Weight = null;
+        var missingWeight = Assert.Throws<InvalidDataException>(() =>
+            Create(Template(missing), "weight-missing"));
+        Assert.Contains("positive daemon-reported weight",
+            missingWeight.Message);
+        var mismatched = Describe(CreateTransaction(1, 3));
+        mismatched.Weight++;
+        var mismatchedWeight = Assert.Throws<InvalidDataException>(() =>
+            Create(Template(mismatched), "weight-mismatch"));
+        Assert.Contains("does not match serialized weight",
+            mismatchedWeight.Message);
+        var missingTransactions = Template();
+        missingTransactions.Transactions = null;
+        var missingTransactionArray = Assert.Throws<InvalidDataException>(() =>
+            Create(missingTransactions, "weight-transactions-missing"));
+        Assert.Contains("transaction array", missingTransactionArray.Message);
     }
 
     [Fact]

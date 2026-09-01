@@ -161,7 +161,7 @@ public class BitcoinDirectSoloIntegrationTests
             var now = DateTime.UtcNow;
             var due = await repository
                 .GetBitcoinDirectBlocksForReconciliationAsync(
-                    connection, "btc-direct", now, 64,
+                    connection, "btc-direct", 0, now, 64,
                     CancellationToken.None);
             var dueBlock = Assert.Single(due);
             Assert.Null(dueBlock.DirectSettlementLastChecked);
@@ -171,7 +171,8 @@ public class BitcoinDirectSoloIntegrationTests
                 dueBlock));
             Assert.Empty(await repository
                 .GetBitcoinDirectBlocksForReconciliationAsync(
-                    connection, "btc-direct", now.AddMinutes(-30), 64,
+                    connection, "btc-direct", 0,
+                    now.AddMinutes(-30), 64,
                     CancellationToken.None));
 
             Assert.True(await repository.TouchBitcoinDirectReconciliationAsync(
@@ -179,8 +180,56 @@ public class BitcoinDirectSoloIntegrationTests
                 CancellationToken.None));
             Assert.Single(await repository
                 .GetBitcoinDirectBlocksForReconciliationAsync(
-                    connection, "btc-direct", now.AddHours(-1), 64,
+                    connection, "btc-direct", 0,
+                    now.AddHours(-1), 64,
                     CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                ALTER TABLE blocks DROP CONSTRAINT
+                    chk_blocks_bitcoin_direct_settlement;
+                INSERT INTO blocks(poolid, blockheight, networkdifficulty,
+                    status, type, transactionconfirmationdata, miner, hash,
+                    created, settlementmode, grossrewardsatoshis,
+                    directminerrewardsatoshis, directminerscriptpubkey,
+                    directrecipientoutputs)
+                VALUES('mistyped-direct', 99, 1, 'pending',
+                    'bitcoin-direct', '" + new string('c', 64) + @"',
+                    'miner', '" + new string('d', 64) + @"', now(),
+                    'coinbase-direct', 5000000000, 4900000000,
+                    '0014" + new string('3', 40) + @"', '[]');");
+            var mistypedId = await connection.ExecuteScalarAsync<long>(@"
+                SELECT id FROM blocks WHERE poolid = 'mistyped-direct'");
+            var mistyped = new Block
+            {
+                Id = mistypedId,
+                PoolId = "mistyped-direct",
+                BlockHeight = 99,
+                NetworkDifficulty = 1,
+                Status = BlockStatus.Quarantined,
+                Type = "bitcoin-direct",
+                TransactionConfirmationData = new string('c', 64),
+                Miner = "miner",
+                Hash = new string('d', 64),
+                Created = DateTime.UtcNow,
+                SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+                GrossRewardSatoshis = 5_000_000_000,
+                DirectMinerRewardSatoshis = 4_900_000_000,
+                DirectMinerScriptPubKey = "0014" + new string('3', 40),
+                DirectRecipientOutputs = "[]",
+            };
+            Assert.True(await repository.UpdateBlockAsync(connection, null,
+                mistyped));
+            Assert.Equal("quarantined",
+                await connection.ExecuteScalarAsync<string>(@"
+                    SELECT status FROM blocks
+                    WHERE id = @mistypedId", new { mistypedId }));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            Assert.Equal(BitcoinDirectCoinbaseSettlement.BlockType,
+                await connection.ExecuteScalarAsync<string>(@"
+                    SELECT type FROM blocks
+                    WHERE id = @mistypedId", new { mistypedId }));
 
             await repository.InsertAsync(connection, null, new Block
             {

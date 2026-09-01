@@ -365,12 +365,15 @@ public class BlockRepositoryTests
 
         await Assert.ThrowsAsync<NotSupportedException>(() => repository
             .GetBitcoinDirectBlocksForReconciliationAsync(
-                connection, block.PoolId, checkedAt, 64,
+                connection, block.PoolId, 50, checkedAt, 64,
                 CancellationToken.None));
         Assert.Contains("status IN ('confirmed', 'orphaned')", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("directsettlementlastchecked ASC NULLS FIRST",
             connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("blockheight >= @minimumBlockHeight",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(50L, connection.Parameters["minimumblockheight"]);
         Assert.Contains("FETCH NEXT @pageSize ROWS ONLY", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal(64, connection.Parameters["pagesize"]);

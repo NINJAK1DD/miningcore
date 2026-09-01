@@ -20,6 +20,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
+    internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
     protected IHashAlgorithm coinbaseHasher;
@@ -523,6 +524,8 @@ public class BitcoinJob
                     DirectCoinbaseSettlement.MinerScriptPubKey;
                 result.DirectRecipientOutputs =
                     DirectCoinbaseSettlement.SerializeRecipientOutputs();
+                result.TransactionConfirmationData =
+                    new uint256(coinbaseHash).ToString();
             }
 
             Span<byte> blockHash = stackalloc byte[32];
@@ -920,6 +923,7 @@ public class BitcoinJob
     public long RewardBasisSatoshis => rewardToPool.Satoshi;
     internal BitcoinDirectCoinbaseSettlement DirectCoinbaseSettlement { get;
         private set; }
+    internal long? DirectBlockWeight { get; private set; }
     internal string DirectPayoutAddress => directCoinbaseTemplate?.MinerAddress;
     internal long? DirectPayoutGeneration =>
         directCoinbaseTemplate?.AuthorizationGeneration;
@@ -963,6 +967,8 @@ public class BitcoinJob
         this.directCoinbaseTemplate = directCoinbaseTemplate;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        if(directCoinbaseTemplate != null)
+            ValidateBlockTemplateTransactionWeights(blockTemplate);
         if(headerHasher is OdoCrypt)
             OdoCrypt.ValidateJobContract(blockTemplate, networkParams);
 
@@ -1048,6 +1054,8 @@ public class BitcoinJob
 
         BuildMerkleBranches();
         BuildCoinbase();
+        if(directCoinbaseTemplate != null)
+            DirectBlockWeight = CalculateDirectBlockWeight();
 
         jobParams = new object[]
         {
@@ -1062,6 +1070,115 @@ public class BitcoinJob
             false
         };
     }
+
+    private long CalculateDirectBlockWeight()
+    {
+        long weight;
+
+        try
+        {
+            var transactionCount = checked(
+                (ulong) BlockTemplate.Transactions.Length + 1);
+            var coinbaseLength = checked((long) coinbaseInitial.Length +
+                extraNoncePlaceHolderLength + coinbaseFinal.Length);
+            weight = checked((80L + CompactSizeLength(transactionCount) +
+                coinbaseLength) * 4L);
+
+            var transactionWeight = BlockTemplate.ValidatedTransactionWeight ??
+                ValidateBlockTemplateTransactionWeights(BlockTemplate);
+            weight = checked(weight + transactionWeight);
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Direct SOLO block-weight calculation overflowed", ex);
+        }
+
+        if(weight > BitcoinConsensusMaxBlockWeight)
+        {
+            throw new InvalidDataException(
+                $"Direct SOLO block weight {weight} exceeds Bitcoin's " +
+                $"{BitcoinConsensusMaxBlockWeight}-weight-unit consensus limit");
+        }
+
+        return weight;
+    }
+
+    internal static long ValidateBlockTemplateTransactionWeights(
+        BlockTemplate blockTemplate)
+    {
+        ArgumentNullException.ThrowIfNull(blockTemplate);
+        if(blockTemplate.ValidatedTransactionWeight is { } validatedWeight)
+            return validatedWeight;
+
+        long result = 0;
+        var transactions = blockTemplate.Transactions ??
+            throw new InvalidDataException(
+                "Direct SOLO requires a getblocktemplate transaction array");
+
+        try
+        {
+            foreach(var templateTransaction in transactions)
+            {
+                if(templateTransaction.Weight is not > 0)
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO requires a positive daemon-reported weight " +
+                        "for every getblocktemplate transaction");
+                }
+                if(string.IsNullOrWhiteSpace(templateTransaction.Data))
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO requires serialized data for every getblocktemplate transaction");
+                }
+
+                Transaction transaction;
+                try
+                {
+                    transaction = Transaction.Parse(templateTransaction.Data,
+                        Network.Main);
+                }
+                catch(Exception ex)
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO could not parse a getblocktemplate transaction",
+                        ex);
+                }
+
+                var totalSize = transaction
+                    .WithOptions(TransactionOptions.Witness).ToBytes().Length;
+                var strippedSize = transaction
+                    .WithOptions(TransactionOptions.None).ToBytes().Length;
+                var actualWeight = checked(strippedSize * 3L + totalSize);
+                if(templateTransaction.Weight.Value != actualWeight)
+                {
+                    throw new InvalidDataException(
+                        $"Direct SOLO daemon-reported transaction weight " +
+                        $"{templateTransaction.Weight.Value} does not match " +
+                        $"serialized weight {actualWeight}");
+                }
+
+                result = checked(result + actualWeight);
+            }
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Direct SOLO template transaction-weight calculation overflowed",
+                ex);
+        }
+
+        blockTemplate.ValidatedTransactionWeight = result;
+        return result;
+    }
+
+    private static int CompactSizeLength(ulong value) => value switch
+    {
+        < 253 => 1,
+        <= ushort.MaxValue => 3,
+        <= uint.MaxValue => 5,
+        _ => 9,
+    };
 
     internal static byte[] ParseMwebPayload(BitcoinTemplate coin, BlockTemplate blockTemplate)
     {

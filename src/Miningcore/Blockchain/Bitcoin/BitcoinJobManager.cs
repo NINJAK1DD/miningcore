@@ -8,6 +8,7 @@ using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -192,6 +193,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                         BitcoinDirectCoinbase.ValidateTemplateAmount(
                             blockTemplate.CoinbaseValue,
                             directCoinbaseRecipients);
+                        BitcoinJob.ValidateBlockTemplateTransactionWeights(
+                            blockTemplate);
                     }
                     catch(PoolStartupException)
                     {
@@ -437,31 +440,36 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         {
             logger.Info(() => $"Submitting block {share.BlockHeight} [{share.BlockHash}]");
 
-            var acceptResponse = await SubmitBlockAsync(share, blockHex, ct);
+            var isDirectCoinbase = job.DirectCoinbaseSettlement != null;
+            var acceptResponse = isDirectCoinbase
+                ? await PersistAndSubmitDirectCandidateAsync(share, blockHex, ct)
+                : await SubmitBlockAsync(share, blockHex, ct);
 
             // is it still a block candidate?
-            share.IsBlockCandidate = acceptResponse.Accepted;
+            share.IsBlockCandidate = acceptResponse.Accepted ||
+                (isDirectCoinbase && acceptResponse.Ambiguous);
 
-            if(share.IsBlockCandidate)
+            if(acceptResponse.Accepted)
             {
-                logger.Info(() => job.DirectCoinbaseSettlement != null
+                logger.Info(() => isDirectCoinbase
                     ? $"Daemon accepted direct-SOLO block {share.BlockHeight} [{share.BlockHash}]"
                     : $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
 
                 // persist the coinbase transaction-hash to allow the payment processor
                 // to verify later on that the pool has received the reward for the block
-                share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
-
-                if(job.DirectCoinbaseSettlement != null &&
-                   !share.BlockRecordEmitted)
-                {
-                    await PersistAcceptedCandidateWithoutAccountingAsync(share);
-                    share.BlockRecordEmitted = true;
-                    ClearDirectSettlementEvidence(share);
-                }
+                if(!isDirectCoinbase)
+                    share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
 
                 // Direct candidates cross their durable database/journal boundary
                 // before refresh observers or other telemetry can fail.
+                OnBlockFound();
+            }
+
+            else if(isDirectCoinbase && acceptResponse.Ambiguous)
+            {
+                logger.Warn(() => $"Direct-SOLO block submission outcome for " +
+                    $"block {share.BlockHeight} [{share.BlockHash}] is uncertain; " +
+                    "the pre-submission durable record will be reconciled");
                 OnBlockFound();
             }
 
@@ -469,8 +477,10 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             {
                 // clear fields that no longer apply
                 share.TransactionConfirmationData = null;
-                ClearDirectSettlementEvidence(share);
             }
+
+            if(isDirectCoinbase)
+                ClearDirectSettlementEvidence(share);
         }
 
         if(poolConfig.PaymentProcessing?.Enabled == true &&
@@ -488,15 +498,88 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         return share;
     }
 
-    protected virtual async Task PersistAcceptedCandidateWithoutAccountingAsync(
+    protected virtual async Task PersistCandidateWithoutAccountingAsync(
         Share share)
     {
         if(blockCandidateRecorder == null)
             throw new InvalidOperationException(
                 "A synchronous block-candidate recorder is required for direct SOLO or PPS");
 
-        var candidate = CreateAcceptedCandidateWithoutAccounting(share);
+        var candidate = CreateCandidateWithoutAccounting(share);
         await blockCandidateRecorder.PersistBlockCandidateAsync(candidate);
+    }
+
+    protected virtual Task<SubmitResult> SubmitDirectBlockAsync(Share share,
+        string blockHex, CancellationToken ct) =>
+        SubmitBlockAsync(share, blockHex, ct, false);
+
+    protected async Task<SubmitResult> PersistAndSubmitDirectCandidateAsync(
+        Share share, string blockHex, CancellationToken ct)
+    {
+        if(string.IsNullOrWhiteSpace(share.TransactionConfirmationData))
+        {
+            throw new InvalidDataException(
+                "A direct SOLO candidate requires its locally calculated coinbase transaction ID before submission");
+        }
+
+        var localCoinbaseTx = share.TransactionConfirmationData;
+
+        // Local proof validation has succeeded and the exact block is immutable. Cross the
+        // durable boundary before the RPC call because a daemon may accept the block and the
+        // transport can still lose the response.
+        await PersistCandidateWithoutAccountingAsync(share);
+        share.BlockRecordEmitted = true;
+
+        try
+        {
+            var result = await SubmitDirectBlockAsync(share, blockHex, ct);
+
+            if(result.Accepted && !string.Equals(result.CoinbaseTx,
+                   localCoinbaseTx, StringComparison.OrdinalIgnoreCase))
+            {
+                logger.Error(() => $"Daemon returned coinbase transaction " +
+                    $"'{result.CoinbaseTx ?? "<missing>"}' for direct-SOLO block " +
+                    $"{share.BlockHeight} [{share.BlockHash}], but Miningcore " +
+                    $"serialized '{localCoinbaseTx}'; durable reconciliation queued");
+                SendDirectSubmissionNotification(
+                    "Direct SOLO block submission requires reconciliation",
+                    $"Pool {share.PoolId} submitted block {share.BlockHeight} " +
+                    $"[{share.BlockHash}], but the daemon did not return the " +
+                    "locally calculated coinbase transaction ID. The durable " +
+                    "candidate remains pending for reconciliation.");
+                return new SubmitResult(false, localCoinbaseTx, true,
+                    result.Duplicate);
+            }
+
+            return result;
+        }
+        catch(Exception ex)
+        {
+            logger.Error(ex, () => $"Direct-SOLO submission outcome for block " +
+                $"{share.BlockHeight} [{share.BlockHash}] could not be classified; " +
+                "the pre-submission durable record will be reconciled");
+            SendDirectSubmissionNotification(
+                "Direct SOLO block submission outcome is uncertain",
+                $"Pool {share.PoolId} could not classify submission of block " +
+                $"{share.BlockHeight} [{share.BlockHash}] after persisting its " +
+                "settlement evidence. The durable candidate remains pending for " +
+                "reconciliation.");
+            return new SubmitResult(false, localCoinbaseTx, true);
+        }
+    }
+
+    private void SendDirectSubmissionNotification(string subject,
+        string message)
+    {
+        try
+        {
+            messageBus.SendMessage(new AdminNotification(subject, message));
+        }
+        catch(Exception ex)
+        {
+            logger.Error(ex,
+                "Failed to publish a direct-SOLO submission-reconciliation notification");
+        }
     }
 
     protected internal virtual async Task
@@ -509,18 +592,18 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         // only durable candidate record.
         if(share.IsBlockCandidate && !share.BlockRecordEmitted)
         {
-            await PersistAcceptedCandidateWithoutAccountingAsync(share);
+            await PersistCandidateWithoutAccountingAsync(share);
             share.BlockRecordEmitted = true;
         }
 
         Miningcore.Mining.ShareAccounting.AttachPpsCreditEvidence(pool, share);
     }
 
-    internal static Share CreateAcceptedCandidateWithoutAccounting(Share share)
+    internal static Share CreateCandidateWithoutAccounting(Share share)
     {
         ArgumentNullException.ThrowIfNull(share);
         if(!share.IsBlockCandidate)
-            throw new ArgumentException("An accepted block candidate is required",
+            throw new ArgumentException("A locally validated block candidate is required",
                 nameof(share));
 
         return new Share

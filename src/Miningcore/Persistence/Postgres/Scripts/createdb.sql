@@ -161,7 +161,8 @@ CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) W
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_COINBASE_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-coinbase-direct';
 CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_RECONCILE ON blocks(
-    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
+    poolid, blockheight, directsettlementlastchecked ASC NULLS FIRST,
+    created, id)
     WHERE status IN ('confirmed', 'orphaned') AND
         type = 'bitcoin-coinbase-direct' AND
         settlementmode = 'coinbase-direct';

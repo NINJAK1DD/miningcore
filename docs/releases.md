@@ -49,9 +49,11 @@ copying a recovery command from the maintainer section.
 **Opt-in Bitcoin direct-coinbase SOLO:** canonical BTC SOLO pools can set
 `soloCoinbasePayout: true` so the block coinbase pays the authorized miner address and each positive
 fee/donation recipient directly. Destination-specific jobs bind submission to the exact announced
-coinbase; exact integer rounding preserves GBT `coinbasevalue`; accepted candidates are synchronously
-audited; and bounded post-maturity block-RPC reconciliation detects later reorgs without creating a
-Miningcore balance or second payment. Existing
+coinbase; exact integer rounding preserves GBT `coinbasevalue`; final serialized weight is checked
+against Bitcoin's consensus limit before work is announced; and every locally validated candidate is
+synchronously audited before daemon submission. Bounded post-maturity block-RPC reconciliation
+tracks terminal rows for two difficulty periods without creating a Miningcore balance or second
+payment. Existing
 custodial SOLO remains the default. Existing databases must apply
 `add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
 the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).

@@ -111,6 +111,8 @@ public class BitcoinDirectSoloRegtestTests : TestBase
             "getblock", candidate.Share.BlockHash, 2));
         var coinbase = Assert.IsType<JObject>(
             Assert.IsType<JArray>(accepted["tx"])[0]);
+        Assert.Equal(coinbase.Value<string>("txid"),
+            candidate.Share.TransactionConfirmationData);
         var outputs = Assert.IsType<JArray>(coinbase["vout"]);
         var minerAmount = outputs.Where(x => string.Equals(
                 x["scriptPubKey"]?["hex"]?.Value<string>(),

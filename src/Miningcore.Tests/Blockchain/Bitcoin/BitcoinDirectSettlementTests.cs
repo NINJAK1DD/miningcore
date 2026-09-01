@@ -94,7 +94,7 @@ public class BitcoinDirectSettlementTests : TestBase
         };
 
         var candidate = BitcoinJobManager
-            .CreateAcceptedCandidateWithoutAccounting(share);
+            .CreateCandidateWithoutAccounting(share);
 
         Assert.Equal(BitcoinDirectCoinbaseSettlement.BlockType,
             candidate.BlockType);

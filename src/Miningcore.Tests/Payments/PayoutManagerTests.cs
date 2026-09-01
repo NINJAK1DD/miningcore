@@ -7,6 +7,7 @@ using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
@@ -293,9 +294,16 @@ public class PayoutManagerTests
         fixture.BlockRepository.HasBitcoinDirectSoloSchemaAsync(
                 fixture.Connection, Arg.Any<CancellationToken>())
             .Returns(true);
+        fixture.MiningPool.NetworkStats.Returns(new BlockchainStats
+        {
+            BlockHeight = 10_000,
+        });
+        var minimumBlockHeight = 10_000L -
+            (long) PayoutManager.DirectSettlementReconciliationDepth;
         fixture.BlockRepository
             .GetBitcoinDirectBlocksForReconciliationAsync(
-                fixture.Connection, fixture.Pool.Id, Arg.Any<DateTime>(),
+                fixture.Connection, fixture.Pool.Id, minimumBlockHeight,
+                Arg.Any<DateTime>(),
                 PayoutManager.DirectSettlementReconciliationBatchSize,
                 Arg.Any<CancellationToken>())
             .Returns(new[] { confirmedDirect });
@@ -303,7 +311,7 @@ public class PayoutManagerTests
             PayoutManager.DirectSettlementReconciliationInterval;
 
         var loaded = await fixture.Manager.LoadBlocksForClassificationAsync(
-            fixture.Pool, CancellationToken.None);
+            fixture.MiningPool, CancellationToken.None);
 
         var after = DateTime.UtcNow -
             PayoutManager.DirectSettlementReconciliationInterval;
@@ -311,6 +319,7 @@ public class PayoutManagerTests
         await fixture.BlockRepository.Received(1)
             .GetBitcoinDirectBlocksForReconciliationAsync(
                 fixture.Connection, fixture.Pool.Id,
+                minimumBlockHeight,
                 Arg.Is<DateTime>(value => value >= before && value <= after),
                 PayoutManager.DirectSettlementReconciliationBatchSize,
                 Arg.Any<CancellationToken>());

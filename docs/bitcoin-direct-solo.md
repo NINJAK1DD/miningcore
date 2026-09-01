@@ -114,7 +114,12 @@ valid template; it does not leave an online pool serving stale direct work.
 Startup/job construction rejects more than 64 positive recipients, percentages totaling 100% or more, non-positive residuals,
 positive outputs below one satoshi, wrong-network addresses, duplicate recipient scripts and a miner
 script that duplicates a recipient. The bundled BTC path also refuses direct mode if the template
-would divert part of `coinbasevalue` into a non-Bitcoin consensus-owned output.
+would divert part of `coinbasevalue` into a non-Bitcoin consensus-owned output. The count limit is a
+resource bound, not a block-fit assumption: Miningcore parses every template transaction,
+verifies its daemon-reported weight against the serialized witness and stripped forms, then combines
+that total with each destination's exact serialized coinbase and block overhead. Work is never
+announced if the final block would exceed Bitcoin's 4,000,000-weight-unit consensus limit; missing,
+non-positive, malformed or mismatched transaction data fails the template closed.
 
 The pool `address` remains configured for daemon startup checks and for historical custodial blocks.
 It is not the destination of a new direct block unless the operator separately lists it as a
@@ -141,7 +146,10 @@ Core block acceptance and exact on-chain scripts/amounts are authoritative.
 
 ## Confirmation, restart and reorg behavior
 
-An accepted candidate is synchronously stored before the ordinary statistical share is admitted.
+Every locally validated direct candidate is synchronously stored before its block is submitted to
+the daemon and before the ordinary statistical share is admitted. The coinbase transaction ID is
+calculated from the exact serialized transaction, so an accepted request whose RPC response is lost
+remains durable and is reconciled instead of being discarded.
 The audit record includes the block hash, coinbase transaction ID, gross value, miner script/value
 and every direct recipient output. Confirmation uses `getblock` with transaction details; the daemon
 wallet does not need to own or spend the miner or recipient outputs, and `txindex` is not required.
@@ -152,10 +160,13 @@ and payment submission are bypassed. `confirmed` means the configured confirmati
 been reached; the miner output remains subject to Bitcoin's independent 100-block coinbase-maturity
 rule and may not yet be spendable at that instant.
 
-Confirmed and orphaned direct rows remain in a bounded, restart-safe reconciliation rotation: each
-row is rechecked no more than once per hour, and the persisted last-check time prevents an old prefix
-from starving later rows. On a post-maturity reorg the audit row becomes orphaned; if that exact block
-later returns to the active chain, immutable evidence permits it to return to pending or confirmed.
+Confirmed and orphaned direct rows within 4,032 blocks of the reported chain tip remain in a bounded,
+restart-safe reconciliation rotation: each row is rechecked no more than once per hour, and the
+persisted last-check time prevents an old prefix from starving later rows. Pending rows are always
+classified regardless of depth. On a post-maturity reorg inside that deliberately conservative
+two-difficulty-period window the audit row becomes orphaned; if that exact block later returns to the
+active chain, immutable evidence permits it to return to pending or confirmed. A deeper chain rewrite
+is outside automatic reconciliation and requires an operator audit of the immutable settlement rows.
 No balance reversal or recreation occurs because Miningcore never credited one. A malformed or
 internally inconsistent historical direct row is quarantined individually, stamped out of the scan
 prefix and excluded from financial settlement so it cannot stop unrelated pool payments; investigate
@@ -168,6 +179,11 @@ sender/receiver deployments are rejected in this first version. A direct candida
 recovery journal uses the dedicated `bitcoin-coinbase-direct` identity and recovery refuses import
 unless the complete direct-SOLO schema contract is present. Binaries predating this feature do not
 recognize that identity and fail closed instead of importing it as a custodial block.
+
+Before upgrading from any pre-release build of this feature, stop every writer and drain or manually
+reconcile its recovery journal. Earlier draft builds wrote direct evidence under the historical
+`bitcoin-direct` identity; current recovery deliberately quarantines that ambiguous shape rather
+than importing it. Do not pass the resulting quarantine file to `-rs`.
 
 ## Rollback
 

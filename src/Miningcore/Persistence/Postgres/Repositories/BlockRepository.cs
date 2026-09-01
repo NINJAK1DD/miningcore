@@ -96,7 +96,6 @@ public class BlockRepository : IBlockRepository
                 SELECT set_config('miningcore.direct_settlement_update', 'on', true)
                 FROM blocks
                 WHERE id = @id
-                  AND type = 'bitcoin-coinbase-direct'
                   AND settlementmode = 'coinbase-direct'
             )
             UPDATE blocks SET blockheight = @blockheight,
@@ -201,9 +200,11 @@ public class BlockRepository : IBlockRepository
     }
 
     public async Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
-        IDbConnection con, string poolId, DateTime checkedBefore, int pageSize,
-        CancellationToken ct)
+        IDbConnection con, string poolId, long minimumBlockHeight,
+        DateTime checkedBefore, int pageSize, CancellationToken ct)
     {
+        if(minimumBlockHeight < 0)
+            throw new ArgumentOutOfRangeException(nameof(minimumBlockHeight));
         if(pageSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(pageSize));
 
@@ -212,6 +213,7 @@ public class BlockRepository : IBlockRepository
               AND status IN ('confirmed', 'orphaned')
               AND type = 'bitcoin-coinbase-direct'
               AND settlementmode = 'coinbase-direct'
+              AND blockheight >= @minimumBlockHeight
               AND (directsettlementlastchecked IS NULL OR
                    directsettlementlastchecked < @checkedBefore)
             ORDER BY directsettlementlastchecked ASC NULLS FIRST,
@@ -219,7 +221,8 @@ public class BlockRepository : IBlockRepository
             FETCH NEXT @pageSize ROWS ONLY";
 
         return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query,
-            new { poolId, checkedBefore, pageSize }, cancellationToken: ct)))
+            new { poolId, minimumBlockHeight, checkedBefore, pageSize },
+            cancellationToken: ct)))
             .Select(mapper.Map<Block>)
             .ToArray();
     }
@@ -493,15 +496,15 @@ public class BlockRepository : IBlockRepository
                       AND am.amname = 'btree'
                       AND NOT i.indisunique
                       AND i.indisvalid AND i.indisready
-                      AND i.indnkeyatts = 4 AND i.indnatts = 4
+                      AND i.indnkeyatts = 5 AND i.indnatts = 5
                       AND ARRAY(
                           SELECT lower(pg_get_indexdef(
                               index_class.oid, position, true))
                           FROM generate_series(1, i.indnkeyatts) position
                           ORDER BY position
-                      ) = ARRAY['poolid', 'directsettlementlastchecked',
-                          'created', 'id']
-                      AND i.indoption = '0 2 0 0'::int2vector
+                      ) = ARRAY['poolid', 'blockheight',
+                          'directsettlementlastchecked', 'created', 'id']
+                      AND i.indoption = '0 0 2 0 0'::int2vector
                       AND regexp_replace(
                           replace(lower(pg_get_expr(i.indpred, i.indrelid,
                               true)), '::text', ''),

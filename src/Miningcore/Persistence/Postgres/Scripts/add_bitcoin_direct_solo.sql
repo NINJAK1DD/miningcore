@@ -59,7 +59,8 @@ CREATE UNIQUE INDEX idx_blocks_bitcoin_coinbase_direct_pool_hash
 -- ordered, bounded and repairable when a local schema drifted.
 DROP INDEX IF EXISTS idx_blocks_bitcoin_direct_reconcile;
 CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
-    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
+    poolid, blockheight, directsettlementlastchecked ASC NULLS FIRST,
+    created, id)
     WHERE status IN ('confirmed', 'orphaned') AND
         type = 'bitcoin-coinbase-direct' AND
         settlementmode = 'coinbase-direct';

@@ -181,6 +181,63 @@ public class BitcoinJobManagerBaseTests
     }
 
     [Fact]
+    public async Task DirectCandidate_PersistsBeforeTransportFailureAndRemainsReconcilable()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>())
+        {
+            DirectSubmissionException = new IOException(
+                "response lost after daemon accepted request"),
+        };
+        manager.Configure(new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Family = CoinFamily.Bitcoin,
+                Symbol = "BTC",
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+        }, new ClusterConfig());
+        var candidate = new Share
+        {
+            PoolId = "btc-direct",
+            Miner = "miner",
+            Difficulty = 1,
+            NetworkDifficulty = 100,
+            IsBlockCandidate = true,
+            BlockHeight = 101,
+            BlockHash = new string('c', 64),
+            TransactionConfirmationData = new string('d', 64),
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            Created = DateTime.UtcNow,
+        };
+
+        var result = await manager.PersistAndSubmitDirect(candidate,
+            "block-hex", CancellationToken.None);
+
+        Assert.False(result.Accepted);
+        Assert.True(result.Ambiguous);
+        Assert.True(manager.Persisted);
+        Assert.True(manager.SubmissionStartedAfterPersistence);
+        Assert.True(candidate.BlockRecordEmitted);
+        Assert.Equal(candidate.BlockHash,
+            manager.PersistedCandidate.BlockHash);
+        Assert.Equal(candidate.TransactionConfirmationData,
+            manager.PersistedCandidate.TransactionConfirmationData);
+        Assert.Equal(BitcoinDirectCoinbaseSettlement.BlockType,
+            manager.PersistedCandidate.BlockType);
+        Assert.Equal(BitcoinDirectCoinbaseSettlement.Mode,
+            manager.PersistedCandidate.SettlementMode);
+    }
+
+    [Fact]
     public async Task DirectTemplateContractFailure_EscapesJobUpdate()
     {
         using var container = BuildContainer();
@@ -247,6 +304,8 @@ public class BitcoinJobManagerBaseTests
 
         public bool Persisted { get; private set; }
         public Share PersistedCandidate { get; private set; }
+        public Exception DirectSubmissionException { get; init; }
+        public bool SubmissionStartedAfterPersistence { get; private set; }
 
         public Task AttachEvidence(PoolConfig pool, Share share) =>
             AttachPpsEvidencePreservingAcceptedCandidateAsync(pool, share);
@@ -259,16 +318,36 @@ public class BitcoinJobManagerBaseTests
         public Task<(bool IsNew, bool Force)> Update(CancellationToken ct) =>
             UpdateJob(ct, false);
 
+        public async Task<(bool Accepted, bool Ambiguous)>
+            PersistAndSubmitDirect(Share share, string blockHex,
+                CancellationToken ct)
+        {
+            var result = await PersistAndSubmitDirectCandidateAsync(share,
+                blockHex, ct);
+            return (result.Accepted, result.Ambiguous);
+        }
+
         protected override Task<RpcResponse<BlockTemplate>>
             GetBlockTemplateAsync(CancellationToken ct) =>
             Task.FromResult(responses.Dequeue());
 
-        protected override Task PersistAcceptedCandidateWithoutAccountingAsync(
+        protected override Task PersistCandidateWithoutAccountingAsync(
             Share share)
         {
             Persisted = true;
-            PersistedCandidate = CreateAcceptedCandidateWithoutAccounting(share);
+            PersistedCandidate = CreateCandidateWithoutAccounting(share);
             return Task.CompletedTask;
+        }
+
+        protected override Task<SubmitResult> SubmitDirectBlockAsync(
+            Share share, string blockHex, CancellationToken ct)
+        {
+            SubmissionStartedAfterPersistence = Persisted;
+
+            return DirectSubmissionException != null
+                ? Task.FromException<SubmitResult>(DirectSubmissionException)
+                : Task.FromResult(new SubmitResult(true,
+                    share.TransactionConfirmationData));
         }
     }
 }

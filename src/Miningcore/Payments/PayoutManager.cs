@@ -94,6 +94,7 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal static readonly TimeSpan DirectSettlementReconciliationInterval =
         TimeSpan.FromHours(1);
     internal const int DirectSettlementReconciliationBatchSize = 64;
+    internal const ulong DirectSettlementReconciliationDepth = 4_032;
     internal int AttachedPoolCount => pools.Count;
 
 #if !DEBUG
@@ -301,7 +302,7 @@ public class PayoutManager : ProcessStatusBackgroundService
 
     private async Task UpdatePoolBalancesAsync(IMiningPool pool, PoolConfig poolConfig, IPayoutHandler handler, IPayoutScheme scheme, CancellationToken ct)
     {
-        var blocksToClassify = await LoadBlocksForClassificationAsync(poolConfig,
+        var blocksToClassify = await LoadBlocksForClassificationAsync(pool,
             ct);
 
         // classify
@@ -354,8 +355,10 @@ public class PayoutManager : ProcessStatusBackgroundService
     }
 
     internal async Task<Block[]> LoadBlocksForClassificationAsync(
-        PoolConfig poolConfig, CancellationToken ct)
+        IMiningPool pool, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(pool);
+        var poolConfig = pool.Config;
         // Pending rows remain the ordinary classification source. Confirmed and
         // orphaned direct settlements are additionally revisited in a bounded,
         // persisted rotation so later reorgs and reactivations remain visible.
@@ -368,9 +371,14 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         var checkedBefore = DateTime.UtcNow -
             DirectSettlementReconciliationInterval;
+        var tip = pool.NetworkStats?.BlockHeight ?? 0;
+        var minimumBlockHeight = tip <= long.MaxValue &&
+            tip > DirectSettlementReconciliationDepth
+            ? (long) (tip - DirectSettlementReconciliationDepth)
+            : 0L;
         var terminalDirectBlocks = await cf.Run(con =>
             blockRepo.GetBitcoinDirectBlocksForReconciliationAsync(
-                con, poolConfig.Id, checkedBefore,
+                con, poolConfig.Id, minimumBlockHeight, checkedBefore,
                 DirectSettlementReconciliationBatchSize, ct));
         return pendingBlocks.Concat(terminalDirectBlocks).ToArray();
     }

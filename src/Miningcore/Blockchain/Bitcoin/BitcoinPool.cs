@@ -657,10 +657,7 @@ public class BitcoinPool : PoolBase
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         });
 
-        if(manager.DirectCoinbasePayoutEnabled)
-            await BroadcastAsync();
-        else
-            await Guard(BroadcastAsync);
+        await Guard(BroadcastAsync);
     }
 
     internal void HandleJobPipelineFailure(Exception ex)
