@@ -84,6 +84,9 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly IMessageBus messageBus;
     private readonly TimeSpan interval;
     private readonly ConcurrentDictionary<string, IMiningPool> pools = new();
+    // ExecuteAsync processes configured pools sequentially. The inspected
+    // direct-settlement schema is database-global, so one process-lifetime
+    // result is sufficient; do not access this cache from parallel pool work.
     private bool? directSettlementSchemaReady;
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;

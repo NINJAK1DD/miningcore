@@ -62,6 +62,9 @@ active-chain duplicate with matching coinbase evidence commits `observed-active`
 again. Malformed replayable evidence moves to an explicit terminal `quarantined` submission state,
 so it remains auditable without poisoning later pool classification, blocking startup or falsely
 claiming acceptance. Transient malformed daemon block data is deferred rather than quarantined.
+An exact on-chain coinbase transaction or output mismatch remains unsettled and triggers one
+administrative alert after a continuous 30-minute grace period; a later exact verification clears
+the episode.
 Routine API and terminal-reconciliation projections exclude the large serialized payload,
 and the pending classifier returns it only for replayable states; immature observed rows remain
 metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,

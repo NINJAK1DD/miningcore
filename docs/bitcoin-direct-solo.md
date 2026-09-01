@@ -107,6 +107,12 @@ for every connected worker. That is intentionally proportional to connected work
 the template transaction count; capacity-test large fleets before enabling this first-version SOLO
 mode.
 
+The template-weight guard deliberately parses and byte-round-trips every daemon transaction once
+before publishing a new shared template. Daemon-reported weights are not trusted for an exact
+direct-coinbase consensus limit, and Miningcore cannot safely announce direct work when its Bitcoin
+serializer cannot reproduce a transaction. Failure therefore invalidates work and fail-stops rather
+than estimating weight or mining against an unverifiable template.
+
 If a later daemon template or destination-specific coinbase violates the direct-coinbase or final
 block-weight contract, Miningcore invalidates every announced direct job, raises an administrative
 alert and enters the process-wide mining fail-stop. A supervised service may restart only after
@@ -224,7 +230,11 @@ rows also move to an explicit terminal `quarantined` submission state, preservin
 and attempt evidence without falsely recording acceptance or rejection. Malformed or incomplete
 daemon `getblock`/coinbase data is treated differently: replayable submissions remain uncertain,
 pending classifications are deferred, and terminal rows are merely rescheduled, so a transient RPC
-response cannot create permanent quarantine.
+response cannot create permanent quarantine. An exact active-chain coinbase transaction ID or
+output-set mismatch starts a separate 30-minute grace episode. Miningcore continues to withhold
+credit and settlement, emits one administrative alert if the mismatch persists, and clears the
+episode after a later exact verification. This makes a financial discrepancy visible without
+misclassifying a malformed RPC response as corrupt stored evidence.
 
 Quarantine is deliberately one-way in normal runtime. Investigate it with Miningcore stopped on
 every writer, retain a database backup and the exact recovery journal, and verify the stored block,

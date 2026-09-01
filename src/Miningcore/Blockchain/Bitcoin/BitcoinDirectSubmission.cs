@@ -59,6 +59,10 @@ internal static class BitcoinDirectSubmission
 
         if(string.Equals(block.DirectSubmissionState, Quarantined,
                StringComparison.Ordinal))
+            // Current replay queries exclude terminal quarantine rows and new
+            // candidates are always inserted as prepared. Keep this branch as
+            // defence in depth for future full-row audit/import callers so the
+            // managed envelope cannot drift below the SQL CHECK contract.
             ValidatePayloadEnvelope(block.DirectSubmissionBlock);
         else if(!string.Equals(block.DirectSubmissionState, LegacyObserved,
                     StringComparison.Ordinal))

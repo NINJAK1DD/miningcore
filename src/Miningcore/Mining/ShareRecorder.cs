@@ -297,7 +297,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "parent-uncertain",
         "merged-parent-uncertain",
     };
-    private static readonly TimeSpan DirectSubmissionDatabaseAttemptTimeout =
+    // This is intentionally a propagation bound, not an overloaded-database
+    // tolerance. After it expires the exact candidate is fsynced to the
+    // recovery journal, submitted to the daemon, and the unhealthy accounting
+    // pipeline fail-stops rather than continuing to accept financial work.
+    private static readonly TimeSpan DirectSubmissionDatabasePropagationBound =
         TimeSpan.FromSeconds(2);
 
     internal async Task PersistSharesAsync(IList<Share> shares,
@@ -350,7 +354,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         try
         {
             await databaseAttempt.WaitAsync(
-                DirectSubmissionDatabaseAttemptTimeout);
+                DirectSubmissionDatabasePropagationBound);
             return new DirectBlockSubmissionPreparation();
         }
         catch(Exception ex) when(ex is not TransactionCommittedCleanupException and
