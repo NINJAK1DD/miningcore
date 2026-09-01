@@ -465,8 +465,15 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal static bool CanApplyDirectSubmissionClassification(
         Block persisted, Block classified)
     {
-        if(!string.Equals(persisted.DirectSubmissionBlock,
-               classified.DirectSubmissionBlock, StringComparison.Ordinal) ||
+        var replayPayloadRequired = BitcoinDirectSubmission.RequiresReplay(
+            persisted.DirectSubmissionState) ||
+            BitcoinDirectSubmission.RequiresReplay(
+                classified.DirectSubmissionState);
+
+        if((replayPayloadRequired && !string.Equals(
+                persisted.DirectSubmissionBlock,
+                classified.DirectSubmissionBlock,
+                StringComparison.Ordinal)) ||
            !string.Equals(persisted.Hash, classified.Hash,
                StringComparison.OrdinalIgnoreCase) ||
            !string.Equals(persisted.TransactionConfirmationData,

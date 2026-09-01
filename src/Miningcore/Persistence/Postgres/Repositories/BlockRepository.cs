@@ -15,8 +15,19 @@ public class BlockRepository : IBlockRepository
     }
 
     private readonly IMapper mapper;
+    internal const int MaximumPublicPageSize = 100;
     private const string PublicBlockTypesFilter =
         "(type IS NULL OR type NOT IN ('auxpow-claim', 'parent-uncertain', 'merged-parent-uncertain'))";
+    private const string BlockMetadataColumns = @"id, poolid, blockheight,
+        networkdifficulty, status, type, confirmationprogress, effort,
+        minereffort, transactionconfirmationdata, miner, reward, source,
+        hash, created, settlementmode, grossrewardsatoshis,
+        directminerrewardsatoshis, directminerscriptpubkey,
+        directrecipientoutputs, directsettlementlastchecked,
+        directsubmissionstate, directsubmissionattempts,
+        directsubmissiondefinitivemisses, directsubmissionlastattempt";
+    private const string BlockReplayColumns = BlockMetadataColumns +
+        ", directsubmissionblock";
 
     public async Task<bool> InsertAsync(IDbConnection con, IDbTransaction tx,
         Block block, CancellationToken ct = default)
@@ -95,7 +106,7 @@ public class BlockRepository : IBlockRepository
         if(string.Equals(block.SettlementMode,
                BitcoinDirectCoinbaseSettlement.Mode,
                StringComparison.Ordinal))
-            BitcoinDirectSubmission.ValidatePersistedBlock(block);
+            BitcoinDirectSubmission.ValidatePersistedProjection(block);
 
         const string legacyQuery = @"UPDATE blocks SET blockheight = @blockheight,
             status = @status, type = @type, reward = @reward, effort = @effort,
@@ -115,7 +126,6 @@ public class BlockRepository : IBlockRepository
             transactionconfirmationdata = @transactionconfirmationdata, hash = @hash,
             directsettlementlastchecked = @directsettlementlastchecked,
             directsubmissionstate = @directsubmissionstate,
-            directsubmissionblock = @directsubmissionblock,
             directsubmissionattempts = @directsubmissionattempts,
             directsubmissiondefinitivemisses = @directsubmissiondefinitivemisses,
             directsubmissionlastattempt = @directsubmissionlastattempt
@@ -156,7 +166,8 @@ public class BlockRepository : IBlockRepository
     public async Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status,
         int page, int pageSize, CancellationToken ct)
     {
-        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status)
+        ValidatePublicPage(page, pageSize);
+        var query = $@"SELECT {BlockMetadataColumns} FROM blocks WHERE poolid = @poolid AND status = ANY(@status)
             AND {PublicBlockTypesFilter}
             ORDER BY created DESC OFFSET @offset FETCH NEXT @pageSize ROWS ONLY";
 
@@ -164,7 +175,7 @@ public class BlockRepository : IBlockRepository
         {
             poolId,
             status = status.Select(x => x.ToString().ToLower()).ToArray(),
-            offset = page * pageSize,
+            offset = (long) page * pageSize,
             pageSize
         }, cancellationToken: ct)))
             .Select(mapper.Map<Block>)
@@ -173,14 +184,15 @@ public class BlockRepository : IBlockRepository
 
     public async Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct)
     {
-        var query = $@"SELECT * FROM blocks WHERE status = ANY(@status)
+        ValidatePublicPage(page, pageSize);
+        var query = $@"SELECT {BlockMetadataColumns} FROM blocks WHERE status = ANY(@status)
             AND {PublicBlockTypesFilter}
             ORDER BY created DESC OFFSET @offset FETCH NEXT @pageSize ROWS ONLY";
 
         return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query, new
         {
             status = status.Select(x => x.ToString().ToLower()).ToArray(),
-            offset = page * pageSize,
+            offset = (long) page * pageSize,
             pageSize
         }, cancellationToken: ct)))
             .Select(mapper.Map<Block>)
@@ -190,7 +202,8 @@ public class BlockRepository : IBlockRepository
     public async Task<Block[]> PageMinerBlocksAsync(IDbConnection con, string poolId, string address, BlockStatus[] status,
         int page, int pageSize, CancellationToken ct)
     {
-        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND miner = @address
+        ValidatePublicPage(page, pageSize);
+        var query = $@"SELECT {BlockMetadataColumns} FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND miner = @address
             AND {PublicBlockTypesFilter}
             ORDER BY created DESC OFFSET @offset FETCH NEXT @pageSize ROWS ONLY";
 
@@ -199,7 +212,7 @@ public class BlockRepository : IBlockRepository
             poolId,
 	    address,
             status = status.Select(x => x.ToString().ToLower()).ToArray(),
-            offset = page * pageSize,
+            offset = (long) page * pageSize,
             pageSize
         }, cancellationToken: ct)))
             .Select(mapper.Map<Block>)
@@ -224,7 +237,7 @@ public class BlockRepository : IBlockRepository
         if(pageSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(pageSize));
 
-        const string query = @"SELECT * FROM blocks
+        var query = $@"SELECT {BlockMetadataColumns} FROM blocks
             WHERE poolid = @poolId
               AND status IN ('confirmed', 'orphaned')
               AND type = 'bitcoin-coinbase-direct'
@@ -254,7 +267,7 @@ public class BlockRepository : IBlockRepository
         if(afterId < 0)
             throw new ArgumentOutOfRangeException(nameof(afterId));
 
-        const string query = @"SELECT * FROM blocks
+        var query = $@"SELECT {BlockReplayColumns} FROM blocks
             WHERE poolid = @poolId
               AND status = 'pending'
               AND type = 'bitcoin-coinbase-direct'
@@ -376,7 +389,7 @@ public class BlockRepository : IBlockRepository
 
     public async Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before)
     {
-        var query = $@"SELECT * FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
+        var query = $@"SELECT created FROM blocks WHERE poolid = @poolid AND status = ANY(@status) AND created < @before
             AND {PublicBlockTypesFilter}
             ORDER BY created DESC FETCH NEXT 1 ROWS ONLY";
 
@@ -549,6 +562,15 @@ public class BlockRepository : IBlockRepository
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));
+    }
+
+    private static void ValidatePublicPage(int page, int pageSize)
+    {
+        if(page < 0)
+            throw new ArgumentOutOfRangeException(nameof(page));
+        if(pageSize is <= 0 or > MaximumPublicPageSize)
+            throw new ArgumentOutOfRangeException(nameof(pageSize),
+                $"Public block page size must be between 1 and {MaximumPublicPageSize}");
     }
 
     public Task<bool> HasBitcoinDirectSoloSchemaAsync(IDbConnection con,

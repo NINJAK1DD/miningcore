@@ -316,12 +316,13 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                 {
                     var result = await SubmitDirectBlockAsync(share,
                         block.DirectSubmissionBlock, ct);
-                    outcome = result.Accepted && string.Equals(
-                        result.CoinbaseTx,
-                        block.TransactionConfirmationData,
-                        StringComparison.OrdinalIgnoreCase)
+                    outcome = (result.Accepted || result.Duplicate) &&
+                        string.Equals(result.CoinbaseTx,
+                            block.TransactionConfirmationData,
+                            StringComparison.OrdinalIgnoreCase)
                         ? BitcoinDirectSubmissionOutcome.ObservedActive
-                        : result.Ambiguous || result.Accepted
+                        : result.Ambiguous || result.Accepted ||
+                            result.Duplicate
                             ? BitcoinDirectSubmissionOutcome.Ambiguous
                             : BitcoinDirectSubmissionOutcome.DefinitiveMiss;
                 }
@@ -654,8 +655,13 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         {
             var result = await SubmitDirectBlockAsync(share, blockHex, ct);
 
-            if(result.Accepted && !string.Equals(result.CoinbaseTx,
-                   localCoinbaseTx, StringComparison.OrdinalIgnoreCase))
+            var exactActiveSubmission =
+                (result.Accepted || result.Duplicate) && string.Equals(
+                    result.CoinbaseTx, localCoinbaseTx,
+                    StringComparison.OrdinalIgnoreCase);
+
+            if((result.Accepted || result.Duplicate) &&
+               !exactActiveSubmission)
             {
                 logger.Error(() => $"Daemon returned coinbase transaction " +
                     $"'{result.CoinbaseTx ?? "<missing>"}' for direct-SOLO block " +
@@ -673,14 +679,16 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                     result.Duplicate);
             }
 
-            var outcome = result.Accepted
+            var outcome = exactActiveSubmission
                 ? BitcoinDirectSubmissionOutcome.ObservedActive
                 : result.Ambiguous
                     ? BitcoinDirectSubmissionOutcome.Ambiguous
                     : BitcoinDirectSubmissionOutcome.DefinitiveMiss;
             await RecordDirectSubmissionOutcomeSafelyAsync(candidate, outcome);
 
-            return result;
+            return exactActiveSubmission && result.Duplicate
+                ? new SubmitResult(true, localCoinbaseTx, false, true)
+                : result;
         }
         catch(Exception ex)
         {

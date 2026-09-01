@@ -48,6 +48,26 @@ internal static class BitcoinDirectSubmission
 
     internal static void ValidatePersistedBlock(PersistedBlock block)
     {
+        ValidatePersistedMetadata(block);
+
+        if(!string.Equals(block.DirectSubmissionState, LegacyObserved,
+               StringComparison.Ordinal))
+            ValidatePayload(block.DirectSubmissionBlock, block.Hash,
+                block.TransactionConfirmationData);
+    }
+
+    internal static void ValidatePersistedProjection(PersistedBlock block)
+    {
+        ValidatePersistedMetadata(block);
+
+        if(RequiresReplay(block.DirectSubmissionState) ||
+           !string.IsNullOrEmpty(block.DirectSubmissionBlock))
+            ValidatePayload(block.DirectSubmissionBlock, block.Hash,
+                block.TransactionConfirmationData);
+    }
+
+    private static void ValidatePersistedMetadata(PersistedBlock block)
+    {
         ArgumentNullException.ThrowIfNull(block);
 
         if(string.Equals(block.DirectSubmissionState, LegacyObserved,
@@ -100,8 +120,6 @@ internal static class BitcoinDirectSubmission
             throw new InvalidDataException(
                 $"Direct SOLO block {block.BlockHeight} has malformed rejected submission evidence");
 
-        ValidatePayload(block.DirectSubmissionBlock, block.Hash,
-            block.TransactionConfirmationData);
     }
 
     internal static void ValidatePayload(string blockHex, string expectedHash,

@@ -377,6 +377,115 @@ public class BitcoinJobManagerBaseTests
             Arg.Any<DateTime>());
     }
 
+    [Theory]
+    [InlineData(DirectBlockSubmissionFailStopReason.CommittedCleanupFailure)]
+    [InlineData(DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain)]
+    public async Task DirectCandidate_ExceptionalDatabaseFailStopRunsAfterSubmission(
+        DirectBlockSubmissionFailStopReason reason)
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        var persistenceError = new IOException(reason.ToString());
+        recorder.PersistDirectBlockSubmissionAsync(Arg.Any<Share>())
+            .Returns(new DirectBlockSubmissionPreparation(persistenceError,
+                reason));
+        TestBitcoinJobManager manager = null;
+        var completionObservedSubmission = false;
+        recorder.CompleteDirectBlockSubmissionPreparationAsync(
+                Arg.Any<Share>(), Arg.Any<DirectBlockSubmissionPreparation>())
+            .Returns(_ =>
+            {
+                completionObservedSubmission = manager.SubmissionCount == 1 &&
+                    manager.SubmittedBlockHex == submission.BlockHex;
+                return Task.FromException(persistenceError);
+            });
+        using var container = BuildContainer();
+        manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder);
+        manager.Configure(CreateDirectPool(), new ClusterConfig());
+
+        var error = await Assert.ThrowsAsync<IOException>(() => manager
+            .PersistAndSubmitDirect(CreateDirectCandidate(submission),
+                submission.BlockHex, CancellationToken.None));
+
+        Assert.Same(persistenceError, error);
+        Assert.True(completionObservedSubmission);
+        Assert.Equal(1, manager.SubmissionCount);
+    }
+
+    [Fact]
+    public async Task DirectReplay_ExactActiveDuplicateCommitsObservedStateAndDoesNotReplayAgain()
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var persisted = new Miningcore.Persistence.Model.Block
+        {
+            Id = 42,
+            PoolId = "btc-direct",
+            BlockHeight = 101,
+            Status = Miningcore.Persistence.Model.BlockStatus.Pending,
+            Type = BitcoinDirectCoinbaseSettlement.BlockType,
+            Hash = submission.BlockHash,
+            Miner = "miner",
+            TransactionConfirmationData = submission.CoinbaseTxId,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+            DirectSubmissionBlock = submission.BlockHex,
+            DirectSubmissionAttempts = 0,
+            DirectSubmissionDefinitiveMisses = 0,
+            Created = DateTime.UtcNow,
+        };
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        recorder.GetDirectBlockSubmissionsForReplayAsync(
+                persisted.PoolId, Arg.Any<long>(), 32,
+                Arg.Any<CancellationToken>())
+            .Returns(_ => BitcoinDirectSubmission.RequiresReplay(
+                    persisted.DirectSubmissionState)
+                ? new[] { persisted }
+                : Array.Empty<Miningcore.Persistence.Model.Block>());
+        BitcoinDirectSubmissionOutcome? recordedOutcome = null;
+        recorder.RecordDirectBlockSubmissionAttemptAsync(
+                Arg.Any<Share>(), Arg.Any<BitcoinDirectSubmissionOutcome>(),
+                Arg.Any<DateTime>())
+            .Returns(call =>
+            {
+                recordedOutcome =
+                    call.ArgAt<BitcoinDirectSubmissionOutcome>(1);
+                persisted.DirectSubmissionState =
+                    BitcoinDirectSubmission.ObservedActive;
+                persisted.DirectSubmissionAttempts = 1;
+                persisted.DirectSubmissionLastAttempt = DateTime.UtcNow;
+                return persisted;
+            });
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder)
+        {
+            DirectSubmissionAccepted = false,
+            DirectSubmissionAmbiguous = true,
+            DirectSubmissionDuplicate = true,
+            DirectSubmissionCoinbaseTx = submission.CoinbaseTxId,
+        };
+        manager.Configure(CreateDirectPool(), new ClusterConfig());
+
+        await manager.ReplayDirect(CancellationToken.None);
+        await manager.ReplayDirect(CancellationToken.None);
+
+        Assert.Equal(BitcoinDirectSubmissionOutcome.ObservedActive,
+            recordedOutcome);
+        Assert.Equal(BitcoinDirectSubmission.ObservedActive,
+            persisted.DirectSubmissionState);
+        Assert.Equal(1, manager.SubmissionCount);
+        await recorder.Received(1).RecordDirectBlockSubmissionAttemptAsync(
+            Arg.Any<Share>(), BitcoinDirectSubmissionOutcome.ObservedActive,
+            Arg.Any<DateTime>());
+    }
+
     private static PoolConfig CreateDirectPool() => new()
     {
         Id = "btc-direct",
@@ -480,6 +589,11 @@ public class BitcoinJobManagerBaseTests
         public Exception PreparedCheckpointException { get; init; }
         public Task PreparedCheckpoint { get; init; }
         public string SubmittedBlockHex { get; private set; }
+        public int SubmissionCount { get; private set; }
+        public bool DirectSubmissionAccepted { get; init; } = true;
+        public bool DirectSubmissionAmbiguous { get; init; }
+        public bool DirectSubmissionDuplicate { get; init; }
+        public string DirectSubmissionCoinbaseTx { get; init; }
         public bool Persisted { get; private set; }
         public Share PersistedCandidate { get; private set; }
 
@@ -522,13 +636,18 @@ public class BitcoinJobManagerBaseTests
             Share share, string blockHex, CancellationToken ct)
         {
             SubmittedBlockHex = blockHex;
+            SubmissionCount++;
             SubmissionStartedAfterPersistence =
                 PersistenceObserved?.Invoke() == true;
 
             return DirectSubmissionException != null
                 ? Task.FromException<SubmitResult>(DirectSubmissionException)
-                : Task.FromResult(new SubmitResult(true,
-                    share.TransactionConfirmationData));
+                : Task.FromResult(new SubmitResult(
+                    DirectSubmissionAccepted,
+                    DirectSubmissionCoinbaseTx ??
+                        share.TransactionConfirmationData,
+                    DirectSubmissionAmbiguous,
+                    DirectSubmissionDuplicate));
         }
 
         protected override Task OnDirectSubmissionPreparedAsync(

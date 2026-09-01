@@ -231,6 +231,13 @@ assert_file_contains 'the direct-SOLO bounded submission rejection' \
   'three definitive misses over at least 30 minutes' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO propagation-safe journal fallback' \
   'ordinary 2/4/8-second database retry ladder' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO exceptional-commit replay identity' \
+  "stable idempotent identity" "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO active duplicate evidence rule' \
+  'accepted response or duplicate transitions to' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO public block page cap' \
+  'at most 100 rows per page' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO bounded terminal reconciliation depth' \
   'within 4,032 blocks of the reported chain tip' "$bitcoin_direct_document"
 assert_file_contains 'the pre-release direct-journal quarantine boundary' \

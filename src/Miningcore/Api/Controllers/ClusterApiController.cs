@@ -7,6 +7,7 @@ using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Time;
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 
 namespace Miningcore.Api.Controllers;
@@ -36,7 +37,9 @@ public class ClusterApiController : ApiControllerBase
 
     [HttpGet("blocks")]
     public async Task<Responses.Block[]> PageBlocksPagedAsync(
-        [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var ct = HttpContext.RequestAborted;
         var blockStates = state is { Length: > 0 } ?

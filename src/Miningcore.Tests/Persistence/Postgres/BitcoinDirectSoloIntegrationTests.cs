@@ -197,6 +197,9 @@ public class BitcoinDirectSoloIntegrationTests
                     BitcoinDirectSubmissionOutcome.ObservedActive,
                     DateTime.UtcNow, 3, DateTime.UtcNow.AddMinutes(-30));
             Assert.NotNull(observed);
+            Assert.Empty(await repository
+                .GetBitcoinDirectSubmissionsForReplayAsync(connection,
+                    direct.PoolId, 0, 16, CancellationToken.None));
             direct.DirectSubmissionState = observed.DirectSubmissionState;
             direct.DirectSubmissionAttempts =
                 observed.DirectSubmissionAttempts;
@@ -227,10 +230,15 @@ public class BitcoinDirectSoloIntegrationTests
                     CancellationToken.None);
             var dueBlock = Assert.Single(due);
             Assert.Null(dueBlock.DirectSettlementLastChecked);
+            Assert.Null(dueBlock.DirectSubmissionBlock);
 
             dueBlock.DirectSettlementLastChecked = now;
             Assert.True(await repository.UpdateBlockAsync(connection, null,
                 dueBlock));
+            Assert.Equal(submission.BlockHex,
+                await connection.ExecuteScalarAsync<string>(@"
+                    SELECT directsubmissionblock FROM blocks
+                    WHERE id = @id", new { id = direct.Id }));
             Assert.Empty(await repository
                 .GetBitcoinDirectBlocksForReconciliationAsync(
                     connection, "btc-direct", 0,

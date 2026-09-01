@@ -390,6 +390,88 @@ public class BlockRepositoryTests
         Assert.Contains("FETCH NEXT @pageSize ROWS ONLY", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal(64, connection.Parameters["pagesize"]);
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("directsubmissionblock", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("pool")]
+    [InlineData("global")]
+    [InlineData("miner")]
+    public async Task PublicBlockPages_ExcludeReplayPayload(string scope)
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+        var states = new[] { BlockStatus.Pending };
+
+        Func<Task<Block[]>> action = scope switch
+        {
+            "pool" => () => repository.PageBlocksAsync(connection, "btc",
+                states, 0, 100, CancellationToken.None),
+            "global" => () => repository.PageBlocksAsync(connection, states,
+                0, 100, CancellationToken.None),
+            "miner" => () => repository.PageMinerBlocksAsync(connection,
+                "btc", "miner", states, 0, 100, CancellationToken.None),
+            _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        };
+
+        await Assert.ThrowsAsync<NotSupportedException>(action);
+
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("directsubmissionblock", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(-1, 1)]
+    [InlineData(0, 0)]
+    [InlineData(0, 101)]
+    public async Task PublicBlockPages_RejectInvalidOrUnboundedPages(int page,
+        int pageSize)
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => repository
+            .PageBlocksAsync(connection, new[] { BlockStatus.Pending }, page,
+                pageSize, CancellationToken.None));
+
+        Assert.Null(connection.CommandText);
+    }
+
+    [Fact]
+    public async Task PublicBlockPages_ComputeOffsetWithoutIntegerOverflow()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .PageBlocksAsync(connection, new[] { BlockStatus.Pending },
+                int.MaxValue, 100, CancellationToken.None));
+
+        Assert.Equal((long) int.MaxValue * 100,
+            connection.Parameters["offset"]);
+    }
+
+    [Fact]
+    public async Task DirectReplayQuery_ExclusivelyLoadsReplayPayload()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .GetBitcoinDirectSubmissionsForReplayAsync(connection, "btc", 0,
+                64, CancellationToken.None));
+
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsubmissionblock", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsubmissionstate IN", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

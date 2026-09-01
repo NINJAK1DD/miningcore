@@ -162,18 +162,33 @@ the exact block, mining fail-stops and the block is not submitted without recove
 unexpected non-retryable database error also schedules a fail-stop, but only after the already
 journaled block has had its daemon-submission opportunity.
 
+PostgreSQL commit acknowledgement and cleanup failures use the same propagation-first rule. A
+known-committed row is the authoritative outbox; Miningcore also attempts an exact journal copy as
+defence in depth. An uncertain commit always writes the exact block to the importable recovery
+journal using the row's stable idempotent identity. Miningcore then attempts `submitblock` before
+executing the database-health fail-stop. This can leave the same candidate in both stores, which is
+intentional: recovery import and daemon submission safely deduplicate it. Preserve both sources and
+follow the notification's reconciliation instructions before restarting.
+
 Startup replays `prepared` and `submitted-uncertain` rows from the exact stored bytes before opening
 Stratum. Recovery import recreates the same replayable row; payout reconciliation provides an
 additional idempotent replay path. Bitcoin Core duplicate handling makes repeated `submitblock`
-safer than losing a possibly unsubmitted solution. Only an exact active-chain block/coinbase match
-transitions to `observed-active` and emits the block-found notification. Ambiguous outcomes stay
-pending. A definitive rejection requires at least three definitive misses over at least 30 minutes
-before the outbox becomes `rejected`; a later exact active-chain observation can reactivate it.
+safer than losing a possibly unsubmitted solution. An accepted response or duplicate transitions to
+`observed-active` only when an active-chain lookup proves the exact block and matching coinbase. The
+notification is emitted only after that state commits, and a terminal row is excluded from later
+replay. A duplicate without matching active-chain evidence remains
+ambiguous. A definitive rejection requires three definitive misses over at least 30 minutes before
+the outbox becomes `rejected`; a later exact active-chain observation can reactivate it.
 
 The audit record includes the exact block, block hash, coinbase transaction ID, gross value, miner
 script/value and every direct recipient output. Confirmation uses `getblock` with transaction
 details; the daemon wallet does not need to own or spend the miner or recipient outputs, and
 `txindex` is not required.
+
+The exact serialized block remains in PostgreSQL for audit and replay, but ordinary block API pages
+and terminal reconciliation use metadata-only projections so they do not allocate multi-megabyte
+payloads. Public block endpoints accept at most 100 rows per page. Only replay and locked
+verification paths load the serialized payload.
 
 Pending, confirmed, orphaned and quarantined states remain visible through the normal block API. A
 confirmed direct block updates block state only: payout schemes, miner balances, recipient balances

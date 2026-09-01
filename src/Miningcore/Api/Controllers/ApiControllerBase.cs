@@ -9,6 +9,8 @@ namespace Miningcore.Api.Controllers;
 
 public abstract class ApiControllerBase : ControllerBase
 {
+    protected const int MaximumBlockPageSize = 100;
+
     protected ApiControllerBase(IComponentContext ctx)
     {
         mapper = ctx.Resolve<IMapper>();

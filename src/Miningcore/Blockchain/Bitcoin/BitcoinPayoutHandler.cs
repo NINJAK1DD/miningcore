@@ -718,7 +718,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             throw new InvalidDataException(
                 $"Direct SOLO block {block.BlockHeight} has malformed persisted settlement identity");
 
-        BitcoinDirectSubmission.ValidatePersistedBlock(block);
+        BitcoinDirectSubmission.ValidatePersistedProjection(block);
     }
 
     private static bool IsActiveDirectSettlementResponse(

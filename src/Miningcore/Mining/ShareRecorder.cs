@@ -340,6 +340,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         BitcoinDirectSubmission.ValidatePreparedShare(share);
 
         Exception databaseError = null;
+        Exception journalError = null;
+        var failStopReason =
+            DirectBlockSubmissionFailStopReason.UnexpectedDatabaseFailure;
         var databaseAttempt = PersistSharesCoreAsync(new[] { share });
 
         try
@@ -357,15 +360,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(TransactionCommittedCleanupException cleanupError)
         {
-            await recoveryFailureHandler.StopClusterAfterCommittedCleanupAsync(
-                new[] { share }, recoveryFilename, cleanupError);
-            throw;
+            databaseError = cleanupError;
+            failStopReason =
+                DirectBlockSubmissionFailStopReason.CommittedCleanupFailure;
         }
         catch(TransactionCommitOutcomeUncertainException commitError)
         {
-            await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
-                new[] { share }, recoveryFilename, commitError);
-            throw;
+            databaseError = commitError;
+            failStopReason =
+                DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain;
         }
 
         try
@@ -376,17 +379,33 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             await WriteRecoveryJournalAsync(new[] { share });
             NotifyAdminOnPolicyFallbackSafely();
         }
-        catch(Exception journalError)
+        catch(Exception journalFailure)
         {
+            journalError = journalFailure;
+            if(failStopReason ==
+               DirectBlockSubmissionFailStopReason.CommittedCleanupFailure)
+            {
+                // PostgreSQL is known to have committed the authoritative outbox.
+                // Preserve propagation priority and report the secondary journal
+                // failure after submitblock.
+                return new DirectBlockSubmissionPreparation(databaseError,
+                    failStopReason, journalError);
+            }
+
             await candidateFailureHandler.StopClusterAsync(new[] { share },
-                databaseError, journalError, false);
-            RethrowCandidatePersistenceFailure(databaseError, journalError);
+                databaseError, journalFailure, false);
+            RethrowCandidatePersistenceFailure(databaseError, journalFailure);
         }
 
-        return new DirectBlockSubmissionPreparation(
-            IsRetryablePersistenceException(databaseError)
+        var deferredError = failStopReason is
+            DirectBlockSubmissionFailStopReason.CommittedCleanupFailure or
+            DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain
+            ? databaseError
+            : IsRetryablePersistenceException(databaseError)
                 ? null
-                : databaseError);
+                : databaseError;
+        return new DirectBlockSubmissionPreparation(deferredError,
+            failStopReason, journalError);
     }
 
     public async Task CompleteDirectBlockSubmissionPreparationAsync(
@@ -396,13 +415,35 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         if(preparation?.DeferredFailStopError == null)
             return;
 
-        // Submission was allowed to run because the exact block was already durable in the
-        // recovery journal. Stop only after the RPC attempt so an unexpected PostgreSQL error
-        // cannot destroy the miner's propagation opportunity.
-        await candidateFailureHandler.StopClusterAsync(new[] { share },
-            preparation.DeferredFailStopError, null, true);
+        // Submission was allowed to run because the exact block was durable in
+        // PostgreSQL, the recovery journal, or both. Execute the database-health
+        // fail-stop only after the propagation attempt.
+        switch(preparation.DeferredFailStopReason)
+        {
+            case DirectBlockSubmissionFailStopReason.CommittedCleanupFailure:
+                await recoveryFailureHandler
+                    .StopClusterAfterReplaySafeCommittedCleanupAsync(
+                        new[] { share }, recoveryFilename,
+                        preparation.DeferredFailStopError,
+                        preparation.JournalError);
+                break;
+
+            case DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain:
+                await recoveryFailureHandler
+                    .StopClusterForReplaySafeUncertainCommitAsync(
+                        new[] { share }, recoveryFilename,
+                        preparation.DeferredFailStopError);
+                break;
+
+            default:
+                await candidateFailureHandler.StopClusterAsync(new[] { share },
+                    preparation.DeferredFailStopError,
+                    preparation.JournalError, true);
+                break;
+        }
+
         RethrowCandidatePersistenceFailure(
-            preparation.DeferredFailStopError, null);
+            preparation.DeferredFailStopError, preparation.JournalError);
     }
 
     public async Task<Block> RecordDirectBlockSubmissionAttemptAsync(
@@ -1530,6 +1571,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 "A required share-recovery failure handler was not supplied");
 
         public Task StopClusterForUncertainCommitAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception commitError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
+        public Task StopClusterAfterReplaySafeCommittedCleanupAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception cleanupError, Exception journalError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
+        public Task StopClusterForReplaySafeUncertainCommitAsync(
             IReadOnlyCollection<Share> shares, string recoveryFilename,
             Exception commitError) =>
             throw new InvalidOperationException(

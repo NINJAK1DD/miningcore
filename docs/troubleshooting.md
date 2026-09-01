@@ -113,6 +113,13 @@ An active process alone does not prove mining or payouts are healthy.
   threshold. Do not delete a prepared row or manually submit reconstructed data; the stored exact
   payload is authoritative. See
   [direct-SOLO confirmation and restart behavior](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior).
+- **Miningcore stops after a direct block with a PostgreSQL commit or cleanup warning.** Keep the
+  exact recovery journal and PostgreSQL row. Miningcore attempts daemon propagation before the
+  database-health fail-stop; an uncertain commit deliberately writes an importable, idempotent
+  journal entry even when PostgreSQL may also contain the same outbox row. Verify and reconcile the
+  stable candidate identity before recovery import or restart. Do not convert that journal into a
+  quarantine file merely because both copies exist. See
+  [direct-SOLO confirmation and restart behavior](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior).
 - **A Bitcoin direct-SOLO template update stops Miningcore.** Keep the supervised restart loop
   stopped if the error repeats. The pool deliberately invalidates stale direct jobs and closes
   mining admission when a post-startup template cannot satisfy the immutable coinbase contract.

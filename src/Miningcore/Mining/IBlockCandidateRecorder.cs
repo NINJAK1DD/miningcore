@@ -21,5 +21,16 @@ public interface IBlockCandidateRecorder
     void BeginShutdown();
 }
 
+public enum DirectBlockSubmissionFailStopReason
+{
+    None,
+    UnexpectedDatabaseFailure,
+    CommittedCleanupFailure,
+    CommitOutcomeUncertain,
+}
+
 public sealed record DirectBlockSubmissionPreparation(
-    Exception DeferredFailStopError = null);
+    Exception DeferredFailStopError = null,
+    DirectBlockSubmissionFailStopReason DeferredFailStopReason =
+        DirectBlockSubmissionFailStopReason.UnexpectedDatabaseFailure,
+    Exception JournalError = null);

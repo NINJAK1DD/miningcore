@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using System.Data;
 using System.Globalization;
 using System.Net;
@@ -271,7 +272,9 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("{poolId}/blocks")]
     public async Task<Responses.Block[]> PagePoolBlocksAsync(
-        string poolId, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
@@ -309,7 +312,9 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("/api/v2/pools/{poolId}/blocks")]
     public async Task<PagedResultResponse<Responses.Block[]>> PagePoolBlocksV2Async(
-        string poolId, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
@@ -478,7 +483,10 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("{poolId}/miners/{address}/blocks")]
     public async Task<Responses.Block[]> PageMinerBlocksAsync(
-        string poolId, string address, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, string address,
+        [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
@@ -521,7 +529,10 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("/api/v2/pools/{poolId}/miners/{address}/blocks")]
     public async Task<PagedResultResponse<Responses.Block[]>> PageMinerBlocksV2Async(
-        string poolId, string address, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, string address,
+        [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
