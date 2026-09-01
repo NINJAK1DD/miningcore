@@ -185,6 +185,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }
                 catch(Exception ex) when(IsCorruptPersistedDirectEvidence(ex))
                 {
+                    ClearDirectSettlementMismatchGrace(directBlock);
                     directBlock.Status = BlockStatus.Quarantined;
                     if(!string.Equals(directBlock.DirectSubmissionState,
                            BitcoinDirectSubmission.LegacyObserved,
@@ -845,11 +846,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
     }
 
+    // Keep distinct names at the two decision boundaries: malformed daemon
+    // data is retried, while the same parser failures in immutable persisted
+    // evidence cause quarantine. Centralizing the type list prevents drift.
     private static bool IsMalformedDirectDaemonData(Exception ex) =>
-        ex is InvalidDataException or JsonException or OverflowException or
-            FormatException or InvalidCastException;
+        IsDirectSettlementDataException(ex);
 
     private static bool IsCorruptPersistedDirectEvidence(Exception ex) =>
+        IsDirectSettlementDataException(ex);
+
+    private static bool IsDirectSettlementDataException(Exception ex) =>
         ex is InvalidDataException or JsonException or OverflowException or
             FormatException or InvalidCastException;
 

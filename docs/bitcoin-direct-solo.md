@@ -105,7 +105,10 @@ complete output total exactly equal to GBT `coinbasevalue`.
 Each template update and rebroadcast builds a destination-specific coinbase and merkle projection
 for every connected worker. That is intentionally proportional to connected workers multiplied by
 the template transaction count; capacity-test large fleets before enabling this first-version SOLO
-mode.
+mode. Duplicate-share tracking is scoped to each destination-specific job rather than the shared
+template. Resubmitting the same solution through multiple still-valid jobs created with identical
+coinbase data can therefore affect displayed hashrate and VarDiff statistics, but it cannot create
+a Miningcore balance or duplicate direct-SOLO settlement.
 
 The template-weight guard deliberately parses and byte-round-trips every daemon transaction once
 before publishing a new shared template. Daemon-reported weights are not trusted for an exact

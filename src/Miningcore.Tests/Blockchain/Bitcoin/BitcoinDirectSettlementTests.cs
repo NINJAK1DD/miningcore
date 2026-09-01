@@ -216,6 +216,8 @@ public class BitcoinDirectSettlementTests : TestBase
         string submissionState, int attempts, int misses,
         bool hasLastAttempt, string status)
     {
+        var start = DateTime.UtcNow;
+        var tracker = new ActiveBlockGracePeriodTracker();
         var submission = BitcoinDirectSubmissionTestData.Create();
         var block = CreateBlock();
         block.Hash = submission.BlockHash;
@@ -229,8 +231,12 @@ public class BitcoinDirectSettlementTests : TestBase
             : null;
         block.Status = Enum.Parse<BlockStatus>(status, true);
         block.DirectRecipientOutputs = "[1]";
+        Assert.False(tracker.TryAcquireNotification(block.PoolId, block.Id,
+            block.Hash, $"{block.Type}:direct-settlement-mismatch", start,
+            TimeSpan.FromMinutes(30)));
         var handler = new DirectResponsePayoutHandler(container,
-            CreateResponse(block, 49m, 1m));
+            CreateResponse(block, 49m, 1m),
+            gracePeriodTracker: tracker);
         await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
         {
             Id = "btc-direct",
@@ -253,6 +259,9 @@ public class BitcoinDirectSettlementTests : TestBase
             block.DirectSubmissionState);
         Assert.NotNull(block.DirectSettlementLastChecked);
         BitcoinDirectSubmission.ValidatePersistedProjection(block);
+        Assert.False(tracker.TryAcquireNotification(block.PoolId, block.Id,
+            block.Hash, $"{block.Type}:direct-settlement-mismatch",
+            start + TimeSpan.FromMinutes(31), TimeSpan.FromMinutes(30)));
     }
 
     [Fact]
