@@ -91,7 +91,7 @@ internal static class BitcoinDirectCoinbase
         var minerAmount = grossRewardSatoshis - directRecipientTotal;
         if(minerAmount < MinimumOutputSatoshis)
             throw new InvalidDataException(
-                "Direct SOLO recipients leave no positive miner coinbase output");
+                $"Direct SOLO recipients leave a miner coinbase residual of {minerAmount} satoshis; at least one satoshi is required");
 
         return new BitcoinDirectCoinbaseSettlement
         {
@@ -121,9 +121,10 @@ internal static class BitcoinDirectCoinbase
             total = checked(total + amount);
         }
 
-        if(grossRewardSatoshis - total < MinimumOutputSatoshis)
+        var minerAmount = grossRewardSatoshis - total;
+        if(minerAmount < MinimumOutputSatoshis)
             throw new InvalidDataException(
-                "Direct SOLO recipients leave no positive miner coinbase output");
+                $"Direct SOLO recipients leave a miner coinbase residual of {minerAmount} satoshis; at least one satoshi is required");
     }
 
     public static BitcoinDirectCoinbaseRecipient[] ValidateRecipients(
@@ -220,6 +221,10 @@ internal static class BitcoinDirectCoinbase
         if(percentage < 0)
             throw new ArgumentOutOfRangeException(nameof(percentage));
 
+        // Decode decimal's specified 96-bit integer and scale into an exact
+        // rational. Multiplying two decimals can round at 28-29 significant
+        // digits; BigInteger preserves the required deterministic satoshi floor
+        // across the complete Int64 reward range.
         var bits = decimal.GetBits(percentage);
         var scale = (bits[3] >> 16) & 0x7f;
         var numerator = new BigInteger((uint) bits[0]) |

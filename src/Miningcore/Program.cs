@@ -1376,8 +1376,11 @@ public class Program : ProcessStatusBackgroundService
                         skipApiListenerSettings);
 
                     RejectCaseInsensitivePropertyDuplicates(document);
-                    if(!skipApiListenerSettings)
-                        ValidateBitcoinDirectSoloSyntax(document);
+                    // Recovery mode discards live pool settings, but the same
+                    // source document must never make malformed or ambiguous
+                    // security-sensitive switches appear acceptable in one
+                    // startup mode and invalid in another.
+                    ValidateBitcoinDirectSoloSyntax(document);
                     if(skipApiListenerSettings)
                     {
                         // Recovery configuration policy:

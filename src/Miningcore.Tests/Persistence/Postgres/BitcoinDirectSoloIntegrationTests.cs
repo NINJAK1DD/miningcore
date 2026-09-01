@@ -193,6 +193,49 @@ public class BitcoinDirectSoloIntegrationTests
             Assert.Equal(submission.BlockHex,
                 preparedPending.DirectSubmissionBlock);
 
+            var quarantined = new Block
+            {
+                PoolId = "btc-direct-quarantine",
+                BlockHeight = direct.BlockHeight,
+                NetworkDifficulty = direct.NetworkDifficulty,
+                Status = BlockStatus.Pending,
+                Type = direct.Type,
+                TransactionConfirmationData = direct.TransactionConfirmationData,
+                Miner = direct.Miner,
+                Hash = direct.Hash,
+                Created = DateTime.UtcNow,
+                SettlementMode = direct.SettlementMode,
+                GrossRewardSatoshis = direct.GrossRewardSatoshis,
+                DirectMinerRewardSatoshis = direct.DirectMinerRewardSatoshis,
+                DirectMinerScriptPubKey = direct.DirectMinerScriptPubKey,
+                DirectRecipientOutputs = direct.DirectRecipientOutputs,
+                DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+                DirectSubmissionBlock = direct.DirectSubmissionBlock,
+                DirectSubmissionAttempts = 0,
+                DirectSubmissionDefinitiveMisses = 0,
+            };
+            await repository.InsertAsync(connection, null, quarantined,
+                CancellationToken.None);
+            quarantined.Id = await connection.ExecuteScalarAsync<long>(@"
+                SELECT id FROM blocks
+                WHERE poolid = 'btc-direct-quarantine'");
+            quarantined.Status = BlockStatus.Quarantined;
+            quarantined.DirectSubmissionState =
+                BitcoinDirectSubmission.Quarantined;
+            Assert.True(await repository.UpdateBlockAsync(connection, null,
+                quarantined));
+            var storedQuarantine = await connection.QuerySingleAsync<dynamic>(@"
+                SELECT status, directsubmissionstate, directsubmissionblock
+                FROM blocks WHERE id = @id", new { quarantined.Id });
+            Assert.Equal("quarantined", (string) storedQuarantine.status);
+            Assert.Equal(BitcoinDirectSubmission.Quarantined,
+                (string) storedQuarantine.directsubmissionstate);
+            Assert.Equal(submission.BlockHex,
+                (string) storedQuarantine.directsubmissionblock);
+            Assert.Empty(await repository
+                .GetBitcoinDirectSubmissionsForReplayAsync(connection,
+                    quarantined.PoolId, 0, 16, CancellationToken.None));
+
             await Assert.ThrowsAsync<PostgresException>(() =>
                 connection.ExecuteAsync(@"
                     UPDATE blocks SET status = 'confirmed'

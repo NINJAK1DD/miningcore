@@ -17,8 +17,12 @@ internal static class BitcoinDirectSubmission
     internal const string SubmittedUncertain = "submitted-uncertain";
     internal const string ObservedActive = "observed-active";
     internal const string Rejected = "rejected";
+    internal const string Quarantined = "quarantined";
     internal const string LegacyObserved = "legacy-observed";
-    internal const int MaximumSerializedBlockHexLength = 8_000_000;
+    // A weight-limited Bitcoin block cannot contain more serialized bytes than
+    // its weight. Hexadecimal doubles that byte count.
+    internal const int MaximumSerializedBlockHexLength =
+        (int) BitcoinJob.BitcoinConsensusMaxBlockWeight * 2;
     internal const int MinimumDefinitiveMisses = 3;
     internal static readonly TimeSpan UncertainLifetime = TimeSpan.FromMinutes(30);
 
@@ -51,6 +55,8 @@ internal static class BitcoinDirectSubmission
         ValidatePersistedMetadata(block);
 
         if(!string.Equals(block.DirectSubmissionState, LegacyObserved,
+               StringComparison.Ordinal) &&
+           !string.Equals(block.DirectSubmissionState, Quarantined,
                StringComparison.Ordinal))
             ValidatePayload(block.DirectSubmissionBlock, block.Hash,
                 block.TransactionConfirmationData);
@@ -60,8 +66,10 @@ internal static class BitcoinDirectSubmission
     {
         ValidatePersistedMetadata(block);
 
-        if(RequiresReplay(block.DirectSubmissionState) ||
-           !string.IsNullOrEmpty(block.DirectSubmissionBlock))
+        if(!string.Equals(block.DirectSubmissionState, Quarantined,
+               StringComparison.Ordinal) &&
+           (RequiresReplay(block.DirectSubmissionState) ||
+            !string.IsNullOrEmpty(block.DirectSubmissionBlock)))
             ValidatePayload(block.DirectSubmissionBlock, block.Hash,
                 block.TransactionConfirmationData);
     }
@@ -84,7 +92,7 @@ internal static class BitcoinDirectSubmission
         }
 
         if(block.DirectSubmissionState is not (Prepared or SubmittedUncertain or
-               ObservedActive or Rejected) ||
+               ObservedActive or Rejected or Quarantined) ||
            block.DirectSubmissionAttempts < 0 ||
            block.DirectSubmissionDefinitiveMisses < 0 ||
            block.DirectSubmissionDefinitiveMisses >
@@ -101,10 +109,22 @@ internal static class BitcoinDirectSubmission
                 throw new InvalidDataException(
                     $"Direct SOLO block {block.BlockHeight} has malformed prepared submission state");
         }
-        else if(block.DirectSubmissionAttempts == 0 ||
-                !block.DirectSubmissionLastAttempt.HasValue)
+        else if(!string.Equals(block.DirectSubmissionState, Quarantined,
+                    StringComparison.Ordinal) &&
+                (block.DirectSubmissionAttempts == 0 ||
+                 !block.DirectSubmissionLastAttempt.HasValue))
             throw new InvalidDataException(
                 $"Direct SOLO block {block.BlockHeight} has incomplete submission-attempt evidence");
+
+        if(string.Equals(block.DirectSubmissionState, Quarantined,
+               StringComparison.Ordinal) &&
+           (block.Status != PersistedBlockStatus.Quarantined ||
+            block.DirectSubmissionAttempts == 0 &&
+            block.DirectSubmissionLastAttempt.HasValue ||
+            block.DirectSubmissionAttempts > 0 &&
+            !block.DirectSubmissionLastAttempt.HasValue))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has malformed quarantined submission evidence");
 
         if((string.Equals(block.DirectSubmissionState, Prepared,
                 StringComparison.Ordinal) ||

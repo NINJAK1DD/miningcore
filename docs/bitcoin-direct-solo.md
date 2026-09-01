@@ -152,15 +152,18 @@ Every locally validated direct candidate crosses a durable submission-outbox bou
 block is submitted to the daemon and before the ordinary statistical share is admitted. The outbox
 stores the exact serialized block, locally calculated block hash and coinbase transaction ID,
 immutable settlement evidence, attempt counters and one of `prepared`, `submitted-uncertain`,
-`observed-active` or `rejected`. A prepared row is not announced as found and cannot be classified
-as orphaned merely because the daemon has not seen it yet.
+`observed-active`, `rejected` or terminal `quarantined`. A prepared row is not announced as found and
+cannot be classified as orphaned merely because the daemon has not seen it yet.
 
-The propagation-critical prepare step makes one bounded PostgreSQL attempt. If that attempt fails,
-Miningcore immediately fsyncs the same complete record to the protected recovery journal instead of
-waiting through the ordinary 2/4/8-second database retry ladder. If neither store can durably retain
-the exact block, mining fail-stops and the block is not submitted without recoverable evidence. An
-unexpected non-retryable database error also schedules a fail-stop, but only after the already
-journaled block has had its daemon-submission opportunity.
+The propagation-critical prepare step makes one PostgreSQL attempt bounded at two seconds. If that
+attempt fails or exceeds the bound, Miningcore immediately fsyncs the same complete record to the
+protected recovery journal instead of waiting through the
+ordinary 2/4/8-second database retry ladder. The bound prioritizes block propagation once the local journal is durable; it is not a
+tolerance setting for an overloaded financial database. If neither store can durably retain the exact
+block, mining fail-stops and the block is not submitted without recoverable evidence. An unexpected
+non-retryable database error also schedules a fail-stop, but only after the already journaled block
+has had its daemon-submission opportunity. The larger journal-record allowance is restricted to the
+dedicated direct-settlement identity; ordinary share records retain the historical one-MiB bound.
 
 PostgreSQL commit acknowledgement and cleanup failures use the same propagation-first rule. A
 known-committed row is the authoritative outbox; Miningcore also attempts an exact journal copy as
@@ -207,9 +210,11 @@ active chain, immutable evidence permits it to return to pending or confirmed. A
 is outside automatic reconciliation and requires an operator audit of the immutable settlement rows.
 No balance reversal or recreation occurs because Miningcore never credited one. A malformed or
 internally inconsistent historical direct row is quarantined individually, stamped out of the scan
-prefix and excluded from financial settlement so it cannot stop unrelated pool payments; investigate
-the database evidence before any manual change. Ordinary confirmed pool blocks remain terminal and
-are not admitted to this direct-only path.
+prefix and excluded from financial settlement so it cannot stop unrelated pool payments. Replayable
+rows also move to an explicit terminal `quarantined` submission state, preserving their exact payload
+and attempt evidence without falsely recording acceptance or rejection; investigate the database
+evidence before any manual change. Ordinary confirmed pool blocks remain terminal and are not admitted
+to this direct-only path.
 
 Back up PostgreSQL and the normal recovery/quarantine artifacts. Never import a quarantine file with
 `-rs`. Direct candidate durability depends on the local PostgreSQL block writer, so share-relay

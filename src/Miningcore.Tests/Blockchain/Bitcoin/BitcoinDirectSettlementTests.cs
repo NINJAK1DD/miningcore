@@ -174,6 +174,86 @@ public class BitcoinDirectSettlementTests : TestBase
     }
 
     [Fact]
+    public async Task PreparedSubmission_ActiveReplayBecomesObservedWithoutSelfQuarantine()
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var block = CreateBlock();
+        block.Hash = submission.BlockHash;
+        block.TransactionConfirmationData = submission.CoinbaseTxId;
+        block.Status = BlockStatus.Pending;
+        block.DirectSubmissionState = BitcoinDirectSubmission.Prepared;
+        block.DirectSubmissionBlock = submission.BlockHex;
+        block.DirectSubmissionAttempts = 0;
+        block.DirectSubmissionDefinitiveMisses = 0;
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(now);
+        var handler = new DirectResponsePayoutHandler(container,
+            CreateResponse(block, 49m, 1m), clock,
+            submitResponse: new RpcResponse<JToken>(null,
+                new JsonRpcError(-27, "duplicate", null)));
+
+        Assert.True(await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None));
+
+        Assert.Equal(BitcoinDirectSubmission.ObservedActive,
+            block.DirectSubmissionState);
+        Assert.Equal(1, block.DirectSubmissionAttempts);
+        Assert.Equal(now, block.DirectSubmissionLastAttempt);
+        Assert.NotEqual(BlockStatus.Quarantined, block.Status);
+        Assert.True(block.NotifyBlockFoundOnUpdate);
+        BitcoinDirectSubmission.ValidatePersistedProjection(block);
+    }
+
+    [Theory]
+    [InlineData("prepared", 0, 0, false, "pending")]
+    [InlineData("submitted-uncertain", 1, 0, true, "pending")]
+    [InlineData("observed-active", 1, 0, true, "pending")]
+    [InlineData("rejected", 3, 3, true, "orphaned")]
+    public async Task MalformedEvidence_QuarantinesEverySubmissionStateLegally(
+        string submissionState, int attempts, int misses,
+        bool hasLastAttempt, string status)
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var block = CreateBlock();
+        block.Hash = submission.BlockHash;
+        block.TransactionConfirmationData = submission.CoinbaseTxId;
+        block.DirectSubmissionBlock = submission.BlockHex;
+        block.DirectSubmissionState = submissionState;
+        block.DirectSubmissionAttempts = attempts;
+        block.DirectSubmissionDefinitiveMisses = misses;
+        block.DirectSubmissionLastAttempt = hasLastAttempt
+            ? DateTime.UtcNow.AddMinutes(-1)
+            : null;
+        block.Status = Enum.Parse<BlockStatus>(status, true);
+        block.DirectRecipientOutputs = "[1]";
+        var handler = new DirectResponsePayoutHandler(container,
+            CreateResponse(block, 49m, 1m));
+        await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Symbol = "BTC",
+                CoinbaseMinConfimations = 1,
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        }, CancellationToken.None);
+
+        var result = await handler.ClassifyBlocksAsync(
+            Substitute.For<IMiningPool>(), new[] { block },
+            CancellationToken.None);
+
+        Assert.Same(block, Assert.Single(result));
+        Assert.Equal(BlockStatus.Quarantined, block.Status);
+        Assert.Equal(BitcoinDirectSubmission.Quarantined,
+            block.DirectSubmissionState);
+        Assert.NotNull(block.DirectSettlementLastChecked);
+        BitcoinDirectSubmission.ValidatePersistedProjection(block);
+    }
+
+    [Fact]
     public async Task NegativeConfirmation_OrphansWithoutWalletLookup()
     {
         var block = CreateBlock();

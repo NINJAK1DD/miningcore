@@ -238,7 +238,7 @@ public class BitcoinPool : PoolBase
     {
         if(manager.DirectCoinbasePayoutEnabled &&
            Volatile.Read(ref directJobPipelineFailed) != 0)
-            throw new InvalidOperationException(
+            throw new StratumException(StratumError.JobNotFound,
                 "Direct SOLO job delivery has entered fail-stop state");
 
         var context = connection.ContextAs<BitcoinWorkerContext>();

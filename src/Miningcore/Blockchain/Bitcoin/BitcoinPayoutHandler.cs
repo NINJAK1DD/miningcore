@@ -179,6 +179,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     JsonException or OverflowException)
                 {
                     directBlock.Status = BlockStatus.Quarantined;
+                    if(!string.Equals(directBlock.DirectSubmissionState,
+                           BitcoinDirectSubmission.LegacyObserved,
+                           StringComparison.Ordinal))
+                        directBlock.DirectSubmissionState =
+                            BitcoinDirectSubmission.Quarantined;
                     directBlock.DirectSettlementLastChecked = clock.Now;
                     directBlock.NotifyBlockFoundOnUpdate = false;
                     directBlock.NotifyBlockConfirmationProgressOnUpdate = false;
@@ -544,20 +549,27 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             var submit = await SubmitDirectSettlementBlockAsync(
                 block.DirectSubmissionBlock, ct);
             response = await GetDirectSettlementBlockAsync(block.Hash, ct);
-            block.DirectSubmissionAttempts = checked(
-                block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
-            block.DirectSubmissionLastAttempt = clock.Now;
 
             if(IsActiveDirectSettlementResponse(response, block.Hash))
             {
+                // Validate while the persisted replay projection still has its
+                // canonical prepared/uncertain counters. Mutating a prepared
+                // row first would make its own state validator reject the
+                // successful replay as malformed.
                 VerifyDirectCoinbaseTransaction(block,
                     (JObject) response.Response);
+                block.DirectSubmissionAttempts = checked(
+                    block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                block.DirectSubmissionLastAttempt = clock.Now;
                 block.DirectSubmissionState =
                     BitcoinDirectSubmission.ObservedActive;
                 block.NotifyBlockFoundOnUpdate = true;
             }
             else
             {
+                block.DirectSubmissionAttempts = checked(
+                    block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                block.DirectSubmissionLastAttempt = clock.Now;
                 var submitError = submit.Error?.Message ??
                     submit.Error?.Code.ToString(CultureInfo.InvariantCulture) ??
                     submit.Response?.ToString();

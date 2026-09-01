@@ -1081,6 +1081,10 @@ public class BitcoinJob
                 (ulong) BlockTemplate.Transactions.Length + 1);
             var coinbaseLength = checked((long) coinbaseInitial.Length +
                 extraNoncePlaceHolderLength + coinbaseFinal.Length);
+            // This is the exact non-witness coinbase byte sequence written by
+            // SerializeBlock. A default witness-commitment output is already
+            // inside coinbaseFinal; Miningcore does not append a separate
+            // coinbase witness serialization outside these bytes.
             weight = checked((80L + CompactSizeLength(transactionCount) +
                 coinbaseLength) * 4L);
 

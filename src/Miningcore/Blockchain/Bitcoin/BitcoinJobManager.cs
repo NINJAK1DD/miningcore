@@ -450,10 +450,10 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             MinerScriptPubKey = minerDestination.ScriptPubKey.ToHex(),
             Recipients = directCoinbaseRecipients,
         };
-        BitcoinDirectCoinbase.EnsureMinerIsDistinct(directTemplate);
 
         try
         {
+            BitcoinDirectCoinbase.EnsureMinerIsDistinct(directTemplate);
             var job = CreateJob();
             job.InitDirect(source.BlockTemplate, NextJobId(),
                 poolConfig, extraPoolConfig, clusterConfig, clock,

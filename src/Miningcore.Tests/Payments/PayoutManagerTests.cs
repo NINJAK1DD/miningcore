@@ -344,11 +344,17 @@ public class PayoutManagerTests
 
         var loaded = await fixture.Manager.LoadBlocksForClassificationAsync(
             fixture.MiningPool, CancellationToken.None);
+        var loadedAgain = await fixture.Manager.LoadBlocksForClassificationAsync(
+            fixture.MiningPool, CancellationToken.None);
 
         var after = DateTime.UtcNow -
             PayoutManager.DirectSettlementReconciliationInterval;
         Assert.Equal(new[] { pending, confirmedDirect }, loaded);
+        Assert.Equal(new[] { pending, confirmedDirect }, loadedAgain);
         await fixture.BlockRepository.Received(1)
+            .HasBitcoinDirectSoloSchemaAsync(fixture.Connection,
+                Arg.Any<CancellationToken>());
+        await fixture.BlockRepository.Received(2)
             .GetBitcoinDirectBlocksForReconciliationAsync(
                 fixture.Connection, fixture.Pool.Id,
                 minimumBlockHeight,

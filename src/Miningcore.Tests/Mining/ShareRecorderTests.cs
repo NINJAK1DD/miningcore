@@ -4885,6 +4885,41 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoveryJournal_OrdinaryRecordsRetainOneMiBWriteLimit()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(),
+            Path.GetRandomFileName());
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, Substitute.For<IMessageBus>());
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share
+                    {
+                        PoolId = "ordinary",
+                        Miner = new string('x',
+                            ShareRecorder.MaxOrdinaryRecoveryRecordLineLength),
+                    },
+                }));
+
+            Assert.Contains("1048576-character limit", error.Message);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
+    }
+
+    [Fact]
     public async Task RecoveryJournal_SameLengthFileReplacementInvalidatesTrustedTail()
     {
         var recoveryFilename = Path.Combine(Path.GetTempPath(),

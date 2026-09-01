@@ -196,6 +196,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "# miningcore-recovery-journal-v1";
     internal const string RecoveryJournalMagic =
         "# miningcore-recovery-journal-v2";
+    internal const int MaxOrdinaryRecoveryRecordLineLength =
+        1024 * 1024;
     // A Bitcoin direct-submission recovery record can contain the complete maximum-weight
     // serialized block as hexadecimal plus its immutable settlement evidence.
     internal const int MaxRecoveryRecordLineLength = 16 * 1024 * 1024;
@@ -1404,8 +1406,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         string previous)
     {
         var shareRecords = shares
-            .Select(share => JsonConvert.SerializeObject(share,
-                jsonSerializerSettings))
+            .Select(share =>
+            {
+                var record = JsonConvert.SerializeObject(share,
+                    jsonSerializerSettings);
+                ValidateRecoveryRecordLength(share, record,
+                    "Recovery journal record");
+                return record;
+            })
             .ToArray();
         var records = shareRecords.Length > 0
             ? string.Join("\n", shareRecords) + "\n"
@@ -2272,6 +2280,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 throw new InvalidDataException(
                     $"Recovery record at line {lineNumber} is null");
 
+            ValidateRecoveryRecordLength(share, line,
+                $"Recovery record at line {lineNumber}");
+
             if(requireConfiguredPool &&
                (share.PoolId == null || !pools.ContainsKey(share.PoolId)))
             {
@@ -2317,6 +2328,26 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
 
         return recordCount;
+    }
+
+    private static void ValidateRecoveryRecordLength(Share share,
+        string record, string description)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        ArgumentNullException.ThrowIfNull(record);
+
+        var maximum = string.Equals(share.BlockType,
+                BitcoinDirectCoinbaseSettlement.BlockType,
+                StringComparison.Ordinal) &&
+            string.Equals(share.SettlementMode,
+                BitcoinDirectCoinbaseSettlement.Mode,
+                StringComparison.Ordinal)
+            ? MaxRecoveryRecordLineLength
+            : MaxOrdinaryRecoveryRecordLineLength;
+
+        if(record.Length > maximum)
+            throw new InvalidDataException(
+                $"{description} exceeds the {maximum}-character limit for its record type");
     }
 
     private void NotifyAdminOnPolicyFallback()

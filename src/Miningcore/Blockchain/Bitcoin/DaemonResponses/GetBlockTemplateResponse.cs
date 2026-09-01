@@ -38,6 +38,9 @@ public class CoinbaseAux
 public class BlockTemplate
 {
     [JsonIgnore]
+    // The job manager fills this before publishing the shared template. Direct
+    // worker jobs only read the immutable cached value, so broadcast tasks do
+    // not race to parse or mutate transaction data.
     internal long ValidatedTransactionWeight { get; set; } = -1;
 
     /// <summary>

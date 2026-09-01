@@ -59,9 +59,12 @@ immediate fsync recovery-journal fallback rather than delaying `submitblock` thr
 ladder. Known-committed cleanup failures and uncertain commits also retain replay-safe evidence and
 defer their database-health fail-stop until after the daemon propagation attempt. An exact
 active-chain duplicate with matching coinbase evidence commits `observed-active` and is not replayed
-again. Routine API and terminal-reconciliation projections exclude the large serialized payload,
+again. Malformed replayable evidence moves to an explicit terminal `quarantined` submission state,
+so it remains auditable without poisoning later pool classification or falsely claiming acceptance.
+Routine API and terminal-reconciliation projections exclude the large serialized payload,
 and the pending classifier returns it only for replayable states; immature observed rows remain
-metadata-only. Public block pages are capped at 100 rows. Bounded post-maturity block-RPC
+metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,
+and reject larger page sizes instead of allowing an unbounded query. Bounded post-maturity block-RPC
 reconciliation tracks terminal rows for two difficulty periods without creating a Miningcore
 balance or second payment. Existing custodial SOLO remains the default. Existing databases must apply
 `add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See

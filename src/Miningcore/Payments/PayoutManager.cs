@@ -84,6 +84,8 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly IMessageBus messageBus;
     private readonly TimeSpan interval;
     private readonly ConcurrentDictionary<string, IMiningPool> pools = new();
+    private readonly ConcurrentDictionary<string, bool>
+        directSettlementSchemaReadiness = new();
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;
     private readonly Func<CancellationToken, Task> executeOverride;
@@ -321,32 +323,45 @@ public class PayoutManager : ProcessStatusBackgroundService
 
                 logger.Info(() => $"Processing payments for pool {poolConfig.Id}, block {block.BlockHeight}");
 
-                await RunBlockUpdateTransactionAsync(poolConfig, block, async (con, tx) =>
+                try
                 {
-                    if(block.Status == BlockStatus.Quarantined)
-                        return await blockRepo.UpdateBlockAsync(con, tx, block);
-
-                    if(!block.Effort.HasValue)  // fill block effort if empty
-                        await CalculateBlockEffortAsync(pool, poolConfig, block, handler, ct);
-
-                    if(!block.MinerEffort.HasValue)  // fill block miner effort if empty
-                        await CalculateMinerEffortAsync(pool, poolConfig, block, handler, ct);
-
-                    switch(block.Status)
+                    await RunBlockUpdateTransactionAsync(poolConfig, block, async (con, tx) =>
                     {
-                        case BlockStatus.Confirmed:
-                            return await ApplyConfirmedBlockAsync(con, tx, pool, block,
-                                handler, scheme, ct);
-
-                        case BlockStatus.Orphaned:
-                        case BlockStatus.Pending:
-                        case BlockStatus.Quarantined:
+                        if(block.Status == BlockStatus.Quarantined)
                             return await blockRepo.UpdateBlockAsync(con, tx, block);
 
-                        default:
-                            return false;
-                    }
-                });
+                        if(!block.Effort.HasValue)  // fill block effort if empty
+                            await CalculateBlockEffortAsync(pool, poolConfig, block, handler, ct);
+
+                        if(!block.MinerEffort.HasValue)  // fill block miner effort if empty
+                            await CalculateMinerEffortAsync(pool, poolConfig, block, handler, ct);
+
+                        switch(block.Status)
+                        {
+                            case BlockStatus.Confirmed:
+                                return await ApplyConfirmedBlockAsync(con, tx, pool, block,
+                                    handler, scheme, ct);
+
+                            case BlockStatus.Orphaned:
+                            case BlockStatus.Pending:
+                            case BlockStatus.Quarantined:
+                                return await blockRepo.UpdateBlockAsync(con, tx, block);
+
+                            default:
+                                return false;
+                        }
+                    });
+                }
+                catch(Exception ex) when(block.Status ==
+                        BlockStatus.Quarantined &&
+                    BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block))
+                {
+                    // A corrupt direct audit row must stay excluded from every
+                    // financial path, but an inability to stamp that one row
+                    // must not starve later blocks or unrelated pool payouts.
+                    logger.Error(ex, () =>
+                        $"Unable to persist quarantine for direct SOLO block {block.BlockHeight} [{block.Hash}]; continuing with independent blocks");
+                }
             }
         }
 
@@ -364,9 +379,25 @@ public class PayoutManager : ProcessStatusBackgroundService
         // persisted rotation so later reorgs and reactivations remain visible.
         var pendingBlocks = await cf.Run(con =>
             blockRepo.GetPendingBlocksForPoolAsync(con, poolConfig.Id));
-        if(poolConfig.Template is not BitcoinTemplate ||
-           !await cf.Run(con =>
-               blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct)))
+        if(poolConfig.Template is not BitcoinTemplate)
+            return pendingBlocks;
+
+        // Schema shape is immutable for the lifetime of a supported process:
+        // migrations require every writer to stop before the new binary starts.
+        // Cache the first fail-closed result instead of repeating the catalog
+        // inspection for every Bitcoin-family pool on every payout cycle. Do
+        // not gate on the current opt-in flag because historical direct rows
+        // must keep reconciling after an operator disables new direct work.
+        if(!directSettlementSchemaReadiness.TryGetValue(poolConfig.Id,
+               out var directSettlementSchemaReady))
+        {
+            directSettlementSchemaReady = await cf.Run(con =>
+                blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct));
+            directSettlementSchemaReadiness.TryAdd(poolConfig.Id,
+                directSettlementSchemaReady);
+        }
+
+        if(!directSettlementSchemaReady)
             return pendingBlocks;
 
         var checkedBefore = DateTime.UtcNow -
