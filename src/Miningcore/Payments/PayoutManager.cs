@@ -84,8 +84,7 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly IMessageBus messageBus;
     private readonly TimeSpan interval;
     private readonly ConcurrentDictionary<string, IMiningPool> pools = new();
-    private readonly ConcurrentDictionary<string, bool>
-        directSettlementSchemaReadiness = new();
+    private bool? directSettlementSchemaReady;
     private readonly ClusterConfig clusterConfig;
     private readonly IPayoutManagerLease payoutLease;
     private readonly Func<CancellationToken, Task> executeOverride;
@@ -388,16 +387,13 @@ public class PayoutManager : ProcessStatusBackgroundService
         // inspection for every Bitcoin-family pool on every payout cycle. Do
         // not gate on the current opt-in flag because historical direct rows
         // must keep reconciling after an operator disables new direct work.
-        if(!directSettlementSchemaReadiness.TryGetValue(poolConfig.Id,
-               out var directSettlementSchemaReady))
+        if(!directSettlementSchemaReady.HasValue)
         {
             directSettlementSchemaReady = await cf.Run(con =>
                 blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct));
-            directSettlementSchemaReadiness.TryAdd(poolConfig.Id,
-                directSettlementSchemaReady);
         }
 
-        if(!directSettlementSchemaReady)
+        if(!directSettlementSchemaReady.Value)
             return pendingBlocks;
 
         var checkedBefore = DateTime.UtcNow -
@@ -520,6 +516,9 @@ public class PayoutManager : ProcessStatusBackgroundService
         var to = classified.DirectSubmissionState;
         if(string.Equals(from, to, StringComparison.Ordinal))
             return true;
+        if(string.Equals(to, BitcoinDirectSubmission.Quarantined,
+               StringComparison.Ordinal))
+            return BitcoinDirectSubmission.CanTransitionToQuarantine(from);
         if(BitcoinDirectSubmission.RequiresReplay(from))
             return to is BitcoinDirectSubmission.SubmittedUncertain or
                 BitcoinDirectSubmission.ObservedActive or

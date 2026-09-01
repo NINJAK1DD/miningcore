@@ -254,6 +254,78 @@ public class BitcoinDirectSettlementTests : TestBase
     }
 
     [Fact]
+    public async Task MalformedDaemonCoinbase_DefersPendingRowWithoutQuarantine()
+    {
+        var block = CreateBlock();
+        block.Status = BlockStatus.Pending;
+        var response = CreateResponse(block, 49m, 1m);
+        ((JObject) response["tx"]![0]!["vout"]![1]!).Remove("value");
+        var handler = new DirectResponsePayoutHandler(container, response);
+
+        var classified = await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None);
+
+        Assert.False(classified);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(BitcoinDirectSubmission.LegacyObserved,
+            block.DirectSubmissionState);
+        Assert.Null(block.DirectSettlementLastChecked);
+    }
+
+    [Fact]
+    public async Task NonNumericDaemonCoinbaseValue_DefersPendingRowWithoutQuarantine()
+    {
+        var block = CreateBlock();
+        block.Status = BlockStatus.Pending;
+        var response = CreateResponse(block, 49m, 1m);
+        response["tx"]![0]!["vout"]![1]!["value"] = "not-a-number";
+        var handler = new DirectResponsePayoutHandler(container, response);
+
+        var classified = await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None);
+
+        Assert.False(classified);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(BitcoinDirectSubmission.LegacyObserved,
+            block.DirectSubmissionState);
+        Assert.Null(block.DirectSettlementLastChecked);
+    }
+
+    [Fact]
+    public void QuarantinedSubmission_RequiresNonNullCountersLikePostgres()
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var block = CreateBlock();
+        block.Status = BlockStatus.Quarantined;
+        block.Hash = submission.BlockHash;
+        block.TransactionConfirmationData = submission.CoinbaseTxId;
+        block.DirectSubmissionState = BitcoinDirectSubmission.Quarantined;
+        block.DirectSubmissionBlock = submission.BlockHex;
+        block.DirectSubmissionAttempts = null;
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            BitcoinDirectSubmission.ValidatePersistedBlock(block));
+
+        Assert.Contains("malformed submission state", error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QuarantinedSubmission_RequiresSqlCompatiblePayloadEnvelope()
+    {
+        var block = CreateBlock();
+        block.Status = BlockStatus.Quarantined;
+        block.DirectSubmissionState = BitcoinDirectSubmission.Quarantined;
+        block.DirectSubmissionBlock = "00";
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            BitcoinDirectSubmission.ValidatePersistedBlock(block));
+
+        Assert.Contains("canonical lowercase", error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task NegativeConfirmation_OrphansWithoutWalletLookup()
     {
         var block = CreateBlock();

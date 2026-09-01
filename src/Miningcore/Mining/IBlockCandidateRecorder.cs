@@ -18,6 +18,8 @@ public interface IBlockCandidateRecorder
         BitcoinDirectSubmissionOutcome outcome, DateTime attemptedAt);
     Task<Block[]> GetDirectBlockSubmissionsForReplayAsync(string poolId,
         long afterId, int pageSize, CancellationToken ct);
+    Task<Block> QuarantineDirectBlockSubmissionAsync(long blockId,
+        CancellationToken ct);
     void BeginShutdown();
 }
 

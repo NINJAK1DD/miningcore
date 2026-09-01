@@ -166,7 +166,8 @@ CREATE TABLE blocks
                     directsubmissionlastattempt IS NULL)
                 OR
                 (directsubmissionstate IN ('prepared',
-                        'submitted-uncertain', 'observed-active', 'rejected') AND
+                        'submitted-uncertain', 'observed-active', 'rejected',
+                        'quarantined') AND
                     directsubmissionblock ~ '^[0-9a-f]+$' AND
                     length(directsubmissionblock) BETWEEN 162 AND 8000000 AND
                     length(directsubmissionblock) % 2 = 0 AND
@@ -179,7 +180,14 @@ CREATE TABLE blocks
                         directsubmissiondefinitivemisses = 0 AND
                         directsubmissionlastattempt IS NULL AND
                         status = 'pending') OR
+                     (directsubmissionstate = 'quarantined' AND
+                        status = 'quarantined' AND
+                        ((directsubmissionattempts = 0 AND
+                          directsubmissionlastattempt IS NULL) OR
+                         (directsubmissionattempts > 0 AND
+                          directsubmissionlastattempt IS NOT NULL))) OR
                      (directsubmissionstate <> 'prepared' AND
+                        directsubmissionstate <> 'quarantined' AND
                         directsubmissionattempts > 0 AND
                         directsubmissionlastattempt IS NOT NULL)) AND
                     (directsubmissionstate <> 'submitted-uncertain' OR

@@ -60,7 +60,8 @@ ladder. Known-committed cleanup failures and uncertain commits also retain repla
 defer their database-health fail-stop until after the daemon propagation attempt. An exact
 active-chain duplicate with matching coinbase evidence commits `observed-active` and is not replayed
 again. Malformed replayable evidence moves to an explicit terminal `quarantined` submission state,
-so it remains auditable without poisoning later pool classification or falsely claiming acceptance.
+so it remains auditable without poisoning later pool classification, blocking startup or falsely
+claiming acceptance. Transient malformed daemon block data is deferred rather than quarantined.
 Routine API and terminal-reconciliation projections exclude the large serialized payload,
 and the pending classifier returns it only for replayable states; immature observed rows remain
 metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,
@@ -69,6 +70,10 @@ reconciliation tracks terminal rows for two difficulty periods without creating 
 balance or second payment. Existing custodial SOLO remains the default. Existing databases must apply
 `add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
 the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
+
+Fresh `createdb.sql` installations and upgraded databases share the same five-state direct-outbox
+constraint. A source-contract regression and live PostgreSQL preflight prevent the fresh schema and
+idempotent migration from drifting apart.
 
 This is a forward-only application compatibility boundary once direct work has been accepted. Do
 not roll the binary back below the release containing this feature when PostgreSQL contains a direct

@@ -472,6 +472,31 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         blockRepo.GetBitcoinDirectSubmissionsForReplayAsync(con, poolId,
             afterId, pageSize, ct));
 
+    public Task<Block> QuarantineDirectBlockSubmissionAsync(long blockId,
+        CancellationToken ct) => cf.RunTx(async (con, tx) =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var block = await blockRepo.GetBlockByIdForUpdateAsync(con, tx,
+            blockId);
+
+        if(block == null ||
+           !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block) ||
+           !BitcoinDirectSubmission.RequiresReplay(
+               block.DirectSubmissionState))
+            return block;
+
+        block.Status = BlockStatus.Quarantined;
+        block.DirectSubmissionState = BitcoinDirectSubmission.Quarantined;
+        block.DirectSettlementLastChecked = clock.Now;
+
+        if(!await blockRepo.UpdateBlockAsync(con, tx, block))
+            throw new InvalidOperationException(
+                $"Unable to persist quarantine for direct-SOLO block " +
+                $"{block.BlockHeight} [{block.Hash}]");
+
+        return block;
+    });
+
     public void BeginShutdown()
     {
         if(Interlocked.Exchange(ref blockCandidateShutdownStarted, 1) == 0)

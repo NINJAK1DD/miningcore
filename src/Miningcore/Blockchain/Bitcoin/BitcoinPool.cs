@@ -250,7 +250,7 @@ public class BitcoinPool : PoolBase
             for(var attempt = 0; attempt < 2; attempt++)
             {
                 var authorization = context.GetDirectPayoutAuthorization() ??
-                    throw new InvalidOperationException(
+                    throw new StratumException(StratumError.JobNotFound,
                         "Direct SOLO worker has no payout authorization");
                 var directJob = manager.GetDirectJobForStratum(
                     authorization.Address, authorization.Destination,
@@ -261,7 +261,7 @@ public class BitcoinPool : PoolBase
                     return directJob.GetJobParams(cleanJob);
             }
 
-            throw new InvalidOperationException(
+            throw new StratumException(StratumError.JobNotFound,
                 "Direct SOLO payout authorization changed while assigning work");
         }
 

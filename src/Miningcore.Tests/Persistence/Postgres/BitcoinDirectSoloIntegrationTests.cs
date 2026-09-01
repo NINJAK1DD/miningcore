@@ -1,12 +1,21 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Autofac;
 using Dapper;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Configuration;
+using Miningcore.Messaging;
+using Miningcore.Payments;
+using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
+using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
+using Miningcore.Persistence.Repositories;
 using Npgsql;
+using NSubstitute;
 using Xunit;
 using Miningcore.Tests.Blockchain.Bitcoin;
 
@@ -14,6 +23,165 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class BitcoinDirectSoloIntegrationTests
 {
+    [Fact]
+    public async Task FreshAndMigrationDirectConstraintsRemainIdentical()
+    {
+        var scripts = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../Miningcore/Persistence/Postgres/Scripts"));
+        var createdb = await File.ReadAllTextAsync(Path.Combine(scripts,
+            "createdb.sql"));
+        var migration = await File.ReadAllTextAsync(Path.Combine(scripts,
+            "add_bitcoin_direct_solo.sql"));
+
+        var freshContract = ExtractConstraint(createdb,
+            "CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (");
+        var migrationContract = ExtractConstraint(migration,
+            "ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement\n        CHECK (");
+
+        Assert.Equal(NormalizeSql(migrationContract),
+            NormalizeSql(freshContract));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task FreshDatabaseScript_SatisfiesDirectSoloPreflight()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_bitcoin_direct_fresh_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var scriptPath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql"));
+        var script = await File.ReadAllTextAsync(scriptPath);
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema} AUTHORIZATION miningcore;
+                SET search_path TO {schema}, public;");
+            await connection.ExecuteAsync(script);
+            var repository = new BlockRepository(
+                AutoMapperFactory.CreateMapper());
+
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync(
+                "RESET ROLE; SET search_path TO public");
+            await connection.ExecuteAsync(
+                $"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task PayoutManager_RowLockPersistsEveryQuarantineTransition()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(
+            "MININGCORE_TEST_POSTGRES");
+        var schema = $"miningcore_bitcoin_direct_guard_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        try
+        {
+            await connection.ExecuteAsync($@"
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, public;
+                CREATE TABLE blocks(
+                    id bigserial PRIMARY KEY, poolid text NOT NULL,
+                    blockheight bigint NOT NULL,
+                    networkdifficulty double precision NOT NULL,
+                    status text NOT NULL, type text NULL,
+                    transactionconfirmationdata text NULL,
+                    miner text NULL, reward decimal(28,12) NULL,
+                    effort double precision NULL,
+                    minereffort double precision NULL,
+                    confirmationprogress double precision NULL,
+                    source text NULL, hash text NULL,
+                    created timestamptz NOT NULL);
+                CREATE UNIQUE INDEX idx_blocks_bitcoin_direct_candidate
+                    ON blocks(poolid, hash)
+                    WHERE type = 'bitcoin-direct';");
+            var migrationPath = Path.GetFullPath(Path.Combine(
+                AppContext.BaseDirectory,
+                "../../../../Miningcore/Persistence/Postgres/Scripts/add_bitcoin_direct_solo.sql"));
+            var migration = (await File.ReadAllTextAsync(migrationPath))
+                .Replace("\\set ON_ERROR_STOP on", string.Empty,
+                    StringComparison.Ordinal);
+            await connection.ExecuteAsync(migration);
+
+            var mapper = AutoMapperFactory.CreateMapper();
+            var repository = new BlockRepository(mapper);
+            var builder = new NpgsqlConnectionStringBuilder(connectionString)
+            {
+                SearchPath = $"{schema},public",
+            };
+            var manager = new PayoutManager(
+                Substitute.For<IComponentContext>(),
+                new PgConnectionFactory(builder.ConnectionString), repository,
+                Substitute.For<IShareRepository>(),
+                Substitute.For<IBalanceRepository>(), new ClusterConfig
+                {
+                    PaymentProcessing =
+                        new ClusterPaymentProcessingConfig(),
+                }, Substitute.For<IMessageBus>(),
+                Substitute.For<IPayoutManagerLease>(), new ProcessStatus());
+            var pool = new PoolConfig
+            {
+                Id = "btc-direct",
+                Template = new BitcoinTemplate { Symbol = "BTC" },
+            };
+            var submission = BitcoinDirectSubmissionTestData.Create();
+            var cases = new[]
+            {
+                (BitcoinDirectSubmission.Prepared, BlockStatus.Pending, 0, 0),
+                (BitcoinDirectSubmission.SubmittedUncertain,
+                    BlockStatus.Pending, 1, 0),
+                (BitcoinDirectSubmission.ObservedActive,
+                    BlockStatus.Pending, 1, 0),
+                (BitcoinDirectSubmission.Rejected,
+                    BlockStatus.Orphaned, 3, 3),
+            };
+
+            for(var index = 0; index < cases.Length; index++)
+            {
+                var source = cases[index];
+                var block = CreateDirectBlock(submission,
+                    $"btc-direct-{index}", source.Item1, source.Item2,
+                    source.Item3, source.Item4);
+                Assert.True(await repository.InsertAsync(connection, null,
+                    block, CancellationToken.None));
+                block.Id = await connection.ExecuteScalarAsync<long>(@"
+                    SELECT id FROM blocks WHERE poolid = @poolId",
+                    new { poolId = block.PoolId });
+                block.Status = BlockStatus.Quarantined;
+                block.DirectSubmissionState =
+                    BitcoinDirectSubmission.Quarantined;
+                block.DirectSettlementLastChecked = DateTime.UtcNow;
+
+                await manager.RunBlockUpdateTransactionAsync(pool, block,
+                    (con, tx) => repository.UpdateBlockAsync(con, tx, block));
+
+                var stored = await connection.QuerySingleAsync<dynamic>(@"
+                    SELECT status, directsubmissionstate
+                    FROM blocks WHERE id = @id", new { block.Id });
+                Assert.Equal("quarantined", (string) stored.status);
+                Assert.Equal(BitcoinDirectSubmission.Quarantined,
+                    (string) stored.directsubmissionstate);
+            }
+        }
+        finally
+        {
+            await connection.ExecuteAsync("SET search_path TO public");
+            await connection.ExecuteAsync(
+                $"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
     [PostgresIntegrationFact]
     public async Task Migration_RepairsContractAndPersistsImmutableEvidence()
     {
@@ -477,4 +645,57 @@ public class BitcoinDirectSoloIntegrationTests
                 $"DROP SCHEMA IF EXISTS {schema} CASCADE");
         }
     }
+
+    private static string ExtractConstraint(string sql, string startMarker)
+    {
+        sql = sql.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var start = sql.IndexOf(startMarker,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.True(start >= 0, $"Missing SQL marker: {startMarker}");
+        start += startMarker.Length;
+        var depth = 1;
+        for(var index = start; index < sql.Length; index++)
+        {
+            if(sql[index] == '(')
+                depth++;
+            else if(sql[index] == ')' && --depth == 0)
+                return sql[start..index];
+        }
+
+        throw new Xunit.Sdk.XunitException(
+            $"Unterminated SQL constraint after marker: {startMarker}");
+    }
+
+    private static string NormalizeSql(string sql) => new(sql
+        .Where(ch => !char.IsWhiteSpace(ch))
+        .Select(char.ToLowerInvariant)
+        .ToArray());
+
+    private static Block CreateDirectBlock(
+        (string BlockHex, string BlockHash, string CoinbaseTxId) submission,
+        string poolId, string state, BlockStatus status, int attempts,
+        int misses) => new()
+    {
+        PoolId = poolId,
+        BlockHeight = 101,
+        NetworkDifficulty = 1,
+        Status = status,
+        Type = BitcoinDirectCoinbaseSettlement.BlockType,
+        TransactionConfirmationData = submission.CoinbaseTxId,
+        Miner = "miner",
+        Hash = submission.BlockHash,
+        Created = DateTime.UtcNow,
+        SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+        GrossRewardSatoshis = 5_000_000_000,
+        DirectMinerRewardSatoshis = 5_000_000_000,
+        DirectMinerScriptPubKey = "0014" + new string('1', 40),
+        DirectRecipientOutputs = "[]",
+        DirectSubmissionState = state,
+        DirectSubmissionBlock = submission.BlockHex,
+        DirectSubmissionAttempts = attempts,
+        DirectSubmissionDefinitiveMisses = misses,
+        DirectSubmissionLastAttempt = attempts == 0
+            ? null
+            : DateTime.UtcNow.AddMinutes(-1),
+    };
 }

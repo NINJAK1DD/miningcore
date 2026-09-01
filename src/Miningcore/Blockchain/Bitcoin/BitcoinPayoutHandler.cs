@@ -175,8 +175,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     if(classified)
                         result.Add(directBlock);
                 }
-                catch(Exception ex) when(ex is InvalidDataException or
-                    JsonException or OverflowException)
+                catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
                 {
                     directBlock.Status = BlockStatus.Quarantined;
                     if(!string.Equals(directBlock.DirectSubmissionState,
@@ -536,6 +535,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         CancellationToken ct)
     {
         ValidatePersistedDirectSettlement(block);
+        ValidatePersistedDirectRecipientEvidence(block);
         var originalStatus = block.Status;
         var wasPending = originalStatus == BlockStatus.Pending;
         block.NotifyBlockFoundOnUpdate = false;
@@ -556,8 +556,26 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 // canonical prepared/uncertain counters. Mutating a prepared
                 // row first would make its own state validator reject the
                 // successful replay as malformed.
-                VerifyDirectCoinbaseTransaction(block,
-                    (JObject) response.Response);
+                try
+                {
+                    VerifyDirectCoinbaseTransaction(block,
+                        (JObject) response.Response);
+                }
+                catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+                {
+                    block.DirectSubmissionAttempts = checked(
+                        block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                    block.DirectSubmissionLastAttempt = clock.Now;
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.SubmittedUncertain;
+                    block.Status = BlockStatus.Pending;
+                    logger.Warn(ex,
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] remains " +
+                        "replayable because the daemon returned malformed " +
+                        "active-block data");
+                    return true;
+                }
                 block.DirectSubmissionAttempts = checked(
                     block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
                 block.DirectSubmissionLastAttempt = clock.Now;
@@ -648,18 +666,35 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             return true;
         }
 
-        var document = response.Response as JObject ??
-            throw new InvalidDataException(
-                $"Direct SOLO block {block.BlockHeight} returned a malformed getblock response");
-        var returnedHash = document.Value<string>("hash");
-        if(!string.Equals(returnedHash, block.Hash,
-               StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException(
-                $"Direct SOLO block {block.BlockHeight} getblock hash does not match its persisted candidate");
+        JObject document;
+        int confirmations;
+        try
+        {
+            document = response.Response as JObject ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} returned a malformed getblock response");
+            var returnedHash = document.Value<string>("hash");
+            if(!string.Equals(returnedHash, block.Hash,
+                   StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} getblock hash does not match its persisted candidate");
 
-        var confirmations = document.Value<int?>("confirmations") ??
-            throw new InvalidDataException(
-                $"Direct SOLO block {block.BlockHeight} has no confirmation count");
+            confirmations = document.Value<int?>("confirmations") ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} has no confirmation count");
+        }
+        catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+        {
+            logger.Warn(ex,
+                $"[{LogCategory}] Deferred classification of direct SOLO " +
+                $"block {block.BlockHeight} [{block.Hash}] because the daemon " +
+                "returned malformed block data");
+            if(wasPending)
+                return false;
+
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
+        }
         if(confirmations < 0)
         {
             block.DirectSettlementLastChecked = clock.Now;
@@ -671,7 +706,22 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             return true;
         }
 
-        VerifyDirectCoinbaseTransaction(block, document);
+        try
+        {
+            VerifyDirectCoinbaseTransaction(block, document);
+        }
+        catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+        {
+            logger.Warn(ex,
+                $"[{LogCategory}] Deferred classification of direct SOLO " +
+                $"block {block.BlockHeight} [{block.Hash}] because the daemon " +
+                "returned malformed coinbase data");
+            if(wasPending)
+                return false;
+
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
+        }
 
         if(string.Equals(block.DirectSubmissionState,
                BitcoinDirectSubmission.Rejected,
@@ -734,11 +784,25 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     }
 
     private static bool IsActiveDirectSettlementResponse(
-        RpcResponse<JToken> response, string expectedHash) =>
-        response?.Error == null && response.Response is JObject document &&
-        string.Equals(document.Value<string>("hash"), expectedHash,
-            StringComparison.OrdinalIgnoreCase) &&
-        document.Value<int?>("confirmations") is >= 0;
+        RpcResponse<JToken> response, string expectedHash)
+    {
+        try
+        {
+            return response?.Error == null &&
+                response.Response is JObject document &&
+                string.Equals(document.Value<string>("hash"), expectedHash,
+                    StringComparison.OrdinalIgnoreCase) &&
+                document.Value<int?>("confirmations") is >= 0;
+        }
+        catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+        {
+            return false;
+        }
+    }
+
+    private static bool IsMalformedDirectDaemonData(Exception ex) =>
+        ex is InvalidDataException or JsonException or OverflowException or
+            FormatException or InvalidCastException;
 
     internal static void VerifyDirectCoinbaseTransaction(Block block,
         JObject document)
@@ -754,6 +818,50 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             throw new InvalidDataException(
                 $"Direct SOLO block {block.BlockHeight} coinbase transaction id differs from accepted-candidate evidence");
 
+        var expected = GetExpectedDirectCoinbaseOutputs(block);
+        var actual = new List<(string Script, long Amount)>();
+        foreach(var output in coinbase["vout"] as JArray ?? new JArray())
+        {
+            var value = output.Value<decimal?>("value") ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains an output without a value");
+            var scaled = value * BitcoinConstants.SatoshisPerBitcoin;
+            if(scaled != decimal.Truncate(scaled) || scaled < 0 ||
+               scaled > long.MaxValue)
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains a non-satoshi output value");
+            var amount = (long) scaled;
+            if(amount == 0)
+                continue;
+
+            var script = output["scriptPubKey"]?.Value<string>("hex");
+            if(!IsCanonicalLowerHex(script))
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains a malformed output script");
+            actual.Add((script, amount));
+        }
+
+        var orderedExpected = expected.OrderBy(x => x.Script,
+            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
+        var orderedActual = actual.OrderBy(x => x.Script,
+            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
+        var outputsMatch = orderedExpected.Length == orderedActual.Length &&
+            orderedExpected.Zip(orderedActual).All(pair =>
+                string.Equals(pair.First.Script, pair.Second.Script,
+                    StringComparison.OrdinalIgnoreCase) &&
+                pair.First.Amount == pair.Second.Amount);
+        if(!outputsMatch ||
+           SumAmounts(actual) != block.GrossRewardSatoshis)
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} coinbase outputs do not match the immutable accepted settlement");
+    }
+
+    private static void ValidatePersistedDirectRecipientEvidence(Block block) =>
+        _ = GetExpectedDirectCoinbaseOutputs(block);
+
+    private static List<(string Script, long Amount)>
+        GetExpectedDirectCoinbaseOutputs(Block block)
+    {
         BitcoinDirectCoinbaseOutput[] recipients;
         try
         {
@@ -790,41 +898,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             throw new InvalidDataException(
                 $"Direct SOLO block {block.BlockHeight} persisted output evidence violates its exact settlement contract");
 
-        var actual = new List<(string Script, long Amount)>();
-        foreach(var output in coinbase["vout"] as JArray ?? new JArray())
-        {
-            var value = output.Value<decimal?>("value") ??
-                throw new InvalidDataException(
-                    $"Direct SOLO block {block.BlockHeight} contains an output without a value");
-            var scaled = value * BitcoinConstants.SatoshisPerBitcoin;
-            if(scaled != decimal.Truncate(scaled) || scaled < 0 ||
-               scaled > long.MaxValue)
-                throw new InvalidDataException(
-                    $"Direct SOLO block {block.BlockHeight} contains a non-satoshi output value");
-            var amount = (long) scaled;
-            if(amount == 0)
-                continue;
-
-            var script = output["scriptPubKey"]?.Value<string>("hex");
-            if(!IsCanonicalLowerHex(script))
-                throw new InvalidDataException(
-                    $"Direct SOLO block {block.BlockHeight} contains a malformed output script");
-            actual.Add((script, amount));
-        }
-
-        var orderedExpected = expected.OrderBy(x => x.Script,
-            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
-        var orderedActual = actual.OrderBy(x => x.Script,
-            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
-        var outputsMatch = orderedExpected.Length == orderedActual.Length &&
-            orderedExpected.Zip(orderedActual).All(pair =>
-                string.Equals(pair.First.Script, pair.Second.Script,
-                    StringComparison.OrdinalIgnoreCase) &&
-                pair.First.Amount == pair.Second.Amount);
-        if(!outputsMatch ||
-           SumAmounts(actual) != block.GrossRewardSatoshis)
-            throw new InvalidDataException(
-                $"Direct SOLO block {block.BlockHeight} coinbase outputs do not match the immutable accepted settlement");
+        return expected;
     }
 
     private static bool IsCanonicalLowerHex(string value) =>

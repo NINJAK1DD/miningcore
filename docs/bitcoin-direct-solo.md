@@ -183,10 +183,19 @@ replay. A duplicate without matching active-chain evidence remains
 ambiguous. A definitive rejection requires three definitive misses over at least 30 minutes before
 the outbox becomes `rejected`; a later exact active-chain observation can reactivate it.
 
+Startup validates each replay row independently. A schema-valid row whose serialized block cannot
+match its stored block/coinbase identity is moved transactionally to terminal `quarantined` state;
+the remaining valid rows are still replayed and one corrupt record cannot prevent Stratum startup.
+If that quarantine transition cannot commit, startup fails closed rather than reopening a row that
+could be resubmitted indefinitely.
+
 The audit record includes the exact block, block hash, coinbase transaction ID, gross value, miner
 script/value and every direct recipient output. Confirmation uses `getblock` with transaction
 details; the daemon wallet does not need to own or spend the miner or recipient outputs, and
-`txindex` is not required.
+`txindex` is not required. Verbosity 2 is deliberate: the block identity, coinbase transaction and
+decoded outputs come from one block-scoped response instead of a second `getrawtransaction` call
+that can race a reorg between RPCs. The persisted one-hour reconciliation interval and 64-row batch
+bound limit that decoding cost for terminal rows.
 
 The exact serialized block remains in PostgreSQL for audit and replay, but ordinary block API pages
 and terminal reconciliation use metadata-only projections so they do not allocate multi-megabyte
@@ -212,9 +221,19 @@ No balance reversal or recreation occurs because Miningcore never credited one. 
 internally inconsistent historical direct row is quarantined individually, stamped out of the scan
 prefix and excluded from financial settlement so it cannot stop unrelated pool payments. Replayable
 rows also move to an explicit terminal `quarantined` submission state, preserving their exact payload
-and attempt evidence without falsely recording acceptance or rejection; investigate the database
-evidence before any manual change. Ordinary confirmed pool blocks remain terminal and are not admitted
-to this direct-only path.
+and attempt evidence without falsely recording acceptance or rejection. Malformed or incomplete
+daemon `getblock`/coinbase data is treated differently: replayable submissions remain uncertain,
+pending classifications are deferred, and terminal rows are merely rescheduled, so a transient RPC
+response cannot create permanent quarantine.
+
+Quarantine is deliberately one-way in normal runtime. Investigate it with Miningcore stopped on
+every writer, retain a database backup and the exact recovery journal, and verify the stored block,
+coinbase ID and outputs against an independent Bitcoin node. Leave the row quarantined when its
+immutable evidence is corrupt. If independently verified evidence proves an older Miningcore build
+quarantined a sound row, use a version-specific, reviewed corrective migration supplied for that
+record; do not directly change only `status` or `directsubmissionstate`, because that bypasses the
+immutable-evidence and attempt-counter contract. Ordinary confirmed pool blocks remain terminal and
+are not admitted to this direct-only path.
 
 Back up PostgreSQL and the normal recovery/quarantine artifacts. Never import a quarantine file with
 `-rs`. Direct candidate durability depends on the local PostgreSQL block writer, so share-relay

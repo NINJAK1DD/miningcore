@@ -308,7 +308,29 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             {
                 ct.ThrowIfCancellationRequested();
                 afterId = Math.Max(afterId, block.Id);
-                BitcoinDirectSubmission.ValidatePersistedBlock(block);
+                try
+                {
+                    BitcoinDirectSubmission.ValidatePersistedBlock(block);
+                }
+                catch(InvalidDataException ex)
+                {
+                    var quarantined = await blockCandidateRecorder
+                        .QuarantineDirectBlockSubmissionAsync(block.Id, ct);
+                    if(quarantined != null &&
+                       BitcoinDirectSubmission.RequiresReplay(
+                           quarantined.DirectSubmissionState))
+                        throw new PoolStartupException(
+                            $"Pool '{poolConfig.Id}' could not isolate malformed " +
+                            $"direct-SOLO replay evidence for block " +
+                            $"{block.BlockHeight} [{block.Hash}]",
+                            poolConfig.Id, ex);
+
+                    logger.Error(ex, () =>
+                        $"Quarantined malformed direct-SOLO replay evidence " +
+                        $"for block {block.BlockHeight} [{block.Hash}] before " +
+                        "opening Stratum");
+                    continue;
+                }
 
                 var share = CreateReplayShare(block);
                 BitcoinDirectSubmissionOutcome outcome;
@@ -451,9 +473,10 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             Recipients = directCoinbaseRecipients,
         };
 
+        BitcoinDirectCoinbase.EnsureMinerIsDistinct(directTemplate);
+
         try
         {
-            BitcoinDirectCoinbase.EnsureMinerIsDistinct(directTemplate);
             var job = CreateJob();
             job.InitDirect(source.BlockTemplate, NextJobId(),
                 poolConfig, extraPoolConfig, clusterConfig, clock,

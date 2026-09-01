@@ -21,6 +21,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NSubstitute;
 using Xunit;
+using Miningcore.Tests.Blockchain.Bitcoin;
 
 namespace Miningcore.Tests.Payments;
 
@@ -57,6 +58,88 @@ public class PayoutManagerTests
         classified.DirectSubmissionState =
             BitcoinDirectSubmission.ObservedActive;
         Assert.True(PayoutManager.CanApplyDirectSubmissionClassification(
+            persisted, classified));
+    }
+
+    [Theory]
+    [InlineData(BitcoinDirectSubmission.Prepared, BlockStatus.Pending, 0, 0)]
+    [InlineData(BitcoinDirectSubmission.SubmittedUncertain,
+        BlockStatus.Pending, 1, 0)]
+    [InlineData(BitcoinDirectSubmission.ObservedActive,
+        BlockStatus.Pending, 1, 0)]
+    [InlineData(BitcoinDirectSubmission.Rejected,
+        BlockStatus.Orphaned, 3, 3)]
+    public async Task DirectSubmissionClassification_PersistsQuarantineUnderRowLock(
+        string sourceState, BlockStatus sourceStatus, int attempts,
+        int definitiveMisses)
+    {
+        var fixture = CreateFixture();
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var persisted = new Block
+        {
+            Id = fixture.Block.Id,
+            PoolId = fixture.Block.PoolId,
+            BlockHeight = fixture.Block.BlockHeight,
+            Status = sourceStatus,
+            DirectSubmissionState = sourceState,
+            DirectSubmissionAttempts = attempts,
+            DirectSubmissionDefinitiveMisses = definitiveMisses,
+            DirectSubmissionLastAttempt = attempts == 0
+                ? null
+                : DateTime.UtcNow.AddMinutes(-1),
+            DirectSubmissionBlock = submission.BlockHex,
+        };
+        SetDirectSettlementEvidence(persisted);
+        persisted.Hash = submission.BlockHash;
+        persisted.TransactionConfirmationData = submission.CoinbaseTxId;
+        fixture.Block.Status = BlockStatus.Quarantined;
+        fixture.Block.DirectSubmissionState =
+            BitcoinDirectSubmission.Quarantined;
+        fixture.Block.DirectSubmissionAttempts = attempts;
+        fixture.Block.DirectSubmissionDefinitiveMisses = definitiveMisses;
+        fixture.Block.DirectSubmissionLastAttempt =
+            persisted.DirectSubmissionLastAttempt;
+        fixture.Block.DirectSubmissionBlock = submission.BlockHex;
+        SetDirectSettlementEvidence(fixture.Block);
+        fixture.Block.Hash = submission.BlockHash;
+        fixture.Block.TransactionConfirmationData = submission.CoinbaseTxId;
+        fixture.BlockRepository.GetBlockByIdForUpdateAsync(
+                fixture.Connection, fixture.Transaction, fixture.Block.Id)
+            .Returns(persisted);
+        var actionCalls = 0;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool,
+            fixture.Block, (_, _) =>
+            {
+                actionCalls++;
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(1, actionCalls);
+    }
+
+    [Fact]
+    public void DirectSubmissionClassification_CannotLeaveQuarantineAutomatically()
+    {
+        var persisted = new Block
+        {
+            Hash = new string('a', 64),
+            TransactionConfirmationData = new string('b', 64),
+            DirectSubmissionState = BitcoinDirectSubmission.Quarantined,
+            DirectSubmissionAttempts = 1,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+        var classified = new Block
+        {
+            Hash = persisted.Hash,
+            TransactionConfirmationData =
+                persisted.TransactionConfirmationData,
+            DirectSubmissionState = BitcoinDirectSubmission.ObservedActive,
+            DirectSubmissionAttempts = 1,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+
+        Assert.False(PayoutManager.CanApplyDirectSubmissionClassification(
             persisted, classified));
     }
 

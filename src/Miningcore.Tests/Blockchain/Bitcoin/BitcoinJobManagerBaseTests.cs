@@ -486,6 +486,74 @@ public class BitcoinJobManagerBaseTests
             Arg.Any<DateTime>());
     }
 
+    [Fact]
+    public async Task DirectReplay_MalformedRowIsQuarantinedWithoutStoppingValidPeer()
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        Miningcore.Persistence.Model.Block Create(long id, string hash) =>
+            new()
+            {
+                Id = id,
+                PoolId = "btc-direct",
+                BlockHeight = checked((ulong) (100 + id)),
+                Status = Miningcore.Persistence.Model.BlockStatus.Pending,
+                Type = BitcoinDirectCoinbaseSettlement.BlockType,
+                Hash = hash,
+                Miner = "miner",
+                TransactionConfirmationData = submission.CoinbaseTxId,
+                SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+                GrossRewardSatoshis = 5_000_000_000,
+                DirectMinerRewardSatoshis = 4_900_000_000,
+                DirectMinerScriptPubKey = "0014" + new string('1', 40),
+                DirectRecipientOutputs = "[]",
+                DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+                DirectSubmissionBlock = submission.BlockHex,
+                DirectSubmissionAttempts = 0,
+                DirectSubmissionDefinitiveMisses = 0,
+                Created = DateTime.UtcNow,
+            };
+        var malformed = Create(41, new string('f', 64));
+        var valid = Create(42, submission.BlockHash);
+        var recorder = Substitute.For<IBlockCandidateRecorder>();
+        recorder.GetDirectBlockSubmissionsForReplayAsync(
+                malformed.PoolId, 0, 32, Arg.Any<CancellationToken>())
+            .Returns(new[] { malformed, valid });
+        recorder.QuarantineDirectBlockSubmissionAsync(malformed.Id,
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                malformed.Status =
+                    Miningcore.Persistence.Model.BlockStatus.Quarantined;
+                malformed.DirectSubmissionState =
+                    BitcoinDirectSubmission.Quarantined;
+                return malformed;
+            });
+        recorder.RecordDirectBlockSubmissionAttemptAsync(
+                Arg.Any<Share>(), BitcoinDirectSubmissionOutcome.ObservedActive,
+                Arg.Any<DateTime>())
+            .Returns(valid);
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>(), recorder)
+        {
+            DirectSubmissionCoinbaseTx = submission.CoinbaseTxId,
+        };
+        manager.Configure(CreateDirectPool(), new ClusterConfig());
+
+        await manager.ReplayDirect(CancellationToken.None);
+
+        Assert.Equal(BitcoinDirectSubmission.Quarantined,
+            malformed.DirectSubmissionState);
+        Assert.Equal(1, manager.SubmissionCount);
+        await recorder.Received(1).QuarantineDirectBlockSubmissionAsync(
+            malformed.Id, Arg.Any<CancellationToken>());
+        await recorder.Received(1).RecordDirectBlockSubmissionAttemptAsync(
+            Arg.Is<Share>(share => share.BlockHash == valid.Hash),
+            BitcoinDirectSubmissionOutcome.ObservedActive,
+            Arg.Any<DateTime>());
+    }
+
     private static PoolConfig CreateDirectPool() => new()
     {
         Id = "btc-direct",

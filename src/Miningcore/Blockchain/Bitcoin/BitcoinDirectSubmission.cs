@@ -34,6 +34,9 @@ internal static class BitcoinDirectSubmission
         string.Equals(state, ObservedActive, StringComparison.Ordinal) ||
         string.Equals(state, LegacyObserved, StringComparison.Ordinal);
 
+    internal static bool CanTransitionToQuarantine(string state) =>
+        state is Prepared or SubmittedUncertain or ObservedActive or Rejected;
+
     internal static void ValidatePreparedShare(Share share)
     {
         ArgumentNullException.ThrowIfNull(share);
@@ -54,10 +57,11 @@ internal static class BitcoinDirectSubmission
     {
         ValidatePersistedMetadata(block);
 
-        if(!string.Equals(block.DirectSubmissionState, LegacyObserved,
-               StringComparison.Ordinal) &&
-           !string.Equals(block.DirectSubmissionState, Quarantined,
+        if(string.Equals(block.DirectSubmissionState, Quarantined,
                StringComparison.Ordinal))
+            ValidatePayloadEnvelope(block.DirectSubmissionBlock);
+        else if(!string.Equals(block.DirectSubmissionState, LegacyObserved,
+                    StringComparison.Ordinal))
             ValidatePayload(block.DirectSubmissionBlock, block.Hash,
                 block.TransactionConfirmationData);
     }
@@ -66,6 +70,9 @@ internal static class BitcoinDirectSubmission
     {
         ValidatePersistedMetadata(block);
 
+        // Terminal and public repository projections intentionally omit the
+        // multi-megabyte payload. The database constraint still requires and
+        // preserves it; full-row insert/startup validation checks its envelope.
         if(!string.Equals(block.DirectSubmissionState, Quarantined,
                StringComparison.Ordinal) &&
            (RequiresReplay(block.DirectSubmissionState) ||
@@ -93,6 +100,8 @@ internal static class BitcoinDirectSubmission
 
         if(block.DirectSubmissionState is not (Prepared or SubmittedUncertain or
                ObservedActive or Rejected or Quarantined) ||
+           !block.DirectSubmissionAttempts.HasValue ||
+           !block.DirectSubmissionDefinitiveMisses.HasValue ||
            block.DirectSubmissionAttempts < 0 ||
            block.DirectSubmissionDefinitiveMisses < 0 ||
            block.DirectSubmissionDefinitiveMisses >
@@ -145,12 +154,7 @@ internal static class BitcoinDirectSubmission
     internal static void ValidatePayload(string blockHex, string expectedHash,
         string expectedCoinbaseTxId)
     {
-        if(string.IsNullOrWhiteSpace(blockHex) || blockHex.Length < 162 ||
-           blockHex.Length > MaximumSerializedBlockHexLength ||
-           blockHex.Length % 2 != 0 ||
-           blockHex.Any(x => !(x is >= '0' and <= '9' or >= 'a' and <= 'f')))
-            throw new InvalidDataException(
-                "Direct submission payload must be canonical lowercase serialized-block hexadecimal");
+        ValidatePayloadEnvelope(blockHex);
 
         try
         {
@@ -174,5 +178,15 @@ internal static class BitcoinDirectSubmission
             throw new InvalidDataException(
                 "Direct submission payload is not a complete Bitcoin block", ex);
         }
+    }
+
+    private static void ValidatePayloadEnvelope(string blockHex)
+    {
+        if(string.IsNullOrWhiteSpace(blockHex) || blockHex.Length < 162 ||
+           blockHex.Length > MaximumSerializedBlockHexLength ||
+           blockHex.Length % 2 != 0 ||
+           blockHex.Any(x => !(x is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            throw new InvalidDataException(
+                "Direct submission payload must be canonical lowercase serialized-block hexadecimal");
     }
 }
