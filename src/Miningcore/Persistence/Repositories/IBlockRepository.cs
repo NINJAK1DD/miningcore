@@ -1,5 +1,6 @@
 using System.Data;
 using Miningcore.Persistence.Model;
+using Miningcore.Blockchain.Bitcoin;
 
 namespace Miningcore.Persistence.Repositories;
 
@@ -18,8 +19,16 @@ public interface IBlockRepository
     Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
         IDbConnection con, string poolId, long minimumBlockHeight,
         DateTime checkedBefore, int pageSize, CancellationToken ct);
+    Task<Block[]> GetBitcoinDirectSubmissionsForReplayAsync(
+        IDbConnection con, string poolId, long afterId, int pageSize,
+        CancellationToken ct);
     Task<bool> TouchBitcoinDirectReconciliationAsync(IDbConnection con,
         IDbTransaction tx, long id, DateTime checkedAt,
+        CancellationToken ct = default);
+    Task<Block> RecordBitcoinDirectSubmissionAttemptAsync(IDbConnection con,
+        IDbTransaction tx, string poolId, string blockHash,
+        BitcoinDirectSubmissionOutcome outcome, DateTime attemptedAt,
+        int minimumDefinitiveMisses, DateTime rejectBefore,
         CancellationToken ct = default);
     Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before);
     Task<uint> GetBlockBeforeCountAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before);

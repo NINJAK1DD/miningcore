@@ -8,6 +8,7 @@ using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
 using Xunit;
+using Miningcore.Tests.Blockchain.Bitcoin;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
@@ -59,6 +60,35 @@ public class BitcoinDirectSoloIntegrationTests
                 connection, CancellationToken.None));
 
             await connection.ExecuteAsync(@"
+                DROP INDEX idx_blocks_bitcoin_direct_reconcile;
+                CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
+                    poolid, blockheight,
+                    directsettlementlastchecked NULLS FIRST, created, id)
+                    WHERE status IN ('confirmed', 'orphaned') AND
+                        type = 'bitcoin-coinbase-direct' AND
+                        settlementmode = 'coinbase-direct';");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                DROP INDEX idx_blocks_bitcoin_direct_submission;
+                CREATE INDEX idx_blocks_bitcoin_direct_submission ON blocks(
+                    poolid, id DESC)
+                    WHERE status = 'pending' AND
+                        type = 'bitcoin-coinbase-direct' AND
+                        settlementmode = 'coinbase-direct' AND
+                        directsubmissionstate IN
+                            ('prepared', 'submitted-uncertain');");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
                 ALTER TABLE blocks DROP CONSTRAINT
                     chk_blocks_bitcoin_direct_settlement;
                 ALTER TABLE blocks ADD CONSTRAINT
@@ -98,6 +128,7 @@ public class BitcoinDirectSoloIntegrationTests
             Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
                 connection, CancellationToken.None));
 
+            var submission = BitcoinDirectSubmissionTestData.Create();
             var direct = new Block
             {
                 PoolId = "btc-direct",
@@ -105,9 +136,9 @@ public class BitcoinDirectSoloIntegrationTests
                 NetworkDifficulty = 1,
                 Status = BlockStatus.Pending,
                 Type = BitcoinDirectCoinbaseSettlement.BlockType,
-                TransactionConfirmationData = new string('a', 64),
+                TransactionConfirmationData = submission.CoinbaseTxId,
                 Miner = "miner",
-                Hash = new string('b', 64),
+                Hash = submission.BlockHash,
                 Created = DateTime.UtcNow,
                 SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
                 GrossRewardSatoshis = 5_000_000_000,
@@ -117,6 +148,10 @@ public class BitcoinDirectSoloIntegrationTests
                     "[{\"Address\":\"fee\",\"ScriptPubKey\":\"0014" +
                     new string('2', 40) +
                     "\",\"AmountSatoshis\":100000000}]",
+                DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+                DirectSubmissionBlock = submission.BlockHex,
+                DirectSubmissionAttempts = 0,
+                DirectSubmissionDefinitiveMisses = 0,
             };
             await repository.InsertAsync(connection, null, direct,
                 CancellationToken.None);
@@ -127,7 +162,10 @@ public class BitcoinDirectSoloIntegrationTests
             var stored = await connection.QuerySingleAsync<dynamic>(@"
                 SELECT settlementmode, grossrewardsatoshis,
                     directminerrewardsatoshis, directminerscriptpubkey,
-                    directrecipientoutputs::text AS directrecipientoutputs
+                    directrecipientoutputs::text AS directrecipientoutputs,
+                    directsubmissionstate, directsubmissionblock,
+                    directsubmissionattempts,
+                    directsubmissiondefinitivemisses
                 FROM blocks WHERE poolid='btc-direct'");
             Assert.Equal(BitcoinDirectCoinbaseSettlement.Mode,
                 (string) stored.settlementmode);
@@ -137,11 +175,35 @@ public class BitcoinDirectSoloIntegrationTests
                 (long) stored.directminerrewardsatoshis);
             Assert.Contains("100000000",
                 (string) stored.directrecipientoutputs);
+            Assert.Equal(BitcoinDirectSubmission.Prepared,
+                (string) stored.directsubmissionstate);
+            Assert.Equal(submission.BlockHex,
+                (string) stored.directsubmissionblock);
+            Assert.Equal(0, (int) stored.directsubmissionattempts);
+            Assert.Equal(0, (int) stored.directsubmissiondefinitivemisses);
+            var replayable = Assert.Single(await repository
+                .GetBitcoinDirectSubmissionsForReplayAsync(connection,
+                    direct.PoolId, 0, 16, CancellationToken.None));
+            Assert.Equal(submission.BlockHex,
+                replayable.DirectSubmissionBlock);
 
             await Assert.ThrowsAsync<PostgresException>(() =>
                 connection.ExecuteAsync(@"
                     UPDATE blocks SET status = 'confirmed'
                     WHERE poolid = 'btc-direct'"));
+            var observed = await repository
+                .RecordBitcoinDirectSubmissionAttemptAsync(connection, null,
+                    direct.PoolId, direct.Hash,
+                    BitcoinDirectSubmissionOutcome.ObservedActive,
+                    DateTime.UtcNow, 3, DateTime.UtcNow.AddMinutes(-30));
+            Assert.NotNull(observed);
+            direct.DirectSubmissionState = observed.DirectSubmissionState;
+            direct.DirectSubmissionAttempts =
+                observed.DirectSubmissionAttempts;
+            direct.DirectSubmissionDefinitiveMisses =
+                observed.DirectSubmissionDefinitiveMisses;
+            direct.DirectSubmissionLastAttempt =
+                observed.DirectSubmissionLastAttempt;
             direct.Status = BlockStatus.Confirmed;
             Assert.True(await repository.UpdateBlockAsync(connection, null,
                 direct));
@@ -216,6 +278,10 @@ public class BitcoinDirectSoloIntegrationTests
                 DirectMinerRewardSatoshis = 4_900_000_000,
                 DirectMinerScriptPubKey = "0014" + new string('3', 40),
                 DirectRecipientOutputs = "[]",
+                DirectSubmissionState =
+                    BitcoinDirectSubmission.LegacyObserved,
+                DirectSubmissionAttempts = 0,
+                DirectSubmissionDefinitiveMisses = 0,
             };
             Assert.True(await repository.UpdateBlockAsync(connection, null,
                 mistyped));

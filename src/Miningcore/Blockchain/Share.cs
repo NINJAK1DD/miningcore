@@ -168,6 +168,25 @@ public class Share
     public string DirectRecipientOutputs { get; set; }
 
     /// <summary>
+    /// Local durable-submission outbox fields. Direct block-only records are never sent over
+    /// the share-relay protocol, but JSON recovery journals retain these public properties.
+    /// </summary>
+    [ProtoIgnore]
+    public string DirectSubmissionState { get; set; }
+
+    [ProtoIgnore]
+    public string DirectSubmissionBlock { get; set; }
+
+    [ProtoIgnore]
+    public int? DirectSubmissionAttempts { get; set; }
+
+    [ProtoIgnore]
+    public int? DirectSubmissionDefinitiveMisses { get; set; }
+
+    [ProtoIgnore]
+    public DateTime? DirectSubmissionLastAttempt { get; set; }
+
+    /// <summary>
     /// Runtime-only guard used when a job manager has already published the ordinary statistical
     /// copy. This is deliberately not serialized on the relay wire.
     /// </summary>

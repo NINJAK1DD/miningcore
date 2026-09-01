@@ -196,8 +196,10 @@ early with an actionable message.
 The direct-SOLO migration is required before enabling Bitcoin
 `soloCoinbasePayout`. It adds immutable settlement evidence to `blocks`; historical rows remain null
 and continue through their original custodial lifecycle. Startup checks the exact types and validated
-constraint, dedicated candidate index, reconciliation index and statement-scoped update guards
-before direct work begins. See the
+settlement/submission constraint, dedicated candidate index, ordered reconciliation index,
+prepared-submission replay index and statement-scoped update guards before direct work begins. The
+same row is a durable submission outbox containing the exact serialized block; `prepared` and
+`submitted-uncertain` entries are replayed idempotently rather than inferred from audit metadata. See the
 [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md#database-migration).
 
 `add_share_accounting.sql` is additive and transactional. Do not attempt a live rollback by dropping

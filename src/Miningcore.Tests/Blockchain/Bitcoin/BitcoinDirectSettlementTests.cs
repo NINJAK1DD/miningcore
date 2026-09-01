@@ -18,6 +18,7 @@ using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
+using NLog;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
@@ -80,12 +81,13 @@ public class BitcoinDirectSettlementTests : TestBase
     [Fact]
     public void AcceptedCandidate_UsesDedicatedDirectCoinbaseIdentity()
     {
+        var submission = BitcoinDirectSubmissionTestData.Create();
         var share = new global::Miningcore.Blockchain.Share
         {
             PoolId = "btc-direct",
             IsBlockCandidate = true,
-            BlockHash = new string('a', 64),
-            TransactionConfirmationData = new string('b', 64),
+            BlockHash = submission.BlockHash,
+            TransactionConfirmationData = submission.CoinbaseTxId,
             SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
             GrossRewardSatoshis = 5_000_000_000,
             DirectMinerRewardSatoshis = 4_900_000_000,
@@ -94,12 +96,15 @@ public class BitcoinDirectSettlementTests : TestBase
         };
 
         var candidate = BitcoinJobManager
-            .CreateCandidateWithoutAccounting(share);
+            .CreateCandidateWithoutAccounting(share,
+                submission.BlockHex);
 
         Assert.Equal(BitcoinDirectCoinbaseSettlement.BlockType,
             candidate.BlockType);
         Assert.Equal(BitcoinDirectCoinbaseSettlement.Mode,
             candidate.SettlementMode);
+        Assert.Equal(BitcoinDirectSubmission.Prepared,
+            candidate.DirectSubmissionState);
     }
 
     [Fact]
@@ -136,6 +141,36 @@ public class BitcoinDirectSettlementTests : TestBase
         Assert.Same(ppsCandidate, Assert.Single(result));
         Assert.Equal(BlockStatus.Confirmed, ppsCandidate.Status);
         Assert.Equal(6.25m, ppsCandidate.Reward);
+    }
+
+    [Fact]
+    public async Task PreparedSubmission_DaemonMiss_RemainsPendingAndSilent()
+    {
+        var submission = BitcoinDirectSubmissionTestData.Create();
+        var block = CreateBlock();
+        block.Hash = submission.BlockHash;
+        block.TransactionConfirmationData = submission.CoinbaseTxId;
+        block.Status = BlockStatus.Pending;
+        block.DirectSubmissionState = BitcoinDirectSubmission.Prepared;
+        block.DirectSubmissionBlock = submission.BlockHex;
+        block.DirectSubmissionAttempts = 0;
+        block.DirectSubmissionDefinitiveMisses = 0;
+        var handler = new DirectResponsePayoutHandler(container, null,
+            directRpcResponse: new RpcResponse<JToken>(null,
+                new JsonRpcError(-5, "Block not found", null)),
+            submitResponse: new RpcResponse<JToken>(null,
+                new JsonRpcError(-500, "response unavailable", null)));
+
+        Assert.True(await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None));
+
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(BitcoinDirectSubmission.SubmittedUncertain,
+            block.DirectSubmissionState);
+        Assert.Equal(1, block.DirectSubmissionAttempts);
+        Assert.Equal(0, block.DirectSubmissionDefinitiveMisses);
+        Assert.False(block.NotifyBlockFoundOnUpdate);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
     }
 
     [Fact]
@@ -294,6 +329,9 @@ public class BitcoinDirectSettlementTests : TestBase
                 AmountSatoshis = 100_000_000,
             },
         }),
+        DirectSubmissionState = BitcoinDirectSubmission.LegacyObserved,
+        DirectSubmissionAttempts = 0,
+        DirectSubmissionDefinitiveMisses = 0,
     };
 
     private static JObject CreateResponse(Block block, decimal miner,
@@ -318,10 +356,14 @@ public class BitcoinDirectSettlementTests : TestBase
     {
         private readonly JToken response;
         private readonly JToken legacyResponse;
+        private readonly RpcResponse<JToken> directRpcResponse;
+        private readonly RpcResponse<JToken> submitResponse;
 
         public DirectResponsePayoutHandler(IComponentContext context,
             JToken response, IMasterClock clock = null,
-            JToken legacyResponse = null) : base(context,
+            JToken legacyResponse = null,
+            RpcResponse<JToken> directRpcResponse = null,
+            RpcResponse<JToken> submitResponse = null) : base(context,
             Substitute.For<IConnectionFactory>(),
             context.Resolve<AutoMapper.IMapper>(),
             Substitute.For<IShareRepository>(),
@@ -333,12 +375,21 @@ public class BitcoinDirectSettlementTests : TestBase
         {
             this.response = response;
             this.legacyResponse = legacyResponse;
+            this.directRpcResponse = directRpcResponse;
+            this.submitResponse = submitResponse;
+            logger = LogManager.GetCurrentClassLogger();
         }
 
         protected override Task<RpcResponse<JToken>>
             GetDirectSettlementBlockAsync(string blockHash,
             CancellationToken ct) =>
-            Task.FromResult(new RpcResponse<JToken>(response));
+            Task.FromResult(directRpcResponse ??
+                new RpcResponse<JToken>(response));
+
+        protected override Task<RpcResponse<JToken>>
+            SubmitDirectSettlementBlockAsync(string blockHex,
+                CancellationToken ct) => Task.FromResult(submitResponse ??
+                new RpcResponse<JToken>((JToken) null));
 
         protected override Task<RpcResponse<JToken>[]>
             GetTransactionsAsync(Block[] blocks, CancellationToken ct) =>

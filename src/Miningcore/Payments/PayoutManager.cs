@@ -414,6 +414,20 @@ public class PayoutManager : ProcessStatusBackgroundService
             if(persisted == null)
                 return false;
 
+            if(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) &&
+               BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block))
+            {
+                if(!CanApplyDirectSubmissionClassification(persisted, block))
+                    return false;
+
+                if(BitcoinDirectSubmission.WasObserved(
+                       persisted.DirectSubmissionState) &&
+                   string.Equals(block.DirectSubmissionState,
+                       BitcoinDirectSubmission.ObservedActive,
+                       StringComparison.Ordinal))
+                    block.NotifyBlockFoundOnUpdate = false;
+            }
+
             if(persisted.Status != BlockStatus.Pending &&
                !CanReconcileDirectBlock(persisted, block))
             {
@@ -446,6 +460,38 @@ public class PayoutManager : ProcessStatusBackgroundService
         if(updated && block.NotifyBlockUnlockedOnUpdate)
             TryNotifyPostCommit(poolConfig.Id, block, "block-unlocked",
                 () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
+    }
+
+    internal static bool CanApplyDirectSubmissionClassification(
+        Block persisted, Block classified)
+    {
+        if(!string.Equals(persisted.DirectSubmissionBlock,
+               classified.DirectSubmissionBlock, StringComparison.Ordinal) ||
+           !string.Equals(persisted.Hash, classified.Hash,
+               StringComparison.OrdinalIgnoreCase) ||
+           !string.Equals(persisted.TransactionConfirmationData,
+               classified.TransactionConfirmationData,
+               StringComparison.OrdinalIgnoreCase) ||
+           classified.DirectSubmissionAttempts <
+               persisted.DirectSubmissionAttempts ||
+           classified.DirectSubmissionDefinitiveMisses <
+               persisted.DirectSubmissionDefinitiveMisses)
+            return false;
+
+        var from = persisted.DirectSubmissionState;
+        var to = classified.DirectSubmissionState;
+        if(string.Equals(from, to, StringComparison.Ordinal))
+            return true;
+        if(BitcoinDirectSubmission.RequiresReplay(from))
+            return to is BitcoinDirectSubmission.SubmittedUncertain or
+                BitcoinDirectSubmission.ObservedActive or
+                BitcoinDirectSubmission.Rejected;
+        if(string.Equals(from, BitcoinDirectSubmission.Rejected,
+               StringComparison.Ordinal))
+            return string.Equals(to, BitcoinDirectSubmission.ObservedActive,
+                StringComparison.Ordinal);
+
+        return false;
     }
 
     internal static bool CanReconcileDirectBlock(Block persisted,

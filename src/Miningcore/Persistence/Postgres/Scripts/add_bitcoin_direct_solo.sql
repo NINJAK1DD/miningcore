@@ -12,6 +12,11 @@ ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directminerrewardsatoshis BIGINT NUL
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directminerscriptpubkey TEXT NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directrecipientoutputs JSONB NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsettlementlastchecked TIMESTAMPTZ NULL;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsubmissionstate TEXT NULL;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsubmissionblock TEXT NULL;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsubmissionattempts INT NULL;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsubmissiondefinitivemisses INT NULL;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsubmissionlastattempt TIMESTAMPTZ NULL;
 
 -- Earlier pre-release builds reused the historical PPS candidate type. Move only
 -- rows carrying the complete direct-settlement marker to the dedicated identity.
@@ -26,11 +31,24 @@ ALTER TABLE blocks DROP CONSTRAINT IF EXISTS
     chk_blocks_bitcoin_direct_settlement;
 UPDATE blocks SET type = 'bitcoin-coinbase-direct'
     WHERE settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct';
+-- Rows produced by an earlier pre-release build cannot be made replayable because
+-- their exact serialized block was never stored. Preserve them under an explicit
+-- audit-only compatibility state; every newly inserted row must carry an outbox payload.
+UPDATE blocks SET
+        directsubmissionstate = 'legacy-observed',
+        directsubmissionattempts = 0,
+        directsubmissiondefinitivemisses = 0
+    WHERE settlementmode = 'coinbase-direct'
+      AND type = 'bitcoin-coinbase-direct'
+      AND directsubmissionstate IS NULL;
 ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
         CHECK (
             (num_nonnulls(settlementmode, grossrewardsatoshis,
                 directminerrewardsatoshis, directminerscriptpubkey,
-                directrecipientoutputs) = 0 AND
+                directrecipientoutputs, directsubmissionstate,
+                directsubmissionblock, directsubmissionattempts,
+                directsubmissiondefinitivemisses,
+                directsubmissionlastattempt) = 0 AND
                 directsettlementlastchecked IS NULL AND
                 type IS DISTINCT FROM 'bitcoin-coinbase-direct')
             OR
@@ -44,7 +62,37 @@ ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
                 directminerrewardsatoshis <= grossrewardsatoshis AND
                 directminerscriptpubkey ~ '^[0-9a-f]+$' AND
                 length(directminerscriptpubkey) % 2 = 0 AND
-                jsonb_typeof(directrecipientoutputs) = 'array')
+                jsonb_typeof(directrecipientoutputs) = 'array' AND
+                (
+                    (directsubmissionstate = 'legacy-observed' AND
+                        directsubmissionblock IS NULL AND
+                        directsubmissionattempts = 0 AND
+                        directsubmissiondefinitivemisses = 0 AND
+                        directsubmissionlastattempt IS NULL)
+                    OR
+                    (directsubmissionstate IN ('prepared',
+                            'submitted-uncertain', 'observed-active', 'rejected') AND
+                        directsubmissionblock ~ '^[0-9a-f]+$' AND
+                        length(directsubmissionblock) BETWEEN 162 AND 8000000 AND
+                        length(directsubmissionblock) % 2 = 0 AND
+                        directsubmissionattempts >= 0 AND
+                        directsubmissiondefinitivemisses >= 0 AND
+                        directsubmissiondefinitivemisses <=
+                            directsubmissionattempts AND
+                        ((directsubmissionstate = 'prepared' AND
+                            directsubmissionattempts = 0 AND
+                            directsubmissiondefinitivemisses = 0 AND
+                            directsubmissionlastattempt IS NULL AND
+                            status = 'pending') OR
+                         (directsubmissionstate <> 'prepared' AND
+                            directsubmissionattempts > 0 AND
+                            directsubmissionlastattempt IS NOT NULL)) AND
+                        (directsubmissionstate <> 'submitted-uncertain' OR
+                            status = 'pending') AND
+                        (directsubmissionstate <> 'rejected' OR
+                            (status = 'orphaned' AND
+                             directsubmissiondefinitivemisses >= 3))))
+            )
         ) NOT VALID;
 
 ALTER TABLE blocks VALIDATE CONSTRAINT
@@ -59,11 +107,17 @@ CREATE UNIQUE INDEX idx_blocks_bitcoin_coinbase_direct_pool_hash
 -- ordered, bounded and repairable when a local schema drifted.
 DROP INDEX IF EXISTS idx_blocks_bitcoin_direct_reconcile;
 CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
-    poolid, blockheight, directsettlementlastchecked ASC NULLS FIRST,
-    created, id)
+    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id,
+    blockheight)
     WHERE status IN ('confirmed', 'orphaned') AND
         type = 'bitcoin-coinbase-direct' AND
         settlementmode = 'coinbase-direct';
+
+DROP INDEX IF EXISTS idx_blocks_bitcoin_direct_submission;
+CREATE INDEX idx_blocks_bitcoin_direct_submission ON blocks(poolid, id)
+    WHERE status = 'pending' AND type = 'bitcoin-coinbase-direct' AND
+        settlementmode = 'coinbase-direct' AND
+        directsubmissionstate IN ('prepared', 'submitted-uncertain');
 
 -- A binary predating direct settlement does not understand that these rows are
 -- non-custodial and must never credit balances. Refuse its generic UPDATE path.

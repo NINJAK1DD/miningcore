@@ -132,10 +132,18 @@ CREATE TABLE blocks
     directminerscriptpubkey TEXT NULL,
     directrecipientoutputs JSONB NULL,
     directsettlementlastchecked TIMESTAMPTZ NULL,
+    directsubmissionstate TEXT NULL,
+    directsubmissionblock TEXT NULL,
+    directsubmissionattempts INT NULL,
+    directsubmissiondefinitivemisses INT NULL,
+    directsubmissionlastattempt TIMESTAMPTZ NULL,
     CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (
         (num_nonnulls(settlementmode, grossrewardsatoshis,
             directminerrewardsatoshis, directminerscriptpubkey,
-            directrecipientoutputs) = 0 AND
+            directrecipientoutputs, directsubmissionstate,
+            directsubmissionblock, directsubmissionattempts,
+            directsubmissiondefinitivemisses,
+            directsubmissionlastattempt) = 0 AND
             directsettlementlastchecked IS NULL AND
             type IS DISTINCT FROM 'bitcoin-coinbase-direct')
         OR
@@ -149,7 +157,37 @@ CREATE TABLE blocks
             directminerrewardsatoshis <= grossrewardsatoshis AND
             directminerscriptpubkey ~ '^[0-9a-f]+$' AND
             length(directminerscriptpubkey) % 2 = 0 AND
-            jsonb_typeof(directrecipientoutputs) = 'array')
+            jsonb_typeof(directrecipientoutputs) = 'array' AND
+            (
+                (directsubmissionstate = 'legacy-observed' AND
+                    directsubmissionblock IS NULL AND
+                    directsubmissionattempts = 0 AND
+                    directsubmissiondefinitivemisses = 0 AND
+                    directsubmissionlastattempt IS NULL)
+                OR
+                (directsubmissionstate IN ('prepared',
+                        'submitted-uncertain', 'observed-active', 'rejected') AND
+                    directsubmissionblock ~ '^[0-9a-f]+$' AND
+                    length(directsubmissionblock) BETWEEN 162 AND 8000000 AND
+                    length(directsubmissionblock) % 2 = 0 AND
+                    directsubmissionattempts >= 0 AND
+                    directsubmissiondefinitivemisses >= 0 AND
+                    directsubmissiondefinitivemisses <=
+                        directsubmissionattempts AND
+                    ((directsubmissionstate = 'prepared' AND
+                        directsubmissionattempts = 0 AND
+                        directsubmissiondefinitivemisses = 0 AND
+                        directsubmissionlastattempt IS NULL AND
+                        status = 'pending') OR
+                     (directsubmissionstate <> 'prepared' AND
+                        directsubmissionattempts > 0 AND
+                        directsubmissionlastattempt IS NOT NULL)) AND
+                    (directsubmissionstate <> 'submitted-uncertain' OR
+                        status = 'pending') AND
+                    (directsubmissionstate <> 'rejected' OR
+                        (status = 'orphaned' AND
+                         directsubmissiondefinitivemisses >= 3))))
+        )
     )
 );
 
@@ -161,11 +199,15 @@ CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) W
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_COINBASE_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-coinbase-direct';
 CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_RECONCILE ON blocks(
-    poolid, blockheight, directsettlementlastchecked ASC NULLS FIRST,
-    created, id)
+    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id,
+    blockheight)
     WHERE status IN ('confirmed', 'orphaned') AND
         type = 'bitcoin-coinbase-direct' AND
         settlementmode = 'coinbase-direct';
+CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_SUBMISSION ON blocks(poolid, id)
+    WHERE status = 'pending' AND type = 'bitcoin-coinbase-direct' AND
+        settlementmode = 'coinbase-direct' AND
+        directsubmissionstate IN ('prepared', 'submitted-uncertain');
 
 CREATE OR REPLACE FUNCTION guard_bitcoin_direct_block_update()
 RETURNS trigger

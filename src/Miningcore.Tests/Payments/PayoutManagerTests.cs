@@ -29,6 +29,38 @@ public class PayoutManagerTests
     private static readonly TimeSpan HostTestTimeout = TimeSpan.FromSeconds(10);
 
     [Fact]
+    public void DirectSubmissionClassification_CannotDowngradeObservedState()
+    {
+        var persisted = new Block
+        {
+            Hash = new string('a', 64),
+            TransactionConfirmationData = new string('b', 64),
+            DirectSubmissionBlock = "00",
+            DirectSubmissionState = BitcoinDirectSubmission.ObservedActive,
+            DirectSubmissionAttempts = 1,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+        var classified = new Block
+        {
+            Hash = persisted.Hash,
+            TransactionConfirmationData =
+                persisted.TransactionConfirmationData,
+            DirectSubmissionBlock = persisted.DirectSubmissionBlock,
+            DirectSubmissionState =
+                BitcoinDirectSubmission.SubmittedUncertain,
+            DirectSubmissionAttempts = 1,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+
+        Assert.False(PayoutManager.CanApplyDirectSubmissionClassification(
+            persisted, classified));
+        classified.DirectSubmissionState =
+            BitcoinDirectSubmission.ObservedActive;
+        Assert.True(PayoutManager.CanApplyDirectSubmissionClassification(
+            persisted, classified));
+    }
+
+    [Fact]
     public async Task RecoveredBlockNotification_IsEmittedAfterTransactionCommit()
     {
         var fixture = CreateFixture();

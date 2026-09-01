@@ -119,7 +119,12 @@ internal static class ShareAccounting
         share.GrossRewardSatoshis.HasValue ||
         share.DirectMinerRewardSatoshis.HasValue ||
         !string.IsNullOrEmpty(share.DirectMinerScriptPubKey) ||
-        !string.IsNullOrEmpty(share.DirectRecipientOutputs);
+        !string.IsNullOrEmpty(share.DirectRecipientOutputs) ||
+        !string.IsNullOrEmpty(share.DirectSubmissionState) ||
+        !string.IsNullOrEmpty(share.DirectSubmissionBlock) ||
+        share.DirectSubmissionAttempts.HasValue ||
+        share.DirectSubmissionDefinitiveMisses.HasValue ||
+        share.DirectSubmissionLastAttempt.HasValue;
 
     private static void ValidateDirectSettlementEvidence(Share share)
     {
@@ -184,6 +189,8 @@ internal static class ShareAccounting
         if(total != share.GrossRewardSatoshis.Value)
             throw new InvalidDataException(
                 "Direct coinbase settlement outputs do not sum to the gross reward");
+
+        BitcoinDirectSubmission.ValidatePreparedShare(share);
     }
 
     internal static void ValidateReplayHorizon(Share envelope, DateTime nowUtc,

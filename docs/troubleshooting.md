@@ -104,8 +104,15 @@ An active process alone does not prove mining or payouts are healthy.
 - **Startup says the direct-settlement block schema is missing or malformed.** Keep Bitcoin direct
   SOLO offline and apply `add_bitcoin_direct_solo.sql` from the verified candidate directory while
   every database writer is stopped. Do not create same-named columns or constraints manually; the
-  exact types and validated financial contract are checked before work is delivered. See the
+  exact types, settlement/submission-state constraint, reconciliation order and prepared-submission
+  replay index are checked before work is delivered. See the
   [direct-SOLO database migration](bitcoin-direct-solo.md#database-migration).
+- **Startup reports replaying Bitcoin direct-SOLO outbox entries.** Keep Stratum closed until replay
+  finishes. Preserve PostgreSQL and the recovery journal, then confirm each exact block becomes
+  `observed-active`, remains `submitted-uncertain`, or reaches the documented bounded rejection
+  threshold. Do not delete a prepared row or manually submit reconstructed data; the stored exact
+  payload is authoritative. See
+  [direct-SOLO confirmation and restart behavior](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior).
 - **A Bitcoin direct-SOLO template update stops Miningcore.** Keep the supervised restart loop
   stopped if the error repeats. The pool deliberately invalidates stale direct jobs and closes
   mining admission when a post-startup template cannot satisfy the immutable coinbase contract.

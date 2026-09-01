@@ -38,7 +38,7 @@ public class CoinbaseAux
 public class BlockTemplate
 {
     [JsonIgnore]
-    internal long? ValidatedTransactionWeight { get; set; }
+    internal long ValidatedTransactionWeight { get; set; } = -1;
 
     /// <summary>
     /// The preferred block version

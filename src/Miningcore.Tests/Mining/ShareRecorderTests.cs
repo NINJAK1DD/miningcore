@@ -3812,6 +3812,73 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task PersistDirectBlockSubmissionAsync_RetryableDatabaseFailureUsesImmediateExactJournalFallback()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-direct-outbox-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        connectionFactory.OpenConnectionAsync().Returns(_ =>
+            Task.FromException<IDbConnection>(new TimeoutException(
+                "simulated PostgreSQL timeout")));
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>());
+        var submission = global::Miningcore.Tests.Blockchain.Bitcoin
+            .BitcoinDirectSubmissionTestData.Create();
+        var candidate = new Share
+        {
+            PoolId = "btc-direct",
+            Miner = "miner",
+            BlockHeight = 123,
+            BlockHash = submission.BlockHash,
+            BlockType = BitcoinDirectCoinbaseSettlement.BlockType,
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = submission.CoinbaseTxId,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+            DirectSubmissionBlock = submission.BlockHex,
+            DirectSubmissionAttempts = 0,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+
+        try
+        {
+            var result = await recorder.PersistDirectBlockSubmissionAsync(
+                candidate);
+
+            Assert.Null(result.DeferredFailStopError);
+            await connectionFactory.Received(1).OpenConnectionAsync();
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(x => !string.IsNullOrWhiteSpace(x) &&
+                    !x.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(submission.BlockHex,
+                persisted.DirectSubmissionBlock);
+            Assert.Equal(BitcoinDirectSubmission.Prepared,
+                persisted.DirectSubmissionState);
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task PersistBlockCandidateAsync_RejectsTypeWithoutIdempotencyRule()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -6254,8 +6321,12 @@ public class ShareRecorderTests
     public async Task RecoverSharesAsync_DirectCoinbaseRecordRequiresCompleteDirectSchema()
     {
         var fixture = CreateRecoveryFixture();
+        var submission = global::Miningcore.Tests.Blockchain.Bitcoin
+            .BitcoinDirectSubmissionTestData.Create();
         var candidate = CreateDurableCandidate("direct-block",
             BitcoinDirectCoinbaseSettlement.BlockType);
+        candidate.BlockHash = submission.BlockHash;
+        candidate.TransactionConfirmationData = submission.CoinbaseTxId;
         candidate.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
         candidate.GrossRewardSatoshis = 5_000_000_000;
         candidate.DirectMinerRewardSatoshis = 4_900_000_000;
@@ -6269,6 +6340,10 @@ public class ShareRecorderTests
                 AmountSatoshis = 100_000_000,
             },
         });
+        candidate.DirectSubmissionState = BitcoinDirectSubmission.Prepared;
+        candidate.DirectSubmissionBlock = submission.BlockHex;
+        candidate.DirectSubmissionAttempts = 0;
+        candidate.DirectSubmissionDefinitiveMisses = 0;
         var filename = await WriteRecoveryFileAsync(new[]
         {
             JsonConvert.SerializeObject(candidate),

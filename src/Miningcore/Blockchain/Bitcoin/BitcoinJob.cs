@@ -101,7 +101,7 @@ public class BitcoinJob
         // Convert byte array to hex string
         string hexString = txBytes.ToHexString();
         // Parse the transaction using NBitcoin
-        var transaction = Transaction.Parse(hexString, Network.Main);
+        var transaction = Transaction.Parse(hexString, network);
         return transaction.HasWitness;
     }
 
@@ -968,7 +968,7 @@ public class BitcoinJob
         BlockTemplate = blockTemplate;
         JobId = jobId;
         if(directCoinbaseTemplate != null)
-            ValidateBlockTemplateTransactionWeights(blockTemplate);
+            ValidateBlockTemplateTransactionWeights(blockTemplate, network);
         if(headerHasher is OdoCrypt)
             OdoCrypt.ValidateJobContract(blockTemplate, networkParams);
 
@@ -1084,8 +1084,10 @@ public class BitcoinJob
             weight = checked((80L + CompactSizeLength(transactionCount) +
                 coinbaseLength) * 4L);
 
-            var transactionWeight = BlockTemplate.ValidatedTransactionWeight ??
-                ValidateBlockTemplateTransactionWeights(BlockTemplate);
+            var transactionWeight = BlockTemplate.ValidatedTransactionWeight >= 0
+                ? BlockTemplate.ValidatedTransactionWeight
+                : ValidateBlockTemplateTransactionWeights(BlockTemplate,
+                    network);
             weight = checked(weight + transactionWeight);
         }
         catch(OverflowException ex)
@@ -1105,11 +1107,12 @@ public class BitcoinJob
     }
 
     internal static long ValidateBlockTemplateTransactionWeights(
-        BlockTemplate blockTemplate)
+        BlockTemplate blockTemplate, Network network)
     {
         ArgumentNullException.ThrowIfNull(blockTemplate);
-        if(blockTemplate.ValidatedTransactionWeight is { } validatedWeight)
-            return validatedWeight;
+        ArgumentNullException.ThrowIfNull(network);
+        if(blockTemplate.ValidatedTransactionWeight >= 0)
+            return blockTemplate.ValidatedTransactionWeight;
 
         long result = 0;
         var transactions = blockTemplate.Transactions ??
@@ -1136,7 +1139,7 @@ public class BitcoinJob
                 try
                 {
                     transaction = Transaction.Parse(templateTransaction.Data,
-                        Network.Main);
+                        network);
                 }
                 catch(Exception ex)
                 {

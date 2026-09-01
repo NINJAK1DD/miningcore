@@ -11,6 +11,7 @@ using System.Text;
 using System.Threading.Channels;
 using AutoMapper;
 using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
@@ -195,7 +196,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "# miningcore-recovery-journal-v1";
     internal const string RecoveryJournalMagic =
         "# miningcore-recovery-journal-v2";
-    internal const int MaxRecoveryRecordLineLength = 1024 * 1024;
+    // A Bitcoin direct-submission recovery record can contain the complete maximum-weight
+    // serialized block as hexadecimal plus its immutable settlement evidence.
+    internal const int MaxRecoveryRecordLineLength = 16 * 1024 * 1024;
     private const string EmptyFrameDigest =
         "0000000000000000000000000000000000000000000000000000000000000000";
     private bool notifiedAdminOnPolicyFallback = false;
@@ -292,6 +295,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "parent-uncertain",
         "merged-parent-uncertain",
     };
+    private static readonly TimeSpan DirectSubmissionDatabaseAttemptTimeout =
+        TimeSpan.FromSeconds(2);
 
     internal async Task PersistSharesAsync(IList<Share> shares,
         CancellationToken ct = default)
@@ -318,6 +323,111 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         return PersistBlockCandidateDurablyAsync(new[] { share });
     }
+
+    public async Task<DirectBlockSubmissionPreparation>
+        PersistDirectBlockSubmissionAsync(Share share)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        if(!share.BlockOnly || !share.IsBlockCandidate ||
+           !string.Equals(share.BlockType,
+               BitcoinDirectCoinbaseSettlement.BlockType,
+               StringComparison.Ordinal))
+            throw new ArgumentException(
+                "Direct submission persistence requires a direct block-only candidate",
+                nameof(share));
+
+        BlockOnlyCandidatePersistenceRules.EnsureDeclared(share);
+        BitcoinDirectSubmission.ValidatePreparedShare(share);
+
+        Exception databaseError = null;
+        var databaseAttempt = PersistSharesCoreAsync(new[] { share });
+
+        try
+        {
+            await databaseAttempt.WaitAsync(
+                DirectSubmissionDatabaseAttemptTimeout);
+            return new DirectBlockSubmissionPreparation();
+        }
+        catch(Exception ex) when(ex is not TransactionCommittedCleanupException and
+            not TransactionCommitOutcomeUncertainException)
+        {
+            databaseError = ex;
+            if(!databaseAttempt.IsCompleted)
+                _ = ObserveLateCandidateDatabaseAttemptAsync(databaseAttempt);
+        }
+        catch(TransactionCommittedCleanupException cleanupError)
+        {
+            await recoveryFailureHandler.StopClusterAfterCommittedCleanupAsync(
+                new[] { share }, recoveryFilename, cleanupError);
+            throw;
+        }
+        catch(TransactionCommitOutcomeUncertainException commitError)
+        {
+            await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                new[] { share }, recoveryFilename, commitError);
+            throw;
+        }
+
+        try
+        {
+            // The exact serialized block is now fsync-backed before submitblock. This fallback
+            // intentionally avoids the ordinary 2/4/8-second retry ladder on Bitcoin's
+            // propagation-critical path. A late database commit remains idempotent.
+            await WriteRecoveryJournalAsync(new[] { share });
+            NotifyAdminOnPolicyFallbackSafely();
+        }
+        catch(Exception journalError)
+        {
+            await candidateFailureHandler.StopClusterAsync(new[] { share },
+                databaseError, journalError, false);
+            RethrowCandidatePersistenceFailure(databaseError, journalError);
+        }
+
+        return new DirectBlockSubmissionPreparation(
+            IsRetryablePersistenceException(databaseError)
+                ? null
+                : databaseError);
+    }
+
+    public async Task CompleteDirectBlockSubmissionPreparationAsync(
+        Share share, DirectBlockSubmissionPreparation preparation)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        if(preparation?.DeferredFailStopError == null)
+            return;
+
+        // Submission was allowed to run because the exact block was already durable in the
+        // recovery journal. Stop only after the RPC attempt so an unexpected PostgreSQL error
+        // cannot destroy the miner's propagation opportunity.
+        await candidateFailureHandler.StopClusterAsync(new[] { share },
+            preparation.DeferredFailStopError, null, true);
+        RethrowCandidatePersistenceFailure(
+            preparation.DeferredFailStopError, null);
+    }
+
+    public async Task<Block> RecordDirectBlockSubmissionAttemptAsync(
+        Share share, BitcoinDirectSubmissionOutcome outcome,
+        DateTime attemptedAt)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        var updated = await cf.RunTx((con, tx) =>
+            blockRepo.RecordBitcoinDirectSubmissionAttemptAsync(con, tx,
+                share.PoolId, share.BlockHash, outcome, attemptedAt,
+                BitcoinDirectSubmission.MinimumDefinitiveMisses,
+                attemptedAt - BitcoinDirectSubmission.UncertainLifetime));
+
+        if(updated != null && string.Equals(updated.DirectSubmissionState,
+               BitcoinDirectSubmission.ObservedActive,
+               StringComparison.Ordinal))
+            NotifyPersistedBlocks(new[] { (share.PoolId, updated) });
+
+        return updated;
+    }
+
+    public Task<Block[]> GetDirectBlockSubmissionsForReplayAsync(string poolId,
+        long afterId, int pageSize, CancellationToken ct) => cf.Run(con =>
+        blockRepo.GetBitcoinDirectSubmissionsForReplayAsync(con, poolId,
+            afterId, pageSize, ct));
 
     public void BeginShutdown()
     {
@@ -577,7 +687,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             if(!inserted)
                 continue;
 
-            if(IsUncertainBlockType(blockEntity.Type))
+            if(IsUncertainBlockType(blockEntity.Type) ||
+               BitcoinDirectSubmission.RequiresReplay(
+                   blockEntity.DirectSubmissionState))
                 continue;
 
             blocks.Add((share.PoolId, blockEntity));

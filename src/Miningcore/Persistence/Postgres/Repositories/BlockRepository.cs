@@ -33,12 +33,16 @@ public class BlockRepository : IBlockRepository
                 miner, reward, effort, minereffort, confirmationprogress, source, hash, created,
                 settlementmode, grossrewardsatoshis, directminerrewardsatoshis,
                 directminerscriptpubkey, directrecipientoutputs,
-                directsettlementlastchecked)
+                directsettlementlastchecked, directsubmissionstate,
+                directsubmissionblock, directsubmissionattempts,
+                directsubmissiondefinitivemisses, directsubmissionlastattempt)
             VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
                 @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created,
                 @settlementmode, @grossrewardsatoshis, @directminerrewardsatoshis,
                 @directminerscriptpubkey, CAST(@directrecipientoutputs AS jsonb),
-                @directsettlementlastchecked)";
+                @directsettlementlastchecked, @directsubmissionstate,
+                @directsubmissionblock, @directsubmissionattempts,
+                @directsubmissiondefinitivemisses, @directsubmissionlastattempt)";
 
         var hasSettlementEvidence = mapped.SettlementMode != null ||
             mapped.GrossRewardSatoshis.HasValue ||
@@ -64,6 +68,8 @@ public class BlockRepository : IBlockRepository
             throw new InvalidDataException(
                 $"Block type '{BitcoinDirectCoinbaseSettlement.BlockType}' " +
                 "requires complete direct coinbase settlement evidence");
+        if(isBitcoinDirect)
+            BitcoinDirectSubmission.ValidatePersistedBlock(block);
 
         var query = isBitcoinDirect ? directQuery : legacyQuery;
 
@@ -86,6 +92,11 @@ public class BlockRepository : IBlockRepository
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
+        if(string.Equals(block.SettlementMode,
+               BitcoinDirectCoinbaseSettlement.Mode,
+               StringComparison.Ordinal))
+            BitcoinDirectSubmission.ValidatePersistedBlock(block);
+
         const string legacyQuery = @"UPDATE blocks SET blockheight = @blockheight,
             status = @status, type = @type, reward = @reward, effort = @effort,
             minereffort = @minereffort, confirmationprogress = @confirmationprogress,
@@ -102,7 +113,12 @@ public class BlockRepository : IBlockRepository
             status = @status, type = @type, reward = @reward, effort = @effort,
             minereffort = @minereffort, confirmationprogress = @confirmationprogress,
             transactionconfirmationdata = @transactionconfirmationdata, hash = @hash,
-            directsettlementlastchecked = @directsettlementlastchecked
+            directsettlementlastchecked = @directsettlementlastchecked,
+            directsubmissionstate = @directsubmissionstate,
+            directsubmissionblock = @directsubmissionblock,
+            directsubmissionattempts = @directsubmissionattempts,
+            directsubmissiondefinitivemisses = @directsubmissiondefinitivemisses,
+            directsubmissionlastattempt = @directsubmissionlastattempt
             FROM direct_update_guard WHERE id = @id";
 
         const string auxPowPromotionQuery = @"UPDATE blocks SET blockheight = @blockheight, status = @status, type = @type,
@@ -227,6 +243,34 @@ public class BlockRepository : IBlockRepository
             .ToArray();
     }
 
+    public async Task<Block[]> GetBitcoinDirectSubmissionsForReplayAsync(
+        IDbConnection con, string poolId, long afterId, int pageSize,
+        CancellationToken ct)
+    {
+        if(string.IsNullOrWhiteSpace(poolId))
+            throw new ArgumentException("Pool id is required", nameof(poolId));
+        if(pageSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        if(afterId < 0)
+            throw new ArgumentOutOfRangeException(nameof(afterId));
+
+        const string query = @"SELECT * FROM blocks
+            WHERE poolid = @poolId
+              AND status = 'pending'
+              AND type = 'bitcoin-coinbase-direct'
+              AND settlementmode = 'coinbase-direct'
+              AND directsubmissionstate IN
+                  ('prepared', 'submitted-uncertain')
+              AND id > @afterId
+            ORDER BY id ASC
+            FETCH NEXT @pageSize ROWS ONLY";
+
+        return (await con.QueryAsync<Entities.Block>(new CommandDefinition(
+            query, new { poolId, afterId, pageSize }, cancellationToken: ct)))
+            .Select(mapper.Map<Block>)
+            .ToArray();
+    }
+
     public async Task<bool> TouchBitcoinDirectReconciliationAsync(
         IDbConnection con, IDbTransaction tx, long id, DateTime checkedAt,
         CancellationToken ct = default)
@@ -247,6 +291,87 @@ public class BlockRepository : IBlockRepository
 
         return await con.ExecuteAsync(new CommandDefinition(query,
             new { id, checkedAt }, tx, cancellationToken: ct)) > 0;
+    }
+
+    public async Task<Block>
+        RecordBitcoinDirectSubmissionAttemptAsync(IDbConnection con,
+            IDbTransaction tx, string poolId, string blockHash,
+            BitcoinDirectSubmissionOutcome outcome, DateTime attemptedAt,
+            int minimumDefinitiveMisses, DateTime rejectBefore,
+            CancellationToken ct = default)
+    {
+        if(string.IsNullOrWhiteSpace(poolId))
+            throw new ArgumentException("Pool id is required", nameof(poolId));
+        if(string.IsNullOrWhiteSpace(blockHash))
+            throw new ArgumentException("Block hash is required", nameof(blockHash));
+        if(minimumDefinitiveMisses <= 0)
+            throw new ArgumentOutOfRangeException(nameof(minimumDefinitiveMisses));
+
+        var nextState = outcome == BitcoinDirectSubmissionOutcome.ObservedActive
+            ? BitcoinDirectSubmission.ObservedActive
+            : BitcoinDirectSubmission.SubmittedUncertain;
+        var definitiveMiss = outcome ==
+            BitcoinDirectSubmissionOutcome.DefinitiveMiss;
+
+        const string query = @"WITH candidate AS MATERIALIZED (
+                SELECT id, directsubmissionstate,
+                    directsubmissiondefinitivemisses,
+                    directsubmissionattempts, created
+                FROM blocks
+                WHERE poolid = @poolId AND hash = @blockHash
+                  AND type = 'bitcoin-coinbase-direct'
+                  AND settlementmode = 'coinbase-direct'
+                  AND status = 'pending'
+                  AND directsubmissionstate IN
+                      ('prepared', 'submitted-uncertain')
+                FOR UPDATE
+            ), direct_update_guard AS MATERIALIZED (
+                SELECT set_config(
+                    'miningcore.direct_settlement_update', 'on', true)
+                FROM candidate
+            ), next_values AS MATERIALIZED (
+                SELECT candidate.id,
+                    candidate.directsubmissionattempts + 1 AS attempts,
+                    candidate.directsubmissiondefinitivemisses +
+                        CASE WHEN @definitiveMiss THEN 1 ELSE 0 END AS misses,
+                    CASE
+                        WHEN @definitiveMiss
+                          AND candidate.directsubmissiondefinitivemisses + 1 >=
+                              @minimumDefinitiveMisses
+                          AND candidate.created <= @rejectBefore
+                            THEN 'rejected'
+                        ELSE @nextState
+                    END AS state
+                FROM candidate, direct_update_guard
+            )
+            UPDATE blocks SET
+                directsubmissionstate = next_values.state,
+                directsubmissionattempts = next_values.attempts,
+                directsubmissiondefinitivemisses = next_values.misses,
+                directsubmissionlastattempt = @attemptedAt,
+                status = CASE WHEN next_values.state = 'rejected'
+                    THEN 'orphaned' ELSE blocks.status END,
+                confirmationprogress = CASE
+                    WHEN next_values.state = 'rejected' THEN 0
+                    ELSE blocks.confirmationprogress END,
+                reward = CASE WHEN next_values.state = 'rejected' THEN 0
+                    ELSE blocks.reward END
+            FROM next_values
+            WHERE blocks.id = next_values.id
+            RETURNING blocks.*";
+
+        var entity = await con.QuerySingleOrDefaultAsync<Entities.Block>(
+            new CommandDefinition(query, new
+            {
+                poolId,
+                blockHash,
+                nextState,
+                definitiveMiss,
+                attemptedAt,
+                minimumDefinitiveMisses,
+                rejectBefore,
+            }, tx, cancellationToken: ct));
+        return entity == null ? null : mapper.Map<Block>(entity);
     }
 
     public async Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before)
@@ -436,7 +561,12 @@ public class BlockRepository : IBlockRepository
                     ('directminerrewardsatoshis', 'bigint'),
                     ('directminerscriptpubkey', 'text'),
                     ('directrecipientoutputs', 'jsonb'),
-                    ('directsettlementlastchecked', 'timestamp with time zone')
+                    ('directsettlementlastchecked', 'timestamp with time zone'),
+                    ('directsubmissionstate', 'text'),
+                    ('directsubmissionblock', 'text'),
+                    ('directsubmissionattempts', 'integer'),
+                    ('directsubmissiondefinitivemisses', 'integer'),
+                    ('directsubmissionlastattempt', 'timestamp with time zone')
             ), actual_columns AS (
                 SELECT lower(a.attname) AS name,
                     format_type(a.atttypid, a.atttypmod) AS data_type
@@ -456,7 +586,7 @@ public class BlockRepository : IBlockRepository
                           replace(lower(pg_get_constraintdef(c.oid)),
                               '::text', ''),
                           '[[:space:]()]', '', 'g') =
-                          'checknum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=0anddirectsettlementlastcheckedisnullandtypeisdistinctfrom''bitcoin-coinbase-direct''ornum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=5andsettlementmode=''coinbase-direct''andtype=''bitcoin-coinbase-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                          'checknum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs,directsubmissionstate,directsubmissionblock,directsubmissionattempts,directsubmissiondefinitivemisses,directsubmissionlastattempt=0anddirectsettlementlastcheckedisnullandtypeisdistinctfrom''bitcoin-coinbase-direct''ornum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=5andsettlementmode=''coinbase-direct''andtype=''bitcoin-coinbase-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array''anddirectsubmissionstate=''legacy-observed''anddirectsubmissionblockisnullanddirectsubmissionattempts=0anddirectsubmissiondefinitivemisses=0anddirectsubmissionlastattemptisnullordirectsubmissionstate=anyarray[''prepared'',''submitted-uncertain'',''observed-active'',''rejected'']anddirectsubmissionblock~''^[0-9a-f]+$''andlengthdirectsubmissionblock>=162andlengthdirectsubmissionblock<=8000000andlengthdirectsubmissionblock%2=0anddirectsubmissionattempts>=0anddirectsubmissiondefinitivemisses>=0anddirectsubmissiondefinitivemisses<=directsubmissionattemptsanddirectsubmissionstate=''prepared''anddirectsubmissionattempts=0anddirectsubmissiondefinitivemisses=0anddirectsubmissionlastattemptisnullandstatus=''pending''ordirectsubmissionstate<>''prepared''anddirectsubmissionattempts>0anddirectsubmissionlastattemptisnotnullanddirectsubmissionstate<>''submitted-uncertain''orstatus=''pending''anddirectsubmissionstate<>''rejected''orstatus=''orphaned''anddirectsubmissiondefinitivemisses>=3'
                 ) AS ready
             ), required_candidate_index AS (
                 SELECT EXISTS (
@@ -502,14 +632,40 @@ public class BlockRepository : IBlockRepository
                               index_class.oid, position, true))
                           FROM generate_series(1, i.indnkeyatts) position
                           ORDER BY position
-                      ) = ARRAY['poolid', 'blockheight',
-                          'directsettlementlastchecked', 'created', 'id']
-                      AND i.indoption = '0 0 2 0 0'::int2vector
+                      ) = ARRAY['poolid', 'directsettlementlastchecked',
+                          'created', 'id', 'blockheight']
+                      AND i.indoption = '0 2 0 0 0'::int2vector
                       AND regexp_replace(
                           replace(lower(pg_get_expr(i.indpred, i.indrelid,
                               true)), '::text', ''),
                           '[[:space:]()]', '', 'g') =
                           'status=anyarray[''confirmed'',''orphaned'']andtype=''bitcoin-coinbase-direct''andsettlementmode=''coinbase-direct'''
+                ) AS ready
+            ), required_submission_index AS (
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                    JOIN pg_am am ON am.oid = index_class.relam
+                    WHERE i.indrelid = to_regclass('blocks')
+                      AND lower(index_class.relname) =
+                          'idx_blocks_bitcoin_direct_submission'
+                      AND am.amname = 'btree'
+                      AND NOT i.indisunique
+                      AND i.indisvalid AND i.indisready
+                      AND i.indnkeyatts = 2 AND i.indnatts = 2
+                      AND ARRAY(
+                          SELECT lower(pg_get_indexdef(
+                              index_class.oid, position, true))
+                          FROM generate_series(1, i.indnkeyatts) position
+                          ORDER BY position
+                      ) = ARRAY['poolid', 'id']
+                      AND i.indoption = '0 0'::int2vector
+                      AND regexp_replace(
+                          replace(lower(pg_get_expr(i.indpred, i.indrelid,
+                              true)), '::text', ''),
+                          '[[:space:]()]', '', 'g') =
+                          'status=''pending''andtype=''bitcoin-coinbase-direct''andsettlementmode=''coinbase-direct''anddirectsubmissionstate=anyarray[''prepared'',''submitted-uncertain'']'
                 ) AS ready
             ), required_update_guard AS (
                 SELECT EXISTS (
@@ -558,13 +714,14 @@ public class BlockRepository : IBlockRepository
                           'beginperformset_config(''miningcore.direct_settlement_update'',''off'',true);returnnull;end;'
                 ) AS ready
             )
-            SELECT (SELECT COUNT(*) = 6
+            SELECT (SELECT COUNT(*) = 11
                     FROM required_columns r
                     JOIN actual_columns a USING(name)
                     WHERE a.data_type = r.data_type)
                AND (SELECT ready FROM required_constraint)
                AND (SELECT ready FROM required_candidate_index)
                AND (SELECT ready FROM required_reconciliation_index)
+               AND (SELECT ready FROM required_submission_index)
                AND (SELECT ready FROM required_update_guard)
                AND (SELECT ready FROM required_clear_update_guard)";
 

@@ -749,6 +749,8 @@ public class BitcoinPool : PoolBase
         manager = ctx.Resolve<BitcoinJobManager>(
             new TypedParameter(typeof(IExtraNonceProvider), new BitcoinExtraNonceProvider(poolConfig.Id, clusterConfig.InstanceId)));
 
+        manager.DirectJobConstructionFailed += HandleJobPipelineFailure;
+
         manager.Configure(poolConfig, clusterConfig);
 
         await manager.StartAsync(ct);

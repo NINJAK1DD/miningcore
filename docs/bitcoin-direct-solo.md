@@ -43,10 +43,11 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f "$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql"
 ```
 
-Startup verifies the exact column types, complete five-field settlement constraint, dedicated
-`bitcoin-coinbase-direct` candidate identity and unique index, ordered reconciliation index, and
-both halves of the statement-scoped direct-row update guard before accepting direct work. Reapplying the
-additive, transactional migration repairs a missing, weakened or wrongly ordered named contract.
+Startup verifies the exact column types, combined settlement/submission-state constraint, dedicated
+`bitcoin-coinbase-direct` candidate identity and unique index, ordered reconciliation index,
+prepared-submission replay index, and both halves of the statement-scoped direct-row update guard
+before accepting direct work. Reapplying the additive, transactional migration repairs a missing,
+weakened or wrongly ordered named contract.
 Existing block rows remain `NULL` in the new fields and retain their original custodial settlement
 path. The database update guard is a last-resort protection against an older binary treating an
 already-paid direct block as a conventional payout liability; it does not make binary downgrade a
@@ -106,10 +107,11 @@ for every connected worker. That is intentionally proportional to connected work
 the template transaction count; capacity-test large fleets before enabling this first-version SOLO
 mode.
 
-If a later daemon template violates the direct-coinbase contract, Miningcore invalidates every
-announced direct job, disconnects affected miners, raises an administrative alert and enters the
-process-wide mining fail-stop. A supervised service may restart only after startup can construct a
-valid template; it does not leave an online pool serving stale direct work.
+If a later daemon template or destination-specific coinbase violates the direct-coinbase or final
+block-weight contract, Miningcore invalidates every announced direct job, raises an administrative
+alert and enters the process-wide mining fail-stop. A supervised service may restart only after
+startup can construct a valid template; it does not leave an online pool repeatedly disconnecting
+workers or serving stale direct work.
 
 Startup/job construction rejects more than 64 positive recipients, percentages totaling 100% or more, non-positive residuals,
 positive outputs below one satoshi, wrong-network addresses, duplicate recipient scripts and a miner
@@ -146,13 +148,32 @@ Core block acceptance and exact on-chain scripts/amounts are authoritative.
 
 ## Confirmation, restart and reorg behavior
 
-Every locally validated direct candidate is synchronously stored before its block is submitted to
-the daemon and before the ordinary statistical share is admitted. The coinbase transaction ID is
-calculated from the exact serialized transaction, so an accepted request whose RPC response is lost
-remains durable and is reconciled instead of being discarded.
-The audit record includes the block hash, coinbase transaction ID, gross value, miner script/value
-and every direct recipient output. Confirmation uses `getblock` with transaction details; the daemon
-wallet does not need to own or spend the miner or recipient outputs, and `txindex` is not required.
+Every locally validated direct candidate crosses a durable submission-outbox boundary before its
+block is submitted to the daemon and before the ordinary statistical share is admitted. The outbox
+stores the exact serialized block, locally calculated block hash and coinbase transaction ID,
+immutable settlement evidence, attempt counters and one of `prepared`, `submitted-uncertain`,
+`observed-active` or `rejected`. A prepared row is not announced as found and cannot be classified
+as orphaned merely because the daemon has not seen it yet.
+
+The propagation-critical prepare step makes one bounded PostgreSQL attempt. If that attempt fails,
+Miningcore immediately fsyncs the same complete record to the protected recovery journal instead of
+waiting through the ordinary 2/4/8-second database retry ladder. If neither store can durably retain
+the exact block, mining fail-stops and the block is not submitted without recoverable evidence. An
+unexpected non-retryable database error also schedules a fail-stop, but only after the already
+journaled block has had its daemon-submission opportunity.
+
+Startup replays `prepared` and `submitted-uncertain` rows from the exact stored bytes before opening
+Stratum. Recovery import recreates the same replayable row; payout reconciliation provides an
+additional idempotent replay path. Bitcoin Core duplicate handling makes repeated `submitblock`
+safer than losing a possibly unsubmitted solution. Only an exact active-chain block/coinbase match
+transitions to `observed-active` and emits the block-found notification. Ambiguous outcomes stay
+pending. A definitive rejection requires at least three definitive misses over at least 30 minutes
+before the outbox becomes `rejected`; a later exact active-chain observation can reactivate it.
+
+The audit record includes the exact block, block hash, coinbase transaction ID, gross value, miner
+script/value and every direct recipient output. Confirmation uses `getblock` with transaction
+details; the daemon wallet does not need to own or spend the miner or recipient outputs, and
+`txindex` is not required.
 
 Pending, confirmed, orphaned and quarantined states remain visible through the normal block API. A
 confirmed direct block updates block state only: payout schemes, miner balances, recipient balances
@@ -176,14 +197,16 @@ are not admitted to this direct-only path.
 Back up PostgreSQL and the normal recovery/quarantine artifacts. Never import a quarantine file with
 `-rs`. Direct candidate durability depends on the local PostgreSQL block writer, so share-relay
 sender/receiver deployments are rejected in this first version. A direct candidate written to the
-recovery journal uses the dedicated `bitcoin-coinbase-direct` identity and recovery refuses import
-unless the complete direct-SOLO schema contract is present. Binaries predating this feature do not
-recognize that identity and fail closed instead of importing it as a custodial block.
+recovery journal uses the dedicated `bitcoin-coinbase-direct` identity and includes the exact
+serialized block plus submission state. Recovery refuses import unless the complete direct-SOLO
+outbox schema contract is present. Binaries predating this feature do not recognize that identity
+and fail closed instead of importing it as a custodial block.
 
 Before upgrading from any pre-release build of this feature, stop every writer and drain or manually
 reconcile its recovery journal. Earlier draft builds wrote direct evidence under the historical
-`bitcoin-direct` identity; current recovery deliberately quarantines that ambiguous shape rather
-than importing it. Do not pass the resulting quarantine file to `-rs`.
+`bitcoin-direct` identity; later pre-release drafts could omit the exact serialized block and
+submission state. Current recovery deliberately quarantines either ambiguous shape rather than
+inventing a resubmittable payload. Do not pass the resulting quarantine file to `-rs`.
 
 ## Rollback
 

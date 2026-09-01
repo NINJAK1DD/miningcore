@@ -522,6 +522,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.GetBlock, ct,
             new object[] { blockHash, 2 });
 
+    protected virtual Task<RpcResponse<JToken>> SubmitDirectSettlementBlockAsync(
+        string blockHex, CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.SubmitBlock, ct,
+            new object[] { blockHex });
+
     internal async Task<bool> ClassifyDirectCoinbaseBlockAsync(Block block,
         CancellationToken ct)
     {
@@ -532,7 +537,78 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         block.NotifyBlockConfirmationProgressOnUpdate = false;
         block.NotifyBlockUnlockedOnUpdate = false;
 
-        var response = await GetDirectSettlementBlockAsync(block.Hash, ct);
+        RpcResponse<JToken> response;
+        if(BitcoinDirectSubmission.RequiresReplay(
+               block.DirectSubmissionState))
+        {
+            var submit = await SubmitDirectSettlementBlockAsync(
+                block.DirectSubmissionBlock, ct);
+            response = await GetDirectSettlementBlockAsync(block.Hash, ct);
+            block.DirectSubmissionAttempts = checked(
+                block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+            block.DirectSubmissionLastAttempt = clock.Now;
+
+            if(IsActiveDirectSettlementResponse(response, block.Hash))
+            {
+                VerifyDirectCoinbaseTransaction(block,
+                    (JObject) response.Response);
+                block.DirectSubmissionState =
+                    BitcoinDirectSubmission.ObservedActive;
+                block.NotifyBlockFoundOnUpdate = true;
+            }
+            else
+            {
+                var submitError = submit.Error?.Message ??
+                    submit.Error?.Code.ToString(CultureInfo.InvariantCulture) ??
+                    submit.Response?.ToString();
+                var definitiveMiss = response.Error?.Code == -5 &&
+                    !string.IsNullOrWhiteSpace(submitError) &&
+                    submit.Error?.Code != -500 &&
+                    !BitcoinJobManagerBase<BitcoinJob>
+                        .IsDuplicateBlockSubmissionResponse(submitError) &&
+                    !BitcoinJobManagerBase<BitcoinJob>
+                        .IsInconclusiveBlockSubmissionResponse(submitError);
+
+                if(definitiveMiss)
+                {
+                    block.DirectSubmissionDefinitiveMisses = checked(
+                        block.DirectSubmissionDefinitiveMisses
+                            .GetValueOrDefault() + 1);
+                }
+
+                if(definitiveMiss &&
+                   block.DirectSubmissionDefinitiveMisses >=
+                       BitcoinDirectSubmission.MinimumDefinitiveMisses &&
+                   clock.Now - block.Created >=
+                       BitcoinDirectSubmission.UncertainLifetime)
+                {
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.Rejected;
+                    block.Status = BlockStatus.Orphaned;
+                    block.ConfirmationProgress = 0;
+                    block.Reward = 0;
+                    logger.Warn(() =>
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] was rejected after " +
+                        $"{block.DirectSubmissionDefinitiveMisses} definitive " +
+                        "submission misses");
+                }
+                else
+                {
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.SubmittedUncertain;
+                    block.Status = BlockStatus.Pending;
+                    logger.Warn(() =>
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] remains replayable " +
+                        "after an inconclusive durable submission attempt");
+                }
+
+                return true;
+            }
+        }
+        else
+            response = await GetDirectSettlementBlockAsync(block.Hash, ct);
         if(response.Error != null)
         {
             if(response.Error.Code == -5)
@@ -584,6 +660,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
 
         VerifyDirectCoinbaseTransaction(block, document);
+
+        if(string.Equals(block.DirectSubmissionState,
+               BitcoinDirectSubmission.Rejected,
+               StringComparison.Ordinal))
+        {
+            block.DirectSubmissionState =
+                BitcoinDirectSubmission.ObservedActive;
+            block.NotifyBlockFoundOnUpdate = true;
+        }
+
         block.DirectSettlementLastChecked = clock.Now;
         block.Reward = block.GrossRewardSatoshis.Value /
             BitcoinConstants.SatoshisPerBitcoin;
@@ -631,7 +717,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
            block.TransactionConfirmationData.Length != 64)
             throw new InvalidDataException(
                 $"Direct SOLO block {block.BlockHeight} has malformed persisted settlement identity");
+
+        BitcoinDirectSubmission.ValidatePersistedBlock(block);
     }
+
+    private static bool IsActiveDirectSettlementResponse(
+        RpcResponse<JToken> response, string expectedHash) =>
+        response?.Error == null && response.Response is JObject document &&
+        string.Equals(document.Value<string>("hash"), expectedHash,
+            StringComparison.OrdinalIgnoreCase) &&
+        document.Value<int?>("confirmations") is >= 0;
 
     internal static void VerifyDirectCoinbaseTransaction(Block block,
         JObject document)

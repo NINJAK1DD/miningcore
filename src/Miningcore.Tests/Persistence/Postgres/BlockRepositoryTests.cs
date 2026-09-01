@@ -66,6 +66,10 @@ public class BlockRepositoryTests
                 block.DirectMinerScriptPubKey =
                     "0014" + new string('1', 40);
                 block.DirectRecipientOutputs = "[]";
+                block.DirectSubmissionState =
+                    BitcoinDirectSubmission.LegacyObserved;
+                block.DirectSubmissionAttempts = 0;
+                block.DirectSubmissionDefinitiveMisses = 0;
             }
 
             await repository.InsertAsync(connection, null, block);
@@ -354,6 +358,15 @@ public class BlockRepositoryTests
             Status = BlockStatus.Confirmed,
             Type = BitcoinDirectCoinbaseSettlement.BlockType,
             SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            Hash = new string('a', 64),
+            TransactionConfirmationData = new string('b', 64),
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            DirectSubmissionState = BitcoinDirectSubmission.LegacyObserved,
+            DirectSubmissionAttempts = 0,
+            DirectSubmissionDefinitiveMisses = 0,
             DirectSettlementLastChecked = checkedAt,
         };
 

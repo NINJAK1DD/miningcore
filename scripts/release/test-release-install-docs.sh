@@ -222,7 +222,15 @@ assert_file_contains 'the direct-SOLO dedicated block identity' \
 assert_file_contains 'the direct-SOLO final block-weight gate' \
   "Bitcoin's 4,000,000-weight-unit consensus" "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO pre-submission durability boundary' \
-  'synchronously stored before its block is submitted' "$bitcoin_direct_document"
+  'durable submission-outbox boundary before its' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO exact replay payload' \
+  'stores the exact serialized block' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO prepared-state silence' \
+  'A prepared row is not announced as found' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO bounded submission rejection' \
+  'three definitive misses over at least 30 minutes' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO propagation-safe journal fallback' \
+  'ordinary 2/4/8-second database retry ladder' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO bounded terminal reconciliation depth' \
   'within 4,032 blocks of the reported chain tip' "$bitcoin_direct_document"
 assert_file_contains 'the pre-release direct-journal quarantine boundary' \
