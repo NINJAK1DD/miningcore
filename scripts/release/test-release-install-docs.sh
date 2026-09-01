@@ -238,6 +238,9 @@ assert_file_contains 'the direct-SOLO active duplicate evidence rule' \
   "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO public block page cap' \
   'at most 100 rows per page' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO pending payload projection' \
+  'an immature `observed-active` row remains metadata-only' \
+  "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO bounded terminal reconciliation depth' \
   'within 4,032 blocks of the reported chain tip' "$bitcoin_direct_document"
 assert_file_contains 'the pre-release direct-journal quarantine boundary' \

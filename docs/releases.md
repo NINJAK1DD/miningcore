@@ -60,9 +60,10 @@ ladder. Known-committed cleanup failures and uncertain commits also retain repla
 defer their database-health fail-stop until after the daemon propagation attempt. An exact
 active-chain duplicate with matching coinbase evidence commits `observed-active` and is not replayed
 again. Routine API and terminal-reconciliation projections exclude the large serialized payload,
-and public block pages are capped at 100 rows. Bounded post-maturity block-RPC reconciliation tracks
-terminal rows for two difficulty periods without creating a Miningcore balance or second payment. Existing
-custodial SOLO remains the default. Existing databases must apply
+and the pending classifier returns it only for replayable states; immature observed rows remain
+metadata-only. Public block pages are capped at 100 rows. Bounded post-maturity block-RPC
+reconciliation tracks terminal rows for two difficulty periods without creating a Miningcore
+balance or second payment. Existing custodial SOLO remains the default. Existing databases must apply
 `add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
 the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
 

@@ -187,8 +187,10 @@ details; the daemon wallet does not need to own or spend the miner or recipient 
 
 The exact serialized block remains in PostgreSQL for audit and replay, but ordinary block API pages
 and terminal reconciliation use metadata-only projections so they do not allocate multi-megabyte
-payloads. Public block endpoints accept at most 100 rows per page. Only replay and locked
-verification paths load the serialized payload.
+payloads. The pending-block projection returns it only for `prepared` or `submitted-uncertain`
+rows; an immature `observed-active` row remains metadata-only on every payout cycle. Public block
+endpoints accept at most 100 rows per page. Only replay and locked verification paths load the
+serialized payload.
 
 Pending, confirmed, orphaned and quarantined states remain visible through the normal block API. A
 confirmed direct block updates block state only: payout schemes, miner balances, recipient balances

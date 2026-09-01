@@ -475,6 +475,31 @@ public class BlockRepositoryTests
     }
 
     [Fact]
+    public async Task PendingBlockQuery_LoadsPayloadOnlyForReplayableDirectStates()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .GetPendingBlocksForPoolAsync(connection, "btc"));
+
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CASE", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsubmissionstate IN", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("('prepared', 'submitted-uncertain')",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THEN directsubmissionblock",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ELSE NULL", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("END AS directsubmissionblock",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task UpdateBlockAsync_ReturnsFalseWhenPromotionGuardDoesNotUpdateRow()
     {
         var mapper = AutoMapperFactory.CreateMapper();

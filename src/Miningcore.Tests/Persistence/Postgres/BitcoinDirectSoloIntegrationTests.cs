@@ -186,6 +186,12 @@ public class BitcoinDirectSoloIntegrationTests
                     direct.PoolId, 0, 16, CancellationToken.None));
             Assert.Equal(submission.BlockHex,
                 replayable.DirectSubmissionBlock);
+            var preparedPending = Assert.Single(await repository
+                .GetPendingBlocksForPoolAsync(connection, direct.PoolId));
+            Assert.Equal(BitcoinDirectSubmission.Prepared,
+                preparedPending.DirectSubmissionState);
+            Assert.Equal(submission.BlockHex,
+                preparedPending.DirectSubmissionBlock);
 
             await Assert.ThrowsAsync<PostgresException>(() =>
                 connection.ExecuteAsync(@"
@@ -200,6 +206,17 @@ public class BitcoinDirectSoloIntegrationTests
             Assert.Empty(await repository
                 .GetBitcoinDirectSubmissionsForReplayAsync(connection,
                     direct.PoolId, 0, 16, CancellationToken.None));
+            var observedPending = Assert.Single(await repository
+                .GetPendingBlocksForPoolAsync(connection, direct.PoolId));
+            Assert.Equal(BitcoinDirectSubmission.ObservedActive,
+                observedPending.DirectSubmissionState);
+            Assert.Null(observedPending.DirectSubmissionBlock);
+            Assert.True(await repository.UpdateBlockAsync(connection, null,
+                observedPending));
+            Assert.Equal(submission.BlockHex,
+                await connection.ExecuteScalarAsync<string>(@"
+                    SELECT directsubmissionblock FROM blocks
+                    WHERE id = @id", new { id = direct.Id }));
             direct.DirectSubmissionState = observed.DirectSubmissionState;
             direct.DirectSubmissionAttempts =
                 observed.DirectSubmissionAttempts;
