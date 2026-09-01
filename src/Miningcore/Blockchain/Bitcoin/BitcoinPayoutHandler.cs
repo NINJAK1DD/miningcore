@@ -164,17 +164,38 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Take(pageSize)
                 .ToArray();
 
-            var directBlocks = page.Where(IsDirectCoinbaseSettlement)
+            var directBlocks = page.Where(block =>
+                    IsDirectCoinbaseSettlement(block) ||
+                    string.Equals(block?.Type, "bitcoin-direct",
+                        StringComparison.Ordinal))
                 .ToArray();
             foreach(var directBlock in directBlocks)
             {
-                var classified = await ClassifyDirectCoinbaseBlockAsync(
-                    directBlock, ct);
-                if(classified)
+                try
+                {
+                    var classified = await ClassifyDirectCoinbaseBlockAsync(
+                        directBlock, ct);
+                    if(classified)
+                        result.Add(directBlock);
+                }
+                catch(Exception ex) when(ex is InvalidDataException or
+                    JsonException or OverflowException)
+                {
+                    directBlock.Status = BlockStatus.Quarantined;
+                    directBlock.DirectSettlementLastChecked = clock.Now;
+                    directBlock.NotifyBlockFoundOnUpdate = false;
+                    directBlock.NotifyBlockConfirmationProgressOnUpdate = false;
+                    directBlock.NotifyBlockUnlockedOnUpdate = false;
                     result.Add(directBlock);
+                    logger.Error(ex, () =>
+                        $"[{LogCategory}] Quarantined direct SOLO block {directBlock.BlockHeight} [{directBlock.Hash}] because its immutable settlement evidence could not be verified");
+                }
             }
 
-            page = page.Where(block => !IsDirectCoinbaseSettlement(block))
+            page = page.Where(block =>
+                    !IsDirectCoinbaseSettlement(block) &&
+                    !string.Equals(block?.Type, "bitcoin-direct",
+                        StringComparison.Ordinal))
                 .ToArray();
             if(page.Length == 0)
                 continue;
@@ -511,7 +532,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         CancellationToken ct)
     {
         ValidatePersistedDirectSettlement(block);
-        var wasPending = block.Status == BlockStatus.Pending;
+        var originalStatus = block.Status;
+        var wasPending = originalStatus == BlockStatus.Pending;
         block.NotifyBlockFoundOnUpdate = false;
         block.NotifyBlockConfirmationProgressOnUpdate = false;
         block.NotifyBlockUnlockedOnUpdate = false;
@@ -525,7 +547,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 block.Status = BlockStatus.Orphaned;
                 block.ConfirmationProgress = 0;
                 block.Reward = 0;
-                block.NotifyBlockUnlockedOnUpdate = true;
+                block.NotifyBlockUnlockedOnUpdate =
+                    originalStatus != BlockStatus.Orphaned;
                 logger.Info(() =>
                     $"[{LogCategory}] Direct SOLO block {block.BlockHeight} [{block.Hash}] is no longer known to the active chain");
                 return true;
@@ -561,7 +584,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             block.Status = BlockStatus.Orphaned;
             block.ConfirmationProgress = 0;
             block.Reward = 0;
-            block.NotifyBlockUnlockedOnUpdate = true;
+            block.NotifyBlockUnlockedOnUpdate =
+                originalStatus != BlockStatus.Orphaned;
             return true;
         }
 
@@ -571,13 +595,17 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             BitcoinConstants.SatoshisPerBitcoin;
         block.ConfirmationProgress = Math.Min(1d,
             (double) confirmations / minConfirmations);
-        block.NotifyBlockConfirmationProgressOnUpdate = wasPending;
+        block.Status = confirmations >= minConfirmations
+            ? BlockStatus.Confirmed
+            : BlockStatus.Pending;
+        block.NotifyBlockConfirmationProgressOnUpdate =
+            block.Status == BlockStatus.Pending;
 
         if(confirmations >= minConfirmations)
         {
-            block.Status = BlockStatus.Confirmed;
             block.ConfirmationProgress = 1;
-            block.NotifyBlockUnlockedOnUpdate = wasPending;
+            block.NotifyBlockUnlockedOnUpdate =
+                originalStatus != BlockStatus.Confirmed;
             logger.Info(() =>
                 $"[{LogCategory}] Confirmed direct SOLO block {block.BlockHeight} with on-chain miner and fee settlement");
         }

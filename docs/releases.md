@@ -56,6 +56,12 @@ custodial SOLO remains the default. Existing databases must apply
 `add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
 the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
 
+This is a forward-only application compatibility boundary once a direct settlement row exists. Do
+not roll the binary back below the release containing this feature when
+`SELECT count(*) FROM blocks WHERE settlementmode = 'coinbase-direct'` is non-zero. The migration's
+database guard fails closed against an older generic updater, but it is not a substitute for the
+documented recovery procedure.
+
 **Breaking DigiByte template rename:** `digibyte-groestl` is removed rather than redirected to a
 different proof of work. Operators must stop that pool and explicitly select a supported current
 algorithm; current-mainnet support adds `digibyte-odocrypt` in its place.

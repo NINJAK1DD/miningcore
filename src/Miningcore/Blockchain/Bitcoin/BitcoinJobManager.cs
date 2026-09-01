@@ -246,6 +246,11 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             // ignored
         }
 
+        catch(PoolStartupException)
+        {
+            throw;
+        }
+
         catch(Exception ex)
         {
             logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
@@ -322,7 +327,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     }
 
     public BitcoinJob GetDirectJobForStratum(string minerAddress,
-        IDestination minerDestination)
+        IDestination minerDestination, long authorizationGeneration)
     {
         if(!DirectCoinbasePayoutEnabled)
             throw new InvalidOperationException(
@@ -334,6 +339,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             "No Bitcoin block template is available");
         var directTemplate = new BitcoinDirectCoinbaseTemplate
         {
+            AuthorizationGeneration = authorizationGeneration,
             MinerAddress = minerAddress,
             MinerDestination = minerDestination,
             MinerScriptPubKey = minerDestination.ScriptPubKey.ToHex(),
@@ -409,12 +415,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         if(string.IsNullOrEmpty(workerValue))
             throw new StratumException(StratumError.Other, "missing or invalid workername");
 
-        BitcoinJob job;
-
-        lock(context)
-        {
-            job = context.GetJob(jobId);
-        }
+        var job = context.GetJob(jobId);
 
         if(job == null)
             throw new StratumException(StratumError.JobNotFound, "job not found");

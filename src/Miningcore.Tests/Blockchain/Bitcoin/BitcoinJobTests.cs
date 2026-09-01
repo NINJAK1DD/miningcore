@@ -1,6 +1,8 @@
 using System;
 using System.Buffers.Binary;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
@@ -539,7 +541,7 @@ public class BitcoinJobTests : TestBase
         }, value => BitcoinAddress.Create(value, Network.RegTest));
 
         DirectSerializationBitcoinJob Create(string id,
-            BitcoinAddress miner)
+            BitcoinAddress miner, long generation = 0)
         {
             var result = new DirectSerializationBitcoinJob();
             result.InitDirect(blockTemplate, id, pc, null,
@@ -548,6 +550,7 @@ public class BitcoinJobTests : TestBase
                 coin.HeaderHasherValue, coin.BlockHasherValue,
                 new BitcoinDirectCoinbaseTemplate
                 {
+                    AuthorizationGeneration = generation,
                     MinerAddress = miner.ToString(),
                     MinerDestination = miner,
                     MinerScriptPubKey = miner.ScriptPubKey.ToHex(),
@@ -612,14 +615,98 @@ public class BitcoinJobTests : TestBase
             axeOsCoinbaseSatoshis));
 
         var context = new BitcoinWorkerContext();
-        context.AddJob(jobA, 4);
+        var authorizationA = context.SetDirectPayoutAuthorization(
+            minerA.ToString(), minerA);
+        jobA = Create("direct-a-current", minerA,
+            authorizationA.Generation);
+        Assert.True(context.TryAddDirectJob(jobA, 4));
         Assert.Same(jobA, context.GetJob(jobA.JobId));
         Assert.Null(context.GetJob(jobB.JobId));
-        context.DirectPayoutAddress = minerB.ToString();
-        context.DirectPayoutDestination = minerB;
+        context.SetDirectPayoutAuthorization(minerB.ToString(), minerB);
         Assert.Equal(minerA.ToString(), jobA.DirectPayoutAddress);
-        context.ClearJobs();
         Assert.Null(context.GetJob(jobA.JobId));
+    }
+
+    [Fact]
+    public async Task DirectJobBuiltDuringReauthorization_CannotReenterQueue()
+    {
+        var context = new BitcoinWorkerContext();
+        var destinationA = new Key().PubKey.GetAddress(
+            ScriptPubKeyType.Segwit, Network.RegTest);
+        var destinationB = new Key().PubKey.GetAddress(
+            ScriptPubKeyType.Segwit, Network.RegTest);
+        var authorizationA = context.SetDirectPayoutAuthorization(
+            destinationA.ToString(), destinationA);
+        var job = new BitcoinJob();
+        var template = typeof(BitcoinJob).GetField("directCoinbaseTemplate",
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic);
+        template.SetValue(job, new BitcoinDirectCoinbaseTemplate
+        {
+            AuthorizationGeneration = authorizationA.Generation,
+            MinerAddress = destinationA.ToString(),
+            MinerDestination = destinationA,
+        });
+        typeof(BitcoinJob).GetProperty(nameof(BitcoinJob.JobId))!
+            .SetValue(job, "stale-direct-job");
+
+        using var built = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var insertion = Task.Run(() =>
+        {
+            built.Set();
+            release.Wait();
+            return context.TryAddDirectJob(job, 4);
+        });
+
+        Assert.True(built.Wait(TimeSpan.FromSeconds(5)));
+        context.SetDirectPayoutAuthorization(destinationB.ToString(),
+            destinationB);
+        release.Set();
+
+        Assert.False(await insertion);
+        Assert.Null(context.GetJob(job.JobId));
+        Assert.Equal(destinationB.ToString(), context.DirectPayoutAddress);
+    }
+
+    [Fact]
+    public async Task DirectSubmissionInProgress_DelaysReauthorizationSuccess()
+    {
+        var context = new BitcoinWorkerContext();
+        var destinationA = new Key().PubKey.GetAddress(
+            ScriptPubKeyType.Segwit, Network.RegTest);
+        var destinationB = new Key().PubKey.GetAddress(
+            ScriptPubKeyType.Segwit, Network.RegTest);
+        var authorizationA = context.SetDirectPayoutAuthorization(
+            destinationA.ToString(), destinationA);
+
+        await context.EnterDirectPayoutSubmissionAsync(
+            CancellationToken.None);
+        var submissionGateHeld = true;
+        try
+        {
+            var reauthorization = context.SetDirectPayoutAuthorizationAsync(
+                destinationB.ToString(), destinationB,
+                CancellationToken.None);
+
+            Assert.False(reauthorization.IsCompleted);
+            Assert.Equal(authorizationA,
+                context.GetDirectPayoutAuthorization());
+
+            context.ExitDirectPayoutSubmission();
+            submissionGateHeld = false;
+            var authorizationB = await reauthorization;
+
+            Assert.True(authorizationB.Generation >
+                authorizationA.Generation);
+            Assert.Equal(destinationB.ToString(),
+                context.DirectPayoutAddress);
+        }
+        finally
+        {
+            if(submissionGateHeld)
+                context.ExitDirectPayoutSubmission();
+        }
     }
 
     [Fact]

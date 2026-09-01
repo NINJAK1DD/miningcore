@@ -120,6 +120,9 @@ public class BitcoinDirectSoloIntegrationTests
             await repository.InsertAsync(connection, null, direct,
                 CancellationToken.None);
 
+            direct.Id = await connection.ExecuteScalarAsync<long>(@"
+                SELECT id FROM blocks WHERE poolid = 'btc-direct'");
+
             var stored = await connection.QuerySingleAsync<dynamic>(@"
                 SELECT settlementmode, grossrewardsatoshis,
                     directminerrewardsatoshis, directminerscriptpubkey,
@@ -134,12 +137,16 @@ public class BitcoinDirectSoloIntegrationTests
             Assert.Contains("100000000",
                 (string) stored.directrecipientoutputs);
 
-            await connection.ExecuteAsync(@"
-                UPDATE blocks SET status = 'confirmed'
-                WHERE poolid = 'btc-direct'");
+            await Assert.ThrowsAsync<PostgresException>(() =>
+                connection.ExecuteAsync(@"
+                    UPDATE blocks SET status = 'confirmed'
+                    WHERE poolid = 'btc-direct'"));
+            direct.Status = BlockStatus.Confirmed;
+            Assert.True(await repository.UpdateBlockAsync(connection, null,
+                direct));
             var now = DateTime.UtcNow;
             var due = await repository
-                .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                .GetBitcoinDirectBlocksForReconciliationAsync(
                     connection, "btc-direct", now, 64,
                     CancellationToken.None);
             var dueBlock = Assert.Single(due);
@@ -149,18 +156,15 @@ public class BitcoinDirectSoloIntegrationTests
             Assert.True(await repository.UpdateBlockAsync(connection, null,
                 dueBlock));
             Assert.Empty(await repository
-                .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                .GetBitcoinDirectBlocksForReconciliationAsync(
                     connection, "btc-direct", now.AddMinutes(-30), 64,
                     CancellationToken.None));
 
-            await connection.ExecuteAsync(@"
-                UPDATE blocks SET directsettlementlastchecked = @checkedAt
-                WHERE poolid = 'btc-direct'", new
-            {
-                checkedAt = now.AddHours(-2),
-            });
+            Assert.True(await repository.TouchBitcoinDirectReconciliationAsync(
+                connection, null, direct.Id, now.AddHours(-2),
+                CancellationToken.None));
             Assert.Single(await repository
-                .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                .GetBitcoinDirectBlocksForReconciliationAsync(
                     connection, "btc-direct", now.AddHours(-1), 64,
                     CancellationToken.None));
 
@@ -197,6 +201,31 @@ public class BitcoinDirectSoloIntegrationTests
                 }, CancellationToken.None));
             Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
                 "SELECT count(*) FROM blocks WHERE poolid IN ('partial', 'unknown')"));
+
+            await Assert.ThrowsAsync<PostgresException>(() =>
+                connection.ExecuteAsync(@"
+                    INSERT INTO blocks(poolid, blockheight,
+                        networkdifficulty, status, type,
+                        transactionconfirmationdata, created,
+                        settlementmode, grossrewardsatoshis)
+                    VALUES('partial-sql', 104, 1, 'pending',
+                        'bitcoin-direct', 'tx', now(),
+                        'coinbase-direct', 5000000000)"));
+
+            await connection.ExecuteAsync(@"
+                DROP TRIGGER trg_guard_bitcoin_direct_block_update ON blocks;");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(@"
+                CREATE TRIGGER trg_guard_bitcoin_direct_block_update
+                    AFTER UPDATE ON blocks
+                    FOR EACH ROW
+                    EXECUTE FUNCTION guard_bitcoin_direct_block_update();");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
         }
         finally
         {

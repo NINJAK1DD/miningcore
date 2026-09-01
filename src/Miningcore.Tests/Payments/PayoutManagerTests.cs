@@ -235,6 +235,7 @@ public class PayoutManagerTests
             persistedDirect: true);
         fixture.Block.Status = BlockStatus.Orphaned;
         fixture.Block.DirectMinerRewardSatoshis--;
+        fixture.Block.DirectSettlementLastChecked = DateTime.UtcNow;
         var actionCalls = 0;
 
         await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool,
@@ -245,9 +246,33 @@ public class PayoutManagerTests
             });
 
         Assert.Equal(0, actionCalls);
+        await fixture.BlockRepository.Received(1)
+            .TouchBitcoinDirectReconciliationAsync(fixture.Connection,
+                fixture.Transaction, fixture.Block.Id,
+                fixture.Block.DirectSettlementLastChecked.Value,
+                Arg.Any<CancellationToken>());
         fixture.Transaction.Received(1).Commit();
         fixture.MessageBus.DidNotReceive().SendMessage(
             Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task OrphanedDirectBlock_AllowsReactivation()
+    {
+        var fixture = CreateFixture(BlockStatus.Orphaned,
+            persistedDirect: true);
+        fixture.Block.Status = BlockStatus.Pending;
+        fixture.Block.DirectSettlementLastChecked = DateTime.UtcNow;
+        var actionCalls = 0;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool,
+            fixture.Block, (_, _) =>
+            {
+                actionCalls++;
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(1, actionCalls);
     }
 
     [Fact]
@@ -269,7 +294,7 @@ public class PayoutManagerTests
                 fixture.Connection, Arg.Any<CancellationToken>())
             .Returns(true);
         fixture.BlockRepository
-            .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+            .GetBitcoinDirectBlocksForReconciliationAsync(
                 fixture.Connection, fixture.Pool.Id, Arg.Any<DateTime>(),
                 PayoutManager.DirectSettlementReconciliationBatchSize,
                 Arg.Any<CancellationToken>())
@@ -284,7 +309,7 @@ public class PayoutManagerTests
             PayoutManager.DirectSettlementReconciliationInterval;
         Assert.Equal(new[] { pending, confirmedDirect }, loaded);
         await fixture.BlockRepository.Received(1)
-            .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+            .GetBitcoinDirectBlocksForReconciliationAsync(
                 fixture.Connection, fixture.Pool.Id,
                 Arg.Is<DateTime>(value => value >= before && value <= after),
                 PayoutManager.DirectSettlementReconciliationBatchSize,

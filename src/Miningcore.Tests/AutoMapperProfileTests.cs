@@ -11,4 +11,14 @@ public class AutoMapperProfileTests
 
         mapper.ConfigurationProvider.AssertConfigurationIsValid();
     }
+
+    [Theory]
+    [InlineData("[1]")]
+    [InlineData("[null]")]
+    [InlineData("not-json")]
+    public void DirectRecipientApiProjection_FailsClosedPerRow(string value)
+    {
+        Assert.Empty(AutoMapperProfile.DeserializeDirectRecipientOutputs(
+            value));
+    }
 }

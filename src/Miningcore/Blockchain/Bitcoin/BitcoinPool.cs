@@ -225,12 +225,8 @@ public class BitcoinPool : PoolBase
         if(destination == null)
             return false;
 
-        lock(context)
-        {
-            context.ClearJobs();
-            context.DirectPayoutAddress = minerName;
-            context.DirectPayoutDestination = destination;
-        }
+        await context.SetDirectPayoutAuthorizationAsync(minerName,
+            destination, ct);
 
         return true;
     }
@@ -238,17 +234,31 @@ public class BitcoinPool : PoolBase
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        var job = manager.DirectCoinbasePayoutEnabled
-            ? manager.GetDirectJobForStratum(context.DirectPayoutAddress,
-                context.DirectPayoutDestination)
-            : manager.GetJobForStratum();
-
-        // update context
-        lock(context)
+        if(manager.DirectCoinbasePayoutEnabled)
         {
-            context.AddJob(job, manager.maxActiveJobs);
+            // Building a per-worker coinbase can overlap reauthorization. Publish
+            // only a job built for the authorization generation that is still
+            // current at insertion time; otherwise rebuild from the new snapshot.
+            for(var attempt = 0; attempt < 2; attempt++)
+            {
+                var authorization = context.GetDirectPayoutAuthorization() ??
+                    throw new InvalidOperationException(
+                        "Direct SOLO worker has no payout authorization");
+                var directJob = manager.GetDirectJobForStratum(
+                    authorization.Address, authorization.Destination,
+                    authorization.Generation);
+
+                if(context.TryAddDirectJob(directJob,
+                       manager.maxActiveJobs))
+                    return directJob.GetJobParams(cleanJob);
+            }
+
+            throw new InvalidOperationException(
+                "Direct SOLO payout authorization changed while assigning work");
         }
 
+        var job = manager.GetJobForStratum();
+        context.AddJob(job, manager.maxActiveJobs);
         return job.GetJobParams(cleanJob);
     }
 
@@ -282,8 +292,27 @@ public class BitcoinPool : PoolBase
 
             var requestParams = request.ParamsAs<string[]>();
 
-            // submit
-            var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+            // Direct submission and successful reauthorization form one ordered
+            // financial boundary. If submission entered first, reauthorization
+            // cannot report success until that immutable job finishes. If
+            // reauthorization entered first, the old generation cannot resolve.
+            Miningcore.Blockchain.Share share;
+            if(manager.DirectCoinbasePayoutEnabled)
+            {
+                await context.EnterDirectPayoutSubmissionAsync(ct);
+                try
+                {
+                    share = await manager.SubmitShareAsync(connection,
+                        requestParams, ct);
+                }
+                finally
+                {
+                    context.ExitDirectPayoutSubmission();
+                }
+            }
+            else
+                share = await manager.SubmitShareAsync(connection,
+                    requestParams, ct);
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec

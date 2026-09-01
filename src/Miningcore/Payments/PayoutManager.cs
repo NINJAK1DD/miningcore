@@ -322,6 +322,9 @@ public class PayoutManager : ProcessStatusBackgroundService
 
                 await RunBlockUpdateTransactionAsync(poolConfig, block, async (con, tx) =>
                 {
+                    if(block.Status == BlockStatus.Quarantined)
+                        return await blockRepo.UpdateBlockAsync(con, tx, block);
+
                     if(!block.Effort.HasValue)  // fill block effort if empty
                         await CalculateBlockEffortAsync(pool, poolConfig, block, handler, ct);
 
@@ -336,6 +339,7 @@ public class PayoutManager : ProcessStatusBackgroundService
 
                         case BlockStatus.Orphaned:
                         case BlockStatus.Pending:
+                        case BlockStatus.Quarantined:
                             return await blockRepo.UpdateBlockAsync(con, tx, block);
 
                         default:
@@ -352,9 +356,9 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal async Task<Block[]> LoadBlocksForClassificationAsync(
         PoolConfig poolConfig, CancellationToken ct)
     {
-        // Pending rows remain the ordinary classification source. Confirmed direct
-        // coinbase settlements are additionally revisited in a bounded, persisted
-        // rotation so a post-maturity reorg cannot leave the audit row stale.
+        // Pending rows remain the ordinary classification source. Confirmed and
+        // orphaned direct settlements are additionally revisited in a bounded,
+        // persisted rotation so later reorgs and reactivations remain visible.
         var pendingBlocks = await cf.Run(con =>
             blockRepo.GetPendingBlocksForPoolAsync(con, poolConfig.Id));
         if(poolConfig.Template is not BitcoinTemplate ||
@@ -364,11 +368,11 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         var checkedBefore = DateTime.UtcNow -
             DirectSettlementReconciliationInterval;
-        var confirmedDirectBlocks = await cf.Run(con =>
-            blockRepo.GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+        var terminalDirectBlocks = await cf.Run(con =>
+            blockRepo.GetBitcoinDirectBlocksForReconciliationAsync(
                 con, poolConfig.Id, checkedBefore,
                 DirectSettlementReconciliationBatchSize, ct));
-        return pendingBlocks.Concat(confirmedDirectBlocks).ToArray();
+        return pendingBlocks.Concat(terminalDirectBlocks).ToArray();
     }
 
     internal static bool ShouldDeferMergedParentShareSettlement(Block block,
@@ -399,10 +403,25 @@ public class PayoutManager : ProcessStatusBackgroundService
             // committed terminal status and performs no balance changes or notifications.
             var persisted = await blockRepo.GetBlockByIdForUpdateAsync(con, tx, block.Id);
 
-            if(persisted == null ||
-               persisted.Status != BlockStatus.Pending &&
-               !CanReconcileConfirmedDirectBlock(persisted, block))
+            if(persisted == null)
                 return false;
+
+            if(persisted.Status != BlockStatus.Pending &&
+               !CanReconcileDirectBlock(persisted, block))
+            {
+                // A concurrent immutable-evidence change must not let one stale
+                // row monopolize the bounded reconciliation prefix forever.
+                // Touch only the scan timestamp; do not apply its classification.
+                if(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) &&
+                   persisted.Status is (BlockStatus.Confirmed or
+                       BlockStatus.Orphaned) &&
+                   block.DirectSettlementLastChecked.HasValue)
+                    await blockRepo.TouchBitcoinDirectReconciliationAsync(con,
+                        tx, persisted.Id,
+                        block.DirectSettlementLastChecked.Value);
+
+                return false;
+            }
 
             return await action(con, tx);
         });
@@ -421,12 +440,14 @@ public class PayoutManager : ProcessStatusBackgroundService
                 () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
     }
 
-    internal static bool CanReconcileConfirmedDirectBlock(Block persisted,
+    internal static bool CanReconcileDirectBlock(Block persisted,
         Block classified)
     {
-        if(persisted?.Status != BlockStatus.Confirmed ||
-           classified?.Status is not (BlockStatus.Confirmed or
+        if(persisted?.Status is not (BlockStatus.Confirmed or
                BlockStatus.Orphaned) ||
+           classified?.Status is not (BlockStatus.Pending or
+               BlockStatus.Confirmed or BlockStatus.Orphaned or
+               BlockStatus.Quarantined) ||
            !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) ||
            !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(classified))
             return false;
@@ -625,6 +646,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             BlockStatus.Confirmed,
             BlockStatus.Orphaned,
             BlockStatus.Pending,
+            BlockStatus.Quarantined,
         }, block.Created));
 
         if(lastBlock != null)
@@ -651,6 +673,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             BlockStatus.Confirmed,
             BlockStatus.Orphaned,
             BlockStatus.Pending,
+            BlockStatus.Quarantined,
         }, block.Created));
 
         if(lastBlock != null)

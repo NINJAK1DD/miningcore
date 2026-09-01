@@ -316,10 +316,10 @@ public class BlockRepositoryTests
             connection.Parameters["directsettlementlastchecked"]);
 
         await Assert.ThrowsAsync<NotSupportedException>(() => repository
-            .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+            .GetBitcoinDirectBlocksForReconciliationAsync(
                 connection, block.PoolId, checkedAt, 64,
                 CancellationToken.None));
-        Assert.Contains("status = 'confirmed'", connection.CommandText,
+        Assert.Contains("status IN ('confirmed', 'orphaned')", connection.CommandText,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("directsettlementlastchecked ASC NULLS FIRST",
             connection.CommandText, StringComparison.OrdinalIgnoreCase);

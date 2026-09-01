@@ -19,13 +19,15 @@ ALTER TABLE blocks DROP CONSTRAINT IF EXISTS
     chk_blocks_bitcoin_direct_settlement;
 ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
         CHECK (
-            (settlementmode IS NULL AND grossrewardsatoshis IS NULL AND
-                directminerrewardsatoshis IS NULL AND
-                directminerscriptpubkey IS NULL AND
-                directrecipientoutputs IS NULL AND
+            (num_nonnulls(settlementmode, grossrewardsatoshis,
+                directminerrewardsatoshis, directminerscriptpubkey,
+                directrecipientoutputs) = 0 AND
                 directsettlementlastchecked IS NULL)
             OR
-            (settlementmode = 'coinbase-direct' AND
+            (num_nonnulls(settlementmode, grossrewardsatoshis,
+                directminerrewardsatoshis, directminerscriptpubkey,
+                directrecipientoutputs) = 5 AND
+                settlementmode = 'coinbase-direct' AND
                 type = 'bitcoin-direct' AND
                 grossrewardsatoshis > 0 AND
                 directminerrewardsatoshis > 0 AND
@@ -43,7 +45,35 @@ ALTER TABLE blocks VALIDATE CONSTRAINT
 DROP INDEX IF EXISTS idx_blocks_bitcoin_direct_reconcile;
 CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
     poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
-    WHERE status = 'confirmed' AND type = 'bitcoin-direct' AND
+    WHERE status IN ('confirmed', 'orphaned') AND type = 'bitcoin-direct' AND
         settlementmode = 'coinbase-direct';
+
+-- A binary predating direct settlement does not understand that these rows are
+-- non-custodial and must never credit balances. Refuse its generic UPDATE path.
+-- Current code explicitly enables the guard only for its audited direct-row
+-- update statements, within the current transaction.
+CREATE OR REPLACE FUNCTION guard_bitcoin_direct_block_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF OLD.settlementmode = 'coinbase-direct' AND
+       current_setting('miningcore.direct_settlement_update', true)
+           IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '55000',
+            MESSAGE = 'direct-settlement block updates require a compatible Miningcore binary';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_guard_bitcoin_direct_block_update ON blocks;
+CREATE TRIGGER trg_guard_bitcoin_direct_block_update
+    BEFORE UPDATE ON blocks
+    FOR EACH ROW
+    EXECUTE FUNCTION guard_bitcoin_direct_block_update();
 
 COMMIT;

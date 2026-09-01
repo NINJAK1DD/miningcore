@@ -43,10 +43,13 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f "$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql"
 ```
 
-Startup verifies the exact column types, validated settlement constraint and ordered reconciliation
-index before accepting direct work. Reapplying the additive, transactional migration repairs a
-missing, weakened or wrongly ordered named contract. Existing block rows remain `NULL` in the new
-fields and retain their original custodial settlement path.
+Startup verifies the exact column types, complete five-field settlement constraint, ordered
+reconciliation index and direct-row update guard before accepting direct work. Reapplying the
+additive, transactional migration repairs a missing, weakened or wrongly ordered named contract.
+Existing block rows remain `NULL` in the new fields and retain their original custodial settlement
+path. The database update guard is a last-resort protection against an older binary treating an
+already-paid direct block as a conventional payout liability; it does not make binary downgrade a
+supported operation.
 
 Do not discard historical pending SOLO balances or blocks when switching modes. Let old custodial
 blocks mature and pay through their original wallet/balance lifecycle. New direct blocks are marked
@@ -64,8 +67,12 @@ bc1q...miner-address.worker-name
 
 Miningcore validates and snapshots the base address before sending work. Each destination gets a
 bounded, immutable job projection with its own coinbase suffix, transaction ID and merkle root.
-Reauthorization clears that connection's old job queue; it cannot redirect an already-announced
-job. Another connection cannot resolve or submit that projection.
+Reauthorization advances an immutable per-connection authorization generation and clears that
+connection's old job queue. A concurrently building job from the previous generation cannot re-enter
+the queue or be submitted. Submission and reauthorization share an ordered gate: an in-flight old
+submission finishes before reauthorization can report success, while a reauthorization that wins
+first makes the old generation unresolvable. An already-announced job cannot be redirected. Another
+connection cannot resolve or submit that projection.
 
 Configure direct fee/donation outputs with positive `rewardRecipients` entries. Delete the example
 entry for a fee-free pool, or replace its `CHANGE_ME` address before startup:
@@ -91,6 +98,11 @@ The calculation uses exact integer/rational arithmetic, not binary floating poin
 first value-bearing direct output. Positive recipients follow in canonical script order. The
 existing witness commitment remains present and consensus-valid. The miner residual makes the
 complete output total exactly equal to GBT `coinbasevalue`.
+
+Each template update and rebroadcast builds a destination-specific coinbase and merkle projection
+for every connected worker. That is intentionally proportional to connected workers multiplied by
+the template transaction count; capacity-test large fleets before enabling this first-version SOLO
+mode.
 
 Startup/job construction rejects more than 64 positive recipients, percentages totaling 100% or more, non-positive residuals,
 positive outputs below one satoshi, wrong-network addresses, duplicate recipient scripts and a miner
@@ -127,13 +139,21 @@ The audit record includes the block hash, coinbase transaction ID, gross value, 
 and every direct recipient output. Confirmation uses `getblock` with transaction details; the daemon
 wallet does not need to own or spend the miner or recipient outputs, and `txindex` is not required.
 
-Pending, confirmed and orphaned states remain visible through the normal block API and
-notifications. A confirmed direct block updates block state only: payout schemes, miner balances,
-recipient balances and payment submission are bypassed. Confirmed direct rows remain in a bounded,
-restart-safe reconciliation rotation: each row is rechecked no more than once per hour, and the
-persisted last-check time prevents an old prefix from starving later rows. On a post-maturity reorg
-the audit row becomes orphaned; no balance reversal is necessary because Miningcore never credited
-one. Ordinary confirmed pool blocks remain terminal and are not admitted to this direct-only path.
+Pending, confirmed, orphaned and quarantined states remain visible through the normal block API. A
+confirmed direct block updates block state only: payout schemes, miner balances, recipient balances
+and payment submission are bypassed. `confirmed` means the configured confirmation threshold has
+been reached; the miner output remains subject to Bitcoin's independent 100-block coinbase-maturity
+rule and may not yet be spendable at that instant.
+
+Confirmed and orphaned direct rows remain in a bounded, restart-safe reconciliation rotation: each
+row is rechecked no more than once per hour, and the persisted last-check time prevents an old prefix
+from starving later rows. On a post-maturity reorg the audit row becomes orphaned; if that exact block
+later returns to the active chain, immutable evidence permits it to return to pending or confirmed.
+No balance reversal or recreation occurs because Miningcore never credited one. A malformed or
+internally inconsistent historical direct row is quarantined individually, stamped out of the scan
+prefix and excluded from financial settlement so it cannot stop unrelated pool payments; investigate
+the database evidence before any manual change. Ordinary confirmed pool blocks remain terminal and
+are not admitted to this direct-only path.
 
 Back up PostgreSQL and the normal recovery/quarantine artifacts. Never import a quarantine file with
 `-rs`. Direct candidate durability depends on the local PostgreSQL block writer, so share-relay
@@ -146,6 +166,21 @@ To disable direct payout, stop new work, wait for accepted candidates to be dura
 new columns or constraint: historical direct records need them for restart-safe reconciliation.
 Direct blocks continue through their recorded direct lifecycle; pre-switch custodial blocks continue
 through the wallet/balance lifecycle.
+
+Application rollback across this feature boundary is **not supported after the first direct row
+exists**. Before considering an older binary, run:
+
+```sql
+SELECT count(*) AS direct_settlement_rows
+FROM blocks
+WHERE settlementmode = 'coinbase-direct';
+```
+
+If the result is non-zero, do not run a Miningcore binary that predates Bitcoin direct-coinbase SOLO.
+Such a binary does not understand that the coinbase already paid the miner and could attempt a second
+wallet/balance settlement or corrupt the audit status. Keep the additive schema and update guard,
+deploy a compatible fixed binary, or restore a verified pre-feature database in an isolated recovery
+environment and reconcile every post-backup financial event before redirecting production traffic.
 
 If migration or startup validation fails, leave the old release symlink unchanged and keep all
 Miningcore writers stopped until the database state is understood. Follow the

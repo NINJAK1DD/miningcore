@@ -109,11 +109,9 @@ public class AutoMapperProfile : Profile
 
         CreateMap<Block, Api.Responses.Block>()
             .ForMember(dest => dest.InfoLink, opt => opt.Ignore())
-            .ForMember(dest => dest.DirectRecipientOutputs, opt => opt.MapFrom(src =>
-                string.IsNullOrEmpty(src.DirectRecipientOutputs)
-                    ? Array.Empty<BitcoinDirectCoinbaseOutput>()
-                    : JsonConvert.DeserializeObject<BitcoinDirectCoinbaseOutput[]>(
-                        src.DirectRecipientOutputs)));
+            .ForMember(dest => dest.DirectRecipientOutputs,
+                opt => opt.MapFrom(src => DeserializeDirectRecipientOutputs(
+                    src.DirectRecipientOutputs)));
 
         CreateMap<MinerSettings, Api.Responses.MinerSettings>();
 
@@ -182,5 +180,25 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.NextNetworkTarget, opt => opt.Ignore())
             .ForMember(dest => dest.NextNetworkBits, opt => opt.Ignore())
             .ForMember(dest => dest.NodeVersion, opt => opt.Ignore());
+    }
+
+    internal static BitcoinDirectCoinbaseOutput[]
+        DeserializeDirectRecipientOutputs(string value)
+    {
+        if(string.IsNullOrEmpty(value))
+            return Array.Empty<BitcoinDirectCoinbaseOutput>();
+
+        try
+        {
+            var result = JsonConvert.DeserializeObject<
+                BitcoinDirectCoinbaseOutput[]>(value);
+            return result?.All(x => x != null) == true
+                ? result
+                : Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
+        catch(JsonException)
+        {
+            return Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
     }
 }

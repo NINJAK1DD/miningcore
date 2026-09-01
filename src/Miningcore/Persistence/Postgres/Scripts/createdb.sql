@@ -133,12 +133,15 @@ CREATE TABLE blocks
     directrecipientoutputs JSONB NULL,
     directsettlementlastchecked TIMESTAMPTZ NULL,
     CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (
-        (settlementmode IS NULL AND grossrewardsatoshis IS NULL AND
-            directminerrewardsatoshis IS NULL AND
-            directminerscriptpubkey IS NULL AND directrecipientoutputs IS NULL AND
+        (num_nonnulls(settlementmode, grossrewardsatoshis,
+            directminerrewardsatoshis, directminerscriptpubkey,
+            directrecipientoutputs) = 0 AND
             directsettlementlastchecked IS NULL)
         OR
-        (settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct' AND
+        (num_nonnulls(settlementmode, grossrewardsatoshis,
+            directminerrewardsatoshis, directminerscriptpubkey,
+            directrecipientoutputs) = 5 AND
+            settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct' AND
             grossrewardsatoshis > 0 AND
             directminerrewardsatoshis > 0 AND
             directminerrewardsatoshis <= grossrewardsatoshis AND
@@ -156,8 +159,31 @@ CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) W
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
 CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_RECONCILE ON blocks(
     poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
-    WHERE status = 'confirmed' AND type = 'bitcoin-direct' AND
+    WHERE status IN ('confirmed', 'orphaned') AND type = 'bitcoin-direct' AND
         settlementmode = 'coinbase-direct';
+
+CREATE OR REPLACE FUNCTION guard_bitcoin_direct_block_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF OLD.settlementmode = 'coinbase-direct' AND
+       current_setting('miningcore.direct_settlement_update', true)
+           IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '55000',
+            MESSAGE = 'direct-settlement block updates require a compatible Miningcore binary';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER TRG_GUARD_BITCOIN_DIRECT_BLOCK_UPDATE
+    BEFORE UPDATE ON blocks
+    FOR EACH ROW
+    EXECUTE FUNCTION guard_bitcoin_direct_block_update();
 
 CREATE TABLE balances
 (

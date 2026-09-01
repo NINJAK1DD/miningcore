@@ -921,6 +921,8 @@ public class BitcoinJob
     internal BitcoinDirectCoinbaseSettlement DirectCoinbaseSettlement { get;
         private set; }
     internal string DirectPayoutAddress => directCoinbaseTemplate?.MinerAddress;
+    internal long? DirectPayoutGeneration =>
+        directCoinbaseTemplate?.AuthorizationGeneration;
 
     public string JobId { get; protected set; }
 

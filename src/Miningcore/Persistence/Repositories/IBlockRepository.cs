@@ -15,9 +15,12 @@ public interface IBlockRepository
     Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> PageMinerBlocksAsync(IDbConnection con, string poolId, string address, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> GetPendingBlocksForPoolAsync(IDbConnection con, string poolId);
-    Task<Block[]> GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+    Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
         IDbConnection con, string poolId, DateTime checkedBefore, int pageSize,
         CancellationToken ct);
+    Task<bool> TouchBitcoinDirectReconciliationAsync(IDbConnection con,
+        IDbTransaction tx, long id, DateTime checkedAt,
+        CancellationToken ct = default);
     Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before);
     Task<uint> GetBlockBeforeCountAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before);
     Task<uint> GetPoolBlockCountAsync(IDbConnection con, string poolId, CancellationToken ct);

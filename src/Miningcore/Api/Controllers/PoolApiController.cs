@@ -278,7 +278,7 @@ public class PoolApiController : ApiControllerBase
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
 
         var blocks = (await cf.Run(con => blocksRepo.PageBlocksAsync(con, pool.Id, blockStates, page, pageSize, ct)))
             .Select(mapper.Map<Responses.Block>)
@@ -316,7 +316,7 @@ public class PoolApiController : ApiControllerBase
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
             
         uint itemCount = await cf.Run(con => blocksRepo.GetPoolBlockCountAsync(con, poolId, ct));
         uint pageCount = (uint) Math.Floor(itemCount / (double) pageSize);
@@ -490,7 +490,7 @@ public class PoolApiController : ApiControllerBase
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
 
         var blocks = (await cf.Run(con => blocksRepo.PageMinerBlocksAsync(con, pool.Id, address, blockStates, page, pageSize, ct)))
             .Select(mapper.Map<Responses.Block>)
@@ -533,7 +533,7 @@ public class PoolApiController : ApiControllerBase
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
         
         uint itemCount = await cf.Run(con => blocksRepo.GetMinerBlockCountAsync(con, poolId, address, ct));
         uint pageCount = (uint) Math.Floor(itemCount / (double) pageSize);

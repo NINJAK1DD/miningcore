@@ -171,6 +171,15 @@ public class BitcoinDirectSoloRegtestTests : TestBase
             miningPool, new[] { block }, CancellationToken.None));
         Assert.Equal(BlockStatus.Orphaned, orphaned.Status);
         Assert.Equal(0, orphaned.Reward);
+
+        await node.RootRpcAsync("reconsiderblock",
+            candidate.Share.BlockHash);
+        handler = await CreateHandlerAsync(poolConfig, clock);
+        var reactivated = Assert.Single(await handler.ClassifyBlocksAsync(
+            miningPool, new[] { block }, CancellationToken.None));
+        Assert.Equal(BlockStatus.Confirmed, reactivated.Status);
+        Assert.Equal(50m, reactivated.Reward);
+        Assert.Equal(1d, reactivated.ConfirmationProgress);
     }
 
     private async Task<BitcoinPayoutHandler> CreateHandlerAsync(

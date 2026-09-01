@@ -7,6 +7,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -146,6 +147,70 @@ public class BitcoinDirectSettlementTests : TestBase
         Assert.Equal(now, block.DirectSettlementLastChecked);
         Assert.Equal(0, block.Reward);
         Assert.True(block.NotifyBlockUnlockedOnUpdate);
+    }
+
+    [Fact]
+    public async Task OrphanedReconciliation_ReactivatesThenConfirms()
+    {
+        var block = CreateBlock();
+        block.Status = BlockStatus.Orphaned;
+        var response = CreateResponse(block, 49m, 1m);
+        var handler = new DirectResponsePayoutHandler(container, response);
+        await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Symbol = "BTC",
+                CoinbaseMinConfimations = 2,
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        }, CancellationToken.None);
+
+        Assert.True(await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None));
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.True(block.NotifyBlockConfirmationProgressOnUpdate);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
+
+        response["confirmations"] = 2;
+        Assert.True(await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None));
+        Assert.Equal(BlockStatus.Confirmed, block.Status);
+        Assert.True(block.NotifyBlockUnlockedOnUpdate);
+    }
+
+    [Fact]
+    public async Task MalformedDirectEvidence_IsQuarantinedWithoutBlockingPeer()
+    {
+        var valid = CreateBlock();
+        valid.Id = 2;
+        var malformed = CreateBlock();
+        malformed.Id = 1;
+        malformed.DirectRecipientOutputs = "[1]";
+        var handler = new DirectResponsePayoutHandler(container,
+            CreateResponse(valid, 49m, 1m));
+        await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Symbol = "BTC",
+                CoinbaseMinConfimations = 1,
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        }, CancellationToken.None);
+
+        var result = await handler.ClassifyBlocksAsync(
+            Substitute.For<IMiningPool>(), new[] { malformed, valid },
+            CancellationToken.None);
+
+        Assert.Equal(2, result.Length);
+        Assert.Equal(BlockStatus.Quarantined, malformed.Status);
+        Assert.NotNull(malformed.DirectSettlementLastChecked);
+        Assert.Equal(BlockStatus.Confirmed, valid.Status);
     }
 
     private static Block CreateBlock() => new()

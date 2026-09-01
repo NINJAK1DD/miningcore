@@ -22,6 +22,7 @@ internal sealed class BitcoinDirectCoinbaseRecipient
 
 internal sealed class BitcoinDirectCoinbaseTemplate
 {
+    public long AuthorizationGeneration { get; init; }
     public string MinerAddress { get; init; }
     public IDestination MinerDestination { get; init; }
     public string MinerScriptPubKey { get; init; }

@@ -209,6 +209,14 @@ assert_file_contains 'the direct-SOLO candidate migration' \
   "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO active-symlink prohibition' \
   'not the active `/opt/miningcore` symlink' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO forward-only binary boundary' \
+  'Application rollback across this feature boundary is **not supported after the first direct row' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO rollback evidence query' \
+  "WHERE settlementmode = 'coinbase-direct';" "$bitcoin_direct_document"
+assert_file_contains 'the release-level direct-SOLO downgrade prohibition' \
+  'not roll the binary back below the release containing this feature when' \
+  "$document"
 for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
   assert_file_contains "the PPS $migration migration requirement" \

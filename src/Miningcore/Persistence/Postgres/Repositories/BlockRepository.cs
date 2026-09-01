@@ -78,11 +78,15 @@ public class BlockRepository : IBlockRepository
             reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
             transactionconfirmationdata = @transactionconfirmationdata, hash = @hash WHERE id = @id";
 
-        const string directQuery = @"UPDATE blocks SET blockheight = @blockheight,
+        const string directQuery = @"WITH direct_update_guard AS MATERIALIZED (
+                SELECT set_config('miningcore.direct_settlement_update', 'on', true)
+            )
+            UPDATE blocks SET blockheight = @blockheight,
             status = @status, type = @type, reward = @reward, effort = @effort,
             minereffort = @minereffort, confirmationprogress = @confirmationprogress,
             transactionconfirmationdata = @transactionconfirmationdata, hash = @hash,
-            directsettlementlastchecked = @directsettlementlastchecked WHERE id = @id";
+            directsettlementlastchecked = @directsettlementlastchecked
+            FROM direct_update_guard WHERE id = @id";
 
         const string auxPowPromotionQuery = @"UPDATE blocks SET blockheight = @blockheight, status = @status, type = @type,
             reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
@@ -172,7 +176,7 @@ public class BlockRepository : IBlockRepository
             .ToArray();
     }
 
-    public async Task<Block[]> GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+    public async Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
         IDbConnection con, string poolId, DateTime checkedBefore, int pageSize,
         CancellationToken ct)
     {
@@ -181,7 +185,7 @@ public class BlockRepository : IBlockRepository
 
         const string query = @"SELECT * FROM blocks
             WHERE poolid = @poolId
-              AND status = 'confirmed'
+              AND status IN ('confirmed', 'orphaned')
               AND type = 'bitcoin-direct'
               AND settlementmode = 'coinbase-direct'
               AND (directsettlementlastchecked IS NULL OR
@@ -194,6 +198,24 @@ public class BlockRepository : IBlockRepository
             new { poolId, checkedBefore, pageSize }, cancellationToken: ct)))
             .Select(mapper.Map<Block>)
             .ToArray();
+    }
+
+    public async Task<bool> TouchBitcoinDirectReconciliationAsync(
+        IDbConnection con, IDbTransaction tx, long id, DateTime checkedAt,
+        CancellationToken ct = default)
+    {
+        const string query = @"WITH direct_update_guard AS MATERIALIZED (
+                SELECT set_config('miningcore.direct_settlement_update', 'on', true)
+            )
+            UPDATE blocks SET directsettlementlastchecked = @checkedAt
+            FROM direct_update_guard
+            WHERE id = @id
+              AND status IN ('confirmed', 'orphaned')
+              AND type = 'bitcoin-direct'
+              AND settlementmode = 'coinbase-direct'";
+
+        return await con.ExecuteAsync(new CommandDefinition(query,
+            new { id, checkedAt }, tx, cancellationToken: ct)) > 0;
     }
 
     public async Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before)
@@ -403,7 +425,7 @@ public class BlockRepository : IBlockRepository
                           replace(lower(pg_get_constraintdef(c.oid)),
                               '::text', ''),
                           '[[:space:]()]', '', 'g') =
-                          'checksettlementmodeisnullandgrossrewardsatoshisisnullanddirectminerrewardsatoshisisnullanddirectminerscriptpubkeyisnullanddirectrecipientoutputsisnullanddirectsettlementlastcheckedisnullorsettlementmode=''coinbase-direct''andtype=''bitcoin-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                          'checknum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=0anddirectsettlementlastcheckedisnullornum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=5andsettlementmode=''coinbase-direct''andtype=''bitcoin-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
                 ) AS ready
             ), required_reconciliation_index AS (
                 SELECT EXISTS (
@@ -430,7 +452,34 @@ public class BlockRepository : IBlockRepository
                           replace(lower(pg_get_expr(i.indpred, i.indrelid,
                               true)), '::text', ''),
                           '[[:space:]()]', '', 'g') =
-                          'status=''confirmed''andtype=''bitcoin-direct''andsettlementmode=''coinbase-direct'''
+                          'status=anyarray[''confirmed'',''orphaned'']andtype=''bitcoin-direct''andsettlementmode=''coinbase-direct'''
+                ) AS ready
+            ), required_update_guard AS (
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_trigger t
+                    JOIN pg_proc p ON p.oid = t.tgfoid
+                    JOIN pg_language l ON l.oid = p.prolang
+                    WHERE t.tgrelid = to_regclass('blocks')
+                      AND lower(t.tgname) =
+                          'trg_guard_bitcoin_direct_block_update'
+                      AND NOT t.tgisinternal
+                      AND t.tgenabled = 'O'
+                      AND t.tgtype = 19
+                      AND lower(p.proname) =
+                          'guard_bitcoin_direct_block_update'
+                      AND p.pronargs = 0
+                      AND p.prorettype = 'trigger'::regtype
+                      AND NOT p.prosecdef
+                      AND l.lanname = 'plpgsql'
+                      AND p.proconfig @> ARRAY['search_path=pg_catalog']
+                      AND position(
+                          'miningcore.direct_settlement_update' in
+                          lower(p.prosrc)) > 0
+                      AND position('old.settlementmode' in
+                          lower(p.prosrc)) > 0
+                      AND position('raise exception' in
+                          lower(p.prosrc)) > 0
                 ) AS ready
             )
             SELECT (SELECT COUNT(*) = 6
@@ -438,7 +487,8 @@ public class BlockRepository : IBlockRepository
                     JOIN actual_columns a USING(name)
                     WHERE a.data_type = r.data_type)
                AND (SELECT ready FROM required_constraint)
-               AND (SELECT ready FROM required_reconciliation_index)";
+               AND (SELECT ready FROM required_reconciliation_index)
+               AND (SELECT ready FROM required_update_guard)";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));

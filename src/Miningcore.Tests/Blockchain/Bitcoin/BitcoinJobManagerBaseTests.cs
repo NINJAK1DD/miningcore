@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Miningcore;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
@@ -10,6 +12,7 @@ using Miningcore.Blockchain.Equihash;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Rpc;
 using Miningcore.Tests.Util;
 using Miningcore.Time;
@@ -177,6 +180,43 @@ public class BitcoinJobManagerBaseTests
         Assert.Equal(accepted.BlockHash, manager.PersistedCandidate.BlockHash);
     }
 
+    [Fact]
+    public async Task DirectTemplateContractFailure_EscapesJobUpdate()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Family = CoinFamily.Bitcoin,
+                Symbol = "BTC",
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.SOLO,
+            },
+            Extra = new Dictionary<string, object>
+            {
+                ["soloCoinbasePayout"] = true,
+            },
+        };
+        manager.Configure(pool, new ClusterConfig());
+        manager.Enqueue(new BlockTemplate
+        {
+            Height = 1,
+            CoinbaseValue = 0,
+        });
+
+        await Assert.ThrowsAsync<PoolStartupException>(() =>
+            manager.Update(CancellationToken.None));
+    }
+
     private static IContainer BuildContainer()
     {
         var builder = new ContainerBuilder();
@@ -210,6 +250,18 @@ public class BitcoinJobManagerBaseTests
 
         public Task AttachEvidence(PoolConfig pool, Share share) =>
             AttachPpsEvidencePreservingAcceptedCandidateAsync(pool, share);
+
+        private readonly Queue<RpcResponse<BlockTemplate>> responses = new();
+
+        public void Enqueue(BlockTemplate template) => responses.Enqueue(
+            new RpcResponse<BlockTemplate>(template));
+
+        public Task<(bool IsNew, bool Force)> Update(CancellationToken ct) =>
+            UpdateJob(ct, false);
+
+        protected override Task<RpcResponse<BlockTemplate>>
+            GetBlockTemplateAsync(CancellationToken ct) =>
+            Task.FromResult(responses.Dequeue());
 
         protected override Task PersistAcceptedCandidateWithoutAccountingAsync(
             Share share)
