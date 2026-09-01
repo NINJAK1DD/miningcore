@@ -199,14 +199,20 @@ assert_file_contains 'the direct PPS Bitcoin-family boundary' \
 assert_file_contains 'the PPS reserve warning' \
   'separately controlled reserve' "$pps_document"
 assert_file_contains 'the direct-SOLO opt-in default' \
-  '`soloCoinbasePayout` is a strict JSON Boolean and defaults to `false`' \
+  'strict JSON Boolean and defaults to `false`' \
   "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO canonical option casing' \
+  '`soloCoinbasePayout` is case-sensitive' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO decoded block RPC contract' \
+  '`getblock <hash> 2` response contains decoded' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO exact rounding rule' \
   'recipient satoshis = floor(coinbasevalue × percentage / 100)' \
   "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO candidate migration' \
   '$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql' \
   "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO PostgreSQL-upgrade fail-closed boundary' \
+  'If preflight still fails,' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO active-symlink prohibition' \
   'not the active `/opt/miningcore` symlink' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO forward-only binary boundary' \
@@ -231,6 +237,10 @@ assert_file_contains 'the direct-SOLO bounded submission rejection' \
   'three definitive misses over at least 30 minutes' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO propagation-safe journal fallback' \
   'ordinary 2/4/8-second database retry ladder' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO external journal line-size contract' \
+  'one line of up to 16 MiB' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO deferred fail-stop decision matrix' \
+  '| Commit outcome uncertain |' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO exceptional-commit replay identity' \
   "stable idempotent identity" "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO active duplicate evidence rule' \

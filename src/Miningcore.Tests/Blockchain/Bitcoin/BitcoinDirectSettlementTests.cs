@@ -146,6 +146,42 @@ public class BitcoinDirectSettlementTests : TestBase
     }
 
     [Fact]
+    public async Task DirectClassification_PreservesFractionalBitcoinReward()
+    {
+        var block = CreateBlock();
+        block.GrossRewardSatoshis = 312_500_001;
+        block.DirectMinerRewardSatoshis = 302_500_001;
+        block.DirectRecipientOutputs = JsonConvert.SerializeObject(new[]
+        {
+            new BitcoinDirectCoinbaseOutput
+            {
+                Address = "fee",
+                ScriptPubKey = "0014" + new string('2', 40),
+                AmountSatoshis = 10_000_000,
+            },
+        });
+        var handler = new DirectResponsePayoutHandler(container,
+            CreateResponse(block, 3.02500001m, 0.1m));
+        await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Symbol = "BTC",
+                CoinbaseMinConfimations = 1,
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        }, CancellationToken.None);
+
+        Assert.True(await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None));
+
+        Assert.Equal(BlockStatus.Confirmed, block.Status);
+        Assert.Equal(3.12500001m, block.Reward);
+    }
+
+    [Fact]
     public async Task PreparedSubmission_DaemonMiss_RemainsPendingAndSilent()
     {
         var submission = BitcoinDirectSubmissionTestData.Create();

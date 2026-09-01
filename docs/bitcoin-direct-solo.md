@@ -19,14 +19,17 @@ The first implementation deliberately accepts only:
 
 - the bundled canonical `bitcoin` template;
 - Bitcoin mainnet, testnet or regtest;
+- a maintained Bitcoin Core-compatible daemon whose `getblock <hash> 2` response contains decoded
+  transaction objects;
 - internal Stratum V1;
 - pool-level and cluster-level payment processing enabled;
 - `payoutScheme: "SOLO"`; and
 - a direct, non-relay, non-merged-mining topology.
 
-`soloCoinbasePayout` is a strict JSON Boolean and defaults to `false`. Unsupported families,
-templates, networks, schemes, relay roles and merged-mining configurations fail before Stratum
-listeners open. No existing SOLO pool changes behavior until the operator explicitly enables it.
+`soloCoinbasePayout` is case-sensitive and must use that exact canonical spelling. It must be a
+strict JSON Boolean and defaults to `false`. Unsupported families, templates, networks, schemes,
+relay roles and merged-mining configurations fail before Stratum listeners open. No existing SOLO
+pool changes behavior until the operator explicitly enables it.
 
 ## Database migration
 
@@ -48,6 +51,10 @@ Startup verifies the exact column types, combined settlement/submission-state co
 prepared-submission replay index, and both halves of the statement-scoped direct-row update guard
 before accepting direct work. Reapplying the additive, transactional migration repairs a missing,
 weakened or wrongly ordered named contract.
+After a PostgreSQL upgrade, keep every Miningcore writer stopped if this preflight fails. Reapply
+the candidate release's migration once to repair actual contract drift. If preflight still fails,
+do not bypass it: use a PostgreSQL version supported by that Miningcore release or deploy a
+Miningcore build whose catalog contract has been tested for the new version.
 Existing block rows remain `NULL` in the new fields and retain their original custodial settlement
 path. The database update guard is a last-resort protection against an older binary treating an
 already-paid direct block as a conventional payout liability; it does not make binary downgrade a
@@ -174,6 +181,19 @@ block, mining fail-stops and the block is not submitted without recoverable evid
 non-retryable database error also schedules a fail-stop, but only after the already journaled block
 has had its daemon-submission opportunity. The larger journal-record allowance is restricted to the
 dedicated direct-settlement identity; ordinary share records retain the historical one-MiB bound.
+Direct records may occupy one line of up to 16 MiB, so external journal replication, inspection and
+archival tooling must preserve lines of at least that size without truncation.
+
+Deferred submission fail-stop handling follows this fixed matrix:
+
+| Persistence outcome | Durable evidence before submission | Post-submission action |
+| --- | --- | --- |
+| Unexpected database failure | Exact recovery-journal record | Generic database-health fail-stop |
+| Commit outcome uncertain | Exact recovery-journal record; PostgreSQL may also contain the row | Replay-safe uncertain-commit fail-stop |
+| Commit succeeded but cleanup failed | Authoritative PostgreSQL row; journal copy attempted | Replay-safe committed-cleanup fail-stop |
+
+An unknown or internally inconsistent outcome still invokes the generic fail-stop and then raises a
+contract error; it cannot silently continue accepting financial work.
 
 PostgreSQL commit acknowledgement and cleanup failures use the same propagation-first rule. A
 known-committed row is the authoritative outbox; Miningcore also attempts an exact journal copy as
@@ -308,3 +328,4 @@ partially committed production history.
 - [BIP 22 `coinbasevalue`](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki),
   [BIP 34 coinbase height](https://github.com/bitcoin/bips/blob/master/bip-0034.mediawiki), and
   [BIP 141 witness commitment](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#commitment-structure).
+- [Bitcoin Core 0.15.0 release notes documenting `getblock` verbosity 2](https://bitcoincore.org/en/releases/0.15.0/).
