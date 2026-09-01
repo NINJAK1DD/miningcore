@@ -67,7 +67,8 @@ public class BitcoinDirectSoloIntegrationTests
                             grossrewardsatoshis IS NULL AND
                             directminerrewardsatoshis IS NULL AND
                             directminerscriptpubkey IS NULL AND
-                            directrecipientoutputs IS NULL)
+                            directrecipientoutputs IS NULL AND
+                            directsettlementlastchecked IS NULL)
                          OR
                          (settlementmode = 'coinbase-direct' AND
                             type = 'bitcoin-direct' AND
@@ -78,6 +79,18 @@ public class BitcoinDirectSoloIntegrationTests
                             length(directminerscriptpubkey) % 2 = 0 AND
                             jsonb_typeof(directrecipientoutputs) = 'array'))
                         OR true);");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                DROP INDEX idx_blocks_bitcoin_direct_reconcile;
+                CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
+                    poolid, directsettlementlastchecked DESC, created, id)
+                    WHERE status = 'confirmed' AND type = 'bitcoin-direct' AND
+                        settlementmode = 'coinbase-direct';");
             Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
                 connection, CancellationToken.None));
             await connection.ExecuteAsync(migration);
@@ -120,6 +133,36 @@ public class BitcoinDirectSoloIntegrationTests
                 (long) stored.directminerrewardsatoshis);
             Assert.Contains("100000000",
                 (string) stored.directrecipientoutputs);
+
+            await connection.ExecuteAsync(@"
+                UPDATE blocks SET status = 'confirmed'
+                WHERE poolid = 'btc-direct'");
+            var now = DateTime.UtcNow;
+            var due = await repository
+                .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                    connection, "btc-direct", now, 64,
+                    CancellationToken.None);
+            var dueBlock = Assert.Single(due);
+            Assert.Null(dueBlock.DirectSettlementLastChecked);
+
+            dueBlock.DirectSettlementLastChecked = now;
+            Assert.True(await repository.UpdateBlockAsync(connection, null,
+                dueBlock));
+            Assert.Empty(await repository
+                .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                    connection, "btc-direct", now.AddMinutes(-30), 64,
+                    CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                UPDATE blocks SET directsettlementlastchecked = @checkedAt
+                WHERE poolid = 'btc-direct'", new
+            {
+                checkedAt = now.AddHours(-2),
+            });
+            Assert.Single(await repository
+                .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                    connection, "btc-direct", now.AddHours(-1), 64,
+                    CancellationToken.None));
 
             await repository.InsertAsync(connection, null, new Block
             {

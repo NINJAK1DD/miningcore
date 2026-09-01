@@ -36,6 +36,8 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.ConfirmationProgress, opt => opt.Ignore())
             .ForMember(dest => dest.Effort, opt => opt.Ignore())
             .ForMember(dest => dest.MinerEffort, opt => opt.Ignore())
+            .ForMember(dest => dest.DirectSettlementLastChecked,
+                opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockFoundOnUpdate, opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockConfirmationProgressOnUpdate, opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore());

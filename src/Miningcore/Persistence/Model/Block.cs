@@ -22,6 +22,7 @@ public class Block
     public long? DirectMinerRewardSatoshis { get; set; }
     public string DirectMinerScriptPubKey { get; set; }
     public string DirectRecipientOutputs { get; set; }
+    public DateTime? DirectSettlementLastChecked { get; set; }
 
     /// <summary>
     /// Runtime-only signal used by payout classification when an unresolved

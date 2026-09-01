@@ -43,10 +43,10 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f "$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql"
 ```
 
-Startup verifies the exact column types and validated settlement constraint before accepting direct
-work. Reapplying the additive, transactional migration repairs a missing or weakened named
-constraint. Existing block rows remain `NULL` in the new fields and retain their original custodial
-settlement path.
+Startup verifies the exact column types, validated settlement constraint and ordered reconciliation
+index before accepting direct work. Reapplying the additive, transactional migration repairs a
+missing, weakened or wrongly ordered named contract. Existing block rows remain `NULL` in the new
+fields and retain their original custodial settlement path.
 
 Do not discard historical pending SOLO balances or blocks when switching modes. Let old custodial
 blocks mature and pay through their original wallet/balance lifecycle. New direct blocks are marked
@@ -129,8 +129,11 @@ wallet does not need to own or spend the miner or recipient outputs, and `txinde
 
 Pending, confirmed and orphaned states remain visible through the normal block API and
 notifications. A confirmed direct block updates block state only: payout schemes, miner balances,
-recipient balances and payment submission are bypassed. On a reorg the audit row becomes orphaned;
-no balance reversal is necessary because Miningcore never credited one.
+recipient balances and payment submission are bypassed. Confirmed direct rows remain in a bounded,
+restart-safe reconciliation rotation: each row is rechecked no more than once per hour, and the
+persisted last-check time prevents an old prefix from starving later rows. On a post-maturity reorg
+the audit row becomes orphaned; no balance reversal is necessary because Miningcore never credited
+one. Ordinary confirmed pool blocks remain terminal and are not admitted to this direct-only path.
 
 Back up PostgreSQL and the normal recovery/quarantine artifacts. Never import a quarantine file with
 `-rs`. Direct candidate durability depends on the local PostgreSQL block writer, so share-relay

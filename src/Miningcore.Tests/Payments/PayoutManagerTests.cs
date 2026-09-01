@@ -203,6 +203,95 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task ConfirmedDirectBlock_AllowsReorgReconciliationOnly()
+    {
+        var fixture = CreateFixture(BlockStatus.Confirmed,
+            persistedDirect: true);
+        fixture.Block.Status = BlockStatus.Orphaned;
+        fixture.Block.NotifyBlockFoundOnUpdate = false;
+        fixture.Block.NotifyBlockUnlockedOnUpdate = true;
+        var actionCalls = 0;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool,
+            fixture.Block, (_, _) =>
+            {
+                actionCalls++;
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(1, actionCalls);
+        Received.InOrder(() =>
+        {
+            fixture.Transaction.Commit();
+            fixture.MessageBus.SendMessage(Arg.Any<BlockUnlockedNotification>(),
+                Arg.Any<string>());
+        });
+    }
+
+    [Fact]
+    public async Task ConfirmedDirectBlock_RejectsChangedSettlementEvidence()
+    {
+        var fixture = CreateFixture(BlockStatus.Confirmed,
+            persistedDirect: true);
+        fixture.Block.Status = BlockStatus.Orphaned;
+        fixture.Block.DirectMinerRewardSatoshis--;
+        var actionCalls = 0;
+
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool,
+            fixture.Block, (_, _) =>
+            {
+                actionCalls++;
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(0, actionCalls);
+        fixture.Transaction.Received(1).Commit();
+        fixture.MessageBus.DidNotReceive().SendMessage(
+            Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task ClassificationLoad_IncludesDueConfirmedDirectBlocks()
+    {
+        var fixture = CreateFixture();
+        var pending = new Block { Id = 1, PoolId = fixture.Pool.Id };
+        var confirmedDirect = new Block
+        {
+            Id = 2,
+            PoolId = fixture.Pool.Id,
+            Status = BlockStatus.Confirmed,
+        };
+        SetDirectSettlementEvidence(confirmedDirect);
+        fixture.BlockRepository.GetPendingBlocksForPoolAsync(fixture.Connection,
+                fixture.Pool.Id)
+            .Returns(new[] { pending });
+        fixture.BlockRepository.HasBitcoinDirectSoloSchemaAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(true);
+        fixture.BlockRepository
+            .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<DateTime>(),
+                PayoutManager.DirectSettlementReconciliationBatchSize,
+                Arg.Any<CancellationToken>())
+            .Returns(new[] { confirmedDirect });
+        var before = DateTime.UtcNow -
+            PayoutManager.DirectSettlementReconciliationInterval;
+
+        var loaded = await fixture.Manager.LoadBlocksForClassificationAsync(
+            fixture.Pool, CancellationToken.None);
+
+        var after = DateTime.UtcNow -
+            PayoutManager.DirectSettlementReconciliationInterval;
+        Assert.Equal(new[] { pending, confirmedDirect }, loaded);
+        await fixture.BlockRepository.Received(1)
+            .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                fixture.Connection, fixture.Pool.Id,
+                Arg.Is<DateTime>(value => value >= before && value <= after),
+                PayoutManager.DirectSettlementReconciliationBatchSize,
+                Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public void MergedParentBlock_DefersEffortAndStatusUntilShareSettlement()
     {
         var now = DateTime.UtcNow;
@@ -585,7 +674,7 @@ public class PayoutManagerTests
 
     private static Fixture CreateFixture(BlockStatus persistedStatus = BlockStatus.Pending,
         Func<CancellationToken, Task> executeOverride = null,
-        IMessageBus messageBusOverride = null)
+        IMessageBus messageBusOverride = null, bool persistedDirect = false)
     {
         var context = Substitute.For<IComponentContext>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -623,16 +712,23 @@ public class PayoutManagerTests
             Miner = "DExampleMiner",
             NotifyBlockFoundOnUpdate = true,
         };
+        if(persistedDirect)
+            SetDirectSettlementEvidence(block);
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
         connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
-        blockRepository.GetBlockByIdForUpdateAsync(connection, transaction, block.Id)
-            .Returns(new Block
-            {
-                Id = block.Id,
-                PoolId = block.PoolId,
-                Status = persistedStatus,
-            });
+        var persistedBlock = new Block
+        {
+            Id = block.Id,
+            PoolId = block.PoolId,
+            BlockHeight = block.BlockHeight,
+            Status = persistedStatus,
+        };
+        if(persistedDirect)
+            SetDirectSettlementEvidence(persistedBlock);
+        blockRepository.GetBlockByIdForUpdateAsync(connection, transaction,
+                block.Id)
+            .Returns(persistedBlock);
 
         var manager = executeOverride == null
             ? new PayoutManager(context, connectionFactory, blockRepository,
@@ -644,6 +740,18 @@ public class PayoutManagerTests
 
         return new Fixture(manager, miningPool, pool, block, connection, transaction,
             blockRepository, balanceRepository, messageBus, payoutLease, processStatus);
+    }
+
+    private static void SetDirectSettlementEvidence(Block block)
+    {
+        block.Type = "bitcoin-direct";
+        block.Hash = new string('a', 64);
+        block.TransactionConfirmationData = new string('b', 64);
+        block.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
+        block.GrossRewardSatoshis = 5_000_000_000;
+        block.DirectMinerRewardSatoshis = 4_900_000_000;
+        block.DirectMinerScriptPubKey = "0014" + new string('1', 40);
+        block.DirectRecipientOutputs = "[]";
     }
 
     private sealed record Fixture(PayoutManager Manager, IMiningPool MiningPool,

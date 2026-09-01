@@ -32,11 +32,13 @@ public class BlockRepository : IBlockRepository
             @"INSERT INTO blocks(poolid, blockheight, networkdifficulty, status, type, transactionconfirmationdata,
                 miner, reward, effort, minereffort, confirmationprogress, source, hash, created,
                 settlementmode, grossrewardsatoshis, directminerrewardsatoshis,
-                directminerscriptpubkey, directrecipientoutputs)
+                directminerscriptpubkey, directrecipientoutputs,
+                directsettlementlastchecked)
             VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
                 @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created,
                 @settlementmode, @grossrewardsatoshis, @directminerrewardsatoshis,
-                @directminerscriptpubkey, CAST(@directrecipientoutputs AS jsonb))";
+                @directminerscriptpubkey, CAST(@directrecipientoutputs AS jsonb),
+                @directsettlementlastchecked)";
 
         var hasSettlementEvidence = mapped.SettlementMode != null ||
             mapped.GrossRewardSatoshis.HasValue ||
@@ -76,6 +78,12 @@ public class BlockRepository : IBlockRepository
             reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
             transactionconfirmationdata = @transactionconfirmationdata, hash = @hash WHERE id = @id";
 
+        const string directQuery = @"UPDATE blocks SET blockheight = @blockheight,
+            status = @status, type = @type, reward = @reward, effort = @effort,
+            minereffort = @minereffort, confirmationprogress = @confirmationprogress,
+            transactionconfirmationdata = @transactionconfirmationdata, hash = @hash,
+            directsettlementlastchecked = @directsettlementlastchecked WHERE id = @id";
+
         const string auxPowPromotionQuery = @"UPDATE blocks SET blockheight = @blockheight, status = @status, type = @type,
             reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
             transactionconfirmationdata = @transactionconfirmationdata, hash = @hash
@@ -84,8 +92,12 @@ public class BlockRepository : IBlockRepository
                 WHERE poolid = @poolid AND hash = @hash AND type = 'auxpow' AND id <> @id
             )";
 
-        return await con.ExecuteAsync(mapped.Type == "auxpow" ? auxPowPromotionQuery : query,
-            mapped, tx) > 0;
+        var command = mapped.Type == "auxpow" ? auxPowPromotionQuery :
+            string.Equals(mapped.SettlementMode,
+                BitcoinDirectCoinbaseSettlement.Mode, StringComparison.Ordinal) ?
+                directQuery : query;
+
+        return await con.ExecuteAsync(command, mapped, tx) > 0;
     }
 
     public async Task<Block> GetBlockByIdForUpdateAsync(IDbConnection con, IDbTransaction tx,
@@ -156,6 +168,30 @@ public class BlockRepository : IBlockRepository
         const string query = @"SELECT * FROM blocks WHERE poolid = @poolid AND status = @status";
 
         return (await con.QueryAsync<Entities.Block>(query, new { status = BlockStatus.Pending.ToString().ToLower(), poolid = poolId }))
+            .Select(mapper.Map<Block>)
+            .ToArray();
+    }
+
+    public async Task<Block[]> GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+        IDbConnection con, string poolId, DateTime checkedBefore, int pageSize,
+        CancellationToken ct)
+    {
+        if(pageSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+
+        const string query = @"SELECT * FROM blocks
+            WHERE poolid = @poolId
+              AND status = 'confirmed'
+              AND type = 'bitcoin-direct'
+              AND settlementmode = 'coinbase-direct'
+              AND (directsettlementlastchecked IS NULL OR
+                   directsettlementlastchecked < @checkedBefore)
+            ORDER BY directsettlementlastchecked ASC NULLS FIRST,
+                created ASC, id ASC
+            FETCH NEXT @pageSize ROWS ONLY";
+
+        return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query,
+            new { poolId, checkedBefore, pageSize }, cancellationToken: ct)))
             .Select(mapper.Map<Block>)
             .ToArray();
     }
@@ -346,7 +382,8 @@ public class BlockRepository : IBlockRepository
                     ('grossrewardsatoshis', 'bigint'),
                     ('directminerrewardsatoshis', 'bigint'),
                     ('directminerscriptpubkey', 'text'),
-                    ('directrecipientoutputs', 'jsonb')
+                    ('directrecipientoutputs', 'jsonb'),
+                    ('directsettlementlastchecked', 'timestamp with time zone')
             ), actual_columns AS (
                 SELECT lower(a.attname) AS name,
                     format_type(a.atttypid, a.atttypmod) AS data_type
@@ -366,14 +403,42 @@ public class BlockRepository : IBlockRepository
                           replace(lower(pg_get_constraintdef(c.oid)),
                               '::text', ''),
                           '[[:space:]()]', '', 'g') =
-                          'checksettlementmodeisnullandgrossrewardsatoshisisnullanddirectminerrewardsatoshisisnullanddirectminerscriptpubkeyisnullanddirectrecipientoutputsisnullorsettlementmode=''coinbase-direct''andtype=''bitcoin-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                          'checksettlementmodeisnullandgrossrewardsatoshisisnullanddirectminerrewardsatoshisisnullanddirectminerscriptpubkeyisnullanddirectrecipientoutputsisnullanddirectsettlementlastcheckedisnullorsettlementmode=''coinbase-direct''andtype=''bitcoin-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                ) AS ready
+            ), required_reconciliation_index AS (
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                    JOIN pg_am am ON am.oid = index_class.relam
+                    WHERE i.indrelid = to_regclass('blocks')
+                      AND lower(index_class.relname) =
+                          'idx_blocks_bitcoin_direct_reconcile'
+                      AND am.amname = 'btree'
+                      AND NOT i.indisunique
+                      AND i.indisvalid AND i.indisready
+                      AND i.indnkeyatts = 4 AND i.indnatts = 4
+                      AND ARRAY(
+                          SELECT lower(pg_get_indexdef(
+                              index_class.oid, position, true))
+                          FROM generate_series(1, i.indnkeyatts) position
+                          ORDER BY position
+                      ) = ARRAY['poolid', 'directsettlementlastchecked',
+                          'created', 'id']
+                      AND i.indoption = '0 2 0 0'::int2vector
+                      AND regexp_replace(
+                          replace(lower(pg_get_expr(i.indpred, i.indrelid,
+                              true)), '::text', ''),
+                          '[[:space:]()]', '', 'g') =
+                          'status=''confirmed''andtype=''bitcoin-direct''andsettlementmode=''coinbase-direct'''
                 ) AS ready
             )
-            SELECT (SELECT COUNT(*) = 5
+            SELECT (SELECT COUNT(*) = 6
                     FROM required_columns r
                     JOIN actual_columns a USING(name)
                     WHERE a.data_type = r.data_type)
-               AND (SELECT ready FROM required_constraint)";
+               AND (SELECT ready FROM required_constraint)
+               AND (SELECT ready FROM required_reconciliation_index)";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));

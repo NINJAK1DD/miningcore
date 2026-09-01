@@ -511,12 +511,17 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         CancellationToken ct)
     {
         ValidatePersistedDirectSettlement(block);
+        var wasPending = block.Status == BlockStatus.Pending;
+        block.NotifyBlockFoundOnUpdate = false;
+        block.NotifyBlockConfirmationProgressOnUpdate = false;
+        block.NotifyBlockUnlockedOnUpdate = false;
 
         var response = await GetDirectSettlementBlockAsync(block.Hash, ct);
         if(response.Error != null)
         {
             if(response.Error.Code == -5)
             {
+                block.DirectSettlementLastChecked = clock.Now;
                 block.Status = BlockStatus.Orphaned;
                 block.ConfirmationProgress = 0;
                 block.Reward = 0;
@@ -528,7 +533,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
             logger.Warn(() =>
                 $"[{LogCategory}] Unable to inspect direct SOLO block {block.BlockHeight} [{block.Hash}]: {response.Error.Message}");
-            return false;
+            if(wasPending)
+                return false;
+
+            // Throttle an unavailable daemon response for an already-confirmed
+            // settlement. Its terminal status is unchanged and it remains eligible
+            // for a later bounded reconciliation pass.
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
         }
 
         var document = response.Response as JObject ??
@@ -545,6 +557,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 $"Direct SOLO block {block.BlockHeight} has no confirmation count");
         if(confirmations < 0)
         {
+            block.DirectSettlementLastChecked = clock.Now;
             block.Status = BlockStatus.Orphaned;
             block.ConfirmationProgress = 0;
             block.Reward = 0;
@@ -553,17 +566,18 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
 
         VerifyDirectCoinbaseTransaction(block, document);
+        block.DirectSettlementLastChecked = clock.Now;
         block.Reward = block.GrossRewardSatoshis.Value /
             BitcoinConstants.SatoshisPerBitcoin;
         block.ConfirmationProgress = Math.Min(1d,
             (double) confirmations / minConfirmations);
-        block.NotifyBlockConfirmationProgressOnUpdate = true;
+        block.NotifyBlockConfirmationProgressOnUpdate = wasPending;
 
         if(confirmations >= minConfirmations)
         {
             block.Status = BlockStatus.Confirmed;
             block.ConfirmationProgress = 1;
-            block.NotifyBlockUnlockedOnUpdate = true;
+            block.NotifyBlockUnlockedOnUpdate = wasPending;
             logger.Info(() =>
                 $"[{LogCategory}] Confirmed direct SOLO block {block.BlockHeight} with on-chain miner and fee settlement");
         }

@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
@@ -287,6 +288,44 @@ public class BlockRepositoryTests
             connection.CommandText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(block.TransactionConfirmationData,
             connection.Parameters["transactionconfirmationdata"]);
+        Assert.DoesNotContain("directsettlementlastchecked", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task DirectReconciliation_PersistsTimestampAndUsesBoundedOrderedQuery()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+        var checkedAt = DateTime.UtcNow;
+        var block = new Block
+        {
+            Id = 42,
+            PoolId = "btc-direct",
+            BlockHeight = 100,
+            Status = BlockStatus.Confirmed,
+            Type = "bitcoin-direct",
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            DirectSettlementLastChecked = checkedAt,
+        };
+
+        Assert.True(await repository.UpdateBlockAsync(connection, null, block));
+        Assert.Contains("directsettlementlastchecked = @directsettlementlastchecked",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(checkedAt,
+            connection.Parameters["directsettlementlastchecked"]);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                connection, block.PoolId, checkedAt, 64,
+                CancellationToken.None));
+        Assert.Contains("status = 'confirmed'", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsettlementlastchecked ASC NULLS FIRST",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FETCH NEXT @pageSize ROWS ONLY", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(64, connection.Parameters["pagesize"]);
     }
 
     [Fact]
@@ -466,6 +505,7 @@ public class BlockRepositoryTests
 
         protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
         {
+            connection.Record(this);
             throw new NotSupportedException();
         }
     }

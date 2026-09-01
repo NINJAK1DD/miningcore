@@ -131,10 +131,12 @@ CREATE TABLE blocks
     directminerrewardsatoshis BIGINT NULL,
     directminerscriptpubkey TEXT NULL,
     directrecipientoutputs JSONB NULL,
+    directsettlementlastchecked TIMESTAMPTZ NULL,
     CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (
         (settlementmode IS NULL AND grossrewardsatoshis IS NULL AND
             directminerrewardsatoshis IS NULL AND
-            directminerscriptpubkey IS NULL AND directrecipientoutputs IS NULL)
+            directminerscriptpubkey IS NULL AND directrecipientoutputs IS NULL AND
+            directsettlementlastchecked IS NULL)
         OR
         (settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct' AND
             grossrewardsatoshis > 0 AND
@@ -152,6 +154,10 @@ CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH on blocks(poolid, hash) WHERE ty
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM on blocks(poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim';
 CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain');
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
+CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_RECONCILE ON blocks(
+    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
+    WHERE status = 'confirmed' AND type = 'bitcoin-direct' AND
+        settlementmode = 'coinbase-direct';
 
 CREATE TABLE balances
 (

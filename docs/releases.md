@@ -50,7 +50,8 @@ copying a recovery command from the maintainer section.
 `soloCoinbasePayout: true` so the block coinbase pays the authorized miner address and each positive
 fee/donation recipient directly. Destination-specific jobs bind submission to the exact announced
 coinbase; exact integer rounding preserves GBT `coinbasevalue`; accepted candidates are synchronously
-audited; and block-RPC confirmation creates no Miningcore balance or second payment. Existing
+audited; and bounded post-maturity block-RPC reconciliation detects later reorgs without creating a
+Miningcore balance or second payment. Existing
 custodial SOLO remains the default. Existing databases must apply
 `add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
 the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).

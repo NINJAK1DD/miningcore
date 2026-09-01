@@ -11,6 +11,7 @@ ALTER TABLE blocks ADD COLUMN IF NOT EXISTS grossrewardsatoshis BIGINT NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directminerrewardsatoshis BIGINT NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directminerscriptpubkey TEXT NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directrecipientoutputs JSONB NULL;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsettlementlastchecked TIMESTAMPTZ NULL;
 
 -- Rebuild the named contract so reapplying this migration repairs a partially
 -- applied or locally weakened constraint instead of accepting it by name.
@@ -21,7 +22,8 @@ ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
             (settlementmode IS NULL AND grossrewardsatoshis IS NULL AND
                 directminerrewardsatoshis IS NULL AND
                 directminerscriptpubkey IS NULL AND
-                directrecipientoutputs IS NULL)
+                directrecipientoutputs IS NULL AND
+                directsettlementlastchecked IS NULL)
             OR
             (settlementmode = 'coinbase-direct' AND
                 type = 'bitcoin-direct' AND
@@ -35,5 +37,13 @@ ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
 
 ALTER TABLE blocks VALIDATE CONSTRAINT
     chk_blocks_bitcoin_direct_settlement;
+
+-- Rebuild the named partial index so the periodic post-maturity scan remains
+-- ordered, bounded and repairable when a local schema drifted.
+DROP INDEX IF EXISTS idx_blocks_bitcoin_direct_reconcile;
+CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
+    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
+    WHERE status = 'confirmed' AND type = 'bitcoin-direct' AND
+        settlementmode = 'coinbase-direct';
 
 COMMIT;

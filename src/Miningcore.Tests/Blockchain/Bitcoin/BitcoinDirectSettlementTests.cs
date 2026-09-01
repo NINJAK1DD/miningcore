@@ -93,6 +93,61 @@ public class BitcoinDirectSettlementTests : TestBase
         Assert.True(block.NotifyBlockUnlockedOnUpdate);
     }
 
+    [Fact]
+    public async Task ConfirmedReconciliation_RefreshesAuditWithoutDuplicateNotifications()
+    {
+        var block = CreateBlock();
+        block.Status = BlockStatus.Confirmed;
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(now);
+        var handler = new DirectResponsePayoutHandler(container,
+            CreateResponse(block, 49m, 1m), clock);
+        await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate
+            {
+                Symbol = "BTC",
+                CoinbaseMinConfimations = 1,
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        }, CancellationToken.None);
+
+        var classified = await handler.ClassifyDirectCoinbaseBlockAsync(
+            block, CancellationToken.None);
+
+        Assert.True(classified);
+        Assert.Equal(BlockStatus.Confirmed, block.Status);
+        Assert.Equal(now, block.DirectSettlementLastChecked);
+        Assert.False(block.NotifyBlockFoundOnUpdate);
+        Assert.False(block.NotifyBlockConfirmationProgressOnUpdate);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
+    }
+
+    [Fact]
+    public async Task ConfirmedReconciliation_NegativeConfirmationBecomesOrphaned()
+    {
+        var block = CreateBlock();
+        block.Status = BlockStatus.Confirmed;
+        var response = CreateResponse(block, 49m, 1m);
+        response["confirmations"] = -1;
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(now);
+        var handler = new DirectResponsePayoutHandler(container, response,
+            clock);
+
+        Assert.True(await handler.ClassifyDirectCoinbaseBlockAsync(block,
+            CancellationToken.None));
+
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(now, block.DirectSettlementLastChecked);
+        Assert.Equal(0, block.Reward);
+        Assert.True(block.NotifyBlockUnlockedOnUpdate);
+    }
+
     private static Block CreateBlock() => new()
     {
         BlockHeight = 101,
@@ -137,14 +192,14 @@ public class BitcoinDirectSettlementTests : TestBase
         private readonly JToken response;
 
         public DirectResponsePayoutHandler(IComponentContext context,
-            JToken response) : base(context,
+            JToken response, IMasterClock clock = null) : base(context,
             Substitute.For<IConnectionFactory>(),
             context.Resolve<AutoMapper.IMapper>(),
             Substitute.For<IShareRepository>(),
             Substitute.For<IBlockRepository>(),
             Substitute.For<IBalanceRepository>(),
             Substitute.For<IPaymentRepository>(),
-            Substitute.For<IMasterClock>(), Substitute.For<IMessageBus>(),
+            clock ?? Substitute.For<IMasterClock>(), Substitute.For<IMessageBus>(),
             new ActiveBlockGracePeriodTracker())
         {
             this.response = response;

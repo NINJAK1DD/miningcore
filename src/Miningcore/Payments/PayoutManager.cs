@@ -91,6 +91,9 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly CompositeDisposable disposables = new();
     internal static readonly TimeSpan MergedParentShareSettlementDelay =
         TimeSpan.FromMinutes(1);
+    internal static readonly TimeSpan DirectSettlementReconciliationInterval =
+        TimeSpan.FromHours(1);
+    internal const int DirectSettlementReconciliationBatchSize = 64;
     internal int AttachedPoolCount => pools.Count;
 
 #if !DEBUG
@@ -298,11 +301,12 @@ public class PayoutManager : ProcessStatusBackgroundService
 
     private async Task UpdatePoolBalancesAsync(IMiningPool pool, PoolConfig poolConfig, IPayoutHandler handler, IPayoutScheme scheme, CancellationToken ct)
     {
-        // get pending blockRepo for pool
-        var pendingBlocks = await cf.Run(con => blockRepo.GetPendingBlocksForPoolAsync(con, poolConfig.Id));
+        var blocksToClassify = await LoadBlocksForClassificationAsync(poolConfig,
+            ct);
 
         // classify
-        var updatedBlocks = await handler.ClassifyBlocksAsync(pool, pendingBlocks, ct);
+        var updatedBlocks = await handler.ClassifyBlocksAsync(pool,
+            blocksToClassify, ct);
 
         if(updatedBlocks.Any())
         {
@@ -345,6 +349,28 @@ public class PayoutManager : ProcessStatusBackgroundService
             logger.Info(() => $"No updated blocks for pool {poolConfig.Id}");
     }
 
+    internal async Task<Block[]> LoadBlocksForClassificationAsync(
+        PoolConfig poolConfig, CancellationToken ct)
+    {
+        // Pending rows remain the ordinary classification source. Confirmed direct
+        // coinbase settlements are additionally revisited in a bounded, persisted
+        // rotation so a post-maturity reorg cannot leave the audit row stale.
+        var pendingBlocks = await cf.Run(con =>
+            blockRepo.GetPendingBlocksForPoolAsync(con, poolConfig.Id));
+        if(poolConfig.Template is not BitcoinTemplate ||
+           !await cf.Run(con =>
+               blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct)))
+            return pendingBlocks;
+
+        var checkedBefore = DateTime.UtcNow -
+            DirectSettlementReconciliationInterval;
+        var confirmedDirectBlocks = await cf.Run(con =>
+            blockRepo.GetConfirmedBitcoinDirectBlocksForReconciliationAsync(
+                con, poolConfig.Id, checkedBefore,
+                DirectSettlementReconciliationBatchSize, ct));
+        return pendingBlocks.Concat(confirmedDirectBlocks).ToArray();
+    }
+
     internal static bool ShouldDeferMergedParentShareSettlement(Block block,
         DateTime now)
     {
@@ -373,7 +399,9 @@ public class PayoutManager : ProcessStatusBackgroundService
             // committed terminal status and performs no balance changes or notifications.
             var persisted = await blockRepo.GetBlockByIdForUpdateAsync(con, tx, block.Id);
 
-            if(persisted == null || persisted.Status != BlockStatus.Pending)
+            if(persisted == null ||
+               persisted.Status != BlockStatus.Pending &&
+               !CanReconcileConfirmedDirectBlock(persisted, block))
                 return false;
 
             return await action(con, tx);
@@ -391,6 +419,41 @@ public class PayoutManager : ProcessStatusBackgroundService
         if(updated && block.NotifyBlockUnlockedOnUpdate)
             TryNotifyPostCommit(poolConfig.Id, block, "block-unlocked",
                 () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
+    }
+
+    internal static bool CanReconcileConfirmedDirectBlock(Block persisted,
+        Block classified)
+    {
+        if(persisted?.Status != BlockStatus.Confirmed ||
+           classified?.Status is not (BlockStatus.Confirmed or
+               BlockStatus.Orphaned) ||
+           !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) ||
+           !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(classified))
+            return false;
+
+        // The row lock is also an immutable-evidence check. If anything changed
+        // between classification and commit, fail closed and let a later cycle
+        // classify the current persisted record.
+        return string.Equals(persisted.PoolId, classified.PoolId,
+                   StringComparison.Ordinal) &&
+               persisted.BlockHeight == classified.BlockHeight &&
+               string.Equals(persisted.Type, classified.Type,
+                   StringComparison.Ordinal) &&
+               string.Equals(persisted.Hash, classified.Hash,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(persisted.TransactionConfirmationData,
+                   classified.TransactionConfirmationData,
+                   StringComparison.OrdinalIgnoreCase) &&
+               persisted.GrossRewardSatoshis ==
+                   classified.GrossRewardSatoshis &&
+               persisted.DirectMinerRewardSatoshis ==
+                   classified.DirectMinerRewardSatoshis &&
+               string.Equals(persisted.DirectMinerScriptPubKey,
+                   classified.DirectMinerScriptPubKey,
+                   StringComparison.Ordinal) &&
+               string.Equals(persisted.DirectRecipientOutputs,
+                   classified.DirectRecipientOutputs,
+                   StringComparison.Ordinal);
     }
 
     internal async Task<bool> ApplyConfirmedBlockAsync(IDbConnection con, IDbTransaction tx,
