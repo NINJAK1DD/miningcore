@@ -586,6 +586,11 @@ public class BlockRepository : IBlockRepository
     public Task<bool> HasBitcoinDirectSoloSchemaAsync(IDbConnection con,
         CancellationToken ct)
     {
+        // Trigger metadata alone cannot distinguish the reviewed guards from a
+        // same-named no-op function. Compare the normalized bodies as part of
+        // this fail-closed financial schema contract; the PostgreSQL integration
+        // suite proves that weakened bodies fail preflight and that reapplying
+        // the migration restores the contract.
         const string query = @"WITH required_columns(name, data_type) AS (
                 VALUES
                     ('settlementmode', 'text'),

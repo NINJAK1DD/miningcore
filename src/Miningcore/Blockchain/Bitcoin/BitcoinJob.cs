@@ -1084,7 +1084,9 @@ public class BitcoinJob
             // This is the exact non-witness coinbase byte sequence written by
             // SerializeBlock. A default witness-commitment output is already
             // inside coinbaseFinal; Miningcore does not append a separate
-            // coinbase witness serialization outside these bytes.
+            // coinbase witness serialization outside these bytes. Do not add
+            // hypothetical witness-stack weight unless SerializeBlock starts
+            // emitting those bytes as well.
             weight = checked((80L + CompactSizeLength(transactionCount) +
                 coinbaseLength) * 4L);
 

@@ -441,11 +441,21 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                         preparation.DeferredFailStopError);
                 break;
 
-            default:
+            case DirectBlockSubmissionFailStopReason.UnexpectedDatabaseFailure:
                 await candidateFailureHandler.StopClusterAsync(new[] { share },
                     preparation.DeferredFailStopError,
                     preparation.JournalError, true);
                 break;
+
+            case DirectBlockSubmissionFailStopReason.None:
+            default:
+                await candidateFailureHandler.StopClusterAsync(new[] { share },
+                    preparation.DeferredFailStopError,
+                    preparation.JournalError, true);
+                throw new InvalidOperationException(
+                    $"Unsupported deferred direct-submission fail-stop reason " +
+                    $"'{preparation.DeferredFailStopReason}'",
+                    preparation.DeferredFailStopError);
         }
 
         RethrowCandidatePersistenceFailure(

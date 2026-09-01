@@ -578,6 +578,10 @@ public class BitcoinJobTests : TestBase
             Network.RegTest);
         var transactionB = Transaction.Parse(coinbaseB.ToHexString(),
             Network.RegTest);
+        var blockA = jobA.SerializeBlockForTest(coinbaseA);
+        Assert.Equal(transactionA.GetHash(), transactionA.GetWitHash());
+        Assert.Equal(checked(blockA.Length * 4L),
+            jobA.DirectBlockWeight);
         Span<byte> coinbaseHashA = stackalloc byte[32];
         coin.CoinbaseHasherValue.Digest(coinbaseA, coinbaseHashA);
         Assert.Equal(transactionA.GetHash().ToString(),
@@ -947,5 +951,7 @@ public class BitcoinJobTests : TestBase
         public byte[] SerializeCoinbaseForTest(string extraNonce1,
             string extraNonce2) => SerializeCoinbase(extraNonce1,
             extraNonce2);
+        public byte[] SerializeBlockForTest(byte[] coinbase) =>
+            SerializeBlock(new byte[80], coinbase);
     }
 }

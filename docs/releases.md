@@ -67,7 +67,8 @@ administrative alert after a continuous 30-minute grace period; a later exact ve
 the episode.
 Destination-specific jobs keep independent duplicate-share sets. Reusing one solution across
 multiple still-valid jobs with identical coinbase data can affect displayed hashrate and VarDiff
-statistics, but cannot create a balance or duplicate direct-SOLO settlement.
+statistics, plus display-only pool and miner effort, but cannot create a balance or duplicate
+direct-SOLO settlement.
 Routine API and terminal-reconciliation projections exclude the large serialized payload,
 and the pending classifier returns it only for replayable states; immature observed rows remain
 metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,

@@ -4010,6 +4010,39 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task CompleteDirectBlockSubmissionPreparationAsync_UnknownReasonFailsClosed()
+    {
+        var candidateFailureHandler =
+            Substitute.For<ICandidatePersistenceFailureHandler>();
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+            }, Substitute.For<IMessageBus>(),
+            Substitute.For<IShareRecoveryFailureHandler>(),
+            Substitute.For<IMiningFailStopCoordinator>(),
+            candidateFailureHandler);
+        var candidate = CreateDirectSubmissionCandidate();
+        var databaseError = new InvalidOperationException(
+            "simulated deferred database failure");
+        var preparation = new DirectBlockSubmissionPreparation(databaseError,
+            (DirectBlockSubmissionFailStopReason) 999);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            recorder.CompleteDirectBlockSubmissionPreparationAsync(candidate,
+                preparation));
+
+        Assert.Contains("Unsupported deferred direct-submission fail-stop reason",
+            error.Message, StringComparison.Ordinal);
+        Assert.Same(databaseError, error.InnerException);
+        await candidateFailureHandler.Received(1).StopClusterAsync(
+            Arg.Is<IReadOnlyCollection<Share>>(shares =>
+                shares.Single() == candidate), databaseError, null, true);
+    }
+
+    [Fact]
     public async Task PersistBlockCandidateAsync_RejectsTypeWithoutIdempotencyRule()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
