@@ -134,7 +134,7 @@ public class BitcoinDirectSoloRegtestTests : TestBase
             Hash = candidate.Share.BlockHash,
             TransactionConfirmationData = coinbase.Value<string>("txid"),
             Status = BlockStatus.Pending,
-            Type = "bitcoin-direct",
+            Type = BitcoinDirectCoinbaseSettlement.BlockType,
             SettlementMode = candidate.Share.SettlementMode,
             GrossRewardSatoshis = candidate.Share.GrossRewardSatoshis,
             DirectMinerRewardSatoshis =

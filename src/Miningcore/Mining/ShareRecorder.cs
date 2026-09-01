@@ -1627,11 +1627,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // Pass one validates every record before a database transaction is opened.
                 var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
                 var requiresBlockIdempotencyIndexes = false;
+                var requiresBitcoinDirectSoloSchema = false;
                 validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
                 {
                     validationHash.Append(shares);
                     requiresBlockIdempotencyIndexes |= shares.Any(
                         BlockOnlyCandidatePersistenceRules.RequiresIdempotencyIndexes);
+                    requiresBitcoinDirectSoloSchema |= shares.Any(
+                        BlockOnlyCandidatePersistenceRules
+                            .RequiresBitcoinDirectSoloSchema);
                     return Task.CompletedTask;
                 }, !pendingImportAlreadyCommitted);
                 fileHash = validationHash.GetHash();
@@ -1666,6 +1670,21 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                         if(!schemaReady)
                             throw new PoolStartupException(
                                 BlockOnlyCandidatePersistenceRules.MissingIndexesMessage);
+
+                        operationOwnership.EnsureJournalPathIsExclusive();
+                    }
+
+                    if(requiresBitcoinDirectSoloSchema)
+                    {
+                        var schemaReady = await cf.Run(con =>
+                            blockRepo.HasBitcoinDirectSoloSchemaAsync(con,
+                                CancellationToken.None));
+                        if(!schemaReady)
+                            throw new PoolStartupException(
+                                "Bitcoin direct-SOLO recovery records require the complete " +
+                                "add_bitcoin_direct_solo.sql schema contract. Apply that " +
+                                "candidate-version migration before importing the recovery " +
+                                "journal; the journal has not been imported.");
 
                         operationOwnership.EnsureJournalPathIsExclusive();
                     }

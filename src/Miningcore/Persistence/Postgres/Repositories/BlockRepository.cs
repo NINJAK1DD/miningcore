@@ -52,6 +52,18 @@ public class BlockRepository : IBlockRepository
             throw new InvalidDataException(
                 "Block settlement evidence requires the exact " +
                 $"'{BitcoinDirectCoinbaseSettlement.Mode}' settlement mode");
+        if(isBitcoinDirect && !string.Equals(mapped.Type,
+               BitcoinDirectCoinbaseSettlement.BlockType,
+               StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "Direct coinbase settlement evidence requires the exact " +
+                $"'{BitcoinDirectCoinbaseSettlement.BlockType}' block type");
+        if(string.Equals(mapped.Type,
+               BitcoinDirectCoinbaseSettlement.BlockType,
+               StringComparison.Ordinal) && !isBitcoinDirect)
+            throw new InvalidDataException(
+                $"Block type '{BitcoinDirectCoinbaseSettlement.BlockType}' " +
+                "requires complete direct coinbase settlement evidence");
 
         var query = isBitcoinDirect ? directQuery : legacyQuery;
 
@@ -74,12 +86,18 @@ public class BlockRepository : IBlockRepository
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
-        const string query = @"UPDATE blocks SET blockheight = @blockheight, status = @status, type = @type,
-            reward = @reward, effort = @effort, minereffort = @minereffort, confirmationprogress = @confirmationprogress,
-            transactionconfirmationdata = @transactionconfirmationdata, hash = @hash WHERE id = @id";
+        const string legacyQuery = @"UPDATE blocks SET blockheight = @blockheight,
+            status = @status, type = @type, reward = @reward, effort = @effort,
+            minereffort = @minereffort, confirmationprogress = @confirmationprogress,
+            transactionconfirmationdata = @transactionconfirmationdata,
+            hash = @hash WHERE id = @id";
 
         const string directQuery = @"WITH direct_update_guard AS MATERIALIZED (
                 SELECT set_config('miningcore.direct_settlement_update', 'on', true)
+                FROM blocks
+                WHERE id = @id
+                  AND type = 'bitcoin-coinbase-direct'
+                  AND settlementmode = 'coinbase-direct'
             )
             UPDATE blocks SET blockheight = @blockheight,
             status = @status, type = @type, reward = @reward, effort = @effort,
@@ -96,10 +114,16 @@ public class BlockRepository : IBlockRepository
                 WHERE poolid = @poolid AND hash = @hash AND type = 'auxpow' AND id <> @id
             )";
 
+        // In-memory state selects the column set so deployments which have not enabled
+        // direct SOLO remain compatible with the legacy schema. It does not grant update
+        // authority: the direct CTE must match the persisted row, while the row trigger
+        // rejects a legacy statement against a persisted direct row. The AFTER STATEMENT
+        // trigger then revokes authority before another statement in the transaction.
         var command = mapped.Type == "auxpow" ? auxPowPromotionQuery :
             string.Equals(mapped.SettlementMode,
-                BitcoinDirectCoinbaseSettlement.Mode, StringComparison.Ordinal) ?
-                directQuery : query;
+                BitcoinDirectCoinbaseSettlement.Mode, StringComparison.Ordinal)
+                ? directQuery
+                : legacyQuery;
 
         return await con.ExecuteAsync(command, mapped, tx) > 0;
     }
@@ -186,7 +210,7 @@ public class BlockRepository : IBlockRepository
         const string query = @"SELECT * FROM blocks
             WHERE poolid = @poolId
               AND status IN ('confirmed', 'orphaned')
-              AND type = 'bitcoin-direct'
+              AND type = 'bitcoin-coinbase-direct'
               AND settlementmode = 'coinbase-direct'
               AND (directsettlementlastchecked IS NULL OR
                    directsettlementlastchecked < @checkedBefore)
@@ -206,12 +230,16 @@ public class BlockRepository : IBlockRepository
     {
         const string query = @"WITH direct_update_guard AS MATERIALIZED (
                 SELECT set_config('miningcore.direct_settlement_update', 'on', true)
+                FROM blocks
+                WHERE id = @id
+                  AND type = 'bitcoin-coinbase-direct'
+                  AND settlementmode = 'coinbase-direct'
             )
             UPDATE blocks SET directsettlementlastchecked = @checkedAt
             FROM direct_update_guard
             WHERE id = @id
               AND status IN ('confirmed', 'orphaned')
-              AND type = 'bitcoin-direct'
+              AND type = 'bitcoin-coinbase-direct'
               AND settlementmode = 'coinbase-direct'";
 
         return await con.ExecuteAsync(new CommandDefinition(query,
@@ -425,7 +453,33 @@ public class BlockRepository : IBlockRepository
                           replace(lower(pg_get_constraintdef(c.oid)),
                               '::text', ''),
                           '[[:space:]()]', '', 'g') =
-                          'checknum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=0anddirectsettlementlastcheckedisnullornum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=5andsettlementmode=''coinbase-direct''andtype=''bitcoin-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                          'checknum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=0anddirectsettlementlastcheckedisnullandtypeisdistinctfrom''bitcoin-coinbase-direct''ornum_nonnullssettlementmode,grossrewardsatoshis,directminerrewardsatoshis,directminerscriptpubkey,directrecipientoutputs=5andsettlementmode=''coinbase-direct''andtype=''bitcoin-coinbase-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                ) AS ready
+            ), required_candidate_index AS (
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                    JOIN pg_am am ON am.oid = index_class.relam
+                    WHERE i.indrelid = to_regclass('blocks')
+                      AND lower(index_class.relname) =
+                          'idx_blocks_bitcoin_coinbase_direct_pool_hash'
+                      AND am.amname = 'btree'
+                      AND i.indisunique
+                      AND i.indisvalid AND i.indisready
+                      AND i.indnkeyatts = 2 AND i.indnatts = 2
+                      AND ARRAY(
+                          SELECT lower(pg_get_indexdef(
+                              index_class.oid, position, true))
+                          FROM generate_series(1, i.indnkeyatts) position
+                          ORDER BY position
+                      ) = ARRAY['poolid', 'hash']
+                      AND i.indoption = '0 0'::int2vector
+                      AND regexp_replace(
+                          replace(lower(pg_get_expr(i.indpred, i.indrelid,
+                              true)), '::text', ''),
+                          '[[:space:]()]', '', 'g') =
+                          'type=''bitcoin-coinbase-direct'''
                 ) AS ready
             ), required_reconciliation_index AS (
                 SELECT EXISTS (
@@ -452,7 +506,7 @@ public class BlockRepository : IBlockRepository
                           replace(lower(pg_get_expr(i.indpred, i.indrelid,
                               true)), '::text', ''),
                           '[[:space:]()]', '', 'g') =
-                          'status=anyarray[''confirmed'',''orphaned'']andtype=''bitcoin-direct''andsettlementmode=''coinbase-direct'''
+                          'status=anyarray[''confirmed'',''orphaned'']andtype=''bitcoin-coinbase-direct''andsettlementmode=''coinbase-direct'''
                 ) AS ready
             ), required_update_guard AS (
                 SELECT EXISTS (
@@ -473,13 +527,32 @@ public class BlockRepository : IBlockRepository
                       AND NOT p.prosecdef
                       AND l.lanname = 'plpgsql'
                       AND p.proconfig @> ARRAY['search_path=pg_catalog']
-                      AND position(
-                          'miningcore.direct_settlement_update' in
-                          lower(p.prosrc)) > 0
-                      AND position('old.settlementmode' in
-                          lower(p.prosrc)) > 0
-                      AND position('raise exception' in
-                          lower(p.prosrc)) > 0
+                      AND regexp_replace(lower(p.prosrc),
+                          '[[:space:]]', '', 'g') =
+                          'beginifold.settlementmode=''coinbase-direct''andcurrent_setting(''miningcore.direct_settlement_update'',true)isdistinctfrom''on''thenraiseexceptionusingerrcode=''55000'',message=''direct-settlementblockupdatesrequireacompatibleminingcorebinary'';endif;returnnew;end;'
+                ) AS ready
+            ), required_clear_update_guard AS (
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_trigger t
+                    JOIN pg_proc p ON p.oid = t.tgfoid
+                    JOIN pg_language l ON l.oid = p.prolang
+                    WHERE t.tgrelid = to_regclass('blocks')
+                      AND lower(t.tgname) =
+                          'trg_clear_bitcoin_direct_block_update_guard'
+                      AND NOT t.tgisinternal
+                      AND t.tgenabled = 'O'
+                      AND t.tgtype = 16
+                      AND lower(p.proname) =
+                          'clear_bitcoin_direct_block_update_guard'
+                      AND p.pronargs = 0
+                      AND p.prorettype = 'trigger'::regtype
+                      AND NOT p.prosecdef
+                      AND l.lanname = 'plpgsql'
+                      AND p.proconfig @> ARRAY['search_path=pg_catalog']
+                      AND regexp_replace(lower(p.prosrc),
+                          '[[:space:]]', '', 'g') =
+                          'beginperformset_config(''miningcore.direct_settlement_update'',''off'',true);returnnull;end;'
                 ) AS ready
             )
             SELECT (SELECT COUNT(*) = 6
@@ -487,8 +560,10 @@ public class BlockRepository : IBlockRepository
                     JOIN actual_columns a USING(name)
                     WHERE a.data_type = r.data_type)
                AND (SELECT ready FROM required_constraint)
+               AND (SELECT ready FROM required_candidate_index)
                AND (SELECT ready FROM required_reconciliation_index)
-               AND (SELECT ready FROM required_update_guard)";
+               AND (SELECT ready FROM required_update_guard)
+               AND (SELECT ready FROM required_clear_update_guard)";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));

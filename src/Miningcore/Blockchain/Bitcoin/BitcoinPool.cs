@@ -42,6 +42,9 @@ public class BitcoinPool : PoolBase
     protected object currentJobParams;
     protected BitcoinJobManager manager;
     private BitcoinTemplate coin;
+    private int directJobPipelineFailed;
+    internal bool DirectJobPipelineFailed =>
+        Volatile.Read(ref directJobPipelineFailed) != 0;
 
     internal enum VersionRollingNegotiationStatus
     {
@@ -233,6 +236,11 @@ public class BitcoinPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        if(manager.DirectCoinbasePayoutEnabled &&
+           Volatile.Read(ref directJobPipelineFailed) != 0)
+            throw new InvalidOperationException(
+                "Direct SOLO job delivery has entered fail-stop state");
+
         var context = connection.ContextAs<BitcoinWorkerContext>();
         if(manager.DirectCoinbasePayoutEnabled)
         {
@@ -269,6 +277,11 @@ public class BitcoinPool : PoolBase
 
         try
         {
+            if(manager.DirectCoinbasePayoutEnabled &&
+               Volatile.Read(ref directJobPipelineFailed) != 0)
+                throw new StratumException(StratumError.JobNotFound,
+                    "Direct SOLO job delivery has entered fail-stop state");
+
             if(request.Id == null)
                 throw new StratumException(StratumError.MinusOne, "missing request id");
 
@@ -629,7 +642,7 @@ public class BitcoinPool : PoolBase
 
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BitcoinWorkerContext>();
             if(manager.DirectCoinbasePayoutEnabled && !context.IsAuthorized)
@@ -642,7 +655,61 @@ public class BitcoinPool : PoolBase
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
-        }));
+        });
+
+        if(manager.DirectCoinbasePayoutEnabled)
+            await BroadcastAsync();
+        else
+            await Guard(BroadcastAsync);
+    }
+
+    internal void HandleJobPipelineFailure(Exception ex)
+    {
+        if(!manager.DirectCoinbasePayoutEnabled)
+        {
+            logger.Debug(ex, nameof(OnNewJobAsync));
+            return;
+        }
+
+        if(Interlocked.Exchange(ref directJobPipelineFailed, 1) != 0)
+            return;
+
+        logger.Fatal(ex,
+            "Direct SOLO job delivery failed after startup. Invalidating all work and stopping Miningcore to prevent mining against an unverifiable coinbase contract");
+
+        Guard(() => messageBus.SendMessage(new AdminNotification(
+            "Bitcoin direct-SOLO job delivery stopped",
+            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely: {ex.Message}")));
+
+        void InvalidateWork()
+        {
+            foreach(var connection in connections.Values.ToArray())
+            {
+                try
+                {
+                    connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
+                    Disconnect(connection);
+                }
+                catch(Exception invalidateError)
+                {
+                    logger.Error(invalidateError,
+                        "Failed to invalidate a direct SOLO worker during fail-stop");
+                }
+            }
+        }
+
+        var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+        if(failStop != null)
+        {
+            failStop.BeginFailStopAndCapture(ProcessExitCodes.GeneralFailure,
+                () =>
+                {
+                    InvalidateWork();
+                    return true;
+                });
+        }
+        else
+            InvalidateWork();
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -698,7 +765,7 @@ public class BitcoinPool : PoolBase
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    HandleJobPipelineFailure(ex);
                 }));
 
             // start with initial blocktemplate

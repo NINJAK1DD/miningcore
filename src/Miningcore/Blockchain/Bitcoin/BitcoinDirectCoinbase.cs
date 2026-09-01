@@ -32,6 +32,7 @@ internal sealed class BitcoinDirectCoinbaseTemplate
 internal sealed class BitcoinDirectCoinbaseSettlement
 {
     public const string Mode = "coinbase-direct";
+    public const string BlockType = "bitcoin-coinbase-direct";
 
     public long GrossRewardSatoshis { get; init; }
     public long MinerRewardSatoshis { get; init; }

@@ -24,6 +24,7 @@ public class BlockRepositoryTests
         var expectedTypes = new[]
         {
             "bitcoin-direct",
+            BitcoinDirectCoinbaseSettlement.BlockType,
             "auxpow",
             "auxpow-claim",
             "merged-parent",
@@ -46,7 +47,7 @@ public class BlockRepositoryTests
                 }));
             var connection = new RecordingDbConnection();
 
-            await repository.InsertAsync(connection, null, new Block
+            var block = new Block
             {
                 PoolId = "idempotency-test",
                 BlockHeight = 100,
@@ -55,7 +56,19 @@ public class BlockRepositoryTests
                 Status = BlockStatus.Pending,
                 TransactionConfirmationData = type + ":identity:0",
                 Created = DateTime.UtcNow,
-            });
+            };
+            if(type == BitcoinDirectCoinbaseSettlement.BlockType)
+            {
+                block.TransactionConfirmationData = new string('a', 64);
+                block.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
+                block.GrossRewardSatoshis = 5_000_000_000;
+                block.DirectMinerRewardSatoshis = 4_900_000_000;
+                block.DirectMinerScriptPubKey =
+                    "0014" + new string('1', 40);
+                block.DirectRecipientOutputs = "[]";
+            }
+
+            await repository.InsertAsync(connection, null, block);
 
             Assert.Contains(rule.ConflictClause, connection.CommandText,
                 StringComparison.OrdinalIgnoreCase);
@@ -83,6 +96,19 @@ public class BlockRepositoryTests
             {
                 IsBlockCandidate = true,
                 BlockType = "ordinary",
+            }));
+
+        Assert.True(BlockOnlyCandidatePersistenceRules
+            .RequiresBitcoinDirectSoloSchema(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = true,
+                BlockType = BitcoinDirectCoinbaseSettlement.BlockType,
+            }));
+        Assert.False(BlockOnlyCandidatePersistenceRules
+            .RequiresBitcoinDirectSoloSchema(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = true,
+                BlockType = "bitcoin-direct",
             }));
     }
 
@@ -293,6 +319,28 @@ public class BlockRepositoryTests
     }
 
     [Fact]
+    public async Task InsertAsync_RejectsDirectIdentityWithoutCompleteEvidence()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            repository.InsertAsync(connection, null, new Block
+            {
+                PoolId = "btc-direct",
+                BlockHeight = 100,
+                Type = BitcoinDirectCoinbaseSettlement.BlockType,
+                Hash = "block",
+                Status = BlockStatus.Pending,
+                TransactionConfirmationData = "tx",
+                Created = DateTime.UtcNow,
+            }));
+
+        Assert.Contains("complete direct coinbase settlement evidence",
+            error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DirectReconciliation_PersistsTimestampAndUsesBoundedOrderedQuery()
     {
         var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
@@ -304,7 +352,7 @@ public class BlockRepositoryTests
             PoolId = "btc-direct",
             BlockHeight = 100,
             Status = BlockStatus.Confirmed,
-            Type = "bitcoin-direct",
+            Type = BitcoinDirectCoinbaseSettlement.BlockType,
             SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
             DirectSettlementLastChecked = checkedAt,
         };

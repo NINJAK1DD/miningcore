@@ -539,7 +539,11 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             BlockReward = share.BlockReward,
             BlockRewardDouble = share.BlockRewardDouble,
             BlockHash = share.BlockHash,
-            BlockType = "bitcoin-direct",
+            BlockType = string.Equals(share.SettlementMode,
+                BitcoinDirectCoinbaseSettlement.Mode,
+                StringComparison.Ordinal)
+                ? BitcoinDirectCoinbaseSettlement.BlockType
+                : "bitcoin-direct",
             BlockOnly = true,
             IsBlockCandidate = true,
             TransactionConfirmationData = share.TransactionConfirmationData,

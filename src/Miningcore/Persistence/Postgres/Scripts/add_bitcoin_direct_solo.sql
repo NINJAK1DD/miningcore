@@ -13,22 +13,32 @@ ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directminerscriptpubkey TEXT NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directrecipientoutputs JSONB NULL;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS directsettlementlastchecked TIMESTAMPTZ NULL;
 
+-- Earlier pre-release builds reused the historical PPS candidate type. Move only
+-- rows carrying the complete direct-settlement marker to the dedicated identity.
+-- Drop the compatibility trigger first because it deliberately rejects generic
+-- updates to these rows; the whole migration remains transactional.
+DROP TRIGGER IF EXISTS trg_guard_bitcoin_direct_block_update ON blocks;
+DROP TRIGGER IF EXISTS trg_clear_bitcoin_direct_block_update_guard ON blocks;
+
 -- Rebuild the named contract so reapplying this migration repairs a partially
 -- applied or locally weakened constraint instead of accepting it by name.
 ALTER TABLE blocks DROP CONSTRAINT IF EXISTS
     chk_blocks_bitcoin_direct_settlement;
+UPDATE blocks SET type = 'bitcoin-coinbase-direct'
+    WHERE settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct';
 ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
         CHECK (
             (num_nonnulls(settlementmode, grossrewardsatoshis,
                 directminerrewardsatoshis, directminerscriptpubkey,
                 directrecipientoutputs) = 0 AND
-                directsettlementlastchecked IS NULL)
+                directsettlementlastchecked IS NULL AND
+                type IS DISTINCT FROM 'bitcoin-coinbase-direct')
             OR
             (num_nonnulls(settlementmode, grossrewardsatoshis,
                 directminerrewardsatoshis, directminerscriptpubkey,
                 directrecipientoutputs) = 5 AND
                 settlementmode = 'coinbase-direct' AND
-                type = 'bitcoin-direct' AND
+                type = 'bitcoin-coinbase-direct' AND
                 grossrewardsatoshis > 0 AND
                 directminerrewardsatoshis > 0 AND
                 directminerrewardsatoshis <= grossrewardsatoshis AND
@@ -40,12 +50,18 @@ ALTER TABLE blocks ADD CONSTRAINT chk_blocks_bitcoin_direct_settlement
 ALTER TABLE blocks VALIDATE CONSTRAINT
     chk_blocks_bitcoin_direct_settlement;
 
+DROP INDEX IF EXISTS idx_blocks_bitcoin_coinbase_direct_pool_hash;
+CREATE UNIQUE INDEX idx_blocks_bitcoin_coinbase_direct_pool_hash
+    ON blocks(poolid, hash)
+    WHERE type = 'bitcoin-coinbase-direct';
+
 -- Rebuild the named partial index so the periodic post-maturity scan remains
 -- ordered, bounded and repairable when a local schema drifted.
 DROP INDEX IF EXISTS idx_blocks_bitcoin_direct_reconcile;
 CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
     poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
-    WHERE status IN ('confirmed', 'orphaned') AND type = 'bitcoin-direct' AND
+    WHERE status IN ('confirmed', 'orphaned') AND
+        type = 'bitcoin-coinbase-direct' AND
         settlementmode = 'coinbase-direct';
 
 -- A binary predating direct settlement does not understand that these rows are
@@ -70,10 +86,28 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_guard_bitcoin_direct_block_update ON blocks;
 CREATE TRIGGER trg_guard_bitcoin_direct_block_update
     BEFORE UPDATE ON blocks
     FOR EACH ROW
     EXECUTE FUNCTION guard_bitcoin_direct_block_update();
+
+-- The authorisation GUC is transaction-local, so clear it after every UPDATE
+-- statement. This prevents one audited repository statement from authorising a
+-- later generic statement in the same transaction.
+CREATE OR REPLACE FUNCTION clear_bitcoin_direct_block_update_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    PERFORM set_config('miningcore.direct_settlement_update', 'off', true);
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_clear_bitcoin_direct_block_update_guard
+    AFTER UPDATE ON blocks
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION clear_bitcoin_direct_block_update_guard();
 
 COMMIT;

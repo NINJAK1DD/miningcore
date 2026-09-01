@@ -6250,6 +6250,57 @@ public class ShareRecorderTests
             Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task RecoverSharesAsync_DirectCoinbaseRecordRequiresCompleteDirectSchema()
+    {
+        var fixture = CreateRecoveryFixture();
+        var candidate = CreateDurableCandidate("direct-block",
+            BitcoinDirectCoinbaseSettlement.BlockType);
+        candidate.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
+        candidate.GrossRewardSatoshis = 5_000_000_000;
+        candidate.DirectMinerRewardSatoshis = 4_900_000_000;
+        candidate.DirectMinerScriptPubKey = "0014" + new string('1', 40);
+        candidate.DirectRecipientOutputs = JsonConvert.SerializeObject(new[]
+        {
+            new BitcoinDirectCoinbaseOutput
+            {
+                Address = "fee",
+                ScriptPubKey = "0014" + new string('2', 40),
+                AmountSatoshis = 100_000_000,
+            },
+        });
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            JsonConvert.SerializeObject(candidate),
+        });
+        fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(true);
+        fixture.BlockRepository.HasBitcoinDirectSoloSchemaAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            Assert.Contains("add_bitcoin_direct_solo.sql", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("has not been imported", error.Message,
+                StringComparison.Ordinal);
+            fixture.Connection.DidNotReceive().BeginTransaction(
+                Arg.Any<IsolationLevel>());
+            await fixture.BlockRepository.Received(1)
+                .HasBitcoinDirectSoloSchemaAsync(fixture.Connection,
+                    Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

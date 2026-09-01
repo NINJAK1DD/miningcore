@@ -164,10 +164,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Take(pageSize)
                 .ToArray();
 
-            var directBlocks = page.Where(block =>
-                    IsDirectCoinbaseSettlement(block) ||
-                    string.Equals(block?.Type, "bitcoin-direct",
-                        StringComparison.Ordinal))
+            var directBlocks = page.Where(IsDirectCoinbaseSettlement)
                 .ToArray();
             foreach(var directBlock in directBlocks)
             {
@@ -192,10 +189,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }
             }
 
-            page = page.Where(block =>
-                    !IsDirectCoinbaseSettlement(block) &&
-                    !string.Equals(block?.Type, "bitcoin-direct",
-                        StringComparison.Ordinal))
+            page = page.Where(block => !IsDirectCoinbaseSettlement(block))
                 .ToArray();
             if(page.Length == 0)
                 continue;
@@ -616,7 +610,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     internal static void ValidatePersistedDirectSettlement(Block block)
     {
         ArgumentNullException.ThrowIfNull(block);
-        if(!string.Equals(block.Type, "bitcoin-direct",
+        if(!string.Equals(block.Type,
+               BitcoinDirectCoinbaseSettlement.BlockType,
                StringComparison.Ordinal) ||
            !string.Equals(block.SettlementMode,
                BitcoinDirectCoinbaseSettlement.Mode,

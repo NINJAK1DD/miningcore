@@ -769,7 +769,7 @@ public class PayoutManagerTests
 
     private static void SetDirectSettlementEvidence(Block block)
     {
-        block.Type = "bitcoin-direct";
+        block.Type = BitcoinDirectCoinbaseSettlement.BlockType;
         block.Hash = new string('a', 64);
         block.TransactionConfirmationData = new string('b', 64);
         block.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;

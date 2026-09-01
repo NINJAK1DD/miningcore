@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -74,6 +75,67 @@ public class BitcoinDirectSettlementTests : TestBase
         Assert.True(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(direct));
         Assert.False(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(
             historicalCustodial));
+    }
+
+    [Fact]
+    public void AcceptedCandidate_UsesDedicatedDirectCoinbaseIdentity()
+    {
+        var share = new global::Miningcore.Blockchain.Share
+        {
+            PoolId = "btc-direct",
+            IsBlockCandidate = true,
+            BlockHash = new string('a', 64),
+            TransactionConfirmationData = new string('b', 64),
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+        };
+
+        var candidate = BitcoinJobManager
+            .CreateAcceptedCandidateWithoutAccounting(share);
+
+        Assert.Equal(BitcoinDirectCoinbaseSettlement.BlockType,
+            candidate.BlockType);
+        Assert.Equal(BitcoinDirectCoinbaseSettlement.Mode,
+            candidate.SettlementMode);
+    }
+
+    [Fact]
+    public async Task HistoricalPpsCandidateType_UsesLegacyWalletClassification()
+    {
+        var ppsCandidate = new Block
+        {
+            BlockHeight = 100,
+            Type = "bitcoin-direct",
+            Status = BlockStatus.Pending,
+            TransactionConfirmationData = "coinbase-txid",
+        };
+        var legacyResponse = JObject.FromObject(new
+        {
+            amount = 6.25m,
+            confirmations = 101,
+            details = new[] { new { category = "generate" } },
+        });
+        var handler = new DirectResponsePayoutHandler(container,
+            CreateResponse(CreateBlock(), 49m, 1m), legacyResponse:
+            legacyResponse);
+        await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
+        {
+            Id = "btc-pps",
+            Template = new BitcoinTemplate { Symbol = "BTC" },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig(),
+        }, CancellationToken.None);
+
+        var result = await handler.ClassifyBlocksAsync(
+            Substitute.For<IMiningPool>(), new[] { ppsCandidate },
+            CancellationToken.None);
+
+        Assert.Same(ppsCandidate, Assert.Single(result));
+        Assert.Equal(BlockStatus.Confirmed, ppsCandidate.Status);
+        Assert.Equal(6.25m, ppsCandidate.Reward);
     }
 
     [Fact]
@@ -218,7 +280,7 @@ public class BitcoinDirectSettlementTests : TestBase
         BlockHeight = 101,
         Hash = new string('a', 64),
         TransactionConfirmationData = new string('b', 64),
-        Type = "bitcoin-direct",
+        Type = BitcoinDirectCoinbaseSettlement.BlockType,
         SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
         GrossRewardSatoshis = 5_000_000_000,
         DirectMinerRewardSatoshis = 4_900_000_000,
@@ -255,9 +317,11 @@ public class BitcoinDirectSettlementTests : TestBase
     private sealed class DirectResponsePayoutHandler : BitcoinPayoutHandler
     {
         private readonly JToken response;
+        private readonly JToken legacyResponse;
 
         public DirectResponsePayoutHandler(IComponentContext context,
-            JToken response, IMasterClock clock = null) : base(context,
+            JToken response, IMasterClock clock = null,
+            JToken legacyResponse = null) : base(context,
             Substitute.For<IConnectionFactory>(),
             context.Resolve<AutoMapper.IMapper>(),
             Substitute.For<IShareRepository>(),
@@ -268,11 +332,19 @@ public class BitcoinDirectSettlementTests : TestBase
             new ActiveBlockGracePeriodTracker())
         {
             this.response = response;
+            this.legacyResponse = legacyResponse;
         }
 
         protected override Task<RpcResponse<JToken>>
             GetDirectSettlementBlockAsync(string blockHash,
-                CancellationToken ct) =>
+            CancellationToken ct) =>
             Task.FromResult(new RpcResponse<JToken>(response));
+
+        protected override Task<RpcResponse<JToken>[]>
+            GetTransactionsAsync(Block[] blocks, CancellationToken ct) =>
+            legacyResponse == null
+                ? base.GetTransactionsAsync(blocks, ct)
+                : Task.FromResult(blocks.Select(_ =>
+                    new RpcResponse<JToken>(legacyResponse)).ToArray());
     }
 }

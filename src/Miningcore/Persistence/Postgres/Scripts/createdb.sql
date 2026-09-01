@@ -136,12 +136,14 @@ CREATE TABLE blocks
         (num_nonnulls(settlementmode, grossrewardsatoshis,
             directminerrewardsatoshis, directminerscriptpubkey,
             directrecipientoutputs) = 0 AND
-            directsettlementlastchecked IS NULL)
+            directsettlementlastchecked IS NULL AND
+            type IS DISTINCT FROM 'bitcoin-coinbase-direct')
         OR
         (num_nonnulls(settlementmode, grossrewardsatoshis,
             directminerrewardsatoshis, directminerscriptpubkey,
             directrecipientoutputs) = 5 AND
-            settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct' AND
+            settlementmode = 'coinbase-direct' AND
+            type = 'bitcoin-coinbase-direct' AND
             grossrewardsatoshis > 0 AND
             directminerrewardsatoshis > 0 AND
             directminerrewardsatoshis <= grossrewardsatoshis AND
@@ -157,9 +159,11 @@ CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH on blocks(poolid, hash) WHERE ty
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM on blocks(poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim';
 CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain');
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
+CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_COINBASE_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-coinbase-direct';
 CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_RECONCILE ON blocks(
     poolid, directsettlementlastchecked ASC NULLS FIRST, created, id)
-    WHERE status IN ('confirmed', 'orphaned') AND type = 'bitcoin-direct' AND
+    WHERE status IN ('confirmed', 'orphaned') AND
+        type = 'bitcoin-coinbase-direct' AND
         settlementmode = 'coinbase-direct';
 
 CREATE OR REPLACE FUNCTION guard_bitcoin_direct_block_update()
@@ -184,6 +188,22 @@ CREATE TRIGGER TRG_GUARD_BITCOIN_DIRECT_BLOCK_UPDATE
     BEFORE UPDATE ON blocks
     FOR EACH ROW
     EXECUTE FUNCTION guard_bitcoin_direct_block_update();
+
+CREATE OR REPLACE FUNCTION clear_bitcoin_direct_block_update_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    PERFORM set_config('miningcore.direct_settlement_update', 'off', true);
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER TRG_CLEAR_BITCOIN_DIRECT_BLOCK_UPDATE_GUARD
+    AFTER UPDATE ON blocks
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION clear_bitcoin_direct_block_update_guard();
 
 CREATE TABLE balances
 (

@@ -210,10 +210,15 @@ assert_file_contains 'the direct-SOLO candidate migration' \
 assert_file_contains 'the direct-SOLO active-symlink prohibition' \
   'not the active `/opt/miningcore` symlink' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO forward-only binary boundary' \
-  'Application rollback across this feature boundary is **not supported after the first direct row' \
+  'Application rollback across this feature boundary is **not supported after direct work has been' \
   "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO rollback evidence query' \
   "WHERE settlementmode = 'coinbase-direct';" "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO journal rollback boundary' \
+  'A zero row count does not prove rollback safety after a database-write failure' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO dedicated block identity' \
+  '`bitcoin-coinbase-direct` block type' "$bitcoin_direct_document"
 assert_file_contains 'the release-level direct-SOLO downgrade prohibition' \
   'not roll the binary back below the release containing this feature when' \
   "$document"

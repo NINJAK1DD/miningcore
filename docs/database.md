@@ -196,7 +196,8 @@ early with an actionable message.
 The direct-SOLO migration is required before enabling Bitcoin
 `soloCoinbasePayout`. It adds immutable settlement evidence to `blocks`; historical rows remain null
 and continue through their original custodial lifecycle. Startup checks the exact types and validated
-constraint before direct work begins. See the
+constraint, dedicated candidate index, reconciliation index and statement-scoped update guards
+before direct work begins. See the
 [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md#database-migration).
 
 `add_share_accounting.sql` is additive and transactional. Do not attempt a live rollback by dropping
@@ -387,7 +388,7 @@ before restarting the pool.
 Recovery checks a partition for every configured pool ID even though all sanitized pools are
 disabled. Once the complete journal has passed integrity and semantic validation, Miningcore also
 requires `add_auxpow_block_idempotency.sql` when an unpersisted block candidate uses
-`bitcoin-direct`, `auxpow`, `auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
+`bitcoin-direct`, `bitcoin-coinbase-direct`, `auxpow`, `auxpow-claim`, `merged-parent`, or `merged-parent-uncertain`. That requirement comes from the
 recovery evidence itself rather than discarded live merged-mining settings, and it is checked before
 the import transaction begins.
 

@@ -43,8 +43,9 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f "$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql"
 ```
 
-Startup verifies the exact column types, complete five-field settlement constraint, ordered
-reconciliation index and direct-row update guard before accepting direct work. Reapplying the
+Startup verifies the exact column types, complete five-field settlement constraint, dedicated
+`bitcoin-coinbase-direct` candidate identity and unique index, ordered reconciliation index, and
+both halves of the statement-scoped direct-row update guard before accepting direct work. Reapplying the
 additive, transactional migration repairs a missing, weakened or wrongly ordered named contract.
 Existing block rows remain `NULL` in the new fields and retain their original custodial settlement
 path. The database update guard is a last-resort protection against an older binary treating an
@@ -53,7 +54,8 @@ supported operation.
 
 Do not discard historical pending SOLO balances or blocks when switching modes. Let old custodial
 blocks mature and pay through their original wallet/balance lifecycle. New direct blocks are marked
-`coinbase-direct`, reconciled by block RPC and can never be reclassified as conventional payout
+`coinbase-direct` with the distinct `bitcoin-coinbase-direct` block type, reconciled by block RPC
+and can never be confused with the historical `bitcoin-direct` PPS candidate type or reclassified as conventional payout
 liabilities after a restart or configuration rollback.
 
 ## Configure payout outputs
@@ -103,6 +105,11 @@ Each template update and rebroadcast builds a destination-specific coinbase and 
 for every connected worker. That is intentionally proportional to connected workers multiplied by
 the template transaction count; capacity-test large fleets before enabling this first-version SOLO
 mode.
+
+If a later daemon template violates the direct-coinbase contract, Miningcore invalidates every
+announced direct job, disconnects affected miners, raises an administrative alert and enters the
+process-wide mining fail-stop. A supervised service may restart only after startup can construct a
+valid template; it does not leave an online pool serving stale direct work.
 
 Startup/job construction rejects more than 64 positive recipients, percentages totaling 100% or more, non-positive residuals,
 positive outputs below one satoshi, wrong-network addresses, duplicate recipient scripts and a miner
@@ -157,7 +164,10 @@ are not admitted to this direct-only path.
 
 Back up PostgreSQL and the normal recovery/quarantine artifacts. Never import a quarantine file with
 `-rs`. Direct candidate durability depends on the local PostgreSQL block writer, so share-relay
-sender/receiver deployments are rejected in this first version.
+sender/receiver deployments are rejected in this first version. A direct candidate written to the
+recovery journal uses the dedicated `bitcoin-coinbase-direct` identity and recovery refuses import
+unless the complete direct-SOLO schema contract is present. Binaries predating this feature do not
+recognize that identity and fail closed instead of importing it as a custodial block.
 
 ## Rollback
 
@@ -167,8 +177,10 @@ new columns or constraint: historical direct records need them for restart-safe 
 Direct blocks continue through their recorded direct lifecycle; pre-switch custodial blocks continue
 through the wallet/balance lifecycle.
 
-Application rollback across this feature boundary is **not supported after the first direct row
-exists**. Before considering an older binary, run:
+Application rollback across this feature boundary is **not supported after direct work has been
+accepted**. Database rows are only one evidence source. Before considering an older binary, stop
+every writer and inspect both PostgreSQL and every configured recovery, emergency-journal and
+quarantine path. This query is necessary but not sufficient:
 
 ```sql
 SELECT count(*) AS direct_settlement_rows
@@ -176,11 +188,17 @@ FROM blocks
 WHERE settlementmode = 'coinbase-direct';
 ```
 
-If the result is non-zero, do not run a Miningcore binary that predates Bitcoin direct-coinbase SOLO.
+If the result is non-zero, or any outstanding journal/quarantine evidence may contain an accepted
+direct candidate, do not run a Miningcore binary that predates Bitcoin direct-coinbase SOLO.
+A zero row count does not prove rollback safety after a database-write failure because the only
+durable candidate may still be in the journal.
 Such a binary does not understand that the coinbase already paid the miner and could attempt a second
 wallet/balance settlement or corrupt the audit status. Keep the additive schema and update guard,
 deploy a compatible fixed binary, or restore a verified pre-feature database in an isolated recovery
 environment and reconcile every post-backup financial event before redirecting production traffic.
+The database guard applies to all updates of a direct row; an old payout manager that encounters one
+can abort that pool's complete payment cycle. This is deliberate fail-closed behavior, not a
+supported mixed-version or downgrade mode.
 
 If migration or startup validation fails, leave the old release symlink unchanged and keep all
 Miningcore writers stopped until the database state is understood. Follow the

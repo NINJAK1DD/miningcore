@@ -127,7 +127,8 @@ internal static class ShareAccounting
         if(!hasEvidence)
             return;
 
-        if(!string.Equals(share.BlockType, "bitcoin-direct",
+        if(!string.Equals(share.BlockType,
+               BitcoinDirectCoinbaseSettlement.BlockType,
                StringComparison.Ordinal) ||
            !string.Equals(share.SettlementMode,
                BitcoinDirectCoinbaseSettlement.Mode,

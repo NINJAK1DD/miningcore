@@ -71,7 +71,7 @@ public class BitcoinDirectSoloIntegrationTests
                             directsettlementlastchecked IS NULL)
                          OR
                          (settlementmode = 'coinbase-direct' AND
-                            type = 'bitcoin-direct' AND
+                            type = 'bitcoin-coinbase-direct' AND
                             grossrewardsatoshis > 0 AND
                             directminerrewardsatoshis > 0 AND
                             directminerrewardsatoshis <= grossrewardsatoshis AND
@@ -89,7 +89,8 @@ public class BitcoinDirectSoloIntegrationTests
                 DROP INDEX idx_blocks_bitcoin_direct_reconcile;
                 CREATE INDEX idx_blocks_bitcoin_direct_reconcile ON blocks(
                     poolid, directsettlementlastchecked DESC, created, id)
-                    WHERE status = 'confirmed' AND type = 'bitcoin-direct' AND
+                    WHERE status = 'confirmed' AND
+                        type = 'bitcoin-coinbase-direct' AND
                         settlementmode = 'coinbase-direct';");
             Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
                 connection, CancellationToken.None));
@@ -103,7 +104,7 @@ public class BitcoinDirectSoloIntegrationTests
                 BlockHeight = 101,
                 NetworkDifficulty = 1,
                 Status = BlockStatus.Pending,
-                Type = "bitcoin-direct",
+                Type = BitcoinDirectCoinbaseSettlement.BlockType,
                 TransactionConfirmationData = new string('a', 64),
                 Miner = "miner",
                 Hash = new string('b', 64),
@@ -144,6 +145,19 @@ public class BitcoinDirectSoloIntegrationTests
             direct.Status = BlockStatus.Confirmed;
             Assert.True(await repository.UpdateBlockAsync(connection, null,
                 direct));
+
+            await using(var tx = await connection.BeginTransactionAsync())
+            {
+                direct.Status = BlockStatus.Pending;
+                Assert.True(await repository.UpdateBlockAsync(connection, tx,
+                    direct));
+                await Assert.ThrowsAsync<PostgresException>(() =>
+                    connection.ExecuteAsync(@"
+                        UPDATE blocks SET status = 'confirmed'
+                        WHERE poolid = 'btc-direct'", transaction: tx));
+                await tx.RollbackAsync();
+                direct.Status = BlockStatus.Confirmed;
+            }
             var now = DateTime.UtcNow;
             var due = await repository
                 .GetBitcoinDirectBlocksForReconciliationAsync(
@@ -209,7 +223,7 @@ public class BitcoinDirectSoloIntegrationTests
                         transactionconfirmationdata, created,
                         settlementmode, grossrewardsatoshis)
                     VALUES('partial-sql', 104, 1, 'pending',
-                        'bitcoin-direct', 'tx', now(),
+                        'bitcoin-coinbase-direct', 'tx', now(),
                         'coinbase-direct', 5000000000)"));
 
             await connection.ExecuteAsync(@"
@@ -221,6 +235,51 @@ public class BitcoinDirectSoloIntegrationTests
                     AFTER UPDATE ON blocks
                     FOR EACH ROW
                     EXECUTE FUNCTION guard_bitcoin_direct_block_update();");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                CREATE OR REPLACE FUNCTION guard_bitcoin_direct_block_update()
+                RETURNS trigger LANGUAGE plpgsql
+                SET search_path = pg_catalog AS $$
+                BEGIN
+                    IF false AND OLD.settlementmode = 'coinbase-direct' AND
+                       current_setting('miningcore.direct_settlement_update', true)
+                           IS DISTINCT FROM 'on' THEN
+                        RAISE EXCEPTION USING ERRCODE = '55000',
+                            MESSAGE = 'direct-settlement block updates require a compatible Miningcore binary';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$;");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                CREATE OR REPLACE FUNCTION clear_bitcoin_direct_block_update_guard()
+                RETURNS trigger LANGUAGE plpgsql
+                SET search_path = pg_catalog AS $$
+                BEGIN
+                    RETURN NULL;
+                END;
+                $$;");
+            Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+            await connection.ExecuteAsync(migration);
+            Assert.True(await repository.HasBitcoinDirectSoloSchemaAsync(
+                connection, CancellationToken.None));
+
+            await connection.ExecuteAsync(@"
+                DROP INDEX idx_blocks_bitcoin_coinbase_direct_pool_hash;
+                CREATE INDEX idx_blocks_bitcoin_coinbase_direct_pool_hash
+                    ON blocks(poolid, hash)
+                    WHERE type = 'bitcoin-coinbase-direct';");
             Assert.False(await repository.HasBitcoinDirectSoloSchemaAsync(
                 connection, CancellationToken.None));
             await connection.ExecuteAsync(migration);

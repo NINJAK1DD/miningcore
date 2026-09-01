@@ -106,6 +106,12 @@ An active process alone does not prove mining or payouts are healthy.
   every database writer is stopped. Do not create same-named columns or constraints manually; the
   exact types and validated financial contract are checked before work is delivered. See the
   [direct-SOLO database migration](bitcoin-direct-solo.md#database-migration).
+- **A Bitcoin direct-SOLO template update stops Miningcore.** Keep the supervised restart loop
+  stopped if the error repeats. The pool deliberately invalidates stale direct jobs and closes
+  mining admission when a post-startup template cannot satisfy the immutable coinbase contract.
+  Preserve PostgreSQL and every recovery/quarantine artifact, inspect the daemon template and use
+  the [direct-SOLO confirmation and rollback boundaries](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior)
+  before resuming miners.
 - **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
   reason to edit balances. Check the reserve, exact PPS ledger, remainder table and bounded
   liability/replay metrics. See
