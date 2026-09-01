@@ -56,6 +56,11 @@ An active process alone does not prove mining or payouts are healthy.
   first pool-specific error. Continue with [pool and daemon checks](#pool-and-daemon-checks).
 - **Miner connects but submits no accepted shares.** Confirm the port, coin, address format,
   password options and difficulty. Continue with [miner and share checks](#miner-and-share-checks).
+- **A direct-SOLO miner receives no job or reports zero coinbase share.** Confirm
+  `soloCoinbasePayout` is enabled on the canonical BTC SOLO pool, the base username is a valid
+  address for the daemon network, and the fee placeholder was replaced. Decode the announced
+  coinbase before hashing; do not fall back to the pool wallet. Follow the
+  [Bitcoin direct-SOLO preflight](bitcoin-direct-solo.md#preflight-before-production-hashing).
 - **BIP310 version rolling is declined or a custom mask stops startup.** Do not widen the mask to
   satisfy a miner. Check the per-chain audit and diagnostics in
   [Bitcoin-family version rolling](version-rolling.md).
@@ -96,6 +101,11 @@ An active process alone does not prove mining or payouts are healthy.
   the index, which can take significant maintenance time on a large accounting table. Do not create
   lookalike tables or disable preflight. See
   [database upgrades](database.md#upgrade-an-existing-database).
+- **Startup says the direct-settlement block schema is missing or malformed.** Keep Bitcoin direct
+  SOLO offline and apply `add_bitcoin_direct_solo.sql` from the verified candidate directory while
+  every database writer is stopped. Do not create same-named columns or constraints manually; the
+  exact types and validated financial contract are checked before work is delivered. See the
+  [direct-SOLO database migration](bitcoin-direct-solo.md#database-migration).
 - **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
   reason to edit balances. Check the reserve, exact PPS ledger, remainder table and bounded
   liability/replay metrics. See
@@ -179,6 +189,10 @@ Check, in order:
 
 One miner submitting shares proves the endpoint works for that route; it does not validate another
 network, TLS proxy or firewall path.
+
+For Bitcoin direct SOLO, no `mining.notify` is sent before successful authorization. Repeated
+authorization with another address clears that connection's old jobs and creates a new immutable
+projection. An old or another connection's job ID must fail instead of redirecting its payout.
 
 ## API, administration and metrics
 

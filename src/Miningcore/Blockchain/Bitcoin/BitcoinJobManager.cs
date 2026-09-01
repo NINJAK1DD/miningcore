@@ -14,6 +14,7 @@ using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
+using NBitcoin;
 using Org.BouncyCastle.Crypto.Parameters;
 
 namespace Miningcore.Blockchain.Bitcoin;
@@ -33,6 +34,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     private BitcoinTemplate coin;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
+    private BitcoinDirectCoinbaseRecipient[] directCoinbaseRecipients =
+        Array.Empty<BitcoinDirectCoinbaseRecipient>();
 
     protected override object[] GetBlockTemplateParams()
     {
@@ -118,6 +121,32 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         base.PostChainIdentifyConfigure();
 
+        if(DirectCoinbasePayoutEnabled)
+        {
+            if(network != Network.Main && network != Network.TestNet &&
+               network != Network.RegTest)
+                throw new PoolStartupException(
+                    $"Pool '{poolConfig.Id}' direct SOLO coinbase payout supports only Bitcoin mainnet, testnet and regtest",
+                    poolConfig.Id);
+
+            try
+            {
+                directCoinbaseRecipients = BitcoinDirectCoinbase.ValidateRecipients(
+                    poolConfig.RewardRecipients,
+                    address => ResolveDirectPayoutDestination(address,
+                        network));
+            }
+            catch(Exception ex) when(ex is not PoolStartupException)
+            {
+                throw new PoolStartupException(
+                    $"Pool '{poolConfig.Id}' has an invalid direct SOLO coinbase recipient contract: {ex.Message}",
+                    poolConfig.Id, ex);
+            }
+
+            logger.Info(() =>
+                $"Direct Bitcoin SOLO coinbase payout is enabled with {directCoinbaseRecipients.Length} positive fee/donation output(s)");
+        }
+
         if(poolConfig.EnableInternalStratum == true && coin.HeaderHasherValue is IHashAlgorithmInit hashInit)
         {
             if(!hashInit.DigestInit(poolConfig))
@@ -156,6 +185,26 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
             if(isNew || forceUpdate)
             {
+                if(DirectCoinbasePayoutEnabled)
+                {
+                    try
+                    {
+                        BitcoinDirectCoinbase.ValidateTemplateAmount(
+                            blockTemplate.CoinbaseValue,
+                            directCoinbaseRecipients);
+                    }
+                    catch(PoolStartupException)
+                    {
+                        throw;
+                    }
+                    catch(Exception ex)
+                    {
+                        throw new PoolStartupException(
+                            $"Pool '{poolConfig.Id}' cannot construct a valid direct SOLO coinbase at template height {blockTemplate.Height}: {ex.Message}",
+                            poolConfig.Id, ex);
+                    }
+                }
+
                 job = CreateJob();
 
                 job.Init(blockTemplate, NextJobId(),
@@ -214,6 +263,92 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     public override BitcoinJob GetJobForStratum()
     {
         var job = currentJob;
+        return job;
+    }
+
+    public bool DirectCoinbasePayoutEnabled =>
+        extraPoolConfig?.SoloCoinbasePayout == true;
+
+    protected override IDestination AddressToDestination(string address,
+        BitcoinAddressType? addressType)
+    {
+        // The pool address is retained for startup validation and historical
+        // custodial blocks. In canonical direct mode, use Bitcoin Core's full
+        // network address surface (including native SegWit) even though new
+        // direct jobs do not pay this destination.
+        if(DirectCoinbasePayoutEnabled)
+            return ResolveDirectPayoutDestination(address, network);
+
+        return base.AddressToDestination(address, addressType);
+    }
+
+    public async Task<IDestination> ValidateDirectPayoutAddressAsync(
+        string address, CancellationToken ct)
+    {
+        if(!DirectCoinbasePayoutEnabled || string.IsNullOrWhiteSpace(address) ||
+           address.Length > 128)
+            return null;
+
+        IDestination destination;
+        try
+        {
+            destination = ResolveDirectPayoutDestination(address, network);
+        }
+
+        catch(PoolStartupException)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
+
+        if(directCoinbaseRecipients.Any(x => string.Equals(x.ScriptPubKey,
+               destination.ScriptPubKey.ToHex(),
+               StringComparison.OrdinalIgnoreCase)))
+            return null;
+
+        return await ValidateAddressAsync(address, ct) ? destination : null;
+    }
+
+    internal static IDestination ResolveDirectPayoutDestination(
+        string address, Network expectedNetwork)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(address);
+        ArgumentNullException.ThrowIfNull(expectedNetwork);
+
+        return BitcoinAddress.Create(address, expectedNetwork);
+    }
+
+    public BitcoinJob GetDirectJobForStratum(string minerAddress,
+        IDestination minerDestination)
+    {
+        if(!DirectCoinbasePayoutEnabled)
+            throw new InvalidOperationException(
+                "Direct SOLO coinbase payout is not enabled");
+        ArgumentException.ThrowIfNullOrWhiteSpace(minerAddress);
+        ArgumentNullException.ThrowIfNull(minerDestination);
+
+        var source = currentJob ?? throw new InvalidOperationException(
+            "No Bitcoin block template is available");
+        var directTemplate = new BitcoinDirectCoinbaseTemplate
+        {
+            MinerAddress = minerAddress,
+            MinerDestination = minerDestination,
+            MinerScriptPubKey = minerDestination.ScriptPubKey.ToHex(),
+            Recipients = directCoinbaseRecipients,
+        };
+        BitcoinDirectCoinbase.EnsureMinerIsDistinct(directTemplate);
+
+        var job = CreateJob();
+        job.InitDirect(source.BlockTemplate, NextJobId(),
+            poolConfig, extraPoolConfig, clusterConfig, clock,
+            poolAddressDestination, network, isPoS, ShareMultiplier,
+            coin.CoinbaseHasherValue, coin.HeaderHasherValue,
+            !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ??
+                coin.BlockHasherValue,
+            directTemplate);
         return job;
     }
 
@@ -290,7 +425,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         // enrich share with common data
         share.PoolId = poolConfig.Id;
         share.IpAddress = worker.RemoteEndpoint.Address.ToString();
-        share.Miner = context.Miner;
+        share.Miner = job.DirectPayoutAddress ?? context.Miner;
         share.Worker = context.Worker;
         share.UserAgent = context.UserAgent;
         share.Source = clusterConfig.ClusterName;
@@ -308,19 +443,32 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
-
-                OnBlockFound();
+                logger.Info(() => job.DirectCoinbaseSettlement != null
+                    ? $"Daemon accepted direct-SOLO block {share.BlockHeight} [{share.BlockHash}]"
+                    : $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
 
                 // persist the coinbase transaction-hash to allow the payment processor
                 // to verify later on that the pool has received the reward for the block
                 share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
+
+                if(job.DirectCoinbaseSettlement != null &&
+                   !share.BlockRecordEmitted)
+                {
+                    await PersistAcceptedCandidateWithoutAccountingAsync(share);
+                    share.BlockRecordEmitted = true;
+                    ClearDirectSettlementEvidence(share);
+                }
+
+                // Direct candidates cross their durable database/journal boundary
+                // before refresh observers or other telemetry can fail.
+                OnBlockFound();
             }
 
             else
             {
                 // clear fields that no longer apply
                 share.TransactionConfirmationData = null;
+                ClearDirectSettlementEvidence(share);
             }
         }
 
@@ -344,7 +492,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         if(blockCandidateRecorder == null)
             throw new InvalidOperationException(
-                "A synchronous block-candidate recorder is required for PPS");
+                "A synchronous block-candidate recorder is required for direct SOLO or PPS");
 
         var candidate = CreateAcceptedCandidateWithoutAccounting(share);
         await blockCandidateRecorder.PersistBlockCandidateAsync(candidate);
@@ -394,10 +542,24 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             BlockOnly = true,
             IsBlockCandidate = true,
             TransactionConfirmationData = share.TransactionConfirmationData,
+            SettlementMode = share.SettlementMode,
+            GrossRewardSatoshis = share.GrossRewardSatoshis,
+            DirectMinerRewardSatoshis = share.DirectMinerRewardSatoshis,
+            DirectMinerScriptPubKey = share.DirectMinerScriptPubKey,
+            DirectRecipientOutputs = share.DirectRecipientOutputs,
             NetworkDifficulty = share.NetworkDifficulty,
             PreserveCreated = true,
             Created = share.Created,
         };
+    }
+
+    private static void ClearDirectSettlementEvidence(Share share)
+    {
+        share.SettlementMode = null;
+        share.GrossRewardSatoshis = null;
+        share.DirectMinerRewardSatoshis = null;
+        share.DirectMinerScriptPubKey = null;
+        share.DirectRecipientOutputs = null;
     }
 
     public double ShareMultiplier => coin.ShareMultiplier;

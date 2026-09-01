@@ -164,6 +164,21 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Take(pageSize)
                 .ToArray();
 
+            var directBlocks = page.Where(IsDirectCoinbaseSettlement)
+                .ToArray();
+            foreach(var directBlock in directBlocks)
+            {
+                var classified = await ClassifyDirectCoinbaseBlockAsync(
+                    directBlock, ct);
+                if(classified)
+                    result.Add(directBlock);
+            }
+
+            page = page.Where(block => !IsDirectCoinbaseSettlement(block))
+                .ToArray();
+            if(page.Length == 0)
+                continue;
+
             var resolvedAuxiliaryBlocks = new HashSet<Block>();
 
             foreach(var block in page)
@@ -480,6 +495,205 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
 
         return result.ToArray();
+    }
+
+    internal static bool IsDirectCoinbaseSettlement(Block block) =>
+        string.Equals(block?.SettlementMode,
+            BitcoinDirectCoinbaseSettlement.Mode,
+            StringComparison.Ordinal);
+
+    protected virtual Task<RpcResponse<JToken>> GetDirectSettlementBlockAsync(
+        string blockHash, CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.GetBlock, ct,
+            new object[] { blockHash, 2 });
+
+    internal async Task<bool> ClassifyDirectCoinbaseBlockAsync(Block block,
+        CancellationToken ct)
+    {
+        ValidatePersistedDirectSettlement(block);
+
+        var response = await GetDirectSettlementBlockAsync(block.Hash, ct);
+        if(response.Error != null)
+        {
+            if(response.Error.Code == -5)
+            {
+                block.Status = BlockStatus.Orphaned;
+                block.ConfirmationProgress = 0;
+                block.Reward = 0;
+                block.NotifyBlockUnlockedOnUpdate = true;
+                logger.Info(() =>
+                    $"[{LogCategory}] Direct SOLO block {block.BlockHeight} [{block.Hash}] is no longer known to the active chain");
+                return true;
+            }
+
+            logger.Warn(() =>
+                $"[{LogCategory}] Unable to inspect direct SOLO block {block.BlockHeight} [{block.Hash}]: {response.Error.Message}");
+            return false;
+        }
+
+        var document = response.Response as JObject ??
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} returned a malformed getblock response");
+        var returnedHash = document.Value<string>("hash");
+        if(!string.Equals(returnedHash, block.Hash,
+               StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} getblock hash does not match its persisted candidate");
+
+        var confirmations = document.Value<int?>("confirmations") ??
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has no confirmation count");
+        if(confirmations < 0)
+        {
+            block.Status = BlockStatus.Orphaned;
+            block.ConfirmationProgress = 0;
+            block.Reward = 0;
+            block.NotifyBlockUnlockedOnUpdate = true;
+            return true;
+        }
+
+        VerifyDirectCoinbaseTransaction(block, document);
+        block.Reward = block.GrossRewardSatoshis.Value /
+            BitcoinConstants.SatoshisPerBitcoin;
+        block.ConfirmationProgress = Math.Min(1d,
+            (double) confirmations / minConfirmations);
+        block.NotifyBlockConfirmationProgressOnUpdate = true;
+
+        if(confirmations >= minConfirmations)
+        {
+            block.Status = BlockStatus.Confirmed;
+            block.ConfirmationProgress = 1;
+            block.NotifyBlockUnlockedOnUpdate = true;
+            logger.Info(() =>
+                $"[{LogCategory}] Confirmed direct SOLO block {block.BlockHeight} with on-chain miner and fee settlement");
+        }
+
+        return true;
+    }
+
+    internal static void ValidatePersistedDirectSettlement(Block block)
+    {
+        ArgumentNullException.ThrowIfNull(block);
+        if(!string.Equals(block.Type, "bitcoin-direct",
+               StringComparison.Ordinal) ||
+           !string.Equals(block.SettlementMode,
+               BitcoinDirectCoinbaseSettlement.Mode,
+               StringComparison.Ordinal) ||
+           block.GrossRewardSatoshis is not > 0 ||
+           block.DirectMinerRewardSatoshis is not > 0 ||
+           block.DirectMinerRewardSatoshis > block.GrossRewardSatoshis ||
+           string.IsNullOrWhiteSpace(block.DirectMinerScriptPubKey) ||
+           string.IsNullOrWhiteSpace(block.DirectRecipientOutputs) ||
+           string.IsNullOrWhiteSpace(block.Hash) ||
+           string.IsNullOrWhiteSpace(block.TransactionConfirmationData))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has incomplete persisted settlement evidence");
+
+        if(!IsCanonicalLowerHex(block.DirectMinerScriptPubKey) ||
+           block.Hash.Length != 64 ||
+           block.TransactionConfirmationData.Length != 64)
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has malformed persisted settlement identity");
+    }
+
+    internal static void VerifyDirectCoinbaseTransaction(Block block,
+        JObject document)
+    {
+        ValidatePersistedDirectSettlement(block);
+
+        var coinbase = (document["tx"] as JArray)?.FirstOrDefault() as
+            JObject ?? throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has no decoded coinbase transaction");
+        if(!string.Equals(coinbase.Value<string>("txid"),
+               block.TransactionConfirmationData,
+               StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} coinbase transaction id differs from accepted-candidate evidence");
+
+        BitcoinDirectCoinbaseOutput[] recipients;
+        try
+        {
+            recipients = JsonConvert.DeserializeObject<
+                BitcoinDirectCoinbaseOutput[]>(
+                block.DirectRecipientOutputs) ??
+                Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
+        catch(JsonException ex)
+        {
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} recipient evidence is not valid JSON",
+                ex);
+        }
+
+        if(recipients.Any(x => x == null ||
+               string.IsNullOrWhiteSpace(x.Address) ||
+               !IsCanonicalLowerHex(x.ScriptPubKey) ||
+               x.AmountSatoshis < BitcoinDirectCoinbase.MinimumOutputSatoshis))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} contains malformed recipient evidence");
+
+        var expected = new List<(string Script, long Amount)>
+        {
+            (block.DirectMinerScriptPubKey,
+                block.DirectMinerRewardSatoshis.Value),
+        };
+        expected.AddRange(recipients.Select(x =>
+            (x.ScriptPubKey, x.AmountSatoshis)));
+
+        if(expected.Select(x => x.Script).Distinct(
+               StringComparer.OrdinalIgnoreCase).Count() != expected.Count ||
+           SumAmounts(expected) != block.GrossRewardSatoshis)
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} persisted output evidence violates its exact settlement contract");
+
+        var actual = new List<(string Script, long Amount)>();
+        foreach(var output in coinbase["vout"] as JArray ?? new JArray())
+        {
+            var value = output.Value<decimal?>("value") ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains an output without a value");
+            var scaled = value * BitcoinConstants.SatoshisPerBitcoin;
+            if(scaled != decimal.Truncate(scaled) || scaled < 0 ||
+               scaled > long.MaxValue)
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains a non-satoshi output value");
+            var amount = (long) scaled;
+            if(amount == 0)
+                continue;
+
+            var script = output["scriptPubKey"]?.Value<string>("hex");
+            if(!IsCanonicalLowerHex(script))
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains a malformed output script");
+            actual.Add((script, amount));
+        }
+
+        var orderedExpected = expected.OrderBy(x => x.Script,
+            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
+        var orderedActual = actual.OrderBy(x => x.Script,
+            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
+        var outputsMatch = orderedExpected.Length == orderedActual.Length &&
+            orderedExpected.Zip(orderedActual).All(pair =>
+                string.Equals(pair.First.Script, pair.Second.Script,
+                    StringComparison.OrdinalIgnoreCase) &&
+                pair.First.Amount == pair.Second.Amount);
+        if(!outputsMatch ||
+           SumAmounts(actual) != block.GrossRewardSatoshis)
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} coinbase outputs do not match the immutable accepted settlement");
+    }
+
+    private static bool IsCanonicalLowerHex(string value) =>
+        !string.IsNullOrEmpty(value) && value.Length % 2 == 0 &&
+        value.All(x => x is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static long SumAmounts(
+        IEnumerable<(string Script, long Amount)> outputs)
+    {
+        long result = 0;
+        foreach(var output in outputs)
+            result = checked(result + output.Amount);
+        return result;
     }
 
     protected virtual Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,

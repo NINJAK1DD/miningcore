@@ -1,6 +1,7 @@
 using System.Data;
 using AutoMapper;
 using Dapper;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
 
@@ -22,11 +23,35 @@ public class BlockRepository : IBlockRepository
     {
         var mapped = mapper.Map<Entities.Block>(block);
 
-        const string query =
+        const string legacyQuery =
             @"INSERT INTO blocks(poolid, blockheight, networkdifficulty, status, type, transactionconfirmationdata,
                 miner, reward, effort, minereffort, confirmationprogress, source, hash, created)
             VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
                 @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created)";
+        const string directQuery =
+            @"INSERT INTO blocks(poolid, blockheight, networkdifficulty, status, type, transactionconfirmationdata,
+                miner, reward, effort, minereffort, confirmationprogress, source, hash, created,
+                settlementmode, grossrewardsatoshis, directminerrewardsatoshis,
+                directminerscriptpubkey, directrecipientoutputs)
+            VALUES(@poolid, @blockheight, @networkdifficulty, @status, @type, @transactionconfirmationdata,
+                @miner, @reward, @effort, @minereffort, @confirmationprogress, @source, @hash, @created,
+                @settlementmode, @grossrewardsatoshis, @directminerrewardsatoshis,
+                @directminerscriptpubkey, CAST(@directrecipientoutputs AS jsonb))";
+
+        var hasSettlementEvidence = mapped.SettlementMode != null ||
+            mapped.GrossRewardSatoshis.HasValue ||
+            mapped.DirectMinerRewardSatoshis.HasValue ||
+            mapped.DirectMinerScriptPubKey != null ||
+            mapped.DirectRecipientOutputs != null;
+        var isBitcoinDirect = string.Equals(mapped.SettlementMode,
+            BitcoinDirectCoinbaseSettlement.Mode, StringComparison.Ordinal);
+
+        if(hasSettlementEvidence && !isBitcoinDirect)
+            throw new InvalidDataException(
+                "Block settlement evidence requires the exact " +
+                $"'{BitcoinDirectCoinbaseSettlement.Mode}' settlement mode");
+
+        var query = isBitcoinDirect ? directQuery : legacyQuery;
 
         var command = BlockOnlyCandidatePersistenceRules.TryGet(mapped.Type,
             out var persistenceRule)
@@ -307,6 +332,48 @@ public class BlockRepository : IBlockRepository
               AND a.indisready
               AND a.key_expressions = e.key_expressions
               AND a.predicate = e.predicate";
+
+        return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
+            cancellationToken: ct));
+    }
+
+    public Task<bool> HasBitcoinDirectSoloSchemaAsync(IDbConnection con,
+        CancellationToken ct)
+    {
+        const string query = @"WITH required_columns(name, data_type) AS (
+                VALUES
+                    ('settlementmode', 'text'),
+                    ('grossrewardsatoshis', 'bigint'),
+                    ('directminerrewardsatoshis', 'bigint'),
+                    ('directminerscriptpubkey', 'text'),
+                    ('directrecipientoutputs', 'jsonb')
+            ), actual_columns AS (
+                SELECT lower(a.attname) AS name,
+                    format_type(a.atttypid, a.atttypmod) AS data_type
+                FROM pg_attribute a
+                WHERE a.attrelid = to_regclass('blocks')
+                  AND a.attnum > 0 AND NOT a.attisdropped
+            ), required_constraint AS (
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint c
+                    WHERE c.conrelid = to_regclass('blocks')
+                      AND lower(c.conname) =
+                          'chk_blocks_bitcoin_direct_settlement'
+                      AND c.contype = 'c'
+                      AND c.convalidated
+                      AND regexp_replace(
+                          replace(lower(pg_get_constraintdef(c.oid)),
+                              '::text', ''),
+                          '[[:space:]()]', '', 'g') =
+                          'checksettlementmodeisnullandgrossrewardsatoshisisnullanddirectminerrewardsatoshisisnullanddirectminerscriptpubkeyisnullanddirectrecipientoutputsisnullorsettlementmode=''coinbase-direct''andtype=''bitcoin-direct''andgrossrewardsatoshis>0anddirectminerrewardsatoshis>0anddirectminerrewardsatoshis<=grossrewardsatoshisanddirectminerscriptpubkey~''^[0-9a-f]+$''andlengthdirectminerscriptpubkey%2=0andjsonb_typeofdirectrecipientoutputs=''array'''
+                ) AS ready
+            )
+            SELECT (SELECT COUNT(*) = 5
+                    FROM required_columns r
+                    JOIN actual_columns a USING(name)
+                    WHERE a.data_type = r.data_type)
+               AND (SELECT ready FROM required_constraint)";
 
         return con.ExecuteScalarAsync<bool>(new CommandDefinition(query,
             cancellationToken: ct));

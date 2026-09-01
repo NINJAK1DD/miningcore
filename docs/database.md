@@ -193,6 +193,12 @@ requires manual review. Recovery mode validates the `share_recovery_imports` tab
 immediate `filehash` primary key before scanning the journal, so a missing or stale migration fails
 early with an actionable message.
 
+The direct-SOLO migration is required before enabling Bitcoin
+`soloCoinbasePayout`. It adds immutable settlement evidence to `blocks`; historical rows remain null
+and continue through their original custodial lifecycle. Startup checks the exact types and validated
+constraint before direct work begins. See the
+[Bitcoin direct-SOLO guide](bitcoin-direct-solo.md#database-migration).
+
 `add_share_accounting.sql` is additive and transactional. Do not attempt a live rollback by dropping
 its tables or columns: they can contain PPS liabilities and replay evidence that are not reconstructible
 from blocks. To roll back the application, stop every writer and payout manager, preserve the current

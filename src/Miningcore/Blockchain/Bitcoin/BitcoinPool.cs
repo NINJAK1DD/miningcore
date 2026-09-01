@@ -103,11 +103,16 @@ public class BitcoinPool : PoolBase
             context.SetDifficulty(nicehashDiff.Value);
         }
 
-        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
-
-        // send intial update
+        // send initial update. Direct-SOLO work is withheld until the username
+        // address has passed network-aware authorization.
         await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+        if(!manager.DirectCoinbasePayoutEnabled || context.IsAuthorized)
+        {
+            var minerJobParams = CreateWorkerJob(connection,
+                context.IsSubscribed);
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
+                minerJobParams);
+        }
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -157,7 +162,9 @@ public class BitcoinPool : PoolBase
                 DateTime.UtcNow);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => manager.DirectCoinbasePayoutEnabled
+                ? $"[{connection.ConnectionId}] Authorized direct-SOLO worker (payout destination retained in immutable job audit state)"
+                : $"[{connection.ConnectionId}] Authorized worker {workerValue}");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -174,6 +181,13 @@ public class BitcoinPool : PoolBase
 
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
             }
+
+            if(manager.DirectCoinbasePayoutEnabled && context.IsSubscribed)
+            {
+                var minerJobParams = CreateWorkerJob(connection, true);
+                await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
+                    minerJobParams);
+            }
         }
 
         else
@@ -183,7 +197,9 @@ public class BitcoinPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => manager.DirectCoinbasePayoutEnabled
+                    ? $"[{connection.ConnectionId}] Banning unauthorized direct-SOLO worker for {loginFailureBanTimeout.TotalSeconds} sec"
+                    : $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -195,13 +211,37 @@ public class BitcoinPool : PoolBase
     protected virtual Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
         string minerName, string password, CancellationToken ct)
     {
-        return manager.ValidateAddressAsync(minerName, ct);
+        if(!manager.DirectCoinbasePayoutEnabled)
+            return manager.ValidateAddressAsync(minerName, ct);
+
+        return ValidateDirectWorkerAsync(context, minerName, ct);
+    }
+
+    private async Task<bool> ValidateDirectWorkerAsync(
+        BitcoinWorkerContext context, string minerName, CancellationToken ct)
+    {
+        var destination = await manager.ValidateDirectPayoutAddressAsync(
+            minerName, ct);
+        if(destination == null)
+            return false;
+
+        lock(context)
+        {
+            context.ClearJobs();
+            context.DirectPayoutAddress = minerName;
+            context.DirectPayoutDestination = destination;
+        }
+
+        return true;
     }
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var job = manager.DirectCoinbasePayoutEnabled
+            ? manager.GetDirectJobForStratum(context.DirectPayoutAddress,
+                context.DirectPayoutDestination)
+            : manager.GetJobForStratum();
 
         // update context
         lock(context)
@@ -563,6 +603,8 @@ public class BitcoinPool : PoolBase
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BitcoinWorkerContext>();
+            if(manager.DirectCoinbasePayoutEnabled && !context.IsAuthorized)
+                return;
             var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // varDiff: if the client has a pending difficulty change, apply it now

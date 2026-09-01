@@ -8,6 +8,7 @@ readme="$repository_root/README.md"
 pps_document="$repository_root/docs/pps.md"
 database_document="$repository_root/docs/database.md"
 merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
+bitcoin_direct_document="$repository_root/docs/bitcoin-direct-solo.md"
 licence_document="$repository_root/docs/lucky-penny-licence.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
@@ -197,6 +198,17 @@ assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
   'separately controlled reserve' "$pps_document"
+assert_file_contains 'the direct-SOLO opt-in default' \
+  '`soloCoinbasePayout` is a strict JSON Boolean and defaults to `false`' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO exact rounding rule' \
+  'recipient satoshis = floor(coinbasevalue × percentage / 100)' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO candidate migration' \
+  '$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO active-symlink prohibition' \
+  'not the active `/opt/miningcore` symlink' "$bitcoin_direct_document"
 for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
   assert_file_contains "the PPS $migration migration requirement" \
@@ -221,7 +233,7 @@ if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Script
   exit 1
 fi
 if grep -REq --include='*.md' \
-    '/opt/miningcore/migrations/add_(auxpow_block_idempotency|payout_manager_ownership|share_accounting)\.sql' \
+    '/opt/miningcore/migrations/add_(auxpow_block_idempotency|payout_manager_ownership|share_accounting|bitcoin_direct_solo)\.sql' \
     "$readme" "$repository_root/docs"; then
   echo 'User documentation reads release migrations through the active symlink' >&2
   exit 1

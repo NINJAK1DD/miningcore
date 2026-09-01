@@ -1,5 +1,6 @@
 using Autofac;
 using Microsoft.AspNetCore.Mvc;
+using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Mining;
@@ -234,25 +235,38 @@ public class AdminApiController : ApiControllerBase
     private void ValidatePaymentProcessingToggle(IEnumerable<IMiningPool> targetPools,
         bool enable)
     {
-        var activePpsPool = targetPools.FirstOrDefault(pool =>
-            pool.Config.Enabled &&
-            pool.Config.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS);
-        if(activePpsPool == null)
+        var protectedPool = targetPools.Select(pool => new
+            {
+                Pool = pool,
+                IsPps = pool.Config.PaymentProcessing?.PayoutScheme ==
+                    PayoutScheme.PPS,
+                IsDirectSolo = pool.Config.Extra
+                    .SafeExtensionDataAs<BitcoinPoolConfigExtra>()?
+                    .SoloCoinbasePayout == true,
+            })
+            .FirstOrDefault(x => x.Pool.Config.Enabled &&
+                (x.IsPps || x.IsDirectSolo));
+        if(protectedPool == null)
             return;
+
+        var pool = protectedPool.Pool;
+        var mode = protectedPool.IsPps ? "PPS" : "direct-SOLO";
 
         if(!enable)
             throw new ApiException(
-                $"Cannot disable payment processing while PPS pool '{activePpsPool.Config.Id}' " +
+                $"Cannot disable payment processing while {mode} pool '{pool.Config.Id}' " +
                 "is accepting shares; stop Miningcore and make the change through a " +
-                "controlled restart. Non-PPS pools remain individually controllable through " +
+                "controlled restart. " + (protectedPool.IsPps
+                    ? "Non-PPS pools remain individually controllable through "
+                    : "Other pools remain individually controllable through ") +
                 "their per-pool routes",
                 HttpStatusCode.Conflict);
 
         if(clusterConfig.PaymentProcessing?.Enabled != true)
             throw new ApiException(
-                $"Cannot enable payment processing for PPS pool '{activePpsPool.Config.Id}' " +
+                $"Cannot enable payment processing for {mode} pool '{pool.Config.Id}' " +
                 "because cluster-level payment processing was not active at startup; use a " +
-                "controlled restart with a valid PPS configuration",
+                $"controlled restart with a valid {mode} configuration",
                 HttpStatusCode.Conflict);
     }
 }

@@ -1,9 +1,11 @@
 using AutoMapper;
 using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Model.Projections;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
 using MinerStats = Miningcore.Persistence.Model.Projections.MinerStats;
 
 namespace Miningcore;
@@ -104,7 +106,12 @@ public class AutoMapperProfile : Profile
                 opt => opt.MapFrom(src => src.SharesPerSecond));
 
         CreateMap<Block, Api.Responses.Block>()
-            .ForMember(dest => dest.InfoLink, opt => opt.Ignore());
+            .ForMember(dest => dest.InfoLink, opt => opt.Ignore())
+            .ForMember(dest => dest.DirectRecipientOutputs, opt => opt.MapFrom(src =>
+                string.IsNullOrEmpty(src.DirectRecipientOutputs)
+                    ? Array.Empty<BitcoinDirectCoinbaseOutput>()
+                    : JsonConvert.DeserializeObject<BitcoinDirectCoinbaseOutput[]>(
+                        src.DirectRecipientOutputs)));
 
         CreateMap<MinerSettings, Api.Responses.MinerSettings>();
 

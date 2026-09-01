@@ -17,6 +17,9 @@ public class BlockFoundNotification : BlockNotification
     public string Miner { get; set; }
     public string MinerExplorerLink { get; set; }
     public string Source { get; set; }
+    public string SettlementMode { get; set; }
+    public long? GrossRewardSatoshis { get; set; }
+    public long? DirectMinerRewardSatoshis { get; set; }
 }
 
 public class NewChainHeightNotification : BlockNotification
@@ -41,4 +44,7 @@ public class BlockUnlockedNotification : BlockNotification
     public string Miner { get; set; }
     public string ExplorerLink { get; set; }
     public string MinerExplorerLink { get; set; }
+    public string SettlementMode { get; set; }
+    public long? GrossRewardSatoshis { get; set; }
+    public long? DirectMinerRewardSatoshis { get; set; }
 }

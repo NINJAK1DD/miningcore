@@ -373,6 +373,7 @@ and recovery requirements.
 | Review AutoMapper licensing or configure a Lucky Penny key | [Lucky Penny licence-key guide](docs/lucky-penny-licence.md) |
 | Deploy distributed Stratum/recorder roles | [Share-relay guide](docs/share-relays.md) |
 | Enable direct Bitcoin-family PPS | [PPS operator guide](docs/pps.md) |
+| Pay Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) |
 | Validate a new deployment before miners | [Operator preflight](docs/operations.md#before-accepting-miners) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
@@ -382,6 +383,15 @@ and recovery requirements.
 
 The complete [documentation index](docs/README.md) also links dependency, licensing and validation
 references.
+
+## Bitcoin direct-coinbase SOLO
+
+Canonical Bitcoin SOLO pools can opt into non-custodial coinbase settlement. Each authorized
+`address.worker` receives destination-specific SV1 work whose coinbase pays the miner directly and
+places each positive pool fee/donation in a separate output. The option defaults off; BTC-only,
+SOLO, database, topology and address contracts fail closed before work begins. Apply the additive
+migration and complete the [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) before enabling
+the [copy-first example](examples/bitcoin_direct_solo_pool.json).
 
 ## Bitcoin-family PPS
 
@@ -718,6 +728,11 @@ Pooled merged-mining and direct Bitcoin-family PPS deployments also require
 and does not require that additional migration.
 It creates the paired-share identity and PPS liability ledger; do not enable either feature until
 the migration and startup preflight succeed.
+
+Opt-in Bitcoin direct-coinbase SOLO additionally requires
+`add_bitcoin_direct_solo.sql`. It preserves immutable on-chain settlement evidence in the block
+record while leaving historical custodial blocks unchanged. Apply it from the verified candidate
+directory described by the upgrade runbook, not through the old active symlink.
 
 For an existing database, stop writers and payout managers before applying the migrations required by
 the target release. The [database and upgrade guide](docs/database.md) gives the exact commands, restore

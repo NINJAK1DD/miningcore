@@ -1,0 +1,113 @@
+{
+  // Non-custodial Bitcoin SOLO: the base mining.authorize username becomes
+  // the on-chain miner output. Complete docs/bitcoin-direct-solo.md first.
+  "clusterName": "bitcoin-direct-solo-example",
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log"
+  },
+  "banning": {
+    "manager": "Integrated",
+    "banOnJunkReceive": true,
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
+  },
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false,
+    "rateLimiting": {
+      // This loopback/reverse-proxy topology delegates public-client limits to the proxy.
+      "disabled": true
+    }
+  },
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore"
+    }
+  },
+  "paymentProcessing": {
+    // Required for confirmation, reorg, notification and immutable audit tracking.
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "Miningcore"
+  },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "pools": [
+    {
+      "id": "bitcoin-direct-solo",
+      "enabled": true,
+      "coin": "bitcoin",
+      // Retained for historical custodial blocks and daemon validation. New direct
+      // blocks do not pay this address unless it is also a positive recipient below.
+      "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      "soloCoinbasePayout": true,
+      "rewardRecipients": [
+        {
+          // Replace before startup. At 2%, this is a distinct direct coinbase output.
+          "address": "CHANGE_ME_BITCOIN_POOL_FEE_ADDRESS",
+          "percentage": 2
+        }
+      ],
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
+      "ports": {
+        "3032": {
+          "name": "BTC-DIRECT-SOLO-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 8192,
+          "varDiff": {
+            "minDiff": 4096,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3033": {
+          "name": "BTC-DIRECT-SOLO-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 1048576,
+          "varDiff": {
+            "minDiff": 524288,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.001,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}

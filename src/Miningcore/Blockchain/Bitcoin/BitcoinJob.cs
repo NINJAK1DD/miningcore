@@ -53,6 +53,7 @@ public class BitcoinJob
     protected string previousBlockHashReversedHex;
     protected Money rewardToPool;
     protected Transaction txOut;
+    private BitcoinDirectCoinbaseTemplate directCoinbaseTemplate;
 
     // serialization constants
     protected byte[] scriptSigFinalBytes;
@@ -328,8 +329,36 @@ public class BitcoinJob
         if(coin.HasDeveloper)
             rewardToPool = CreateDeveloperOutputs(tx, rewardToPool);
 
-        // Remaining amount goes to pool
-        tx.Outputs.Add(rewardToPool, poolAddressDestination);
+        if(directCoinbaseTemplate == null)
+        {
+            // Remaining amount goes to pool
+            tx.Outputs.Add(rewardToPool, poolAddressDestination);
+        }
+        else
+        {
+            if(rewardToPool.Satoshi != BlockTemplate.CoinbaseValue)
+                throw new InvalidDataException(
+                    "Direct SOLO coinbase payout is restricted to canonical Bitcoin templates without additional consensus-owned value outputs");
+            DirectCoinbaseSettlement = BitcoinDirectCoinbase.Split(
+                rewardToPool.Satoshi, directCoinbaseTemplate);
+
+            // Miner first, followed by a canonical script-sorted recipient list. The
+            // existing serializer retains the BIP141 commitment in its established slot.
+            tx.Outputs.Add(new Money(
+                    DirectCoinbaseSettlement.MinerRewardSatoshis,
+                    MoneyUnit.Satoshi),
+                directCoinbaseTemplate.MinerDestination);
+
+            foreach(var output in DirectCoinbaseSettlement.RecipientOutputs)
+            {
+                var recipient = directCoinbaseTemplate.Recipients.Single(x =>
+                    string.Equals(x.ScriptPubKey, output.ScriptPubKey,
+                        StringComparison.OrdinalIgnoreCase));
+                tx.Outputs.Add(new Money(output.AmountSatoshis,
+                        MoneyUnit.Satoshi),
+                    recipient.Destination);
+            }
+        }
 
         return tx;
     }
@@ -481,6 +510,20 @@ public class BitcoinJob
         if(isBlockCandidate)
         {
             result.IsBlockCandidate = true;
+
+            if(DirectCoinbaseSettlement != null)
+            {
+                result.SettlementMode =
+                    BitcoinDirectCoinbaseSettlement.Mode;
+                result.GrossRewardSatoshis =
+                    DirectCoinbaseSettlement.GrossRewardSatoshis;
+                result.DirectMinerRewardSatoshis =
+                    DirectCoinbaseSettlement.MinerRewardSatoshis;
+                result.DirectMinerScriptPubKey =
+                    DirectCoinbaseSettlement.MinerScriptPubKey;
+                result.DirectRecipientOutputs =
+                    DirectCoinbaseSettlement.SerializeRecipientOutputs();
+            }
 
             Span<byte> blockHash = stackalloc byte[32];
             blockHasher.Digest(headerBytes, blockHash, nTime);
@@ -875,6 +918,9 @@ public class BitcoinJob
     public BlockTemplate BlockTemplate { get; protected set; }
     public double Difficulty { get; protected set; }
     public long RewardBasisSatoshis => rewardToPool.Satoshi;
+    internal BitcoinDirectCoinbaseSettlement DirectCoinbaseSettlement { get;
+        private set; }
+    internal string DirectPayoutAddress => directCoinbaseTemplate?.MinerAddress;
 
     public string JobId { get; protected set; }
 
@@ -883,7 +929,18 @@ public class BitcoinJob
         ClusterConfig cc, IMasterClock clock,
         IDestination poolAddressDestination, Network network,
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
-        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher)
+        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher) =>
+        InitDirect(blockTemplate, jobId, pc, extraPoolConfig, cc, clock,
+            poolAddressDestination, network, isPoS, shareMultiplier,
+            coinbaseHasher, headerHasher, blockHasher, null);
+
+    internal void InitDirect(BlockTemplate blockTemplate, string jobId,
+        PoolConfig pc, BitcoinPoolConfigExtra extraPoolConfig,
+        ClusterConfig cc, IMasterClock clock,
+        IDestination poolAddressDestination, Network network,
+        bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
+        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher,
+        BitcoinDirectCoinbaseTemplate directCoinbaseTemplate = null)
     {
         Contract.RequiresNonNull(blockTemplate);
         Contract.RequiresNonNull(pc);
@@ -901,6 +958,7 @@ public class BitcoinJob
         this.network = network;
         this.clock = clock;
         this.poolAddressDestination = poolAddressDestination;
+        this.directCoinbaseTemplate = directCoinbaseTemplate;
         BlockTemplate = blockTemplate;
         JobId = jobId;
         if(headerHasher is OdoCrypt)

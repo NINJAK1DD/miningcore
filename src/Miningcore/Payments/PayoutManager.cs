@@ -6,6 +6,7 @@ using System.Reactive.Linq;
 using Autofac;
 using Autofac.Features.Metadata;
 using Microsoft.Extensions.Hosting;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
@@ -401,6 +402,12 @@ public class PayoutManager : ProcessStatusBackgroundService
         // so a later balance failure rolls the block transition back too.
         if(!await blockRepo.UpdateBlockAsync(con, tx, block))
             return false;
+
+        // The accepted coinbase is already the complete financial settlement.
+        // Persisting the terminal block state is required; creating a balance or
+        // wallet payment would pay the miner/recipients a second time.
+        if(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block))
+            return true;
 
         // Blockchains that do not support block-reward payments via coinbase Tx
         // must generate balance records for all reward recipients instead.

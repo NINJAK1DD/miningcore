@@ -27,6 +27,7 @@ wallet balances or recovery files.
 | Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
 | Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
+| Pay canonical Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-coinbase SOLO](bitcoin-direct-solo.md) |
 | Configure and operate Bitcoin-family PPS | [PPS](pps.md) |
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
 | Configure and commission DigiByte direct mining | [DigiByte](digibyte.md) |

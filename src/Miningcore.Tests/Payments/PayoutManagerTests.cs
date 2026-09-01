@@ -7,6 +7,7 @@ using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -480,6 +481,34 @@ public class PayoutManagerTests
         Assert.Equal(1, exitCode);
         Assert.Equal(1, fixture.ProcessStatus.ExitCode);
         await fixture.PayoutLease.Received(1).DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ConfirmedDirectCoinbaseBlock_PersistsStatusWithoutBalances()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        var scheme = Substitute.For<IPayoutScheme>();
+        fixture.Block.SettlementMode =
+            BitcoinDirectCoinbaseSettlement.Mode;
+        fixture.BlockRepository.UpdateBlockAsync(fixture.Connection,
+                fixture.Transaction, fixture.Block)
+            .Returns(true);
+
+        var updated = await fixture.Manager.ApplyConfirmedBlockAsync(
+            fixture.Connection, fixture.Transaction, fixture.MiningPool,
+            fixture.Block, handler, scheme, CancellationToken.None);
+
+        Assert.True(updated);
+        await handler.DidNotReceive().UpdateBlockRewardBalancesAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+            Arg.Any<IMiningPool>(), Arg.Any<Block>(),
+            Arg.Any<CancellationToken>());
+        await scheme.DidNotReceive().UpdateBalancesAsync(
+            Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
+            Arg.Any<IMiningPool>(), Arg.Any<IPayoutHandler>(),
+            Arg.Any<Block>(), Arg.Any<decimal>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]

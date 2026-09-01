@@ -124,8 +124,26 @@ CREATE TABLE blocks
 	miner TEXT NULL,
 	reward decimal(28,12) NULL,
     source TEXT NULL,
-    hash TEXT NULL,
-	created TIMESTAMPTZ NOT NULL
+	hash TEXT NULL,
+	created TIMESTAMPTZ NOT NULL,
+    settlementmode TEXT NULL,
+    grossrewardsatoshis BIGINT NULL,
+    directminerrewardsatoshis BIGINT NULL,
+    directminerscriptpubkey TEXT NULL,
+    directrecipientoutputs JSONB NULL,
+    CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (
+        (settlementmode IS NULL AND grossrewardsatoshis IS NULL AND
+            directminerrewardsatoshis IS NULL AND
+            directminerscriptpubkey IS NULL AND directrecipientoutputs IS NULL)
+        OR
+        (settlementmode = 'coinbase-direct' AND type = 'bitcoin-direct' AND
+            grossrewardsatoshis > 0 AND
+            directminerrewardsatoshis > 0 AND
+            directminerrewardsatoshis <= grossrewardsatoshis AND
+            directminerscriptpubkey ~ '^[0-9a-f]+$' AND
+            length(directminerscriptpubkey) % 2 = 0 AND
+            jsonb_typeof(directrecipientoutputs) = 'array')
+    )
 );
 
 CREATE INDEX IDX_BLOCKS_POOL_BLOCK_STATUS on blocks(poolid, blockheight, status);

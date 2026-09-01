@@ -3,9 +3,11 @@ using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Persistence.Model;
 using Share = Miningcore.Blockchain.Share;
+using Newtonsoft.Json;
 
 namespace Miningcore.Mining;
 
@@ -46,8 +48,14 @@ internal static class ShareAccounting
                 throw new InvalidDataException(
                     "Block-only records must not carry ordinary share-accounting data");
 
+            ValidateDirectSettlementEvidence(envelope);
+
             return Array.Empty<Share>();
         }
+
+        if(HasDirectSettlementEvidence(envelope))
+            throw new InvalidDataException(
+                "Ordinary shares must not carry direct coinbase settlement evidence");
 
         if(string.IsNullOrEmpty(envelope.AccountingId))
         {
@@ -104,6 +112,77 @@ internal static class ShareAccounting
             "achieved miner difficulty");
 
         return new[] { envelope, auxiliary };
+    }
+
+    private static bool HasDirectSettlementEvidence(Share share) =>
+        !string.IsNullOrEmpty(share.SettlementMode) ||
+        share.GrossRewardSatoshis.HasValue ||
+        share.DirectMinerRewardSatoshis.HasValue ||
+        !string.IsNullOrEmpty(share.DirectMinerScriptPubKey) ||
+        !string.IsNullOrEmpty(share.DirectRecipientOutputs);
+
+    private static void ValidateDirectSettlementEvidence(Share share)
+    {
+        var hasEvidence = HasDirectSettlementEvidence(share);
+        if(!hasEvidence)
+            return;
+
+        if(!string.Equals(share.BlockType, "bitcoin-direct",
+               StringComparison.Ordinal) ||
+           !string.Equals(share.SettlementMode,
+               BitcoinDirectCoinbaseSettlement.Mode,
+               StringComparison.Ordinal) ||
+           share.GrossRewardSatoshis is not > 0 ||
+           share.DirectMinerRewardSatoshis is not > 0 ||
+           share.DirectMinerRewardSatoshis > share.GrossRewardSatoshis ||
+           string.IsNullOrWhiteSpace(share.DirectMinerScriptPubKey) ||
+           string.IsNullOrWhiteSpace(share.DirectRecipientOutputs))
+            throw new InvalidDataException(
+                "Direct coinbase block records require complete immutable settlement evidence");
+
+        if(share.DirectMinerScriptPubKey.Length % 2 != 0 ||
+           share.DirectMinerScriptPubKey.Any(x =>
+               !(x is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            throw new InvalidDataException(
+                "Direct coinbase miner script must be canonical lowercase hexadecimal");
+
+        BitcoinDirectCoinbaseOutput[] outputs;
+        try
+        {
+            outputs = JsonConvert.DeserializeObject<
+                BitcoinDirectCoinbaseOutput[]>(
+                share.DirectRecipientOutputs) ??
+                Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
+        catch(JsonException ex)
+        {
+            throw new InvalidDataException(
+                "Direct coinbase recipient evidence must be valid JSON", ex);
+        }
+
+        var scripts = new HashSet<string>(StringComparer.Ordinal)
+        {
+            share.DirectMinerScriptPubKey,
+        };
+        long total = share.DirectMinerRewardSatoshis.Value;
+        foreach(var output in outputs)
+        {
+            if(output == null || string.IsNullOrWhiteSpace(output.Address) ||
+               string.IsNullOrWhiteSpace(output.ScriptPubKey) ||
+               output.ScriptPubKey.Length % 2 != 0 ||
+               output.ScriptPubKey.Any(x =>
+                   !(x is >= '0' and <= '9' or >= 'a' and <= 'f')) ||
+               output.AmountSatoshis <
+                   BitcoinDirectCoinbase.MinimumOutputSatoshis ||
+               !scripts.Add(output.ScriptPubKey))
+                throw new InvalidDataException(
+                    "Direct coinbase recipient evidence contains an invalid or duplicate output");
+            total = checked(total + output.AmountSatoshis);
+        }
+
+        if(total != share.GrossRewardSatoshis.Value)
+            throw new InvalidDataException(
+                "Direct coinbase settlement outputs do not sum to the gross reward");
     }
 
     internal static void ValidateReplayHorizon(Share envelope, DateTime nowUtc,

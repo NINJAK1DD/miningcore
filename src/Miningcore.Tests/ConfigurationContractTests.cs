@@ -590,7 +590,7 @@ public class ConfigurationContractTests
 
             Assert.True(rewardRecipients?.Count > 0,
                 $"{fileName}: pool '{poolId}' must demonstrate at least one " +
-                "zero-percent reward recipient");
+                "reviewed reward recipient");
 
             foreach(var recipient in rewardRecipients.Children<JObject>())
             {
@@ -606,7 +606,15 @@ public class ConfigurationContractTests
                 Assert.True(isPlaceholder || isApprovedDonation,
                     $"{fileName}: pool '{poolId}' has an unexpected reward " +
                     $"recipient address '{recipientAddress}'");
-                Assert.Equal(0m, percentage);
+                if(fileName == "bitcoin_direct_solo_pool.json")
+                {
+                    Assert.True(isPlaceholder,
+                        $"{fileName}: the opt-in direct fee must remain an " +
+                        "operator-owned placeholder");
+                    Assert.Equal(2m, percentage);
+                }
+                else
+                    Assert.Equal(0m, percentage);
             }
         }
 

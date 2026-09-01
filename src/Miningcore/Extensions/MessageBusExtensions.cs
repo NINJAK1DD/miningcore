@@ -27,6 +27,9 @@ public static class MessageBusExtensions
             Miner = block.Miner,
             MinerExplorerLink = minerExplorerLink,
             Source = block.Source,
+            SettlementMode = block.SettlementMode,
+            GrossRewardSatoshis = block.GrossRewardSatoshis,
+            DirectMinerRewardSatoshis = block.DirectMinerRewardSatoshis,
         });
     }
 
@@ -87,6 +90,9 @@ public static class MessageBusExtensions
             ExplorerLink = blockExplorerLink,
             Miner = block.Miner,
             MinerExplorerLink = minerExplorerLink,
+            SettlementMode = block.SettlementMode,
+            GrossRewardSatoshis = block.GrossRewardSatoshis,
+            DirectMinerRewardSatoshis = block.DirectMinerRewardSatoshis,
         });
     }
 
