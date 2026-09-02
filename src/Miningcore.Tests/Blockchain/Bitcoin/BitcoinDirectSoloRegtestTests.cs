@@ -85,7 +85,7 @@ public class BitcoinDirectSoloRegtestTests : TestBase
         Assert.True(string.Equals(pool.ScriptPubKey.ToHex(),
             outputs[0]?["scriptPubKey"]?["hex"]?.Value<string>(),
             StringComparison.OrdinalIgnoreCase));
-        Assert.True(outputs[^1]?["scriptPubKey"]?["hex"]?.Value<string>()?
+        Assert.True(outputs[outputs.Count - 1]?["scriptPubKey"]?["hex"]?.Value<string>()?
             .StartsWith("6a24aa21a9ed",
                 StringComparison.OrdinalIgnoreCase) == true);
     }
