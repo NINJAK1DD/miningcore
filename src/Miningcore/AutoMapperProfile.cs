@@ -1,9 +1,11 @@
 using AutoMapper;
 using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Model.Projections;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
 using MinerStats = Miningcore.Persistence.Model.Projections.MinerStats;
 
 namespace Miningcore;
@@ -34,6 +36,8 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.ConfirmationProgress, opt => opt.Ignore())
             .ForMember(dest => dest.Effort, opt => opt.Ignore())
             .ForMember(dest => dest.MinerEffort, opt => opt.Ignore())
+            .ForMember(dest => dest.DirectSettlementLastChecked,
+                opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockFoundOnUpdate, opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockConfirmationProgressOnUpdate, opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore());
@@ -104,7 +108,10 @@ public class AutoMapperProfile : Profile
                 opt => opt.MapFrom(src => src.SharesPerSecond));
 
         CreateMap<Block, Api.Responses.Block>()
-            .ForMember(dest => dest.InfoLink, opt => opt.Ignore());
+            .ForMember(dest => dest.InfoLink, opt => opt.Ignore())
+            .ForMember(dest => dest.DirectRecipientOutputs,
+                opt => opt.MapFrom(src => DeserializeDirectRecipientOutputs(
+                    src.DirectRecipientOutputs)));
 
         CreateMap<MinerSettings, Api.Responses.MinerSettings>();
 
@@ -173,5 +180,25 @@ public class AutoMapperProfile : Profile
             .ForMember(dest => dest.NextNetworkTarget, opt => opt.Ignore())
             .ForMember(dest => dest.NextNetworkBits, opt => opt.Ignore())
             .ForMember(dest => dest.NodeVersion, opt => opt.Ignore());
+    }
+
+    internal static BitcoinDirectCoinbaseOutput[]
+        DeserializeDirectRecipientOutputs(string value)
+    {
+        if(string.IsNullOrEmpty(value))
+            return Array.Empty<BitcoinDirectCoinbaseOutput>();
+
+        try
+        {
+            var result = JsonConvert.DeserializeObject<
+                BitcoinDirectCoinbaseOutput[]>(value);
+            return result?.All(x => x != null) == true
+                ? result
+                : Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
+        catch(JsonException)
+        {
+            return Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
     }
 }

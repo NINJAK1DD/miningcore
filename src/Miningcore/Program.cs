@@ -546,6 +546,8 @@ public class Program : ProcessStatusBackgroundService
             // templates but before any Stratum listener is reserved or pool is started.
             // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            ValidateBitcoinDirectSoloDeployment(clusterConfig,
+                requireAssignedTemplates: true);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(
@@ -1178,6 +1180,7 @@ public class Program : ProcessStatusBackgroundService
             {
                 ValidateMergedMiningDeployment(config);
                 ValidatePpsDeployment(config);
+                ValidateBitcoinDirectSoloDeployment(config);
             }
 
             var listenerConflict = FindApiListenerStratumPortConflict(
@@ -1373,6 +1376,11 @@ public class Program : ProcessStatusBackgroundService
                         skipApiListenerSettings);
 
                     RejectCaseInsensitivePropertyDuplicates(document);
+                    // Recovery mode discards live pool settings, but the same
+                    // source document must never make malformed or ambiguous
+                    // security-sensitive switches appear acceptable in one
+                    // startup mode and invalid in another.
+                    ValidateBitcoinDirectSoloSyntax(document);
                     if(skipApiListenerSettings)
                     {
                         // Recovery configuration policy:
@@ -1463,6 +1471,31 @@ public class Program : ProcessStatusBackgroundService
         current.Ancestors().OfType<JProperty>().Any(property =>
             property.Name.Equals("payoutSchemeConfig",
                 StringComparison.OrdinalIgnoreCase));
+
+    internal static void ValidateBitcoinDirectSoloSyntax(JObject document)
+    {
+        foreach(var pool in document?["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var property = pool.Properties().FirstOrDefault(candidate =>
+                candidate.Name.Equals("soloCoinbasePayout",
+                    StringComparison.OrdinalIgnoreCase));
+            if(property == null)
+                continue;
+
+            if(!string.Equals(property.Name, "soloCoinbasePayout",
+                   StringComparison.Ordinal))
+                throw new JsonSerializationException(
+                    $"Property '{property.Name}' must use canonical casing 'soloCoinbasePayout'." +
+                    GetJsonLocationSuffix(property as IJsonLineInfo,
+                        property.Path));
+            if(property.Value.Type != JTokenType.Boolean)
+                throw new JsonSerializationException(
+                    "Property 'soloCoinbasePayout' must be a JSON Boolean." +
+                    GetJsonLocationSuffix(property.Value as IJsonLineInfo,
+                        property.Path));
+        }
+    }
 
     private static string GetJsonLocationSuffix(IJsonLineInfo source,
         string path = null)
@@ -1910,6 +1943,10 @@ public class Program : ProcessStatusBackgroundService
             services.GetService<IConnectionFactory>(),
             services.GetService<IShareRepository>(), CancellationToken.None);
 
+        await EnsureBitcoinDirectSoloSchemaAsync(clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IBlockRepository>(), CancellationToken.None);
+
         ZcashNetworks.Instance.EnsureRegistered();
 
         var messageBus = services.GetService<IMessageBus>();
@@ -2111,6 +2148,7 @@ public class Program : ProcessStatusBackgroundService
 
     internal static bool RequiresSynchronousBlockCandidatePersistence(
         ClusterConfig config) => RequiresMergedMiningPersistence(config) ||
+        RequiresBitcoinDirectSoloPersistence(config) ||
         config?.Pools?.Any(pool => pool.Enabled &&
             pool.PaymentProcessing?.Enabled == true &&
             pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS) == true;
@@ -2141,6 +2179,7 @@ public class Program : ProcessStatusBackgroundService
         var auxiliary = config.Pools?.FirstOrDefault(pool =>
             string.Equals(pool.Id, merged.AuxPoolId,
                 StringComparison.OrdinalIgnoreCase));
+
         return parent.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO ||
             auxiliary?.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO;
     }
@@ -2211,6 +2250,98 @@ public class Program : ProcessStatusBackgroundService
                 "Every PPS accepting node requires PostgreSQL so accepted block candidates persist synchronously and the share receipt, liability ledger, precision remainder and miner balance commit atomically.");
     }
 
+    internal static bool RequiresBitcoinDirectSoloPersistence(
+        ClusterConfig config) => config?.Pools?.Any(pool => pool.Enabled &&
+        pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()?
+            .SoloCoinbasePayout == true) == true;
+
+    internal static void ValidateBitcoinDirectSoloDeployment(
+        ClusterConfig config, bool requireAssignedTemplates = false)
+    {
+        var directPools = config?.Pools?.Where(pool => pool.Enabled &&
+            pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()?
+                .SoloCoinbasePayout == true).ToArray() ??
+            Array.Empty<PoolConfig>();
+        if(directPools.Length == 0)
+            return;
+
+        if(config.Persistence?.Postgres == null)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires PostgreSQL for synchronous accepted-block audit persistence.");
+        if(config.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires cluster-level payment processing for maturity, reorg and notification tracking.");
+        if(config.ShareRelay != null || config.ShareRelays?.Length > 0)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout does not support share-relay sender, receiver or recorder topologies in its initial BTC-only contract.");
+
+        foreach(var pool in directPools)
+        {
+            if(!string.Equals(pool.Coin, "bitcoin",
+                   StringComparison.Ordinal))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' enables direct SOLO coinbase payout, which is supported only by the canonical 'bitcoin' template",
+                    pool.Id);
+            if(pool.EnableInternalStratum != true)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the internal Stratum server",
+                    pool.Id);
+            if(pool.PaymentProcessing?.Enabled != true ||
+               pool.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct coinbase payout requires enabled pool-level payment processing with payoutScheme 'SOLO'",
+                    pool.Id);
+            if(MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled ==
+               true)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout does not support merged-mining topology",
+                    pool.Id);
+
+            if(pool.Template == null)
+            {
+                if(requireAssignedTemplates)
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' direct SOLO coinbase payout template was not assigned before its runtime contract was checked",
+                        pool.Id);
+            }
+            else if(pool.Template.Family != CoinFamily.Bitcoin ||
+                    !string.Equals(pool.Template.Symbol, "BTC",
+                        StringComparison.Ordinal) ||
+                    !string.Equals(pool.Template.CanonicalName, "Bitcoin",
+                        StringComparison.Ordinal))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the canonical BTC runtime template",
+                    pool.Id);
+
+            var recipients = pool.RewardRecipients ??
+                Array.Empty<RewardRecipient>();
+            if(recipients.Any(x => x == null || x.Percentage < 0 ||
+                    x.Percentage > 0 &&
+                    string.IsNullOrWhiteSpace(x.Address)))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout contains a null, negative or addressless positive reward recipient",
+                    pool.Id);
+
+            decimal total;
+            try
+            {
+                total = recipients.Where(x => x.Percentage > 0)
+                    .Sum(x => x.Percentage);
+            }
+            catch(OverflowException ex)
+            {
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO recipient percentages exceed the supported range",
+                    pool.Id, ex);
+            }
+
+            if(total >= 100m)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO recipient percentages must total less than 100%",
+                    pool.Id);
+        }
+    }
+
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
     {
         var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
@@ -2265,6 +2396,23 @@ public class Program : ProcessStatusBackgroundService
         if(!schemaReady)
             throw new PoolStartupException(
                 "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql before enabling them.");
+    }
+
+    internal static async Task EnsureBitcoinDirectSoloSchemaAsync(
+        ClusterConfig config, IConnectionFactory cf,
+        IBlockRepository blockRepo, CancellationToken ct)
+    {
+        if(!RequiresBitcoinDirectSoloPersistence(config))
+            return;
+        if(cf == null || blockRepo == null)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires PostgreSQL block persistence.");
+
+        var ready = await cf.Run(con =>
+            blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct));
+        if(!ready)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires the direct-settlement block schema. Apply add_bitcoin_direct_solo.sql before enabling soloCoinbasePayout.");
     }
 
     private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)

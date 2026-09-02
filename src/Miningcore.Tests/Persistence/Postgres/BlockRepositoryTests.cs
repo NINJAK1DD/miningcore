@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
@@ -23,6 +24,7 @@ public class BlockRepositoryTests
         var expectedTypes = new[]
         {
             "bitcoin-direct",
+            BitcoinDirectCoinbaseSettlement.BlockType,
             "auxpow",
             "auxpow-claim",
             "merged-parent",
@@ -45,7 +47,7 @@ public class BlockRepositoryTests
                 }));
             var connection = new RecordingDbConnection();
 
-            await repository.InsertAsync(connection, null, new Block
+            var block = new Block
             {
                 PoolId = "idempotency-test",
                 BlockHeight = 100,
@@ -54,7 +56,23 @@ public class BlockRepositoryTests
                 Status = BlockStatus.Pending,
                 TransactionConfirmationData = type + ":identity:0",
                 Created = DateTime.UtcNow,
-            });
+            };
+            if(type == BitcoinDirectCoinbaseSettlement.BlockType)
+            {
+                block.TransactionConfirmationData = new string('a', 64);
+                block.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
+                block.GrossRewardSatoshis = 5_000_000_000;
+                block.DirectMinerRewardSatoshis = 4_900_000_000;
+                block.DirectMinerScriptPubKey =
+                    "0014" + new string('1', 40);
+                block.DirectRecipientOutputs = "[]";
+                block.DirectSubmissionState =
+                    BitcoinDirectSubmission.LegacyObserved;
+                block.DirectSubmissionAttempts = 0;
+                block.DirectSubmissionDefinitiveMisses = 0;
+            }
+
+            await repository.InsertAsync(connection, null, block);
 
             Assert.Contains(rule.ConflictClause, connection.CommandText,
                 StringComparison.OrdinalIgnoreCase);
@@ -82,6 +100,19 @@ public class BlockRepositoryTests
             {
                 IsBlockCandidate = true,
                 BlockType = "ordinary",
+            }));
+
+        Assert.True(BlockOnlyCandidatePersistenceRules
+            .RequiresBitcoinDirectSoloSchema(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = true,
+                BlockType = BitcoinDirectCoinbaseSettlement.BlockType,
+            }));
+        Assert.False(BlockOnlyCandidatePersistenceRules
+            .RequiresBitcoinDirectSoloSchema(new global::Miningcore.Blockchain.Share
+            {
+                IsBlockCandidate = true,
+                BlockType = "bitcoin-direct",
             }));
     }
 
@@ -287,6 +318,185 @@ public class BlockRepositoryTests
             connection.CommandText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(block.TransactionConfirmationData,
             connection.Parameters["transactionconfirmationdata"]);
+        Assert.DoesNotContain("directsettlementlastchecked", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task InsertAsync_RejectsDirectIdentityWithoutCompleteEvidence()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            repository.InsertAsync(connection, null, new Block
+            {
+                PoolId = "btc-direct",
+                BlockHeight = 100,
+                Type = BitcoinDirectCoinbaseSettlement.BlockType,
+                Hash = "block",
+                Status = BlockStatus.Pending,
+                TransactionConfirmationData = "tx",
+                Created = DateTime.UtcNow,
+            }));
+
+        Assert.Contains("complete direct coinbase settlement evidence",
+            error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DirectReconciliation_PersistsTimestampAndUsesBoundedOrderedQuery()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+        var checkedAt = DateTime.UtcNow;
+        var block = new Block
+        {
+            Id = 42,
+            PoolId = "btc-direct",
+            BlockHeight = 100,
+            Status = BlockStatus.Confirmed,
+            Type = BitcoinDirectCoinbaseSettlement.BlockType,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            Hash = new string('a', 64),
+            TransactionConfirmationData = new string('b', 64),
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            DirectSubmissionState = BitcoinDirectSubmission.LegacyObserved,
+            DirectSubmissionAttempts = 0,
+            DirectSubmissionDefinitiveMisses = 0,
+            DirectSettlementLastChecked = checkedAt,
+        };
+
+        Assert.True(await repository.UpdateBlockAsync(connection, null, block));
+        Assert.Contains("directsettlementlastchecked = @directsettlementlastchecked",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(checkedAt,
+            connection.Parameters["directsettlementlastchecked"]);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .GetBitcoinDirectBlocksForReconciliationAsync(
+                connection, block.PoolId, 50, checkedAt, 64,
+                CancellationToken.None));
+        Assert.Contains("status IN ('confirmed', 'orphaned')", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsettlementlastchecked ASC NULLS FIRST",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("blockheight >= @minimumBlockHeight",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(50L, connection.Parameters["minimumblockheight"]);
+        Assert.Contains("FETCH NEXT @pageSize ROWS ONLY", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(64, connection.Parameters["pagesize"]);
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("directsubmissionblock", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("pool")]
+    [InlineData("global")]
+    [InlineData("miner")]
+    public async Task PublicBlockPages_ExcludeReplayPayload(string scope)
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+        var states = new[] { BlockStatus.Pending };
+
+        Func<Task<Block[]>> action = scope switch
+        {
+            "pool" => () => repository.PageBlocksAsync(connection, "btc",
+                states, 0, 100, CancellationToken.None),
+            "global" => () => repository.PageBlocksAsync(connection, states,
+                0, 100, CancellationToken.None),
+            "miner" => () => repository.PageMinerBlocksAsync(connection,
+                "btc", "miner", states, 0, 100, CancellationToken.None),
+            _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        };
+
+        await Assert.ThrowsAsync<NotSupportedException>(action);
+
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("directsubmissionblock", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(-1, 1)]
+    [InlineData(0, 0)]
+    [InlineData(0, 101)]
+    public async Task PublicBlockPages_RejectInvalidOrUnboundedPages(int page,
+        int pageSize)
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => repository
+            .PageBlocksAsync(connection, new[] { BlockStatus.Pending }, page,
+                pageSize, CancellationToken.None));
+
+        Assert.Null(connection.CommandText);
+    }
+
+    [Fact]
+    public async Task PublicBlockPages_ComputeOffsetWithoutIntegerOverflow()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .PageBlocksAsync(connection, new[] { BlockStatus.Pending },
+                int.MaxValue, 100, CancellationToken.None));
+
+        Assert.Equal((long) int.MaxValue * 100,
+            connection.Parameters["offset"]);
+    }
+
+    [Fact]
+    public async Task DirectReplayQuery_ExclusivelyLoadsReplayPayload()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .GetBitcoinDirectSubmissionsForReplayAsync(connection, "btc", 0,
+                64, CancellationToken.None));
+
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsubmissionblock", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsubmissionstate IN", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PendingBlockQuery_LoadsPayloadOnlyForReplayableDirectStates()
+    {
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var connection = new RecordingDbConnection();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => repository
+            .GetPendingBlocksForPoolAsync(connection, "btc"));
+
+        Assert.DoesNotContain("SELECT *", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CASE", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("directsubmissionstate IN", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("('prepared', 'submitted-uncertain')",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THEN directsubmissionblock",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ELSE NULL", connection.CommandText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("END AS directsubmissionblock",
+            connection.CommandText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -466,6 +676,7 @@ public class BlockRepositoryTests
 
         protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
         {
+            connection.Record(this);
             throw new NotSupportedException();
         }
     }

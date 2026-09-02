@@ -1,3 +1,4 @@
+using Miningcore.Blockchain.Bitcoin;
 using Share = Miningcore.Blockchain.Share;
 
 namespace Miningcore.Persistence;
@@ -20,6 +21,9 @@ internal static class BlockOnlyCandidatePersistenceRules
         {
             ["bitcoin-direct"] = new("bitcoin-direct", "poolId + blockHash",
                 " ON CONFLICT (poolid, hash) WHERE type = 'bitcoin-direct' DO NOTHING"),
+            [BitcoinDirectCoinbaseSettlement.BlockType] = new(
+                BitcoinDirectCoinbaseSettlement.BlockType, "poolId + blockHash",
+                $" ON CONFLICT (poolid, hash) WHERE type = '{BitcoinDirectCoinbaseSettlement.BlockType}' DO NOTHING"),
             ["auxpow"] = new("auxpow", "poolId + blockHash",
                 " ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING"),
             ["auxpow-claim"] = new("auxpow-claim",
@@ -49,6 +53,13 @@ internal static class BlockOnlyCandidatePersistenceRules
         candidate?.IsBlockCandidate == true &&
         !candidate.BlockRecordEmitted &&
         TryGet(candidate.BlockType, out _);
+
+    internal static bool RequiresBitcoinDirectSoloSchema(Share candidate) =>
+        candidate?.IsBlockCandidate == true &&
+        !candidate.BlockRecordEmitted &&
+        string.Equals(candidate.BlockType,
+            BitcoinDirectCoinbaseSettlement.BlockType,
+            StringComparison.Ordinal);
 
     internal static void EnsureDeclared(Share candidate)
     {

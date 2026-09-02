@@ -187,6 +187,15 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   done < <(find "$repository_root/examples" -maxdepth 1 -type f \
     \( -name '*.json' -o -name 'README.md' \) -print | sort)
 
+  while IFS= read -r migration; do
+    member="$package_root/migrations/$(basename "$migration")"
+    if ! tar -xOf "$output_dir/$archive" "$member" | cmp -s - "$migration"; then
+      echo "$archive does not contain the reviewed migration $(basename "$migration")" >&2
+      exit 1
+    fi
+  done < <(find "$repository_root/src/Miningcore/Persistence/Postgres/Scripts" \
+    -maxdepth 1 -type f -name '*.sql' -print | sort)
+
   cp "$output_dir/$archive" "$complete_dir/"
 done
 

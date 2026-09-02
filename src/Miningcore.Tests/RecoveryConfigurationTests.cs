@@ -444,6 +444,31 @@ public class RecoveryConfigurationTests
         }
     }
 
+    [Theory]
+    [InlineData("SoloCoinbasePayout", "true", "canonical casing")]
+    [InlineData("soloCoinbasePayout", "\"true\"", "JSON Boolean")]
+    public void RecoveryMode_RejectsMalformedDirectSoloSwitchBeforeSanitization(
+        string propertyName, string valueJson, string expected)
+    {
+        var document = CreateRecoveryDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+        pool[propertyName] = JToken.Parse(valueJson);
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+
+            Assert.Contains(expected, error.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
     [Fact]
     public async Task RecoveryMode_SanitizedDisabledPoolsStillRequireSharePartitions()
     {

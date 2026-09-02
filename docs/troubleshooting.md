@@ -56,6 +56,11 @@ An active process alone does not prove mining or payouts are healthy.
   first pool-specific error. Continue with [pool and daemon checks](#pool-and-daemon-checks).
 - **Miner connects but submits no accepted shares.** Confirm the port, coin, address format,
   password options and difficulty. Continue with [miner and share checks](#miner-and-share-checks).
+- **A direct-SOLO miner receives no job or reports zero coinbase share.** Confirm
+  `soloCoinbasePayout` is enabled on the canonical BTC SOLO pool, the base username is a valid
+  address for the daemon network, and the fee placeholder was replaced. Decode the announced
+  coinbase before hashing; do not fall back to the pool wallet. Follow the
+  [Bitcoin direct-SOLO preflight](bitcoin-direct-solo.md#preflight-before-production-hashing).
 - **BIP310 version rolling is declined or a custom mask stops startup.** Do not widen the mask to
   satisfy a miner. Check the per-chain audit and diagnostics in
   [Bitcoin-family version rolling](version-rolling.md).
@@ -96,6 +101,31 @@ An active process alone does not prove mining or payouts are healthy.
   the index, which can take significant maintenance time on a large accounting table. Do not create
   lookalike tables or disable preflight. See
   [database upgrades](database.md#upgrade-an-existing-database).
+- **Startup says the direct-settlement block schema is missing or malformed.** Keep Bitcoin direct
+  SOLO offline and apply `add_bitcoin_direct_solo.sql` from the verified candidate directory while
+  every database writer is stopped. Do not create same-named columns or constraints manually; the
+  exact types, settlement/submission-state constraint, reconciliation order and prepared-submission
+  replay index are checked before work is delivered. See the
+  [direct-SOLO database migration](bitcoin-direct-solo.md#database-migration).
+- **Startup reports replaying Bitcoin direct-SOLO outbox entries.** Keep Stratum closed until replay
+  finishes. Preserve PostgreSQL and the recovery journal, then confirm each exact block becomes
+  `observed-active`, remains `submitted-uncertain`, or reaches the documented bounded rejection
+  threshold. Do not delete a prepared row or manually submit reconstructed data; the stored exact
+  payload is authoritative. See
+  [direct-SOLO confirmation and restart behavior](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior).
+- **Miningcore stops after a direct block with a PostgreSQL commit or cleanup warning.** Keep the
+  exact recovery journal and PostgreSQL row. Miningcore attempts daemon propagation before the
+  database-health fail-stop; an uncertain commit deliberately writes an importable, idempotent
+  journal entry even when PostgreSQL may also contain the same outbox row. Verify and reconcile the
+  stable candidate identity before recovery import or restart. Do not convert that journal into a
+  quarantine file merely because both copies exist. See
+  [direct-SOLO confirmation and restart behavior](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior).
+- **A Bitcoin direct-SOLO template update stops Miningcore.** Keep the supervised restart loop
+  stopped if the error repeats. The pool deliberately invalidates stale direct jobs and closes
+  mining admission when a post-startup template cannot satisfy the immutable coinbase contract.
+  Preserve PostgreSQL and every recovery/quarantine artifact, inspect the daemon template and use
+  the [direct-SOLO confirmation and rollback boundaries](bitcoin-direct-solo.md#confirmation-restart-and-reorg-behavior)
+  before resuming miners.
 - **PPS balances grow while blocks are orphaned or absent.** This is expected PPS liability, not a
   reason to edit balances. Check the reserve, exact PPS ledger, remainder table and bounded
   liability/replay metrics. See
@@ -179,6 +209,10 @@ Check, in order:
 
 One miner submitting shares proves the endpoint works for that route; it does not validate another
 network, TLS proxy or firewall path.
+
+For Bitcoin direct SOLO, no `mining.notify` is sent before successful authorization. Repeated
+authorization with another address clears that connection's old jobs and creates a new immutable
+projection. An old or another connection's job ID must fail instead of redirecting its payout.
 
 ## API, administration and metrics
 

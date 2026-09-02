@@ -27,6 +27,14 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Blockchain.Bitcoin;
 
+internal sealed class BitcoinDirectSettlementMismatchException : Exception
+{
+    public BitcoinDirectSettlementMismatchException(string message) :
+        base(message)
+    {
+    }
+}
+
 [CoinFamily(CoinFamily.Bitcoin, CoinFamily.Nexa)]
 public class BitcoinPayoutHandler : PayoutHandlerBase,
     IPayoutHandler
@@ -163,6 +171,41 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 .Skip(i * pageSize)
                 .Take(pageSize)
                 .ToArray();
+
+            var directBlocks = page.Where(IsDirectCoinbaseSettlement)
+                .ToArray();
+            foreach(var directBlock in directBlocks)
+            {
+                try
+                {
+                    var classified = await ClassifyDirectCoinbaseBlockAsync(
+                        directBlock, ct);
+                    if(classified)
+                        result.Add(directBlock);
+                }
+                catch(Exception ex) when(IsCorruptPersistedDirectEvidence(ex))
+                {
+                    ClearDirectSettlementMismatchGrace(directBlock);
+                    directBlock.Status = BlockStatus.Quarantined;
+                    if(!string.Equals(directBlock.DirectSubmissionState,
+                           BitcoinDirectSubmission.LegacyObserved,
+                           StringComparison.Ordinal))
+                        directBlock.DirectSubmissionState =
+                            BitcoinDirectSubmission.Quarantined;
+                    directBlock.DirectSettlementLastChecked = clock.Now;
+                    directBlock.NotifyBlockFoundOnUpdate = false;
+                    directBlock.NotifyBlockConfirmationProgressOnUpdate = false;
+                    directBlock.NotifyBlockUnlockedOnUpdate = false;
+                    result.Add(directBlock);
+                    logger.Error(ex, () =>
+                        $"[{LogCategory}] Quarantined direct SOLO block {directBlock.BlockHeight} [{directBlock.Hash}] because its immutable settlement evidence could not be verified");
+                }
+            }
+
+            page = page.Where(block => !IsDirectCoinbaseSettlement(block))
+                .ToArray();
+            if(page.Length == 0)
+                continue;
 
             var resolvedAuxiliaryBlocks = new HashSet<Block>();
 
@@ -482,6 +525,450 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         return result.ToArray();
     }
 
+    internal static bool IsDirectCoinbaseSettlement(Block block) =>
+        string.Equals(block?.SettlementMode,
+            BitcoinDirectCoinbaseSettlement.Mode,
+            StringComparison.Ordinal);
+
+    protected virtual Task<RpcResponse<JToken>> GetDirectSettlementBlockAsync(
+        string blockHash, CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.GetBlock, ct,
+            new object[] { blockHash, 2 });
+
+    protected virtual Task<RpcResponse<JToken>> SubmitDirectSettlementBlockAsync(
+        string blockHex, CancellationToken ct) =>
+        rpcClient.ExecuteAsync<JToken>(logger, BitcoinCommands.SubmitBlock, ct,
+            new object[] { blockHex });
+
+    internal async Task<bool> ClassifyDirectCoinbaseBlockAsync(Block block,
+        CancellationToken ct)
+    {
+        ValidatePersistedDirectSettlement(block);
+        ValidatePersistedDirectRecipientEvidence(block);
+        var originalStatus = block.Status;
+        var wasPending = originalStatus == BlockStatus.Pending;
+        block.NotifyBlockFoundOnUpdate = false;
+        block.NotifyBlockConfirmationProgressOnUpdate = false;
+        block.NotifyBlockUnlockedOnUpdate = false;
+
+        RpcResponse<JToken> response;
+        if(BitcoinDirectSubmission.RequiresReplay(
+               block.DirectSubmissionState))
+        {
+            var submit = await SubmitDirectSettlementBlockAsync(
+                block.DirectSubmissionBlock, ct);
+            response = await GetDirectSettlementBlockAsync(block.Hash, ct);
+
+            if(IsActiveDirectSettlementResponse(response, block.Hash))
+            {
+                // Validate while the persisted replay projection still has its
+                // canonical prepared/uncertain counters. Mutating a prepared
+                // row first would make its own state validator reject the
+                // successful replay as malformed.
+                try
+                {
+                    VerifyDirectCoinbaseTransaction(block,
+                        (JObject) response.Response);
+                }
+                catch(BitcoinDirectSettlementMismatchException ex)
+                {
+                    block.DirectSubmissionAttempts = checked(
+                        block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                    block.DirectSubmissionLastAttempt = clock.Now;
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.SubmittedUncertain;
+                    block.Status = BlockStatus.Pending;
+                    NotifyDirectSettlementMismatchGrace(block, ex.Message);
+                    logger.Warn(ex,
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] remains " +
+                        "replayable because its active-chain coinbase does " +
+                        "not match the immutable settlement evidence");
+                    return true;
+                }
+                catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+                {
+                    block.DirectSubmissionAttempts = checked(
+                        block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                    block.DirectSubmissionLastAttempt = clock.Now;
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.SubmittedUncertain;
+                    block.Status = BlockStatus.Pending;
+                    logger.Warn(ex,
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] remains " +
+                        "replayable because the daemon returned malformed " +
+                        "active-block data");
+                    return true;
+                }
+                block.DirectSubmissionAttempts = checked(
+                    block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                block.DirectSubmissionLastAttempt = clock.Now;
+                block.DirectSubmissionState =
+                    BitcoinDirectSubmission.ObservedActive;
+                block.NotifyBlockFoundOnUpdate = true;
+            }
+            else
+            {
+                block.DirectSubmissionAttempts = checked(
+                    block.DirectSubmissionAttempts.GetValueOrDefault() + 1);
+                block.DirectSubmissionLastAttempt = clock.Now;
+                var submitError = submit.Error?.Message ??
+                    submit.Error?.Code.ToString(CultureInfo.InvariantCulture) ??
+                    submit.Response?.ToString();
+                var definitiveMiss = response.Error?.Code == -5 &&
+                    !string.IsNullOrWhiteSpace(submitError) &&
+                    submit.Error?.Code != -500 &&
+                    !BitcoinJobManagerBase<BitcoinJob>
+                        .IsDuplicateBlockSubmissionResponse(submitError) &&
+                    !BitcoinJobManagerBase<BitcoinJob>
+                        .IsInconclusiveBlockSubmissionResponse(submitError);
+
+                if(response.Error?.Code == -5)
+                    ClearDirectSettlementMismatchGrace(block);
+
+                if(definitiveMiss)
+                {
+                    block.DirectSubmissionDefinitiveMisses = checked(
+                        block.DirectSubmissionDefinitiveMisses
+                            .GetValueOrDefault() + 1);
+                }
+
+                if(definitiveMiss &&
+                   block.DirectSubmissionDefinitiveMisses >=
+                       BitcoinDirectSubmission.MinimumDefinitiveMisses &&
+                   clock.Now - block.Created >=
+                       BitcoinDirectSubmission.UncertainLifetime)
+                {
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.Rejected;
+                    block.Status = BlockStatus.Orphaned;
+                    block.ConfirmationProgress = 0;
+                    block.Reward = 0;
+                    logger.Warn(() =>
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] was rejected after " +
+                        $"{block.DirectSubmissionDefinitiveMisses} definitive " +
+                        "submission misses");
+                }
+                else
+                {
+                    block.DirectSubmissionState =
+                        BitcoinDirectSubmission.SubmittedUncertain;
+                    block.Status = BlockStatus.Pending;
+                    logger.Warn(() =>
+                        $"[{LogCategory}] Direct SOLO block " +
+                        $"{block.BlockHeight} [{block.Hash}] remains replayable " +
+                        "after an inconclusive durable submission attempt");
+                }
+
+                return true;
+            }
+        }
+        else
+            response = await GetDirectSettlementBlockAsync(block.Hash, ct);
+        if(response.Error != null)
+        {
+            if(response.Error.Code == -5)
+            {
+                ClearDirectSettlementMismatchGrace(block);
+                block.DirectSettlementLastChecked = clock.Now;
+                block.Status = BlockStatus.Orphaned;
+                block.ConfirmationProgress = 0;
+                block.Reward = 0;
+                block.NotifyBlockUnlockedOnUpdate =
+                    originalStatus != BlockStatus.Orphaned;
+                logger.Info(() =>
+                    $"[{LogCategory}] Direct SOLO block {block.BlockHeight} [{block.Hash}] is no longer known to the active chain");
+                return true;
+            }
+
+            logger.Warn(() =>
+                $"[{LogCategory}] Unable to inspect direct SOLO block {block.BlockHeight} [{block.Hash}]: {response.Error.Message}");
+            if(wasPending)
+                return false;
+
+            // Throttle an unavailable daemon response for an already-confirmed
+            // settlement. Its terminal status is unchanged and it remains eligible
+            // for a later bounded reconciliation pass.
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
+        }
+
+        JObject document;
+        int confirmations;
+        try
+        {
+            document = response.Response as JObject ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} returned a malformed getblock response");
+            var returnedHash = document.Value<string>("hash");
+            if(!string.Equals(returnedHash, block.Hash,
+                   StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} getblock hash does not match its persisted candidate");
+
+            confirmations = document.Value<int?>("confirmations") ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} has no confirmation count");
+        }
+        catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+        {
+            logger.Warn(ex,
+                $"[{LogCategory}] Deferred classification of direct SOLO " +
+                $"block {block.BlockHeight} [{block.Hash}] because the daemon " +
+                "returned malformed block data");
+            if(wasPending)
+                return false;
+
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
+        }
+        if(confirmations < 0)
+        {
+            ClearDirectSettlementMismatchGrace(block);
+            block.DirectSettlementLastChecked = clock.Now;
+            block.Status = BlockStatus.Orphaned;
+            block.ConfirmationProgress = 0;
+            block.Reward = 0;
+            block.NotifyBlockUnlockedOnUpdate =
+                originalStatus != BlockStatus.Orphaned;
+            return true;
+        }
+
+        try
+        {
+            VerifyDirectCoinbaseTransaction(block, document);
+        }
+        catch(BitcoinDirectSettlementMismatchException ex)
+        {
+            NotifyDirectSettlementMismatchGrace(block, ex.Message);
+            logger.Warn(ex,
+                $"[{LogCategory}] Deferred classification of direct SOLO " +
+                $"block {block.BlockHeight} [{block.Hash}] because its " +
+                "active-chain coinbase does not match the immutable " +
+                "settlement evidence");
+            if(wasPending)
+                return false;
+
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
+        }
+        catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+        {
+            logger.Warn(ex,
+                $"[{LogCategory}] Deferred classification of direct SOLO " +
+                $"block {block.BlockHeight} [{block.Hash}] because the daemon " +
+                "returned malformed coinbase data");
+            if(wasPending)
+                return false;
+
+            block.DirectSettlementLastChecked = clock.Now;
+            return true;
+        }
+
+        ClearDirectSettlementMismatchGrace(block);
+
+        if(string.Equals(block.DirectSubmissionState,
+               BitcoinDirectSubmission.Rejected,
+               StringComparison.Ordinal))
+        {
+            block.DirectSubmissionState =
+                BitcoinDirectSubmission.ObservedActive;
+            block.NotifyBlockFoundOnUpdate = true;
+        }
+
+        block.DirectSettlementLastChecked = clock.Now;
+        block.Reward = block.GrossRewardSatoshis.Value /
+            BitcoinConstants.SatoshisPerBitcoin;
+        block.ConfirmationProgress = Math.Min(1d,
+            (double) confirmations / minConfirmations);
+        block.Status = confirmations >= minConfirmations
+            ? BlockStatus.Confirmed
+            : BlockStatus.Pending;
+        block.NotifyBlockConfirmationProgressOnUpdate =
+            block.Status == BlockStatus.Pending;
+
+        if(confirmations >= minConfirmations)
+        {
+            block.ConfirmationProgress = 1;
+            block.NotifyBlockUnlockedOnUpdate =
+                originalStatus != BlockStatus.Confirmed;
+            logger.Info(() =>
+                $"[{LogCategory}] Confirmed direct SOLO block {block.BlockHeight} with on-chain miner and fee settlement");
+        }
+
+        return true;
+    }
+
+    internal static void ValidatePersistedDirectSettlement(Block block)
+    {
+        ArgumentNullException.ThrowIfNull(block);
+        if(!string.Equals(block.Type,
+               BitcoinDirectCoinbaseSettlement.BlockType,
+               StringComparison.Ordinal) ||
+           !string.Equals(block.SettlementMode,
+               BitcoinDirectCoinbaseSettlement.Mode,
+               StringComparison.Ordinal) ||
+           block.GrossRewardSatoshis is not > 0 ||
+           block.DirectMinerRewardSatoshis is not > 0 ||
+           block.DirectMinerRewardSatoshis > block.GrossRewardSatoshis ||
+           string.IsNullOrWhiteSpace(block.DirectMinerScriptPubKey) ||
+           string.IsNullOrWhiteSpace(block.DirectRecipientOutputs) ||
+           string.IsNullOrWhiteSpace(block.Hash) ||
+           string.IsNullOrWhiteSpace(block.TransactionConfirmationData))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has incomplete persisted settlement evidence");
+
+        if(!IsCanonicalLowerHex(block.DirectMinerScriptPubKey) ||
+           block.Hash.Length != 64 ||
+           block.TransactionConfirmationData.Length != 64)
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has malformed persisted settlement identity");
+
+        BitcoinDirectSubmission.ValidatePersistedProjection(block);
+    }
+
+    private static bool IsActiveDirectSettlementResponse(
+        RpcResponse<JToken> response, string expectedHash)
+    {
+        try
+        {
+            return response?.Error == null &&
+                response.Response is JObject document &&
+                string.Equals(document.Value<string>("hash"), expectedHash,
+                    StringComparison.OrdinalIgnoreCase) &&
+                document.Value<int?>("confirmations") is >= 0;
+        }
+        catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
+        {
+            return false;
+        }
+    }
+
+    // Keep distinct names at the two decision boundaries: malformed daemon
+    // data is retried, while the same parser failures in immutable persisted
+    // evidence cause quarantine. Centralizing the type list prevents drift.
+    private static bool IsMalformedDirectDaemonData(Exception ex) =>
+        IsDirectSettlementDataException(ex);
+
+    private static bool IsCorruptPersistedDirectEvidence(Exception ex) =>
+        IsDirectSettlementDataException(ex);
+
+    private static bool IsDirectSettlementDataException(Exception ex) =>
+        ex is InvalidDataException or JsonException or OverflowException or
+            FormatException or InvalidCastException;
+
+    internal static void VerifyDirectCoinbaseTransaction(Block block,
+        JObject document)
+    {
+        ValidatePersistedDirectSettlement(block);
+
+        var coinbase = (document["tx"] as JArray)?.FirstOrDefault() as
+            JObject ?? throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} has no decoded coinbase transaction");
+        if(!string.Equals(coinbase.Value<string>("txid"),
+               block.TransactionConfirmationData,
+               StringComparison.OrdinalIgnoreCase))
+            throw new BitcoinDirectSettlementMismatchException(
+                $"Direct SOLO block {block.BlockHeight} coinbase transaction id differs from accepted-candidate evidence");
+
+        var expected = GetExpectedDirectCoinbaseOutputs(block);
+        var actual = new List<(string Script, long Amount)>();
+        foreach(var output in coinbase["vout"] as JArray ?? new JArray())
+        {
+            var value = output.Value<decimal?>("value") ??
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains an output without a value");
+            var scaled = value * BitcoinConstants.SatoshisPerBitcoin;
+            if(scaled != decimal.Truncate(scaled) || scaled < 0 ||
+               scaled > long.MaxValue)
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains a non-satoshi output value");
+            var amount = (long) scaled;
+            if(amount == 0)
+                continue;
+
+            var script = output["scriptPubKey"]?.Value<string>("hex");
+            if(!IsCanonicalLowerHex(script))
+                throw new InvalidDataException(
+                    $"Direct SOLO block {block.BlockHeight} contains a malformed output script");
+            actual.Add((script, amount));
+        }
+
+        var orderedExpected = expected.OrderBy(x => x.Script,
+            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
+        var orderedActual = actual.OrderBy(x => x.Script,
+            StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Amount).ToArray();
+        var outputsMatch = orderedExpected.Length == orderedActual.Length &&
+            orderedExpected.Zip(orderedActual).All(pair =>
+                string.Equals(pair.First.Script, pair.Second.Script,
+                    StringComparison.OrdinalIgnoreCase) &&
+                pair.First.Amount == pair.Second.Amount);
+        if(!outputsMatch ||
+           SumAmounts(actual) != block.GrossRewardSatoshis)
+            throw new BitcoinDirectSettlementMismatchException(
+                $"Direct SOLO block {block.BlockHeight} coinbase outputs do not match the immutable accepted settlement");
+    }
+
+    private static void ValidatePersistedDirectRecipientEvidence(Block block) =>
+        _ = GetExpectedDirectCoinbaseOutputs(block);
+
+    private static List<(string Script, long Amount)>
+        GetExpectedDirectCoinbaseOutputs(Block block)
+    {
+        BitcoinDirectCoinbaseOutput[] recipients;
+        try
+        {
+            recipients = JsonConvert.DeserializeObject<
+                BitcoinDirectCoinbaseOutput[]>(
+                block.DirectRecipientOutputs) ??
+                Array.Empty<BitcoinDirectCoinbaseOutput>();
+        }
+        catch(JsonException ex)
+        {
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} recipient evidence is not valid JSON",
+                ex);
+        }
+
+        if(recipients.Any(x => x == null ||
+               string.IsNullOrWhiteSpace(x.Address) ||
+               !IsCanonicalLowerHex(x.ScriptPubKey) ||
+               x.AmountSatoshis < BitcoinDirectCoinbase.MinimumOutputSatoshis))
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} contains malformed recipient evidence");
+
+        var expected = new List<(string Script, long Amount)>
+        {
+            (block.DirectMinerScriptPubKey,
+                block.DirectMinerRewardSatoshis.Value),
+        };
+        expected.AddRange(recipients.Select(x =>
+            (x.ScriptPubKey, x.AmountSatoshis)));
+
+        if(expected.Select(x => x.Script).Distinct(
+               StringComparer.OrdinalIgnoreCase).Count() != expected.Count ||
+           SumAmounts(expected) != block.GrossRewardSatoshis)
+            throw new InvalidDataException(
+                $"Direct SOLO block {block.BlockHeight} persisted output evidence violates its exact settlement contract");
+
+        return expected;
+    }
+
+    private static bool IsCanonicalLowerHex(string value) =>
+        !string.IsNullOrEmpty(value) && value.Length % 2 == 0 &&
+        value.All(x => x is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static long SumAmounts(
+        IEnumerable<(string Script, long Amount)> outputs)
+    {
+        long result = 0;
+        foreach(var output in outputs)
+            result = checked(result + output.Amount);
+        return result;
+    }
+
     protected virtual Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
         CancellationToken ct)
     {
@@ -530,6 +1017,52 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     {
         return block.Type is "auxpow" or "merged-parent";
     }
+
+    private void NotifyDirectSettlementMismatchGrace(Block block,
+        string reason)
+    {
+        var episodeType = GetDirectSettlementMismatchEpisodeType(block);
+        if(!activeBlockGracePeriodTracker.TryAcquireNotification(
+               block.PoolId, block.Id, block.Hash, episodeType, clock.Now,
+               UncertainBlockLifetime))
+            return;
+
+        var subject =
+            $"[{poolConfig.Id}] direct-SOLO settlement mismatch persists";
+        var message = $"Pool {poolConfig.Id} direct-SOLO block " +
+            $"{block.BlockHeight} [{block.Hash}] has failed exact on-chain " +
+            $"coinbase settlement verification for at least " +
+            $"{(int) UncertainBlockLifetime.TotalMinutes} minutes: {reason}. " +
+            "Miningcore has not credited or paid this block and has kept the " +
+            "record pending or replayable. Compare the stored block, coinbase " +
+            "transaction ID and output scripts/amounts with an independent " +
+            "Bitcoin node before intervening.";
+
+        try
+        {
+            messageBus.SendMessage(new AdminNotification(subject, message));
+            activeBlockGracePeriodTracker.MarkNotificationSent(block.PoolId,
+                block.Id, block.Hash, episodeType);
+        }
+        catch(Exception ex)
+        {
+            activeBlockGracePeriodTracker.ReleaseNotification(block.PoolId,
+                block.Id, block.Hash, episodeType);
+            logger.Error(ex, () =>
+                $"[{LogCategory}] Unable to emit delayed direct-SOLO " +
+                $"settlement-mismatch notification for block " +
+                $"{block.BlockHeight} [{block.Hash}]");
+        }
+    }
+
+    private void ClearDirectSettlementMismatchGrace(Block block)
+    {
+        activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id,
+            block.Hash, GetDirectSettlementMismatchEpisodeType(block));
+    }
+
+    private static string GetDirectSettlementMismatchEpisodeType(Block block) =>
+        $"{block.Type}:direct-settlement-mismatch";
 
     private void NotifyUnavailableActiveBlockGrace(Block block, string reason)
     {

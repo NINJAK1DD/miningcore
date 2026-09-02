@@ -17,4 +17,15 @@ public class Block
     public string Source { get; set; }
     public string Hash { get; set; }
     public DateTime Created { get; set; }
+    public string SettlementMode { get; set; }
+    public long? GrossRewardSatoshis { get; set; }
+    public long? DirectMinerRewardSatoshis { get; set; }
+    public string DirectMinerScriptPubKey { get; set; }
+    public string DirectRecipientOutputs { get; set; }
+    public DateTime? DirectSettlementLastChecked { get; set; }
+    public string DirectSubmissionState { get; set; }
+    public string DirectSubmissionBlock { get; set; }
+    public int? DirectSubmissionAttempts { get; set; }
+    public int? DirectSubmissionDefinitiveMisses { get; set; }
+    public DateTime? DirectSubmissionLastAttempt { get; set; }
 }

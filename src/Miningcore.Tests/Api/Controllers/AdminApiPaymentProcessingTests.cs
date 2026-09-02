@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using Autofac;
 using AutoMapper;
 using Miningcore.Api;
@@ -61,8 +62,46 @@ public class AdminApiPaymentProcessingTests
         Assert.True(ordinary.PaymentProcessing.Enabled);
     }
 
-    private static PoolConfig Pool(string id, PayoutScheme scheme, bool enabled) =>
-        new()
+    [Fact]
+    public void BulkDisable_RejectsActiveDirectSoloBeforeMutatingAnyPool()
+    {
+        var direct = Pool("direct", PayoutScheme.SOLO, true,
+            directCoinbase: true);
+        var ordinary = Pool("ordinary", PayoutScheme.PPLNS, true);
+        var controller = CreateController(true, direct, ordinary);
+
+        var error = Assert.Throws<ApiException>(() =>
+            controller.DisablePoolsPaymentProcessing());
+
+        Assert.Equal(409, error.ResponseStatusCode);
+        Assert.Contains(
+            "Cannot disable payment processing while direct-SOLO pool 'direct'",
+            error.Message);
+        Assert.True(direct.PaymentProcessing.Enabled);
+        Assert.True(ordinary.PaymentProcessing.Enabled);
+    }
+
+    [Fact]
+    public void BulkEnable_RejectsDirectSoloWithoutStartupScheduler()
+    {
+        var direct = Pool("direct", PayoutScheme.SOLO, false,
+            directCoinbase: true);
+        var ordinary = Pool("ordinary", PayoutScheme.PPLNS, false);
+        var controller = CreateController(false, direct, ordinary);
+
+        var error = Assert.Throws<ApiException>(() =>
+            controller.EnablePoolsPaymentProcessing());
+
+        Assert.Equal(409, error.ResponseStatusCode);
+        Assert.Contains("valid direct-SOLO configuration", error.Message);
+        Assert.False(direct.PaymentProcessing.Enabled);
+        Assert.False(ordinary.PaymentProcessing.Enabled);
+    }
+
+    private static PoolConfig Pool(string id, PayoutScheme scheme, bool enabled,
+        bool directCoinbase = false)
+    {
+        var result = new PoolConfig
         {
             Id = id,
             Enabled = true,
@@ -72,6 +111,15 @@ public class AdminApiPaymentProcessingTests
                 PayoutScheme = scheme,
             },
         };
+
+        if(directCoinbase)
+            result.Extra = new Dictionary<string, object>
+            {
+                ["soloCoinbasePayout"] = true,
+            };
+
+        return result;
+    }
 
     private static AdminApiController CreateController(bool clusterPaymentEnabled,
         params PoolConfig[] poolConfigs)

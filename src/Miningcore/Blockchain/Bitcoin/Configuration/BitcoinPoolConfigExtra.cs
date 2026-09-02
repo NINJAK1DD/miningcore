@@ -51,4 +51,10 @@ public class BitcoinPoolConfigExtra
     /// Custom Arguments for getblocktemplate RPC
     /// </summary>
     public JToken GBTArgs { get; set; }
+
+    /// <summary>
+    /// Pay canonical Bitcoin SOLO rewards directly in the accepted block's
+    /// coinbase transaction. Disabled by default for compatibility.
+    /// </summary>
+    public bool SoloCoinbasePayout { get; set; } = false;
 }

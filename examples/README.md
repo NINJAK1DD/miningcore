@@ -10,9 +10,11 @@ These files are reviewed operational baselines, not production secrets or promis
 fits every miner fleet. Primary pool-wallet fields deliberately use `CHANGE_ME` placeholders so
 copying an example cannot silently redirect block rewards. Every pool includes a
 `rewardRecipients` entry demonstrating either a maintainer donation address listed in the main
-README or an operator-supplied placeholder, but every sample percentage is `0`. Miningcore does not
-require a reward recipient to mine or pay miners; set a reviewed non-zero percentage only when the
-pool should collect a fee or donation.
+README or an operator-supplied placeholder. Samples use `0` except the intentionally invalid,
+operator-owned fee placeholder in `bitcoin_direct_solo_pool.json`; replacing that address is a
+startup prerequisite and prevents an unchanged copy from directing fees elsewhere. Miningcore does
+not require a reward recipient to mine or pay miners; set a reviewed non-zero percentage only when
+the pool should collect a fee or donation.
 
 Do not commit populated configurations. Miningcore does not have a parse-only startup flag; validate
 on an isolated staging host or during a controlled maintenance window, then stop the foreground
@@ -42,6 +44,7 @@ for the expected miner fleet before deployment.
 | Example | Use it for |
 | --- | --- |
 | [`bitcoin_pool.json`](bitcoin_pool.json) | One Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
+| [`bitcoin_direct_solo_pool.json`](bitcoin_direct_solo_pool.json) | Opt-in non-custodial Bitcoin SOLO whose authorized miner address is paid in the coinbase; complete the [direct-SOLO guide](../docs/bitcoin-direct-solo.md) before use |
 | [`bitcoin_cash_pool.json`](bitcoin_cash_pool.json) | One Bitcoin Cash SOLO pool using CashAddr and low/high SHA-256 ports |
 | [`bitcoin_bitcoin_cash_pool.json`](bitcoin_bitcoin_cash_pool.json) | Independent Bitcoin and Bitcoin Cash pools with separate daemon and Stratum ports |
 | [`dogecoin_pool.json`](dogecoin_pool.json) | One direct Dogecoin SOLO pool with low- and high-difficulty ports |

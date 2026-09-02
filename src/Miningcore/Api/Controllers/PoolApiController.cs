@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using System.Data;
 using System.Globalization;
 using System.Net;
@@ -271,14 +272,16 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("{poolId}/blocks")]
     public async Task<Responses.Block[]> PagePoolBlocksAsync(
-        string poolId, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
 
         var blocks = (await cf.Run(con => blocksRepo.PageBlocksAsync(con, pool.Id, blockStates, page, pageSize, ct)))
             .Select(mapper.Map<Responses.Block>)
@@ -309,14 +312,16 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("/api/v2/pools/{poolId}/blocks")]
     public async Task<PagedResultResponse<Responses.Block[]>> PagePoolBlocksV2Async(
-        string poolId, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
             
         uint itemCount = await cf.Run(con => blocksRepo.GetPoolBlockCountAsync(con, poolId, ct));
         uint pageCount = (uint) Math.Floor(itemCount / (double) pageSize);
@@ -478,7 +483,10 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("{poolId}/miners/{address}/blocks")]
     public async Task<Responses.Block[]> PageMinerBlocksAsync(
-        string poolId, string address, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, string address,
+        [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
@@ -490,7 +498,7 @@ public class PoolApiController : ApiControllerBase
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
 
         var blocks = (await cf.Run(con => blocksRepo.PageMinerBlocksAsync(con, pool.Id, address, blockStates, page, pageSize, ct)))
             .Select(mapper.Map<Responses.Block>)
@@ -521,7 +529,10 @@ public class PoolApiController : ApiControllerBase
 
     [HttpGet("/api/v2/pools/{poolId}/miners/{address}/blocks")]
     public async Task<PagedResultResponse<Responses.Block[]>> PageMinerBlocksV2Async(
-        string poolId, string address, [FromQuery] int page, [FromQuery] int pageSize = 15, [FromQuery] BlockStatus[] state = null)
+        string poolId, string address,
+        [FromQuery, Range(0, int.MaxValue)] int page,
+        [FromQuery, Range(1, MaximumBlockPageSize)] int pageSize = 15,
+        [FromQuery] BlockStatus[] state = null)
     {
         var pool = GetPool(poolId);
         var ct = HttpContext.RequestAborted;
@@ -533,7 +544,7 @@ public class PoolApiController : ApiControllerBase
 
         var blockStates = state is { Length: > 0 } ?
             state :
-            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned };
+            new[] { BlockStatus.Confirmed, BlockStatus.Pending, BlockStatus.Orphaned, BlockStatus.Quarantined };
         
         uint itemCount = await cf.Run(con => blocksRepo.GetMinerBlockCountAsync(con, poolId, address, ct));
         uint pageCount = (uint) Math.Floor(itemCount / (double) pageSize);

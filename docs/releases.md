@@ -46,6 +46,51 @@ copying a recovery command from the maintainer section.
 
 ## Post-v0.2.1 development
 
+**Opt-in Bitcoin direct-coinbase SOLO:** canonical BTC SOLO pools can set
+`soloCoinbasePayout: true` so the block coinbase pays the authorized miner address and each positive
+fee/donation recipient directly. Destination-specific jobs bind submission to the exact announced
+coinbase; exact integer rounding preserves GBT `coinbasevalue`; final serialized weight is checked
+against Bitcoin's consensus limit before work is announced; and every locally validated candidate
+stores its exact serialized block and immutable evidence in a durable submission outbox before
+daemon submission. Prepared or uncertain entries are replayed idempotently on startup and during
+reconciliation, remain silent and non-terminal until observed, and use a bounded three-miss/30-minute
+rejection policy. The propagation-critical prepare path performs one bounded database attempt before
+immediate fsync recovery-journal fallback rather than delaying `submitblock` through the normal retry
+ladder. Known-committed cleanup failures and uncertain commits also retain replay-safe evidence and
+defer their database-health fail-stop until after the daemon propagation attempt. An exact
+active-chain duplicate with matching coinbase evidence commits `observed-active` and is not replayed
+again. Malformed replayable evidence moves to an explicit terminal `quarantined` submission state,
+so it remains auditable without poisoning later pool classification, blocking startup or falsely
+claiming acceptance. Transient malformed daemon block data is deferred rather than quarantined.
+An exact on-chain coinbase transaction or output mismatch remains unsettled and triggers one
+administrative alert after a continuous 30-minute grace period; a later exact verification clears
+the episode.
+Destination-specific jobs keep independent duplicate-share sets. Reusing one solution across
+multiple still-valid jobs with identical coinbase data can affect displayed hashrate and VarDiff
+statistics, plus display-only pool and miner effort, but cannot create a balance or duplicate
+direct-SOLO settlement.
+Routine API and terminal-reconciliation projections exclude the large serialized payload,
+and the pending classifier returns it only for replayable states; immature observed rows remain
+metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,
+and reject larger page sizes instead of allowing an unbounded query. Bounded post-maturity block-RPC
+reconciliation tracks terminal rows for two difficulty periods without creating a Miningcore
+balance or second payment. Existing custodial SOLO remains the default. Existing databases must apply
+`add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
+the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
+
+Fresh `createdb.sql` installations and upgraded databases share the same five-state direct-outbox
+constraint. A source-contract regression and live PostgreSQL preflight prevent the fresh schema and
+idempotent migration from drifting apart.
+
+This is a forward-only application compatibility boundary once direct work has been accepted. Do
+not roll the binary back below the release containing this feature when PostgreSQL contains a direct
+settlement row **or** any recovery/emergency journal or quarantine may contain an accepted direct
+candidate. A zero result from
+`SELECT count(*) FROM blocks WHERE settlementmode = 'coinbase-direct'` is not sufficient after a
+database-write failure. The dedicated `bitcoin-coinbase-direct` recovery identity and migration's
+statement-scoped database guard fail closed against an older importer/updater, but they are not a
+substitute for the documented recovery procedure.
+
 **Breaking DigiByte template rename:** `digibyte-groestl` is removed rather than redirected to a
 different proof of work. Operators must stop that pool and explicitly select a supported current
 algorithm; current-mainnet support adds `digibyte-odocrypt` in its place.

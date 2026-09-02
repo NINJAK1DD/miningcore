@@ -20,6 +20,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
+    internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
     protected IHashAlgorithm coinbaseHasher;
@@ -53,6 +54,7 @@ public class BitcoinJob
     protected string previousBlockHashReversedHex;
     protected Money rewardToPool;
     protected Transaction txOut;
+    private BitcoinDirectCoinbaseTemplate directCoinbaseTemplate;
 
     // serialization constants
     protected byte[] scriptSigFinalBytes;
@@ -99,7 +101,7 @@ public class BitcoinJob
         // Convert byte array to hex string
         string hexString = txBytes.ToHexString();
         // Parse the transaction using NBitcoin
-        var transaction = Transaction.Parse(hexString, Network.Main);
+        var transaction = Transaction.Parse(hexString, network);
         return transaction.HasWitness;
     }
 
@@ -328,8 +330,36 @@ public class BitcoinJob
         if(coin.HasDeveloper)
             rewardToPool = CreateDeveloperOutputs(tx, rewardToPool);
 
-        // Remaining amount goes to pool
-        tx.Outputs.Add(rewardToPool, poolAddressDestination);
+        if(directCoinbaseTemplate == null)
+        {
+            // Remaining amount goes to pool
+            tx.Outputs.Add(rewardToPool, poolAddressDestination);
+        }
+        else
+        {
+            if(rewardToPool.Satoshi != BlockTemplate.CoinbaseValue)
+                throw new InvalidDataException(
+                    "Direct SOLO coinbase payout is restricted to canonical Bitcoin templates without additional consensus-owned value outputs");
+            DirectCoinbaseSettlement = BitcoinDirectCoinbase.Split(
+                rewardToPool.Satoshi, directCoinbaseTemplate);
+
+            // Miner first, followed by a canonical script-sorted recipient list. The
+            // existing serializer retains the BIP141 commitment in its established slot.
+            tx.Outputs.Add(new Money(
+                    DirectCoinbaseSettlement.MinerRewardSatoshis,
+                    MoneyUnit.Satoshi),
+                directCoinbaseTemplate.MinerDestination);
+
+            foreach(var output in DirectCoinbaseSettlement.RecipientOutputs)
+            {
+                var recipient = directCoinbaseTemplate.Recipients.Single(x =>
+                    string.Equals(x.ScriptPubKey, output.ScriptPubKey,
+                        StringComparison.OrdinalIgnoreCase));
+                tx.Outputs.Add(new Money(output.AmountSatoshis,
+                        MoneyUnit.Satoshi),
+                    recipient.Destination);
+            }
+        }
 
         return tx;
     }
@@ -481,6 +511,22 @@ public class BitcoinJob
         if(isBlockCandidate)
         {
             result.IsBlockCandidate = true;
+
+            if(DirectCoinbaseSettlement != null)
+            {
+                result.SettlementMode =
+                    BitcoinDirectCoinbaseSettlement.Mode;
+                result.GrossRewardSatoshis =
+                    DirectCoinbaseSettlement.GrossRewardSatoshis;
+                result.DirectMinerRewardSatoshis =
+                    DirectCoinbaseSettlement.MinerRewardSatoshis;
+                result.DirectMinerScriptPubKey =
+                    DirectCoinbaseSettlement.MinerScriptPubKey;
+                result.DirectRecipientOutputs =
+                    DirectCoinbaseSettlement.SerializeRecipientOutputs();
+                result.TransactionConfirmationData =
+                    new uint256(coinbaseHash).ToString();
+            }
 
             Span<byte> blockHash = stackalloc byte[32];
             blockHasher.Digest(headerBytes, blockHash, nTime);
@@ -875,6 +921,12 @@ public class BitcoinJob
     public BlockTemplate BlockTemplate { get; protected set; }
     public double Difficulty { get; protected set; }
     public long RewardBasisSatoshis => rewardToPool.Satoshi;
+    internal BitcoinDirectCoinbaseSettlement DirectCoinbaseSettlement { get;
+        private set; }
+    internal long? DirectBlockWeight { get; private set; }
+    internal string DirectPayoutAddress => directCoinbaseTemplate?.MinerAddress;
+    internal long? DirectPayoutGeneration =>
+        directCoinbaseTemplate?.AuthorizationGeneration;
 
     public string JobId { get; protected set; }
 
@@ -883,7 +935,18 @@ public class BitcoinJob
         ClusterConfig cc, IMasterClock clock,
         IDestination poolAddressDestination, Network network,
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
-        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher)
+        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher) =>
+        InitDirect(blockTemplate, jobId, pc, extraPoolConfig, cc, clock,
+            poolAddressDestination, network, isPoS, shareMultiplier,
+            coinbaseHasher, headerHasher, blockHasher, null);
+
+    internal void InitDirect(BlockTemplate blockTemplate, string jobId,
+        PoolConfig pc, BitcoinPoolConfigExtra extraPoolConfig,
+        ClusterConfig cc, IMasterClock clock,
+        IDestination poolAddressDestination, Network network,
+        bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
+        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher,
+        BitcoinDirectCoinbaseTemplate directCoinbaseTemplate = null)
     {
         Contract.RequiresNonNull(blockTemplate);
         Contract.RequiresNonNull(pc);
@@ -901,8 +964,11 @@ public class BitcoinJob
         this.network = network;
         this.clock = clock;
         this.poolAddressDestination = poolAddressDestination;
+        this.directCoinbaseTemplate = directCoinbaseTemplate;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        if(directCoinbaseTemplate != null)
+            ValidateBlockTemplateTransactionWeights(blockTemplate, network);
         if(headerHasher is OdoCrypt)
             OdoCrypt.ValidateJobContract(blockTemplate, networkParams);
 
@@ -988,6 +1054,8 @@ public class BitcoinJob
 
         BuildMerkleBranches();
         BuildCoinbase();
+        if(directCoinbaseTemplate != null)
+            DirectBlockWeight = CalculateDirectBlockWeight();
 
         jobParams = new object[]
         {
@@ -1002,6 +1070,124 @@ public class BitcoinJob
             false
         };
     }
+
+    private long CalculateDirectBlockWeight()
+    {
+        long weight;
+
+        try
+        {
+            var transactionCount = checked(
+                (ulong) BlockTemplate.Transactions.Length + 1);
+            var coinbaseLength = checked((long) coinbaseInitial.Length +
+                extraNoncePlaceHolderLength + coinbaseFinal.Length);
+            // This is the exact non-witness coinbase byte sequence written by
+            // SerializeBlock. A default witness-commitment output is already
+            // inside coinbaseFinal; Miningcore does not append a separate
+            // coinbase witness serialization outside these bytes. Do not add
+            // hypothetical witness-stack weight unless SerializeBlock starts
+            // emitting those bytes as well.
+            weight = checked((80L + CompactSizeLength(transactionCount) +
+                coinbaseLength) * 4L);
+
+            var transactionWeight = BlockTemplate.ValidatedTransactionWeight >= 0
+                ? BlockTemplate.ValidatedTransactionWeight
+                : ValidateBlockTemplateTransactionWeights(BlockTemplate,
+                    network);
+            weight = checked(weight + transactionWeight);
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Direct SOLO block-weight calculation overflowed", ex);
+        }
+
+        if(weight > BitcoinConsensusMaxBlockWeight)
+        {
+            throw new InvalidDataException(
+                $"Direct SOLO block weight {weight} exceeds Bitcoin's " +
+                $"{BitcoinConsensusMaxBlockWeight}-weight-unit consensus limit");
+        }
+
+        return weight;
+    }
+
+    internal static long ValidateBlockTemplateTransactionWeights(
+        BlockTemplate blockTemplate, Network network)
+    {
+        ArgumentNullException.ThrowIfNull(blockTemplate);
+        ArgumentNullException.ThrowIfNull(network);
+        if(blockTemplate.ValidatedTransactionWeight >= 0)
+            return blockTemplate.ValidatedTransactionWeight;
+
+        long result = 0;
+        var transactions = blockTemplate.Transactions ??
+            throw new InvalidDataException(
+                "Direct SOLO requires a getblocktemplate transaction array");
+
+        try
+        {
+            foreach(var templateTransaction in transactions)
+            {
+                if(templateTransaction.Weight is not > 0)
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO requires a positive daemon-reported weight " +
+                        "for every getblocktemplate transaction");
+                }
+                if(string.IsNullOrWhiteSpace(templateTransaction.Data))
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO requires serialized data for every getblocktemplate transaction");
+                }
+
+                Transaction transaction;
+                try
+                {
+                    transaction = Transaction.Parse(templateTransaction.Data,
+                        network);
+                }
+                catch(Exception ex)
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO could not parse a getblocktemplate transaction",
+                        ex);
+                }
+
+                var totalSize = transaction
+                    .WithOptions(TransactionOptions.Witness).ToBytes().Length;
+                var strippedSize = transaction
+                    .WithOptions(TransactionOptions.None).ToBytes().Length;
+                var actualWeight = checked(strippedSize * 3L + totalSize);
+                if(templateTransaction.Weight.Value != actualWeight)
+                {
+                    throw new InvalidDataException(
+                        $"Direct SOLO daemon-reported transaction weight " +
+                        $"{templateTransaction.Weight.Value} does not match " +
+                        $"serialized weight {actualWeight}");
+                }
+
+                result = checked(result + actualWeight);
+            }
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Direct SOLO template transaction-weight calculation overflowed",
+                ex);
+        }
+
+        blockTemplate.ValidatedTransactionWeight = result;
+        return result;
+    }
+
+    private static int CompactSizeLength(ulong value) => value switch
+    {
+        < 253 => 1,
+        <= ushort.MaxValue => 3,
+        <= uint.MaxValue => 5,
+        _ => 9,
+    };
 
     internal static byte[] ParseMwebPayload(BitcoinTemplate coin, BlockTemplate blockTemplate)
     {

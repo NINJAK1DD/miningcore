@@ -8,6 +8,7 @@ readme="$repository_root/README.md"
 pps_document="$repository_root/docs/pps.md"
 database_document="$repository_root/docs/database.md"
 merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
+bitcoin_direct_document="$repository_root/docs/bitcoin-direct-solo.md"
 licence_document="$repository_root/docs/lucky-penny-licence.md"
 migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
@@ -197,6 +198,73 @@ assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
   'separately controlled reserve' "$pps_document"
+assert_file_contains 'the direct-SOLO opt-in default' \
+  'strict JSON Boolean and defaults to `false`' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO canonical option casing' \
+  '`soloCoinbasePayout` is case-sensitive' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO decoded block RPC contract' \
+  '`getblock <hash> 2` response contains decoded' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO exact rounding rule' \
+  'recipient satoshis = floor(coinbasevalue × percentage / 100)' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO candidate migration' \
+  '$MININGCORE_CANDIDATE_DIR/migrations/add_bitcoin_direct_solo.sql' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO PostgreSQL-upgrade fail-closed boundary' \
+  'If preflight still fails,' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO active-symlink prohibition' \
+  'not the active `/opt/miningcore` symlink' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO forward-only binary boundary' \
+  'Application rollback across this feature boundary is **not supported after direct work has been' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO rollback evidence query' \
+  "WHERE settlementmode = 'coinbase-direct';" "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO journal rollback boundary' \
+  'A zero row count does not prove rollback safety after a database-write failure' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO dedicated block identity' \
+  '`bitcoin-coinbase-direct` block type' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO final block-weight gate' \
+  "Bitcoin's 4,000,000-weight-unit consensus" "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO pre-submission durability boundary' \
+  'durable submission-outbox boundary before its' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO exact replay payload' \
+  'stores the exact serialized block' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO prepared-state silence' \
+  'A prepared row is not announced as found' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO bounded submission rejection' \
+  'three definitive misses over at least 30 minutes' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO propagation-safe journal fallback' \
+  'ordinary 2/4/8-second database retry ladder' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO external journal line-size contract' \
+  'one line of up to 16 MiB' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO deferred fail-stop decision matrix' \
+  '| Commit outcome uncertain |' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO retryable database continuation policy' \
+  '| Retryable database failure or two-second propagation timeout | Exact recovery-journal record | No deferred fail-stop;' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO non-retryable database fail-stop policy' \
+  '| Unexpected non-retryable database failure | Exact recovery-journal record | Generic database-health fail-stop |' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO exceptional-commit replay identity' \
+  "stable idempotent identity" "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO active duplicate evidence rule' \
+  'accepted response or duplicate transitions to' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO public block page cap' \
+  'at most 100 rows per page' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO pending payload projection' \
+  'an immature `observed-active` row remains metadata-only' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO bounded terminal reconciliation depth' \
+  'within 4,032 blocks of the reported chain tip' "$bitcoin_direct_document"
+assert_file_contains 'the pre-release direct-journal quarantine boundary' \
+  'Earlier draft builds wrote direct evidence under the historical' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the release-level direct-SOLO downgrade prohibition' \
+  'not roll the binary back below the release containing this feature when' \
+  "$document"
 for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
   assert_file_contains "the PPS $migration migration requirement" \
@@ -221,7 +289,7 @@ if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Script
   exit 1
 fi
 if grep -REq --include='*.md' \
-    '/opt/miningcore/migrations/add_(auxpow_block_idempotency|payout_manager_ownership|share_accounting)\.sql' \
+    '/opt/miningcore/migrations/add_(auxpow_block_idempotency|payout_manager_ownership|share_accounting|bitcoin_direct_solo)\.sql' \
     "$readme" "$repository_root/docs"; then
   echo 'User documentation reads release migrations through the active symlink' >&2
   exit 1

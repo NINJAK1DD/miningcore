@@ -26,6 +26,7 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
+| Enable non-custodial Bitcoin SOLO | [Bitcoin direct-coinbase SOLO](#bitcoin-direct-coinbase-solo) |
 | Enable direct Bitcoin-family PPS | [Bitcoin-family PPS](#bitcoin-family-pps) |
 | Enable Litecoin–Dogecoin merged mining | [LTC/DOGE merged mining](#ltcdoge-merged-mining) |
 | Protect emergency share persistence | [Share recovery storage](#share-recovery-storage) |
@@ -423,6 +424,16 @@ Truncation can leave a residual after every payment. It is carried into a later 
 but can remain indefinitely when a miner stops before reaching the threshold again. When every
 selected balance is below the configured precision, Miningcore skips wallet submission and logs the
 active `payoutDecimalPlaces` value so the operator can review `minimumPayment`.
+
+## Bitcoin direct-coinbase SOLO
+
+The canonical `bitcoin` template can opt into `soloCoinbasePayout: true` with `SOLO` payment
+processing. The base authorized `address.worker` username becomes the immutable miner coinbase
+destination; positive `rewardRecipients` are separate direct fee/donation outputs. The option is a
+strict Boolean, defaults off and rejects non-BTC templates, pooled schemes, relay and merged-mining
+topologies before work is delivered. Existing databases need the additive direct-settlement
+migration. Follow the complete [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md); do not infer that
+other Bitcoin-family coinbase layouts are compatible.
 
 ## Bitcoin-family PPS
 

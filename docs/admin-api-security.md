@@ -184,11 +184,12 @@ State-changing requests use explicit non-GET verbs:
 | `POST` | `/api/admin/forcegc` | Request an immediate garbage collection |
 
 Payment-processing toggles are validated atomically before any pool is changed. Miningcore rejects
-disabling payment processing while an enabled PPS pool is accepting shares, and enabling PPS when
-the cluster-level payout and retention scheduler was not active at startup. Stop Miningcore and make
-PPS contract changes through a reviewed configuration and controlled restart. If a bulk disable is
-rejected, non-PPS pools remain individually controllable through their per-pool routes; see the
-[PPS operator guide](pps.md).
+disabling payment processing while an enabled PPS or Bitcoin direct-SOLO pool is accepting work,
+and rejects enabling either mode when the cluster-level payout/confirmation scheduler was not active
+at startup. Stop Miningcore and make either financial contract change through a reviewed
+configuration and controlled restart. If a bulk operation is rejected, unaffected pools remain
+individually controllable through their per-pool routes; see the [PPS operator guide](pps.md) and
+[Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
 
 Read-only administrative routes remain `GET`, but require the same bearer token and IP whitelist.
 The former public `POST /api/pools/{poolId}/miners/{address}/settings` route has been removed because

@@ -124,8 +124,79 @@ CREATE TABLE blocks
 	miner TEXT NULL,
 	reward decimal(28,12) NULL,
     source TEXT NULL,
-    hash TEXT NULL,
-	created TIMESTAMPTZ NOT NULL
+	hash TEXT NULL,
+	created TIMESTAMPTZ NOT NULL,
+    settlementmode TEXT NULL,
+    grossrewardsatoshis BIGINT NULL,
+    directminerrewardsatoshis BIGINT NULL,
+    directminerscriptpubkey TEXT NULL,
+    directrecipientoutputs JSONB NULL,
+    directsettlementlastchecked TIMESTAMPTZ NULL,
+    directsubmissionstate TEXT NULL,
+    directsubmissionblock TEXT NULL,
+    directsubmissionattempts INT NULL,
+    directsubmissiondefinitivemisses INT NULL,
+    directsubmissionlastattempt TIMESTAMPTZ NULL,
+    CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (
+        (num_nonnulls(settlementmode, grossrewardsatoshis,
+            directminerrewardsatoshis, directminerscriptpubkey,
+            directrecipientoutputs, directsubmissionstate,
+            directsubmissionblock, directsubmissionattempts,
+            directsubmissiondefinitivemisses,
+            directsubmissionlastattempt) = 0 AND
+            directsettlementlastchecked IS NULL AND
+            type IS DISTINCT FROM 'bitcoin-coinbase-direct')
+        OR
+        (num_nonnulls(settlementmode, grossrewardsatoshis,
+            directminerrewardsatoshis, directminerscriptpubkey,
+            directrecipientoutputs) = 5 AND
+            settlementmode = 'coinbase-direct' AND
+            type = 'bitcoin-coinbase-direct' AND
+            grossrewardsatoshis > 0 AND
+            directminerrewardsatoshis > 0 AND
+            directminerrewardsatoshis <= grossrewardsatoshis AND
+            directminerscriptpubkey ~ '^[0-9a-f]+$' AND
+            length(directminerscriptpubkey) % 2 = 0 AND
+            jsonb_typeof(directrecipientoutputs) = 'array' AND
+            (
+                (directsubmissionstate = 'legacy-observed' AND
+                    directsubmissionblock IS NULL AND
+                    directsubmissionattempts = 0 AND
+                    directsubmissiondefinitivemisses = 0 AND
+                    directsubmissionlastattempt IS NULL)
+                OR
+                (directsubmissionstate IN ('prepared',
+                        'submitted-uncertain', 'observed-active', 'rejected',
+                        'quarantined') AND
+                    directsubmissionblock ~ '^[0-9a-f]+$' AND
+                    length(directsubmissionblock) BETWEEN 162 AND 8000000 AND
+                    length(directsubmissionblock) % 2 = 0 AND
+                    directsubmissionattempts >= 0 AND
+                    directsubmissiondefinitivemisses >= 0 AND
+                    directsubmissiondefinitivemisses <=
+                        directsubmissionattempts AND
+                    ((directsubmissionstate = 'prepared' AND
+                        directsubmissionattempts = 0 AND
+                        directsubmissiondefinitivemisses = 0 AND
+                        directsubmissionlastattempt IS NULL AND
+                        status = 'pending') OR
+                     (directsubmissionstate = 'quarantined' AND
+                        status = 'quarantined' AND
+                        ((directsubmissionattempts = 0 AND
+                          directsubmissionlastattempt IS NULL) OR
+                         (directsubmissionattempts > 0 AND
+                          directsubmissionlastattempt IS NOT NULL))) OR
+                     (directsubmissionstate <> 'prepared' AND
+                        directsubmissionstate <> 'quarantined' AND
+                        directsubmissionattempts > 0 AND
+                        directsubmissionlastattempt IS NOT NULL)) AND
+                    (directsubmissionstate <> 'submitted-uncertain' OR
+                        status = 'pending') AND
+                    (directsubmissionstate <> 'rejected' OR
+                        (status = 'orphaned' AND
+                         directsubmissiondefinitivemisses >= 3))))
+        )
+    )
 );
 
 CREATE INDEX IDX_BLOCKS_POOL_BLOCK_STATUS on blocks(poolid, blockheight, status);
@@ -134,6 +205,56 @@ CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_POOL_HASH on blocks(poolid, hash) WHERE ty
 CREATE UNIQUE INDEX IDX_BLOCKS_AUXPOW_CLAIM on blocks(poolid, hash, (regexp_replace(transactionconfirmationdata, ':[0-9]+$', ''))) WHERE type = 'auxpow-claim';
 CREATE UNIQUE INDEX IDX_BLOCKS_MERGED_PARENT_POOL_HASH on blocks(poolid, hash) WHERE type IN ('merged-parent', 'merged-parent-uncertain');
 CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-direct';
+CREATE UNIQUE INDEX IDX_BLOCKS_BITCOIN_COINBASE_DIRECT_POOL_HASH on blocks(poolid, hash) WHERE type = 'bitcoin-coinbase-direct';
+CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_RECONCILE ON blocks(
+    poolid, directsettlementlastchecked ASC NULLS FIRST, created, id,
+    blockheight)
+    WHERE status IN ('confirmed', 'orphaned') AND
+        type = 'bitcoin-coinbase-direct' AND
+        settlementmode = 'coinbase-direct';
+CREATE INDEX IDX_BLOCKS_BITCOIN_DIRECT_SUBMISSION ON blocks(poolid, id)
+    WHERE status = 'pending' AND type = 'bitcoin-coinbase-direct' AND
+        settlementmode = 'coinbase-direct' AND
+        directsubmissionstate IN ('prepared', 'submitted-uncertain');
+
+CREATE OR REPLACE FUNCTION guard_bitcoin_direct_block_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF OLD.settlementmode = 'coinbase-direct' AND
+       current_setting('miningcore.direct_settlement_update', true)
+           IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '55000',
+            MESSAGE = 'direct-settlement block updates require a compatible Miningcore binary';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER TRG_GUARD_BITCOIN_DIRECT_BLOCK_UPDATE
+    BEFORE UPDATE ON blocks
+    FOR EACH ROW
+    EXECUTE FUNCTION guard_bitcoin_direct_block_update();
+
+CREATE OR REPLACE FUNCTION clear_bitcoin_direct_block_update_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    PERFORM set_config('miningcore.direct_settlement_update', 'off', true);
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER TRG_CLEAR_BITCOIN_DIRECT_BLOCK_UPDATE_GUARD
+    AFTER UPDATE ON blocks
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION clear_bitcoin_direct_block_update_guard();
 
 CREATE TABLE balances
 (

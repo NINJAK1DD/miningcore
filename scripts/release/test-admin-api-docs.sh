@@ -113,11 +113,13 @@ assert_prose_contains "fixed whitelist metric cardinality" \
   'fixed[[:space:]]+values[[:space:]]+`admin`,[[:space:]]+`metrics`[[:space:]]+or[[:space:]]+`other`;[[:space:]]+it[[:space:]]+never[[:space:]]+includes[[:space:]]+a[[:space:]]+client[[:space:]]+address[[:space:]]+or[[:space:]]+request[[:space:]]+path'
 assert_prose_contains "atomic payment-processing toggles" \
   'Payment-processing[[:space:]]+toggles[[:space:]]+are[[:space:]]+validated[[:space:]]+atomically[[:space:]]+before[[:space:]]+any[[:space:]]+pool[[:space:]]+is[[:space:]]+changed'
-assert_prose_contains "active PPS disable prohibition" \
-  'rejects[[:space:]]+disabling[[:space:]]+payment[[:space:]]+processing[[:space:]]+while[[:space:]]+an[[:space:]]+enabled[[:space:]]+PPS[[:space:]]+pool[[:space:]]+is[[:space:]]+accepting[[:space:]]+shares'
-assert_prose_contains "PPS controlled-restart requirement" \
-  'make[[:space:]]+PPS[[:space:]]+contract[[:space:]]+changes[[:space:]]+through[[:space:]]+a[[:space:]]+reviewed[[:space:]]+configuration[[:space:]]+and[[:space:]]+controlled[[:space:]]+restart'
-assert_prose_contains "non-PPS per-pool toggle fallback" \
-  'If[[:space:]]+a[[:space:]]+bulk[[:space:]]+disable[[:space:]]+is[[:space:]]+rejected,[[:space:]]+non-PPS[[:space:]]+pools[[:space:]]+remain[[:space:]]+individually[[:space:]]+controllable[[:space:]]+through[[:space:]]+their[[:space:]]+per-pool[[:space:]]+routes'
+assert_prose_contains "active PPS and direct-SOLO disable prohibition" \
+  'rejects[[:space:]]+disabling[[:space:]]+payment[[:space:]]+processing[[:space:]]+while[[:space:]]+an[[:space:]]+enabled[[:space:]]+PPS[[:space:]]+or[[:space:]]+Bitcoin[[:space:]]+direct-SOLO[[:space:]]+pool[[:space:]]+is[[:space:]]+accepting[[:space:]]+work'
+assert_prose_contains "financial-mode controlled-restart requirement" \
+  'make[[:space:]]+either[[:space:]]+financial[[:space:]]+contract[[:space:]]+change[[:space:]]+through[[:space:]]+a[[:space:]]+reviewed[[:space:]]+configuration[[:space:]]+and[[:space:]]+controlled[[:space:]]+restart'
+assert_prose_contains "unaffected per-pool toggle fallback" \
+  'If[[:space:]]+a[[:space:]]+bulk[[:space:]]+operation[[:space:]]+is[[:space:]]+rejected,[[:space:]]+unaffected[[:space:]]+pools[[:space:]]+remain[[:space:]]+individually[[:space:]]+controllable[[:space:]]+through[[:space:]]+their[[:space:]]+per-pool[[:space:]]+routes'
+assert_prose_contains "financial-mode operator guides" \
+  '\[PPS[[:space:]]+operator[[:space:]]+guide\]\(pps\.md\)[[:space:]]+and[[:space:]]+\[Bitcoin[[:space:]]+direct-SOLO[[:space:]]+guide\]\(bitcoin-direct-solo\.md\)'
 
 echo "Administrative API documentation invariants are present"

@@ -1,5 +1,6 @@
 using System.Data;
 using Miningcore.Persistence.Model;
+using Miningcore.Blockchain.Bitcoin;
 
 namespace Miningcore.Persistence.Repositories;
 
@@ -15,6 +16,20 @@ public interface IBlockRepository
     Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> PageMinerBlocksAsync(IDbConnection con, string poolId, string address, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> GetPendingBlocksForPoolAsync(IDbConnection con, string poolId);
+    Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
+        IDbConnection con, string poolId, long minimumBlockHeight,
+        DateTime checkedBefore, int pageSize, CancellationToken ct);
+    Task<Block[]> GetBitcoinDirectSubmissionsForReplayAsync(
+        IDbConnection con, string poolId, long afterId, int pageSize,
+        CancellationToken ct);
+    Task<bool> TouchBitcoinDirectReconciliationAsync(IDbConnection con,
+        IDbTransaction tx, long id, DateTime checkedAt,
+        CancellationToken ct = default);
+    Task<Block> RecordBitcoinDirectSubmissionAttemptAsync(IDbConnection con,
+        IDbTransaction tx, string poolId, string blockHash,
+        BitcoinDirectSubmissionOutcome outcome, DateTime attemptedAt,
+        int minimumDefinitiveMisses, DateTime rejectBefore,
+        CancellationToken ct = default);
     Task<Block> GetBlockBeforeAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before);
     Task<uint> GetBlockBeforeCountAsync(IDbConnection con, string poolId, BlockStatus[] status, DateTime before);
     Task<uint> GetPoolBlockCountAsync(IDbConnection con, string poolId, CancellationToken ct);
@@ -27,6 +42,8 @@ public interface IBlockRepository
     Task<Block> GetBlockByPoolHeightAndTypeAsync(IDbConnection con, string poolId, long height, string type);
     Task<Block> GetBlockByPoolHashAndTypeAsync(IDbConnection con, string poolId, string hash, string type);
     Task<bool> HasMergedMiningBlockIndexesAsync(IDbConnection con, CancellationToken ct);
+    Task<bool> HasBitcoinDirectSoloSchemaAsync(IDbConnection con,
+        CancellationToken ct);
     Task<uint> GetPoolDuplicateBlockCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status);
     Task<uint> GetPoolDuplicateBlockBeforeCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status, DateTime before);
     Task<uint> GetPoolDuplicateBlockAfterCountByPoolHeightNoTypeAndStatusAsync(IDbConnection con, string poolId, long height, BlockStatus[] status, DateTime after);

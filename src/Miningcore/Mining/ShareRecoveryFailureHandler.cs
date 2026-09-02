@@ -18,6 +18,12 @@ public interface IShareRecoveryFailureHandler
         string recoveryFilename, Exception cleanupError);
     Task StopClusterForUncertainCommitAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception commitError);
+    Task StopClusterAfterReplaySafeCommittedCleanupAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception cleanupError, Exception journalError);
+    Task StopClusterForReplaySafeUncertainCommitAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception commitError);
 }
 
 public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
@@ -233,6 +239,78 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             "cleanup failed. Those committed records were deliberately excluded from the " +
             $"replayable recovery journal at {absoluteRecoveryFilename}. Investigate the " +
             "database provider and connection health before restarting.");
+        await SendCriticalNotificationSafelyAsync(notification);
+    }
+
+    public async Task StopClusterAfterReplaySafeCommittedCleanupAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception cleanupError, Exception journalError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+
+        logger.Fatal(cleanupError,
+            "Stopping cluster after propagating {0} direct block submission(s): PostgreSQL committed the durable outbox row, but transaction cleanup failed.",
+            shares.Count);
+        if(journalError != null)
+            logger.Error(journalError,
+                "The optional duplicate direct-submission recovery-journal append also failed; the committed PostgreSQL outbox remains authoritative");
+
+        if(!TryClaimNotificationSeverity(1))
+            return;
+
+        var journalSummary = journalError == null
+            ? $" A replay-safe duplicate was also appended to {absoluteRecoveryFilename}."
+            : " The recovery-journal duplicate could not be appended, but PostgreSQL committed the authoritative outbox row.";
+        var notification = new AdminNotification(
+            "Direct block transaction cleanup failed after commit",
+            $"Miningcore propagated {shares.Count} direct block submission(s), then requested " +
+            $"exit status {ProcessExitCodes.GeneralFailure} because transaction or connection " +
+            "cleanup failed after PostgreSQL committed the durable outbox row." +
+            journalSummary + " Investigate database-provider and connection health before restarting.");
+        await SendCriticalNotificationSafelyAsync(notification);
+    }
+
+    public async Task StopClusterForReplaySafeUncertainCommitAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception commitError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        failStopCoordinator.BeginFailStop(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss);
+        var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+
+        logger.Fatal(commitError,
+            "Stopping cluster after propagating {0} direct block submission(s) because PostgreSQL commit outcome is uncertain. Their stable identities and exact payloads were appended to the replayable recovery journal.",
+            shares.Count);
+
+        try
+        {
+            fatalState.MarkFatalShares(shares, commitError, null,
+                "bitcoin-direct-postgresql-commit-outcome-uncertain");
+        }
+        catch(Exception ex)
+        {
+            logger.Fatal(ex,
+                "Unable to persist uncertain direct-submission fatal state {0}; exit status {1} remains active",
+                fatalState.FatalStateFilename,
+                ProcessExitCodes.UnreconciledShareDurabilityLoss);
+        }
+
+        if(!TryClaimNotificationSeverity(2))
+            return;
+
+        var notification = new AdminNotification(
+            "Uncertain PostgreSQL direct-block commit",
+            $"Miningcore propagated {shares.Count} direct block submission(s), then requested " +
+            $"exit status {ProcessExitCodes.UnreconciledShareDurabilityLoss} because PostgreSQL " +
+            "may or may not have committed their outbox rows. Exact replay-safe records are in " +
+            $"{absoluteRecoveryFilename}; their stable unique identities make recovery import " +
+            "idempotent. Reconcile PostgreSQL and the journal before resuming mining. " +
+            ShareRecoveryFatalState.OperatorAcknowledgementInstruction);
         await SendCriticalNotificationSafelyAsync(notification);
     }
 

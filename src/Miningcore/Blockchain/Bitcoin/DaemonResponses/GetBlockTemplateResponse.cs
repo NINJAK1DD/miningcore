@@ -23,6 +23,11 @@ public class BitcoinBlockTransaction
     /// The amount of the fee in BTC
     /// </summary>
     public decimal Fee { get; set; }
+
+    /// <summary>
+    /// Transaction weight as calculated by the daemon
+    /// </summary>
+    public long? Weight { get; set; }
 }
 
 public class CoinbaseAux
@@ -32,6 +37,12 @@ public class CoinbaseAux
 
 public class BlockTemplate
 {
+    [JsonIgnore]
+    // The job manager fills this before publishing the shared template. Direct
+    // worker jobs only read the immutable cached value, so broadcast tasks do
+    // not race to parse or mutate transaction data.
+    internal long ValidatedTransactionWeight { get; set; } = -1;
+
     /// <summary>
     /// The preferred block version
     /// </summary>
