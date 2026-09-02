@@ -71,10 +71,11 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 ```
 
 Run either command from the layout it documents, never both. `createdb.sql` is only for a new,
-empty database. `-f -` tells `psql` to treat stdin as file input so `--single-transaction` remains
-valid. The invoking shell opens the redirected checkout file before `sudo` starts `psql`, so the
-`postgres` account does not need permission to traverse the developer's home directory. Use the
-release upgrade procedure for an existing database.
+empty database. `-f -` makes `psql` read stdin as file input, so SQL errors include input line
+numbers and `--single-transaction` follows the documented file-input form. The invoking shell opens
+the redirected checkout file before `sudo` starts `psql`, so the `postgres` account does not need
+permission to traverse the developer's home directory. Use the release upgrade procedure for an
+existing database.
 
 Confirm the application login works:
 
