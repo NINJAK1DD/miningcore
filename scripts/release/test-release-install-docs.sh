@@ -409,9 +409,13 @@ if ! grep -Fq -- '< src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
   echo 'The new-installation runbook is missing the executable source-checkout schema import' >&2
   exit 1
 fi
-if grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+if ! grep -Fq -- '--single-transaction -f -' <<<"$database_new_install_section"; then
+  echo 'The source-checkout import does not select stdin as psql file input' >&2
+  exit 1
+fi
+if grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/' \
     <<<"$database_upgrade_section" ||
-    grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+    grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/' \
       "$pps_document" "$merged_mining_document"; then
   echo 'An existing-database guide has a repository-only executable migration path' >&2
   exit 1
@@ -1143,26 +1147,51 @@ trace="$fixture_dir/trace"
 mkdir -p "$fixture_dir/source-db-bin"
 cat > "$fixture_dir/source-db-bin/sudo" <<'EOF'
 #!/usr/bin/env bash
-if [[ " $* " == *' -f '* || " $* " == *'createdb.sql'* ]]; then
-  echo "Source schema path leaked into the postgres command: $*" >&2
+original_args=$*
+stdin_file_count=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -f)
+      if [[ $# -lt 2 || "$2" != - ]]; then
+        echo "Source import used an unsafe psql file argument: $original_args" >&2
+        exit 64
+      fi
+      ((stdin_file_count += 1))
+      shift 2
+      ;;
+    *createdb.sql*)
+      echo "Source schema path leaked into the postgres command: $original_args" >&2
+      exit 64
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ $stdin_file_count -ne 1 ]]; then
+  echo "Source import did not use exactly one -f - pair: $original_args" >&2
   exit 64
 fi
-printf '%s\n' "$*" > "${DOC_TEST_SOURCE_DB_ARGS:?}"
+printf '%s\n' "$original_args" > "${DOC_TEST_SOURCE_DB_ARGS:?}"
 cat > "${DOC_TEST_SOURCE_DB_STDIN:?}"
 EOF
 chmod +x "$fixture_dir/source-db-bin/sudo"
 
 source_db_args="$fixture_dir/source-db-args"
 source_db_stdin="$fixture_dir/source-db-stdin"
-if ! env PATH="$fixture_dir/source-db-bin:$PATH" \
+if ! (
+  cd "$repository_root" &&
+  env PATH="$fixture_dir/source-db-bin:$PATH" \
     DOC_TEST_SOURCE_DB_ARGS="$source_db_args" DOC_TEST_SOURCE_DB_STDIN="$source_db_stdin" \
-    bash -c "$database_source_import_block"; then
+    bash -c "$database_source_import_block"
+); then
   echo 'The documented source-checkout database import did not execute through stdin' >&2
   exit 1
 fi
-if ! grep -Fq -- '-u postgres psql -v ON_ERROR_STOP=1 -d miningcore --single-transaction' \
+if ! grep -Fq -- '-u postgres psql -v ON_ERROR_STOP=1 -d miningcore --single-transaction -f -' \
     "$source_db_args" ||
-    ! cmp -s -- src/Miningcore/Persistence/Postgres/Scripts/createdb.sql "$source_db_stdin"; then
+    ! cmp -s -- "$repository_root/src/Miningcore/Persistence/Postgres/Scripts/createdb.sql" \
+      "$source_db_stdin"; then
   echo 'The source-checkout database import did not pass the reviewed schema to postgres on stdin' >&2
   exit 1
 fi
