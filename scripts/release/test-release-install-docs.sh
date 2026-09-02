@@ -79,6 +79,19 @@ partition_block=$(awk '
   capture && /^```$/ { exit }
   capture { print }
 ' "$readme")
+source_build_section=$(awk '
+  { sub(/\r$/, "") }
+  /^For a source build or development session,/ { capture = 1 }
+  capture && /^## API and web front ends$/ { exit }
+  capture { print }
+' "$readme")
+source_placeholder_block=$(awk '
+  { sub(/\r$/, "") }
+  /^file, then run this fail-closed placeholder check:$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
 upgrade_block=$(awk '
   { sub(/\r$/, "") }
   /^## Upgrade or roll back$/ { section = 1; next }
@@ -183,17 +196,28 @@ assert_file_contains 'the neutral AutoMapper dual-licensing boundary' \
 assert_file_contains 'the quick-start private-service boundary' \
   'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
 assert_file_contains 'the quick-start placeholder gate' \
-  "sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json" "$readme"
+  'quickstart_placeholder_status=0' "$readme"
+assert_file_contains 'the quick-start placeholder inspection failure boundary' \
+  'STOP: could not inspect /etc/miningcore/config.json' "$readme"
 assert_file_contains 'the manual source-build editor boundary' \
   'editor build/config.json' "$readme"
 assert_file_contains 'the manual source-build placeholder gate' \
-  "if grep -n 'CHANGE_ME' build/config.json; then" "$readme"
+  'source_placeholder_status=0' "$readme"
+assert_file_contains 'the manual source-build inspection failure boundary' \
+  'STOP: could not inspect build/config.json' "$readme"
 assert_file_contains 'the manual source-build launch boundary' \
   'Only after the check prints `READY`, start the published binary' "$readme"
+assert_file_contains 'the manual source-build systemd layout boundary' \
+  'it does not run the development `build/` layout unchanged' "$readme"
 assert_file_contains 'the quick-start direct-SOLO opt-in boundary' \
   '#### Optional: enable Bitcoin direct-coinbase SOLO' "$readme"
-assert_file_contains 'the quick-start direct-SOLO fresh-schema boundary' \
-  'For this fresh-install quick start, `createdb.sql` already installed the direct-settlement schema.' \
+assert_file_contains 'the quick-start direct-SOLO binary-version boundary' \
+  'branch, that means `v0.3.0-rc.1`' "$readme"
+assert_file_contains 'the stable-release direct-SOLO skip boundary' \
+  'If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection' \
+  "$readme"
+assert_file_contains 'the quick-start direct-SOLO conditional fresh-schema boundary' \
+  'Only a fresh database created from `v0.3.0-rc.1` has the required schema' \
   "$readme"
 assert_file_contains 'the quick-start direct-SOLO existing-database migration route' \
   '[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration)' \
@@ -793,6 +817,23 @@ find_unique_line() {
   printf '%s\n' "${matches[0]}"
 }
 
+source_editor_line=$(
+  find_unique_line source-editor 'editor build/config.json' "$source_build_section"
+)
+source_check_line=$(
+  find_unique_line source-placeholder-check \
+    "grep -n 'CHANGE_ME' build/config.json" "$source_build_section"
+)
+source_launch_line=$(
+  find_unique_line source-launch './Miningcore -c config.json' "$source_build_section"
+)
+
+if [[ "$source_check_line" -le "$source_editor_line" ||
+    "$source_launch_line" -le "$source_check_line" ]]; then
+  echo 'The source-build edit, fail-closed placeholder check and launch are not safely ordered' >&2
+  exit 1
+fi
+
 # Keep these as bare assignments: set -e makes an ambiguous or missing anchor fail the test.
 directory_guard_line=$(find_unique_line directory-guard 'test -d "$release_dir"' "$install_block")
 symlink_line=$(
@@ -894,6 +935,48 @@ fi
 fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-install-docs.XXXXXXXX")
 mkdir -p "$fixture_dir/bin" "$fixture_dir/download" "$fixture_dir/home"
 trace="$fixture_dir/trace"
+
+source_placeholder_root="$fixture_dir/source-placeholder"
+mkdir -p "$source_placeholder_root/build"
+
+printf '%s\n' '{ "configured": true }' > "$source_placeholder_root/build/config.json"
+if ! clean_placeholder_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check rejected a readable configuration without placeholders' >&2
+  exit 1
+fi
+if ! grep -Fq 'READY: no CHANGE_ME placeholders remain' <<<"$clean_placeholder_output" ||
+    grep -Fq 'STOP:' <<<"$clean_placeholder_output"; then
+  echo 'The source placeholder check did not report its clean success state exactly' >&2
+  exit 1
+fi
+
+printf '%s\n' '{ "password": "CHANGE_ME" }' > "$source_placeholder_root/build/config.json"
+if matched_placeholder_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check accepted an unresolved placeholder' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: replace every CHANGE_ME value' <<<"$matched_placeholder_output" ||
+    grep -Fq 'READY:' <<<"$matched_placeholder_output"; then
+  echo 'The source placeholder check did not fail closed on a placeholder match' >&2
+  exit 1
+fi
+
+rm -f -- "$source_placeholder_root/build/config.json"
+if failed_placeholder_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check accepted a failed configuration inspection' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: could not inspect build/config.json' <<<"$failed_placeholder_output" ||
+    grep -Fq 'READY:' <<<"$failed_placeholder_output"; then
+  echo 'The source placeholder check did not distinguish grep failure from no matches' >&2
+  exit 1
+fi
 
 cat > "$fixture_dir/bin/id" <<'EOF'
 #!/usr/bin/env bash

@@ -221,20 +221,31 @@ Before continuing:
   `shareRecoveryStateDirectory` to `/var/lib/miningcore`; and
 - keep direct examples `SOLO` unless the [PPS operator checklist](docs/pps.md) is complete.
 
-This check must print nothing. Any output names a placeholder that still needs attention:
+Run this fail-closed check. Continue only when it prints `READY`; a placeholder match or an
+inspection error returns a nonzero status:
 
 ```console
-sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json || true
+quickstart_placeholder_status=0
+sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json || quickstart_placeholder_status=$?
+case "$quickstart_placeholder_status" in
+  0) echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2; false ;;
+  1) echo 'READY: no CHANGE_ME placeholders remain' ;;
+  *) echo 'STOP: could not inspect /etc/miningcore/config.json' >&2; false ;;
+esac
 ```
 
 #### Optional: enable Bitcoin direct-coinbase SOLO
 
-Skip this subsection for conventional custodial SOLO, PPS, PROP or PPLNS operation. Direct
-coinbase settlement is an explicit, BTC-only option in which the authorized miner address and each
-positive pool fee/donation recipient are paid by separate outputs in the accepted block.
+Skip this subsection for conventional custodial SOLO, PPS, PROP or PPLNS operation. It requires a
+Miningcore binary that implements direct settlement and its matching database schema—on this
+branch, that means `v0.3.0-rc.1`. Direct coinbase settlement is an explicit, BTC-only option in
+which the authorized miner address and each positive pool fee/donation recipient are paid by
+separate outputs in the accepted block.
 
-For this fresh-install quick start, `createdb.sql` already installed the direct-settlement schema.
-For a database created by `v0.2.1` or earlier—or any pre-PR #135 build—keep
+If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection:
+that binary does not implement `soloCoinbasePayout`. Upgrade the binary and database before adding
+or enabling the setting. Only a fresh database created from `v0.3.0-rc.1` has the required schema
+from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-PR #135 build—keep
 `soloCoinbasePayout` disabled until the verified candidate migration has completed; use the
 [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
 `createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
@@ -719,14 +730,16 @@ editor build/config.json
 ```
 
 Replace every `CHANGE_ME` value and remove pools or services you do not intend to run. Save the
-file, then check for unresolved placeholders before continuing:
+file, then run this fail-closed placeholder check:
 
 ```console
-if grep -n 'CHANGE_ME' build/config.json; then
-  echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2
-else
-  echo 'READY: no CHANGE_ME placeholders remain'
-fi
+source_placeholder_status=0
+grep -n 'CHANGE_ME' build/config.json || source_placeholder_status=$?
+case "$source_placeholder_status" in
+  0) echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2; false ;;
+  1) echo 'READY: no CHANGE_ME placeholders remain' ;;
+  *) echo 'STOP: could not inspect build/config.json' >&2; false ;;
+esac
 ```
 
 Only after the check prints `READY`, start the published binary:
@@ -740,8 +753,13 @@ Miningcore accepts comments in configuration files, while ordinary strict-JSON t
 [example index](examples/README.md), [configuration guide](docs/configuration.md) and
 [coin-family extension guidance](docs/configuration.md#coin-specific-extension-fields) define the
 supported starting points. Keep the first run interactive, verify the local health and pool APIs,
-then use the supplied systemd service for unattended operation; do not host a production pool in
-`screen` or an interactive SSH session.
+then install a production layout before unattended operation. The supplied unit expects
+`/opt/miningcore/Miningcore.dll`, `/etc/miningcore/config.json` and the dedicated `miningcore`
+account; it does not run the development `build/` layout unchanged. Follow
+[quick-start step 8](#8-install-and-start-the-systemd-service) or the
+[release service procedure](docs/releases.md#install-the-systemd-service), or create an equivalent
+service with paths and an account appropriate to your installation. Do not host a production pool
+in `screen` or an interactive SSH session.
 
 ## API and web front ends
 
