@@ -119,6 +119,13 @@ version-bit signal or a claim that BIP 54 is active. The policy is intentionally
 the broad Bitcoin-family runtime: other coins retain their existing sequence, locktime and output
 ordering unless their own consensus rules are separately researched and implemented.
 
+The canonical Bitcoin pool setting `bip54Coinbase` defaults to `true`. If an older miner or Stratum
+proxy cannot process the non-zero locktime, setting it to `false` temporarily restores the previous
+locktime and sequence fields. It does not move the witness commitment back ahead of the value-
+bearing outputs. Miningcore logs the effective policy during pool startup. Treat the override as a
+compatibility rollback, upgrade the incompatible component, then remove it to restore forward-
+compatible work.
+
 Each template update and rebroadcast builds a destination-specific coinbase and merkle projection
 for every connected worker. That is intentionally proportional to connected workers multiplied by
 the template transaction count; capacity-test large fleets before enabling this first-version SOLO

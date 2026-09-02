@@ -22,6 +22,7 @@ public class BitcoinDirectSoloConfigurationTests
 
         Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
         Assert.False(new BitcoinPoolConfigExtra().SoloCoinbasePayout);
+        Assert.True(new BitcoinPoolConfigExtra().Bip54Coinbase);
     }
 
     [Fact]
@@ -137,6 +138,40 @@ public class BitcoinDirectSoloConfigurationTests
     {
         Program.ValidateBitcoinDirectSoloSyntax(JObject.Parse(
             "{\"pools\":[{\"soloCoinbasePayout\":true}]}"));
+    }
+
+    [Theory]
+    [InlineData("Bip54Coinbase", "true", "canonical casing")]
+    [InlineData("bip54Coinbase", "\"true\"", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "1", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "null", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "{}", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "[]", "JSON Boolean")]
+    public void Bip54OptionSyntax_IsStrict(string property, string value,
+        string expected)
+    {
+        var document = JObject.Parse(
+            $"{{\"pools\":[{{\"{property}\":{value}}}]}}");
+
+        Assert.Contains(expected, Assert.Throws<JsonSerializationException>(() =>
+            Program.ValidateBitcoinBip54CoinbaseSyntax(document)).Message);
+    }
+
+    [Fact]
+    public void Bip54OptionSyntax_AcceptsCanonicalBoolean()
+    {
+        Program.ValidateBitcoinBip54CoinbaseSyntax(JObject.Parse(
+            "{\"pools\":[{\"coin\":\"bitcoin\",\"bip54Coinbase\":false}]}"));
+    }
+
+    [Fact]
+    public void Bip54OptionSyntax_RejectsNonCanonicalPool()
+    {
+        var error = Assert.Throws<JsonSerializationException>(() =>
+            Program.ValidateBitcoinBip54CoinbaseSyntax(JObject.Parse(
+                "{\"pools\":[{\"coin\":\"litecoin\",\"bip54Coinbase\":false}]}")));
+
+        Assert.Contains("only on the canonical 'bitcoin'", error.Message);
     }
 
     private static ClusterConfig CreateConfig() => new()

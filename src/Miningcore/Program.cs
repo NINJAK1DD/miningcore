@@ -1381,6 +1381,7 @@ public class Program : ProcessStatusBackgroundService
                     // security-sensitive switches appear acceptable in one
                     // startup mode and invalid in another.
                     ValidateBitcoinDirectSoloSyntax(document);
+                    ValidateBitcoinBip54CoinbaseSyntax(document);
                     if(skipApiListenerSettings)
                     {
                         // Recovery configuration policy:
@@ -1493,6 +1494,37 @@ public class Program : ProcessStatusBackgroundService
                 throw new JsonSerializationException(
                     "Property 'soloCoinbasePayout' must be a JSON Boolean." +
                     GetJsonLocationSuffix(property.Value as IJsonLineInfo,
+                        property.Path));
+        }
+    }
+
+    internal static void ValidateBitcoinBip54CoinbaseSyntax(JObject document)
+    {
+        foreach(var pool in document?["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var property = pool.Properties().FirstOrDefault(candidate =>
+                candidate.Name.Equals("bip54Coinbase",
+                    StringComparison.OrdinalIgnoreCase));
+            if(property == null)
+                continue;
+
+            if(!string.Equals(property.Name, "bip54Coinbase",
+                   StringComparison.Ordinal))
+                throw new JsonSerializationException(
+                    $"Property '{property.Name}' must use canonical casing 'bip54Coinbase'." +
+                    GetJsonLocationSuffix(property as IJsonLineInfo,
+                        property.Path));
+            if(property.Value.Type != JTokenType.Boolean)
+                throw new JsonSerializationException(
+                    "Property 'bip54Coinbase' must be a JSON Boolean." +
+                    GetJsonLocationSuffix(property.Value as IJsonLineInfo,
+                        property.Path));
+            if(!string.Equals(pool["coin"]?.Value<string>(), "bitcoin",
+                   StringComparison.Ordinal))
+                throw new JsonSerializationException(
+                    "Property 'bip54Coinbase' is supported only on the canonical 'bitcoin' pool template." +
+                    GetJsonLocationSuffix(property as IJsonLineInfo,
                         property.Path));
         }
     }

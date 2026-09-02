@@ -66,8 +66,10 @@ public class BitcoinJob
     protected static uint txInPrevOutIndex = (uint) (Math.Pow(2, 32) - 1);
     protected uint txInSequence;
     protected uint txLockTime;
-    private bool useBitcoinBip54Coinbase;
+    private bool emitBip54CoinbaseFields;
+    private bool witnessCommitmentLast;
 
+    // CKPool and AxeOS use 0xfffffffe for their BIP 54-compatible shape.
     private const uint Bip54CoinbaseSequence = uint.MaxValue - 1;
 
     protected virtual void BuildMerkleBranches()
@@ -211,7 +213,7 @@ public class BitcoinJob
             // Preserve the established layout for other Bitcoin-family chains.
             // Canonical Bitcoin puts value-bearing outputs first and the BIP141
             // witness commitment last, matching CKPool's operator-facing layout.
-            if(withDefaultWitnessCommitment && !useBitcoinBip54Coinbase)
+            if(withDefaultWitnessCommitment && !witnessCommitmentLast)
                 SerializeDefaultWitnessCommitment(bs);
 
             // serialize outputs
@@ -227,7 +229,7 @@ public class BitcoinJob
                 bs.ReadWrite(raw);
             }
 
-            if(withDefaultWitnessCommitment && useBitcoinBip54Coinbase)
+            if(withDefaultWitnessCommitment && witnessCommitmentLast)
                 SerializeDefaultWitnessCommitment(bs);
 
             return stream.ToArray();
@@ -244,10 +246,6 @@ public class BitcoinJob
             // Compute witness commitment
             byte[] witnessRoot = raw;
             byte[] witnessNonce = new byte[32];
-
-            // Build Merkle Tree
-            var mtSegwit = BuildSegwitMerkleBranches();
-            var merkleRoot = mtSegwit.WithFirst(new byte[32]);
 
             // Concatenate witness root and nonce
             Span<byte> witnessRootAndNonce = stackalloc byte[witnessRoot.Length + witnessNonce.Length];
@@ -348,8 +346,8 @@ public class BitcoinJob
             DirectCoinbaseSettlement = BitcoinDirectCoinbase.Split(
                 rewardToPool.Satoshi, directCoinbaseTemplate);
 
-            // Miner first, followed by a canonical script-sorted recipient list. The
-            // existing serializer retains the BIP141 commitment in its established slot.
+            // Miner first, followed by a canonical script-sorted recipient list.
+            // Canonical Bitcoin serialization appends the BIP141 commitment afterward.
             tx.Outputs.Add(new Money(
                     DirectCoinbaseSettlement.MinerRewardSatoshis,
                     MoneyUnit.Satoshi),
@@ -966,9 +964,12 @@ public class BitcoinJob
         coin = pc.Template.As<BitcoinTemplate>();
         networkParams = coin.GetNetwork(network.ChainName);
         txVersion = coin.CoinbaseTxVersion;
-        useBitcoinBip54Coinbase = IsCanonicalBitcoin(pc, coin);
-        txInSequence = useBitcoinBip54Coinbase ? Bip54CoinbaseSequence : 0;
-        if(useBitcoinBip54Coinbase)
+        var isCanonicalBitcoin = IsCanonicalBitcoin(pc, coin);
+        emitBip54CoinbaseFields = isCanonicalBitcoin &&
+            (extraPoolConfig?.Bip54Coinbase ?? true);
+        witnessCommitmentLast = isCanonicalBitcoin;
+        txInSequence = emitBip54CoinbaseFields ? Bip54CoinbaseSequence : 0;
+        if(emitBip54CoinbaseFields)
         {
             if(blockTemplate.Height == 0)
                 throw new InvalidDataException(
@@ -1088,7 +1089,7 @@ public class BitcoinJob
         };
     }
 
-    private static bool IsCanonicalBitcoin(PoolConfig pc,
+    internal static bool IsCanonicalBitcoin(PoolConfig pc,
         BitcoinTemplate template) =>
         string.Equals(pc.Coin, "bitcoin", StringComparison.Ordinal) &&
         template.Family == CoinFamily.Bitcoin &&

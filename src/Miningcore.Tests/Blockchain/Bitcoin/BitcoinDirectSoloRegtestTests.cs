@@ -27,6 +27,70 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinDirectSoloRegtestTests : TestBase
 {
     [BitcoinCoreIntegrationFact]
+    public async Task CustodialJob_SubmitsBip54CoinbaseToPreActivationNode()
+    {
+        await using var node = await BitcoinPayoutHandlerRegtestTests
+            .BitcoinCoreRegtestNode.StartAsync(walletBroadcast: true);
+        var rawTemplate = Assert.IsType<JObject>(await node.RootRpcAsync(
+            "getblocktemplate", new JObject
+            {
+                ["rules"] = new JArray("segwit"),
+            }));
+        var blockTemplate = rawTemplate.ToObject<BlockTemplate>();
+        var coin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["bitcoin"]);
+        var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var poolConfig = new PoolConfig
+        {
+            Id = $"bitcoin-custodial-regtest-{Guid.NewGuid():N}",
+            Coin = "bitcoin",
+            Template = coin,
+        };
+        var job = new BitcoinJob();
+        job.Init(blockTemplate, "custodial-regtest", poolConfig, null,
+            new ClusterConfig(), clock, pool, Network.RegTest, false,
+            coin.ShareMultiplier, coin.CoinbaseHasherValue,
+            coin.HeaderHasherValue, coin.BlockHasherValue);
+        var worker = CreateWorker(clock, pool.ToString());
+
+        (Miningcore.Blockchain.Share Share, string BlockHex) candidate = default;
+        for(uint nonce = 0; nonce < 1_000_000; nonce++)
+        {
+            candidate = job.ProcessShare(worker, "00000000000000",
+                blockTemplate.CurTime.ToStringHex8(), nonce.ToStringHex8());
+            if(candidate.Share.IsBlockCandidate)
+                break;
+        }
+
+        Assert.True(candidate.Share?.IsBlockCandidate == true,
+            "Miningcore did not produce a custodial regtest block candidate");
+        Assert.False(string.IsNullOrEmpty(candidate.BlockHex));
+        var submitResult = await node.RootRpcAsync("submitblock",
+            candidate.BlockHex);
+        Assert.Equal(JTokenType.Null, submitResult.Type);
+
+        var accepted = Assert.IsType<JObject>(await node.RootRpcAsync(
+            "getblock", candidate.Share.BlockHash, 2));
+        var coinbase = Assert.IsType<JObject>(
+            Assert.IsType<JArray>(accepted["tx"])[0]);
+        Assert.Equal(blockTemplate.Height - 1,
+            coinbase.Value<uint>("locktime"));
+        var input = Assert.Single(Assert.IsType<JArray>(coinbase["vin"]));
+        Assert.Equal(uint.MaxValue - 1,
+            input.Value<uint>("sequence"));
+        var outputs = Assert.IsType<JArray>(coinbase["vout"]);
+        Assert.True(string.Equals(pool.ScriptPubKey.ToHex(),
+            outputs[0]?["scriptPubKey"]?["hex"]?.Value<string>(),
+            StringComparison.OrdinalIgnoreCase));
+        Assert.True(outputs[^1]?["scriptPubKey"]?["hex"]?.Value<string>()?
+            .StartsWith("6a24aa21a9ed",
+                StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    [BitcoinCoreIntegrationFact]
     public async Task DirectJob_SubmitsAndConfirmsWithoutDestinationWalletOwnership()
     {
         await using var node = await BitcoinPayoutHandlerRegtestTests

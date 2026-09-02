@@ -57,4 +57,11 @@ public class BitcoinPoolConfigExtra
     /// coinbase transaction. Disabled by default for compatibility.
     /// </summary>
     public bool SoloCoinbasePayout { get; set; } = false;
+
+    /// <summary>
+    /// Emit BIP 54-forward-compatible locktime and sequence fields for the
+    /// canonical Bitcoin template. Enabled by default. Set to false only as a
+    /// temporary compatibility fallback for an incompatible miner or proxy.
+    /// </summary>
+    public bool Bip54Coinbase { get; set; } = true;
 }
