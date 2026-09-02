@@ -113,6 +113,11 @@ public class BitcoinDirectSoloRegtestTests : TestBase
             Assert.IsType<JArray>(accepted["tx"])[0]);
         Assert.Equal(coinbase.Value<string>("txid"),
             candidate.Share.TransactionConfirmationData);
+        Assert.Equal(blockTemplate.Height - 1,
+            coinbase.Value<uint>("locktime"));
+        var input = Assert.Single(Assert.IsType<JArray>(coinbase["vin"]));
+        Assert.Equal(uint.MaxValue - 1,
+            input.Value<uint>("sequence"));
         var outputs = Assert.IsType<JArray>(coinbase["vout"]);
         var minerAmount = outputs.Where(x => string.Equals(
                 x["scriptPubKey"]?["hex"]?.Value<string>(),
@@ -125,8 +130,14 @@ public class BitcoinDirectSoloRegtestTests : TestBase
 
         Assert.Equal(49m, minerAmount);
         Assert.Equal(1m, feeAmount);
-        Assert.Contains(outputs, x => x["scriptPubKey"]?["hex"]?
-            .Value<string>()?.StartsWith("6a24aa21a9ed",
+        Assert.True(string.Equals(miner.ScriptPubKey.ToHex(),
+            outputs[0]?["scriptPubKey"]?["hex"]?.Value<string>(),
+            StringComparison.OrdinalIgnoreCase));
+        Assert.True(string.Equals(fee.ScriptPubKey.ToHex(),
+            outputs[1]?["scriptPubKey"]?["hex"]?.Value<string>(),
+            StringComparison.OrdinalIgnoreCase));
+        Assert.True(outputs[2]?["scriptPubKey"]?["hex"]?.Value<string>()?
+            .StartsWith("6a24aa21a9ed",
                 StringComparison.OrdinalIgnoreCase) == true);
 
         var block = new Miningcore.Persistence.Model.Block

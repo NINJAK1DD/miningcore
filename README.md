@@ -28,7 +28,8 @@ the original authors and contributors.
 - SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
 - Opt-in Bitcoin direct-coinbase SOLO, paying the authorized miner and positive pool fee/donation
   recipients in separate outputs of the accepted block instead of creating a custodial Miningcore
-  balance.
+  balance. Canonical BTC coinbases use the BIP 54-forward-compatible locktime/sequence shape and
+  list value-bearing outputs before the witness commitment.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.

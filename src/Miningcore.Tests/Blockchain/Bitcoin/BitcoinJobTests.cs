@@ -508,7 +508,11 @@ public class BitcoinJobTests : TestBase
     public void DirectSoloJobs_AreDestinationSpecificAndWorkerIsolated()
     {
         var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["bitcoin"];
-        var pc = new PoolConfig { Template = coin };
+        var pc = new PoolConfig
+        {
+            Coin = "bitcoin",
+            Template = coin,
+        };
         var blockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
         {
             Version = 0x20000000,
@@ -592,8 +596,19 @@ public class BitcoinJobTests : TestBase
 
         Assert.Contains("6a24aa21a9ed", (string) paramsA[3]);
         var transaction = transactionA;
+        Assert.Equal(blockTemplate.Height - 1,
+            transaction.LockTime.Value);
+        Assert.Equal(uint.MaxValue - 1,
+            Assert.Single(transaction.Inputs).Sequence.Value);
         Assert.Equal(3, transaction.Outputs.Count);
-        Assert.Equal(0, transaction.Outputs[0].Value.Satoshi);
+        Assert.Equal(minerA.ScriptPubKey,
+            transaction.Outputs[0].ScriptPubKey);
+        Assert.Equal(fee.ScriptPubKey,
+            transaction.Outputs[1].ScriptPubKey);
+        Assert.Equal(0, transaction.Outputs[2].Value.Satoshi);
+        Assert.StartsWith("6a24aa21a9ed",
+            transaction.Outputs[2].ScriptPubKey.ToHex(),
+            StringComparison.OrdinalIgnoreCase);
         var outputs = jobA.Outputs;
         Assert.Equal(2, outputs.Count);
         Assert.Equal(minerA.ScriptPubKey,
@@ -636,11 +651,167 @@ public class BitcoinJobTests : TestBase
         Assert.Null(context.GetJob(jobA.JobId));
     }
 
+    [Theory]
+    [InlineData("bitcoin", 100u, 0xfffffffeu, false)]
+    [InlineData("litecoin", 0u, 0u, true)]
+    public void CanonicalBitcoinCustodialCoinbase_IsBip54ForwardCompatibleWithoutChangingAltcoins(
+        string coinId, uint expectedLockTime, uint expectedSequence,
+        bool witnessFirst)
+    {
+        var coin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates[coinId]);
+        var pc = new PoolConfig
+        {
+            Coin = coinId,
+            Template = coin,
+        };
+        var blockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 101,
+            Transactions = Array.Empty<Miningcore.Blockchain.Bitcoin.DaemonResponses.BitcoinBlockTransaction>(),
+            DefaultWitnessCommitment =
+                "6a24aa21a9ed" + new string('0', 64),
+        };
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+        var job = new DirectSerializationBitcoinJob();
+
+        job.Init(blockTemplate, $"{coinId}-custodial", pc, null,
+            new ClusterConfig(), clock, pool, Network.RegTest, false,
+            coin.ShareMultiplier, coin.CoinbaseHasherValue,
+            coin.HeaderHasherValue, coin.BlockHasherValue);
+
+        var coinbase = job.SerializeCoinbaseForTest("00000001",
+            "00000000000000");
+        var transaction = Transaction.Parse(coinbase.ToHexString(),
+            Network.RegTest);
+
+        Assert.Equal(expectedLockTime, transaction.LockTime.Value);
+        Assert.Equal(expectedSequence,
+            Assert.Single(transaction.Inputs).Sequence.Value);
+        Assert.Equal(2, transaction.Outputs.Count);
+        var witnessIndex = witnessFirst ? 0 : 1;
+        var valueIndex = witnessFirst ? 1 : 0;
+        Assert.Equal(0, transaction.Outputs[witnessIndex].Value.Satoshi);
+        Assert.StartsWith("6a24aa21a9ed",
+            transaction.Outputs[witnessIndex].ScriptPubKey.ToHex(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(pool.ScriptPubKey,
+            transaction.Outputs[valueIndex].ScriptPubKey);
+        Assert.Equal(blockTemplate.CoinbaseValue,
+            transaction.Outputs[valueIndex].Value.Satoshi);
+    }
+
+    [Fact]
+    public void BitcoinAndAltcoinJobs_KeepIndependentCoinbasePolicies()
+    {
+        var bitcoin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["bitcoin"]);
+        var litecoin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["litecoin"]);
+        var blockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 101,
+            Transactions = Array.Empty<Miningcore.Blockchain.Bitcoin.DaemonResponses.BitcoinBlockTransaction>(),
+        };
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+
+        DirectSerializationBitcoinJob Create(string coinId,
+            BitcoinTemplate template)
+        {
+            var job = new DirectSerializationBitcoinJob();
+            job.Init(blockTemplate, coinId, new PoolConfig
+                {
+                    Coin = coinId,
+                    Template = template,
+                }, null, new ClusterConfig(), clock, pool, Network.RegTest,
+                false, template.ShareMultiplier,
+                template.CoinbaseHasherValue, template.HeaderHasherValue,
+                template.BlockHasherValue);
+            return job;
+        }
+
+        var bitcoinJob = Create("bitcoin", bitcoin);
+        var litecoinJob = Create("litecoin", litecoin);
+        var bitcoinCoinbase = Transaction.Parse(bitcoinJob
+                .SerializeCoinbaseForTest("00000001", "00000000000000")
+                .ToHexString(),
+            Network.RegTest);
+        var litecoinCoinbase = Transaction.Parse(litecoinJob
+                .SerializeCoinbaseForTest("00000001", "00000000000000")
+                .ToHexString(),
+            Network.RegTest);
+
+        Assert.Equal(100u, bitcoinCoinbase.LockTime.Value);
+        Assert.Equal(uint.MaxValue - 1,
+            Assert.Single(bitcoinCoinbase.Inputs).Sequence.Value);
+        Assert.Equal(0u, litecoinCoinbase.LockTime.Value);
+        Assert.Equal(0u,
+            Assert.Single(litecoinCoinbase.Inputs).Sequence.Value);
+    }
+
+    [Fact]
+    public void CanonicalBitcoinCoinbase_RejectsZeroHeight()
+    {
+        var coin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["bitcoin"]);
+        var pc = new PoolConfig
+        {
+            Coin = "bitcoin",
+            Template = coin,
+        };
+        var blockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 0,
+            Transactions = Array.Empty<Miningcore.Blockchain.Bitcoin.DaemonResponses.BitcoinBlockTransaction>(),
+        };
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+        var job = new DirectSerializationBitcoinJob();
+
+        var error = Assert.Throws<InvalidDataException>(() => job.Init(
+            blockTemplate, "bitcoin-zero-height", pc, null,
+            new ClusterConfig(), clock, pool, Network.RegTest, false,
+            coin.ShareMultiplier, coin.CoinbaseHasherValue,
+            coin.HeaderHasherValue, coin.BlockHasherValue));
+
+        Assert.Contains("positive block height", error.Message);
+    }
+
     [Fact]
     public void DirectSoloJob_RejectsNearFullTemplateWhenFinalBlockIsOverweight()
     {
         var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["bitcoin"];
-        var pc = new PoolConfig { Template = coin };
+        var pc = new PoolConfig
+        {
+            Coin = "bitcoin",
+            Template = coin,
+        };
         var clock = MockMasterClock.FromTicks(
             DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
         var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
@@ -853,10 +1024,14 @@ public class BitcoinJobTests : TestBase
     }
 
     [Fact]
-    public void DirectOptionOff_PreservesLegacyCoinbaseBytes()
+    public void DirectOptionOff_PreservesCanonicalCoinbaseBytes()
     {
         var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["bitcoin"];
-        var pc = new PoolConfig { Template = coin };
+        var pc = new PoolConfig
+        {
+            Coin = "bitcoin",
+            Template = coin,
+        };
         var blockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
         {
             Version = 0x20000000,
