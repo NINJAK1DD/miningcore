@@ -299,10 +299,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     };
     // This is intentionally a propagation bound, not an overloaded-database
     // tolerance. After it expires the exact candidate is fsynced to the
-    // recovery journal, submitted to the daemon, and the unhealthy accounting
-    // pipeline fail-stops rather than continuing to accept financial work. It
-    // is deliberately not configurable: operators cannot trade away this
-    // propagation boundary while direct settlement is enabled.
+    // recovery journal, submitted to the daemon, and the late database attempt
+    // is observed in the background. The retryable timeout alone does not
+    // schedule a deferred fail-stop. It is deliberately not configurable:
+    // operators cannot trade away this propagation boundary while direct
+    // settlement is enabled.
     private static readonly TimeSpan DirectSubmissionDatabasePropagationBound =
         TimeSpan.FromSeconds(2);
 

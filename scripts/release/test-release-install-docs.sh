@@ -241,6 +241,12 @@ assert_file_contains 'the direct-SOLO external journal line-size contract' \
   'one line of up to 16 MiB' "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO deferred fail-stop decision matrix' \
   '| Commit outcome uncertain |' "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO retryable database continuation policy' \
+  '| Retryable database failure or two-second propagation timeout | Exact recovery-journal record | No deferred fail-stop;' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO non-retryable database fail-stop policy' \
+  '| Unexpected non-retryable database failure | Exact recovery-journal record | Generic database-health fail-stop |' \
+  "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO exceptional-commit replay identity' \
   "stable idempotent identity" "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO active duplicate evidence rule' \

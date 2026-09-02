@@ -188,7 +188,8 @@ Deferred submission fail-stop handling follows this fixed matrix:
 
 | Persistence outcome | Durable evidence before submission | Post-submission action |
 | --- | --- | --- |
-| Unexpected database failure | Exact recovery-journal record | Generic database-health fail-stop |
+| Retryable database failure or two-second propagation timeout | Exact recovery-journal record | No deferred fail-stop; observe any late database attempt in the background and continue mining |
+| Unexpected non-retryable database failure | Exact recovery-journal record | Generic database-health fail-stop |
 | Commit outcome uncertain | Exact recovery-journal record; PostgreSQL may also contain the row | Replay-safe uncertain-commit fail-stop |
 | Commit succeeded but cleanup failed | Authoritative PostgreSQL row; journal copy attempted | Replay-safe committed-cleanup fail-stop |
 

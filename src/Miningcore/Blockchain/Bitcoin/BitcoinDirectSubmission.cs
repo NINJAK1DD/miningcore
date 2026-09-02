@@ -162,6 +162,10 @@ internal static class BitcoinDirectSubmission
 
         try
         {
+            // Direct settlement is restricted to canonical Bitcoin mainnet,
+            // testnet and regtest. Their wire block format and NBitcoin
+            // consensus factory are identical; Network.Main selects that
+            // factory here and does not perform address or chain validation.
             var block = NBitcoin.Block.Parse(blockHex, Network.Main);
             if(!string.Equals(block.GetHash().ToString(), expectedHash,
                    StringComparison.OrdinalIgnoreCase))
