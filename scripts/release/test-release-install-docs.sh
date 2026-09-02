@@ -103,16 +103,27 @@ quickstart_placeholder_block=$(awk '
   capture && /^```$/ { exit }
   capture { print }
 ' "$readme")
+database_new_install_section=$(awk '
+  { sub(/\r$/, "") }
+  /^## New installation$/ { capture = 1 }
+  capture { print }
+  capture && /^## Back up and restore$/ { exit }
+' "$database_document")
+database_upgrade_section=$(awk '
+  { sub(/\r$/, "") }
+  /^## Upgrade an existing database$/ { capture = 1 }
+  capture { print }
+  capture && /^## / && !/^## Upgrade an existing database$/ { exit }
+' "$database_document")
 source_build_section=$(awk '
   { sub(/\r$/, "") }
-  /^For a source build or development session,/ { capture = 1 }
+  /^For a fresh source-only installation,/ { capture = 1 }
   capture && /^## API and web front ends$/ { exit }
   capture { print }
 ' "$readme")
 source_placeholder_block=$(awk '
   { sub(/\r$/, "") }
-  /^file, then run this fail-closed placeholder check:$/ { section = 1; next }
-  section && /^```console$/ { capture = 1; next }
+  /^source_placeholder_status=0$/ { capture = 1 }
   capture && /^```$/ { exit }
   capture { print }
 ' "$readme")
@@ -219,15 +230,16 @@ assert_file_contains 'the neutral AutoMapper dual-licensing boundary' \
   'dual-licensed under RPL-1.5 or Lucky Penny commercial terms' "$licence_document"
 assert_file_contains 'the quick-start private-service boundary' \
   'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
-if awk '/^[[:space:]]*\/\// && /CHANGE_ME/ { found = 1 } END { exit found ? 0 : 1 }' \
-    "$config_example"; then
-  echo 'config.example.json contains a comment-only CHANGE_ME token that can confuse operators' >&2
+if [[ $(grep -Ec '/CHANGE_ME\|REPLACE_WITH_/' "$readme") -ne 2 ]]; then
+  echo 'The quick-start and source-build gates do not share the complete placeholder vocabulary' >&2
   exit 1
 fi
 assert_file_contains 'the quick-start placeholder gate' \
   'quickstart_placeholder_status=0' "$readme"
 assert_file_contains 'the quick-start privileged-read preflight' \
   'if sudo -v &&' "$readme"
+assert_file_contains 'the guarded-block sudo-validation requirement' \
+  'require an account for which `sudo -v` succeeds' "$readme"
 assert_file_contains 'the quick-start placeholder inspection failure boundary' \
   'STOP: could not inspect /etc/miningcore/config.json' "$readme"
 assert_file_contains 'the manual source-build editor boundary' \
@@ -258,14 +270,16 @@ assert_file_contains 'the quick-start direct-SOLO protected example installation
   "$readme"
 assert_file_contains 'the quick-start direct-SOLO backup boundary' \
   '/etc/miningcore/config.json.before-direct-solo.XXXXXXXX' "$readme"
-assert_file_contains 'the quick-start direct-SOLO readiness latch' \
-  'MININGCORE_DIRECT_SOLO_CONFIG_READY=1' "$readme"
+assert_file_contains 'the quick-start direct-SOLO nonzero failure boundary' \
+  'STOP: direct-SOLO example installation failed' "$readme"
 assert_file_contains 'the mandatory quick-start edit heading' \
   '#### Edit and validate the configuration' "$readme"
 assert_file_contains 'the restored configuration-schema route' \
   '[configuration schema](src/Miningcore/config.schema.json)' "$readme"
 assert_file_contains 'the restored source-run health probe' \
   'curl --fail --max-time 5 http://127.0.0.1:4000/api/health-check' "$readme"
+assert_file_contains 'the README source-checkout database route' \
+  'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' "$readme"
 assert_file_contains 'the DigiByte Odocrypt feature highlight' \
   'Activation- and schedule-aware DigiByte Odocrypt mining' "$readme"
 assert_file_contains 'the direct-SOLO migration task-table route' \
@@ -383,8 +397,15 @@ for migration in add_auxpow_block_idempotency.sql \
 done
 assert_file_contains 'the database-runbook source-checkout alternative' \
   '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$database_document"
+if ! grep -Fq -- '-f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+    <<<"$database_new_install_section"; then
+  echo 'The new-installation runbook is missing the executable source-checkout schema import' >&2
+  exit 1
+fi
 if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
-    "$database_document" "$pps_document" "$merged_mining_document"; then
+    <<<"$database_upgrade_section" ||
+    grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
+      "$pps_document" "$merged_mining_document"; then
   echo 'An existing-database guide has a repository-only executable migration path' >&2
   exit 1
 fi
@@ -882,11 +903,27 @@ release_feature_heading_line=$(
 release_previous_heading_line=$(
   find_unique_line release-previous-heading '## v0.2.1 hotfix' "$release_document"
 )
+release_tag_checklist_line=$(
+  find_unique_line release-tag-checklist 'Before tagging a new release,' "$release_document"
+)
+release_tag_preference_line=$(
+  find_unique_line release-tag-preference 'failures before publication. Prefer a signed annotated tag:' \
+    "$release_document"
+)
+release_tag_command_line=$(
+  find_unique_line release-tag-command 'git switch dev' "$release_document"
+)
 
 if [[ "$release_upgrade_heading_line" -le "$release_rc_heading_line" ||
     "$release_feature_heading_line" -le "$release_upgrade_heading_line" ||
     "$release_previous_heading_line" -le "$release_feature_heading_line" ]]; then
   echo 'The v0.3.0 upgrade boundary and feature detail are not correctly nested before v0.2.1' >&2
+  exit 1
+fi
+
+if [[ "$release_tag_preference_line" -le "$release_tag_checklist_line" ||
+    "$release_tag_command_line" -le "$release_tag_preference_line" ]]; then
+  echo 'The maintainer checklist interrupts the signed-tag command introduction' >&2
   exit 1
 fi
 
@@ -952,14 +989,22 @@ direct_install_line=$(
     "$direct_solo_install_block"
 )
 direct_ready_line=$(
-  find_unique_line direct-ready 'MININGCORE_DIRECT_SOLO_CONFIG_READY=1' \
+  find_unique_line direct-ready 'READY: installed the direct-SOLO example' \
     "$direct_solo_install_block"
+)
+direct_stop_line=$(
+  find_unique_line direct-stop 'STOP: direct-SOLO example installation failed' \
+    "$direct_solo_install_block"
+)
+direct_failure_line=$(
+  find_unique_line direct-failure '  false' "$direct_solo_install_block"
 )
 
 if [[ "$direct_backup_line" -le "$direct_source_guard_line" ||
     "$direct_install_line" -le "$direct_backup_line" ||
-    "$direct_ready_line" -le "$direct_install_line" ]]; then
-  echo 'Direct-SOLO source validation, backup, install and readiness are not safely ordered' >&2
+    "$direct_ready_line" -le "$direct_install_line" ||
+    "$direct_failure_line" -le "$direct_stop_line" ]]; then
+  echo 'Direct-SOLO validation, backup, install, readiness and failure are not safely ordered' >&2
   exit 1
 fi
 
@@ -1070,9 +1115,9 @@ mkdir -p "$source_placeholder_root/build"
 
 awk '
   /^[[:space:]]*\/\// { print; next }
-  { gsub(/CHANGE_ME[A-Z0-9_]*/, "configured"); print }
+  { gsub(/(CHANGE_ME|REPLACE_WITH_)[A-Z0-9_]*/, "configured"); print }
 ' "$config_example" > "$source_placeholder_root/build/config.json"
-printf '%s\n' '// CHANGE_ME_COMMENT_ONLY_DOES_NOT_BLOCK' \
+printf '%s\n' '// REPLACE_WITH_COMMENT_ONLY_DOES_NOT_BLOCK' \
   >> "$source_placeholder_root/build/config.json"
 if ! real_config_output=$(
   cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
@@ -1080,7 +1125,7 @@ if ! real_config_output=$(
   echo 'The source placeholder check rejected the edited real config.example.json' >&2
   exit 1
 fi
-if ! grep -Fq 'READY: no active CHANGE_ME placeholders remain' <<<"$real_config_output" ||
+if ! grep -Fq 'READY: no active placeholders remain' <<<"$real_config_output" ||
     grep -Fq 'STOP:' <<<"$real_config_output"; then
   echo 'The edited real config.example.json did not reach the documented READY state' >&2
   exit 1
@@ -1093,7 +1138,7 @@ if ! clean_placeholder_output=$(
   echo 'The source placeholder check rejected a readable configuration without placeholders' >&2
   exit 1
 fi
-if ! grep -Fq 'READY: no active CHANGE_ME placeholders remain' <<<"$clean_placeholder_output" ||
+if ! grep -Fq 'READY: no active placeholders remain' <<<"$clean_placeholder_output" ||
     grep -Fq 'STOP:' <<<"$clean_placeholder_output"; then
   echo 'The source placeholder check did not report its clean success state exactly' >&2
   exit 1
@@ -1106,7 +1151,7 @@ if matched_placeholder_output=$(
   echo 'The source placeholder check accepted an unresolved placeholder' >&2
   exit 1
 fi
-if ! grep -Fq 'STOP: replace every active CHANGE_ME value' <<<"$matched_placeholder_output" ||
+if ! grep -Fq 'STOP: replace every active placeholder' <<<"$matched_placeholder_output" ||
     grep -Fq 'READY:' <<<"$matched_placeholder_output"; then
   echo 'The source placeholder check did not fail closed on a placeholder match' >&2
   exit 1
@@ -1125,12 +1170,92 @@ if ! grep -Fq 'STOP: could not inspect build/config.json' <<<"$failed_placeholde
   exit 1
 fi
 
+mapfile -t optional_placeholder_lines < <(
+  awk '
+    /^[[:space:]]*\/\// && /(CHANGE_ME|REPLACE_WITH_)/ {
+      sub(/^[[:space:]]*\/\/[[:space:]]?/, "")
+      print
+    }
+  ' "$config_example"
+)
+if [[ ${#optional_placeholder_lines[@]} -ne 4 ]]; then
+  echo 'The maintained config does not contain the four reviewed optional secret placeholders' >&2
+  exit 1
+fi
+
+for index in "${!optional_placeholder_lines[@]}"; do
+  printf '%s\n' "${optional_placeholder_lines[$index]}" \
+    > "$source_placeholder_root/build/config.json"
+  if optional_source_output=$(
+    cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+  ); then
+    echo "The source gate accepted uncommented optional placeholder $index" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'STOP: replace every active placeholder' <<<"$optional_source_output" ||
+      grep -Fq 'READY:' <<<"$optional_source_output"; then
+    echo "The source gate did not reject optional placeholder $index exactly" >&2
+    exit 1
+  fi
+done
+
 quick_config="$fixture_dir/quick-config.json"
 awk '
   /^[[:space:]]*\/\// { print; next }
-  { gsub(/CHANGE_ME[A-Z0-9_]*/, "configured"); print }
+  { gsub(/(CHANGE_ME|REPLACE_WITH_)[A-Z0-9_]*/, "configured"); print }
 ' "$config_example" > "$quick_config"
-printf '%s\n' '// CHANGE_ME_COMMENT_ONLY_DOES_NOT_BLOCK' >> "$quick_config"
+printf '%s\n' '// REPLACE_WITH_COMMENT_ONLY_DOES_NOT_BLOCK' >> "$quick_config"
+
+mkdir -p "$fixture_dir/direct-bin"
+cat > "$fixture_dir/direct-bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -v)
+    exit 0
+    ;;
+  test)
+    if [[ "${2:-}" == -f && "${3:-}" == /opt/miningcore/examples/bitcoin_direct_solo_pool.json ]]; then
+      exit "${DOC_TEST_DIRECT_SOURCE_STATUS:-0}"
+    fi
+    exit 0
+    ;;
+  mktemp)
+    printf '%s\n' '/etc/miningcore/config.json.before-direct-solo.TESTBACKUP'
+    exit 0
+    ;;
+  cp|install)
+    exit 0
+    ;;
+esac
+echo "Unexpected direct-SOLO sudo invocation: $*" >&2
+exit 64
+EOF
+chmod +x "$fixture_dir/direct-bin/sudo"
+
+if ! direct_success_output=$(
+  env PATH="$fixture_dir/direct-bin:$PATH" bash -c "$direct_solo_install_block" 2>&1
+); then
+  echo 'The direct-SOLO install block rejected its simulated protected success path' >&2
+  exit 1
+fi
+if ! grep -Fq 'READY: installed the direct-SOLO example' <<<"$direct_success_output" ||
+    grep -Fq 'STOP:' <<<"$direct_success_output"; then
+  echo 'The direct-SOLO install block did not report its success state exactly' >&2
+  exit 1
+fi
+
+if direct_failure_output=$(
+  env PATH="$fixture_dir/direct-bin:$PATH" DOC_TEST_DIRECT_SOURCE_STATUS=1 \
+    bash -c "$direct_solo_install_block" 2>&1
+); then
+  echo 'The direct-SOLO install block returned success after a source validation failure' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: direct-SOLO example installation failed' <<<"$direct_failure_output" ||
+    grep -Fq 'READY:' <<<"$direct_failure_output"; then
+  echo 'The direct-SOLO install block did not fail closed exactly' >&2
+  exit 1
+fi
 
 cat > "$fixture_dir/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -1159,7 +1284,7 @@ if ! quick_clean_output=$(
   echo 'The quick-start gate rejected the edited real config.example.json' >&2
   exit 1
 fi
-if ! grep -Fq 'READY: no active CHANGE_ME placeholders remain' <<<"$quick_clean_output" ||
+if ! grep -Fq 'READY: no active placeholders remain' <<<"$quick_clean_output" ||
     grep -Fq 'STOP:' <<<"$quick_clean_output"; then
   echo 'The quick-start gate did not report its real-config success state exactly' >&2
   exit 1
@@ -1173,11 +1298,27 @@ if quick_match_output=$(
   echo 'The quick-start gate accepted an unresolved active placeholder' >&2
   exit 1
 fi
-if ! grep -Fq 'STOP: replace every active CHANGE_ME value' <<<"$quick_match_output" ||
+if ! grep -Fq 'STOP: replace every active placeholder' <<<"$quick_match_output" ||
     grep -Fq 'READY:' <<<"$quick_match_output"; then
   echo 'The quick-start gate did not fail closed on an active placeholder' >&2
   exit 1
 fi
+
+for index in "${!optional_placeholder_lines[@]}"; do
+  printf '%s\n' "${optional_placeholder_lines[$index]}" > "$quick_config"
+  if optional_quick_output=$(
+    env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \
+      bash -c "$quickstart_placeholder_block" 2>&1
+  ); then
+    echo "The quick-start gate accepted uncommented optional placeholder $index" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'STOP: replace every active placeholder' <<<"$optional_quick_output" ||
+      grep -Fq 'READY:' <<<"$optional_quick_output"; then
+    echo "The quick-start gate did not reject optional placeholder $index exactly" >&2
+    exit 1
+  fi
+done
 
 if quick_sudo_failure_output=$(
   env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \

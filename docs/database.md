@@ -61,6 +61,18 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f /opt/miningcore/migrations/createdb.sql
 ```
 
+For a source-only installation from the repository checkout, use the reviewed source schema
+instead of the prebuilt `/opt/miningcore` path:
+
+```console
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --single-transaction \
+  -f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
+```
+
+Run either command from the layout it documents, never both. `createdb.sql` is only for a new,
+empty database; use the release upgrade procedure for an existing database.
+
 Confirm the application login works:
 
 ```console

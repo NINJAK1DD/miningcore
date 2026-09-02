@@ -225,8 +225,11 @@ from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-
 If selecting direct settlement, install the reviewed
 [`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract before editing:
 
+The guarded command blocks in this section require an account for which `sudo -v` succeeds. If a
+command-specific sudoers policy intentionally denies general credential validation, have an
+administrator perform the equivalent protected-file steps instead of weakening these checks.
+
 ```console
-MININGCORE_DIRECT_SOLO_CONFIG_READY=
 direct_solo_source=/opt/miningcore/examples/bitcoin_direct_solo_pool.json
 direct_solo_backup=
 if sudo -v &&
@@ -239,10 +242,10 @@ if sudo -v &&
      /etc/miningcore/config.json "$direct_solo_backup" &&
    sudo install -m 0640 -o root -g miningcore \
      "$direct_solo_source" /etc/miningcore/config.json; then
-  export MININGCORE_DIRECT_SOLO_CONFIG_READY=1
   echo "READY: installed the direct-SOLO example; previous config: $direct_solo_backup"
 else
   echo "STOP: direct-SOLO example installation failed; backup: ${direct_solo_backup:-not created}" >&2
+  false
 fi
 ```
 
@@ -266,7 +269,8 @@ sudoedit /etc/miningcore/config.json
 
 Before continuing:
 
-- replace every `CHANGE_ME` wallet, RPC, PostgreSQL, SMTP, TLS and licence value;
+- replace every active placeholder marker (`CHANGE_ME` or `REPLACE_WITH_`) in wallet, RPC,
+  PostgreSQL, SMTP, TLS and licence values;
 - use the PostgreSQL password created above and keep daemon/wallet RPC listeners private;
 - remove unused pools or leave them explicitly disabled;
 - preserve a non-null `paymentProcessing` object on every pool;
@@ -281,7 +285,6 @@ fail-closed check. Continue only when it prints `READY`; a placeholder match or 
 returns a nonzero status:
 
 ```console
-MININGCORE_CONFIGURATION_READY=
 quickstart_placeholder_status=0
 if sudo -v &&
    sudo test -f /etc/miningcore/config.json &&
@@ -289,12 +292,12 @@ if sudo -v &&
    sudo test ! -L /etc/miningcore/config.json; then
   sudo awk '
     /^[[:space:]]*\/\// { next }
-    /CHANGE_ME/ { print NR ":" $0; found = 1 }
+    /CHANGE_ME|REPLACE_WITH_/ { print NR ":" $0; found = 1 }
     END { exit found ? 0 : 3 }
   ' /etc/miningcore/config.json || quickstart_placeholder_status=$?
   case "$quickstart_placeholder_status" in
-    0) echo 'STOP: replace every active CHANGE_ME value before starting Miningcore' >&2; false ;;
-    3) export MININGCORE_CONFIGURATION_READY=1; echo 'READY: no active CHANGE_ME placeholders remain' ;;
+    0) echo 'STOP: replace every active placeholder before starting Miningcore' >&2; false ;;
+    3) echo 'READY: no active placeholders remain' ;;
     *) echo 'STOP: could not inspect /etc/miningcore/config.json' >&2; false ;;
   esac
 else
@@ -755,6 +758,7 @@ recovery commands live only in the task-specific runbooks:
 | Task | Authoritative procedure |
 | --- | --- |
 | Create a new PostgreSQL database | [Quick start: create PostgreSQL](#4-create-postgresql-and-load-the-schema) |
+| Create a PostgreSQL database from a source checkout | [Database guide: new installation](docs/database.md#new-installation) using `src/Miningcore/Persistence/Postgres/Scripts/createdb.sql` |
 | Upgrade an existing release and database | [Release upgrade or rollback](docs/releases.md#upgrade-or-roll-back) |
 | Enable pooled accounting or PPS | [PPS database prerequisites](docs/pps.md#database-prerequisites) |
 | Enable direct-coinbase SOLO on a v0.2.1-or-earlier/pre-PR #135 database | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
@@ -765,8 +769,11 @@ Never run `createdb.sql` over an existing database, run release migrations throu
 symlink, or edit balances, blocks or payments manually. Stop every writer named by the upgrade
 runbook and prove the backup before a schema change.
 
-For a source build or development session, copy the annotated configuration into the publish
-directory and open it for editing:
+For a fresh source-only installation, first follow the
+[source-checkout database path](docs/database.md#new-installation); do not use the prebuilt-only
+`/opt/miningcore/migrations/createdb.sql` path unless that release layout has actually been
+installed. Then copy the annotated configuration into the publish directory and open it for
+editing:
 
 ```console
 cp config.example.json build/config.json
@@ -775,20 +782,20 @@ ${EDITOR:-vi} build/config.json
 
 On Windows PowerShell, use `notepad build/config.json` or another editor instead.
 
-Replace every `CHANGE_ME` value and remove pools or services you do not intend to run. Save the
-file, then run this fail-closed placeholder check:
+Replace every active placeholder marker (`CHANGE_ME` or `REPLACE_WITH_`) and remove pools or
+services you do not intend to run. Save the file, then run this fail-closed placeholder check:
 
 ```console
 source_placeholder_status=0
 if [ -f build/config.json ] && [ -r build/config.json ] && [ ! -L build/config.json ]; then
   awk '
     /^[[:space:]]*\/\// { next }
-    /CHANGE_ME/ { print NR ":" $0; found = 1 }
+    /CHANGE_ME|REPLACE_WITH_/ { print NR ":" $0; found = 1 }
     END { exit found ? 0 : 3 }
   ' build/config.json || source_placeholder_status=$?
   case "$source_placeholder_status" in
-    0) echo 'STOP: replace every active CHANGE_ME value before starting Miningcore' >&2; false ;;
-    3) echo 'READY: no active CHANGE_ME placeholders remain' ;;
+    0) echo 'STOP: replace every active placeholder before starting Miningcore' >&2; false ;;
+    3) echo 'READY: no active placeholders remain' ;;
     *) echo 'STOP: could not inspect build/config.json' >&2; false ;;
   esac
 else

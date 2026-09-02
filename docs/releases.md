@@ -1586,16 +1586,16 @@ transient resolution failures use status 69.
 > does not report a status on unrelated pull requests. Do not configure it as a required status
 > check; require the always-running build and release checks instead.
 
+Before tagging a new release, update every release-locked quick-start sentence as well as the
+`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. In particular, replace the README's
+named stable-version substitution boundary and its release-documentation assertion when the stable
+baseline changes.
+
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
-
-Before tagging a new release, update every release-locked quick-start sentence as well as the
-`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. In particular, replace the README's
-named stable-version substitution boundary and its release-documentation assertion when the stable
-baseline changes.
 
 > **Release retry rule:** if any Release workflow job fails, select **Re-run all jobs**.
 > Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the
