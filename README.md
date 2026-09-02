@@ -24,6 +24,7 @@ the original authors and contributors.
 - Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json)
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
+- Activation- and schedule-aware DigiByte Odocrypt mining backed by source-built native validation.
 - SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
 - Opt-in Bitcoin direct-coinbase SOLO, paying the authorized miner and positive pool fee/donation
   recipients in separate outputs of the accepted block instead of creating a custodial Miningcore
@@ -225,9 +226,28 @@ If selecting direct settlement, install the reviewed
 [`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract before editing:
 
 ```console
-sudo install -m 0640 -o root -g miningcore \
-  /opt/miningcore/examples/bitcoin_direct_solo_pool.json /etc/miningcore/config.json
+MININGCORE_DIRECT_SOLO_CONFIG_READY=
+direct_solo_source=/opt/miningcore/examples/bitcoin_direct_solo_pool.json
+direct_solo_backup=
+if sudo -v &&
+   sudo test -f "$direct_solo_source" &&
+   sudo test -f /etc/miningcore/config.json &&
+   sudo test ! -L /etc/miningcore/config.json &&
+   direct_solo_backup="$(sudo mktemp \
+     /etc/miningcore/config.json.before-direct-solo.XXXXXXXX)" &&
+   sudo cp --preserve=mode,ownership,timestamps \
+     /etc/miningcore/config.json "$direct_solo_backup" &&
+   sudo install -m 0640 -o root -g miningcore \
+     "$direct_solo_source" /etc/miningcore/config.json; then
+  export MININGCORE_DIRECT_SOLO_CONFIG_READY=1
+  echo "READY: installed the direct-SOLO example; previous config: $direct_solo_backup"
+else
+  echo "STOP: direct-SOLO example installation failed; backup: ${direct_solo_backup:-not created}" >&2
+fi
 ```
+
+If selected, continue only after this block prints `READY`. Keep the reported backup until the
+commissioned configuration and rollback plan have been verified.
 
 While editing below, keep both cluster- and pool-level payment processing enabled, retain
 `payoutScheme: "SOLO"`, replace the pool wallet, daemon credentials and positive recipient address,
@@ -235,6 +255,8 @@ and explicitly set `soloCoinbasePayout: true`. Miners must authorize with a vali
 `BITCOIN_ADDRESS.worker` username. Complete the [direct-SOLO guide](docs/bitcoin-direct-solo.md),
 including its regtest/preflight procedure, before admitting production miners. The option remains
 off by default for every existing pool.
+
+#### Edit and validate the configuration
 
 After choosing the configuration, edit the protected file:
 
@@ -259,13 +281,26 @@ fail-closed check. Continue only when it prints `READY`; a placeholder match or 
 returns a nonzero status:
 
 ```console
+MININGCORE_CONFIGURATION_READY=
 quickstart_placeholder_status=0
-sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json || quickstart_placeholder_status=$?
-case "$quickstart_placeholder_status" in
-  0) echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2; false ;;
-  1) echo 'READY: no CHANGE_ME placeholders remain' ;;
-  *) echo 'STOP: could not inspect /etc/miningcore/config.json' >&2; false ;;
-esac
+if sudo -v &&
+   sudo test -f /etc/miningcore/config.json &&
+   sudo test -r /etc/miningcore/config.json &&
+   sudo test ! -L /etc/miningcore/config.json; then
+  sudo awk '
+    /^[[:space:]]*\/\// { next }
+    /CHANGE_ME/ { print NR ":" $0; found = 1 }
+    END { exit found ? 0 : 3 }
+  ' /etc/miningcore/config.json || quickstart_placeholder_status=$?
+  case "$quickstart_placeholder_status" in
+    0) echo 'STOP: replace every active CHANGE_ME value before starting Miningcore' >&2; false ;;
+    3) export MININGCORE_CONFIGURATION_READY=1; echo 'READY: no active CHANGE_ME placeholders remain' ;;
+    *) echo 'STOP: could not inspect /etc/miningcore/config.json' >&2; false ;;
+  esac
+else
+  echo 'STOP: could not inspect /etc/miningcore/config.json' >&2
+  false
+fi
 ```
 
 ### 6. Install, secure and synchronize the coin daemons
@@ -735,20 +770,31 @@ directory and open it for editing:
 
 ```console
 cp config.example.json build/config.json
-editor build/config.json
+${EDITOR:-vi} build/config.json
 ```
+
+On Windows PowerShell, use `notepad build/config.json` or another editor instead.
 
 Replace every `CHANGE_ME` value and remove pools or services you do not intend to run. Save the
 file, then run this fail-closed placeholder check:
 
 ```console
 source_placeholder_status=0
-grep -n 'CHANGE_ME' build/config.json || source_placeholder_status=$?
-case "$source_placeholder_status" in
-  0) echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2; false ;;
-  1) echo 'READY: no CHANGE_ME placeholders remain' ;;
-  *) echo 'STOP: could not inspect build/config.json' >&2; false ;;
-esac
+if [ -f build/config.json ] && [ -r build/config.json ] && [ ! -L build/config.json ]; then
+  awk '
+    /^[[:space:]]*\/\// { next }
+    /CHANGE_ME/ { print NR ":" $0; found = 1 }
+    END { exit found ? 0 : 3 }
+  ' build/config.json || source_placeholder_status=$?
+  case "$source_placeholder_status" in
+    0) echo 'STOP: replace every active CHANGE_ME value before starting Miningcore' >&2; false ;;
+    3) echo 'READY: no active CHANGE_ME placeholders remain' ;;
+    *) echo 'STOP: could not inspect build/config.json' >&2; false ;;
+  esac
+else
+  echo 'STOP: could not inspect build/config.json' >&2
+  false
+fi
 ```
 
 Only after the check prints `READY`, start the published binary:
@@ -761,8 +807,16 @@ cd build
 Miningcore accepts comments in configuration files, while ordinary strict-JSON tools may not. The
 [example index](examples/README.md), [configuration guide](docs/configuration.md) and
 [coin-family extension guidance](docs/configuration.md#coin-specific-extension-fields) define the
-supported starting points. Keep the first run interactive, verify the local health and pool APIs,
-then install a production layout before unattended operation. The supplied unit expects
+supported starting points. The machine-readable
+[configuration schema](src/Miningcore/config.schema.json) covers the shared typed structure.
+Keep the first run interactive and, from another terminal, verify the local health endpoint:
+
+```console
+curl --fail --max-time 5 http://127.0.0.1:4000/api/health-check
+```
+
+After verifying the pool APIs, install a production layout before unattended operation. The
+supplied unit expects
 `/opt/miningcore/Miningcore.dll`, `/etc/miningcore/config.json` and the dedicated `miningcore`
 account; it does not run the development `build/` layout unchanged. Follow
 [quick-start step 8](#8-install-and-start-the-systemd-service) or the

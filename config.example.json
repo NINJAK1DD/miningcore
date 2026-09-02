@@ -1,5 +1,5 @@
 {
-  // Copy this file to config.json and replace every CHANGE_ME value.
+  // Copy this file to config.json and replace every active placeholder value.
   // Miningcore accepts comments, although strict JSON tools may not.
   // Smaller direct, multi-coin, merged-mining and relay starting points are indexed in
   // examples/README.md. This maintained reference keeps LTC/DOGE sections because they
@@ -63,7 +63,7 @@
     // "tls": {
     //   "enabled": true,
     //   "tlsPfxFile": "/etc/miningcore/api-certificate.pfx",
-    //   "tlsPfxPassword": "CHANGE_ME_API_CERTIFICATE_PASSWORD"
+    //   "tlsPfxPassword": "REPLACE_WITH_API_CERTIFICATE_PASSWORD"
     // },
     // Per-client API request limiting. Miningcore does not process trusted forwarded-client
     // headers. If a same-host reverse proxy connects over loopback, enforce public-client limits
@@ -194,13 +194,13 @@
   //   // false binds/listens; true connects to an already-bound relay endpoint.
   //   "connect": false,
   //   // Replace with a long random ZeroMQ shared secret.
-  //   "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+  //   "sharedEncryptionKey": "REPLACE_WITH_A_LONG_RANDOM_SECRET"
   // },
   // Advanced central receiver/recorder example:
   // "shareRelays": [
   //   {
   //     "url": "tcp://192.0.2.20:5555",
-  //     "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+  //     "sharedEncryptionKey": "REPLACE_WITH_A_LONG_RANDOM_SECRET"
   //   }
   // ],
 
@@ -271,7 +271,7 @@
           "tlsAuto": false,
           // When TLS is enabled, uncomment and replace both values:
           // "tlsPfxFile": "/etc/miningcore/stratum-certificate.pfx",
-          // "tlsPfxPassword": "CHANGE_ME_STRATUM_CERTIFICATE_PASSWORD",
+          // "tlsPfxPassword": "REPLACE_WITH_STRATUM_CERTIFICATE_PASSWORD",
           // Accept HAProxy PROXY protocol information from explicitly trusted proxies only.
           "tcpProxyProtocol": {
             // Parse PROXY headers on this port.

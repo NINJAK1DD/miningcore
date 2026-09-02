@@ -73,6 +73,8 @@ Once direct work has been accepted, its database and journal evidence creates th
 application boundary described below. Do not test rollback with production direct-settlement
 evidence.
 
+### Feature detail
+
 **Opt-in Bitcoin direct-coinbase SOLO:** canonical BTC SOLO pools can set
 `soloCoinbasePayout: true` so the block coinbase pays the authorized miner address and each positive
 fee/donation recipient directly. Destination-specific jobs bind submission to the exact announced
@@ -101,9 +103,8 @@ and the pending classifier returns it only for replayable states; immature obser
 metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,
 and reject larger page sizes instead of allowing an unbounded query. Bounded post-maturity block-RPC
 reconciliation tracks terminal rows for two difficulty periods without creating a Miningcore
-balance or second payment. Existing custodial SOLO remains the default. Existing databases must apply
-`add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
-the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
+balance or second payment. Existing custodial SOLO remains the default. See the
+[Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
 
 Fresh `createdb.sql` installations and upgraded databases share the same five-state direct-outbox
 constraint. A source-contract regression and live PostgreSQL preflight prevent the fresh schema and
@@ -118,12 +119,11 @@ database-write failure. The dedicated `bitcoin-coinbase-direct` recovery identit
 statement-scoped database guard fail closed against an older importer/updater, but they are not a
 substitute for the documented recovery procedure.
 
-**Breaking DigiByte template rename:** `digibyte-groestl` is removed rather than redirected to a
-different proof of work. Operators must stop that pool and explicitly select a supported current
-algorithm; current-mainnet support adds `digibyte-odocrypt` in its place.
-
-DigiByte current-mainnet support replaces the retired Myriad-Groestl catalogue entry with
-activation- and schedule-aware Odocrypt. The Odocrypt cipher is pinned to DigiByte Core v9.26.5;
+**Breaking DigiByte template rename:** current-mainnet support removes `digibyte-groestl` rather
+than redirecting it to a different proof of work and replaces that retired Myriad-Groestl catalogue
+entry with activation- and schedule-aware `digibyte-odocrypt`. Operators must stop the old pool and
+explicitly select and commission a supported current algorithm. The Odocrypt cipher is pinned to
+DigiByte Core v9.26.5;
 network-specific activation and schedule metadata is validated before startup, template `odokey`
 is checked against template time, submitted shares derive their key from submitted header time,
 and native known-answer, symbol, relocation and source-built Windows checks protect the packaged
@@ -1591,6 +1591,11 @@ branches intentionally retain GitVersion's prerelease calculation; the runtime c
 exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
+
+Before tagging a new release, update every release-locked quick-start sentence as well as the
+`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. In particular, replace the README's
+named stable-version substitution boundary and its release-documentation assertion when the stable
+baseline changes.
 
 > **Release retry rule:** if any Release workflow job fails, select **Re-run all jobs**.
 > Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the

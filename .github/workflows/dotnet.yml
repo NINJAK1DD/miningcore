@@ -47,10 +47,6 @@ jobs:
       shell: bash
       run: bash scripts/release/test-release-install-docs.sh
 
-    - name: Lint release installation documentation test
-      shell: bash
-      run: shellcheck -x -S warning scripts/release/test-release-install-docs.sh
-
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py
@@ -78,6 +74,7 @@ jobs:
         scripts/release/test-msbuild-warning-file-logger.sh
         scripts/release/test-odocrypt-source-inventory.sh
         scripts/release/test-odocrypt-source-verifiers.sh
+        scripts/release/test-release-install-docs.sh
         scripts/release/test-ubuntu-source-build.sh
 
     - name: Test Linux native symbol contracts
