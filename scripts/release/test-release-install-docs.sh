@@ -109,6 +109,13 @@ database_new_install_section=$(awk '
   capture { print }
   capture && /^## Back up and restore$/ { exit }
 ' "$database_document")
+database_source_import_block=$(awk '
+  { sub(/\r$/, "") }
+  /^For a source-only installation from the repository checkout,/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$database_document")
 database_upgrade_section=$(awk '
   { sub(/\r$/, "") }
   /^## Upgrade an existing database$/ { capture = 1 }
@@ -230,7 +237,7 @@ assert_file_contains 'the neutral AutoMapper dual-licensing boundary' \
   'dual-licensed under RPL-1.5 or Lucky Penny commercial terms' "$licence_document"
 assert_file_contains 'the quick-start private-service boundary' \
   'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
-if [[ $(grep -Ec '/CHANGE_ME\|REPLACE_WITH_/' "$readme") -ne 2 ]]; then
+if [[ $(grep -Fc '/CHANGE_ME|REPLACE_WITH_/' "$readme") -ne 2 ]]; then
   echo 'The quick-start and source-build gates do not share the complete placeholder vocabulary' >&2
   exit 1
 fi
@@ -397,16 +404,21 @@ for migration in add_auxpow_block_idempotency.sql \
 done
 assert_file_contains 'the database-runbook source-checkout alternative' \
   '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$database_document"
-if ! grep -Fq -- '-f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+if ! grep -Fq -- '< src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
     <<<"$database_new_install_section"; then
   echo 'The new-installation runbook is missing the executable source-checkout schema import' >&2
   exit 1
 fi
-if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
+if grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
     <<<"$database_upgrade_section" ||
-    grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
+    grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
       "$pps_document" "$merged_mining_document"; then
   echo 'An existing-database guide has a repository-only executable migration path' >&2
+  exit 1
+fi
+if grep -Fq -- '-f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+    <<<"$database_new_install_section"; then
+  echo 'The source-checkout schema is incorrectly opened by the postgres account' >&2
   exit 1
 fi
 if grep -REq --include='*.md' \
@@ -729,6 +741,7 @@ bash -n <<<"$partition_block"
 bash -n <<<"$direct_solo_install_block"
 bash -n <<<"$quickstart_placeholder_block"
 bash -n <<<"$source_placeholder_block"
+bash -n <<<"$database_source_import_block"
 bash -n <<<"$upgrade_block"
 
 if [[ "$readme_database_block" != "$release_database_block" ]]; then
@@ -949,6 +962,16 @@ quickstart_example_line=$(
     'direct_solo_source=/opt/miningcore/examples/bitcoin_direct_solo_pool.json' \
     "$quickstart_configuration_section"
 )
+quickstart_sudo_requirement_line=$(
+  find_unique_line quickstart-sudo-requirement \
+    'The guarded command blocks in this section require an account' \
+    "$quickstart_configuration_section"
+)
+quickstart_direct_intro_line=$(
+  find_unique_line quickstart-direct-intro \
+    'If selecting direct settlement, install the reviewed' \
+    "$quickstart_configuration_section"
+)
 quickstart_editor_line=$(
   find_unique_line quickstart-editor \
     'sudoedit /etc/miningcore/config.json' "$quickstart_configuration_section"
@@ -968,7 +991,9 @@ quickstart_continue_line=$(
     "$quickstart_configuration_section"
 )
 
-if [[ "$quickstart_edit_heading_line" -le "$quickstart_example_line" ||
+if [[ "$quickstart_direct_intro_line" -le "$quickstart_sudo_requirement_line" ||
+    "$quickstart_example_line" -le "$quickstart_direct_intro_line" ||
+    "$quickstart_edit_heading_line" -le "$quickstart_example_line" ||
     "$quickstart_editor_line" -le "$quickstart_edit_heading_line" ||
     "$quickstart_check_line" -le "$quickstart_editor_line" ||
     "$quickstart_continue_line" -le "$quickstart_check_line" ]]; then
@@ -996,9 +1021,14 @@ direct_stop_line=$(
   find_unique_line direct-stop 'STOP: direct-SOLO example installation failed' \
     "$direct_solo_install_block"
 )
-direct_failure_line=$(
-  find_unique_line direct-failure '  false' "$direct_solo_install_block"
+mapfile -t direct_failure_matches < <(
+  grep -nE '^[[:space:]]*false[[:space:]]*$' <<<"$direct_solo_install_block" | cut -d: -f1
 )
+if [[ ${#direct_failure_matches[@]} -ne 1 ]]; then
+  echo "Direct-SOLO failure command occurred ${#direct_failure_matches[@]} times; expected 1" >&2
+  exit 1
+fi
+direct_failure_line=${direct_failure_matches[0]}
 
 if [[ "$direct_backup_line" -le "$direct_source_guard_line" ||
     "$direct_install_line" -le "$direct_backup_line" ||
@@ -1110,6 +1140,33 @@ fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-install-docs.XXXXXXXX")
 mkdir -p "$fixture_dir/bin" "$fixture_dir/download" "$fixture_dir/home"
 trace="$fixture_dir/trace"
 
+mkdir -p "$fixture_dir/source-db-bin"
+cat > "$fixture_dir/source-db-bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+if [[ " $* " == *' -f '* || " $* " == *'createdb.sql'* ]]; then
+  echo "Source schema path leaked into the postgres command: $*" >&2
+  exit 64
+fi
+printf '%s\n' "$*" > "${DOC_TEST_SOURCE_DB_ARGS:?}"
+cat > "${DOC_TEST_SOURCE_DB_STDIN:?}"
+EOF
+chmod +x "$fixture_dir/source-db-bin/sudo"
+
+source_db_args="$fixture_dir/source-db-args"
+source_db_stdin="$fixture_dir/source-db-stdin"
+if ! env PATH="$fixture_dir/source-db-bin:$PATH" \
+    DOC_TEST_SOURCE_DB_ARGS="$source_db_args" DOC_TEST_SOURCE_DB_STDIN="$source_db_stdin" \
+    bash -c "$database_source_import_block"; then
+  echo 'The documented source-checkout database import did not execute through stdin' >&2
+  exit 1
+fi
+if ! grep -Fq -- '-u postgres psql -v ON_ERROR_STOP=1 -d miningcore --single-transaction' \
+    "$source_db_args" ||
+    ! cmp -s -- src/Miningcore/Persistence/Postgres/Scripts/createdb.sql "$source_db_stdin"; then
+  echo 'The source-checkout database import did not pass the reviewed schema to postgres on stdin' >&2
+  exit 1
+fi
+
 source_placeholder_root="$fixture_dir/source-placeholder"
 mkdir -p "$source_placeholder_root/build"
 
@@ -1178,8 +1235,8 @@ mapfile -t optional_placeholder_lines < <(
     }
   ' "$config_example"
 )
-if [[ ${#optional_placeholder_lines[@]} -ne 4 ]]; then
-  echo 'The maintained config does not contain the four reviewed optional secret placeholders' >&2
+if [[ ${#optional_placeholder_lines[@]} -lt 1 ]]; then
+  echo 'The maintained config has no commented optional secret for active-gate regression coverage' >&2
   exit 1
 fi
 

@@ -222,12 +222,12 @@ from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-
 [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
 `createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
 
-If selecting direct settlement, install the reviewed
-[`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract before editing:
-
 The guarded command blocks in this section require an account for which `sudo -v` succeeds. If a
 command-specific sudoers policy intentionally denies general credential validation, have an
 administrator perform the equivalent protected-file steps instead of weakening these checks.
+
+If selecting direct settlement, install the reviewed
+[`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract before editing:
 
 ```console
 direct_solo_source=/opt/miningcore/examples/bitcoin_direct_solo_pool.json
