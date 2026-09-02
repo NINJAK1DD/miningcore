@@ -711,10 +711,27 @@ symlink, or edit balances, blocks or payments manually. Stop every writer named 
 runbook and prove the backup before a schema change.
 
 For a source build or development session, copy the annotated configuration into the publish
-directory, replace every `CHANGE_ME` value, and remove unused pools or services:
+directory and open it for editing:
 
 ```console
 cp config.example.json build/config.json
+editor build/config.json
+```
+
+Replace every `CHANGE_ME` value and remove pools or services you do not intend to run. Save the
+file, then check for unresolved placeholders before continuing:
+
+```console
+if grep -n 'CHANGE_ME' build/config.json; then
+  echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2
+else
+  echo 'READY: no CHANGE_ME placeholders remain'
+fi
+```
+
+Only after the check prints `READY`, start the published binary:
+
+```console
 cd build
 ./Miningcore -c config.json
 ```

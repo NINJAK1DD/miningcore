@@ -184,6 +184,12 @@ assert_file_contains 'the quick-start private-service boundary' \
   'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
 assert_file_contains 'the quick-start placeholder gate' \
   "sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json" "$readme"
+assert_file_contains 'the manual source-build editor boundary' \
+  'editor build/config.json' "$readme"
+assert_file_contains 'the manual source-build placeholder gate' \
+  "if grep -n 'CHANGE_ME' build/config.json; then" "$readme"
+assert_file_contains 'the manual source-build launch boundary' \
+  'Only after the check prints `READY`, start the published binary' "$readme"
 assert_file_contains 'the quick-start direct-SOLO opt-in boundary' \
   '#### Optional: enable Bitcoin direct-coinbase SOLO' "$readme"
 assert_file_contains 'the quick-start direct-SOLO fresh-schema boundary' \
