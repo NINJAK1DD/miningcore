@@ -61,6 +61,22 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
   -f /opt/miningcore/migrations/createdb.sql
 ```
 
+For a source-only installation from the repository checkout, use the reviewed source schema
+instead of the prebuilt `/opt/miningcore` path:
+
+```console
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  --single-transaction -f - \
+  < src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
+```
+
+Run either command from the layout it documents, never both. `createdb.sql` is only for a new,
+empty database. `-f -` makes `psql` read stdin as file input, so SQL errors include input line
+numbers and `--single-transaction` follows the documented file-input form. The invoking shell opens
+the redirected checkout file before `sudo` starts `psql`, so the `postgres` account does not need
+permission to traverse the developer's home directory. Use the release upgrade procedure for an
+existing database.
+
 Confirm the application login works:
 
 ```console
@@ -135,7 +151,7 @@ that uses the database, take a verified backup, then point this shell at that ex
 candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-export MININGCORE_VERSION=v0.2.1
+export MININGCORE_VERSION=v0.3.0-rc.1
 export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
 export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
 test -d "$MININGCORE_CANDIDATE_DIR/migrations"

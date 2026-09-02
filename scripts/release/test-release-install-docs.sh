@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
+# Literal documentation contracts intentionally must not expand shell expressions.
+# shellcheck disable=SC2016
 
 set -euo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
+config_example="$repository_root/config.example.json"
 pps_document="$repository_root/docs/pps.md"
 database_document="$repository_root/docs/database.md"
 merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
@@ -18,6 +21,7 @@ zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Pro
 capability_dir=
 fixture_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
+release_document=$(tr -d '\r' < "$document")
 
 cleanup() {
   if [[ -n "$capability_dir" ]]; then
@@ -79,6 +83,57 @@ partition_block=$(awk '
   capture && /^```$/ { exit }
   capture { print }
 ' "$readme")
+quickstart_configuration_section=$(awk '
+  { sub(/\r$/, "") }
+  /^### 5\. Choose and edit a configuration$/ { capture = 1 }
+  capture { print }
+  capture && /^### 6\. Install, secure and synchronize the coin daemons$/ { exit }
+' "$readme")
+direct_solo_install_block=$(awk '
+  { sub(/\r$/, "") }
+  /^If selecting direct settlement, install the reviewed$/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
+quickstart_placeholder_block=$(awk '
+  { sub(/\r$/, "") }
+  /^fail-closed check\. Continue only when it prints `READY`/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
+database_new_install_section=$(awk '
+  { sub(/\r$/, "") }
+  /^## New installation$/ { capture = 1 }
+  capture { print }
+  capture && /^## Back up and restore$/ { exit }
+' "$database_document")
+database_source_import_block=$(awk '
+  { sub(/\r$/, "") }
+  /^For a source-only installation from the repository checkout,/ { section = 1; next }
+  section && /^```console$/ { capture = 1; next }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$database_document")
+database_upgrade_section=$(awk '
+  { sub(/\r$/, "") }
+  /^## Upgrade an existing database$/ { capture = 1 }
+  capture { print }
+  capture && /^## / && !/^## Upgrade an existing database$/ { exit }
+' "$database_document")
+source_build_section=$(awk '
+  { sub(/\r$/, "") }
+  /^For a fresh source-only installation,/ { capture = 1 }
+  capture && /^## API and web front ends$/ { exit }
+  capture { print }
+' "$readme")
+source_placeholder_block=$(awk '
+  { sub(/\r$/, "") }
+  /^source_placeholder_status=0$/ { capture = 1 }
+  capture && /^```$/ { exit }
+  capture { print }
+' "$readme")
 upgrade_block=$(awk '
   { sub(/\r$/, "") }
   /^## Upgrade or roll back$/ { section = 1; next }
@@ -122,12 +177,12 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.2.1 release example' \
-  'export MININGCORE_VERSION=v0.2.1' "$document"
-assert_file_contains 'the v0.2.1 container example' \
-  'MININGCORE_VERSION=v0.2.1' "$readme"
-assert_file_contains 'the v0.2.1 database migration example' \
-  'export MININGCORE_VERSION=v0.2.1' "$database_document"
+assert_file_contains 'the v0.3.0-rc.1 release example' \
+  'export MININGCORE_VERSION=v0.3.0-rc.1' "$document"
+assert_file_contains 'the v0.3.0-rc.1 container example' \
+  'MININGCORE_VERSION=v0.3.0-rc.1' "$readme"
+assert_file_contains 'the v0.3.0-rc.1 database migration example' \
+  'export MININGCORE_VERSION=v0.3.0-rc.1' "$database_document"
 assert_file_contains 'the v0.2.1 hotfix task route' \
   '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
 assert_file_contains 'the v0.2.1 troubleshooting route' \
@@ -182,18 +237,84 @@ assert_file_contains 'the neutral AutoMapper dual-licensing boundary' \
   'dual-licensed under RPL-1.5 or Lucky Penny commercial terms' "$licence_document"
 assert_file_contains 'the quick-start private-service boundary' \
   'Keep PostgreSQL, daemon/wallet RPC, the administrative API and metrics private' "$readme"
+if [[ $(grep -Fc '/CHANGE_ME|REPLACE_WITH_/' "$readme") -ne 2 ]]; then
+  echo 'The quick-start and source-build gates do not share the complete placeholder vocabulary' >&2
+  exit 1
+fi
 assert_file_contains 'the quick-start placeholder gate' \
-  "sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json" "$readme"
+  'quickstart_placeholder_status=0' "$readme"
+assert_file_contains 'the quick-start privileged-read preflight' \
+  'if sudo -v &&' "$readme"
+assert_file_contains 'the guarded-block sudo-validation requirement' \
+  'require an account for which `sudo -v` succeeds' "$readme"
+assert_file_contains 'the quick-start placeholder inspection failure boundary' \
+  'STOP: could not inspect /etc/miningcore/config.json' "$readme"
+assert_file_contains 'the manual source-build editor boundary' \
+  '${EDITOR:-vi} build/config.json' "$readme"
+assert_file_contains 'the manual source-build placeholder gate' \
+  'source_placeholder_status=0' "$readme"
+assert_file_contains 'the manual source-build inspection failure boundary' \
+  'STOP: could not inspect build/config.json' "$readme"
+assert_file_contains 'the manual source-build launch boundary' \
+  'Only after the check prints `READY`, start the published binary' "$readme"
+assert_file_contains 'the manual source-build systemd layout boundary' \
+  'it does not run the development `build/` layout unchanged' "$readme"
+assert_file_contains 'the quick-start direct-SOLO opt-in boundary' \
+  '#### Optional: enable Bitcoin direct-coinbase SOLO' "$readme"
+assert_file_contains 'the quick-start direct-SOLO binary-version boundary' \
+  'branch, that means `v0.3.0-rc.1`' "$readme"
+assert_file_contains 'the stable-release direct-SOLO skip boundary' \
+  'If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection' \
+  "$readme"
+assert_file_contains 'the quick-start direct-SOLO conditional fresh-schema boundary' \
+  'Only a fresh database created from `v0.3.0-rc.1` has the required schema' \
+  "$readme"
+assert_file_contains 'the quick-start direct-SOLO existing-database migration route' \
+  '[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration)' \
+  "$readme"
+assert_file_contains 'the quick-start direct-SOLO protected example installation' \
+  'direct_solo_source=/opt/miningcore/examples/bitcoin_direct_solo_pool.json' \
+  "$readme"
+assert_file_contains 'the quick-start direct-SOLO backup boundary' \
+  '/etc/miningcore/config.json.before-direct-solo.XXXXXXXX' "$readme"
+assert_file_contains 'the quick-start direct-SOLO nonzero failure boundary' \
+  'STOP: direct-SOLO example installation failed' "$readme"
+assert_file_contains 'the mandatory quick-start edit heading' \
+  '#### Edit and validate the configuration' "$readme"
+assert_file_contains 'the restored configuration-schema route' \
+  '[configuration schema](src/Miningcore/config.schema.json)' "$readme"
+assert_file_contains 'the restored source-run health probe' \
+  'curl --fail --max-time 5 http://127.0.0.1:4000/api/health-check' "$readme"
+assert_file_contains 'the README source-checkout database route' \
+  'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' "$readme"
+assert_file_contains 'the DigiByte Odocrypt feature highlight' \
+  'Activation- and schedule-aware DigiByte Odocrypt mining' "$readme"
+assert_file_contains 'the direct-SOLO migration task-table route' \
+  '| Migrate a v0.2.1-or-earlier/pre-PR #135 database before enabling direct Bitcoin SOLO |' "$readme"
+assert_file_contains 'the v0.3.0-rc.1 highlight route' \
+  '| Evaluate v0.3.0-rc.1 from v0.2.1 | [v0.3.0-rc.1 highlights](#v030-rc1-highlights) |' \
+  "$document"
+assert_prose_contains 'the v0.3.0-rc.1 candidate warning' \
+  'Treat this candidate as staging software'
+assert_prose_contains 'the v0.3.0-rc.1 unchanged-pool migration boundary' \
+  'No new v0.3.0 database migration is required solely to keep their existing payout behavior.'
+assert_file_contains 'the v0.3.0 feature-detail heading' \
+  '### Feature detail' "$document"
+assert_prose_contains 'the release-locked stable-baseline checklist' \
+  "replace the README's named stable-version substitution boundary"
+assert_file_contains 'the v0.3.0-rc.1 optional direct-SOLO migration' \
+  '`add_bitcoin_direct_solo.sql` from that immutable candidate directory before setting' \
+  "$document"
 assert_file_contains 'the concise source-build progress contract' \
   "Interactive builds retain .NET's concise progress and elapsed-time display" "$readme"
 assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.2.1 recovery example' \
-  'export TAG=v0.2.1'
-assert_contains 'the v0.2.1 tagging example' \
-  'NEXT_VERSION=v0.2.1'
+assert_contains 'the v0.3.0-rc.1 recovery example' \
+  'export TAG=v0.3.0-rc.1'
+assert_contains 'the v0.3.0-rc.1 tagging example' \
+  'NEXT_VERSION=v0.3.0-rc.1'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
@@ -283,9 +404,25 @@ for migration in add_auxpow_block_idempotency.sql \
 done
 assert_file_contains 'the database-runbook source-checkout alternative' \
   '`src/Miningcore/Persistence/Postgres/Scripts/` directory' "$database_document"
-if grep -Eq '[[:space:]]-f[[:space:]]+src/Miningcore/Persistence/Postgres/Scripts/' \
-    "$database_document" "$pps_document" "$merged_mining_document"; then
+if ! grep -Fq -- '< src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+    <<<"$database_new_install_section"; then
+  echo 'The new-installation runbook is missing the executable source-checkout schema import' >&2
+  exit 1
+fi
+if ! grep -Fq -- '--single-transaction -f -' <<<"$database_new_install_section"; then
+  echo 'The source-checkout import does not select stdin as psql file input' >&2
+  exit 1
+fi
+if grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/' \
+    <<<"$database_upgrade_section" ||
+    grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/' \
+      "$pps_document" "$merged_mining_document"; then
   echo 'An existing-database guide has a repository-only executable migration path' >&2
+  exit 1
+fi
+if grep -Fq -- '-f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' \
+    <<<"$database_new_install_section"; then
+  echo 'The source-checkout schema is incorrectly opened by the postgres account' >&2
   exit 1
 fi
 if grep -REq --include='*.md' \
@@ -570,17 +707,17 @@ if grep -Eh \
     '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
     "$readme" "$document" "$database_document" |
     grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.2\.1([[:space:]]|$)'; then
+      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0-rc\.1([[:space:]]|$)'; then
   echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
   exit 1
 fi
 
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.2\.1([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.2\.1([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.2\.1([[:space:]]|$)' "$database_document") -ne 1 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.2\.1([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.2\.1([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.2.1 copy-paste assignment inventory is incomplete or duplicated' >&2
+if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$readme") -ne 3 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$document") -ne 2 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$database_document") -ne 1 ]] ||
+    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]] ||
+    [[ $(grep -Ec '^export TAG=v0\.3\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]]; then
+  echo 'The v0.3.0-rc.1 copy-paste assignment inventory is incomplete or duplicated' >&2
   exit 1
 fi
 
@@ -605,6 +742,10 @@ bash -n <<<"$readme_install_block"
 bash -n <<<"$readme_database_block"
 bash -n <<<"$release_database_block"
 bash -n <<<"$partition_block"
+bash -n <<<"$direct_solo_install_block"
+bash -n <<<"$quickstart_placeholder_block"
+bash -n <<<"$source_placeholder_block"
+bash -n <<<"$database_source_import_block"
 bash -n <<<"$upgrade_block"
 
 if [[ "$readme_database_block" != "$release_database_block" ]]; then
@@ -767,6 +908,140 @@ find_unique_line() {
   printf '%s\n' "${matches[0]}"
 }
 
+release_rc_heading_line=$(
+  find_unique_line release-rc-heading '## v0.3.0-rc.1 highlights' "$release_document"
+)
+release_upgrade_heading_line=$(
+  find_unique_line release-upgrade-heading '### Upgrade boundary from v0.2.1' "$release_document"
+)
+release_feature_heading_line=$(
+  find_unique_line release-feature-heading '### Feature detail' "$release_document"
+)
+release_previous_heading_line=$(
+  find_unique_line release-previous-heading '## v0.2.1 hotfix' "$release_document"
+)
+release_tag_checklist_line=$(
+  find_unique_line release-tag-checklist 'Before tagging a new release,' "$release_document"
+)
+release_tag_preference_line=$(
+  find_unique_line release-tag-preference 'failures before publication. Prefer a signed annotated tag:' \
+    "$release_document"
+)
+release_tag_command_line=$(
+  find_unique_line release-tag-command 'git switch dev' "$release_document"
+)
+
+if [[ "$release_upgrade_heading_line" -le "$release_rc_heading_line" ||
+    "$release_feature_heading_line" -le "$release_upgrade_heading_line" ||
+    "$release_previous_heading_line" -le "$release_feature_heading_line" ]]; then
+  echo 'The v0.3.0 upgrade boundary and feature detail are not correctly nested before v0.2.1' >&2
+  exit 1
+fi
+
+if [[ "$release_tag_preference_line" -le "$release_tag_checklist_line" ||
+    "$release_tag_command_line" -le "$release_tag_preference_line" ]]; then
+  echo 'The maintainer checklist interrupts the signed-tag command introduction' >&2
+  exit 1
+fi
+
+source_editor_line=$(
+  find_unique_line source-editor '${EDITOR:-vi} build/config.json' "$source_build_section"
+)
+source_check_line=$(
+  find_unique_line source-placeholder-check \
+    'source_placeholder_status=0' "$source_build_section"
+)
+source_launch_line=$(
+  find_unique_line source-launch './Miningcore -c config.json' "$source_build_section"
+)
+
+if [[ "$source_check_line" -le "$source_editor_line" ||
+    "$source_launch_line" -le "$source_check_line" ]]; then
+  echo 'The source-build edit, fail-closed placeholder check and launch are not safely ordered' >&2
+  exit 1
+fi
+
+quickstart_example_line=$(
+  find_unique_line quickstart-example-selection \
+    'direct_solo_source=/opt/miningcore/examples/bitcoin_direct_solo_pool.json' \
+    "$quickstart_configuration_section"
+)
+quickstart_sudo_requirement_line=$(
+  find_unique_line quickstart-sudo-requirement \
+    'The guarded command blocks in this section require an account' \
+    "$quickstart_configuration_section"
+)
+quickstart_direct_intro_line=$(
+  find_unique_line quickstart-direct-intro \
+    'If selecting direct settlement, install the reviewed' \
+    "$quickstart_configuration_section"
+)
+quickstart_editor_line=$(
+  find_unique_line quickstart-editor \
+    'sudoedit /etc/miningcore/config.json' "$quickstart_configuration_section"
+)
+quickstart_edit_heading_line=$(
+  find_unique_line quickstart-edit-heading \
+    '#### Edit and validate the configuration' "$quickstart_configuration_section"
+)
+quickstart_check_line=$(
+  find_unique_line quickstart-placeholder-check \
+    'quickstart_placeholder_status=0' \
+    "$quickstart_configuration_section"
+)
+quickstart_continue_line=$(
+  find_unique_line quickstart-continue \
+    '### 6. Install, secure and synchronize the coin daemons' \
+    "$quickstart_configuration_section"
+)
+
+if [[ "$quickstart_direct_intro_line" -le "$quickstart_sudo_requirement_line" ||
+    "$quickstart_example_line" -le "$quickstart_direct_intro_line" ||
+    "$quickstart_edit_heading_line" -le "$quickstart_example_line" ||
+    "$quickstart_editor_line" -le "$quickstart_edit_heading_line" ||
+    "$quickstart_check_line" -le "$quickstart_editor_line" ||
+    "$quickstart_continue_line" -le "$quickstart_check_line" ]]; then
+  echo 'Quick-start example selection, editing, final validation and continuation are not safely ordered' >&2
+  exit 1
+fi
+
+direct_source_guard_line=$(
+  find_unique_line direct-source-guard 'sudo test -f "$direct_solo_source"' \
+    "$direct_solo_install_block"
+)
+direct_backup_line=$(
+  find_unique_line direct-backup 'sudo cp --preserve=mode,ownership,timestamps' \
+    "$direct_solo_install_block"
+)
+direct_install_line=$(
+  find_unique_line direct-install 'sudo install -m 0640 -o root -g miningcore' \
+    "$direct_solo_install_block"
+)
+direct_ready_line=$(
+  find_unique_line direct-ready 'READY: installed the direct-SOLO example' \
+    "$direct_solo_install_block"
+)
+direct_stop_line=$(
+  find_unique_line direct-stop 'STOP: direct-SOLO example installation failed' \
+    "$direct_solo_install_block"
+)
+mapfile -t direct_failure_matches < <(
+  grep -nE '^[[:space:]]*false[[:space:]]*$' <<<"$direct_solo_install_block" | cut -d: -f1
+)
+if [[ ${#direct_failure_matches[@]} -ne 1 ]]; then
+  echo "Direct-SOLO failure command occurred ${#direct_failure_matches[@]} times; expected 1" >&2
+  exit 1
+fi
+direct_failure_line=${direct_failure_matches[0]}
+
+if [[ "$direct_backup_line" -le "$direct_source_guard_line" ||
+    "$direct_install_line" -le "$direct_backup_line" ||
+    "$direct_ready_line" -le "$direct_install_line" ||
+    "$direct_failure_line" -le "$direct_stop_line" ]]; then
+  echo 'Direct-SOLO validation, backup, install, readiness and failure are not safely ordered' >&2
+  exit 1
+fi
+
 # Keep these as bare assignments: set -e makes an ambiguous or missing anchor fail the test.
 directory_guard_line=$(find_unique_line directory-guard 'test -d "$release_dir"' "$install_block")
 symlink_line=$(
@@ -868,6 +1143,294 @@ fi
 fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-install-docs.XXXXXXXX")
 mkdir -p "$fixture_dir/bin" "$fixture_dir/download" "$fixture_dir/home"
 trace="$fixture_dir/trace"
+
+mkdir -p "$fixture_dir/source-db-bin"
+cat > "$fixture_dir/source-db-bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+original_args=$*
+stdin_file_count=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -f)
+      if [[ $# -lt 2 || "$2" != - ]]; then
+        echo "Source import used an unsafe psql file argument: $original_args" >&2
+        exit 64
+      fi
+      ((stdin_file_count += 1))
+      shift 2
+      ;;
+    *createdb.sql*)
+      echo "Source schema path leaked into the postgres command: $original_args" >&2
+      exit 64
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ $stdin_file_count -ne 1 ]]; then
+  echo "Source import did not use exactly one -f - pair: $original_args" >&2
+  exit 64
+fi
+printf '%s\n' "$original_args" > "${DOC_TEST_SOURCE_DB_ARGS:?}"
+cat > "${DOC_TEST_SOURCE_DB_STDIN:?}"
+EOF
+chmod +x "$fixture_dir/source-db-bin/sudo"
+
+source_db_args="$fixture_dir/source-db-args"
+source_db_stdin="$fixture_dir/source-db-stdin"
+if ! (
+  cd "$repository_root" &&
+  env PATH="$fixture_dir/source-db-bin:$PATH" \
+    DOC_TEST_SOURCE_DB_ARGS="$source_db_args" DOC_TEST_SOURCE_DB_STDIN="$source_db_stdin" \
+    bash -c "$database_source_import_block"
+); then
+  echo 'The documented source-checkout database import did not execute through stdin' >&2
+  exit 1
+fi
+if ! grep -Fq -- '-u postgres psql -v ON_ERROR_STOP=1 -d miningcore --single-transaction -f -' \
+    "$source_db_args" ||
+    ! cmp -s -- "$repository_root/src/Miningcore/Persistence/Postgres/Scripts/createdb.sql" \
+      "$source_db_stdin"; then
+  echo 'The source-checkout database import did not pass the reviewed schema to postgres on stdin' >&2
+  exit 1
+fi
+
+source_placeholder_root="$fixture_dir/source-placeholder"
+mkdir -p "$source_placeholder_root/build"
+
+awk '
+  /^[[:space:]]*\/\// { print; next }
+  { gsub(/(CHANGE_ME|REPLACE_WITH_)[A-Z0-9_]*/, "configured"); print }
+' "$config_example" > "$source_placeholder_root/build/config.json"
+printf '%s\n' '// REPLACE_WITH_COMMENT_ONLY_DOES_NOT_BLOCK' \
+  >> "$source_placeholder_root/build/config.json"
+if ! real_config_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check rejected the edited real config.example.json' >&2
+  exit 1
+fi
+if ! grep -Fq 'READY: no active placeholders remain' <<<"$real_config_output" ||
+    grep -Fq 'STOP:' <<<"$real_config_output"; then
+  echo 'The edited real config.example.json did not reach the documented READY state' >&2
+  exit 1
+fi
+
+printf '%s\n' '{ "configured": true }' > "$source_placeholder_root/build/config.json"
+if ! clean_placeholder_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check rejected a readable configuration without placeholders' >&2
+  exit 1
+fi
+if ! grep -Fq 'READY: no active placeholders remain' <<<"$clean_placeholder_output" ||
+    grep -Fq 'STOP:' <<<"$clean_placeholder_output"; then
+  echo 'The source placeholder check did not report its clean success state exactly' >&2
+  exit 1
+fi
+
+printf '%s\n' '{ "password": "CHANGE_ME" }' > "$source_placeholder_root/build/config.json"
+if matched_placeholder_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check accepted an unresolved placeholder' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: replace every active placeholder' <<<"$matched_placeholder_output" ||
+    grep -Fq 'READY:' <<<"$matched_placeholder_output"; then
+  echo 'The source placeholder check did not fail closed on a placeholder match' >&2
+  exit 1
+fi
+
+rm -f -- "$source_placeholder_root/build/config.json"
+if failed_placeholder_output=$(
+  cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+); then
+  echo 'The source placeholder check accepted a failed configuration inspection' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: could not inspect build/config.json' <<<"$failed_placeholder_output" ||
+    grep -Fq 'READY:' <<<"$failed_placeholder_output"; then
+  echo 'The source placeholder check did not distinguish inspection failure from no matches' >&2
+  exit 1
+fi
+
+mapfile -t optional_placeholder_lines < <(
+  awk '
+    /^[[:space:]]*\/\// && /(CHANGE_ME|REPLACE_WITH_)/ {
+      sub(/^[[:space:]]*\/\/[[:space:]]?/, "")
+      print
+    }
+  ' "$config_example"
+)
+if [[ ${#optional_placeholder_lines[@]} -lt 1 ]]; then
+  echo 'The maintained config has no commented optional secret for active-gate regression coverage' >&2
+  exit 1
+fi
+
+for index in "${!optional_placeholder_lines[@]}"; do
+  printf '%s\n' "${optional_placeholder_lines[$index]}" \
+    > "$source_placeholder_root/build/config.json"
+  if optional_source_output=$(
+    cd "$source_placeholder_root" && bash -c "$source_placeholder_block" 2>&1
+  ); then
+    echo "The source gate accepted uncommented optional placeholder $index" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'STOP: replace every active placeholder' <<<"$optional_source_output" ||
+      grep -Fq 'READY:' <<<"$optional_source_output"; then
+    echo "The source gate did not reject optional placeholder $index exactly" >&2
+    exit 1
+  fi
+done
+
+quick_config="$fixture_dir/quick-config.json"
+awk '
+  /^[[:space:]]*\/\// { print; next }
+  { gsub(/(CHANGE_ME|REPLACE_WITH_)[A-Z0-9_]*/, "configured"); print }
+' "$config_example" > "$quick_config"
+printf '%s\n' '// REPLACE_WITH_COMMENT_ONLY_DOES_NOT_BLOCK' >> "$quick_config"
+
+mkdir -p "$fixture_dir/direct-bin"
+cat > "$fixture_dir/direct-bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -v)
+    exit 0
+    ;;
+  test)
+    if [[ "${2:-}" == -f && "${3:-}" == /opt/miningcore/examples/bitcoin_direct_solo_pool.json ]]; then
+      exit "${DOC_TEST_DIRECT_SOURCE_STATUS:-0}"
+    fi
+    exit 0
+    ;;
+  mktemp)
+    printf '%s\n' '/etc/miningcore/config.json.before-direct-solo.TESTBACKUP'
+    exit 0
+    ;;
+  cp|install)
+    exit 0
+    ;;
+esac
+echo "Unexpected direct-SOLO sudo invocation: $*" >&2
+exit 64
+EOF
+chmod +x "$fixture_dir/direct-bin/sudo"
+
+if ! direct_success_output=$(
+  env PATH="$fixture_dir/direct-bin:$PATH" bash -c "$direct_solo_install_block" 2>&1
+); then
+  echo 'The direct-SOLO install block rejected its simulated protected success path' >&2
+  exit 1
+fi
+if ! grep -Fq 'READY: installed the direct-SOLO example' <<<"$direct_success_output" ||
+    grep -Fq 'STOP:' <<<"$direct_success_output"; then
+  echo 'The direct-SOLO install block did not report its success state exactly' >&2
+  exit 1
+fi
+
+if direct_failure_output=$(
+  env PATH="$fixture_dir/direct-bin:$PATH" DOC_TEST_DIRECT_SOURCE_STATUS=1 \
+    bash -c "$direct_solo_install_block" 2>&1
+); then
+  echo 'The direct-SOLO install block returned success after a source validation failure' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: direct-SOLO example installation failed' <<<"$direct_failure_output" ||
+    grep -Fq 'READY:' <<<"$direct_failure_output"; then
+  echo 'The direct-SOLO install block did not fail closed exactly' >&2
+  exit 1
+fi
+
+cat > "$fixture_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -v)
+    exit "${DOC_TEST_SUDO_VALIDATE_STATUS:-0}"
+    ;;
+  test)
+    exit "${DOC_TEST_SUDO_TEST_STATUS:-0}"
+    ;;
+  awk)
+    shift
+    program=${1:?}
+    exec /usr/bin/awk "$program" "${DOC_TEST_QUICK_CONFIG:?}"
+    ;;
+esac
+echo "Unexpected quick-start sudo invocation: $*" >&2
+exit 64
+EOF
+chmod +x "$fixture_dir/bin/sudo"
+
+if ! quick_clean_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \
+    bash -c "$quickstart_placeholder_block" 2>&1
+); then
+  echo 'The quick-start gate rejected the edited real config.example.json' >&2
+  exit 1
+fi
+if ! grep -Fq 'READY: no active placeholders remain' <<<"$quick_clean_output" ||
+    grep -Fq 'STOP:' <<<"$quick_clean_output"; then
+  echo 'The quick-start gate did not report its real-config success state exactly' >&2
+  exit 1
+fi
+
+printf '%s\n' '{ "password": "CHANGE_ME_ACTIVE" }' > "$quick_config"
+if quick_match_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \
+    bash -c "$quickstart_placeholder_block" 2>&1
+); then
+  echo 'The quick-start gate accepted an unresolved active placeholder' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: replace every active placeholder' <<<"$quick_match_output" ||
+    grep -Fq 'READY:' <<<"$quick_match_output"; then
+  echo 'The quick-start gate did not fail closed on an active placeholder' >&2
+  exit 1
+fi
+
+for index in "${!optional_placeholder_lines[@]}"; do
+  printf '%s\n' "${optional_placeholder_lines[$index]}" > "$quick_config"
+  if optional_quick_output=$(
+    env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \
+      bash -c "$quickstart_placeholder_block" 2>&1
+  ); then
+    echo "The quick-start gate accepted uncommented optional placeholder $index" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'STOP: replace every active placeholder' <<<"$optional_quick_output" ||
+      grep -Fq 'READY:' <<<"$optional_quick_output"; then
+    echo "The quick-start gate did not reject optional placeholder $index exactly" >&2
+    exit 1
+  fi
+done
+
+if quick_sudo_failure_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \
+    DOC_TEST_SUDO_VALIDATE_STATUS=1 bash -c "$quickstart_placeholder_block" 2>&1
+); then
+  echo 'The quick-start gate accepted failed sudo authorization' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: could not inspect /etc/miningcore/config.json' \
+    <<<"$quick_sudo_failure_output" || grep -Fq 'READY:' <<<"$quick_sudo_failure_output"; then
+  echo 'The quick-start gate confused sudo failure with a clean configuration' >&2
+  exit 1
+fi
+
+if quick_read_failure_output=$(
+  env PATH="$fixture_dir/bin:$PATH" DOC_TEST_QUICK_CONFIG="$quick_config" \
+    DOC_TEST_SUDO_TEST_STATUS=1 bash -c "$quickstart_placeholder_block" 2>&1
+); then
+  echo 'The quick-start gate accepted an unreadable or unsafe configuration object' >&2
+  exit 1
+fi
+if ! grep -Fq 'STOP: could not inspect /etc/miningcore/config.json' \
+    <<<"$quick_read_failure_output" || grep -Fq 'READY:' <<<"$quick_read_failure_output"; then
+  echo 'The quick-start gate confused failed file preflight with a clean configuration' >&2
+  exit 1
+fi
 
 cat > "$fixture_dir/bin/id" <<'EOF'
 #!/usr/bin/env bash
@@ -1052,6 +1615,8 @@ fi
 # only the filesystem root changes here so an unprivileged test can create the
 # candidate binary and migration inventory.
 candidate_dir="$fixture_dir/candidate-release"
+# This is a multiline documented command block, not a simple variable substitution.
+# shellcheck disable=SC2001
 upgrade_fixture_block=$(
   sed 's#^  release_dir=.*#  release_dir="${DOC_TEST_RELEASE_DIR}"#' \
     <<<"$upgrade_block"

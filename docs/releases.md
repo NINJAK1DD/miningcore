@@ -34,9 +34,11 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
+| Evaluate v0.3.0-rc.1 from v0.2.1 | [v0.3.0-rc.1 highlights](#v030-rc1-highlights) |
 | Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
 | v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
+| Enable Bitcoin direct-coinbase SOLO on an existing database | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
@@ -44,7 +46,34 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Post-v0.2.1 development
+## v0.3.0-rc.1 highlights
+
+`v0.3.0-rc.1` is the first release candidate for the next minor release. It adds current DigiByte
+Odocrypt mining and opt-in Bitcoin direct-coinbase SOLO settlement. Existing Bitcoin SOLO pools
+remain custodial unless `soloCoinbasePayout` is explicitly set to `true`; existing DigiByte
+operators must review the intentionally breaking template replacement below. Treat this candidate
+as staging software, complete the feature-specific commissioning checks, and preserve a tested
+database/configuration backup before evaluating it with real daemons or miners.
+
+### Upgrade boundary from v0.2.1
+
+- **Existing pools that leave direct coinbase settlement disabled:** follow the canonical release
+  upgrade procedure. No new v0.3.0 database migration is required solely to keep their existing
+  payout behavior.
+- **Existing Bitcoin databases enabling direct coinbase settlement:** after staging the verified
+  candidate and stopping every writer, apply
+  `add_bitcoin_direct_solo.sql` from that immutable candidate directory before setting
+  `soloCoinbasePayout: true`. Follow the
+  [direct-SOLO database migration](bitcoin-direct-solo.md#database-migration).
+- **Existing DigiByte configurations:** `digibyte-groestl` is intentionally removed. Select
+  `digibyte-odocrypt` only after completing the current-daemon and miner commissioning checks in
+  the [DigiByte guide](digibyte.md); the other supported DigiByte algorithms are unchanged.
+
+Once direct work has been accepted, its database and journal evidence creates the forward-only
+application boundary described below. Do not test rollback with production direct-settlement
+evidence.
+
+### Feature detail
 
 **Opt-in Bitcoin direct-coinbase SOLO:** canonical BTC SOLO pools can set
 `soloCoinbasePayout: true` so the block coinbase pays the authorized miner address and each positive
@@ -74,9 +103,8 @@ and the pending classifier returns it only for replayable states; immature obser
 metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,
 and reject larger page sizes instead of allowing an unbounded query. Bounded post-maturity block-RPC
 reconciliation tracks terminal rows for two difficulty periods without creating a Miningcore
-balance or second payment. Existing custodial SOLO remains the default. Existing databases must apply
-`add_bitcoin_direct_solo.sql` from the verified candidate directory before enabling the option. See
-the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
+balance or second payment. Existing custodial SOLO remains the default. See the
+[Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
 
 Fresh `createdb.sql` installations and upgraded databases share the same five-state direct-outbox
 constraint. A source-contract regression and live PostgreSQL preflight prevent the fresh schema and
@@ -91,12 +119,11 @@ database-write failure. The dedicated `bitcoin-coinbase-direct` recovery identit
 statement-scoped database guard fail closed against an older importer/updater, but they are not a
 substitute for the documented recovery procedure.
 
-**Breaking DigiByte template rename:** `digibyte-groestl` is removed rather than redirected to a
-different proof of work. Operators must stop that pool and explicitly select a supported current
-algorithm; current-mainnet support adds `digibyte-odocrypt` in its place.
-
-DigiByte current-mainnet support replaces the retired Myriad-Groestl catalogue entry with
-activation- and schedule-aware Odocrypt. The Odocrypt cipher is pinned to DigiByte Core v9.26.5;
+**Breaking DigiByte template rename:** current-mainnet support removes `digibyte-groestl` rather
+than redirecting it to a different proof of work and replaces that retired Myriad-Groestl catalogue
+entry with activation- and schedule-aware `digibyte-odocrypt`. Operators must stop the old pool and
+explicitly select and commission a supported current algorithm. The Odocrypt cipher is pinned to
+DigiByte Core v9.26.5;
 network-specific activation and schedule metadata is validated before startup, template `odokey`
 is checked against template time, submitted shares derive their key from submitted header time,
 and native known-answer, symbol, relocation and source-built Windows checks protect the packaged
@@ -277,8 +304,8 @@ before upgrading from an older release candidate.
 
 ## Choose a version
 
-Versions containing a suffix such as `v0.2.0-rc.1` are release candidates. Test them before relying
-on them for real funds. A version without a suffix, such as `v0.2.0`, is a stable release and updates
+Versions containing a suffix such as `v0.3.0-rc.1` are release candidates. Test them before relying
+on them for real funds. A version without a suffix, such as `v0.3.0`, is a stable release and updates
 the `latest` container tag.
 
 Open the [releases page](https://github.com/NINJAK1DD/miningcore/releases), choose a version, and
@@ -288,10 +315,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.2.1`. Substitute the version you selected.
+The examples below use `v0.3.0-rc.1`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.2.1
+export MININGCORE_VERSION=v0.3.0-rc.1
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -657,7 +684,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.2.1  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.3.0-rc.1  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1471,9 +1498,11 @@ deliberate fail-closed compatibility change; explicit redefinitions across separ
 remain supported.
 
 The stale HelpTheHomeless X16R definition has been removed because the maintained chain uses X25X,
-which is not included in the packaged native runtimes. DigiByte Odocrypt is likewise not advertised:
-Miningcore's historical Odocrypt implementation was removed as non-working. MeowCoin's existing
-MeowPow definition remains valid; its newer Scrypt mode is AuxPoW-only and requires generalized
+which is not included in the packaged native runtimes. Miningcore's historical non-working
+DigiByte Odocrypt implementation was also removed at that boundary; `v0.3.0-rc.1` restores a
+source-verified current-mainnet implementation under the new `digibyte-odocrypt` template described
+in its highlights above. MeowCoin's existing MeowPow definition remains valid; its newer Scrypt
+mode is AuxPoW-only and requires generalized
 merged-mining support before it can be offered as a Miningcore template.
 
 ## Maintainer release procedure
@@ -1483,8 +1512,8 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.2.0-rc.1` or
-`v0.2.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.3.0-rc.1` or
+`v0.3.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
@@ -1557,6 +1586,11 @@ transient resolution failures use status 69.
 > does not report a status on unrelated pull requests. Do not configure it as a required status
 > check; require the always-running build and release checks instead.
 
+Before tagging a new release, update every release-locked quick-start sentence as well as the
+`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. In particular, replace the README's
+named stable-version substitution boundary and its release-documentation assertion when the stable
+baseline changes.
+
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
@@ -1571,7 +1605,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.2.1  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.3.0-rc.1  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1634,7 +1668,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.2.1
+export TAG=v0.3.0-rc.1
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

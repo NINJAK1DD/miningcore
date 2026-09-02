@@ -18,6 +18,7 @@ wallet balances or recovery files.
 | Operate and monitor a production service | [Operator handbook](operations.md) |
 | Diagnose startup, mining, payout or storage problems | [Troubleshooting](troubleshooting.md) |
 | Set up, back up, migrate or recover PostgreSQL | [Database and recovery](database.md) |
+| Migrate a v0.2.1-or-earlier/pre-PR #135 database for Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration](dotnet-6-to-10-migration.md) |
 
 ## Features and interfaces

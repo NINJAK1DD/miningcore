@@ -1245,6 +1245,11 @@ if ! grep -Fq 'shellcheck -x' "$dotnet_workflow"; then
   exit 1
 fi
 
+if [[ $(grep -Fc 'scripts/release/test-release-install-docs.sh' "$dotnet_workflow") -lt 2 ]]; then
+  echo 'The release-installation documentation test is not executed and strictly ShellChecked in .NET CI' >&2
+  exit 1
+fi
+
 # Documentation paragraphs are hard-wrapped for readability. Normalize CR/LF and repeated spaces
 # so security-contract assertions remain specific without becoming coupled to harmless reflowing.
 release_docs_flat=$(tr '\r\n' '  ' <"$release_docs" | tr -s ' ')
