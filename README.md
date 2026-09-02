@@ -203,36 +203,7 @@ the new-database schema over live data.
 
 The installed `config.example.json` is the fully annotated reference. Smaller reviewed pool,
 multi-coin, merged-mining and relay files are under `/opt/miningcore/examples/`; copy one over the
-starter only when it matches the intended topology. Then edit the protected file:
-
-```console
-sudoedit /etc/miningcore/config.json
-```
-
-Before continuing:
-
-- replace every `CHANGE_ME` wallet, RPC, PostgreSQL, SMTP, TLS and licence value;
-- use the PostgreSQL password created above and keep daemon/wallet RPC listeners private;
-- remove unused pools or leave them explicitly disabled;
-- preserve a non-null `paymentProcessing` object on every pool;
-- use unique pool IDs and Stratum ports, and create one payout wallet per enabled coin;
-- set `logging.logBaseDirectory` to `/var/log/miningcore`;
-- set `shareRecoveryFile` to `/var/lib/miningcore/recovered-shares.txt` and
-  `shareRecoveryStateDirectory` to `/var/lib/miningcore`; and
-- keep direct examples `SOLO` unless the [PPS operator checklist](docs/pps.md) is complete.
-
-Run this fail-closed check. Continue only when it prints `READY`; a placeholder match or an
-inspection error returns a nonzero status:
-
-```console
-quickstart_placeholder_status=0
-sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json || quickstart_placeholder_status=$?
-case "$quickstart_placeholder_status" in
-  0) echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2; false ;;
-  1) echo 'READY: no CHANGE_ME placeholders remain' ;;
-  *) echo 'STOP: could not inspect /etc/miningcore/config.json' >&2; false ;;
-esac
-```
+starter only when it matches the intended topology.
 
 #### Optional: enable Bitcoin direct-coinbase SOLO
 
@@ -250,14 +221,52 @@ from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-
 [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
 `createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
 
-Start from the reviewed
-[`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract. Keep both
-cluster- and pool-level payment processing enabled, retain `payoutScheme: "SOLO"`, replace the pool
-wallet, daemon credentials and positive recipient address, and explicitly set
-`soloCoinbasePayout: true`. Miners must authorize with a valid network-matching
+If selecting direct settlement, install the reviewed
+[`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract before editing:
+
+```console
+sudo install -m 0640 -o root -g miningcore \
+  /opt/miningcore/examples/bitcoin_direct_solo_pool.json /etc/miningcore/config.json
+```
+
+While editing below, keep both cluster- and pool-level payment processing enabled, retain
+`payoutScheme: "SOLO"`, replace the pool wallet, daemon credentials and positive recipient address,
+and explicitly set `soloCoinbasePayout: true`. Miners must authorize with a valid network-matching
 `BITCOIN_ADDRESS.worker` username. Complete the [direct-SOLO guide](docs/bitcoin-direct-solo.md),
 including its regtest/preflight procedure, before admitting production miners. The option remains
 off by default for every existing pool.
+
+After choosing the configuration, edit the protected file:
+
+```console
+sudoedit /etc/miningcore/config.json
+```
+
+Before continuing:
+
+- replace every `CHANGE_ME` wallet, RPC, PostgreSQL, SMTP, TLS and licence value;
+- use the PostgreSQL password created above and keep daemon/wallet RPC listeners private;
+- remove unused pools or leave them explicitly disabled;
+- preserve a non-null `paymentProcessing` object on every pool;
+- use unique pool IDs and Stratum ports, and create one payout wallet per enabled coin;
+- set `logging.logBaseDirectory` to `/var/log/miningcore`;
+- set `shareRecoveryFile` to `/var/lib/miningcore/recovered-shares.txt` and
+  `shareRecoveryStateDirectory` to `/var/lib/miningcore`; and
+- keep direct examples `SOLO` unless the [PPS operator checklist](docs/pps.md) is complete.
+
+After choosing an example and completing any optional direct-SOLO changes, run this final
+fail-closed check. Continue only when it prints `READY`; a placeholder match or an inspection error
+returns a nonzero status:
+
+```console
+quickstart_placeholder_status=0
+sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json || quickstart_placeholder_status=$?
+case "$quickstart_placeholder_status" in
+  0) echo 'STOP: replace every CHANGE_ME value before starting Miningcore' >&2; false ;;
+  1) echo 'READY: no CHANGE_ME placeholders remain' ;;
+  *) echo 'STOP: could not inspect /etc/miningcore/config.json' >&2; false ;;
+esac
+```
 
 ### 6. Install, secure and synchronize the coin daemons
 

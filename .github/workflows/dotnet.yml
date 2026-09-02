@@ -47,6 +47,10 @@ jobs:
       shell: bash
       run: bash scripts/release/test-release-install-docs.sh
 
+    - name: Lint release installation documentation test
+      shell: bash
+      run: shellcheck -x -S warning scripts/release/test-release-install-docs.sh
+
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py

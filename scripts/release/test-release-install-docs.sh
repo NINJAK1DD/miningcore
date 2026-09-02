@@ -14,6 +14,7 @@ migration_document="$repository_root/docs/dotnet-6-to-10-migration.md"
 source_dockerfile="$repository_root/Dockerfile"
 release_dockerfile="$repository_root/packaging/docker/Dockerfile.release"
 release_workflow="$repository_root/.github/workflows/release.yml"
+dotnet_workflow="$repository_root/.github/workflows/dotnet.yml"
 zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Program.cs"
 capability_dir=
 fixture_dir=
@@ -78,6 +79,12 @@ partition_block=$(awk '
   section && /^```console$/ { capture = 1; next }
   capture && /^```$/ { exit }
   capture { print }
+' "$readme")
+quickstart_configuration_section=$(awk '
+  { sub(/\r$/, "") }
+  /^### 5\. Choose and edit a configuration$/ { capture = 1 }
+  capture { print }
+  capture && /^### 6\. Install, secure and synchronize the coin daemons$/ { exit }
 ' "$readme")
 source_build_section=$(awk '
   { sub(/\r$/, "") }
@@ -221,6 +228,9 @@ assert_file_contains 'the quick-start direct-SOLO conditional fresh-schema bound
   "$readme"
 assert_file_contains 'the quick-start direct-SOLO existing-database migration route' \
   '[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration)' \
+  "$readme"
+assert_file_contains 'the quick-start direct-SOLO protected example installation' \
+  '/opt/miningcore/examples/bitcoin_direct_solo_pool.json /etc/miningcore/config.json' \
   "$readme"
 assert_file_contains 'the direct-SOLO migration task-table route' \
   '| Migrate a v0.2.1-or-earlier/pre-PR #135 database before enabling direct Bitcoin SOLO |' "$readme"
@@ -505,6 +515,10 @@ for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
 done
 assert_file_contains 'the Release pull-request trigger' \
   'pull_request:' "$release_workflow"
+if [[ $(grep -Fc 'scripts/release/test-release-install-docs.sh' "$dotnet_workflow") -lt 2 ]]; then
+  echo 'The release-installation documentation test is not executed and ShellChecked in .NET CI' >&2
+  exit 1
+fi
 assert_file_contains 'the source Dockerfile pull-request build' \
   'file: Dockerfile' "$release_workflow"
 assert_file_contains 'the packaged Dockerfile pull-request build' \
@@ -831,6 +845,33 @@ source_launch_line=$(
 if [[ "$source_check_line" -le "$source_editor_line" ||
     "$source_launch_line" -le "$source_check_line" ]]; then
   echo 'The source-build edit, fail-closed placeholder check and launch are not safely ordered' >&2
+  exit 1
+fi
+
+quickstart_example_line=$(
+  find_unique_line quickstart-example-selection \
+    '/opt/miningcore/examples/bitcoin_direct_solo_pool.json /etc/miningcore/config.json' \
+    "$quickstart_configuration_section"
+)
+quickstart_editor_line=$(
+  find_unique_line quickstart-editor \
+    'sudoedit /etc/miningcore/config.json' "$quickstart_configuration_section"
+)
+quickstart_check_line=$(
+  find_unique_line quickstart-placeholder-check \
+    "sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json" \
+    "$quickstart_configuration_section"
+)
+quickstart_continue_line=$(
+  find_unique_line quickstart-continue \
+    '### 6. Install, secure and synchronize the coin daemons' \
+    "$quickstart_configuration_section"
+)
+
+if [[ "$quickstart_editor_line" -le "$quickstart_example_line" ||
+    "$quickstart_check_line" -le "$quickstart_editor_line" ||
+    "$quickstart_continue_line" -le "$quickstart_check_line" ]]; then
+  echo 'Quick-start example selection, editing, final validation and continuation are not safely ordered' >&2
   exit 1
 fi
 
