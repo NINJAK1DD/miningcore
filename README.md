@@ -25,6 +25,9 @@ the original authors and contributors.
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
 - SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
+- Opt-in Bitcoin direct-coinbase SOLO, paying the authorized miner and positive pool fee/donation
+  recipients in separate outputs of the accepted block instead of creating a custodial Miningcore
+  balance.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
@@ -45,6 +48,13 @@ PostgreSQL, prepares the configuration, and runs Miningcore under systemd. Run e
 the preceding check succeeds. Ubuntu 22.04 uses its separately built compatibility archive and
 different runtime packages; Ubuntu 24.04 is a source-build target. Use the
 [release guide](docs/releases.md) for those paths or for an upgrade/rollback.
+
+> [!CAUTION]
+> This branch currently pins the `v0.3.0-rc.1` release candidate. Test release candidates on
+> regtest or a controlled staging pool before relying on them for real funds. Operators who want
+> the latest stable release should select it from the
+> [releases page](https://github.com/NINJAK1DD/miningcore/releases) and substitute that tag in every
+> command below.
 
 ### 1. Confirm the host and install dependencies
 
@@ -79,7 +89,7 @@ sudo systemctl is-active postgresql
 Select the release and download it into private temporary storage:
 
 ```console
-export MININGCORE_VERSION=v0.2.1
+export MININGCORE_VERSION=v0.3.0-rc.1
 export MININGCORE_UBUNTU=26.04
 MININGCORE_QUICKSTART_READY=
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX")"
@@ -216,6 +226,27 @@ This check must print nothing. Any output names a placeholder that still needs a
 ```console
 sudo grep -n 'CHANGE_ME' /etc/miningcore/config.json || true
 ```
+
+#### Optional: enable Bitcoin direct-coinbase SOLO
+
+Skip this subsection for conventional custodial SOLO, PPS, PROP or PPLNS operation. Direct
+coinbase settlement is an explicit, BTC-only option in which the authorized miner address and each
+positive pool fee/donation recipient are paid by separate outputs in the accepted block.
+
+For this fresh-install quick start, `createdb.sql` already installed the direct-settlement schema.
+For a database created by `v0.2.1` or earlier—or any pre-PR #135 build—keep
+`soloCoinbasePayout` disabled until the verified candidate migration has completed; use the
+[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
+`createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
+
+Start from the reviewed
+[`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract. Keep both
+cluster- and pool-level payment processing enabled, retain `payoutScheme: "SOLO"`, replace the pool
+wallet, daemon credentials and positive recipient address, and explicitly set
+`soloCoinbasePayout: true`. Miners must authorize with a valid network-matching
+`BITCOIN_ADDRESS.worker` username. Complete the [direct-SOLO guide](docs/bitcoin-direct-solo.md),
+including its regtest/preflight procedure, before admitting production miners. The option remains
+off by default for every existing pool.
 
 ### 6. Install, secure and synchronize the coin daemons
 
@@ -374,6 +405,7 @@ and recovery requirements.
 | Deploy distributed Stratum/recorder roles | [Share-relay guide](docs/share-relays.md) |
 | Enable direct Bitcoin-family PPS | [PPS operator guide](docs/pps.md) |
 | Pay Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) |
+| Migrate a v0.2.1-or-earlier/pre-PR #135 database before enabling direct Bitcoin SOLO | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
 | Validate a new deployment before miners | [Operator preflight](docs/operations.md#before-accepting-miners) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
@@ -535,7 +567,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.2.1  # Replace with the release you selected.
+MININGCORE_VERSION=v0.3.0-rc.1  # Replace with the release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -545,7 +577,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 ```console
-MININGCORE_VERSION=v0.2.1  # Replace with the release you selected.
+MININGCORE_VERSION=v0.3.0-rc.1  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \
@@ -659,152 +691,40 @@ Remember these container boundaries:
 The full release, checksum, provenance, container and update procedure is in the
 [release guide](docs/releases.md).
 
-## Database setup
+## Database, configuration and manual source runs
 
-Miningcore uses PostgreSQL for shares, blocks, balances, statistics and payments. For a new public
-pool, use a currently supported PostgreSQL release; PostgreSQL 15 or newer is a sensible baseline.
+The [Quick start](#quick-start) is the single copy-paste path for a new prebuilt installation. To
+avoid competing procedures, detailed database creation, backup, migration, partitioning and
+recovery commands live only in the task-specific runbooks:
 
-After [installing PostgreSQL](https://www.postgresql.org/download/), open its administrative shell:
+| Task | Authoritative procedure |
+| --- | --- |
+| Create a new PostgreSQL database | [Quick start: create PostgreSQL](#4-create-postgresql-and-load-the-schema) |
+| Upgrade an existing release and database | [Release upgrade or rollback](docs/releases.md#upgrade-or-roll-back) |
+| Enable pooled accounting or PPS | [PPS database prerequisites](docs/pps.md#database-prerequisites) |
+| Enable direct-coinbase SOLO on a v0.2.1-or-earlier/pre-PR #135 database | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
+| Back up, inspect or recover PostgreSQL | [Database and recovery guide](docs/database.md) |
+| Partition the `shares` table | [Advanced partitioning](docs/database.md#advanced-share-table-partitioning) |
 
-```console
-sudo -u postgres psql
-```
+Never run `createdb.sql` over an existing database, run release migrations through the old active
+symlink, or edit balances, blocks or payments manually. Stop every writer named by the upgrade
+runbook and prove the backup before a schema change.
 
-Create a user and database. Choose a unique strong password and do not commit it to Git:
-
-```sql
-CREATE ROLE miningcore WITH LOGIN ENCRYPTED PASSWORD 'CHANGE_ME_TO_A_STRONG_PASSWORD';
-CREATE DATABASE miningcore OWNER miningcore;
-\q
-```
-
-Import the current schema from the repository root:
-
-```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f src/Miningcore/Persistence/Postgres/Scripts/createdb.sql
-```
-
-Test the login:
-
-```console
-psql -h 127.0.0.1 -U miningcore -d miningcore -c "SELECT current_database();"
-```
-
-Then place the same connection details in `config.json`:
-
-```json
-"persistence": {
-  "postgres": {
-    "host": "127.0.0.1",
-    "port": 5432,
-    "user": "miningcore",
-    "password": "CHANGE_ME_TO_A_STRONG_PASSWORD",
-    "database": "miningcore"
-  }
-}
-```
-
-Back up before upgrades:
-
-```console
-sudo -u postgres pg_dump -Fc -d miningcore > miningcore-backup.dump
-pg_restore --list miningcore-backup.dump > /dev/null
-```
-
-Using the local PostgreSQL administrator ensures the archive also contains partition tables or
-other administrator-created objects that the runtime role may not be allowed to lock directly. For
-a remote database, use a dedicated backup role with read and lock access to every schema object.
-
-> [!IMPORTANT]
-> The current release series is a breaking database upgrade for every deployment that enables payment
-> processing, even when LTC/DOGE merged mining is not enabled. Stop Miningcore and apply
-> `add_payout_manager_ownership.sql` before starting the upgraded binary. Recovery-only nodes that
-> use `-rs` require the same migration. Missing ownership/idempotency schema fails startup with the
-> migration filename instead of running payouts without protection.
-
-Pooled merged-mining and direct Bitcoin-family PPS deployments also require
-`add_share_accounting.sql`. Existing SOLO/SOLO merged mining retains its established share record
-and does not require that additional migration.
-It creates the paired-share identity and PPS liability ledger; do not enable either feature until
-the migration and startup preflight succeed.
-
-Opt-in Bitcoin direct-coinbase SOLO additionally requires
-`add_bitcoin_direct_solo.sql`. It preserves immutable on-chain settlement evidence in the block
-record while leaving historical custodial blocks unchanged. Apply it from the verified candidate
-directory described by the upgrade runbook, not through the old active symlink.
-
-For an existing database, stop writers and payout managers before applying the migrations required by
-the target release. The [database and upgrade guide](docs/database.md) gives the exact commands, restore
-procedure, post-migration ownership check, merged-mining indexes, payout-manager ownership rules and
-optional advanced partitioning.
-
-> [!IMPORTANT]
-> If you opt into the advanced partitioned `shares` layout, create a partition whose bound exactly
-> matches every enabled pool ID before starting Miningcore. Startup now fails fast when a direct
-> recorder, relay receiver or recovery import is missing one; see the database guide for the
-> backup, conversion, partition creation and restore sequence.
-
-## Configuration
-
-Copy [config.example.json](config.example.json) to `config.json`. It is a JSON-with-comments example
-covering the common cluster, API, PostgreSQL, statistics, banning, payment, daemon, low/high
-Stratum, vardiff and LTC/DOGE merged-mining options. Miningcore accepts comments; ordinary
-strict-JSON tools may not.
+For a source build or development session, copy the annotated configuration into the publish
+directory, replace every `CHANGE_ME` value, and remove unused pools or services:
 
 ```console
 cp config.example.json build/config.json
-```
-
-Replace all `CHANGE_ME` values and remove pools or services you do not intend to run. The
-[example configuration index](examples/README.md) provides smaller direct, Bitcoin Cash,
-multi-coin, merged-mining and distributed-recorder starting points. The
-[configuration guide](docs/configuration.md)
-explains the main sections and miner login formats. The machine-readable
-[configuration schema](src/Miningcore/config.schema.json) validates the shared typed structure.
-Coin-specific extension fields are intentionally outside that structural catalogue; use the
-reviewed examples and the [coin-family guidance](docs/configuration.md#coin-specific-extension-fields)
-for those settings.
-
-## Running Miningcore
-
-Start the published binary from the directory containing `config.json`:
-
-```console
 cd build
 ./Miningcore -c config.json
 ```
 
-Miningcore validates the file and daemon connections during startup. Keep the console open for an
-initial test; stop it with `Ctrl+C`. On Linux, confirm the API in another shell:
-
-```console
-curl http://127.0.0.1:4000/api/health-check
-curl http://127.0.0.1:4000/api/pools
-```
-
-For unattended operation, use a service manager such as systemd, send logs to persistent storage and
-configure clean shutdown timeouts. Do not run a production instance in `screen`, a desktop terminal,
-or an interactive SSH session. See [Production operation](#production-operation).
-
-### Basic PostgreSQL management
-
-```console
-# Open the database shell
-psql -h 127.0.0.1 -U miningcore -d miningcore
-
-# List tables inside psql
-\dt
-
-# Show recent blocks inside psql
-SELECT poolid, blockheight, status, created FROM blocks ORDER BY created DESC LIMIT 10;
-
-# Leave psql
-\q
-```
-
-Use SQL only for inspection unless a documented migration or recovery procedure explicitly requires
-a change. Manual edits to balances, blocks or payments can cause financial errors.
+Miningcore accepts comments in configuration files, while ordinary strict-JSON tools may not. The
+[example index](examples/README.md), [configuration guide](docs/configuration.md) and
+[coin-family extension guidance](docs/configuration.md#coin-specific-extension-fields) define the
+supported starting points. Keep the first run interactive, verify the local health and pool APIs,
+then use the supplied systemd service for unattended operation; do not host a production pool in
+`screen` or an interactive SSH session.
 
 ## API and web front ends
 
