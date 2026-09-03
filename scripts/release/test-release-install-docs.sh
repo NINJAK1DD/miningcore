@@ -21,7 +21,14 @@ zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Pro
 capability_dir=
 fixture_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
+normalized_readme=$(tr '\r\n\t' '   ' < "$readme" | sed -E 's/[[:space:]]+/ /g')
 release_document=$(tr -d '\r' < "$document")
+readme_features_section=$(awk '
+  { sub(/\r$/, "") }
+  /^## Features$/ { capture = 1 }
+  capture { print }
+  capture && /^## Quick start$/ { exit }
+' "$readme")
 
 cleanup() {
   if [[ -n "$capability_dir" ]]; then
@@ -173,16 +180,26 @@ assert_prose_contains() {
   fi
 }
 
+assert_readme_prose_contains() {
+  local label=$1
+  local expected=$2
+
+  if ! grep -Fq -- "$expected" <<<"$normalized_readme"; then
+    echo "README is missing $label" >&2
+    exit 1
+  fi
+}
+
 assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.3.0-rc.1 release example' \
-  'export MININGCORE_VERSION=v0.3.0-rc.1' "$document"
-assert_file_contains 'the v0.3.0-rc.1 container example' \
-  'MININGCORE_VERSION=v0.3.0-rc.1' "$readme"
-assert_file_contains 'the v0.3.0-rc.1 database migration example' \
-  'export MININGCORE_VERSION=v0.3.0-rc.1' "$database_document"
+assert_file_contains 'the v0.3.0-rc.2 release example' \
+  'export MININGCORE_VERSION=v0.3.0-rc.2' "$document"
+assert_file_contains 'the v0.3.0-rc.2 container example' \
+  'MININGCORE_VERSION=v0.3.0-rc.2' "$readme"
+assert_file_contains 'the v0.3.0-rc.2 database migration example' \
+  'export MININGCORE_VERSION=v0.3.0-rc.2' "$database_document"
 assert_file_contains 'the v0.2.1 hotfix task route' \
   '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
 assert_file_contains 'the v0.2.1 troubleshooting route' \
@@ -262,13 +279,12 @@ assert_file_contains 'the manual source-build systemd layout boundary' \
 assert_file_contains 'the quick-start direct-SOLO opt-in boundary' \
   '#### Optional: enable Bitcoin direct-coinbase SOLO' "$readme"
 assert_file_contains 'the quick-start direct-SOLO binary-version boundary' \
-  'branch, that means `v0.3.0-rc.1`' "$readme"
+  'branch, that means `v0.3.0-rc.2`' "$readme"
 assert_file_contains 'the stable-release direct-SOLO skip boundary' \
   'If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection' \
   "$readme"
-assert_file_contains 'the quick-start direct-SOLO conditional fresh-schema boundary' \
-  'Only a fresh database created from `v0.3.0-rc.1` has the required schema' \
-  "$readme"
+assert_readme_prose_contains 'the quick-start direct-SOLO conditional fresh-schema boundary' \
+  'Only a fresh database created from `v0.3.0-rc.1` or later has the required schema'
 assert_file_contains 'the quick-start direct-SOLO existing-database migration route' \
   '[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration)' \
   "$readme"
@@ -287,15 +303,26 @@ assert_file_contains 'the restored source-run health probe' \
   'curl --fail --max-time 5 http://127.0.0.1:4000/api/health-check' "$readme"
 assert_file_contains 'the README source-checkout database route' \
   'src/Miningcore/Persistence/Postgres/Scripts/createdb.sql' "$readme"
-assert_file_contains 'the DigiByte Odocrypt feature highlight' \
-  'Activation- and schedule-aware DigiByte Odocrypt mining' "$readme"
+if grep -Fiq 'Odocrypt' <<<"$readme_features_section"; then
+  echo 'The README headline feature list still highlights DigiByte Odocrypt' >&2
+  exit 1
+fi
+if ! grep -Fq 'Opt-in Bitcoin direct-coinbase SOLO' <<<"$readme_features_section" ||
+   ! grep -Fq 'BIP 54-forward-compatible' <<<"$readme_features_section"; then
+  echo 'The README headline feature list is missing the direct-SOLO or BIP 54 highlight' >&2
+  exit 1
+fi
 assert_file_contains 'the direct-SOLO migration task-table route' \
   '| Migrate a v0.2.1-or-earlier/pre-PR #135 database before enabling direct Bitcoin SOLO |' "$readme"
-assert_file_contains 'the v0.3.0-rc.1 highlight route' \
-  '| Evaluate v0.3.0-rc.1 from v0.2.1 | [v0.3.0-rc.1 highlights](#v030-rc1-highlights) |' \
+assert_file_contains 'the v0.3.0-rc.2 highlight route' \
+  '| Evaluate v0.3.0-rc.2 | [v0.3.0-rc.2 highlights](#v030-rc2-highlights) |' \
   "$document"
-assert_prose_contains 'the v0.3.0-rc.1 candidate warning' \
+assert_prose_contains 'the v0.3.0-rc.2 candidate warning' \
   'Treat this candidate as staging software'
+assert_prose_contains 'the v0.3.0-rc.2 no-migration boundary' \
+  'No database migration is required when upgrading from `v0.3.0-rc.1`'
+assert_prose_contains 'the v0.3.0-rc.2 older-release migration boundary' \
+  'Operators upgrading directly from `v0.2.1` or earlier must also complete the `v0.3.0-rc.1` upgrade boundary below'
 assert_prose_contains 'the v0.3.0-rc.1 unchanged-pool migration boundary' \
   'No new v0.3.0 database migration is required solely to keep their existing payout behavior.'
 assert_file_contains 'the v0.3.0 feature-detail heading' \
@@ -311,10 +338,10 @@ assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.3.0-rc.1 recovery example' \
-  'export TAG=v0.3.0-rc.1'
-assert_contains 'the v0.3.0-rc.1 tagging example' \
-  'NEXT_VERSION=v0.3.0-rc.1'
+assert_contains 'the v0.3.0-rc.2 recovery example' \
+  'export TAG=v0.3.0-rc.2'
+assert_contains 'the v0.3.0-rc.2 tagging example' \
+  'NEXT_VERSION=v0.3.0-rc.2'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
@@ -707,17 +734,17 @@ if grep -Eh \
     '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
     "$readme" "$document" "$database_document" |
     grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0-rc\.1([[:space:]]|$)'; then
+      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0-rc\.2([[:space:]]|$)'; then
   echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
   exit 1
 fi
 
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$database_document") -ne 1 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.3\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.3.0-rc.1 copy-paste assignment inventory is incomplete or duplicated' >&2
+if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$readme") -ne 3 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$document") -ne 2 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$database_document") -ne 1 ]] ||
+    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$document") -ne 1 ]] ||
+    [[ $(grep -Ec '^export TAG=v0\.3\.0-rc\.2([[:space:]]|$)' "$document") -ne 1 ]]; then
+  echo 'The v0.3.0-rc.2 copy-paste assignment inventory is incomplete or duplicated' >&2
   exit 1
 fi
 
@@ -909,7 +936,10 @@ find_unique_line() {
 }
 
 release_rc_heading_line=$(
-  find_unique_line release-rc-heading '## v0.3.0-rc.1 highlights' "$release_document"
+  find_unique_line release-rc-heading '## v0.3.0-rc.2 highlights' "$release_document"
+)
+release_previous_rc_heading_line=$(
+  find_unique_line release-previous-rc-heading '## v0.3.0-rc.1 highlights' "$release_document"
 )
 release_upgrade_heading_line=$(
   find_unique_line release-upgrade-heading '### Upgrade boundary from v0.2.1' "$release_document"
@@ -931,10 +961,11 @@ release_tag_command_line=$(
   find_unique_line release-tag-command 'git switch dev' "$release_document"
 )
 
-if [[ "$release_upgrade_heading_line" -le "$release_rc_heading_line" ||
+if [[ "$release_previous_rc_heading_line" -le "$release_rc_heading_line" ||
+    "$release_upgrade_heading_line" -le "$release_previous_rc_heading_line" ||
     "$release_feature_heading_line" -le "$release_upgrade_heading_line" ||
     "$release_previous_heading_line" -le "$release_feature_heading_line" ]]; then
-  echo 'The v0.3.0 upgrade boundary and feature detail are not correctly nested before v0.2.1' >&2
+  echo 'The v0.3.0 release-candidate history is not correctly ordered before v0.2.1' >&2
   exit 1
 fi
 

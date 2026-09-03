@@ -24,7 +24,6 @@ the original authors and contributors.
 - Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json)
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
-- Activation- and schedule-aware DigiByte Odocrypt mining backed by source-built native validation.
 - SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
 - Opt-in Bitcoin direct-coinbase SOLO, paying the authorized miner and positive pool fee/donation
   recipients in separate outputs of the accepted block instead of creating a custodial Miningcore
@@ -52,7 +51,7 @@ different runtime packages; Ubuntu 24.04 is a source-build target. Use the
 [release guide](docs/releases.md) for those paths or for an upgrade/rollback.
 
 > [!CAUTION]
-> This branch currently pins the `v0.3.0-rc.1` release candidate. Test release candidates on
+> This branch currently pins the `v0.3.0-rc.2` release candidate. Test release candidates on
 > regtest or a controlled staging pool before relying on them for real funds. Operators who want
 > the latest stable release should select it from the
 > [releases page](https://github.com/NINJAK1DD/miningcore/releases) and substitute that tag in every
@@ -91,7 +90,7 @@ sudo systemctl is-active postgresql
 Select the release and download it into private temporary storage:
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.1
+export MININGCORE_VERSION=v0.3.0-rc.2
 export MININGCORE_UBUNTU=26.04
 MININGCORE_QUICKSTART_READY=
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX")"
@@ -211,14 +210,14 @@ starter only when it matches the intended topology.
 
 Skip this subsection for conventional custodial SOLO, PPS, PROP or PPLNS operation. It requires a
 Miningcore binary that implements direct settlement and its matching database schema—on this
-branch, that means `v0.3.0-rc.1`. Direct coinbase settlement is an explicit, BTC-only option in
+branch, that means `v0.3.0-rc.2`. Direct coinbase settlement is an explicit, BTC-only option in
 which the authorized miner address and each positive pool fee/donation recipient are paid by
 separate outputs in the accepted block.
 
 If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection:
 that binary does not implement `soloCoinbasePayout`. Upgrade the binary and database before adding
-or enabling the setting. Only a fresh database created from `v0.3.0-rc.1` has the required schema
-from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-PR #135 build—keep
+or enabling the setting. Only a fresh database created from `v0.3.0-rc.1` or later has the required
+schema from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-PR #135 build—keep
 `soloCoinbasePayout` disabled until the verified candidate migration has completed; use the
 [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
 `createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
@@ -628,7 +627,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.3.0-rc.1  # Replace with the release you selected.
+MININGCORE_VERSION=v0.3.0-rc.2  # Replace with the release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -638,7 +637,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 ```console
-MININGCORE_VERSION=v0.3.0-rc.1  # Replace with the release you selected.
+MININGCORE_VERSION=v0.3.0-rc.2  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \
