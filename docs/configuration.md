@@ -435,6 +435,16 @@ topologies before work is delivered. Existing databases need the additive direct
 migration. Follow the complete [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md); do not infer that
 other Bitcoin-family coinbase layouts are compatible.
 
+Canonical Bitcoin coinbases use `nLockTime = block height - 1` and `nSequence = 0xfffffffe` in both
+custodial and direct-SOLO modes. This is valid under existing Bitcoin consensus and is forward-
+compatible with BIP 54; it does not claim or signal network activation. Value-bearing outputs are
+serialized first and the BIP 141 witness commitment last. The policy is deliberately limited to
+the canonical `bitcoin` template so altcoin transaction framing and output order remain unchanged.
+It is enabled by default. If an incompatible miner or Stratum proxy cannot process the new shape,
+`bip54Coinbase: false` temporarily restores the complete earlier form: zero locktime and sequence,
+with the witness commitment before value-bearing outputs. Startup logs the effective policy; upgrade
+the incompatible component and remove the override after validation.
+
 ## Bitcoin-family PPS
 
 Direct pools using an audited Bitcoin-family template may set pool-level

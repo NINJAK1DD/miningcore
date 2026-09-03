@@ -46,6 +46,25 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Changes after v0.3.0-rc.1
+
+Canonical Bitcoin coinbases now use BIP 54-forward-compatible fields by default:
+`nLockTime = block height - 1` and `nSequence = 0xfffffffe`. Value-bearing outputs are serialized
+before the BIP 141 witness commitment, matching CKPool's operator-facing order. This applies to
+existing custodial Bitcoin pools as well as direct-SOLO pools, changes the serialized coinbase
+transaction ID and resulting merkle root, and requires no database migration. Other Bitcoin-family
+coins retain their previous fields and output order.
+
+The default-on `bip54Coinbase` pool setting may be set to `false` as a temporary compatibility
+fallback if a miner or Stratum proxy cannot process the new shape. The fallback restores the full
+earlier form: zero locktime and sequence, with the witness commitment before value-bearing outputs.
+Startup logs the effective policy. Prefer upgrading the incompatible component and re-enabling the
+forward-compatible shape.
+
+The legacy Anokas and Ravencash special case now serializes the complete witness-commitment script
+provided by the daemon verbatim. This removes a malformed reconstruction that omitted the required
+`OP_RETURN` and push opcode. No configuration or database migration is required.
+
 ## v0.3.0-rc.1 highlights
 
 `v0.3.0-rc.1` is the first release candidate for the next minor release. It adds current DigiByte

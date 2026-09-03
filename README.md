@@ -28,7 +28,8 @@ the original authors and contributors.
 - SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
 - Opt-in Bitcoin direct-coinbase SOLO, paying the authorized miner and positive pool fee/donation
   recipients in separate outputs of the accepted block instead of creating a custodial Miningcore
-  balance.
+  balance. Canonical BTC coinbases use the BIP 54-forward-compatible locktime/sequence shape and
+  list value-bearing outputs before the witness commitment.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
@@ -481,7 +482,9 @@ Canonical Bitcoin SOLO pools can opt into non-custodial coinbase settlement. Eac
 places each positive pool fee/donation in a separate output. The option defaults off; BTC-only,
 SOLO, database, topology and address contracts fail closed before work begins. Apply the additive
 migration and complete the [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) before enabling
-the [copy-first example](examples/bitcoin_direct_solo_pool.json).
+the [copy-first example](examples/bitcoin_direct_solo_pool.json). BIP 54-forward-compatible
+coinbase shape is independently enabled by default for every canonical Bitcoin pool; the guide
+documents the temporary `bip54Coinbase: false` full-shape compatibility fallback.
 
 ## Bitcoin-family PPS
 

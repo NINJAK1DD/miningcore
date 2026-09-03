@@ -510,6 +510,24 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
 
         base.Configure(pc, cc);
+
+        if(BitcoinJob.IsCanonicalBitcoin(pc, coin))
+        {
+            if(BitcoinPoolConfigExtra.ResolveBip54Coinbase(extraPoolConfig))
+                logger.Info(() => "Canonical Bitcoin coinbase policy: BIP 54-compatible " +
+                    "locktime/sequence fields enabled; value-bearing outputs precede " +
+                    "the BIP 141 witness commitment");
+            else
+                logger.Warn(() => "Canonical Bitcoin coinbase policy: compatibility " +
+                    "fallback enabled by bip54Coinbase=false; legacy locktime/sequence " +
+                    "fields and witness-first output order are in use");
+        }
+        else if(string.Equals(coin.Symbol, "BTC", StringComparison.Ordinal))
+        {
+            logger.Warn(() => $"Pool '{pc.Id}' uses BTC template '{pc.Coin}' without " +
+                "the canonical Bitcoin identity; retaining legacy coinbase fields and " +
+                "witness-output order");
+        }
     }
 
     public virtual object[] GetSubscriberData(StratumConnection worker)

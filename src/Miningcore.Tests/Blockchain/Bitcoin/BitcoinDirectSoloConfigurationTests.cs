@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using Miningcore;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
@@ -22,6 +24,7 @@ public class BitcoinDirectSoloConfigurationTests
 
         Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
         Assert.False(new BitcoinPoolConfigExtra().SoloCoinbasePayout);
+        Assert.True(new BitcoinPoolConfigExtra().Bip54Coinbase);
     }
 
     [Fact]
@@ -137,6 +140,105 @@ public class BitcoinDirectSoloConfigurationTests
     {
         Program.ValidateBitcoinDirectSoloSyntax(JObject.Parse(
             "{\"pools\":[{\"soloCoinbasePayout\":true}]}"));
+    }
+
+    [Theory]
+    [InlineData("Bip54Coinbase", "true", "canonical casing")]
+    [InlineData("bip54Coinbase", "\"true\"", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "1", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "null", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "{}", "JSON Boolean")]
+    [InlineData("bip54Coinbase", "[]", "JSON Boolean")]
+    public void Bip54OptionSyntax_IsStrict(string property, string value,
+        string expected)
+    {
+        var document = JObject.Parse(
+            $"{{\"pools\":[{{\"{property}\":{value}}}]}}");
+
+        Assert.Contains(expected, Assert.Throws<JsonSerializationException>(() =>
+            Program.ValidateBitcoinBip54CoinbaseSyntax(document)).Message);
+    }
+
+    [Fact]
+    public void Bip54OptionSyntax_AcceptsCanonicalBoolean()
+    {
+        Program.ValidateBitcoinBip54CoinbaseSyntax(JObject.Parse(
+            "{\"pools\":[{\"coin\":\"bitcoin\",\"bip54Coinbase\":false}]}"));
+    }
+
+    [Fact]
+    public void Bip54OptionSyntax_RejectsNonCanonicalPool()
+    {
+        var error = Assert.Throws<JsonSerializationException>(() =>
+            Program.ValidateBitcoinBip54CoinbaseSyntax(JObject.Parse(
+                "{\"pools\":[{\"coin\":\"litecoin\",\"bip54Coinbase\":false}]}")));
+
+        Assert.Contains("exact JSON string 'bitcoin'", error.Message);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    public void ReadConfig_Bip54OptionWithStructuredCoin_UsesPublicDiagnostic(
+        string coin)
+    {
+        var path = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(path,
+                $"{{\"pools\":[{{\"coin\":{coin},\"bip54Coinbase\":false}}]}}");
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(path, false));
+
+            Assert.StartsWith("Configuration file error:", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("exact JSON string 'bitcoin'", error.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ExplicitBip54Option_RequiresCanonicalRuntimeIdentity()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra["bip54Coinbase"] = false;
+        config.Pools[0].Template.CanonicalName = "Custom Bitcoin";
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinBip54CoinbaseDeployment(config,
+                requireAssignedTemplates: true));
+
+        Assert.Contains("canonical BTC runtime template", error.Message);
+    }
+
+    [Fact]
+    public void ExplicitBip54Option_AcceptsAssignedCanonicalRuntimeIdentity()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra["bip54Coinbase"] = false;
+
+        Program.ValidateBitcoinBip54CoinbaseDeployment(config,
+            requireAssignedTemplates: true);
+    }
+
+    [Fact]
+    public void ExplicitBip54Option_RequiresTemplateAssignmentAtRuntimeGate()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra["bip54Coinbase"] = false;
+        config.Pools[0].Template = null;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinBip54CoinbaseDeployment(config,
+                requireAssignedTemplates: true));
+
+        Assert.Contains("template was not assigned", error.Message);
     }
 
     private static ClusterConfig CreateConfig() => new()

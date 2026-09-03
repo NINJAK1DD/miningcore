@@ -685,9 +685,9 @@ public class BitcoinDirectSettlementTests : TestBase
             {
               "txid": "{{block.TransactionConfirmationData}}",
               "vout": [
-                { "value": 0, "scriptPubKey": { "hex": "6a24aa21a9ed{{new string('0', 64)}}" } },
                 { "value": {{miner}}, "scriptPubKey": { "hex": "{{block.DirectMinerScriptPubKey}}" } },
-                { "value": {{fee}}, "scriptPubKey": { "hex": "0014{{new string('2', 40)}}" } }
+                { "value": {{fee}}, "scriptPubKey": { "hex": "0014{{new string('2', 40)}}" } },
+                { "value": 0, "scriptPubKey": { "hex": "6a24aa21a9ed{{new string('0', 64)}}" } }
               ]
             }
           ]

@@ -106,8 +106,24 @@ miner satoshis     = coinbasevalue − sum(recipient satoshis)
 
 The calculation uses exact integer/rational arithmetic, not binary floating point. The miner is the
 first value-bearing direct output. Positive recipients follow in canonical script order. The
-existing witness commitment remains present and consensus-valid. The miner residual makes the
-complete output total exactly equal to GBT `coinbasevalue`.
+existing BIP 141 witness commitment remains present and consensus-valid as the final output. BIP 141
+allows the commitment at any output index; placing it last keeps the economically important miner
+and recipient amounts first in operator and miner displays. The miner residual makes the complete
+output total exactly equal to GBT `coinbasevalue`.
+
+Both custodial and direct-SOLO coinbases for the canonical `bitcoin` template use
+`nLockTime = block height - 1` and `nSequence = 0xfffffffe`. Those values satisfy BIP 54's coinbase
+requirements while remaining valid under existing Bitcoin consensus, making newly announced work
+forward-compatible without waiting for activation. They are transaction construction fields, not a
+version-bit signal or a claim that BIP 54 is active. The policy is intentionally not inferred from
+the broad Bitcoin-family runtime: other coins retain their existing sequence, locktime and output
+ordering unless their own consensus rules are separately researched and implemented.
+
+The canonical Bitcoin pool setting `bip54Coinbase` defaults to `true`. If an older miner or Stratum
+proxy cannot process the new coinbase shape, setting it to `false` temporarily restores the complete
+previous form: zero locktime and sequence, with the witness commitment before value-bearing outputs.
+Miningcore logs the effective policy during pool startup. Treat the override as a compatibility
+rollback, upgrade the incompatible component, then remove it to restore forward-compatible work.
 
 Each template update and rebroadcast builds a destination-specific coinbase and merkle projection
 for every connected worker. That is intentionally proportional to connected workers multiplied by
@@ -153,15 +169,18 @@ positive direct recipient.
 4. Confirm the coinbase contains the expected miner script and each positive recipient script.
 5. Recalculate every satoshi amount with the floor rule above and confirm the values sum exactly to
    the template's `coinbasevalue`.
-6. Confirm the `6a24aa21a9ed...` witness-commitment output remains present.
+6. Confirm the decoded transaction has `nLockTime = block height - 1`, `nSequence = 0xfffffffe`,
+   value-bearing outputs first and the final `6a24aa21a9ed...` witness-commitment output.
 7. Mine and submit a regtest block, mature it, and verify the block API reports
    `settlementMode: "coinbase-direct"`, the gross satoshis, miner satoshis and recipient outputs.
 8. Confirm no miner balance, payment batch or wallet send was created for that direct block.
 
 Current AxeOS derives the miner's displayed share by matching coinbase output scripts against the
-address portion of its username. A correctly configured direct job therefore reports a non-zero
-share matching the miner residual. Treat that display as interoperability evidence only; Bitcoin
-Core block acceptance and exact on-chain scripts/amounts are authoritative.
+address portion of its username. It displays its green `BIP-54` badge when the decoded coinbase has
+the height-minus-one locktime and a non-final sequence. A correctly configured direct job therefore
+reports a non-zero share matching the miner residual and the badge for this forward-compatible
+shape. Treat both displays as interoperability evidence only; Bitcoin Core block acceptance and
+exact on-chain fields, scripts and amounts are authoritative.
 
 ## Confirmation, restart and reorg behavior
 
@@ -323,10 +342,13 @@ partially committed production history.
 ## Source-verified design references
 
 - [CKPool SOLO behavior at `c26eb7f`](https://github.com/ckolivas/ckpool/blob/c26eb7ff2df5535982dcfb80bafe1bab346eaf34/README-SOLOMINING.md)
-  and its [per-user work construction](https://github.com/ckolivas/ckpool/blob/c26eb7ff2df5535982dcfb80bafe1bab346eaf34/src/stratifier.c).
-- [AxeOS coinbase decoder at `3a09ea0`](https://github.com/bitaxeorg/ESP-Miner/blob/3a09ea00c6f1254e4e19cb7033f8f6b8bf055e44/components/stratum/coinbase_decoder.c)
-  and its [dashboard percentage handling](https://github.com/bitaxeorg/ESP-Miner/blob/3a09ea00c6f1254e4e19cb7033f8f6b8bf055e44/main/http_server/axe-os/src/app/components/home/home.component.ts).
+  and its [per-user work construction](https://github.com/ckolivas/ckpool/blob/c26eb7ff2df5535982dcfb80bafe1bab346eaf34/src/stratifier.c). CKPool's
+  [BIP 54-compatible coinbase and output ordering at `952375d`](https://github.com/ckolivas/ckpool/blob/952375dc863a55a86df99509331d74884a5ff2f9/src/stratifier.c#L3205-L3277)
+  provide the interoperability layout used here.
+- [AxeOS coinbase decoder at `2943d20`](https://github.com/bitaxeorg/ESP-Miner/blob/2943d206f6c8a4b249bc74c820fb56c874ac316d/components/stratum/coinbase_decoder.c#L1338-L1459)
+  and its exact locktime/sequence badge condition.
 - [BIP 22 `coinbasevalue`](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki),
   [BIP 34 coinbase height](https://github.com/bitcoin/bips/blob/master/bip-0034.mediawiki), and
   [BIP 141 witness commitment](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#commitment-structure).
+- [BIP 54 consensus cleanup and miner forward compatibility](https://github.com/bitcoin/bips/blob/master/bip-0054.md#miner-forward-compatibility).
 - [Bitcoin Core 0.15.0 release notes documenting `getblock` verbosity 2](https://bitcoincore.org/en/releases/0.15.0/).
