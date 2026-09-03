@@ -44,8 +44,6 @@ public class BitcoinJob
     protected string coinbaseInitialHex;
     protected string[] merkleBranchesHex;
     protected MerkleTree mt;
-    protected string[] merkleSegwitBranchesHex;
-    protected MerkleTree mtSegwit;
 
     ///////////////////////////////////////////
     // GetJobParams related properties

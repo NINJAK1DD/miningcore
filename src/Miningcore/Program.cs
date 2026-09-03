@@ -547,6 +547,9 @@ public class Program : ProcessStatusBackgroundService
             // templates but before any Stratum listener is reserved or pool is started.
             // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            // This check intentionally has no earlier ValidateConfig pass: its only
+            // additional contract is the resolved runtime-template identity, which
+            // is unavailable until AssignPoolTemplates completes.
             ValidateBitcoinBip54CoinbaseDeployment(clusterConfig,
                 requireAssignedTemplates: true);
             ValidateBitcoinDirectSoloDeployment(clusterConfig,

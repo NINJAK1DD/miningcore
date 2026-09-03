@@ -9,12 +9,15 @@ using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
+using Miningcore.Blockchain.Progpow;
 using Miningcore.Configuration;
+using Miningcore.Crypto.Hashing.Progpow;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using NBitcoin;
+using NSubstitute;
 using Newtonsoft.Json;
 using NLog;
 using Xunit;
@@ -776,7 +779,7 @@ public class BitcoinJobTests : TestBase
     {
         var bitcoin = Assert.IsType<BitcoinTemplate>(
             ModuleInitializer.CoinTemplates["bitcoin"]);
-        var coin = new BitcoinTemplate
+        var coin = new ProgpowCoinTemplate
         {
             Name = symbol,
             CanonicalName = symbol,
@@ -806,15 +809,16 @@ public class BitcoinJobTests : TestBase
             DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
         var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
             Network.RegTest);
-        var job = new DirectSerializationBitcoinJob();
+        var job = new SerializationProgpowJob();
 
         job.Init(blockTemplate, $"{symbol}-commitment", pc, null,
             new ClusterConfig(), clock, pool, Network.RegTest, false,
             bitcoin.ShareMultiplier, bitcoin.CoinbaseHasherValue,
-            bitcoin.HeaderHasherValue, bitcoin.BlockHasherValue);
+            bitcoin.HeaderHasherValue, bitcoin.BlockHasherValue,
+            Substitute.For<IProgpowCache>());
 
         var transaction = Transaction.Parse(job.SerializeCoinbaseForTest(
-                "00000001", "00000000000000").ToHexString(),
+                "0001").ToHexString(),
             Network.RegTest);
 
         Assert.Equal(commitment,
@@ -1246,5 +1250,11 @@ public class BitcoinJobTests : TestBase
         public byte[] SerializeCoinbaseForTest(string extraNonce1,
             string extraNonce2) => SerializeCoinbase(extraNonce1,
             extraNonce2);
+    }
+
+    private sealed class SerializationProgpowJob : ProgpowJob
+    {
+        public byte[] SerializeCoinbaseForTest(string extraNonce1) =>
+            SerializeCoinbase(extraNonce1);
     }
 }
