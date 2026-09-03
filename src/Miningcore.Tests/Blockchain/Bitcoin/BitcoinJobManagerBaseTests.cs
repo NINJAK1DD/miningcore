@@ -232,6 +232,7 @@ public class BitcoinJobManagerBaseTests
             Network.RegTest);
 
         manager.Configure(pool, new ClusterConfig());
+        Assert.Null(manager.CachedBip54CoinbasePolicy);
         manager.PrepareJobConstruction(Network.RegTest, poolDestination);
         manager.Enqueue(new BlockTemplate
         {
