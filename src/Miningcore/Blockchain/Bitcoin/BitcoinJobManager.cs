@@ -513,12 +513,14 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         if(BitcoinJob.IsCanonicalBitcoin(pc, coin))
         {
-            var fields = extraPoolConfig?.Bip54Coinbase ?? true
-                ? "enabled"
-                : "disabled by bip54Coinbase=false";
-            logger.Info(() => $"Canonical Bitcoin coinbase policy: BIP 54-compatible " +
-                $"locktime/sequence fields {fields}; value-bearing outputs precede " +
-                "the BIP 141 witness commitment");
+            if(BitcoinPoolConfigExtra.ResolveBip54Coinbase(extraPoolConfig))
+                logger.Info(() => "Canonical Bitcoin coinbase policy: BIP 54-compatible " +
+                    "locktime/sequence fields enabled; value-bearing outputs precede " +
+                    "the BIP 141 witness commitment");
+            else
+                logger.Warn(() => "Canonical Bitcoin coinbase policy: compatibility " +
+                    "fallback enabled by bip54Coinbase=false; legacy locktime/sequence " +
+                    "fields and witness-first output order are in use");
         }
         else if(string.Equals(coin.Symbol, "BTC", StringComparison.Ordinal))
         {

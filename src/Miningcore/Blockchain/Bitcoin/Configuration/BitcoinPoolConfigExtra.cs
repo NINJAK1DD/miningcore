@@ -5,6 +5,8 @@ namespace Miningcore.Blockchain.Bitcoin.Configuration;
 
 public class BitcoinPoolConfigExtra
 {
+    internal const bool Bip54CoinbaseDefault = true;
+
     /// <summary>
     /// Minimum confirmations required before a mined block is credited.
     /// </summary>
@@ -59,9 +61,14 @@ public class BitcoinPoolConfigExtra
     public bool SoloCoinbasePayout { get; set; } = false;
 
     /// <summary>
-    /// Emit BIP 54-forward-compatible locktime and sequence fields for the
-    /// canonical Bitcoin template. Enabled by default. Set to false only as a
-    /// temporary compatibility fallback for an incompatible miner or proxy.
+    /// Emit the BIP 54-forward-compatible locktime/sequence fields and
+    /// value-first witness-output layout for the canonical Bitcoin template.
+    /// Enabled by default. Set to false only as a temporary compatibility
+    /// fallback for an incompatible miner or proxy.
     /// </summary>
-    public bool Bip54Coinbase { get; set; } = true;
+    public bool Bip54Coinbase { get; set; } = Bip54CoinbaseDefault;
+
+    internal static bool ResolveBip54Coinbase(
+        BitcoinPoolConfigExtra config) => config?.Bip54Coinbase ??
+        Bip54CoinbaseDefault;
 }

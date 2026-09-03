@@ -120,11 +120,10 @@ the broad Bitcoin-family runtime: other coins retain their existing sequence, lo
 ordering unless their own consensus rules are separately researched and implemented.
 
 The canonical Bitcoin pool setting `bip54Coinbase` defaults to `true`. If an older miner or Stratum
-proxy cannot process the non-zero locktime, setting it to `false` temporarily restores the previous
-locktime and sequence fields. It does not move the witness commitment back ahead of the value-
-bearing outputs. Miningcore logs the effective policy during pool startup. Treat the override as a
-compatibility rollback, upgrade the incompatible component, then remove it to restore forward-
-compatible work.
+proxy cannot process the new coinbase shape, setting it to `false` temporarily restores the complete
+previous form: zero locktime and sequence, with the witness commitment before value-bearing outputs.
+Miningcore logs the effective policy during pool startup. Treat the override as a compatibility
+rollback, upgrade the incompatible component, then remove it to restore forward-compatible work.
 
 Each template update and rebroadcast builds a destination-specific coinbase and merkle projection
 for every connected worker. That is intentionally proportional to connected workers multiplied by

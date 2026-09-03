@@ -87,29 +87,6 @@ public class BitcoinJob
             .ToArray();
     }
 
-    protected virtual MerkleTree BuildSegwitMerkleBranches()
-    {
-        var segwitTransactionHashes = BlockTemplate.Transactions
-            .Where(tx => IsSegWitTransaction(tx))
-            .Select(tx => (tx.TxId ?? tx.Hash)
-                .HexToByteArray()
-                .ReverseInPlace())
-            .ToArray();
-        // Build Merkle Tree with SegWit transactions
-        return new MerkleTree(segwitTransactionHashes);
-    }
-
-    protected virtual bool IsSegWitTransaction(BitcoinBlockTransaction tx)
-    {
-        // Convert hex string to byte array
-        byte[] txBytes = tx.Data.HexToByteArray();
-        // Convert byte array to hex string
-        string hexString = txBytes.ToHexString();
-        // Parse the transaction using NBitcoin
-        var transaction = Transaction.Parse(hexString, network);
-        return transaction.HasWitness;
-    }
-
     protected virtual void BuildCoinbase()
     {
         // generate script parts
@@ -240,31 +217,6 @@ public class BitcoinJob
     {
         long amount = 0;
         var raw = BlockTemplate.DefaultWitnessCommitment.HexToByteArray();
-
-        if(coin.Symbol == "ANOK" || coin.Symbol == "RVH")
-        {
-            // Compute witness commitment
-            byte[] witnessRoot = raw;
-            byte[] witnessNonce = new byte[32];
-
-            // Concatenate witness root and nonce
-            Span<byte> witnessRootAndNonce = stackalloc byte[witnessRoot.Length + witnessNonce.Length];
-            witnessRoot.CopyTo(witnessRootAndNonce);
-            witnessNonce.CopyTo(witnessRootAndNonce[witnessRoot.Length..]);
-
-            // Generate SHA256^2 hash
-            Sha256D sha256DHasher = new Sha256D();
-            byte[] hash = new byte[32];
-            sha256DHasher.Digest(witnessRootAndNonce, hash);
-
-            // Create scriptPubKey
-            byte[] magic = { 0xaa, 0x21, 0xa9, 0xed };
-            Span<byte> scriptPubKey = stackalloc byte[magic.Length + hash.Length];
-            magic.CopyTo(scriptPubKey);
-            hash.CopyTo(scriptPubKey[magic.Length..]);
-
-            raw = scriptPubKey.ToArray();
-        }
 
         var rawLength = (uint) raw.Length;
         bs.ReadWrite(ref amount);
@@ -966,8 +918,10 @@ public class BitcoinJob
         txVersion = coin.CoinbaseTxVersion;
         var isCanonicalBitcoin = IsCanonicalBitcoin(pc, coin);
         emitBip54CoinbaseFields = isCanonicalBitcoin &&
-            (extraPoolConfig?.Bip54Coinbase ?? true);
-        witnessCommitmentLast = isCanonicalBitcoin;
+            BitcoinPoolConfigExtra.ResolveBip54Coinbase(extraPoolConfig);
+        // The compatibility switch restores the complete pre-change coinbase
+        // shape, including witness-output placement.
+        witnessCommitmentLast = emitBip54CoinbaseFields;
         txInSequence = emitBip54CoinbaseFields ? Bip54CoinbaseSequence : 0;
         if(emitBip54CoinbaseFields)
         {
@@ -1090,7 +1044,7 @@ public class BitcoinJob
     }
 
     internal static bool IsCanonicalBitcoin(PoolConfig pc,
-        BitcoinTemplate template) =>
+        CoinTemplate template) =>
         string.Equals(pc.Coin, "bitcoin", StringComparison.Ordinal) &&
         template.Family == CoinFamily.Bitcoin &&
         string.Equals(template.Symbol, "BTC", StringComparison.Ordinal) &&

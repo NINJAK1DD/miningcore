@@ -440,9 +440,9 @@ custodial and direct-SOLO modes. This is valid under existing Bitcoin consensus 
 compatible with BIP 54; it does not claim or signal network activation. Value-bearing outputs are
 serialized first and the BIP 141 witness commitment last. The policy is deliberately limited to
 the canonical `bitcoin` template so altcoin transaction framing and output order remain unchanged.
-It is enabled by default. If an incompatible miner or Stratum proxy cannot process the non-zero
-locktime, `bip54Coinbase: false` temporarily restores the earlier locktime and sequence fields while
-leaving the canonical Bitcoin output order unchanged. Startup logs the effective policy; upgrade
+It is enabled by default. If an incompatible miner or Stratum proxy cannot process the new shape,
+`bip54Coinbase: false` temporarily restores the complete earlier form: zero locktime and sequence,
+with the witness commitment before value-bearing outputs. Startup logs the effective policy; upgrade
 the incompatible component and remove the override after validation.
 
 ## Bitcoin-family PPS

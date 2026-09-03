@@ -28,6 +28,7 @@ using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -546,6 +547,8 @@ public class Program : ProcessStatusBackgroundService
             // templates but before any Stratum listener is reserved or pool is started.
             // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            ValidateBitcoinBip54CoinbaseDeployment(clusterConfig,
+                requireAssignedTemplates: true);
             ValidateBitcoinDirectSoloDeployment(clusterConfig,
                 requireAssignedTemplates: true);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
@@ -1520,12 +1523,40 @@ public class Program : ProcessStatusBackgroundService
                     "Property 'bip54Coinbase' must be a JSON Boolean." +
                     GetJsonLocationSuffix(property.Value as IJsonLineInfo,
                         property.Path));
-            if(!string.Equals(pool["coin"]?.Value<string>(), "bitcoin",
+            var coinToken = pool["coin"];
+            if(coinToken?.Type != JTokenType.String ||
+               !string.Equals(coinToken.Value<string>(), "bitcoin",
                    StringComparison.Ordinal))
                 throw new JsonSerializationException(
-                    "Property 'bip54Coinbase' is supported only on the canonical 'bitcoin' pool template." +
+                    "Property 'bip54Coinbase' requires property 'coin' to be the exact JSON string 'bitcoin'." +
                     GetJsonLocationSuffix(property as IJsonLineInfo,
                         property.Path));
+        }
+    }
+
+    internal static void ValidateBitcoinBip54CoinbaseDeployment(
+        ClusterConfig config, bool requireAssignedTemplates = false)
+    {
+        var configuredPools = config?.Pools?.Where(pool => pool.Enabled &&
+            pool.Extra?.ContainsKey("bip54Coinbase") == true).ToArray() ??
+            Array.Empty<PoolConfig>();
+
+        foreach(var pool in configuredPools)
+        {
+            if(pool.Template == null)
+            {
+                if(requireAssignedTemplates)
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' configures bip54Coinbase but its coin template was not assigned before the runtime identity was checked",
+                        pool.Id);
+
+                continue;
+            }
+
+            if(!BitcoinJob.IsCanonicalBitcoin(pool, pool.Template))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' configures bip54Coinbase, which requires the canonical BTC runtime template",
+                    pool.Id);
         }
     }
 

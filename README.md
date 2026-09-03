@@ -483,8 +483,8 @@ places each positive pool fee/donation in a separate output. The option defaults
 SOLO, database, topology and address contracts fail closed before work begins. Apply the additive
 migration and complete the [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) before enabling
 the [copy-first example](examples/bitcoin_direct_solo_pool.json). BIP 54-forward-compatible
-coinbase fields are independently enabled by default for every canonical Bitcoin pool; the guide
-documents the temporary `bip54Coinbase: false` compatibility fallback.
+coinbase shape is independently enabled by default for every canonical Bitcoin pool; the guide
+documents the temporary `bip54Coinbase: false` full-shape compatibility fallback.
 
 ## Bitcoin-family PPS
 
