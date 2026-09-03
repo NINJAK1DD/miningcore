@@ -212,10 +212,6 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         }
 
         base.Configure(pc, cc);
-
-        // ProgPoW historically enables legacy daemon RPC only through an
-        // explicit pool override; do not inherit the template default here.
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
     }
 
     public object[] GetSubscriberData(StratumConnection worker)

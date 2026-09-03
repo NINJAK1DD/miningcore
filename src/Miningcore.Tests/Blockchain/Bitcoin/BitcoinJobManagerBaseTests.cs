@@ -10,7 +10,6 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Equihash;
-using Miningcore.Blockchain.Progpow;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -205,22 +204,23 @@ public class BitcoinJobManagerBaseTests
     }
 
     [Fact]
-    public void NonCanonicalBitcoinConfigure_HasNoCachedBip54Policy()
+    public async Task NonCanonicalBitcoinUpdate_PreservesLegacyCoinbaseShape()
     {
+        ModuleInitializer.Initialize();
         using var container = BuildContainer();
-        var manager = new TestBitcoinJobManager(container,
-            MockMasterClock.FromTicks(638010200200475015),
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var manager = new TestBitcoinJobManager(container, clock,
             new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        var coin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["bitcoin"]);
         var pool = new PoolConfig
         {
-            Id = "litecoin-solo",
-            Coin = "litecoin",
-            Template = new BitcoinTemplate
-            {
-                Family = CoinFamily.Bitcoin,
-                Symbol = "LTC",
-                CanonicalName = "Litecoin",
-            },
+            Id = "noncanonical-bitcoin-solo",
+            Coin = "custom-bitcoin",
+            Address = new Key().PubKey.GetAddress(
+                ScriptPubKeyType.Segwit, Network.RegTest).ToString(),
+            Template = coin,
             Daemons = new[] { new DaemonEndpointConfig() },
             PaymentProcessing = new PoolPaymentProcessingConfig
             {
@@ -228,10 +228,39 @@ public class BitcoinJobManagerBaseTests
                 PayoutScheme = PayoutScheme.SOLO,
             },
         };
+        var poolDestination = BitcoinAddress.Create(pool.Address,
+            Network.RegTest);
 
         manager.Configure(pool, new ClusterConfig());
+        manager.PrepareJobConstruction(Network.RegTest, poolDestination);
+        manager.Enqueue(new BlockTemplate
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 101,
+            Transactions = Array.Empty<BitcoinBlockTransaction>(),
+            DefaultWitnessCommitment =
+                "6a24aa21a9ed" + new string('0', 64),
+        });
 
-        Assert.Null(manager.CachedBip54CoinbasePolicy);
+        var update = await manager.Update(CancellationToken.None);
+
+        Assert.True(update.IsNew);
+        var jobParams = Assert.IsType<object[]>(
+            manager.Current.GetJobParams(false));
+        var coinbaseHex = (string) jobParams[2] + "00000001" +
+            "00000000000000" + (string) jobParams[3];
+        var transaction = NBitcoin.Transaction.Parse(coinbaseHex,
+            Network.RegTest);
+        Assert.Equal(0u, transaction.LockTime.Value);
+        Assert.Equal(0u, Assert.Single(transaction.Inputs).Sequence.Value);
+        Assert.StartsWith("6a24aa21a9ed",
+            transaction.Outputs[0].ScriptPubKey.ToHex(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -272,23 +301,28 @@ public class BitcoinJobManagerBaseTests
     }
 
     [Theory]
-    [InlineData(null, false)]
-    [InlineData(false, false)]
-    [InlineData(true, true)]
-    public void ProgpowConfigure_RequiresExplicitLegacyDaemonOverride(
-        bool? configuredOverride, bool expected)
+    [InlineData(false, null, false)]
+    [InlineData(true, null, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, true)]
+    public void BitcoinConfigure_ResolvesLegacyTemplateAndPoolOverrides(
+        bool templateRequiresLegacyDaemon, bool? configuredOverride,
+        bool expected)
     {
         using var container = BuildContainer();
-        var manager = new TestProgpowJobManager(container,
+        var manager = new TestBitcoinJobManager(container,
             MockMasterClock.FromTicks(638010200200475015),
             new MessageBus(), Substitute.For<IExtraNonceProvider>());
         var pool = new PoolConfig
         {
-            Id = "progpow-test",
-            Template = new ProgpowCoinTemplate
+            Id = "legacy-bitcoin-test",
+            Coin = "legacy-bitcoin-test",
+            Template = new BitcoinTemplate
             {
-                Family = CoinFamily.Progpow,
-                RequiresLegacyDaemon = true,
+                Family = CoinFamily.Bitcoin,
+                Symbol = "TST",
+                CanonicalName = "Legacy Bitcoin Test",
+                RequiresLegacyDaemon = templateRequiresLegacyDaemon,
             },
             Daemons = new[] { new DaemonEndpointConfig() },
             Extra = configuredOverride.HasValue
@@ -885,18 +919,6 @@ public class BitcoinJobManagerBaseTests
         public bool LegacyDaemonEnabled => hasLegacyDaemon;
     }
 
-    private sealed class TestProgpowJobManager : ProgpowJobManager
-    {
-        public TestProgpowJobManager(IComponentContext ctx,
-            IMasterClock clock, IMessageBus messageBus,
-            IExtraNonceProvider extraNonceProvider) :
-            base(ctx, clock, messageBus, extraNonceProvider)
-        {
-        }
-
-        public bool LegacyDaemonEnabled => hasLegacyDaemon;
-    }
-
     private sealed class TestBitcoinJobManager : BitcoinJobManager
     {
         public TestBitcoinJobManager(IComponentContext ctx, IMasterClock clock,
@@ -920,6 +942,7 @@ public class BitcoinJobManagerBaseTests
         public bool Persisted { get; private set; }
         public Share PersistedCandidate { get; private set; }
         public BitcoinJob Current => currentJob;
+        public bool LegacyDaemonEnabled => hasLegacyDaemon;
 
         public void PrepareJobConstruction(Network jobNetwork,
             IDestination destination)
