@@ -131,6 +131,10 @@ public static class SerializationExtensions
         $"Type '{type.FullName}' uses {feature}, which payment extension " +
         "contract discovery does not support");
 
+    /// <summary>
+    /// Attempts to bind extension data while preserving the original error.
+    /// A null source is a successful no-op with a default result value.
+    /// </summary>
     public static bool TryExtensionDataAs<T>(
         this IDictionary<string, object> extra, out T value,
         out Exception error, params string[] wrappers)

@@ -51,6 +51,17 @@ public class BitcoinDirectSoloConfigurationTests
     }
 
     [Fact]
+    public void DisabledPool_DoesNotBindOrResolveDirectSoloPolicy()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Enabled = false;
+        config.Pools[0].Extra["soloCoinbasePayout"] = true;
+        config.Pools[0].Extra["maxActiveJobs"] = "not-an-integer";
+
+        Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
+    }
+
+    [Fact]
     public void ImplicitDefaultFailure_ExplainsCustodialOptOut()
     {
         var config = CreateConfig();

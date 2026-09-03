@@ -78,6 +78,19 @@ public class SerializationExtensionsTests : TestBase
         Assert.Null(result.Extra.SafeExtensionDataAs<Simple>());
     }
 
+    [Fact]
+    public void TryExtensionData_NullSourceIsSuccessfulNoOp()
+    {
+        IDictionary<string, object> source = null;
+
+        var success = source.TryExtensionDataAs(
+            out Simple extra, out var error);
+
+        Assert.True(success);
+        Assert.Null(extra);
+        Assert.Null(error);
+    }
+
     class Wrapped
     {
         public int Baz { get; set; }

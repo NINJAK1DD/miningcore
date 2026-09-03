@@ -105,13 +105,45 @@ public class BitcoinJobManagerBaseTests
 
         manager.Configure(pool, new ClusterConfig());
 
-        Assert.Equal(expected, manager.Bip54CoinbaseEnabled);
+        Assert.Equal(expected,
+            manager.CachedBip54CoinbasePolicy);
 
         pool.Extra = new Dictionary<string, object>
         {
             ["bip54Coinbase"] = !expected,
         };
-        Assert.Equal(expected, manager.Bip54CoinbaseEnabled);
+        Assert.Equal(expected,
+            manager.CachedBip54CoinbasePolicy);
+    }
+
+    [Fact]
+    public void NonCanonicalBitcoinConfigure_HasNoCachedBip54Policy()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "litecoin-solo",
+            Coin = "litecoin",
+            Template = new BitcoinTemplate
+            {
+                Family = CoinFamily.Bitcoin,
+                Symbol = "LTC",
+                CanonicalName = "Litecoin",
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.SOLO,
+            },
+        };
+
+        manager.Configure(pool, new ClusterConfig());
+
+        Assert.Null(manager.CachedBip54CoinbasePolicy);
     }
 
     [Theory]

@@ -37,10 +37,13 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
     private bool bip54CoinbaseEnabled;
     private bool directCoinbasePayoutEnabled;
-    internal bool Bip54CoinbaseEnabled => bip54CoinbaseEnabled;
-    internal event Action<Exception> DirectJobConstructionFailed;
     private BitcoinDirectCoinbaseRecipient[] directCoinbaseRecipients =
         Array.Empty<BitcoinDirectCoinbaseRecipient>();
+    internal bool? CachedBip54CoinbasePolicy => poolConfig != null &&
+        coin != null && BitcoinJob.IsCanonicalBitcoin(poolConfig, coin)
+            ? bip54CoinbaseEnabled
+            : null;
+    internal event Action<Exception> DirectJobConstructionFailed;
 
     protected override object[] GetBlockTemplateParams()
     {
@@ -507,22 +510,17 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<BitcoinTemplate>();
-        pc.Extra.TryExtensionDataAs(out extraPoolConfig,
-            out var bindingError);
-        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
-
-        if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
-            maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
-
         base.Configure(pc, cc);
 
         directCoinbasePayoutEnabled = BitcoinPoolConfigPolicy
-            .ResolveSoloCoinbasePayout(pc, extraPoolConfig, bindingError);
+            .ResolveSoloCoinbasePayout(pc, extraPoolConfig,
+                extraPoolConfigBindingError);
 
         if(BitcoinJob.IsCanonicalBitcoin(pc, coin))
         {
             bip54CoinbaseEnabled = BitcoinPoolConfigPolicy
-                .ResolveBip54Coinbase(pc, extraPoolConfig, bindingError);
+                .ResolveBip54Coinbase(pc, extraPoolConfig,
+                    extraPoolConfigBindingError);
             if(bip54CoinbaseEnabled)
                 logger.Info(() => "Canonical Bitcoin coinbase policy: BIP 54-compatible " +
                     "locktime/sequence fields enabled; value-bearing outputs precede " +
