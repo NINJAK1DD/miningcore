@@ -399,7 +399,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         };
 
     public bool DirectCoinbasePayoutEnabled =>
-        extraPoolConfig?.SoloCoinbasePayout == true;
+        BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(poolConfig,
+            extraPoolConfig);
 
     protected override IDestination AddressToDestination(string address,
         BitcoinAddressType? addressType)

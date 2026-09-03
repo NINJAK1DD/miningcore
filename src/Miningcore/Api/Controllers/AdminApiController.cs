@@ -240,9 +240,10 @@ public class AdminApiController : ApiControllerBase
                 Pool = pool,
                 IsPps = pool.Config.PaymentProcessing?.PayoutScheme ==
                     PayoutScheme.PPS,
-                IsDirectSolo = pool.Config.Extra
-                    .SafeExtensionDataAs<BitcoinPoolConfigExtra>()?
-                    .SoloCoinbasePayout == true,
+                IsDirectSolo = BitcoinPoolConfigExtra
+                    .ResolveSoloCoinbasePayout(pool.Config,
+                        pool.Config.Extra
+                            .SafeExtensionDataAs<BitcoinPoolConfigExtra>()),
             })
             .FirstOrDefault(x => x.Pool.Config.Enabled &&
                 (x.IsPps || x.IsDirectSolo));

@@ -48,7 +48,12 @@
       "id": "bitcoin-solo",
       "enabled": true,
       "coin": "bitcoin",
+      // Retained for historical custodial blocks and daemon validation. New direct
+      // blocks pay the address supplied by each authorized miner.
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      // Canonical Bitcoin SOLO defaults to true in v0.3.0. Keep this explicit so
+      // the example's non-custodial settlement contract is visible.
+      "soloCoinbasePayout": true,
       // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
       "rewardRecipients": [
         {

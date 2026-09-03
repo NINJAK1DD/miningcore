@@ -2318,15 +2318,16 @@ public class Program : ProcessStatusBackgroundService
 
     internal static bool RequiresBitcoinDirectSoloPersistence(
         ClusterConfig config) => config?.Pools?.Any(pool => pool.Enabled &&
-        pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()?
-            .SoloCoinbasePayout == true) == true;
+        BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(pool,
+            pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>())) == true;
 
     internal static void ValidateBitcoinDirectSoloDeployment(
         ClusterConfig config, bool requireAssignedTemplates = false)
     {
         var directPools = config?.Pools?.Where(pool => pool.Enabled &&
-            pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()?
-                .SoloCoinbasePayout == true).ToArray() ??
+            BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(pool,
+                pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()))
+            .ToArray() ??
             Array.Empty<PoolConfig>();
         if(directPools.Length == 0)
             return;
@@ -2478,7 +2479,7 @@ public class Program : ProcessStatusBackgroundService
             blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct));
         if(!ready)
             throw new PoolStartupException(
-                "Bitcoin direct SOLO coinbase payout requires the direct-settlement block schema. Apply add_bitcoin_direct_solo.sql before enabling soloCoinbasePayout.");
+                "Bitcoin direct SOLO coinbase payout requires the direct-settlement block schema. Apply add_bitcoin_direct_solo.sql before starting canonical Bitcoin SOLO, or explicitly set soloCoinbasePayout to false to retain custodial settlement.");
     }
 
     private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)

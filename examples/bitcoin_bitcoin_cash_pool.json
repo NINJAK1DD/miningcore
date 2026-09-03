@@ -49,7 +49,10 @@
       "id": "bitcoin-solo",
       "enabled": true,
       "coin": "bitcoin",
+      // Retained for historical custodial blocks and daemon validation. New direct
+      // blocks pay the address supplied by each authorized miner.
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      "soloCoinbasePayout": true,
       "rewardRecipients": [
         {
           "address": "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",

@@ -34,17 +34,48 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Evaluate v0.3.0-rc.2 | [v0.3.0-rc.2 highlights](#v030-rc2-highlights) |
+| Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |
 | Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
 | v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
-| Enable Bitcoin direct-coinbase SOLO on an existing database | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
+| Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
+
+## v0.3.0 highlights
+
+`v0.3.0` promotes the two v0.3.0 release candidates to the stable minor release. It adds current
+DigiByte Odocrypt mining, default Bitcoin direct-coinbase SOLO settlement and a BIP
+54-forward-compatible canonical Bitcoin coinbase shape. The release candidates completed the full
+automated build, database, packaging, container and portability suites; controlled live-soak
+testing also confirmed synchronized daemons, normal miner authorization and accepted-share flow,
+direct-SOLO operation, expected BIP 54 presentation and clean accounting logs.
+
+`v0.3.0` changes the default for the exact canonical `bitcoin` template when it uses
+`payoutScheme: "SOLO"`: omitting `soloCoinbasePayout` now enables direct settlement. Before
+upgrading, every existing Bitcoin SOLO operator must choose one fail-closed path:
+
+- Apply `add_bitcoin_direct_solo.sql`, satisfy the direct-SOLO prerequisites and accept the new
+  default. Operators already running direct settlement on RC.2 need no further migration.
+- Add `soloCoinbasePayout: false` before starting `v0.3.0` to retain the previous custodial flow;
+  no direct-settlement migration is required for that explicit fallback.
+
+The default does not apply to any other coin or payout scheme. Existing Bitcoin relay deployments
+must use the explicit `false` fallback because direct settlement does not support relay topologies.
+Startup checks payment processing, topology and the complete database contract before reserving
+Stratum listeners, so an unprepared upgrade fails closed instead of silently reverting to custody.
+
+Operators upgrading from `v0.3.0-rc.1` should also review the RC.2 Bitcoin coinbase compatibility
+change below. Operators upgrading directly from `v0.2.1` or earlier must complete the RC.1 upgrade
+boundary and all cumulative migrations.
+
+The cumulative operational changes remain documented in the
+[RC.2](#v030-rc2-highlights) and [RC.1](#v030-rc1-highlights) sections. `bip54Coinbase` remains
+default-on only for canonical Bitcoin and is independent of the direct-settlement choice.
 
 ## v0.3.0-rc.2 highlights
 
@@ -343,10 +374,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.3.0-rc.2`. Substitute the version you selected.
+The examples below use `v0.3.0`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.2
+export MININGCORE_VERSION=v0.3.0
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -712,7 +743,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.2  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.3.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1633,7 +1664,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.3.0-rc.2  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.3.0  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1696,7 +1727,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.3.0-rc.2
+export TAG=v0.3.0
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

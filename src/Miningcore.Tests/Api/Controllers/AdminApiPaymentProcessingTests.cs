@@ -98,6 +98,42 @@ public class AdminApiPaymentProcessingTests
         Assert.False(ordinary.PaymentProcessing.Enabled);
     }
 
+    [Fact]
+    public void BulkDisable_ProtectsDefaultBitcoinDirectSolo()
+    {
+        var direct = Pool("direct-default", PayoutScheme.SOLO, true);
+        direct.Coin = "bitcoin";
+        var ordinary = Pool("ordinary", PayoutScheme.PPLNS, true);
+        var controller = CreateController(true, direct, ordinary);
+
+        var error = Assert.Throws<ApiException>(() =>
+            controller.DisablePoolsPaymentProcessing());
+
+        Assert.Equal(409, error.ResponseStatusCode);
+        Assert.Contains(
+            "Cannot disable payment processing while direct-SOLO pool 'direct-default'",
+            error.Message);
+        Assert.True(direct.PaymentProcessing.Enabled);
+        Assert.True(ordinary.PaymentProcessing.Enabled);
+    }
+
+    [Fact]
+    public void ExplicitFalseBitcoinSolo_RemainsAdministrativelyControllable()
+    {
+        var custodial = Pool("custodial", PayoutScheme.SOLO, true);
+        custodial.Coin = "bitcoin";
+        custodial.Extra = new Dictionary<string, object>
+        {
+            ["soloCoinbasePayout"] = false,
+        };
+        var controller = CreateController(true, custodial);
+
+        var result = controller.DisablePoolPaymentProcessing(custodial.Id);
+
+        Assert.Equal("Ok", result.Value);
+        Assert.False(custodial.PaymentProcessing.Enabled);
+    }
+
     private static PoolConfig Pool(string id, PayoutScheme scheme, bool enabled,
         bool directCoinbase = false)
     {

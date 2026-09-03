@@ -14,7 +14,7 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinDirectSoloConfigurationTests
 {
     [Fact]
-    public void Option_DefaultsOffAndDoesNotRequireSchema()
+    public void CanonicalBitcoinSolo_DefaultsOnAndRequiresSchema()
     {
         var config = CreateConfig();
         config.Pools[0].Extra = null;
@@ -22,9 +22,40 @@ public class BitcoinDirectSoloConfigurationTests
         Program.ValidateBitcoinDirectSoloDeployment(config,
             requireAssignedTemplates: true);
 
-        Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
-        Assert.False(new BitcoinPoolConfigExtra().SoloCoinbasePayout);
+        Assert.True(Program.RequiresBitcoinDirectSoloPersistence(config));
+        Assert.True(new BitcoinPoolConfigExtra().SoloCoinbasePayout);
         Assert.True(new BitcoinPoolConfigExtra().Bip54Coinbase);
+    }
+
+    [Fact]
+    public void ExplicitFalse_RetainsCustodialSettlementWithoutSchema()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra["soloCoinbasePayout"] = false;
+
+        Program.ValidateBitcoinDirectSoloDeployment(config,
+            requireAssignedTemplates: true);
+
+        Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
+    }
+
+    [Theory]
+    [InlineData("litecoin", PayoutScheme.SOLO)]
+    [InlineData("bitcoin", PayoutScheme.PPS)]
+    [InlineData("bitcoin", PayoutScheme.PROP)]
+    [InlineData("bitcoin", PayoutScheme.PPLNS)]
+    public void Default_DoesNotEscapeCanonicalBitcoinSolo(string coin,
+        PayoutScheme scheme)
+    {
+        var config = CreateConfig();
+        config.Pools[0].Coin = coin;
+        config.Pools[0].PaymentProcessing.PayoutScheme = scheme;
+        config.Pools[0].Extra = null;
+
+        Program.ValidateBitcoinDirectSoloDeployment(config,
+            requireAssignedTemplates: true);
+
+        Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
     }
 
     [Fact]
