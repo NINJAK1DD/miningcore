@@ -25,6 +25,51 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinJobManagerBaseTests
 {
     [Theory]
+    [InlineData(null, true)]
+    [InlineData(false, false)]
+    public void BitcoinConfigure_ResolvesAndCachesDirectSoloPolicy(
+        bool? configured, bool expected)
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "bitcoin-solo",
+            Coin = "bitcoin",
+            Template = new BitcoinTemplate
+            {
+                Family = CoinFamily.Bitcoin,
+                Symbol = "BTC",
+                CanonicalName = "Bitcoin",
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.SOLO,
+            },
+            Extra = configured.HasValue
+                ? new Dictionary<string, object>
+                {
+                    ["soloCoinbasePayout"] = configured.Value,
+                }
+                : null,
+        };
+
+        manager.Configure(pool, new ClusterConfig());
+
+        Assert.Equal(expected, manager.DirectCoinbasePayoutEnabled);
+
+        pool.Extra = new Dictionary<string, object>
+        {
+            ["soloCoinbasePayout"] = !expected,
+        };
+        Assert.Equal(expected, manager.DirectCoinbasePayoutEnabled);
+    }
+
+    [Theory]
     [InlineData(null, false)]
     [InlineData(false, false)]
     [InlineData(true, true)]

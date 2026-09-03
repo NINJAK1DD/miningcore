@@ -215,11 +215,11 @@ direct-settlement database schema.
 
 If you deliberately substituted the older `v0.2.1` release in this quick start, skip this entire
 subsection: that binary does not implement `soloCoinbasePayout`. Upgrade the binary and database
-before adding or enabling the setting. Only a fresh database created from `v0.3.0-rc.1` or later has
+before relying on the v0.3.0 default. Only a fresh database created from `v0.3.0-rc.1` or later has
 the required schema from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-PR
-#135 build—keep `soloCoinbasePayout` disabled until the verified candidate migration has completed;
-use the [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
-`createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
+#135 build—explicitly set `soloCoinbasePayout: false` until the verified candidate migration has
+completed; use the [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration),
+not `createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
 
 The guarded command blocks in this section require an account for which `sudo -v` succeeds. If a
 command-specific sudoers policy intentionally denies general credential validation, have an
@@ -248,8 +248,8 @@ else
 fi
 ```
 
-If selected, continue only after this block prints `READY`. Keep the reported backup until the
-commissioned configuration and rollback plan have been verified.
+After choosing this direct-SOLO example, continue only after this block prints `READY`. Keep the
+reported backup until the commissioned configuration and rollback plan have been verified.
 
 While editing below, keep both cluster- and pool-level payment processing enabled, retain
 `payoutScheme: "SOLO"`, replace the pool wallet, daemon credentials and positive recipient address,

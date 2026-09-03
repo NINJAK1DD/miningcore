@@ -916,7 +916,8 @@ public class BitcoinJob
         txVersion = coin.CoinbaseTxVersion;
         var isCanonicalBitcoin = IsCanonicalBitcoin(pc, coin);
         emitBip54CoinbaseFields = isCanonicalBitcoin &&
-            BitcoinPoolConfigExtra.ResolveBip54Coinbase(extraPoolConfig);
+            BitcoinPoolConfigExtra.ResolveBip54Coinbase(pc,
+                extraPoolConfig);
         // The compatibility switch restores the complete pre-change coinbase
         // shape, including witness-output placement.
         witnessCommitmentLast = emitBip54CoinbaseFields;

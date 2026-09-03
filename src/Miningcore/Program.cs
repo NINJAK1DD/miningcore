@@ -2324,51 +2324,90 @@ public class Program : ProcessStatusBackgroundService
     internal static void ValidateBitcoinDirectSoloDeployment(
         ClusterConfig config, bool requireAssignedTemplates = false)
     {
-        var directPools = config?.Pools?.Where(pool => pool.Enabled &&
-            BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(pool,
-                pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()))
-            .ToArray() ??
-            Array.Empty<PoolConfig>();
+        var directPools = (config?.Pools ?? Array.Empty<PoolConfig>())
+            .Where(pool => pool.Enabled)
+            .Select(pool => new
+            {
+                Pool = pool,
+                Mode = BitcoinPoolConfigExtra.ResolveSoloCoinbasePayoutMode(
+                    pool, pool.Extra
+                        .SafeExtensionDataAs<BitcoinPoolConfigExtra>()),
+            })
+            .Where(item => item.Mode !=
+                BitcoinDirectSoloPayoutMode.Disabled)
+            .ToArray();
         if(directPools.Length == 0)
             return;
 
+        var implicitDefaultHint = directPools.Any(item => item.Mode ==
+            BitcoinDirectSoloPayoutMode.Implicit)
+            ? " One or more canonical Bitcoin SOLO pools defaulted to " +
+              "direct settlement in v0.3.0 because soloCoinbasePayout " +
+              "was omitted; set soloCoinbasePayout to false on those " +
+              "pools to retain custodial settlement."
+            : string.Empty;
+
         if(config.Persistence?.Postgres == null)
             throw new PoolStartupException(
-                "Bitcoin direct SOLO coinbase payout requires PostgreSQL for synchronous accepted-block audit persistence.");
+                "Bitcoin direct SOLO coinbase payout requires PostgreSQL " +
+                "for synchronous accepted-block audit persistence." +
+                implicitDefaultHint);
         if(config.PaymentProcessing?.Enabled != true)
             throw new PoolStartupException(
-                "Bitcoin direct SOLO coinbase payout requires cluster-level payment processing for maturity, reorg and notification tracking.");
+                "Bitcoin direct SOLO coinbase payout requires cluster-level " +
+                "payment processing for maturity, reorg and notification tracking." +
+                implicitDefaultHint);
         if(config.ShareRelay != null || config.ShareRelays?.Length > 0)
             throw new PoolStartupException(
-                "Bitcoin direct SOLO coinbase payout does not support share-relay sender, receiver or recorder topologies in its initial BTC-only contract.");
+                "Bitcoin direct SOLO coinbase payout does not support " +
+                "share-relay sender, receiver or recorder topologies in its " +
+                "initial BTC-only contract." +
+                implicitDefaultHint);
 
-        foreach(var pool in directPools)
+        foreach(var directPool in directPools)
         {
+            var pool = directPool.Pool;
+            var implicitPoolHint = directPool.Mode ==
+                BitcoinDirectSoloPayoutMode.Implicit
+                ? " This pool defaulted to direct settlement in v0.3.0 " +
+                  "because soloCoinbasePayout was omitted; set " +
+                  "soloCoinbasePayout to false to retain custodial " +
+                  "settlement."
+                : string.Empty;
+
             if(!string.Equals(pool.Coin, "bitcoin",
                    StringComparison.Ordinal))
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' enables direct SOLO coinbase payout, which is supported only by the canonical 'bitcoin' template",
+                    $"Pool '{pool.Id}' enables direct SOLO coinbase payout, " +
+                    "which is supported only by the canonical 'bitcoin' template" +
+                    implicitPoolHint,
                     pool.Id);
             if(pool.EnableInternalStratum != true)
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the internal Stratum server",
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the internal Stratum server" +
+                    implicitPoolHint,
                     pool.Id);
             if(pool.PaymentProcessing?.Enabled != true ||
                pool.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO)
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct coinbase payout requires enabled pool-level payment processing with payoutScheme 'SOLO'",
+                    $"Pool '{pool.Id}' direct coinbase payout requires enabled " +
+                    "pool-level payment processing with payoutScheme 'SOLO'" +
+                    implicitPoolHint,
                     pool.Id);
             if(MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled ==
                true)
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct SOLO coinbase payout does not support merged-mining topology",
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout does not support merged-mining topology" +
+                    implicitPoolHint,
                     pool.Id);
 
             if(pool.Template == null)
             {
                 if(requireAssignedTemplates)
                     throw new PoolStartupException(
-                        $"Pool '{pool.Id}' direct SOLO coinbase payout template was not assigned before its runtime contract was checked",
+                        $"Pool '{pool.Id}' direct SOLO coinbase payout template " +
+                        "was not assigned before its runtime contract was checked" +
+                        implicitPoolHint,
                         pool.Id);
             }
             else if(pool.Template.Family != CoinFamily.Bitcoin ||
@@ -2377,7 +2416,8 @@ public class Program : ProcessStatusBackgroundService
                     !string.Equals(pool.Template.CanonicalName, "Bitcoin",
                         StringComparison.Ordinal))
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the canonical BTC runtime template",
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the canonical BTC runtime template" +
+                    implicitPoolHint,
                     pool.Id);
 
             var recipients = pool.RewardRecipients ??
@@ -2386,7 +2426,9 @@ public class Program : ProcessStatusBackgroundService
                     x.Percentage > 0 &&
                     string.IsNullOrWhiteSpace(x.Address)))
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct SOLO coinbase payout contains a null, negative or addressless positive reward recipient",
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout contains a " +
+                    "null, negative or addressless positive reward recipient" +
+                    implicitPoolHint,
                     pool.Id);
 
             decimal total;
@@ -2398,13 +2440,15 @@ public class Program : ProcessStatusBackgroundService
             catch(OverflowException ex)
             {
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct SOLO recipient percentages exceed the supported range",
+                    $"Pool '{pool.Id}' direct SOLO recipient percentages exceed the supported range" +
+                    implicitPoolHint,
                     pool.Id, ex);
             }
 
             if(total >= 100m)
                 throw new PoolStartupException(
-                    $"Pool '{pool.Id}' direct SOLO recipient percentages must total less than 100%",
+                    $"Pool '{pool.Id}' direct SOLO recipient percentages must total less than 100%" +
+                    implicitPoolHint,
                     pool.Id);
         }
     }

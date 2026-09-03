@@ -35,6 +35,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     private BitcoinTemplate coin;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
+    private bool directCoinbasePayoutEnabled;
     internal event Action<Exception> DirectJobConstructionFailed;
     private BitcoinDirectCoinbaseRecipient[] directCoinbaseRecipients =
         Array.Empty<BitcoinDirectCoinbaseRecipient>();
@@ -399,8 +400,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         };
 
     public bool DirectCoinbasePayoutEnabled =>
-        BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(poolConfig,
-            extraPoolConfig);
+        directCoinbasePayoutEnabled;
 
     protected override IDestination AddressToDestination(string address,
         BitcoinAddressType? addressType)
@@ -512,9 +512,13 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         base.Configure(pc, cc);
 
+        directCoinbasePayoutEnabled = BitcoinPoolConfigExtra
+            .ResolveSoloCoinbasePayout(pc, extraPoolConfig);
+
         if(BitcoinJob.IsCanonicalBitcoin(pc, coin))
         {
-            if(BitcoinPoolConfigExtra.ResolveBip54Coinbase(extraPoolConfig))
+            if(BitcoinPoolConfigExtra.ResolveBip54Coinbase(pc,
+                   extraPoolConfig))
                 logger.Info(() => "Canonical Bitcoin coinbase policy: BIP 54-compatible " +
                     "locktime/sequence fields enabled; value-bearing outputs precede " +
                     "the BIP 141 witness commitment");

@@ -1,11 +1,18 @@
 using Miningcore.Configuration;
+using Miningcore.Mining;
 using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.Bitcoin.Configuration;
 
+internal enum BitcoinDirectSoloPayoutMode
+{
+    Disabled,
+    Implicit,
+    Explicit,
+}
+
 public class BitcoinPoolConfigExtra
 {
-    internal const bool SoloCoinbasePayoutDefault = true;
     internal const bool Bip54CoinbaseDefault = true;
 
     /// <summary>
@@ -60,7 +67,7 @@ public class BitcoinPoolConfigExtra
     /// coinbase transaction. Enabled by default for canonical Bitcoin SOLO
     /// pools. Set to false to retain custodial settlement.
     /// </summary>
-    public bool SoloCoinbasePayout { get; set; } = SoloCoinbasePayoutDefault;
+    public bool? SoloCoinbasePayout { get; set; }
 
     /// <summary>
     /// Emit the BIP 54-forward-compatible locktime/sequence fields and
@@ -68,20 +75,63 @@ public class BitcoinPoolConfigExtra
     /// Enabled by default. Set to false only as a temporary compatibility
     /// fallback for an incompatible miner or proxy.
     /// </summary>
-    public bool Bip54Coinbase { get; set; } = Bip54CoinbaseDefault;
+    public bool? Bip54Coinbase { get; set; }
 
-    internal static bool ResolveBip54Coinbase(
-        BitcoinPoolConfigExtra config) => config?.Bip54Coinbase ??
-        Bip54CoinbaseDefault;
-
-    internal static bool ResolveSoloCoinbasePayout(PoolConfig pool,
+    internal static bool ResolveBip54Coinbase(PoolConfig pool,
         BitcoinPoolConfigExtra config)
     {
-        if(pool?.Extra?.ContainsKey("soloCoinbasePayout") == true)
-            return config?.SoloCoinbasePayout == true;
+        if(config?.Bip54Coinbase is bool configured)
+            return configured;
 
-        return SoloCoinbasePayoutDefault &&
-            string.Equals(pool?.Coin, "bitcoin", StringComparison.Ordinal) &&
-            pool.PaymentProcessing?.PayoutScheme == PayoutScheme.SOLO;
+        if(HasRawProperty(pool, "bip54Coinbase"))
+        {
+            throw new PoolStartupException(
+                $"Pool '{pool.Id}' could not safely bind Bitcoin pool " +
+                "extension data while bip54Coinbase is present; correct " +
+                "malformed or mistyped extension fields before startup",
+                pool.Id);
+        }
+
+        return Bip54CoinbaseDefault;
     }
+
+    internal static bool ResolveSoloCoinbasePayout(PoolConfig pool,
+        BitcoinPoolConfigExtra config) => ResolveSoloCoinbasePayoutMode(pool,
+        config) != BitcoinDirectSoloPayoutMode.Disabled;
+
+    internal static BitcoinDirectSoloPayoutMode
+        ResolveSoloCoinbasePayoutMode(PoolConfig pool,
+            BitcoinPoolConfigExtra config)
+    {
+        if(config?.SoloCoinbasePayout is bool configured)
+        {
+            return configured ? BitcoinDirectSoloPayoutMode.Explicit :
+                BitcoinDirectSoloPayoutMode.Disabled;
+        }
+
+        // The raw loader owns canonical casing and Boolean-token validation.
+        // Seeing the key without a bound nullable value means extension binding
+        // failed; never reinterpret an explicit operator choice as the default.
+        if(HasRawProperty(pool, "soloCoinbasePayout"))
+        {
+            throw new PoolStartupException(
+                $"Pool '{pool.Id}' could not safely bind Bitcoin pool " +
+                "extension data while soloCoinbasePayout is present; " +
+                "correct malformed or mistyped extension fields before startup",
+                pool.Id);
+        }
+
+        // Runtime template identity is not assigned during the first config
+        // pass. ValidateBitcoinDirectSoloDeployment owns the stricter family,
+        // symbol and canonical-name check before listeners are reserved.
+        return string.Equals(pool?.Coin, "bitcoin",
+                   StringComparison.Ordinal) &&
+               pool.PaymentProcessing?.PayoutScheme == PayoutScheme.SOLO
+            ? BitcoinDirectSoloPayoutMode.Implicit
+            : BitcoinDirectSoloPayoutMode.Disabled;
+    }
+
+    private static bool HasRawProperty(PoolConfig pool, string name) =>
+        pool?.Extra?.Keys.Any(key => string.Equals(key, name,
+            StringComparison.OrdinalIgnoreCase)) == true;
 }

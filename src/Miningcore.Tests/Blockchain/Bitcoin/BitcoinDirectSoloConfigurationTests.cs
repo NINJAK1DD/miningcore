@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Miningcore;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Extensions;
 using Miningcore.Mining;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -23,12 +26,17 @@ public class BitcoinDirectSoloConfigurationTests
             requireAssignedTemplates: true);
 
         Assert.True(Program.RequiresBitcoinDirectSoloPersistence(config));
-        Assert.True(new BitcoinPoolConfigExtra().SoloCoinbasePayout);
-        Assert.True(new BitcoinPoolConfigExtra().Bip54Coinbase);
+        var defaults = new BitcoinPoolConfigExtra();
+        Assert.Null(defaults.SoloCoinbasePayout);
+        Assert.Null(defaults.Bip54Coinbase);
+        Assert.True(BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(
+            config.Pools[0], defaults));
+        Assert.True(BitcoinPoolConfigExtra.ResolveBip54Coinbase(
+            config.Pools[0], defaults));
     }
 
     [Fact]
-    public void ExplicitFalse_RetainsCustodialSettlementWithoutSchema()
+    public async Task ExplicitFalse_RetainsCustodialSettlementWithoutSchema()
     {
         var config = CreateConfig();
         config.Pools[0].Extra["soloCoinbasePayout"] = false;
@@ -37,6 +45,39 @@ public class BitcoinDirectSoloConfigurationTests
             requireAssignedTemplates: true);
 
         Assert.False(Program.RequiresBitcoinDirectSoloPersistence(config));
+        await Program.EnsureBitcoinDirectSoloSchemaAsync(config, null, null,
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public void ImplicitDefaultFailure_ExplainsCustodialOptOut()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra = null;
+        config.Pools[0].EnableInternalStratum = false;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinDirectSoloDeployment(config,
+                requireAssignedTemplates: true));
+
+        Assert.Contains("defaulted to direct settlement in v0.3.0",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("set soloCoinbasePayout to false",
+            error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExplicitFailure_DoesNotMisreportImplicitDefault()
+    {
+        var config = CreateConfig();
+        config.Pools[0].EnableInternalStratum = false;
+
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinDirectSoloDeployment(config,
+                requireAssignedTemplates: true));
+
+        Assert.DoesNotContain("defaulted to direct settlement",
+            error.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -102,16 +143,23 @@ public class BitcoinDirectSoloConfigurationTests
     public void MissingPostgresOrClusterPaymentProcessing_IsRejected()
     {
         var config = CreateConfig();
+        config.Pools[0].Extra = null;
         config.Persistence = null;
-        Assert.Contains("requires PostgreSQL",
-            Assert.Throws<PoolStartupException>(() =>
-                Program.ValidateBitcoinDirectSoloDeployment(config)).Message);
+        var postgresError = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinDirectSoloDeployment(config));
+        Assert.Contains("requires PostgreSQL", postgresError.Message);
+        Assert.Contains("defaulted to direct settlement in v0.3.0",
+            postgresError.Message);
 
         config = CreateConfig();
+        config.Pools[0].Extra = null;
         config.PaymentProcessing.Enabled = false;
+        var paymentError = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinDirectSoloDeployment(config));
         Assert.Contains("cluster-level payment processing",
-            Assert.Throws<PoolStartupException>(() =>
-                Program.ValidateBitcoinDirectSoloDeployment(config)).Message);
+            paymentError.Message);
+        Assert.Contains("set soloCoinbasePayout to false",
+            paymentError.Message);
     }
 
     [Fact]
@@ -171,6 +219,70 @@ public class BitcoinDirectSoloConfigurationTests
     {
         Program.ValidateBitcoinDirectSoloSyntax(JObject.Parse(
             "{\"pools\":[{\"soloCoinbasePayout\":true}]}"));
+    }
+
+    [Fact]
+    public void ReadConfig_MiscasedOption_UsesPublicDiagnostic()
+    {
+        var path = Path.GetTempFileName();
+
+        try
+        {
+            File.WriteAllText(path,
+                "{\"pools\":[{\"SoloCoinbasePayout\":false}]}");
+
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(path, false));
+
+            Assert.StartsWith("Configuration file error:", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("canonical casing 'soloCoinbasePayout'",
+                error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void FailedExtensionBinding_CannotInvertExplicitChoice()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra["maxActiveJobs"] = "not-an-integer";
+        var extra = config.Pools[0].Extra
+            .SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+
+        Assert.Null(extra);
+        var error = Assert.Throws<PoolStartupException>(() =>
+            BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(
+                config.Pools[0], extra));
+
+        Assert.Contains("could not safely bind Bitcoin pool extension data",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("while soloCoinbasePayout is present",
+            error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FailedExtensionBinding_CannotInvertBip54CompatibilityChoice()
+    {
+        var config = CreateConfig();
+        config.Pools[0].Extra.Remove("soloCoinbasePayout");
+        config.Pools[0].Extra["bip54Coinbase"] = false;
+        config.Pools[0].Extra["maxActiveJobs"] = "not-an-integer";
+        var extra = config.Pools[0].Extra
+            .SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+
+        Assert.Null(extra);
+        var error = Assert.Throws<PoolStartupException>(() =>
+            BitcoinPoolConfigExtra.ResolveBip54Coinbase(
+                config.Pools[0], extra));
+
+        Assert.Contains("could not safely bind Bitcoin pool extension data",
+            error.Message, StringComparison.Ordinal);
+        Assert.Contains("while bip54Coinbase is present",
+            error.Message, StringComparison.Ordinal);
     }
 
     [Theory]

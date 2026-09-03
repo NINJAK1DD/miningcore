@@ -285,6 +285,16 @@ assert_file_contains 'the stable-release direct-SOLO skip boundary' \
   "$readme"
 assert_readme_prose_contains 'the quick-start direct-SOLO conditional fresh-schema boundary' \
   'Only a fresh database created from `v0.3.0-rc.1` or later has the required schema'
+assert_readme_prose_contains 'the quick-start explicit custodial migration boundary' \
+  'explicitly set `soloCoinbasePayout: false` until the verified candidate migration has completed'
+assert_readme_prose_contains 'the direct-SOLO example continuation boundary' \
+  'After choosing this direct-SOLO example, continue only after this block prints `READY`'
+if grep -Fq 'keep `soloCoinbasePayout` disabled' "$readme" ||
+   grep -Fq 'before adding or enabling the setting' "$readme" ||
+   grep -Fq 'If selected, continue only' "$readme"; then
+  echo 'The README retains stale opt-in wording for default direct SOLO' >&2
+  exit 1
+fi
 assert_file_contains 'the quick-start direct-SOLO existing-database migration route' \
   '[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration)' \
   "$readme"

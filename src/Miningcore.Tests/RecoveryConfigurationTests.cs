@@ -535,6 +535,32 @@ public class RecoveryConfigurationTests
     }
 
     [Fact]
+    public void RecoveryMode_IntentionallyIgnoresImplicitDirectSoloMiningPrerequisites()
+    {
+        var liveConfig = CreateRecoveryConfig();
+        Assert.True(Program.RequiresBitcoinDirectSoloPersistence(liveConfig));
+        var liveError = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinDirectSoloDeployment(liveConfig));
+        Assert.Contains("defaulted to direct settlement in v0.3.0",
+            liveError.Message, StringComparison.Ordinal);
+
+        var configFile = WriteTemporaryConfig(CreateRecoveryDocument());
+
+        try
+        {
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+
+            Assert.Equal("recovery-pool",
+                Assert.Single(recoveryConfig.Pools).Id);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
     public void RecoveryMode_RejectsDuplicatePoolIdentity()
     {
         var config = CreateRecoveryConfig();
