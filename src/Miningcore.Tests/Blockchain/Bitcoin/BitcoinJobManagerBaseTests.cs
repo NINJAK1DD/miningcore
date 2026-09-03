@@ -10,6 +10,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Equihash;
+using Miningcore.Blockchain.Progpow;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -263,6 +264,39 @@ public class BitcoinJobManagerBaseTests
                 },
             },
             Extra = extra,
+        };
+
+        manager.Configure(pool, new ClusterConfig());
+
+        Assert.Equal(expected, manager.LegacyDaemonEnabled);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void ProgpowConfigure_RequiresExplicitLegacyDaemonOverride(
+        bool? configuredOverride, bool expected)
+    {
+        using var container = BuildContainer();
+        var manager = new TestProgpowJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        var pool = new PoolConfig
+        {
+            Id = "progpow-test",
+            Template = new ProgpowCoinTemplate
+            {
+                Family = CoinFamily.Progpow,
+                RequiresLegacyDaemon = true,
+            },
+            Daemons = new[] { new DaemonEndpointConfig() },
+            Extra = configuredOverride.HasValue
+                ? new Dictionary<string, object>
+                {
+                    ["hasLegacyDaemon"] = configuredOverride.Value,
+                }
+                : null,
         };
 
         manager.Configure(pool, new ClusterConfig());
@@ -842,6 +876,18 @@ public class BitcoinJobManagerBaseTests
     private sealed class TestEquihashJobManager : EquihashJobManager
     {
         public TestEquihashJobManager(IComponentContext ctx,
+            IMasterClock clock, IMessageBus messageBus,
+            IExtraNonceProvider extraNonceProvider) :
+            base(ctx, clock, messageBus, extraNonceProvider)
+        {
+        }
+
+        public bool LegacyDaemonEnabled => hasLegacyDaemon;
+    }
+
+    private sealed class TestProgpowJobManager : ProgpowJobManager
+    {
+        public TestProgpowJobManager(IComponentContext ctx,
             IMasterClock clock, IMessageBus messageBus,
             IExtraNonceProvider extraNonceProvider) :
             base(ctx, clock, messageBus, extraNonceProvider)
