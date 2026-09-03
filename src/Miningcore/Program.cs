@@ -2317,21 +2317,31 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static bool RequiresBitcoinDirectSoloPersistence(
-        ClusterConfig config) => config?.Pools?.Any(pool => pool.Enabled &&
-        BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(pool,
-            pool.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>())) == true;
+        ClusterConfig config) => config?.Pools?.Any(pool =>
+    {
+        pool.Extra.TryExtensionDataAs(out BitcoinPoolConfigExtra extra,
+            out var bindingError);
+        return pool.Enabled && BitcoinPoolConfigPolicy
+            .ResolveSoloCoinbasePayout(pool, extra, bindingError);
+    }) == true;
 
     internal static void ValidateBitcoinDirectSoloDeployment(
         ClusterConfig config, bool requireAssignedTemplates = false)
     {
         var directPools = (config?.Pools ?? Array.Empty<PoolConfig>())
             .Where(pool => pool.Enabled)
-            .Select(pool => new
+            .Select(pool =>
             {
-                Pool = pool,
-                Mode = BitcoinPoolConfigExtra.ResolveSoloCoinbasePayoutMode(
-                    pool, pool.Extra
-                        .SafeExtensionDataAs<BitcoinPoolConfigExtra>()),
+                pool.Extra.TryExtensionDataAs(
+                    out BitcoinPoolConfigExtra extra,
+                    out var bindingError);
+                return new
+                {
+                    Pool = pool,
+                    Mode = BitcoinPoolConfigPolicy
+                        .ResolveSoloCoinbasePayoutMode(pool, extra,
+                            bindingError),
+                };
             })
             .Where(item => item.Mode !=
                 BitcoinDirectSoloPayoutMode.Disabled)

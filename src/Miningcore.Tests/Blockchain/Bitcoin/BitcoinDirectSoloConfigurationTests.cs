@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
@@ -29,9 +30,9 @@ public class BitcoinDirectSoloConfigurationTests
         var defaults = new BitcoinPoolConfigExtra();
         Assert.Null(defaults.SoloCoinbasePayout);
         Assert.Null(defaults.Bip54Coinbase);
-        Assert.True(BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(
+        Assert.True(BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(
             config.Pools[0], defaults));
-        Assert.True(BitcoinPoolConfigExtra.ResolveBip54Coinbase(
+        Assert.True(BitcoinPoolConfigPolicy.ResolveBip54Coinbase(
             config.Pools[0], defaults));
     }
 
@@ -250,18 +251,23 @@ public class BitcoinDirectSoloConfigurationTests
     {
         var config = CreateConfig();
         config.Pools[0].Extra["maxActiveJobs"] = "not-an-integer";
-        var extra = config.Pools[0].Extra
-            .SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+        var bound = config.Pools[0].Extra.TryExtensionDataAs(
+            out BitcoinPoolConfigExtra extra, out var bindingError);
 
+        Assert.False(bound);
         Assert.Null(extra);
+        Assert.NotNull(bindingError);
         var error = Assert.Throws<PoolStartupException>(() =>
-            BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(
-                config.Pools[0], extra));
+            BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(
+                config.Pools[0], extra, bindingError));
 
         Assert.Contains("could not safely bind Bitcoin pool extension data",
             error.Message, StringComparison.Ordinal);
         Assert.Contains("while soloCoinbasePayout is present",
             error.Message, StringComparison.Ordinal);
+        Assert.Contains("Invalid extension path: 'maxActiveJobs'",
+            error.Message, StringComparison.Ordinal);
+        Assert.Same(bindingError, error.InnerException);
     }
 
     [Fact]
@@ -271,18 +277,23 @@ public class BitcoinDirectSoloConfigurationTests
         config.Pools[0].Extra.Remove("soloCoinbasePayout");
         config.Pools[0].Extra["bip54Coinbase"] = false;
         config.Pools[0].Extra["maxActiveJobs"] = "not-an-integer";
-        var extra = config.Pools[0].Extra
-            .SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+        var bound = config.Pools[0].Extra.TryExtensionDataAs(
+            out BitcoinPoolConfigExtra extra, out var bindingError);
 
+        Assert.False(bound);
         Assert.Null(extra);
+        Assert.NotNull(bindingError);
         var error = Assert.Throws<PoolStartupException>(() =>
-            BitcoinPoolConfigExtra.ResolveBip54Coinbase(
-                config.Pools[0], extra));
+            BitcoinPoolConfigPolicy.ResolveBip54Coinbase(
+                config.Pools[0], extra, bindingError));
 
         Assert.Contains("could not safely bind Bitcoin pool extension data",
             error.Message, StringComparison.Ordinal);
         Assert.Contains("while bip54Coinbase is present",
             error.Message, StringComparison.Ordinal);
+        Assert.Contains("Invalid extension path: 'maxActiveJobs'",
+            error.Message, StringComparison.Ordinal);
+        Assert.Same(bindingError, error.InnerException);
     }
 
     [Theory]

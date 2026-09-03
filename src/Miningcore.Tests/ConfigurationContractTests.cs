@@ -560,7 +560,7 @@ public class ConfigurationContractTests
                 Assert.Equal(expectedDirect,
                     pool["soloCoinbasePayout"]?.Value<bool>());
                 Assert.Equal(expectedDirect,
-                    BitcoinPoolConfigExtra.ResolveSoloCoinbasePayout(
+                    BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(
                         configuredPool, configuredPool.Extra
                             .SafeExtensionDataAs<BitcoinPoolConfigExtra>()));
             }

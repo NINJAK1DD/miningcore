@@ -1,20 +1,10 @@
 using Miningcore.Configuration;
-using Miningcore.Mining;
 using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.Bitcoin.Configuration;
 
-internal enum BitcoinDirectSoloPayoutMode
-{
-    Disabled,
-    Implicit,
-    Explicit,
-}
-
 public class BitcoinPoolConfigExtra
 {
-    internal const bool Bip54CoinbaseDefault = true;
-
     /// <summary>
     /// Minimum confirmations required before a mined block is credited.
     /// </summary>
@@ -76,62 +66,4 @@ public class BitcoinPoolConfigExtra
     /// fallback for an incompatible miner or proxy.
     /// </summary>
     public bool? Bip54Coinbase { get; set; }
-
-    internal static bool ResolveBip54Coinbase(PoolConfig pool,
-        BitcoinPoolConfigExtra config)
-    {
-        if(config?.Bip54Coinbase is bool configured)
-            return configured;
-
-        if(HasRawProperty(pool, "bip54Coinbase"))
-        {
-            throw new PoolStartupException(
-                $"Pool '{pool.Id}' could not safely bind Bitcoin pool " +
-                "extension data while bip54Coinbase is present; correct " +
-                "malformed or mistyped extension fields before startup",
-                pool.Id);
-        }
-
-        return Bip54CoinbaseDefault;
-    }
-
-    internal static bool ResolveSoloCoinbasePayout(PoolConfig pool,
-        BitcoinPoolConfigExtra config) => ResolveSoloCoinbasePayoutMode(pool,
-        config) != BitcoinDirectSoloPayoutMode.Disabled;
-
-    internal static BitcoinDirectSoloPayoutMode
-        ResolveSoloCoinbasePayoutMode(PoolConfig pool,
-            BitcoinPoolConfigExtra config)
-    {
-        if(config?.SoloCoinbasePayout is bool configured)
-        {
-            return configured ? BitcoinDirectSoloPayoutMode.Explicit :
-                BitcoinDirectSoloPayoutMode.Disabled;
-        }
-
-        // The raw loader owns canonical casing and Boolean-token validation.
-        // Seeing the key without a bound nullable value means extension binding
-        // failed; never reinterpret an explicit operator choice as the default.
-        if(HasRawProperty(pool, "soloCoinbasePayout"))
-        {
-            throw new PoolStartupException(
-                $"Pool '{pool.Id}' could not safely bind Bitcoin pool " +
-                "extension data while soloCoinbasePayout is present; " +
-                "correct malformed or mistyped extension fields before startup",
-                pool.Id);
-        }
-
-        // Runtime template identity is not assigned during the first config
-        // pass. ValidateBitcoinDirectSoloDeployment owns the stricter family,
-        // symbol and canonical-name check before listeners are reserved.
-        return string.Equals(pool?.Coin, "bitcoin",
-                   StringComparison.Ordinal) &&
-               pool.PaymentProcessing?.PayoutScheme == PayoutScheme.SOLO
-            ? BitcoinDirectSoloPayoutMode.Implicit
-            : BitcoinDirectSoloPayoutMode.Disabled;
-    }
-
-    private static bool HasRawProperty(PoolConfig pool, string name) =>
-        pool?.Extra?.Keys.Any(key => string.Equals(key, name,
-            StringComparison.OrdinalIgnoreCase)) == true;
 }

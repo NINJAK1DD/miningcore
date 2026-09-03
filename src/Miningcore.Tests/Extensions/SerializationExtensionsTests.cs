@@ -46,6 +46,38 @@ public class SerializationExtensionsTests : TestBase
         Assert.Equal(42, extra.Baz);
     }
 
+    [Fact]
+    public void TryExtensionData_ReturnsSuccessfulBinding()
+    {
+        var result = JsonConvert.DeserializeObject<Foo>(
+            "{ \"bar\": 1, \"baz\": 42 }");
+
+        var success = result!.Extra.TryExtensionDataAs(
+            out Simple extra, out var error);
+
+        Assert.True(success);
+        Assert.NotNull(extra);
+        Assert.Equal(42, extra.Baz);
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void TryExtensionData_PreservesBindingFailure()
+    {
+        var result = JsonConvert.DeserializeObject<Foo>(
+            "{ \"bar\": 1, \"baz\": \"not-an-integer\" }");
+
+        var success = result!.Extra.TryExtensionDataAs(
+            out Simple extra, out var error);
+
+        Assert.False(success);
+        Assert.Null(extra);
+        Assert.NotNull(error);
+        Assert.Contains("baz", error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Null(result.Extra.SafeExtensionDataAs<Simple>());
+    }
+
     class Wrapped
     {
         public int Baz { get; set; }

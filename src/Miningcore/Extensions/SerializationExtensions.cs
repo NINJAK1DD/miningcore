@@ -131,10 +131,15 @@ public static class SerializationExtensions
         $"Type '{type.FullName}' uses {feature}, which payment extension " +
         "contract discovery does not support");
 
-    public static T SafeExtensionDataAs<T>(this IDictionary<string, object> extra, params string[] wrappers)
+    public static bool TryExtensionDataAs<T>(
+        this IDictionary<string, object> extra, out T value,
+        out Exception error, params string[] wrappers)
     {
+        value = default;
+        error = null;
+
         if(extra == null)
-            return default;
+            return true;
 
         try
         {
@@ -152,15 +157,22 @@ public static class SerializationExtensions
                     throw new NotSupportedException("Unsupported child element type");
             }
 
-            return JToken.FromObject(o).ToObject<T>(serializer);
+            value = JToken.FromObject(o).ToObject<T>(serializer);
+            return true;
         }
 
-        catch
+        catch(Exception ex)
         {
-            // ignored
+            error = ex;
+            return false;
         }
+    }
 
-        return default;
+    public static T SafeExtensionDataAs<T>(this IDictionary<string, object> extra, params string[] wrappers)
+    {
+        TryExtensionDataAs(extra, out T value, out _, wrappers);
+
+        return value;
     }
 }
 

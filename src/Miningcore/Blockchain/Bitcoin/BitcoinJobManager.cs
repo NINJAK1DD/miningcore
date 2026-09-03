@@ -35,7 +35,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     private BitcoinTemplate coin;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
+    private bool bip54CoinbaseEnabled;
     private bool directCoinbasePayoutEnabled;
+    internal bool Bip54CoinbaseEnabled => bip54CoinbaseEnabled;
     internal event Action<Exception> DirectJobConstructionFailed;
     private BitcoinDirectCoinbaseRecipient[] directCoinbaseRecipients =
         Array.Empty<BitcoinDirectCoinbaseRecipient>();
@@ -212,10 +214,11 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
                 job = CreateJob();
 
-                job.Init(blockTemplate, NextJobId(),
+                job.InitWithCoinbasePolicy(blockTemplate, NextJobId(),
                     poolConfig, extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
                     ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue,
-                    !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ?? coin.BlockHasherValue);
+                    !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ?? coin.BlockHasherValue,
+                    bip54CoinbaseEnabled);
 
                 if(isNew)
                 {
@@ -485,7 +488,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                 coin.CoinbaseHasherValue, coin.HeaderHasherValue,
                 !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ??
                     coin.BlockHasherValue,
-                directTemplate);
+                directTemplate, bip54CoinbaseEnabled);
             return job;
         }
         catch(Exception ex) when(ex is InvalidDataException or
@@ -504,7 +507,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<BitcoinTemplate>();
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+        pc.Extra.TryExtensionDataAs(out extraPoolConfig,
+            out var bindingError);
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
 
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
@@ -512,13 +516,14 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         base.Configure(pc, cc);
 
-        directCoinbasePayoutEnabled = BitcoinPoolConfigExtra
-            .ResolveSoloCoinbasePayout(pc, extraPoolConfig);
+        directCoinbasePayoutEnabled = BitcoinPoolConfigPolicy
+            .ResolveSoloCoinbasePayout(pc, extraPoolConfig, bindingError);
 
         if(BitcoinJob.IsCanonicalBitcoin(pc, coin))
         {
-            if(BitcoinPoolConfigExtra.ResolveBip54Coinbase(pc,
-                   extraPoolConfig))
+            bip54CoinbaseEnabled = BitcoinPoolConfigPolicy
+                .ResolveBip54Coinbase(pc, extraPoolConfig, bindingError);
+            if(bip54CoinbaseEnabled)
                 logger.Info(() => "Canonical Bitcoin coinbase policy: BIP 54-compatible " +
                     "locktime/sequence fields enabled; value-bearing outputs precede " +
                     "the BIP 141 witness commitment");

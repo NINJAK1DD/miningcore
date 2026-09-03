@@ -1,5 +1,6 @@
 using Autofac;
 using Microsoft.AspNetCore.Mvc;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
@@ -235,15 +236,21 @@ public class AdminApiController : ApiControllerBase
     private void ValidatePaymentProcessingToggle(IEnumerable<IMiningPool> targetPools,
         bool enable)
     {
-        var protectedPool = targetPools.Select(pool => new
+        var protectedPool = targetPools
+            .Select(pool =>
             {
-                Pool = pool,
-                IsPps = pool.Config.PaymentProcessing?.PayoutScheme ==
-                    PayoutScheme.PPS,
-                IsDirectSolo = BitcoinPoolConfigExtra
-                    .ResolveSoloCoinbasePayout(pool.Config,
-                        pool.Config.Extra
-                            .SafeExtensionDataAs<BitcoinPoolConfigExtra>()),
+                pool.Config.Extra.TryExtensionDataAs(
+                    out BitcoinPoolConfigExtra extra,
+                    out var bindingError);
+                return new
+                {
+                    Pool = pool,
+                    IsPps = pool.Config.PaymentProcessing?.PayoutScheme ==
+                        PayoutScheme.PPS,
+                    IsDirectSolo = BitcoinPoolConfigPolicy
+                        .ResolveSoloCoinbasePayout(pool.Config, extra,
+                            bindingError),
+                };
             })
             .FirstOrDefault(x => x.Pool.Config.Enabled &&
                 (x.IsPps || x.IsDirectSolo));
