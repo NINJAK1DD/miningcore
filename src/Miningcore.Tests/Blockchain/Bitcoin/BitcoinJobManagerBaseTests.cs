@@ -7,6 +7,7 @@ using Autofac;
 using Miningcore;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Equihash;
 using Miningcore.Configuration;
@@ -16,6 +17,7 @@ using Miningcore.Mining;
 using Miningcore.Rpc;
 using Miningcore.Tests.Util;
 using Miningcore.Time;
+using NBitcoin;
 using Newtonsoft.Json;
 using NSubstitute;
 using Xunit;
@@ -114,6 +116,91 @@ public class BitcoinJobManagerBaseTests
         };
         Assert.Equal(expected,
             manager.CachedBip54CoinbasePolicy);
+    }
+
+    [Theory]
+    [InlineData(null, 100u, 0xfffffffeu, false)]
+    [InlineData(false, 0u, 0u, true)]
+    public async Task BitcoinUpdate_PassesCachedBip54PolicyToConstructedJob(
+        bool? configured, uint expectedLockTime, uint expectedSequence,
+        bool witnessFirst)
+    {
+        ModuleInitializer.Initialize();
+        using var container = BuildContainer();
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var manager = new TestBitcoinJobManager(container, clock,
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        var coin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["bitcoin"]);
+        var extra = new Dictionary<string, object>
+        {
+            ["soloCoinbasePayout"] = false,
+        };
+        if(configured.HasValue)
+            extra["bip54Coinbase"] = configured.Value;
+        var pool = new PoolConfig
+        {
+            Id = "bitcoin-cached-policy-update",
+            Coin = "bitcoin",
+            Address = new Key().PubKey.GetAddress(
+                ScriptPubKeyType.Segwit, Network.RegTest).ToString(),
+            Template = coin,
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.SOLO,
+            },
+            Extra = extra,
+        };
+        var poolDestination = BitcoinAddress.Create(pool.Address,
+            Network.RegTest);
+
+        manager.Configure(pool, new ClusterConfig());
+        manager.PrepareJobConstruction(Network.RegTest, poolDestination);
+
+        var cachedPolicy = Assert.IsType<bool>(
+            manager.CachedBip54CoinbasePolicy);
+        Assert.Equal(configured ?? true, cachedPolicy);
+
+        // Poison the fallback input after Configure. UpdateJob must pass the
+        // manager's cached policy rather than letting BitcoinJob re-resolve it.
+        manager.ReplaceBoundPoolConfig(new BitcoinPoolConfigExtra
+        {
+            Bip54Coinbase = !cachedPolicy,
+            SoloCoinbasePayout = false,
+        });
+        manager.Enqueue(new BlockTemplate
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 101,
+            Transactions = Array.Empty<BitcoinBlockTransaction>(),
+            DefaultWitnessCommitment =
+                "6a24aa21a9ed" + new string('0', 64),
+        });
+
+        var update = await manager.Update(CancellationToken.None);
+
+        Assert.True(update.IsNew);
+        var jobParams = Assert.IsType<object[]>(
+            manager.Current.GetJobParams(false));
+        var coinbaseHex = (string) jobParams[2] + "00000001" +
+            "00000000000000" + (string) jobParams[3];
+        var transaction = NBitcoin.Transaction.Parse(coinbaseHex,
+            Network.RegTest);
+        Assert.Equal(expectedLockTime, transaction.LockTime.Value);
+        Assert.Equal(expectedSequence,
+            Assert.Single(transaction.Inputs).Sequence.Value);
+        var witnessIndex = witnessFirst ? 0 : 1;
+        Assert.StartsWith("6a24aa21a9ed",
+            transaction.Outputs[witnessIndex].ScriptPubKey.ToHex(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -786,6 +873,17 @@ public class BitcoinJobManagerBaseTests
         public string DirectSubmissionCoinbaseTx { get; init; }
         public bool Persisted { get; private set; }
         public Share PersistedCandidate { get; private set; }
+        public BitcoinJob Current => currentJob;
+
+        public void PrepareJobConstruction(Network jobNetwork,
+            IDestination destination)
+        {
+            network = jobNetwork;
+            poolAddressDestination = destination;
+        }
+
+        public void ReplaceBoundPoolConfig(BitcoinPoolConfigExtra config) =>
+            extraPoolConfig = config;
 
         public Task AttachEvidence(PoolConfig pool, Share share) =>
             AttachPpsEvidencePreservingAcceptedCandidateAsync(pool, share);

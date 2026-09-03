@@ -1,6 +1,5 @@
 using Autofac;
 using Miningcore.Blockchain.Bitcoin;
-using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Progpow.Custom.Firo;
 using Miningcore.Blockchain.Progpow.Custom.Kiiro;
@@ -206,13 +205,6 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<ProgpowCoinTemplate>();
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
-        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
-
-        if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
-            maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
-
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
 
         if(pc.EnableInternalStratum == true)
         {
