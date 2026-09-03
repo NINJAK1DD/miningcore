@@ -34,7 +34,7 @@ Use this guide by task:
 | New installation | [Choose a version](#choose-a-version) |
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Evaluate v0.3.0-rc.1 from v0.2.1 | [v0.3.0-rc.1 highlights](#v030-rc1-highlights) |
+| Evaluate v0.3.0-rc.2 | [v0.3.0-rc.2 highlights](#v030-rc2-highlights) |
 | Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
 | v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
@@ -46,7 +46,16 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Changes after v0.3.0-rc.1
+## v0.3.0-rc.2 highlights
+
+`v0.3.0-rc.2` is the second release candidate for the next minor release. It adds a
+BIP 54-forward-compatible canonical Bitcoin coinbase shape for custodial and direct-SOLO pools.
+No database migration is required when upgrading from `v0.3.0-rc.1`; retain the existing
+configuration unless the temporary compatibility fallback below is needed. Continue treating this
+candidate as staging software and complete controlled miner, proxy and daemon testing before using
+it for real funds. Operators upgrading directly from `v0.2.1` or earlier must also complete the
+`v0.3.0-rc.1` upgrade boundary below, including the optional direct-SOLO migration before enabling
+that feature.
 
 Canonical Bitcoin coinbases now use BIP 54-forward-compatible fields by default:
 `nLockTime = block height - 1` and `nSequence = 0xfffffffe`. Value-bearing outputs are serialized
@@ -323,7 +332,7 @@ before upgrading from an older release candidate.
 
 ## Choose a version
 
-Versions containing a suffix such as `v0.3.0-rc.1` are release candidates. Test them before relying
+Versions containing a suffix such as `v0.3.0-rc.2` are release candidates. Test them before relying
 on them for real funds. A version without a suffix, such as `v0.3.0`, is a stable release and updates
 the `latest` container tag.
 
@@ -334,10 +343,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.3.0-rc.1`. Substitute the version you selected.
+The examples below use `v0.3.0-rc.2`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.1
+export MININGCORE_VERSION=v0.3.0-rc.2
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -703,7 +712,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.1  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.3.0-rc.2  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1531,7 +1540,7 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.3.0-rc.1` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.3.0-rc.2` or
 `v0.3.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
@@ -1624,7 +1633,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.3.0-rc.1  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.3.0-rc.2  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -1687,7 +1696,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.3.0-rc.1
+export TAG=v0.3.0-rc.2
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 
