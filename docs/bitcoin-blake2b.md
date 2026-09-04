@@ -162,7 +162,7 @@ operator commissioning beyond isolated regtest.
 
 ## Immutable source provenance
 
-Protocol baseline rechecked against upstream on 2026-09-04:
+Protocol baseline rechecked against upstream on 2026-09-04 and 2026-09-05:
 
 | Contract | Reviewed source |
 | --- | --- |

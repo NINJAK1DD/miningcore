@@ -170,8 +170,11 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             network, ShareMultiplier, coin.CoinbaseHasherValue,
             coin.HeaderHasherValue, coin.BlockHasherValue);
         }
-        catch(Exception ex) when(ex is InvalidDataException or ArgumentException or OverflowException)
+        catch(Exception ex) when(ex is not (OperationCanceledException or PoolStartupException))
         {
+            // Parsing and serialization failures (including FormatException
+            // and truncated-stream errors) must not enter the shared loop's
+            // retry-and-retain-old-work path.
             throw new PoolStartupException($"Pool '{poolConfig.Id}' rejected Bitcoin BLAKE2b work: {ex.Message}", poolConfig.Id, ex);
         }
     }

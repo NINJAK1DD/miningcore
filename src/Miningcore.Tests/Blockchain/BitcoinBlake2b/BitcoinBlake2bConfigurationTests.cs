@@ -2,7 +2,11 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Autofac;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
 using Miningcore.Mining;
@@ -10,12 +14,68 @@ using Miningcore.Messaging;
 using Miningcore.Time;
 using NSubstitute;
 using Newtonsoft.Json.Linq;
+using NBitcoin;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bConfigurationTests : TestBase
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task JobConstruction_ParsingFailuresEscapeSharedRetryLoop(bool truncated)
+    {
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var manager = new FaultingManager(container, clock, truncated);
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        manager.Configure(new PoolConfig
+        {
+            Id = "blake2b-test", Coin = "bitcoin-blake2b",
+            Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"],
+            Address = address.ToString(),
+            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 } },
+        }, new ClusterConfig());
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() => manager.BuildAsync(address));
+        Assert.Equal("blake2b-test", error.PoolId);
+        Assert.Contains("rejected Bitcoin BLAKE2b work", error.Message);
+        Assert.IsType(truncated ? typeof(EndOfStreamException) : typeof(FormatException), error.InnerException);
+        Assert.Null(manager.GetJobForStratum());
+    }
+
+    private sealed class FaultingManager : BitcoinBlake2bJobManager
+    {
+        private readonly bool truncated;
+        internal FaultingManager(IComponentContext ctx, IMasterClock clock, bool truncated) :
+            base(ctx, clock, Substitute.For<IMessageBus>(), new BitcoinBlake2bExtraNonceProvider()) =>
+            this.truncated = truncated;
+
+        protected override BitcoinJob CreateJob() => new FaultingJob(truncated);
+
+        internal Task BuildAsync(IDestination address)
+        {
+            network = Network.RegTest;
+            poolAddressDestination = address;
+            var template = new BlockTemplate
+            {
+                Height = 21, Version = 0xa0000000, CurTime = 1700000000, Bits = "207fffff",
+                Target = "7fffff" + new string('0', 58), PreviousBlockhash = new string('0', 64),
+                CoinbaseValue = 5000000000, Transactions = Array.Empty<BitcoinBlockTransaction>(),
+                Rules = new[] { "!blake2b" },
+            };
+            return UpdateJob(CancellationToken.None, true, json:
+                new JObject { ["result"] = JObject.FromObject(template) }.ToString());
+        }
+    }
+
+    private sealed class FaultingJob(bool truncated) : BitcoinBlake2bJob
+    {
+        protected override byte[] BuildScriptSigFinalBytes(string coinbaseString) =>
+            throw (truncated ? new EndOfStreamException("truncated daemon payload") :
+                new FormatException("malformed daemon payload"));
+    }
+
     [Theory]
     [InlineData("not-hex!", "1d00ffff")]
     [InlineData("1d80ffff", "1d00ffff")]
