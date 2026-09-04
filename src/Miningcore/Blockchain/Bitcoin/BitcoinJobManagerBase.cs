@@ -45,6 +45,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     public int maxActiveJobs { get; protected set; } = 4;
     protected bool hasLegacyDaemon;
     protected BitcoinPoolConfigExtra extraPoolConfig;
+    // Preserve binding failures for derived managers that protect financial or
+    // consensus-sensitive settings. Other callers retain best-effort behavior.
+    protected Exception extraPoolConfigBindingError;
     protected BitcoinPoolPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
     protected DateTime? lastJobRebroadcast;
     protected bool hasSubmitBlockMethod;
@@ -795,7 +798,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+        pc.Extra.TryExtensionDataAs(out extraPoolConfig,
+            out extraPoolConfigBindingError);
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
 
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)

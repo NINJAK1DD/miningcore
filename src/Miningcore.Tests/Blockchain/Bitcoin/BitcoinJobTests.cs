@@ -1,11 +1,13 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using Microsoft.IO;
+using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
@@ -14,6 +16,8 @@ using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Progpow;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
+using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using NBitcoin;
@@ -714,6 +718,83 @@ public class BitcoinJobTests : TestBase
             transaction.Outputs[valueIndex].ScriptPubKey);
         Assert.Equal(blockTemplate.CoinbaseValue,
             transaction.Outputs[valueIndex].Value.Satoshi);
+    }
+
+    [Theory]
+    [InlineData(null, 100u, 0xfffffffeu, false)]
+    [InlineData(false, 0u, 0u, true)]
+    public void CanonicalBitcoinCoinbase_UsesManagerCachedBip54Policy(
+        bool? configured, uint expectedLockTime, uint expectedSequence,
+        bool witnessFirst)
+    {
+        var coin = Assert.IsType<BitcoinTemplate>(
+            ModuleInitializer.CoinTemplates["bitcoin"]);
+        var extra = new Dictionary<string, object>
+        {
+            ["soloCoinbasePayout"] = false,
+        };
+        if(configured.HasValue)
+            extra["bip54Coinbase"] = configured.Value;
+        var pc = new PoolConfig
+        {
+            Id = "bitcoin-cached-policy",
+            Coin = "bitcoin",
+            Template = coin,
+            Daemons = new[] { new DaemonEndpointConfig() },
+            PaymentProcessing = new PoolPaymentProcessingConfig
+            {
+                Enabled = true,
+                PayoutScheme = PayoutScheme.SOLO,
+            },
+            Extra = extra,
+        };
+        var clock = MockMasterClock.FromTicks(
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).UtcTicks);
+        var manager = new BitcoinJobManager(container, clock,
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+
+        manager.Configure(pc, new ClusterConfig());
+        var cachedPolicy = manager.CachedBip54CoinbasePolicy;
+        Assert.Equal(configured ?? true, cachedPolicy);
+
+        // Prove job construction consumes the configured manager value rather
+        // than re-reading mutable extension data through the fallback path.
+        pc.Extra["bip54Coinbase"] = !cachedPolicy.Value;
+        var reboundExtra = pc.Extra
+            .SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+        var blockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
+        {
+            Version = 0x20000000,
+            PreviousBlockhash = new string('0', 64),
+            CoinbaseValue = 5_000_000_000,
+            Target = "7" + new string('f', 63),
+            CurTime = 1_700_000_000,
+            Bits = "207fffff",
+            Height = 101,
+            Transactions = Array.Empty<Miningcore.Blockchain.Bitcoin.DaemonResponses.BitcoinBlockTransaction>(),
+            DefaultWitnessCommitment =
+                "6a24aa21a9ed" + new string('0', 64),
+        };
+        var pool = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+            Network.RegTest);
+        var job = new DirectSerializationBitcoinJob();
+
+        job.InitWithCoinbasePolicy(blockTemplate, "cached-policy", pc,
+            reboundExtra, new ClusterConfig(), clock, pool, Network.RegTest,
+            false, coin.ShareMultiplier, coin.CoinbaseHasherValue,
+            coin.HeaderHasherValue, coin.BlockHasherValue,
+            cachedPolicy.Value);
+
+        var transaction = Transaction.Parse(job.SerializeCoinbaseForTest(
+                "00000001", "00000000000000").ToHexString(),
+            Network.RegTest);
+        Assert.Equal(expectedLockTime, transaction.LockTime.Value);
+        Assert.Equal(expectedSequence,
+            Assert.Single(transaction.Inputs).Sequence.Value);
+        var witnessIndex = witnessFirst ? 0 : 1;
+        Assert.StartsWith("6a24aa21a9ed",
+            transaction.Outputs[witnessIndex].ScriptPubKey.ToHex(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

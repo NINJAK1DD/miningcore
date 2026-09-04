@@ -1,17 +1,18 @@
 # Bitcoin direct-coinbase SOLO
 
-Bitcoin direct-coinbase SOLO is an explicit, BTC-only mode that pays the block-finding miner in the
-accepted block's coinbase transaction. Positive pool fee or donation recipients are separate
-coinbase outputs. The miner reward never becomes a Miningcore balance and Miningcore never sends a
-second payout transaction for that block.
+Bitcoin direct-coinbase SOLO is the default for canonical Bitcoin SOLO pools from `v0.3.0`. It pays
+the block-finding miner in the accepted block's coinbase transaction. Positive pool fee or donation
+recipients are separate coinbase outputs. The miner reward never becomes a Miningcore balance and
+Miningcore never sends a second payout transaction for that block.
 
 This mode reduces post-block custody; it does not remove trust in the pool. A miner still trusts the
 pool to construct the announced job honestly and submit a valid solution promptly. Coinbase outputs
 also remain subject to Bitcoin's normal 100-block maturity rule.
 
 Start from [`examples/bitcoin_direct_solo_pool.json`](../examples/bitcoin_direct_solo_pool.json).
-Do not enable the option on an existing database until the migration and historical-liability checks
-below are complete.
+Do not start `v0.3.0` with a canonical Bitcoin SOLO pool on an existing database until the migration
+and historical-liability checks below are complete. To retain the older custodial behavior instead,
+set `soloCoinbasePayout: false` before upgrading.
 
 ## Supported contract
 
@@ -27,9 +28,10 @@ The first implementation deliberately accepts only:
 - a direct, non-relay, non-merged-mining topology.
 
 `soloCoinbasePayout` is case-sensitive and must use that exact canonical spelling. It must be a
-strict JSON Boolean and defaults to `false`. Unsupported families, templates, networks, schemes,
-relay roles and merged-mining configurations fail before Stratum listeners open. No existing SOLO
-pool changes behavior until the operator explicitly enables it.
+strict JSON Boolean. When omitted, it defaults to `true` only for a pool using the exact canonical
+`bitcoin` template with `payoutScheme: "SOLO"`; it remains off for every other coin and payout
+scheme. Set it to `false` to retain custodial Bitcoin SOLO. Unsupported families, templates,
+networks, schemes, relay roles and merged-mining configurations fail before Stratum listeners open.
 
 ## Database migration
 
@@ -96,6 +98,10 @@ entry for a fee-free pool, or replace its `CHANGE_ME` address before startup:
   }
 ]
 ```
+
+The explicit `true` keeps the intended settlement visible in reviewed configuration, although it is
+the `v0.3.0` default for canonical Bitcoin SOLO. Use an explicit `false` only when deliberately
+retaining the older custodial flow.
 
 Zero-percent entries create no output. For every positive percentage Miningcore calculates:
 

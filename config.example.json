@@ -428,13 +428,17 @@
       }
     },
     {
-      // Ordinary Bitcoin SOLO starter. See examples/bitcoin_pool.json for separate
-      // low/high difficulty ports and a smaller standalone configuration.
+      // Bitcoin SOLO defaults to direct coinbase settlement in v0.3.0. See
+      // examples/bitcoin_pool.json for separate low/high difficulty ports and a
+      // smaller standalone configuration.
       // Keep SOLO unless the migrations, reserve and docs/pps.md checklist are complete.
       "id": "bitcoin-solo",
       "enabled": false,
       "coin": "bitcoin",
+      // Retained for historical custodial blocks and daemon validation. New direct
+      // blocks pay the address supplied by each authorized miner.
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      "soloCoinbasePayout": true,
       // Keep staged ports disabled until this pool is configured and intentionally enabled.
       "enableInternalStratum": false,
       "blockRefreshInterval": 1000,
@@ -492,8 +496,8 @@
         "invalidPercent": 50,
         "time": 600
       },
-      // Required even while the pool is disabled. Enable only after wallet fee-reserve,
-      // database and payout ownership checks are complete.
+      // Required even while the pool is disabled. Direct SOLO requires both this
+      // switch and cluster payment processing, plus the direct-settlement schema.
       "paymentProcessing": {
         "enabled": false,
         "minimumPayment": 0.001,

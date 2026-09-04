@@ -43,8 +43,8 @@ for the expected miner fleet before deployment.
 
 | Example | Use it for |
 | --- | --- |
-| [`bitcoin_pool.json`](bitcoin_pool.json) | One Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
-| [`bitcoin_direct_solo_pool.json`](bitcoin_direct_solo_pool.json) | Opt-in non-custodial Bitcoin SOLO whose authorized miner address is paid in the coinbase; complete the [direct-SOLO guide](../docs/bitcoin-direct-solo.md) before use |
+| [`bitcoin_pool.json`](bitcoin_pool.json) | One direct-coinbase Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
+| [`bitcoin_direct_solo_pool.json`](bitcoin_direct_solo_pool.json) | Direct-coinbase Bitcoin SOLO with an operator fee output; complete the [direct-SOLO guide](../docs/bitcoin-direct-solo.md) before use |
 | [`bitcoin_cash_pool.json`](bitcoin_cash_pool.json) | One Bitcoin Cash SOLO pool using CashAddr and low/high SHA-256 ports |
 | [`bitcoin_bitcoin_cash_pool.json`](bitcoin_bitcoin_cash_pool.json) | Independent Bitcoin and Bitcoin Cash pools with separate daemon and Stratum ports |
 | [`dogecoin_pool.json`](dogecoin_pool.json) | One direct Dogecoin SOLO pool with low- and high-difficulty ports |
@@ -56,6 +56,12 @@ Direct Bitcoin-family examples remain `SOLO` by default. To commission PPS, star
 coin's reviewed direct example, apply the required migrations, and change only its payout contract
 after completing the [PPS operator guide](../docs/pps.md). There is intentionally no copy-first PPS
 example that silently accepts an operator liability without the reserve and ledger checks.
+
+Canonical Bitcoin SOLO examples explicitly show `soloCoinbasePayout: true`, which is also the
+`v0.3.0` default when that property is omitted. The Bitcoin share-relay examples explicitly set it
+to `false` because direct coinbase settlement does not support relay topologies. Existing databases
+must apply the direct-settlement migration before using the default; set the property to `false`
+before upgrading when intentionally retaining custodial settlement.
 
 Every example that opens an internal Stratum listener has named low- and high-difficulty tiers. A
 few protocols retain a useful medium or optional-TLS tier as well. Receiver-only share recorders and

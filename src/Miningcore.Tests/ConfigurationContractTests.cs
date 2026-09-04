@@ -550,6 +550,23 @@ public class ConfigurationContractTests
             Assert.False(string.IsNullOrWhiteSpace(
                 paymentProcessing["payoutScheme"]?.Value<string>()));
 
+            if(string.Equals(coin, "bitcoin", StringComparison.Ordinal) &&
+               string.Equals(paymentProcessing["payoutScheme"]?.Value<string>(),
+                   "SOLO", StringComparison.Ordinal))
+            {
+                var expectedDirect = fileName is not
+                    ("bitcoin_share_relay_sender.json" or
+                     "bitcoin_share_relay_recorder.json");
+                Assert.Equal(expectedDirect,
+                    pool["soloCoinbasePayout"]?.Value<bool>());
+                Assert.Equal(expectedDirect,
+                    BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(
+                        configuredPool, configuredPool.Extra
+                            .SafeExtensionDataAs<BitcoinPoolConfigExtra>()));
+            }
+            else
+                Assert.Null(pool["soloCoinbasePayout"]);
+
             foreach(var daemon in pool["daemons"]?.Children<JObject>() ??
                         Enumerable.Empty<JObject>())
             {
@@ -609,7 +626,7 @@ public class ConfigurationContractTests
                 if(fileName == "bitcoin_direct_solo_pool.json")
                 {
                     Assert.True(isPlaceholder,
-                        $"{fileName}: the opt-in direct fee must remain an " +
+                        $"{fileName}: the direct fee must remain an " +
                         "operator-owned placeholder");
                     Assert.Equal(2m, percentage);
                 }
@@ -620,6 +637,17 @@ public class ConfigurationContractTests
 
         AssertExamplePortsDoNotConflict(fileName, document, config);
         AssertInternalStratumDifficultyTiers(fileName, document, config);
+    }
+
+    [Fact]
+    public void RootBitcoinSolo_DeclaresDefaultDirectSettlement()
+    {
+        var document = ReadExampleConfigDocument();
+        var pool = document["pools"]?.Children<JObject>().Single(item =>
+            string.Equals(item["coin"]?.Value<string>(), "bitcoin",
+                StringComparison.Ordinal));
+
+        Assert.True(pool?["soloCoinbasePayout"]?.Value<bool>());
     }
 
     [Fact]

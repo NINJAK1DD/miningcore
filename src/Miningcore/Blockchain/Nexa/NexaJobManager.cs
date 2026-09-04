@@ -1,7 +1,6 @@
 using System.Globalization;
 using Autofac;
 using Miningcore.Blockchain.Bitcoin;
-using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Nexa.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -187,10 +186,6 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
     {
         poolAddress = pc.Address;
         coin = pc.Template.As<BitcoinTemplate>();
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
-
-        if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
-            maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
 
         base.Configure(pc, cc);
     }

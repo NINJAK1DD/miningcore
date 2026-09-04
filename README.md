@@ -25,10 +25,10 @@ the original authors and contributors.
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
 - SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
-- Opt-in Bitcoin direct-coinbase SOLO, paying the authorized miner and positive pool fee/donation
-  recipients in separate outputs of the accepted block instead of creating a custodial Miningcore
-  balance. Canonical BTC coinbases use the BIP 54-forward-compatible locktime/sequence shape and
-  list value-bearing outputs before the witness commitment.
+- Bitcoin direct-coinbase SOLO is enabled by default: when a miner finds a Bitcoin block, the block
+  pays that miner directly and pays the pool only its configured fee or donation. Miningcore does
+  not hold the miner's block reward first. Canonical BTC coinbases also use the
+  BIP 54-forward-compatible shape and list payment outputs before the witness commitment.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
@@ -50,12 +50,11 @@ the preceding check succeeds. Ubuntu 22.04 uses its separately built compatibili
 different runtime packages; Ubuntu 24.04 is a source-build target. Use the
 [release guide](docs/releases.md) for those paths or for an upgrade/rollback.
 
-> [!CAUTION]
-> This branch currently pins the `v0.3.0-rc.2` release candidate. Test release candidates on
-> regtest or a controlled staging pool before relying on them for real funds. Operators who want
-> the latest stable release should select it from the
-> [releases page](https://github.com/NINJAK1DD/miningcore/releases) and substitute that tag in every
-> command below.
+> [!IMPORTANT]
+> This quick start pins the `v0.3.0` stable release. To install another published version, select it
+> from the [releases page](https://github.com/NINJAK1DD/miningcore/releases) and substitute that tag
+> in every command below. Release candidates should be tested on regtest or a controlled staging
+> pool before they are trusted with real funds.
 
 ### 1. Confirm the host and install dependencies
 
@@ -90,7 +89,7 @@ sudo systemctl is-active postgresql
 Select the release and download it into private temporary storage:
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.2
+export MININGCORE_VERSION=v0.3.0
 export MININGCORE_UBUNTU=26.04
 MININGCORE_QUICKSTART_READY=
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX")"
@@ -206,27 +205,27 @@ The installed `config.example.json` is the fully annotated reference. Smaller re
 multi-coin, merged-mining and relay files are under `/opt/miningcore/examples/`; copy one over the
 starter only when it matches the intended topology.
 
-#### Optional: enable Bitcoin direct-coinbase SOLO
+#### Bitcoin direct-coinbase SOLO (default for BTC SOLO)
 
-Skip this subsection for conventional custodial SOLO, PPS, PROP or PPLNS operation. It requires a
-Miningcore binary that implements direct settlement and its matching database schema—on this
-branch, that means `v0.3.0-rc.2`. Direct coinbase settlement is an explicit, BTC-only option in
-which the authorized miner address and each positive pool fee/donation recipient are paid by
-separate outputs in the accepted block.
+Skip this subsection if the configuration does not run Bitcoin SOLO. In `v0.3.0`, a canonical
+Bitcoin pool using `payoutScheme: "SOLO"` defaults to direct settlement: the block pays the address
+from the authorized miner username and pays each positive pool fee/donation recipient separately.
+Miningcore does not receive and hold the miner's reward first. The mode requires the matching
+direct-settlement database schema.
 
-If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection:
-that binary does not implement `soloCoinbasePayout`. Upgrade the binary and database before adding
-or enabling the setting. Only a fresh database created from `v0.3.0-rc.1` or later has the required
-schema from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-PR #135 build—keep
-`soloCoinbasePayout` disabled until the verified candidate migration has completed; use the
-[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration), not
-`createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
+If you deliberately substituted the older `v0.2.1` release in this quick start, skip this entire
+subsection: that binary does not implement `soloCoinbasePayout`. Upgrade the binary and database
+before relying on the v0.3.0 default. Only a fresh database created from `v0.3.0-rc.1` or later has
+the required schema from `createdb.sql`. For a database created by `v0.2.1` or earlier—or any pre-PR
+#135 build—explicitly set `soloCoinbasePayout: false` until the verified candidate migration has
+completed; use the [direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration),
+not `createdb.sql` and not a migration beneath the old `/opt/miningcore` symlink.
 
 The guarded command blocks in this section require an account for which `sudo -v` succeeds. If a
 command-specific sudoers policy intentionally denies general credential validation, have an
 administrator perform the equivalent protected-file steps instead of weakening these checks.
 
-If selecting direct settlement, install the reviewed
+For a new Bitcoin SOLO pool, install the reviewed
 [`bitcoin_direct_solo_pool.json`](examples/bitcoin_direct_solo_pool.json) contract before editing:
 
 ```console
@@ -249,15 +248,15 @@ else
 fi
 ```
 
-If selected, continue only after this block prints `READY`. Keep the reported backup until the
-commissioned configuration and rollback plan have been verified.
+After choosing this direct-SOLO example, continue only after this block prints `READY`. Keep the
+reported backup until the commissioned configuration and rollback plan have been verified.
 
 While editing below, keep both cluster- and pool-level payment processing enabled, retain
 `payoutScheme: "SOLO"`, replace the pool wallet, daemon credentials and positive recipient address,
 and explicitly set `soloCoinbasePayout: true`. Miners must authorize with a valid network-matching
 `BITCOIN_ADDRESS.worker` username. Complete the [direct-SOLO guide](docs/bitcoin-direct-solo.md),
-including its regtest/preflight procedure, before admitting production miners. The option remains
-off by default for every existing pool.
+including its regtest/preflight procedure, before admitting production miners. The default applies
+only to canonical Bitcoin SOLO; every other coin and payout scheme remains unchanged.
 
 #### Edit and validate the configuration
 
@@ -463,7 +462,7 @@ and recovery requirements.
 | Deploy distributed Stratum/recorder roles | [Share-relay guide](docs/share-relays.md) |
 | Enable direct Bitcoin-family PPS | [PPS operator guide](docs/pps.md) |
 | Pay Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) |
-| Migrate a v0.2.1-or-earlier/pre-PR #135 database before enabling direct Bitcoin SOLO | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
+| Prepare a v0.2.1-or-earlier/pre-PR #135 database for default direct-coinbase SOLO | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
 | Validate a new deployment before miners | [Operator preflight](docs/operations.md#before-accepting-miners) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration guide](docs/dotnet-6-to-10-migration.md) |
 | Enable Litecoin–Dogecoin merged mining | [Merged-mining guide](docs/merged-mining-litecoin-dogecoin.md) |
@@ -476,12 +475,14 @@ references.
 
 ## Bitcoin direct-coinbase SOLO
 
-Canonical Bitcoin SOLO pools can opt into non-custodial coinbase settlement. Each authorized
+Canonical Bitcoin SOLO pools use direct coinbase settlement by default. Each authorized
 `address.worker` receives destination-specific SV1 work whose coinbase pays the miner directly and
-places each positive pool fee/donation in a separate output. The option defaults off; BTC-only,
-SOLO, database, topology and address contracts fail closed before work begins. Apply the additive
-migration and complete the [Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) before enabling
-the [copy-first example](examples/bitcoin_direct_solo_pool.json). BIP 54-forward-compatible
+places each positive pool fee/donation in a separate output, so Miningcore does not custody the
+miner's block reward first. BTC-only, SOLO, database, topology and address contracts fail closed
+before work begins. Existing databases must apply the additive migration before accepting the new
+default, or explicitly set `soloCoinbasePayout: false` to retain custodial settlement. Complete the
+[Bitcoin direct-SOLO guide](docs/bitcoin-direct-solo.md) before using the
+[copy-first example](examples/bitcoin_direct_solo_pool.json). BIP 54-forward-compatible
 coinbase shape is independently enabled by default for every canonical Bitcoin pool; the guide
 documents the temporary `bip54Coinbase: false` full-shape compatibility fallback.
 
@@ -627,7 +628,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.3.0-rc.2  # Replace with the release you selected.
+MININGCORE_VERSION=v0.3.0  # Replace with the release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -637,7 +638,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 ```console
-MININGCORE_VERSION=v0.3.0-rc.2  # Replace with the release you selected.
+MININGCORE_VERSION=v0.3.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \
@@ -763,7 +764,7 @@ recovery commands live only in the task-specific runbooks:
 | Create a PostgreSQL database from a source checkout | [Database guide: new installation](docs/database.md#new-installation) using `src/Miningcore/Persistence/Postgres/Scripts/createdb.sql` |
 | Upgrade an existing release and database | [Release upgrade or rollback](docs/releases.md#upgrade-or-roll-back) |
 | Enable pooled accounting or PPS | [PPS database prerequisites](docs/pps.md#database-prerequisites) |
-| Enable direct-coinbase SOLO on a v0.2.1-or-earlier/pre-PR #135 database | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
+| Prepare a v0.2.1-or-earlier/pre-PR #135 database for default direct-coinbase SOLO | [Direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration) |
 | Back up, inspect or recover PostgreSQL | [Database and recovery guide](docs/database.md) |
 | Partition the `shares` table | [Advanced partitioning](docs/database.md#advanced-share-table-partitioning) |
 

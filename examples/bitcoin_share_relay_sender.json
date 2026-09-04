@@ -46,6 +46,9 @@
       "id": "bitcoin-solo",
       "enabled": true,
       "coin": "bitcoin",
+      // Direct coinbase SOLO is intentionally disabled: it does not support
+      // share-relay topologies.
+      "soloCoinbasePayout": false,
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
       // Keep this identical to the recorder's payout-owner configuration.
       "rewardRecipients": [

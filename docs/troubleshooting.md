@@ -56,10 +56,10 @@ An active process alone does not prove mining or payouts are healthy.
   first pool-specific error. Continue with [pool and daemon checks](#pool-and-daemon-checks).
 - **Miner connects but submits no accepted shares.** Confirm the port, coin, address format,
   password options and difficulty. Continue with [miner and share checks](#miner-and-share-checks).
-- **A direct-SOLO miner receives no job or reports zero coinbase share.** Confirm
-  `soloCoinbasePayout` is enabled on the canonical BTC SOLO pool, the base username is a valid
-  address for the daemon network, and the fee placeholder was replaced. Decode the announced
-  coinbase before hashing; do not fall back to the pool wallet. Follow the
+- **A direct-SOLO miner receives no job or reports zero coinbase share.** Confirm direct settlement
+  is active on the canonical BTC SOLO pool (the `v0.3.0` default unless explicitly disabled), the
+  base username is a valid address for the daemon network, and the fee placeholder was replaced.
+  Decode the announced coinbase before hashing; do not fall back to the pool wallet. Follow the
   [Bitcoin direct-SOLO preflight](bitcoin-direct-solo.md#preflight-before-production-hashing).
 - **BIP310 version rolling is declined or a custom mask stops startup.** Do not widen the mask to
   satisfy a miner. Check the per-chain audit and diagnostics in

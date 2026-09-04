@@ -98,7 +98,7 @@ quickstart_configuration_section=$(awk '
 ' "$readme")
 direct_solo_install_block=$(awk '
   { sub(/\r$/, "") }
-  /^If selecting direct settlement, install the reviewed$/ { section = 1; next }
+  /^For a new Bitcoin SOLO pool, install the reviewed$/ { section = 1; next }
   section && /^```console$/ { capture = 1; next }
   capture && /^```$/ { exit }
   capture { print }
@@ -194,12 +194,12 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.3.0-rc.2 release example' \
-  'export MININGCORE_VERSION=v0.3.0-rc.2' "$document"
-assert_file_contains 'the v0.3.0-rc.2 container example' \
-  'MININGCORE_VERSION=v0.3.0-rc.2' "$readme"
-assert_file_contains 'the v0.3.0-rc.2 database migration example' \
-  'export MININGCORE_VERSION=v0.3.0-rc.2' "$database_document"
+assert_file_contains 'the v0.3.0 release example' \
+  'export MININGCORE_VERSION=v0.3.0' "$document"
+assert_file_contains 'the v0.3.0 container example' \
+  'MININGCORE_VERSION=v0.3.0' "$readme"
+assert_file_contains 'the v0.3.0 database migration example' \
+  'export MININGCORE_VERSION=v0.3.0' "$database_document"
 assert_file_contains 'the v0.2.1 hotfix task route' \
   '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
 assert_file_contains 'the v0.2.1 troubleshooting route' \
@@ -277,14 +277,24 @@ assert_file_contains 'the manual source-build launch boundary' \
 assert_file_contains 'the manual source-build systemd layout boundary' \
   'it does not run the development `build/` layout unchanged' "$readme"
 assert_file_contains 'the quick-start direct-SOLO opt-in boundary' \
-  '#### Optional: enable Bitcoin direct-coinbase SOLO' "$readme"
+  '#### Bitcoin direct-coinbase SOLO (default for BTC SOLO)' "$readme"
 assert_file_contains 'the quick-start direct-SOLO binary-version boundary' \
-  'branch, that means `v0.3.0-rc.2`' "$readme"
+  'In `v0.3.0`, a canonical' "$readme"
 assert_file_contains 'the stable-release direct-SOLO skip boundary' \
-  'If you substituted the stable `v0.2.1` release in this quick start, skip this entire subsection' \
+  'If you deliberately substituted the older `v0.2.1` release in this quick start' \
   "$readme"
 assert_readme_prose_contains 'the quick-start direct-SOLO conditional fresh-schema boundary' \
   'Only a fresh database created from `v0.3.0-rc.1` or later has the required schema'
+assert_readme_prose_contains 'the quick-start explicit custodial migration boundary' \
+  'explicitly set `soloCoinbasePayout: false` until the verified candidate migration has completed'
+assert_readme_prose_contains 'the direct-SOLO example continuation boundary' \
+  'After choosing this direct-SOLO example, continue only after this block prints `READY`'
+if grep -Fq 'keep `soloCoinbasePayout` disabled' "$readme" ||
+   grep -Fq 'before adding or enabling the setting' "$readme" ||
+   grep -Fq 'If selected, continue only' "$readme"; then
+  echo 'The README retains stale opt-in wording for default direct SOLO' >&2
+  exit 1
+fi
 assert_file_contains 'the quick-start direct-SOLO existing-database migration route' \
   '[direct-SOLO database migration](docs/bitcoin-direct-solo.md#database-migration)' \
   "$readme"
@@ -307,16 +317,26 @@ if grep -Fiq 'Odocrypt' <<<"$readme_features_section"; then
   echo 'The README headline feature list still highlights DigiByte Odocrypt' >&2
   exit 1
 fi
-if ! grep -Fq 'Opt-in Bitcoin direct-coinbase SOLO' <<<"$readme_features_section" ||
+if ! grep -Fq 'Bitcoin direct-coinbase SOLO is enabled by default' <<<"$readme_features_section" ||
    ! grep -Fq 'BIP 54-forward-compatible' <<<"$readme_features_section"; then
   echo 'The README headline feature list is missing the direct-SOLO or BIP 54 highlight' >&2
   exit 1
 fi
 assert_file_contains 'the direct-SOLO migration task-table route' \
-  '| Migrate a v0.2.1-or-earlier/pre-PR #135 database before enabling direct Bitcoin SOLO |' "$readme"
-assert_file_contains 'the v0.3.0-rc.2 highlight route' \
-  '| Evaluate v0.3.0-rc.2 | [v0.3.0-rc.2 highlights](#v030-rc2-highlights) |' \
+  '| Prepare a v0.2.1-or-earlier/pre-PR #135 database for default direct-coinbase SOLO |' "$readme"
+assert_file_contains 'the v0.3.0 stable highlight route' \
+  '| Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |' \
   "$document"
+assert_prose_contains 'the v0.3.0 direct-SOLO default boundary' \
+  'omitting `soloCoinbasePayout` now enables direct settlement'
+assert_prose_contains 'the v0.3.0 migrated-RC.2 boundary' \
+  'Operators already running direct settlement on RC.2 need no further migration.'
+assert_prose_contains 'the v0.3.0 custodial fallback boundary' \
+  'Add `soloCoinbasePayout: false` before starting `v0.3.0` to retain the previous custodial flow'
+assert_prose_contains 'the v0.3.0 fail-closed upgrade boundary' \
+  'an unprepared upgrade fails closed instead of silently reverting to custody'
+assert_prose_contains 'the v0.3.0 older-release migration boundary' \
+  'Operators upgrading directly from `v0.2.1` or earlier must complete the RC.1 upgrade boundary'
 assert_prose_contains 'the v0.3.0-rc.2 candidate warning' \
   'Treat this candidate as staging software'
 assert_prose_contains 'the v0.3.0-rc.2 no-migration boundary' \
@@ -338,16 +358,19 @@ assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.3.0-rc.2 recovery example' \
-  'export TAG=v0.3.0-rc.2'
-assert_contains 'the v0.3.0-rc.2 tagging example' \
-  'NEXT_VERSION=v0.3.0-rc.2'
+assert_contains 'the v0.3.0 recovery example' \
+  'export TAG=v0.3.0'
+assert_contains 'the v0.3.0 tagging example' \
+  'NEXT_VERSION=v0.3.0'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
   'separately controlled reserve' "$pps_document"
-assert_file_contains 'the direct-SOLO opt-in default' \
-  'strict JSON Boolean and defaults to `false`' \
+assert_file_contains 'the direct-SOLO canonical default' \
+  'defaults to `true` only for a pool using the exact canonical' \
+  "$bitcoin_direct_document"
+assert_file_contains 'the direct-SOLO custodial fallback' \
+  'set `soloCoinbasePayout: false` before upgrading' \
   "$bitcoin_direct_document"
 assert_file_contains 'the direct-SOLO canonical option casing' \
   '`soloCoinbasePayout` is case-sensitive' "$bitcoin_direct_document"
@@ -734,17 +757,17 @@ if grep -Eh \
     '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
     "$readme" "$document" "$database_document" |
     grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0-rc\.2([[:space:]]|$)'; then
+      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0([[:space:]]|$)'; then
   echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
   exit 1
 fi
 
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$database_document") -ne 1 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0-rc\.2([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.3\.0-rc\.2([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.3.0-rc.2 copy-paste assignment inventory is incomplete or duplicated' >&2
+if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$readme") -ne 3 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$document") -ne 2 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$database_document") -ne 1 ]] ||
+    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0([[:space:]]|$)' "$document") -ne 1 ]] ||
+    [[ $(grep -Ec '^export TAG=v0\.3\.0([[:space:]]|$)' "$document") -ne 1 ]]; then
+  echo 'The v0.3.0 copy-paste assignment inventory is incomplete or duplicated' >&2
   exit 1
 fi
 
@@ -935,6 +958,9 @@ find_unique_line() {
   printf '%s\n' "${matches[0]}"
 }
 
+release_stable_heading_line=$(
+  find_unique_line release-stable-heading '## v0.3.0 highlights' "$release_document"
+)
 release_rc_heading_line=$(
   find_unique_line release-rc-heading '## v0.3.0-rc.2 highlights' "$release_document"
 )
@@ -961,11 +987,12 @@ release_tag_command_line=$(
   find_unique_line release-tag-command 'git switch dev' "$release_document"
 )
 
-if [[ "$release_previous_rc_heading_line" -le "$release_rc_heading_line" ||
+if [[ "$release_rc_heading_line" -le "$release_stable_heading_line" ||
+    "$release_previous_rc_heading_line" -le "$release_rc_heading_line" ||
     "$release_upgrade_heading_line" -le "$release_previous_rc_heading_line" ||
     "$release_feature_heading_line" -le "$release_upgrade_heading_line" ||
     "$release_previous_heading_line" -le "$release_feature_heading_line" ]]; then
-  echo 'The v0.3.0 release-candidate history is not correctly ordered before v0.2.1' >&2
+  echo 'The v0.3.0 stable and release-candidate history is not correctly ordered before v0.2.1' >&2
   exit 1
 fi
 
@@ -1004,7 +1031,7 @@ quickstart_sudo_requirement_line=$(
 )
 quickstart_direct_intro_line=$(
   find_unique_line quickstart-direct-intro \
-    'If selecting direct settlement, install the reviewed' \
+    'For a new Bitcoin SOLO pool, install the reviewed' \
     "$quickstart_configuration_section"
 )
 quickstart_editor_line=$(

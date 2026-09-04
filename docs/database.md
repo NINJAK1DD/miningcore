@@ -151,7 +151,7 @@ that uses the database, take a verified backup, then point this shell at that ex
 candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-export MININGCORE_VERSION=v0.3.0-rc.2
+export MININGCORE_VERSION=v0.3.0
 export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
 export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
 test -d "$MININGCORE_CANDIDATE_DIR/migrations"
@@ -209,14 +209,16 @@ requires manual review. Recovery mode validates the `share_recovery_imports` tab
 immediate `filehash` primary key before scanning the journal, so a missing or stale migration fails
 early with an actionable message.
 
-The direct-SOLO migration is required before enabling Bitcoin
-`soloCoinbasePayout`. It adds immutable settlement evidence to `blocks`; historical rows remain null
-and continue through their original custodial lifecycle. Startup checks the exact types and validated
-settlement/submission constraint, dedicated candidate index, ordered reconciliation index,
-prepared-submission replay index and statement-scoped update guards before direct work begins. The
-same row is a durable submission outbox containing the exact serialized block; `prepared` and
-`submitted-uncertain` entries are replayed idempotently rather than inferred from audit metadata. See the
-[Bitcoin direct-SOLO guide](bitcoin-direct-solo.md#database-migration).
+The direct-SOLO migration is required before running a canonical Bitcoin `SOLO` pool under
+`v0.3.0`, where `soloCoinbasePayout` defaults to `true`. An operator retaining the older custodial
+flow may instead set `soloCoinbasePayout: false` before upgrading. The migration adds immutable
+settlement evidence to `blocks`; historical rows remain null and continue through their original
+custodial lifecycle. Startup checks the exact types and validated settlement/submission constraint,
+dedicated candidate index, ordered reconciliation index, prepared-submission replay index and
+statement-scoped update guards before direct work begins. The same row is a durable submission
+outbox containing the exact serialized block; `prepared` and
+`submitted-uncertain` entries are replayed idempotently rather than inferred from audit metadata.
+See the [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md#database-migration).
 
 `add_share_accounting.sql` is additive and transactional. Do not attempt a live rollback by dropping
 its tables or columns: they can contain PPS liabilities and replay evidence that are not reconstructible

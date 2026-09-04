@@ -893,13 +893,26 @@ public class BitcoinJob
             poolAddressDestination, network, isPoS, shareMultiplier,
             coinbaseHasher, headerHasher, blockHasher, null);
 
+    internal void InitWithCoinbasePolicy(BlockTemplate blockTemplate,
+        string jobId, PoolConfig pc,
+        BitcoinPoolConfigExtra extraPoolConfig, ClusterConfig cc,
+        IMasterClock clock, IDestination poolAddressDestination,
+        Network network, bool isPoS, double shareMultiplier,
+        IHashAlgorithm coinbaseHasher, IHashAlgorithm headerHasher,
+        IHashAlgorithm blockHasher, bool bip54CoinbaseEnabled) =>
+        InitDirect(blockTemplate, jobId, pc, extraPoolConfig, cc, clock,
+            poolAddressDestination, network, isPoS, shareMultiplier,
+            coinbaseHasher, headerHasher, blockHasher, null,
+            bip54CoinbaseEnabled);
+
     internal void InitDirect(BlockTemplate blockTemplate, string jobId,
         PoolConfig pc, BitcoinPoolConfigExtra extraPoolConfig,
         ClusterConfig cc, IMasterClock clock,
         IDestination poolAddressDestination, Network network,
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
         IHashAlgorithm headerHasher, IHashAlgorithm blockHasher,
-        BitcoinDirectCoinbaseTemplate directCoinbaseTemplate = null)
+        BitcoinDirectCoinbaseTemplate directCoinbaseTemplate = null,
+        bool? bip54CoinbaseEnabled = null)
     {
         Contract.RequiresNonNull(blockTemplate);
         Contract.RequiresNonNull(pc);
@@ -916,7 +929,8 @@ public class BitcoinJob
         txVersion = coin.CoinbaseTxVersion;
         var isCanonicalBitcoin = IsCanonicalBitcoin(pc, coin);
         emitBip54CoinbaseFields = isCanonicalBitcoin &&
-            BitcoinPoolConfigExtra.ResolveBip54Coinbase(extraPoolConfig);
+            (bip54CoinbaseEnabled ?? BitcoinPoolConfigPolicy
+                .ResolveBip54Coinbase(pc, extraPoolConfig));
         // The compatibility switch restores the complete pre-change coinbase
         // shape, including witness-output placement.
         witnessCommitmentLast = emitBip54CoinbaseFields;

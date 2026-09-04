@@ -62,6 +62,9 @@
       "id": "bitcoin-solo",
       "enabled": true,
       "coin": "bitcoin",
+      // Direct coinbase SOLO is intentionally disabled: it does not support
+      // share-relay topologies.
+      "soloCoinbasePayout": false,
       "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
       // Optional pool fee or donation; keep identical across every relay node.
       "rewardRecipients": [
