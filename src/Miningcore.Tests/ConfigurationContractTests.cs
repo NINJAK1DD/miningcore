@@ -108,6 +108,10 @@ public class ConfigurationContractTests
                     new[] { typeof(ConcealPoolConfigExtra) },
                     new[] { typeof(ConcealDaemonEndpointConfigExtra) },
                     new[] { typeof(ConcealPoolPaymentProcessingConfigExtra) }),
+                [CoinFamily.BitcoinBlake2b] = Contract(
+                    new[] { typeof(BitcoinPoolConfigExtra) },
+                    new[] { typeof(BitcoinDaemonNotificationConfigExtra) },
+                    new[] { typeof(BitcoinPoolPaymentProcessingConfigExtra) }),
                 [CoinFamily.Cryptonote] = Contract(
                     new[] { typeof(CryptonotePoolConfigExtra) },
                     new[] { typeof(CryptonoteDaemonEndpointConfigExtra) },
@@ -840,7 +844,9 @@ public class ConfigurationContractTests
                 ? null
                 : BundledCoinTemplates.Value[coin]?["family"]?.Value<string>();
 
-            if(!Enum.TryParse<CoinFamily>(familyName, true, out var family) ||
+            var enumName = familyName == "bitcoin-blake2b"
+                ? nameof(CoinFamily.BitcoinBlake2b) : familyName;
+            if(!Enum.TryParse<CoinFamily>(enumName, true, out var family) ||
                !ExampleExtensionContracts.Value.TryGetValue(family,
                    out var contract))
             {

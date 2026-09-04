@@ -49,6 +49,13 @@ public class BlockTemplate
     public uint Version { get; set; }
 
     /// <summary>
+    /// Consensus rules advertised by the daemon. Mandatory rules are prefixed
+    /// with '!'. Dedicated protocol runtimes use this to fail closed when a
+    /// daemon returns work for another chain or header revision.
+    /// </summary>
+    public string[] Rules { get; set; }
+
+    /// <summary>
     /// The hash of current highest block
     /// </summary>
     public string PreviousBlockhash { get; set; }
@@ -72,6 +79,10 @@ public class BlockTemplate
     /// Current timestamp in seconds since epoch (Jan 1 1970 GMT)
     /// </summary>
     public uint CurTime { get; set; }
+
+    /// <summary>
+    /// Minimum consensus-valid block timestamp returned by GBT.
+    /// </summary>
 
     /// <summary>
     /// Compressed target of next block

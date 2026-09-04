@@ -65,6 +65,10 @@ public enum CoinFamily
 
     [EnumMember(Value = "zano")]
     Zano,
+
+    // Append new families to preserve existing public enum numeric values.
+    [EnumMember(Value = "bitcoin-blake2b")]
+    BitcoinBlake2b,
 }
 
 public abstract partial class CoinTemplate
@@ -170,6 +174,7 @@ public abstract partial class CoinTemplate
         {CoinFamily.Alephium, typeof(AlephiumCoinTemplate)},
         {CoinFamily.Beam, typeof(BeamCoinTemplate)},
         {CoinFamily.Bitcoin, typeof(BitcoinTemplate)},
+        {CoinFamily.BitcoinBlake2b, typeof(BitcoinBlake2bTemplate)},
         {CoinFamily.Conceal, typeof(ConcealCoinTemplate)},
         {CoinFamily.Cryptonote, typeof(CryptonoteCoinTemplate)},
         {CoinFamily.Equihash, typeof(EquihashCoinTemplate)},
@@ -222,6 +227,29 @@ public partial class BitcoinTemplate : CoinTemplate
         /// </summary>
         [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public uint? OdoCryptShapeChangeInterval { get; set; }
+
+        /// <summary>
+        /// First height whose consensus header uses Bitcoin BLAKE2b header-v2.
+        /// This is required only by the isolated bitcoin-blake2b family.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public uint? Blake2bActivationHeight { get; set; }
+
+        /// <summary>
+        /// Consensus headline required in the activation block coinbase.
+        /// Empty is valid on test networks whose daemon was configured without
+        /// an activation headline.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public string Blake2bActivationHeadline { get; set; }
+
+        /// <summary>
+        /// One-off target shift applied by the daemon at activation. Miningcore
+        /// records and validates this source-derived value; the daemon remains
+        /// authoritative for the returned compact target.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public byte? Blake2bTargetShift { get; set; }
 
         /// <summary>
         /// Arbitrary extension data
@@ -367,6 +395,23 @@ public partial class BitcoinTemplate : CoinTemplate
     /// </summary>
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public int? PayoutDecimalPlaces { get; set; } = 4;
+}
+
+/// <summary>
+/// Typed template for the Bitcoin BLAKE2b header-v2 hard-fork chain. Keeping a
+/// separate CLR type and family prevents its wire protocol from being selected
+/// by canonical SHA-256d Bitcoin or another Bitcoin-derived template.
+/// </summary>
+public partial class BitcoinBlake2bTemplate : BitcoinTemplate
+{
+    public override string GetAlgorithmName() => "BLAKE2b header-v2";
+
+    /// <summary>
+    /// Immutable compatibility identifier for the reviewed header/miner wire
+    /// contract. A changed upstream protocol requires a code review and a new
+    /// supported identifier rather than silently inheriting this implementation.
+    /// </summary>
+    public string Blake2bProtocol { get; set; }
 }
 
 public enum ConcealSubfamily

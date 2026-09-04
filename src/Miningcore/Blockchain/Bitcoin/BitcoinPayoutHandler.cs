@@ -35,7 +35,7 @@ internal sealed class BitcoinDirectSettlementMismatchException : Exception
     }
 }
 
-[CoinFamily(CoinFamily.Bitcoin, CoinFamily.Nexa)]
+[CoinFamily(CoinFamily.Bitcoin, CoinFamily.BitcoinBlake2b, CoinFamily.Nexa)]
 public class BitcoinPayoutHandler : PayoutHandlerBase,
     IPayoutHandler
 {

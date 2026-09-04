@@ -234,7 +234,8 @@ public class BitcoinPool : PoolBase
         return true;
     }
 
-    private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+    protected virtual object CreateWorkerJob(StratumConnection connection,
+        bool cleanJob)
     {
         if(manager.DirectCoinbasePayoutEnabled &&
            Volatile.Read(ref directJobPipelineFailed) != 0)

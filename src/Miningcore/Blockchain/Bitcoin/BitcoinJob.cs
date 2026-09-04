@@ -961,7 +961,7 @@ public class BitcoinJob
         var coinbaseString = !string.IsNullOrEmpty(cc.PaymentProcessing?.CoinbaseString) ?
             cc.PaymentProcessing?.CoinbaseString.Trim() : "Miningcore";
 
-        scriptSigFinalBytes = new Script(Op.GetPushOp(Encoding.UTF8.GetBytes(coinbaseString))).ToBytes();
+        scriptSigFinalBytes = BuildScriptSigFinalBytes(coinbaseString);
 
         Difficulty = new Target(System.Numerics.BigInteger.Parse(BlockTemplate.Target, NumberStyles.HexNumber)).Difficulty;
 
@@ -1205,7 +1205,11 @@ public class BitcoinJob
         }
     }
 
-    public object GetJobParams(bool isNew)
+    protected virtual byte[] BuildScriptSigFinalBytes(string coinbaseString) =>
+        new Script(Op.GetPushOp(Encoding.UTF8.GetBytes(coinbaseString)))
+            .ToBytes();
+
+    public virtual object GetJobParams(bool isNew)
     {
         jobParams[^1] = isNew;
         return jobParams;

@@ -465,7 +465,8 @@ public class PoolApiController : ApiControllerBase
             // Only PendingShares still needs shareMultiplier.
             // BestShare / BestSessionShare come from actualdifficulty,
             // which is already in the network-comparable scale exposed by the API.
-            if(pool.Template.Family == CoinFamily.Bitcoin)
+            if(pool.Template.Family is CoinFamily.Bitcoin or
+               CoinFamily.BitcoinBlake2b)
             {
                 var shareMultiplier = pool.Template.As<BitcoinTemplate>().ShareMultiplier;
                 stats.PendingShares *= shareMultiplier;
