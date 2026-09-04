@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
@@ -15,6 +16,39 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bConfigurationTests : TestBase
 {
+    [Theory]
+    [InlineData("not-hex!", "1d00ffff")]
+    [InlineData("1d80ffff", "1d00ffff")]
+    [InlineData("1d00ffff", "1c00ffff")]
+    [InlineData(null, "1d00ffff")]
+    public void ActivationTarget_MalformedParentFailsWithTerminalPoolDiagnostic(string parent, string next)
+    {
+        var error = Assert.Throws<PoolStartupException>(() =>
+            BitcoinBlake2bJobManager.ValidateActivationTarget(parent, next, 22, 0x1d00ffffU, "blake2b-test"));
+        Assert.Equal("blake2b-test", error.PoolId);
+        Assert.Contains("activation metadata", error.Message);
+    }
+
+    [Theory]
+    [InlineData("soloCoinbasePayout")]
+    [InlineData("bip54Coinbase")]
+    [InlineData("gbtArgs")]
+    [InlineData("btStream")]
+    [InlineData("mergedMining")]
+    [InlineData("hasLegacyDaemon")]
+    [InlineData("coinbaseTxComment")]
+    public void Manager_RejectsForeignProtocolOptionsEvenWhenFalse(string property)
+    {
+        var manager = new BitcoinBlake2bJobManager(container, Substitute.For<IMasterClock>(),
+            Substitute.For<IMessageBus>(), new BitcoinBlake2bExtraNonceProvider());
+        var config = new PoolConfig
+        {
+            Id = "blake2b-test", Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"],
+            Extra = new Dictionary<string, object> { [property] = false },
+        };
+        Assert.Throws<PoolStartupException>(() => manager.Configure(config, new ClusterConfig()));
+    }
+
     [Theory]
     [InlineData(PayoutScheme.PPBS)]
     [InlineData(PayoutScheme.PPLNSBF)]

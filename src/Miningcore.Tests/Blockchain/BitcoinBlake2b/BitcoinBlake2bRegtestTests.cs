@@ -46,8 +46,14 @@ internal sealed class BitcoinBlake2bIntegrationFactAttribute : FactAttribute
 public class BitcoinBlake2bRegtestTests : TestBase
 {
     [BitcoinBlake2bIntegrationFact]
-    public async Task HeaderV2_AllPayoutSchemes_SubmitAcceptedCustodialBlocks()
+    public Task HeaderV2_AllPayoutSchemes_SubmitAcceptedCustodialBlocks() => ExerciseAsync(false);
+
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public Task HeaderV2_RealStratumPpsProof_CommitsExactlyOnceToPostgres() => ExerciseAsync(true);
+
+    private async Task ExerciseAsync(bool requirePostgres)
     {
+        await using var ledger = requirePostgres ? await BitcoinBlake2bLedgerProbe.CreateAsync() : null;
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
             true, Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
             new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest" }, 19);
@@ -68,9 +74,11 @@ public class BitcoinBlake2bRegtestTests : TestBase
         };
         var schemes = new[] { PayoutScheme.SOLO, PayoutScheme.PPS, PayoutScheme.PROP, PayoutScheme.PPLNS };
         var acceptedBlocks = new List<Miningcore.Persistence.Model.Block>();
+        var acceptedShares = new List<Share>();
         for(var index = 0; index < schemes.Length; index++)
         {
             var height = 20 + index;
+            pool.Id = "blake2b-regtest-" + schemes[index].ToString().ToLowerInvariant();
             pool.Daemons = new[] { node.WalletEndpoint };
             pool.PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true, PayoutScheme = schemes[index] };
             var recorder = Substitute.For<IBlockCandidateRecorder>();
@@ -172,6 +180,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 Assert.True(candidate.BlockRecordEmitted);
                 Assert.NotNull(candidate.PpsCalculatedAmount);
                 Assert.NotNull(ShareAccounting.CreatePpsCredit(pool, candidate));
+                if(ledger != null)
+                    await ledger.AssertPpsPersistenceAsync(candidate, pool);
                 await recorder.Received(1).PersistBlockCandidateAsync(Arg.Is<Share>(x =>
                     x.BlockOnly && x.PpsCalculatedAmount == null && x.RewardBasisSatoshis == 0));
             }
@@ -190,9 +200,11 @@ public class BitcoinBlake2bRegtestTests : TestBase
             acceptedBlocks.Add(new Miningcore.Persistence.Model.Block
             {
                 PoolId = pool.Id, BlockHeight = (ulong) height, Hash = candidate.BlockHash,
+                Miner = candidate.Miner,
                 TransactionConfirmationData = candidate.TransactionConfirmationData,
                 Status = Miningcore.Persistence.Model.BlockStatus.Pending, Created = clock.Now,
             });
+            acceptedShares.Add(candidate);
             var blockHex = (await node.RootRpcAsync("getblock", candidate.BlockHash, 0)).Value<string>();
             Assert.Equal("duplicate", (await node.RootRpcAsync("submitblock", blockHex)).Value<string>());
         }
@@ -221,11 +233,16 @@ public class BitcoinBlake2bRegtestTests : TestBase
         Assert.Equal(4, matured.Length);
         foreach(var block in matured)
         {
+            var index = (int) block.BlockHeight - 20;
+            pool.Id = block.PoolId;
+            pool.PaymentProcessing.PayoutScheme = schemes[index];
             Assert.Equal(Miningcore.Persistence.Model.BlockStatus.Confirmed, block.Status);
             Assert.Equal(50m, block.Reward);
             Assert.Equal(49m, await handler.UpdateBlockRewardBalancesAsync(con, tx, miningPool, block, CancellationToken.None));
+            if(ledger != null)
+                await ledger.AssertSchemeSettlementAsync(acceptedShares[index], pool, block, handler);
         }
-        await balances.Received(4).AddAmountAsync(con, tx, pool.Id, recipient.ToString(), 1m, Arg.Any<string>());
+        await balances.Received(4).AddAmountAsync(con, tx, Arg.Any<string>(), recipient.ToString(), 1m, Arg.Any<string>());
 
         await handler.PayoutAsync(miningPool, new[]
         {

@@ -151,6 +151,11 @@ constructs Sia-style proofs independently from notify data, and verifies accepte
 SOLO/PPS/PROP/PPLNS. It also checks VarDiff notification ordering, strict JSON rejection,
 PPS admission evidence, coinbase maturity, fee allocation, and a confirmed wallet payment.
 Its persistence sink is substituted: this test is not a PostgreSQL ledger integration test.
+A second, explicitly gated test requires both that binary and `MININGCORE_TEST_POSTGRES`.
+It feeds the real miner's accepted proof into the PostgreSQL accounting repository, verifies
+PPS credit/remainder precision, duplicate replay and conflicting-payload rejection, and runs
+SOLO/PROP/PPLNS allocation against actual share/balance tables. Confirmed or orphaned PPS
+blocks cannot credit the same liability again or reverse it. Each run owns a disposable schema.
 Inspect actual test results before deployment—test code existing is not evidence that a run passed.
 Real-network maturity, payout liquidity, firmware behavior and long-running VarDiff require
 operator commissioning beyond isolated regtest.

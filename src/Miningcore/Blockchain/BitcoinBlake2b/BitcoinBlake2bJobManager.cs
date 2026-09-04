@@ -81,16 +81,33 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
                         new object[] { response.Response.PreviousBlockhash });
                     if(parent.Error != null || parent.Response?["bits"]?.Type != JTokenType.String)
                         throw new PoolStartupException($"Pool '{poolConfig.Id}' cannot verify the activation parent target", poolConfig.Id);
-                    var expected = BitcoinBlake2bHeader.ActivationTarget(
-                        BitcoinBlake2bHeader.ParseCompactBits(parent.Response["bits"].Value<string>()),
-                        contract.Blake2bTargetShift!.Value,
-                        network == NBitcoin.Network.Main ? 0x1d00ffffU : 0x207fffffU);
-                    if(expected != BitcoinBlake2bHeader.ParseCompactBits(response.Response.Bits))
-                        throw new PoolStartupException($"Pool '{poolConfig.Id}' activation target differs from the reviewed target-shift contract", poolConfig.Id);
+                    ValidateActivationTarget(parent.Response["bits"].Value<string>(),
+                        response.Response.Bits, contract.Blake2bTargetShift!.Value,
+                        network == NBitcoin.Network.Main ? 0x1d00ffffU : 0x207fffffU,
+                        poolConfig.Id);
                 }
             }
         }
         return response;
+    }
+
+    internal static void ValidateActivationTarget(string parentBits, string nextBits,
+        byte shift, uint powLimitBits, string poolId)
+    {
+        try
+        {
+            var expected = BitcoinBlake2bHeader.ActivationTarget(
+                BitcoinBlake2bHeader.ParseCompactBits(parentBits), shift, powLimitBits);
+            if(expected != BitcoinBlake2bHeader.ParseCompactBits(nextBits))
+                throw new InvalidDataException("activation target differs from the reviewed target-shift contract");
+        }
+        catch(Exception ex) when(ex is InvalidDataException or ArgumentException or OverflowException)
+        {
+            // The shared update loop retries ordinary errors. A malformed
+            // consensus contract instead must propagate to fail-stop and
+            // invalidate previously issued work.
+            throw new PoolStartupException($"Pool '{poolId}' rejected Bitcoin BLAKE2b activation metadata: {ex.Message}", poolId, ex);
+        }
     }
 
     protected override void PostChainIdentifyConfigure()
