@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Reactive.Subjects;
 using System.Text;
 using System.Threading;
@@ -17,6 +18,7 @@ using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Pushover;
 using Miningcore.Tests.Util;
 using NSubstitute;
 using Prometheus;
@@ -411,6 +413,61 @@ public class HostedServiceStartupTests
         Assert.Contains(
             $"miningcore_share_persistence_queue_overflow_total{{queue=\"primary\"}} {finalSnapshot.OverflowCount}",
             text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NotificationService_OptionalConfigurationDoesNotPreventStartup(bool emptySection)
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = emptySection ? new NotificationsConfig() : null,
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+        var factory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        // Exercise both actual constructors used by the hosted-service graph.
+        var pushover = new PushoverClient(config, factory);
+        using var service = new NotificationService(config, pushover, messageBus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await service.StartAsync(timeout.Token).WaitAsync(timeout.Token);
+        await service.SendCriticalAdminNotificationAsync(new AdminNotification("test", "disabled"), timeout.Token);
+        await service.StopAsync(timeout.Token);
+
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NotificationService_MissingEmailProviderHasExplicitStartupDiagnostic(bool enabled)
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications { Enabled = enabled, EmailAddress = "admin@example.invalid" },
+            },
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+
+        if(enabled)
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                new NotificationService(config, null, messageBus));
+            Assert.Contains("notifications.email", error.Message);
+        }
+        else
+        {
+            using var service = new NotificationService(config, null, messageBus);
+        }
     }
 
     [Fact]

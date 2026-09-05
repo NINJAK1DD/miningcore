@@ -32,6 +32,23 @@ public class PpsConfigurationTests
     }
 
     [Fact]
+    public void BitcoinBlake2bPps_PreservesLocalFinancialStartupRequirements()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].Coin = "bitcoin-blake2b";
+        config.Pools[0].Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b };
+        Program.ValidatePpsDeployment(config, requireAssignedTemplates: true);
+        Assert.True(Program.RequiresShareAccountingPersistence(config));
+        Assert.True(Program.RequiresSynchronousBlockCandidatePersistence(config));
+        config.ShareRelay = new ShareRelayConfig();
+        config.Persistence = null;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
+        config.Persistence = new PersistenceConfig { Postgres = new PostgresConfig() };
+        config.PaymentProcessing.Enabled = false;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
+    }
+
+    [Fact]
     public void RelaySender_RequiresLocalCandidateAndAccountingSchema()
     {
         var config = CreateConfig(CoinFamily.Bitcoin);

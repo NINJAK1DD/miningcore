@@ -211,7 +211,8 @@ public class ScryptCoinTemplateTests : TestBase
             "bells", "cyberyen", "dogecoin", "luckybit", "namecoin", "paccoin",
         };
         var actual = ModuleInitializer.CoinTemplates
-            .Where(x => x.Value is BitcoinTemplate {DisableVersionRolling: true})
+            .Where(x => x.Value is BitcoinTemplate {DisableVersionRolling: true} &&
+                x.Value.Family != CoinFamily.BitcoinBlake2b)
             .Select(x => x.Key)
             .OrderBy(x => x, StringComparer.Ordinal)
             .ToArray();

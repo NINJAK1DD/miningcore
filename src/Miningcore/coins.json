@@ -369,6 +369,46 @@
         "explorerTxLink": "https://www.blockchain.com/btc/tx/{0}",
         "explorerAccountLink": "https://www.blockchain.com/btc/address/{0}"
     },
+    "bitcoin-blake2b": {
+        "name": "Bitcoin BLAKE2b",
+        "canonicalName": "Bitcoin-BLAKE2b",
+        "symbol": "BTCB2B",
+        "family": "bitcoin-blake2b",
+        "website": "https://btc-blake2b.org/",
+        "github": "https://github.com/bitcoinknots/bitcoin/tree/8c85b1585dac23f964e2dd32045624de7f02aa58",
+        "market": "",
+        "twitter": "",
+        "telegram": "",
+        "discord": "",
+        "blake2bProtocol": "knots-29.4.1-header-v2",
+        "disableVersionRolling": true,
+        "coinbaseHasher": {
+            "hash": "sha256d"
+        },
+        "headerHasher": {
+            "hash": "sha256d"
+        },
+        "blockHasher": {
+            "hash": "reverse",
+            "args": [
+                {
+                    "hash": "sha256d"
+                }
+            ]
+        },
+        "networks": {
+            "main": {
+                "blake2bActivationHeight": 961640,
+                "blake2bActivationHeadline": "8-30 NYPost Deride And Conquer",
+                "blake2bTargetShift": 22
+            },
+            "regtest": {
+                "blake2bActivationHeight": 20,
+                "blake2bActivationHeadline": "Miningcore BLAKE2b regtest",
+                "blake2bTargetShift": 20
+            }
+        }
+    },
     "bitcoin-cash": {
         "name": "Bitcoin Cash",
         "canonicalName": "Bitcoin-Cash",

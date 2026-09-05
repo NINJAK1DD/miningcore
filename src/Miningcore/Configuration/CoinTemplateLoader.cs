@@ -24,6 +24,8 @@ public static class CoinTemplateLoader
         "odoCryptActivationHeight";
     private const string OdoCryptIntervalProperty =
         "odoCryptShapeChangeInterval";
+    internal const string BitcoinBlake2bProtocol =
+        "knots-29.4.1-header-v2";
 
     private static void RejectUnsupportedMetadata(string filename, string coinId,
         JToken template)
@@ -373,6 +375,160 @@ public static class CoinTemplateLoader
         string coinId, string message) => new(
         $"Invalid coin-template '{coinId}' in file '{filename}': {message}");
 
+    private static void ValidateBitcoinBlake2bSyntax(string filename,
+        string coinId, CoinFamily family, JObject template)
+    {
+        void Reject(string reason) => throw new PoolStartupException(
+            $"Invalid coin-template '{coinId}' in file '{filename}': {reason}");
+
+        if(family != CoinFamily.BitcoinBlake2b)
+        {
+            if(template.Descendants().OfType<JProperty>().Any(x =>
+                   x.Name.StartsWith("blake2b", StringComparison.OrdinalIgnoreCase)))
+                Reject("blake2b metadata is supported only by the bitcoin-blake2b family");
+            return;
+        }
+
+        // Header-v2 is not an arbitrary Bitcoin-template flag combination.
+        // Restrict it to the fields exercised by this typed runtime, before
+        // extension binding can silently discard casing or scope mistakes.
+        var scalarNames = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "name", "canonicalName", "symbol", "family", "website", "github",
+            "market", "twitter", "telegram", "discord", "explorerBlockLink",
+            "explorerTxLink", "explorerAccountLink", "blake2bProtocol",
+        };
+        foreach(var property in template.Properties())
+        {
+            if(scalarNames.Contains(property.Name))
+            {
+                if(property.Value.Type != JTokenType.String)
+                    Reject($"'{property.Name}' must be a JSON string");
+                continue;
+            }
+            if(property.Name is not ("disableVersionRolling" or "networks" or
+                "coinbaseHasher" or "headerHasher" or "blockHasher"))
+                Reject($"unsupported or non-canonical Bitcoin BLAKE2b property '{property.Name}'");
+        }
+
+        var sha256d = JObject.Parse("{\"hash\":\"sha256d\"}");
+        var reverseSha256d = JObject.Parse("{\"hash\":\"reverse\",\"args\":[{\"hash\":\"sha256d\"}]}");
+        if(!JToken.DeepEquals(template["coinbaseHasher"], sha256d) ||
+           !JToken.DeepEquals(template["headerHasher"], sha256d) ||
+           !JToken.DeepEquals(template["blockHasher"], reverseSha256d))
+            Reject("Bitcoin BLAKE2b requires the reviewed base-serializer hash descriptors; the dedicated header-v2 job owns PoW and block identity");
+
+        if(template["networks"] is not JObject networks)
+        {
+            Reject("'networks' must be an object");
+            return;
+        }
+        foreach(var entry in networks.Properties())
+        {
+            if(entry.Name is not ("main" or "regtest") || entry.Value is not JObject)
+                Reject($"unsupported network '{entry.Name}'; only main and regtest are reviewed");
+            foreach(var field in ((JObject) entry.Value).Properties())
+            {
+                if(field.Name == "blake2bActivationHeadline")
+                {
+                    if(field.Value.Type != JTokenType.String ||
+                       field.Value.Value<string>().Any(x => x is < ' ' or > '~'))
+                        Reject($"'{field.Name}' must be printable ASCII");
+                }
+                else if(field.Name is "blake2bActivationHeight" or "blake2bTargetShift")
+                {
+                    if(field.Value.Type != JTokenType.Integer ||
+                       !ulong.TryParse(field.Value.ToString(), out var number) ||
+                       number == 0 || number > (field.Name == "blake2bTargetShift" ? 255UL : uint.MaxValue))
+                        Reject($"'{field.Name}' must be a positive in-range JSON integer");
+                }
+                else
+                    Reject($"unsupported or non-canonical network property '{field.Name}'");
+            }
+        }
+    }
+
+    private static void ValidateBitcoinBlake2bContract(string filename,
+        string coinId, BitcoinBlake2bTemplate template)
+    {
+        if(!string.Equals(template.Blake2bProtocol, BitcoinBlake2bProtocol,
+               StringComparison.Ordinal))
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"'blake2bProtocol' must be '{BitcoinBlake2bProtocol}'");
+        }
+
+        if(!template.DisableVersionRolling ||
+           template.AllowedVersionRollingMask.HasValue ||
+           template.VersionRollingConsensusMask.HasValue)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                "Bitcoin BLAKE2b header-v2 requires 'disableVersionRolling: " +
+                "true' and does not accept BIP310 mask metadata");
+        }
+
+        if(template.Networks == null ||
+           !template.Networks.TryGetValue("main", out var main) ||
+           !template.Networks.TryGetValue("regtest", out var regtest))
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                "Bitcoin BLAKE2b requires typed 'main' and 'regtest' network metadata");
+        }
+
+        ValidateBitcoinBlake2bNetwork(filename, coinId, "main", main,
+            requireHeadline: true);
+        ValidateBitcoinBlake2bNetwork(filename, coinId, "regtest", regtest,
+            requireHeadline: false);
+
+        if(regtest.Blake2bTargetShift != 20)
+            throw new PoolStartupException($"Invalid coin-template '{coinId}' in file '{filename}': regtest target shift must match the reviewed value 20");
+
+        if(main.Blake2bActivationHeight != 961640 ||
+           main.Blake2bTargetShift != 22 ||
+           !string.Equals(main.Blake2bActivationHeadline,
+               "8-30 NYPost Deride And Conquer", StringComparison.Ordinal))
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                "mainnet activation metadata does not match reviewed Bitcoin " +
+                "Knots v29.4.1.knots20260508 consensus parameters");
+        }
+    }
+
+    private static void ValidateBitcoinBlake2bNetwork(string filename,
+        string coinId, string networkName,
+        BitcoinTemplate.BitcoinNetworkParams network,
+        bool requireHeadline)
+    {
+        if(network?.Blake2bActivationHeight is not > 0 ||
+           network.Blake2bTargetShift is not > 0)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"network '{networkName}' requires a positive " +
+                "'blake2bActivationHeight' and a target shift from 1 through 255");
+        }
+
+        if(requireHeadline &&
+           string.IsNullOrEmpty(network.Blake2bActivationHeadline))
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"network '{networkName}' requires " +
+                "'blake2bActivationHeadline'");
+        }
+
+        if(network.Blake2bActivationHeadline?.Length > 80)
+        {
+            throw new PoolStartupException(
+                $"Invalid coin-template '{coinId}' in file '{filename}': " +
+                $"network '{networkName}' activation headline exceeds 80 bytes");
+        }
+    }
+
     private static IEnumerable<KeyValuePair<string, CoinTemplate>> LoadTemplates(string filename, IComponentContext ctx)
     {
         using var textReader = File.OpenText(filename);
@@ -414,7 +570,9 @@ public static class CoinTemplateLoader
                 string.Equals(x.Name, DisableVersionRollingProperty,
                     StringComparison.OrdinalIgnoreCase));
 
-            if(family != CoinFamily.Bitcoin && hasVersionRollingPolicy)
+            if(family != CoinFamily.Bitcoin &&
+               family != CoinFamily.BitcoinBlake2b &&
+               hasVersionRollingPolicy)
             {
                 throw VersionRollingError(filename, o.Key,
                     "version-rolling policy is supported only by templates " +
@@ -427,10 +585,11 @@ public static class CoinTemplateLoader
                 VersionRollingConsensusMaskProperty);
             ValidateDisableVersionRollingSyntax(filename, o.Key, templateObject);
             ValidateOdoCryptContract(filename, o.Key, family, templateObject);
+            ValidateBitcoinBlake2bSyntax(filename, o.Key, family, templateObject);
 
             var result = (CoinTemplate) o.Value.ToObject(CoinTemplate.Families[family]);
 
-            if(family == CoinFamily.Bitcoin)
+            if(family is CoinFamily.Bitcoin or CoinFamily.BitcoinBlake2b)
             {
                 if(result is not BitcoinTemplate bitcoinTemplate)
                 {
@@ -439,6 +598,19 @@ public static class CoinTemplateLoader
                 }
 
                 ValidateVersionRollingContract(filename, o.Key, bitcoinTemplate);
+
+                if(family == CoinFamily.BitcoinBlake2b)
+                {
+                    if(result is not BitcoinBlake2bTemplate blake2bTemplate)
+                    {
+                        throw new PoolStartupException(
+                            $"Invalid coin-template '{o.Key}' in file '{filename}': " +
+                            "Bitcoin BLAKE2b templates require BitcoinBlake2bTemplate metadata");
+                    }
+
+                    ValidateBitcoinBlake2bContract(filename, o.Key,
+                        blake2bTemplate);
+                }
             }
 
             ctx.InjectProperties(result);

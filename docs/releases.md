@@ -46,6 +46,24 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: Bitcoin BLAKE2b header-v2
+
+The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
+29.4.1.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
+direct-coinbase settlement on another chain, or implement the DATUM pool protocol.
+The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and miner contract,
+isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
+Existing schema migrations remain applicable; no new schema is introduced by this feature.
+Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
+
+Full-process GPU validation also exposed two existing startup issues: an omitted optional
+`notifications` section could prevent service construction, and debug logging printed the
+PostgreSQL connection string. Optional notification configuration now remains safely disabled
+when absent, and database/client-certificate credentials are no longer included in that log.
+Database diagnostics retain only host, port, database, user and the configured SSL policy;
+certificate/key paths are omitted and control characters are escaped. An enabled admin-email
+destination without an email provider also receives an explicit service-startup diagnostic.
+
 ## v0.3.0 highlights
 
 `v0.3.0` promotes the two v0.3.0 release candidates to the stable minor release. It adds current

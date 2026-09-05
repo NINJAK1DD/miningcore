@@ -5,6 +5,7 @@ using Miningcore.Banning;
 using Miningcore.Blockchain.Alephium;
 using Miningcore.Blockchain.Beam;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Blockchain.Conceal;
 using Miningcore.Blockchain.Cryptonote;
@@ -225,6 +226,8 @@ public class AutofacModule : Module
         builder.RegisterType<MergedMiningBitcoinJobManager>()
             .As<BitcoinJobManager>()
             .AsSelf();
+
+        builder.RegisterType<BitcoinBlake2bJobManager>();
 
         //////////////////////
         // Conceal
