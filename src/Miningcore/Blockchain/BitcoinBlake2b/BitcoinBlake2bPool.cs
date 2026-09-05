@@ -181,8 +181,8 @@ public class BitcoinBlake2bPool : BitcoinPool
         BitcoinBlake2bJob workerJob;
         try
         {
-            var target = ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
-            workerJob = job.ForDifficulty(context.Difficulty, target);
+            var assignment = ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
+            workerJob = job.ForDifficulty(assignment);
         }
         catch(ArgumentOutOfRangeException ex)
         {

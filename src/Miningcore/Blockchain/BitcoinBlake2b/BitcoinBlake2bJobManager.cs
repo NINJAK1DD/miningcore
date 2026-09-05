@@ -10,7 +10,6 @@ using Miningcore.Rpc;
 using Miningcore.JsonRpc;
 using NBitcoin;
 using System.Text;
-using System.Numerics;
 using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.BitcoinBlake2b;
@@ -32,6 +31,9 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     private DateTime nextActivationRpcAttempt;
     private JsonRpcError activationRpcError;
     private DateTime daemonAttestationExpires;
+    private int attestationRpcFailures;
+    private DateTime nextAttestationRpcAttempt;
+    private JsonRpcError attestationRpcError;
     private string attestedChain;
     internal static readonly TimeSpan DaemonAttestationLifetime = TimeSpan.FromSeconds(30);
 
@@ -124,29 +126,54 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     {
         if(clock.Now < daemonAttestationExpires)
             return null;
+        if(attestationRpcError != null && clock.Now < nextAttestationRpcAttempt)
+            return attestationRpcError;
 
         // A successful cache entry is installed only after every response
         // validates. Transport errors keep the cache expired and publish no
         // fresh work; successful contradictions take the terminal path.
         daemonAttestationExpires = DateTime.MinValue;
-        var info = await ReadDaemonAttestationAsync(BitcoinCommands.GetNetworkInfo, ct);
+        var info = await ReadAttestationWithBackoffAsync(BitcoinCommands.GetNetworkInfo, ct);
         if(info.Error != null) return info.Error;
         ValidateDaemonIdentity(info.Response, poolConfig.Id);
 
-        var chain = await ReadDaemonAttestationAsync(BitcoinCommands.GetBlockchainInfo, ct);
+        var chain = await ReadAttestationWithBackoffAsync(BitcoinCommands.GetBlockchainInfo, ct);
         if(chain.Error != null) return chain.Error;
         var expectedChain = attestedChain ?? (network == Network.Main ? "main" : "regtest");
         if(chain.Response?["chain"]?.Type != JTokenType.String ||
            !string.Equals(chain.Response["chain"].Value<string>(), expectedChain, StringComparison.Ordinal))
             throw new PoolStartupException($"Pool '{poolConfig.Id}' Bitcoin BLAKE2b daemon chain changed; expected '{expectedChain}'", poolConfig.Id);
 
-        var deployment = await ReadDaemonAttestationAsync("getdeploymentinfo", ct);
+        var deployment = await ReadAttestationWithBackoffAsync("getdeploymentinfo", ct);
         if(deployment.Error != null) return deployment.Error;
         ValidateDeployment(deployment.Response,
             blake2bCoin.Networks[expectedChain].Blake2bActivationHeight!.Value, poolConfig.Id);
         attestedChain = expectedChain;
+        attestationRpcFailures = 0;
+        attestationRpcError = null;
         daemonAttestationExpires = clock.Now.Add(DaemonAttestationLifetime);
         return null;
+    }
+
+    private async Task<RpcResponse<JObject>> ReadAttestationWithBackoffAsync(string method, CancellationToken ct)
+    {
+        RpcResponse<JObject> response;
+        try
+        {
+            response = await ReadDaemonAttestationAsync(method, ct);
+        }
+        catch(Exception ex) when(ex is HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            response = new(null, new JsonRpcError(-500, "Daemon attestation transport failed", null));
+        }
+        if(response.Error != null)
+        {
+            attestationRpcError = response.Error;
+            attestationRpcFailures = Math.Min(attestationRpcFailures + 1, 6);
+            nextAttestationRpcAttempt = clock.Now.AddSeconds(Math.Min(30, 1 << (attestationRpcFailures - 1)));
+        }
+        return response;
     }
 
     protected virtual Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct) =>
@@ -181,16 +208,16 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         return new(template);
     }
 
-    internal static BigInteger ValidateDifficultyForNetwork(double difficulty, Network selectedNetwork)
+    internal static BitcoinBlake2bDifficulty ValidateDifficultyForNetwork(double difficulty, Network selectedNetwork)
     {
-        var target = BitcoinBlake2bHeader.TargetForDifficulty(difficulty);
+        var assignment = BitcoinBlake2bDifficulty.Create(difficulty);
         if(selectedNetwork != Network.RegTest && difficulty < 1)
             throw new ArgumentOutOfRangeException(nameof(difficulty),
                 "Bitcoin BLAKE2b mainnet requires difficulty >= 1; easier targets are isolated-regtest only");
-        return target;
+        return assignment;
     }
 
-    internal BigInteger ValidateWorkerDifficulty(double difficulty) => ValidateDifficultyForNetwork(difficulty, network);
+    internal BitcoinBlake2bDifficulty ValidateWorkerDifficulty(double difficulty) => ValidateDifficultyForNetwork(difficulty, network);
 
     internal static void ValidateActivationCoinbaseSize(PoolConfig pc, ClusterConfig cc, BitcoinBlake2bTemplate template)
     {

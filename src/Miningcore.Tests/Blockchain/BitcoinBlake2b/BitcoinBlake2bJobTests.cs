@@ -19,6 +19,38 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bJobTests : TestBase
 {
+    [Theory]
+    [InlineData(1e-9)]
+    [InlineData(1)]
+    [InlineData(1000)]
+    public void AssignedDifficulty_BindsCreditedDifficultyToProofAndWireTarget(double difficulty)
+    {
+        var assignment = BitcoinBlake2bJobManager.ValidateDifficultyForNetwork(difficulty, Network.RegTest);
+        Assert.Equal(difficulty, assignment.Difficulty);
+        Assert.Equal(BitcoinBlake2bHeader.TargetForDifficulty(difficulty), assignment.Target);
+        Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(assignment.Target), assignment.Bits);
+        var (job, _) = CreateJob();
+        var issued = job.ForDifficulty(assignment);
+        Assert.Equal(job.ForDifficulty(difficulty).JobId, issued.JobId);
+        Assert.Equal(assignment.Bits.ToString("x8"), ((object[]) issued.GetJobParams(false))[6]);
+    }
+
+    [Fact]
+    public void AssignedDifficulty_CannotAcceptAnIndependentTargetOrInvalidDefault()
+    {
+        var type = typeof(BitcoinBlake2bDifficulty);
+        Assert.True(type.IsSealed);
+        Assert.All(type.GetConstructors(System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic),
+            constructor => Assert.True(constructor.IsPrivate));
+        Assert.All(type.GetProperties(System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic),
+            property => Assert.Null(property.SetMethod));
+        Assert.Throws<ArgumentOutOfRangeException>(() => BitcoinBlake2bDifficulty.Create(0));
+        var (job, _) = CreateJob();
+        Assert.Throws<ArgumentNullException>(() => job.ForDifficulty(null));
+    }
+
     [Fact]
     public void IssuedDifficulty_RemainsImmutableAcrossVarDiffChanges()
     {

@@ -19,7 +19,9 @@ later hard fork is implemented by the pinned Knots sources listed below.
   verify the upstream release checksums and signatures.
   Runtime work re-attests version, chain and deployment on the first successful template
   poll after a 30-second cache expires, and before new work after a GBT/activation-parent RPC outage.
-  Failed attestation RPCs withhold fresh work; successful identity or deployment mismatches
+  Failed attestation RPCs withhold fresh work and retry with bounded exponential backoff
+  (1–30 seconds), restarting all identity checks after the delay. Only a complete successful
+  attestation resets the backoff. Successful identity or deployment mismatches
   stop the process through the consensus-contract fail-stop path. Cached attestation bounds
   detection latency; it does not authenticate binaries or eliminate an endpoint replacement
   between RPC calls. Stop Miningcore before changing its daemon binary or chain configuration.
@@ -160,6 +162,10 @@ uses a zero XOR key. There is no user-supplied header-flags or profile override.
   stop unrelated pools. A successful
   but malformed/contradictory consensus response still invokes the terminal failure path.
 - **Malformed or unknown work:** check firmware/proxy field lengths and job preservation.
+  A successful but incompatible daemon identity, chain or deployment response stops the
+  **whole Miningcore process, including unrelated pools** through the shared fail-stop
+  coordinator. This is distinct from retryable transport errors. Stop Miningcore before
+  replacing or upgrading a daemon; review compatibility before restarting.
   Ordinary Bitcoin Stratum translation is not a compatible substitute.
 - **Unexpected low-difficulty shares:** verify the notify compact target and miner protocol,
   not only the displayed `set_difficulty`. Avoid unreviewed time/version rolling.

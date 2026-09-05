@@ -126,6 +126,7 @@ public partial class BitcoinBlake2bStartupTests
         await manager.RefreshAsync();
         Assert.Same(verified, manager.GetJobForStratum());
         manager.AttestationUnavailable = false;
+        now = now.AddSeconds(1);
         await manager.RefreshAsync();
         Assert.Equal(7, manager.AttestationCalls);
         Assert.NotSame(verified, manager.GetJobForStratum());
@@ -133,10 +134,14 @@ public partial class BitcoinBlake2bStartupTests
 
     private sealed class LifecycleManager : BitcoinBlake2bJobManager
     {
+        // Only ParentUnavailable crosses the timer/test-thread boundary.
+        // Other switches are changed between awaited, directly driven refreshes.
         internal volatile bool ParentUnavailable;
         internal bool TemplateUnavailable;
         internal bool TemplateThrows;
         internal bool AttestationUnavailable;
+        internal string FailedAttestationMethod;
+        internal bool AttestationThrows;
         internal string Drift;
         internal int Publications;
         internal int AttestationCalls;
@@ -148,7 +153,7 @@ public partial class BitcoinBlake2bStartupTests
             network = Network.RegTest;
             poolAddressDestination = BitcoinAddress.Create(poolConfig.Address, network);
         }
-        internal Task RefreshAsync() => UpdateJob(CancellationToken.None, true);
+        internal Task RefreshAsync() => RefreshResultAsync();
         internal Task<(bool IsNew, bool Force)> RefreshResultAsync() => UpdateJob(CancellationToken.None, true);
         protected override Task<bool> AreDaemonsHealthyAsync(CancellationToken ct) => Task.FromResult(true);
         protected override Task<bool> AreDaemonsConnectedAsync(CancellationToken ct) => Task.FromResult(true);
@@ -185,7 +190,11 @@ public partial class BitcoinBlake2bStartupTests
         protected override Task<RpcResponse<JObject>> ReadDaemonAttestationAsync(string method, CancellationToken ct)
         {
             AttestationCalls++;
-            if(AttestationUnavailable) return Task.FromResult(new RpcResponse<JObject>(null, Unavailable()));
+            if(AttestationUnavailable || method == FailedAttestationMethod)
+            {
+                if(AttestationThrows) throw new System.Net.Http.HttpRequestException("test transport failure");
+                return Task.FromResult(new RpcResponse<JObject>(null, Unavailable()));
+            }
             var response = method switch
             {
                 BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290401,
@@ -197,6 +206,58 @@ public partial class BitcoinBlake2bStartupTests
             return Task.FromResult(new RpcResponse<JObject>(response));
         }
         private static JsonRpcError Unavailable() => new(-500, "RPC unavailable", null);
+    }
+
+    [Theory]
+    [InlineData(BitcoinCommands.GetNetworkInfo, 1, false)]
+    [InlineData(BitcoinCommands.GetBlockchainInfo, 2, false)]
+    [InlineData("getdeploymentinfo", 3, false)]
+    [InlineData("getdeploymentinfo", 3, true)]
+    public async Task RuntimeAttestation_BackoffIsBoundedAndResetsOnlyAfterCompleteSuccess(
+        string failedMethod, int callsPerAttempt, bool throws)
+    {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var manager = new LifecycleManager(container, clock);
+        manager.Configure(LifecycleConfig(), new ClusterConfig());
+        manager.Prepare();
+        await manager.RefreshAsync();
+        var verified = manager.GetJobForStratum();
+        now = now.AddSeconds(30);
+        manager.FailedAttestationMethod = failedMethod;
+        manager.AttestationThrows = throws;
+        var expectedCalls = 3;
+        foreach(var delay in new[] { 1, 2, 4, 8, 16, 30, 30 })
+        {
+            await manager.RefreshAsync();
+            expectedCalls += callsPerAttempt;
+            Assert.Equal(expectedCalls, manager.AttestationCalls);
+            Assert.Same(verified, manager.GetJobForStratum());
+            // A template outage must invalidate identity without erasing the
+            // retry deadline, otherwise alternating outages defeat backoff.
+            manager.TemplateUnavailable = true;
+            await manager.RefreshAsync();
+            manager.TemplateUnavailable = false;
+            now = now.AddMilliseconds(delay * 1000 - 1);
+            await manager.RefreshAsync();
+            Assert.Equal(expectedCalls, manager.AttestationCalls);
+            now = now.AddMilliseconds(1);
+        }
+        manager.FailedAttestationMethod = null;
+        await manager.RefreshAsync();
+        Assert.Equal(expectedCalls + 3, manager.AttestationCalls);
+        Assert.NotSame(verified, manager.GetJobForStratum());
+        now = now.AddSeconds(30);
+        manager.FailedAttestationMethod = failedMethod;
+        await manager.RefreshAsync();
+        manager.FailedAttestationMethod = null;
+        now = now.AddSeconds(1); // successful attestation reset the failure count
+        await manager.RefreshAsync();
+        Assert.Equal(expectedCalls + 6 + callsPerAttempt, manager.AttestationCalls);
+        now = now.AddSeconds(30);
+        manager.Drift = "version";
+        await Assert.ThrowsAsync<PoolStartupException>(() => manager.RefreshAsync());
     }
 
     [Theory]

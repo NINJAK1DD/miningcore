@@ -140,15 +140,17 @@ public class BitcoinBlake2bJob : BitcoinJob
         return result.Concat(pushedHeadline).ToArray();
     }
 
-    internal BitcoinBlake2bJob ForDifficulty(double difficulty, BigInteger? validatedTarget = null)
+    internal BitcoinBlake2bJob ForDifficulty(double difficulty) =>
+        ForDifficulty(BitcoinBlake2bDifficulty.Create(difficulty));
+
+    internal BitcoinBlake2bJob ForDifficulty(BitcoinBlake2bDifficulty assignment)
     {
+        ArgumentNullException.ThrowIfNull(assignment);
         var result = (BitcoinBlake2bJob) MemberwiseClone();
-        result.assignedDifficulty = difficulty;
-        // The pool supplies the target returned by its network-aware gate;
-        // direct callers still receive full representability validation.
-        result.assignedTarget = validatedTarget ?? BitcoinBlake2bHeader.TargetForDifficulty(difficulty);
-        result.assignedBits = BitcoinBlake2bHeader.EncodeCompactTarget(result.assignedTarget);
-        result.JobId = JobId + "-" + BitConverter.DoubleToInt64Bits(difficulty).ToString("x16");
+        result.assignedDifficulty = assignment.Difficulty;
+        result.assignedTarget = assignment.Target;
+        result.assignedBits = assignment.Bits;
+        result.JobId = JobId + "-" + BitConverter.DoubleToInt64Bits(assignment.Difficulty).ToString("x16");
         return result;
     }
 
