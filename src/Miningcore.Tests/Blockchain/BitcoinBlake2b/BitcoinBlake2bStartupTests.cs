@@ -176,6 +176,30 @@ public partial class BitcoinBlake2bStartupTests : TestBase
         await Assert.ThrowsAsync<PoolStartupException>(() => manager.VerifyActivationParentAsync(template, contract, CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(false, 961640u, true)]
+    [InlineData(false, 2016u, false)]
+    [InlineData(true, 20u, false)]
+    [InlineData(true, 2016u, false)]
+    public void ActivationComparison_IsLimitedToMainnetCarryForward(bool regtest, uint height, bool expected) =>
+        Assert.Equal(expected, BitcoinBlake2bJobManager.CanCompareActivationParent(
+            regtest ? Network.RegTest : Network.Main, height));
+
+    [Theory]
+    [InlineData(20u)]
+    [InlineData(2016u)]
+    public async Task ActivationRpc_RegtestDoesNotAssumeParentOnlyDifficulty(uint height)
+    {
+        var manager = new ActivationManager(container, Substitute.For<IMasterClock>());
+        manager.Configure(LifecycleConfig(), new ClusterConfig());
+        manager.Response = new(new JObject { ["bits"] = "1d00ffff" });
+        var contract = ((BitcoinBlake2bTemplate) ModuleInitializer.CoinTemplates["bitcoin-blake2b"]).Networks["regtest"];
+        var template = new BlockTemplate { Height = height, Bits = "207fffff", PreviousBlockhash = new string('0', 64) };
+        var result = await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None);
+        Assert.Null(result.Error);
+        Assert.Same(template, result.Response);
+    }
+
     private sealed class ActivationManager : BitcoinBlake2bJobManager
     {
         internal RpcResponse<JObject> Response;

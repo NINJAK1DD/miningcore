@@ -215,22 +215,51 @@ internal static class BitcoinBlake2bHeader
         return raw;
     }
 
-    internal static byte[] ComputeUnmaskedProfile0Hash(ConsensusFields fields, ReadOnlySpan<byte> commitment,
-        ReadOnlySpan<byte> hiddenPrevious, ReadOnlySpan<byte> nonce,
-        ReadOnlySpan<byte> minerTime, ReadOnlySpan<byte> headerExtraNonce)
+    // Own the fields and their derived caches together. Neither callers nor worker clones
+    // can pair a commitment with a different serialized header or mutate its backing arrays.
+    internal sealed class Profile0Work
     {
-        if(fields.Flags != 0 || fields.XorKeyMaskClearBits != 0 ||
-           fields.XorKey.Length != 16 || fields.XorKey.AsSpan().IndexOfAnyExcept((byte) 0) >= 0)
-            throw new InvalidOperationException("Cached profile-0 hashing requires fixed time and an unmasked zero-key policy");
-        if(hiddenPrevious.Length != 32 || nonce.Length != 8 || minerTime.Length != 8)
-            throw new ArgumentException("Invalid profile-0 work dimensions");
-        var root = WorkRoot(commitment, headerExtraNonce);
-        Span<byte> input = stackalloc byte[80];
-        hiddenPrevious.CopyTo(input);
-        nonce.CopyTo(input[32..40]);
-        minerTime.CopyTo(input[40..48]);
-        root.CopyTo(input[48..]);
-        return Blake2b(input);
+        private readonly ConsensusFields fields;
+        private readonly byte[] commitment;
+        private readonly byte[] hiddenPrevious;
+
+        internal Profile0Work(ConsensusFields source)
+        {
+            Validate(source);
+            fields = source with
+            {
+                PreviousBlockHash = source.PreviousBlockHash.ToArray(),
+                MerkleRoot = source.MerkleRoot.ToArray(),
+                XorKey = source.XorKey.ToArray(),
+                MergeMiningRightHandSide = source.MergeMiningRightHandSide.ToArray(),
+            };
+            if(fields.Flags != 0 || fields.XorKeyMaskClearBits != 0 ||
+               fields.XorKey.AsSpan().IndexOfAnyExcept((byte) 0) >= 0)
+                throw new InvalidOperationException("Cached profile-0 hashing requires fixed time and an unmasked zero-key policy");
+            commitment = HeaderCommitment(fields);
+            hiddenPrevious = HiddenPreviousBlockHash(fields.PreviousBlockHash);
+        }
+
+        internal byte[] CoinbasePrefix() => Coinbase1(commitment);
+        internal byte[] HiddenPrevious() => hiddenPrevious.ToArray();
+
+        internal byte[] ComputeHash(ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> minerTime,
+            ReadOnlySpan<byte> headerExtraNonce)
+        {
+            if(nonce.Length != MinerNonceSize || minerTime.Length != MinerTimeSize)
+                throw new ArgumentException("Invalid profile-0 work dimensions");
+            var root = WorkRoot(commitment, headerExtraNonce);
+            Span<byte> input = stackalloc byte[80];
+            hiddenPrevious.CopyTo(input);
+            nonce.CopyTo(input[32..40]);
+            minerTime.CopyTo(input[40..48]);
+            root.CopyTo(input[48..]);
+            return Blake2b(input);
+        }
+
+        internal byte[] Serialize(ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> minerTime,
+            ReadOnlySpan<byte> headerExtraNonce) =>
+            BitcoinBlake2bHeader.Serialize(fields, nonce, minerTime, headerExtraNonce);
     }
 
     internal static byte[] Serialize(ConsensusFields fields,

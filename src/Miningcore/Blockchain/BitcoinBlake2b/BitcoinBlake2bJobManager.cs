@@ -217,11 +217,30 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         activationRpcError = null;
         if(parent.Response?["bits"]?.Type != JTokenType.String)
             throw new PoolStartupException($"Pool '{poolConfig.Id}' received malformed activation parent metadata", poolConfig.Id);
+        // A parent-only comparison is exact only for mainnet carry-forward difficulty.
+        // Regtest permits min-difficulty selection; a retarget needs ancestor timestamps.
+        // Still reject malformed metadata, but leave those difficulty selections to Knots.
+        try
+        {
+            BitcoinBlake2bHeader.DecodeCompactTarget(BitcoinBlake2bHeader.ParseCompactBits(parent.Response["bits"].Value<string>()));
+        }
+        catch(InvalidDataException ex)
+        {
+            throw new PoolStartupException($"Pool '{poolConfig.Id}' received malformed activation parent bits", poolConfig.Id, ex);
+        }
+        if(!CanCompareActivationParent(network, template.Height))
+        {
+            logger.Debug("Activation difficulty selection is daemon-owned on regtest or retarget boundaries; skipping parent-only shift comparison");
+            return new(template);
+        }
         ValidateActivationTarget(parent.Response["bits"].Value<string>(), template.Bits,
             contract.Blake2bTargetShift!.Value, network == Network.Main ? 0x1d00ffffU : 0x207fffffU,
             poolConfig.Id);
         return new(template);
     }
+
+    internal static bool CanCompareActivationParent(Network selectedNetwork, uint height) =>
+        selectedNetwork == Network.Main && height % 2016 != 0;
 
     internal static BitcoinBlake2bDifficulty ValidateDifficultyForNetwork(double difficulty, Network selectedNetwork)
     {

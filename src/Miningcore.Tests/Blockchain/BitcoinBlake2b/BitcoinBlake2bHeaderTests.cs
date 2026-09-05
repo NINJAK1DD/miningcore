@@ -23,12 +23,43 @@ public class BitcoinBlake2bHeaderTests
         if(keyed) key[0] = 1;
         var fields = new BitcoinBlake2bHeader.ConsensusFields(0xa0000000,
             new byte[32], new byte[32], 1700000000, 0x207fffff, 1, flags, 0, key, 21, new byte[32]);
-        byte[] Cached() => BitcoinBlake2bHeader.ComputeUnmaskedProfile0Hash(fields,
-            BitcoinBlake2bHeader.HeaderCommitment(fields), BitcoinBlake2bHeader.HiddenPreviousBlockHash(fields.PreviousBlockHash),
-            new byte[8], new byte[8], new byte[16]);
+        byte[] Cached() => new BitcoinBlake2bHeader.Profile0Work(fields)
+            .ComputeHash(new byte[8], new byte[8], new byte[16]);
         if(flags == 0 && !keyed)
             Assert.Equal(BitcoinBlake2bHeader.ComputeHash(fields, new byte[8], new byte[8], new byte[16]), Cached());
         else Assert.Throws<InvalidOperationException>(Cached);
+    }
+
+    [Fact]
+    public void CachedHasher_NonzeroInputsMatchReferenceHashAndSerialization()
+    {
+        var random = new Random(124140);
+        byte[] Bytes(int length) { var result = new byte[length]; random.NextBytes(result); return result; }
+        for(var i = 0; i < 512; i++)
+        {
+            var fields = new BitcoinBlake2bHeader.ConsensusFields(
+                0xa0000000 | (uint) random.Next(), Bytes(32), Bytes(32),
+                (uint) random.Next(), 0x207fffff, (ushort) random.Next(1, 65536),
+                0, 0, new byte[16], (uint) random.Next(20, int.MaxValue), Bytes(32));
+            var nonce = Bytes(8);
+            var time = Bytes(8);
+            var extra = Bytes(16);
+            var cached = new BitcoinBlake2bHeader.Profile0Work(fields);
+            var expectedHash = BitcoinBlake2bHeader.ComputeHash(fields, nonce, time, extra);
+            var expectedHeader = BitcoinBlake2bHeader.Serialize(fields, nonce, time, extra);
+            Assert.Equal(expectedHash, cached.ComputeHash(nonce, time, extra));
+            Assert.Equal(expectedHeader, cached.Serialize(nonce, time, extra));
+
+            // Source arrays and returned wire buffers must not mutate the cached/serialized contract.
+            Array.Fill(fields.PreviousBlockHash, (byte) 0xff);
+            Array.Fill(fields.MerkleRoot, (byte) 0xff);
+            Array.Fill(fields.XorKey, (byte) 0xff);
+            Array.Fill(fields.MergeMiningRightHandSide, (byte) 0xff);
+            Array.Fill(cached.HiddenPrevious(), (byte) 0xff);
+            Array.Fill(cached.CoinbasePrefix(), (byte) 0xff);
+            Assert.Equal(expectedHash, cached.ComputeHash(nonce, time, extra));
+            Assert.Equal(expectedHeader, cached.Serialize(nonce, time, extra));
+        }
     }
 
     [Theory]

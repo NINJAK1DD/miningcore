@@ -19,6 +19,20 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bJobTests : TestBase
 {
+    [Fact]
+    public void UnissuedJob_RejectsBeforeConsumingSubmissionIdentity()
+    {
+        var (job, worker) = CreateJob();
+        const string field = "0102030405060708";
+        var error = Assert.Throws<StratumException>(() => job.ProcessShare(worker, field, field, field));
+        Assert.Equal(StratumError.Other, error.Code);
+        Assert.Contains("issued difficulty snapshot", error.Message);
+        var issued = job.ForDifficulty(1e-9);
+        // A low-difficulty proof is permitted here; duplicate rejection is not.
+        try { issued.ProcessShare(worker, field, field, field); }
+        catch(StratumException ex) { Assert.Equal(StratumError.LowDifficultyShare, ex.Code); }
+    }
+
     [Theory]
     [InlineData(1e-9)]
     [InlineData(1)]
@@ -33,6 +47,10 @@ public class BitcoinBlake2bJobTests : TestBase
         var issued = job.ForDifficulty(assignment);
         Assert.Equal(job.ForDifficulty(difficulty).JobId, issued.JobId);
         Assert.Equal(assignment.Bits.ToString("x8"), ((object[]) issued.GetJobParams(false))[6]);
+        var cached = (object[]) typeof(BitcoinJob).GetField("jobParams",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(issued);
+        Assert.Equal(issued.JobId, cached[0]);
+        Assert.Equal(assignment.Bits.ToString("x8"), cached[6]);
     }
 
     [Fact]

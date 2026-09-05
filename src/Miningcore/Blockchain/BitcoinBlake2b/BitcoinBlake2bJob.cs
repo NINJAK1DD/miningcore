@@ -16,11 +16,9 @@ namespace Miningcore.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bJob : BitcoinJob
 {
-    private BitcoinBlake2bHeader.ConsensusFields consensusFields;
+    private BitcoinBlake2bHeader.Profile0Work work;
     private BitcoinTemplate.BitcoinNetworkParams blake2bNetwork;
     private byte[] fixedCoinbase;
-    private byte[] headerCommitment;
-    private byte[] hiddenPreviousBlockHash;
     private BigInteger networkTarget;
     private string initialMinerTime;
     private double? assignedDifficulty;
@@ -75,6 +73,9 @@ public class BitcoinBlake2bJob : BitcoinJob
             bip54CoinbaseEnabled: false);
         Difficulty = BitcoinBlake2bHeader.DifficultyForHash(networkTarget);
 
+        // Keep the shared coinbase serializer's fixed-width placeholder contract. These
+        // bytes are intentionally inert and included in the activation scriptSig budget;
+        // actual miner extranonces live in header-v2, not this transaction.
         var fixedExtraNonce1 = new string('0',
             BitcoinBlake2bHeader.ConnectionExtraNonceSize * 2);
         var fixedExtraNonce2 = new string('0',
@@ -92,7 +93,7 @@ public class BitcoinBlake2bJob : BitcoinJob
         var merkleRootDisplay = new uint256(merkleRootInternal).ToString()
             .HexToByteArray();
 
-        consensusFields = new BitcoinBlake2bHeader.ConsensusFields(
+        var consensusFields = new BitcoinBlake2bHeader.ConsensusFields(
             blockTemplate.Version,
             BitcoinBlake2bHeader.ParseExactHex(
                 blockTemplate.PreviousBlockhash, 32, "previousblockhash"),
@@ -105,9 +106,7 @@ public class BitcoinBlake2bJob : BitcoinJob
             new byte[16],
             blockTemplate.Height,
             new byte[32]);
-        headerCommitment = BitcoinBlake2bHeader.HeaderCommitment(consensusFields);
-        hiddenPreviousBlockHash = BitcoinBlake2bHeader
-            .HiddenPreviousBlockHash(consensusFields.PreviousBlockHash);
+        work = new BitcoinBlake2bHeader.Profile0Work(consensusFields);
 
         Span<byte> minerTime = stackalloc byte[8];
         // Profile 0 uses the upper half as nonce3. Seeding it with curtime
@@ -152,6 +151,7 @@ public class BitcoinBlake2bJob : BitcoinJob
         result.assignedTarget = assignment.Target;
         result.assignedBits = assignment.Bits;
         result.JobId = JobId + "-" + BitConverter.DoubleToInt64Bits(assignment.Difficulty).ToString("x16");
+        result.jobParams = result.BuildJobParams(false);
         return result;
     }
 
@@ -163,11 +163,8 @@ public class BitcoinBlake2bJob : BitcoinJob
         return new object[]
         {
             JobId,
-            hiddenPreviousBlockHash?.ToHexString(),
-            headerCommitment == null
-                ? null
-                : BitcoinBlake2bHeader.Coinbase1(headerCommitment)
-                    .ToHexString(),
+            work?.HiddenPrevious().ToHexString(),
+            work?.CoinbasePrefix().ToHexString(),
             string.Empty,
             Array.Empty<string>(),
             BlockTemplate?.Version.ToString("x8"),
@@ -211,6 +208,10 @@ public class BitcoinBlake2bJob : BitcoinJob
             throw new StratumException(StratumError.Other,
                 "version_bits is not supported by Bitcoin BLAKE2b header-v2");
 
+        // Reject an unissued base job before consuming duplicate-submission identity.
+        var stratumDifficulty = assignedDifficulty ?? throw new StratumException(
+            StratumError.Other, "Bitcoin BLAKE2b shares require an issued difficulty snapshot");
+
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                null))
             throw new StratumException(StratumError.DuplicateShare,
@@ -222,12 +223,8 @@ public class BitcoinBlake2bJob : BitcoinJob
         var headerExtraNonce = new byte[16];
         combinedExtraNonce.CopyTo(headerExtraNonce, 4);
 
-        var hash = BitcoinBlake2bHeader.ComputeUnmaskedProfile0Hash(
-            consensusFields, headerCommitment, hiddenPreviousBlockHash, minerNonce, minerTime,
-            headerExtraNonce);
+        var hash = work.ComputeHash(minerNonce, minerTime, headerExtraNonce);
         var hashValue = BitcoinBlake2bHeader.HashValue(hash);
-        var stratumDifficulty = assignedDifficulty ?? throw new InvalidOperationException(
-            "Bitcoin BLAKE2b shares require an issued difficulty snapshot");
         var (accepted, isBlockCandidate) = BitcoinBlake2bHeader.ClassifyProof(
             hashValue, assignedTarget, networkTarget);
         if(!accepted)
@@ -251,8 +248,7 @@ public class BitcoinBlake2bJob : BitcoinJob
         if(!isBlockCandidate)
             return (share, null);
 
-        var header = BitcoinBlake2bHeader.Serialize(consensusFields,
-            minerNonce, minerTime, headerExtraNonce);
+        var header = work.Serialize(minerNonce, minerTime, headerExtraNonce);
         share.BlockHash = hash.ToHexString();
         return (share, SerializeBlock(header, fixedCoinbase).ToHexString());
     }

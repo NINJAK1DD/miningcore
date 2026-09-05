@@ -55,6 +55,9 @@ The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and mine
 isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
 Existing schema migrations remain applicable; no new schema is introduced by this feature.
 Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
+The shared Bitcoin-family refresh loop also no longer forces a null-job rebroadcast before
+its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
+dedicated generic-Bitcoin and BLAKE2b lifecycle regressions cover both error-return and exception paths.
 
 Full-process GPU validation also exposed two existing startup issues: an omitted optional
 `notifications` section could prevent service construction, and debug logging printed the

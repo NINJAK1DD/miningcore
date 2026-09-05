@@ -134,6 +134,11 @@ public class BitcoinBlake2bConfigurationTests : TestBase
         Assert.Equal("BLAKE2b header-v2", coin.GetAlgorithmName());
         Assert.Equal(1d, coin.ShareMultiplier);
         Assert.True(coin.DisableVersionRolling);
+        Assert.Equal(new[] { "bitcoin-blake2b" }, ModuleInitializer.CoinTemplates
+            .Where(x => x.Value.Family == CoinFamily.BitcoinBlake2b)
+            .Select(x => x.Key).OrderBy(x => x).ToArray());
+        Assert.All(ModuleInitializer.CoinTemplates.Values.OfType<BitcoinBlake2bTemplate>(),
+            template => Assert.True(template.DisableVersionRolling));
         Assert.IsType<BitcoinTemplate>(ModuleInitializer.CoinTemplates["bitcoin"]);
         Assert.Equal("BTC", ModuleInitializer.CoinTemplates["bitcoin"].Symbol);
     }

@@ -25,10 +25,18 @@ later hard fork is implemented by the pinned Knots sources listed below.
   stop the process through the consensus-contract fail-stop path. Cached attestation bounds
   detection latency; it does not authenticate binaries or eliminate an endpoint replacement
   between RPC calls. Stop Miningcore before changing its daemon binary or chain configuration.
+  Attestation shares the serialized polling loop, not a background timer: a cache-expiring
+  update can pay three additional sequential RPCs. Ordinary template polling refreshes the
+  cache even without a new block. This deliberate latency/safety trade-off avoids concurrent
+  attestation-state races; it does not promise zero added new-tip latency.
 - Mainnet first uses header-v2 at height **961640**. Its activation coinbase headline is
   `8-30 NYPost Deride And Conquer` and the one-time target shift is 22. Miningcore validates
   that first target against the parent and the mainnet proof-of-work limit; it does not
   apply another shift to ordinary shares or subsequent daemon targets.
+  The parent-only comparison is restricted to mainnet carry-forward heights. At a retarget
+  boundary or on min-difficulty regtest, the daemon owns difficulty selection; Miningcore
+  still validates GBT target/bits and rejects malformed parent metadata. See the pinned
+  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/pow.cpp#L32-L89).
 - Only mainnet and isolated regtest are configured. Testnet4 and signet are not advertised.
   The regtest fixture uses activation 20 and shift 20; its headline is
   `Miningcore BLAKE2b regtest`. These are a test contract, not mainnet settings.
@@ -183,11 +191,20 @@ uses a zero XOR key. There is no user-supplied header-flags or profile override.
   Ordinary Bitcoin Stratum translation is not a compatible substitute.
 - **Unexpected low-difficulty shares:** verify the notify compact target and miner protocol,
   not only the displayed `set_difficulty`. Avoid unreviewed time/version rolling.
+  A stock SHA-256d Sv1 miner, or a generic BLAKE2b miner without this Sia-style header-v2
+  contract, may show 100% low-difficulty rejects or malformed-work errors. Use a compatible
+  miner; changing its displayed algorithm name or difficulty does not translate the protocol.
 - **Daemon rejects a candidate:** preserve the submission hash, daemon rejection reason,
   template and recovery evidence. Independently look up the block. A missing response is
   not acceptance, and `duplicate-invalid` must never be treated as success.
 - **Accounting pipeline stops:** follow [recovery guidance](troubleshooting.md); never import
   a quarantine file as a recovery journal. Preserve PostgreSQL and all journals first.
+
+Run this experimental chain in a separate Miningcore process if other pools must remain up
+after a positive daemon-contract contradiction. Pool-local fail-stop/restart is not implemented;
+silently softening the shared accounting admission boundary is not a safe substitute.
+Explorer metadata remains omitted until a chain-specific service and its block, transaction
+and address routes are verified. Do not substitute a SHA-256d Bitcoin explorer for this fork.
 
 Automated tests include the five official header-v2 vectors, strict configuration and share
 parsing, exact target boundaries, difficulty snapshots, and a pinned-node activation/submission
