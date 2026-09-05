@@ -152,6 +152,11 @@ public class BitcoinBlake2bPool : BitcoinPool
 
         if(context.IsSubscribed)
         {
+            // Subscribe already sends both messages (including a NiceHash
+            // override). Custodial authorize sends difficulty only, so it
+            // still needs the fresh BLAKE2b job below.
+            if(request.Value.Method == BitcoinStratumMethods.Subscribe)
+                return;
             // Unlike authorize/suggest-difficulty, the inherited BIP310
             // handler changes context state without announcing difficulty.
             if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
@@ -169,12 +174,20 @@ public class BitcoinBlake2bPool : BitcoinPool
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b work has been invalidated");
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
         if(manager.GetJobForStratum() is not BitcoinBlake2bJob job)
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b job is unavailable");
 
-        var workerJob = job.ForDifficulty(context.Difficulty);
+        BitcoinBlake2bJob workerJob;
+        try
+        {
+            var target = ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
+            workerJob = job.ForDifficulty(context.Difficulty, target);
+        }
+        catch(ArgumentOutOfRangeException ex)
+        {
+            throw new StratumException(StratumError.Other, ex.Message);
+        }
         context.AddJob(workerJob, manager.maxActiveJobs);
         return workerJob.GetJobParams(cleanJob);
     }

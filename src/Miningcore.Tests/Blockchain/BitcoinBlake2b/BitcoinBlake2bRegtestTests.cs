@@ -110,8 +110,21 @@ public class BitcoinBlake2bRegtestTests : TestBase
             var notify = wireJob.ToObject<object[]>();
             notify[4] = wireJob[4].ToObject<string[]>();
             var worker = wire.Connection;
-            var authorize = await wire.RequestAsync("mining.authorize", destination + ".test", "x");
+            var authorize = await wire.RequestAsync("mining.authorize", destination + ".test", "d=0.000000002");
             Assert.True(authorize["result"].Value<bool>());
+            Assert.Equal("mining.set_difficulty", (await wire.ReadAsync())["method"].Value<string>());
+            var authorizedJob = await wire.ReadAsync();
+            Assert.Equal("mining.notify", authorizedJob["method"].Value<string>());
+            Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(BitcoinBlake2bHeader.TargetForDifficulty(2e-9))
+                .ToString("x8"), authorizedJob["params"][6].Value<string>());
+            // A FIFO response fence detects an extra notify from authorize;
+            // RequestAsync intentionally discards intervening notifications.
+            await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" },
+                new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });
+            Assert.Null((await wire.ReadAsync())["method"]);
+            worker.ContextAs<BitcoinWorkerContext>().SetDifficulty(0);
+            Assert.Throws<StratumException>(() => wire.CreateJob());
+            worker.ContextAs<BitcoinWorkerContext>().SetDifficulty(2e-9);
             var configure = await wire.RequestAsync("mining.configure", new[] { "version-rolling" },
                 new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });
             Assert.False(configure["result"]["version-rolling"].Value<bool>());

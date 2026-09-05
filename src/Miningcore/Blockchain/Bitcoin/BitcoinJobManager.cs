@@ -188,7 +188,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             if(response.Error != null)
             {
                 logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
-                return (false, forceUpdate);
+                // A forced refresh can rebroadcast verified old work, but
+                // must never publish null before the first job exists.
+                return (false, forceUpdate && currentJob != null);
             }
 
             var blockTemplate = response.Response;
@@ -274,7 +276,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
         }
 
-        return (false, forceUpdate);
+        return (false, forceUpdate && currentJob != null);
     }
 
     protected override object GetJobParamsForStratum(bool isNew)

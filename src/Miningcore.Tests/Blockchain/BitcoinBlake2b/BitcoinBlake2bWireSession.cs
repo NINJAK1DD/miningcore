@@ -101,7 +101,11 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         return JObject.Parse(line);
     }
 
+    internal Task SendRequestAsync(string method, params object[] parameters) =>
+        writer.WriteLineAsync(JsonConvert.SerializeObject(new { id = ++requestId, method, @params = parameters }));
+
     internal Task AnnounceJobAsync(object jobParams) => pool.Announce(jobParams);
+    internal object CreateJob() => pool.CreateJob(Connection);
 
     public async ValueTask DisposeAsync()
     {
@@ -130,5 +134,6 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         internal Task Dispatch(StratumConnection connection, Timestamped<JsonRpcRequest> request,
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
         internal Task Announce(object jobParams) => OnNewJobAsync(jobParams);
+        internal object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }
 }

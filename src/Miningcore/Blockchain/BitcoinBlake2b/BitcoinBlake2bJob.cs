@@ -24,6 +24,8 @@ public class BitcoinBlake2bJob : BitcoinJob
     private BigInteger networkTarget;
     private string initialMinerTime;
     private double? assignedDifficulty;
+    private BigInteger assignedTarget;
+    private uint assignedBits;
 
     internal void InitBlake2b(BlockTemplate blockTemplate, string jobId,
         PoolConfig pc, BitcoinPoolConfigExtra extraPoolConfig,
@@ -115,7 +117,9 @@ public class BitcoinBlake2bJob : BitcoinJob
             blockTemplate.CurTime);
         initialMinerTime = minerTime.ToHexString();
 
-        jobParams = BuildJobParams(false, Difficulty);
+        assignedTarget = BitcoinBlake2bHeader.TargetForDifficulty(Difficulty);
+        assignedBits = BitcoinBlake2bHeader.EncodeCompactTarget(assignedTarget);
+        jobParams = BuildJobParams(false);
     }
 
     protected override byte[] BuildScriptSigFinalBytes(string coinbaseString)
@@ -136,23 +140,23 @@ public class BitcoinBlake2bJob : BitcoinJob
         return result.Concat(pushedHeadline).ToArray();
     }
 
-    internal BitcoinBlake2bJob ForDifficulty(double difficulty)
+    internal BitcoinBlake2bJob ForDifficulty(double difficulty, BigInteger? validatedTarget = null)
     {
-        BitcoinBlake2bHeader.TargetForDifficulty(difficulty);
         var result = (BitcoinBlake2bJob) MemberwiseClone();
         result.assignedDifficulty = difficulty;
+        // The pool supplies the target returned by its network-aware gate;
+        // direct callers still receive full representability validation.
+        result.assignedTarget = validatedTarget ?? BitcoinBlake2bHeader.TargetForDifficulty(difficulty);
+        result.assignedBits = BitcoinBlake2bHeader.EncodeCompactTarget(result.assignedTarget);
         result.JobId = JobId + "-" + BitConverter.DoubleToInt64Bits(difficulty).ToString("x16");
         return result;
     }
 
     public override object GetJobParams(bool isNew) =>
-        BuildJobParams(isNew, assignedDifficulty ?? Difficulty);
+        BuildJobParams(isNew);
 
-    private object[] BuildJobParams(bool isNew, double difficulty)
+    private object[] BuildJobParams(bool isNew)
     {
-        var shareTarget = BitcoinBlake2bHeader.TargetForDifficulty(difficulty);
-        var shareBits = BitcoinBlake2bHeader.EncodeCompactTarget(shareTarget);
-
         return new object[]
         {
             JobId,
@@ -164,7 +168,7 @@ public class BitcoinBlake2bJob : BitcoinJob
             string.Empty,
             Array.Empty<string>(),
             BlockTemplate?.Version.ToString("x8"),
-            shareBits.ToString("x8"),
+            assignedBits.ToString("x8"),
             initialMinerTime,
             isNew,
         };
@@ -221,8 +225,6 @@ public class BitcoinBlake2bJob : BitcoinJob
         var hashValue = BitcoinBlake2bHeader.HashValue(hash);
         var stratumDifficulty = assignedDifficulty ?? throw new InvalidOperationException(
             "Bitcoin BLAKE2b shares require an issued difficulty snapshot");
-        var assignedTarget = BitcoinBlake2bHeader.TargetForDifficulty(
-            stratumDifficulty);
         var (accepted, isBlockCandidate) = BitcoinBlake2bHeader.ClassifyProof(
             hashValue, assignedTarget, networkTarget);
         if(!accepted)

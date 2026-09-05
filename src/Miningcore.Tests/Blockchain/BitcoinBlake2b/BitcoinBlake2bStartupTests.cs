@@ -30,7 +30,7 @@ using Xunit;
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
-public class BitcoinBlake2bStartupTests : TestBase
+public partial class BitcoinBlake2bStartupTests : TestBase
 {
     private ILifetimeScope Scope() => container.BeginLifetimeScope(builder =>
     {
@@ -108,6 +108,10 @@ public class BitcoinBlake2bStartupTests : TestBase
 
     [Theory]
     [InlineData("Miningcore", true)]
+    [InlineData("123456789012345678901234", true)]
+    [InlineData("1234567890123456789012345", false)]
+    [InlineData("éééééééééééé", true)]
+    [InlineData("ééééééééééééé", false)]
     [InlineData("1234567890123456789012345678901234567890", false)]
     [InlineData("éééééééééééééééééééééééééééééé", false)]
     public void Configure_ReservesActivationCoinbaseBudgetBeforeDaemonAccess(string marker, bool accepted)

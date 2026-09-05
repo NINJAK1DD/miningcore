@@ -220,7 +220,7 @@ internal static class BitcoinBlake2bHeader
         ReadOnlySpan<byte> minerTime, ReadOnlySpan<byte> headerExtraNonce)
     {
         if(fields.Flags != 0 || fields.XorKeyMaskClearBits != 0 ||
-           fields.XorKey.Length != 16 || fields.XorKey.Any(x => x != 0))
+           fields.XorKey.Length != 16 || fields.XorKey.AsSpan().IndexOfAnyExcept((byte) 0) >= 0)
             throw new InvalidOperationException("Cached profile-0 hashing requires fixed time and an unmasked zero-key policy");
         if(hiddenPrevious.Length != 32 || nonce.Length != 8 || minerTime.Length != 8)
             throw new ArgumentException("Invalid profile-0 work dimensions");

@@ -17,6 +17,12 @@ later hard fork is implemented by the pinned Knots sources listed below.
   an active deployment with the expected activation height, and mandatory GBT rule `!blake2b`.
   Version strings are compatibility checks, not proof of binary authenticity: independently
   verify the upstream release checksums and signatures.
+  Runtime work re-attests version, chain and deployment on the first successful template
+  poll after a 30-second cache expires, and before new work after a GBT/activation-parent RPC outage.
+  Failed attestation RPCs withhold fresh work; successful identity or deployment mismatches
+  stop the process through the consensus-contract fail-stop path. Cached attestation bounds
+  detection latency; it does not authenticate binaries or eliminate an endpoint replacement
+  between RPC calls. Stop Miningcore before changing its daemon binary or chain configuration.
 - Mainnet first uses header-v2 at height **961640**. Its activation coinbase headline is
   `8-30 NYPost Deride And Conquer` and the one-time target shift is 22. Miningcore validates
   that first target against the parent and the mainnet proof-of-work limit; it does not
@@ -93,8 +99,10 @@ do not introduce a new chain into a mixed-version accounting deployment.
 Keep the fee entry at zero until its address and intended percentage are reviewed.
 Do not infer current profitability, market value or reserve adequacy from hash-rate telemetry.
 Startup reserves the activation-headline scriptSig budget even if the current job does not
-need the headline. Keep `paymentProcessing.coinbaseString` short; oversized UTF-8 markers
-are rejected before daemon access. Runtime checks also cover daemon-supplied auxiliary flags.
+need the headline. With the shipped network contracts, `paymentProcessing.coinbaseString`
+allows **24 UTF-8 bytes after trimming** (24 ASCII characters, fewer for multibyte text).
+Oversized markers are rejected before daemon access. Pinned Knots emits an empty
+`coinbaseaux` object; runtime checks also cover any unexpected auxiliary flags.
 
 ## Miner protocol and difficulty
 
@@ -147,7 +155,9 @@ uses a zero XOR key. There is no user-supplied header-flags or profile override.
   deployment state, and `!blake2b`. Do not remove the gate or substitute the `bitcoin` template.
 - **Activation parent RPC is temporarily unavailable:** work verification retries with
   exponential backoff from 1 to 30 seconds. No unverified job is published; previously
-  verified work is retained. Transport failures do not stop unrelated pools. A successful
+  verified work is retained. Forced rebroadcasts emit nothing until that first verified job
+  exists, so startup remains blocked before listener activation. Transport failures do not
+  stop unrelated pools. A successful
   but malformed/contradictory consensus response still invokes the terminal failure path.
 - **Malformed or unknown work:** check firmware/proxy field lengths and job preservation.
   Ordinary Bitcoin Stratum translation is not a compatible substitute.
