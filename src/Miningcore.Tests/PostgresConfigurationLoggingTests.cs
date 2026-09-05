@@ -1,6 +1,7 @@
 using System.Reflection;
 using Autofac;
 using Miningcore.Configuration;
+using Newtonsoft.Json.Linq;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
@@ -17,8 +18,10 @@ public sealed class PostgresConfigurationLoggingCollection
 [Collection(PostgresConfigurationLoggingCollection.Name)]
 public class PostgresConfigurationLoggingTests
 {
-    [Fact]
-    public void ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(bool tls)
     {
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
         var loggerField = typeof(Program).GetField("logger", flags);
@@ -39,19 +42,33 @@ public class PostgresConfigurationLoggingTests
             {
                 new PostgresConfig
                 {
-                    Host = "127.0.0.1", Port = 5432, Database = "test", User = "test",
+                    Host = "db.example.invalid", Port = 5433, Database = "test\nforged-line", User = "test-user",
                     Password = "database-secret-must-not-be-logged",
-                    Tls = true, TlsPassword = "certificate-secret-must-not-be-logged",
+                    Tls = tls, TlsPassword = "certificate-secret-must-not-be-logged",
+                    TlsCert = "private-certificate-path", TlsKey = "private-key-path",
                 },
                 new ContainerBuilder(),
             });
             factory.Flush();
 
-            Assert.Contains("Using PostgreSQL persistence", target.Logs);
+            var entry = Assert.Single(target.Logs);
+            const string prefix = "Using PostgreSQL persistence ";
+            Assert.StartsWith(prefix, entry);
+            var metadata = JObject.Parse(entry[prefix.Length..]);
+            Assert.Equal(5, metadata.Count);
+            Assert.Equal("db.example.invalid", metadata["Host"]?.Value<string>());
+            Assert.Equal(5433, metadata["Port"]?.Value<int>());
+            Assert.Equal("test\nforged-line", metadata["Database"]?.Value<string>());
+            Assert.Equal("test-user", metadata["User"]?.Value<string>());
+            Assert.Equal(tls ? "Require" : "DriverDefault", metadata["SslMode"]?.Value<string>());
+            Assert.DoesNotContain("\n", entry);
+            Assert.DoesNotContain("\r", entry);
             var output = string.Join("\n", target.Logs);
             Assert.DoesNotContain("database-secret-must-not-be-logged", output);
             Assert.DoesNotContain("certificate-secret-must-not-be-logged", output);
             Assert.DoesNotContain("Password=", output);
+            Assert.DoesNotContain("private-certificate-path", output);
+            Assert.DoesNotContain("private-key-path", output);
         }
         finally
         {

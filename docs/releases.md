@@ -60,6 +60,9 @@ Full-process GPU validation also exposed two existing startup issues: an omitted
 `notifications` section could prevent service construction, and debug logging printed the
 PostgreSQL connection string. Optional notification configuration now remains safely disabled
 when absent, and database/client-certificate credentials are no longer included in that log.
+Database diagnostics retain only host, port, database, user and the configured SSL policy;
+certificate/key paths are omitted and control characters are escaped. An enabled admin-email
+destination without an email provider also receives an explicit service-startup diagnostic.
 
 ## v0.3.0 highlights
 

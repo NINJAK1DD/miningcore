@@ -121,8 +121,10 @@ Commission each miner/proxy on an isolated endpoint before sending production ha
 Physical GPU validation used an RTX 3080 Ti with the unmodified OpenCL kernel from
 [PyBLOCK miner revision 618ec513](https://github.com/GaltRanch/pyblock-miner/tree/618ec5130feca063ecd4d0ae634633d3d3ebc644)
 and a separate, bounded Stratum adapter that reads Miningcore's exact compact share target.
-Across the four payout schemes, the full Miningcore process recorded 98 GPU-generated
-shares and matching daemon-accepted blocks in an isolated PostgreSQL/regtest deployment.
+Across the four payout schemes, the full Miningcore process recorded 98 accepted GPU-generated
+shares and 98 distinct daemon-accepted blocks in an isolated PostgreSQL/regtest deployment.
+Every accepted share also met the deliberately easy regtest network target; these are separate
+share and block counts, not an estimate of mainnet block-finding performance.
 This included PPS credits, duplicate/malformed rejection, reconnects, graceful restarts,
 changing VarDiff targets, and daemon outage/recovery. GPU results were independently
 verified with Python's BLAKE2b before submission, then checked against the daemon's active chain.

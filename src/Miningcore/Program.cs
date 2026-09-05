@@ -2596,8 +2596,16 @@ public class Program : ProcessStatusBackgroundService
 
         connectionString.Append($"CommandTimeout={pgConfig.CommandTimeout ?? 300};");
 
-        // Connection strings contain database and potentially client-certificate passwords.
-        logger.Debug("Using PostgreSQL persistence");
+        // Allowlist diagnostics instead of redacting a connection string: new secret options
+        // must never become log fields. JSON escaping also keeps configured values on one line.
+        logger.Debug(() => "Using PostgreSQL persistence " + JsonConvert.SerializeObject(new
+        {
+            pgConfig.Host,
+            pgConfig.Port,
+            pgConfig.Database,
+            pgConfig.User,
+            SslMode = pgConfig.Tls ? "Require" : "DriverDefault",
+        }));
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))

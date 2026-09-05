@@ -443,6 +443,33 @@ public class HostedServiceStartupTests
         messageBus.DidNotReceive().Listen<PaymentNotification>();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NotificationService_MissingEmailProviderHasExplicitStartupDiagnostic(bool enabled)
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications { Enabled = enabled, EmailAddress = "admin@example.invalid" },
+            },
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+
+        if(enabled)
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                new NotificationService(config, null, messageBus));
+            Assert.Contains("notifications.email", error.Message);
+        }
+        else
+        {
+            using var service = new NotificationService(config, null, messageBus);
+        }
+    }
+
     [Fact]
     public async Task NotificationService_AttachesAllSubscriptionsBeforeStartReturns()
     {
