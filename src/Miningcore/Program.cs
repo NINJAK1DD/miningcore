@@ -2596,7 +2596,8 @@ public class Program : ProcessStatusBackgroundService
 
         connectionString.Append($"CommandTimeout={pgConfig.CommandTimeout ?? 300};");
 
-        logger.Debug(()=> $"Using postgres connection string: {connectionString}");
+        // Connection strings contain database and potentially client-certificate passwords.
+        logger.Debug("Using PostgreSQL persistence");
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))

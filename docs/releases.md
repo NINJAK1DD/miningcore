@@ -56,6 +56,11 @@ isolated wallet/node setup, accounting, startup refusal conditions and validatio
 Existing schema migrations remain applicable; no new schema is introduced by this feature.
 Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
 
+Full-process GPU validation also exposed two existing startup issues: an omitted optional
+`notifications` section could prevent service construction, and debug logging printed the
+PostgreSQL connection string. Optional notification configuration now remains safely disabled
+when absent, and database/client-certificate credentials are no longer included in that log.
+
 ## v0.3.0 highlights
 
 `v0.3.0` promotes the two v0.3.0 release candidates to the stable minor release. It adds current
