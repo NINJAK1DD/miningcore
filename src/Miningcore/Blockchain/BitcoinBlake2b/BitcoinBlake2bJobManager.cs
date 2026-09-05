@@ -187,7 +187,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     private JsonRpcError DeferredRpcRetry(JsonRpcError previous, DateTime nextAttempt, string phase) =>
         new(previous.Code,
             $"Local {phase} retry deferred for {Math.Ceiling((nextAttempt - clock.Now).TotalSeconds)}s; no new RPC attempted; last error: {previous.Message}",
-            previous.Data);
+            previous.Data, previous.InnerException);
 
     protected virtual Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct) =>
         rpc.ExecuteAsync<JObject>(logger, "getblockheader", ct, new object[] { hash });

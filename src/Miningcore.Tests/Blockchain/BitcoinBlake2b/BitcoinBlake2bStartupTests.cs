@@ -159,10 +159,12 @@ public partial class BitcoinBlake2bStartupTests : TestBase
             Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 } } }, new ClusterConfig());
         var contract = ((BitcoinBlake2bTemplate) ModuleInitializer.CoinTemplates["bitcoin-blake2b"]).Networks["regtest"];
         var template = new BlockTemplate { Height = 20, Bits = "207fffff", PreviousBlockhash = new string('0', 64) };
-        manager.Response = new(null, new JsonRpcError(-500, "RPC timeout", null));
+        var cause = new TimeoutException("RPC timeout");
+        manager.Response = new(null, new JsonRpcError(-500, "RPC timeout", null, cause));
         Assert.NotNull((await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None)).Error);
         var deferred = (await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None)).Error;
         Assert.Contains("activation-parent retry deferred for 1s; no new RPC attempted", deferred.Message);
+        Assert.Same(cause, deferred.InnerException);
         Assert.Equal(1, manager.Calls);
         now = now.AddSeconds(1);
         manager.Response = new(new JObject { ["bits"] = "207fffff" });
