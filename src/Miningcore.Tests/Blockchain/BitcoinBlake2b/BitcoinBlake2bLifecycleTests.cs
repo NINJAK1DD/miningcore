@@ -126,6 +126,9 @@ public partial class BitcoinBlake2bStartupTests
         await manager.RefreshAsync();
         Assert.Same(verified, manager.GetJobForStratum());
         manager.AttestationUnavailable = false;
+        var deferred = await manager.FetchTemplateAsync(CancellationToken.None);
+        Assert.Contains("daemon attestation retry deferred for 1s; no new RPC attempted", deferred.Error.Message);
+        Assert.Equal(4, manager.AttestationCalls);
         now = now.AddSeconds(1);
         await manager.RefreshAsync();
         Assert.Equal(7, manager.AttestationCalls);
@@ -142,6 +145,8 @@ public partial class BitcoinBlake2bStartupTests
         internal bool AttestationUnavailable;
         internal string FailedAttestationMethod;
         internal bool AttestationThrows;
+        internal string AttestationException = "http";
+        internal CancellationTokenSource CancelDuringAttestation;
         internal string Drift;
         internal int Publications;
         internal int AttestationCalls;
@@ -154,6 +159,7 @@ public partial class BitcoinBlake2bStartupTests
             poolAddressDestination = BitcoinAddress.Create(poolConfig.Address, network);
         }
         internal Task RefreshAsync() => RefreshResultAsync();
+        internal Task<RpcResponse<BlockTemplate>> FetchTemplateAsync(CancellationToken ct) => GetBlockTemplateAsync(ct);
         internal Task<(bool IsNew, bool Force)> RefreshResultAsync() => UpdateJob(CancellationToken.None, true);
         protected override Task<bool> AreDaemonsHealthyAsync(CancellationToken ct) => Task.FromResult(true);
         protected override Task<bool> AreDaemonsConnectedAsync(CancellationToken ct) => Task.FromResult(true);
@@ -192,8 +198,15 @@ public partial class BitcoinBlake2bStartupTests
             AttestationCalls++;
             if(AttestationUnavailable || method == FailedAttestationMethod)
             {
-                if(AttestationThrows) throw new System.Net.Http.HttpRequestException("test transport failure");
-                return Task.FromResult(new RpcResponse<JObject>(null, Unavailable()));
+                CancelDuringAttestation?.Cancel();
+                if(AttestationThrows) throw AttestationException switch
+                {
+                    "timeout" => new TimeoutException(),
+                    "cancelled" => new OperationCanceledException(ct),
+                    _ => new System.Net.Http.HttpRequestException("test transport failure"),
+                };
+                return Task.FromResult(new RpcResponse<JObject>(null,
+                    ct.IsCancellationRequested ? new JsonRpcError(-500, "Cancelled", null) : Unavailable()));
             }
             var response = method switch
             {
@@ -206,6 +219,36 @@ public partial class BitcoinBlake2bStartupTests
             return Task.FromResult(new RpcResponse<JObject>(response));
         }
         private static JsonRpcError Unavailable() => new(-500, "RPC unavailable", null);
+    }
+
+    [Theory]
+    [InlineData(false, "response")]
+    [InlineData(true, "http")]
+    [InlineData(true, "timeout")]
+    [InlineData(true, "cancelled")]
+    public async Task RuntimeAttestation_CallerCancellationDoesNotBecomeBackoff(bool throws, string exception)
+    {
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var manager = new LifecycleManager(container, clock);
+        manager.Configure(LifecycleConfig(), new ClusterConfig());
+        manager.Prepare();
+        using var stop = new CancellationTokenSource();
+        manager.FailedAttestationMethod = BitcoinCommands.GetNetworkInfo;
+        manager.CancelDuringAttestation = stop;
+        manager.AttestationThrows = throws;
+        manager.AttestationException = exception;
+        // The error-response case models RpcClient's default cancellation
+        // conversion; thrown cases exercise the overridable transport seam.
+        var error = await Record.ExceptionAsync(() => manager.FetchTemplateAsync(stop.Token));
+        Assert.NotNull(error);
+        if(!throws || exception == "cancelled") Assert.IsAssignableFrom<OperationCanceledException>(error);
+        else if(exception == "http") Assert.IsType<System.Net.Http.HttpRequestException>(error);
+        else Assert.IsType<TimeoutException>(error);
+        manager.FailedAttestationMethod = null;
+        manager.CancelDuringAttestation = null;
+        Assert.Null((await manager.FetchTemplateAsync(CancellationToken.None)).Error);
+        Assert.Equal(4, manager.AttestationCalls); // same clock: no retry delay armed
     }
 
     [Theory]

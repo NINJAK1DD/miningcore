@@ -161,7 +161,8 @@ public partial class BitcoinBlake2bStartupTests : TestBase
         var template = new BlockTemplate { Height = 20, Bits = "207fffff", PreviousBlockhash = new string('0', 64) };
         manager.Response = new(null, new JsonRpcError(-500, "RPC timeout", null));
         Assert.NotNull((await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None)).Error);
-        Assert.NotNull((await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None)).Error);
+        var deferred = (await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None)).Error;
+        Assert.Contains("activation-parent retry deferred for 1s; no new RPC attempted", deferred.Message);
         Assert.Equal(1, manager.Calls);
         now = now.AddSeconds(1);
         manager.Response = new(new JObject { ["bits"] = "207fffff" });
@@ -177,13 +178,34 @@ public partial class BitcoinBlake2bStartupTests : TestBase
     {
         internal RpcResponse<JObject> Response;
         internal int Calls;
+        internal CancellationTokenSource CancelDuringRead;
         internal ActivationManager(IComponentContext ctx, IMasterClock clock) : base(ctx, clock,
             Substitute.For<IMessageBus>(), new BitcoinBlake2bExtraNonceProvider()) => network = Network.RegTest;
         internal void Identify(Network selected) { network = selected; PostChainIdentifyConfigure(); }
         protected override Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct)
         {
             Calls++;
+            CancelDuringRead?.Cancel();
             return Task.FromResult(Response);
         }
+    }
+
+    [Fact]
+    public async Task ActivationRpc_CancelledErrorResponseDoesNotArmBackoff()
+    {
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var manager = new ActivationManager(container, clock);
+        manager.Configure(LifecycleConfig(), new ClusterConfig());
+        var contract = ((BitcoinBlake2bTemplate) ModuleInitializer.CoinTemplates["bitcoin-blake2b"]).Networks["regtest"];
+        var template = new BlockTemplate { Height = 20, Bits = "207fffff", PreviousBlockhash = new string('0', 64) };
+        using var stop = new CancellationTokenSource();
+        manager.CancelDuringRead = stop;
+        manager.Response = new(null, new JsonRpcError(-500, "Cancelled", null));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => manager.VerifyActivationParentAsync(template, contract, stop.Token));
+        manager.CancelDuringRead = null;
+        manager.Response = new(new JObject { ["bits"] = "207fffff" });
+        Assert.Null((await manager.VerifyActivationParentAsync(template, contract, CancellationToken.None)).Error);
+        Assert.Equal(2, manager.Calls);
     }
 }

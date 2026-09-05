@@ -117,8 +117,9 @@ public class BitcoinBlake2bJob : BitcoinJob
             blockTemplate.CurTime);
         initialMinerTime = minerTime.ToHexString();
 
-        assignedTarget = BitcoinBlake2bHeader.TargetForDifficulty(Difficulty);
-        assignedBits = BitcoinBlake2bHeader.EncodeCompactTarget(assignedTarget);
+        var seed = BitcoinBlake2bDifficulty.Create(Difficulty);
+        assignedTarget = seed.Target;
+        assignedBits = seed.Bits;
         jobParams = BuildJobParams(false);
     }
 

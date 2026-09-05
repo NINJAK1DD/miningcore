@@ -124,10 +124,11 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
 
     private async Task<JsonRpcError> AttestDaemonAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if(clock.Now < daemonAttestationExpires)
             return null;
         if(attestationRpcError != null && clock.Now < nextAttestationRpcAttempt)
-            return attestationRpcError;
+            return DeferredRpcRetry(attestationRpcError, nextAttestationRpcAttempt, "daemon attestation");
 
         // A successful cache entry is installed only after every response
         // validates. Transport errors keep the cache expired and publish no
@@ -157,16 +158,23 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
 
     private async Task<RpcResponse<JObject>> ReadAttestationWithBackoffAsync(string method, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         RpcResponse<JObject> response;
         try
         {
             response = await ReadDaemonAttestationAsync(method, ct);
         }
-        catch(Exception ex) when(ex is HttpRequestException or TimeoutException ||
-            ex is OperationCanceledException && !ct.IsCancellationRequested)
+        // Defensive for overridden transports. The production RpcClient
+        // normally converts these failures (including cancellation) to errors.
+        catch(Exception ex) when(!ct.IsCancellationRequested &&
+            (ex is HttpRequestException or TimeoutException or OperationCanceledException))
         {
             response = new(null, new JsonRpcError(-500, "Daemon attestation transport failed", null));
         }
+        // Check the token as well as exceptions: RpcClient's default mode
+        // returns cancellation as JsonRpcError(-500, "Cancelled"). Shutdown
+        // must not be interpreted as a new daemon failure/backoff episode.
+        ct.ThrowIfCancellationRequested();
         if(response.Error != null)
         {
             attestationRpcError = response.Error;
@@ -176,16 +184,23 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         return response;
     }
 
+    private JsonRpcError DeferredRpcRetry(JsonRpcError previous, DateTime nextAttempt, string phase) =>
+        new(previous.Code,
+            $"Local {phase} retry deferred for {Math.Ceiling((nextAttempt - clock.Now).TotalSeconds)}s; no new RPC attempted; last error: {previous.Message}",
+            previous.Data);
+
     protected virtual Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct) =>
         rpc.ExecuteAsync<JObject>(logger, "getblockheader", ct, new object[] { hash });
 
     internal async Task<RpcResponse<BlockTemplate>> VerifyActivationParentAsync(BlockTemplate template,
         BitcoinTemplate.BitcoinNetworkParams contract, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if(activationRpcError != null && clock.Now < nextActivationRpcAttempt)
-            return new(null, activationRpcError);
+            return new(null, DeferredRpcRetry(activationRpcError, nextActivationRpcAttempt, "activation-parent"));
 
         var parent = await GetActivationParentAsync(template.PreviousBlockhash, ct);
+        ct.ThrowIfCancellationRequested();
         if(parent.Error != null)
         {
             daemonAttestationExpires = DateTime.MinValue;
