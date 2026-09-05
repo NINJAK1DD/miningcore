@@ -55,6 +55,11 @@ The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and mine
 isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
 Existing schema migrations remain applicable; no new schema is introduced by this feature.
 Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
+**Failure isolation:** a successful but incompatible BLAKE2b daemon response (including a
+changed reviewed version/subversion or missing mandatory GBT rule) stops the **whole Miningcore
+process, including unrelated pools**. Transport outages instead withhold fresh work and retry.
+Stop Miningcore before upgrading its daemon; use a separate Miningcore process for this chain
+if other pools must remain available. Pool-local fail-stop/restart is not implemented.
 The shared Bitcoin-family refresh loop also no longer forces a null-job rebroadcast before
 its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
 dedicated generic-Bitcoin and BLAKE2b lifecycle regressions cover both error-return and exception paths.

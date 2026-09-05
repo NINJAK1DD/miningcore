@@ -17,6 +17,8 @@ namespace Miningcore.Blockchain.BitcoinBlake2b;
 public class BitcoinBlake2bJob : BitcoinJob
 {
     private BitcoinBlake2bHeader.Profile0Work work;
+    private string hiddenPreviousHex;
+    private string coinbasePrefixHex;
     private BitcoinTemplate.BitcoinNetworkParams blake2bNetwork;
     private byte[] fixedCoinbase;
     private BigInteger networkTarget;
@@ -107,6 +109,8 @@ public class BitcoinBlake2bJob : BitcoinJob
             blockTemplate.Height,
             new byte[32]);
         work = new BitcoinBlake2bHeader.Profile0Work(consensusFields);
+        hiddenPreviousHex = work.HiddenPrevious().ToHexString();
+        coinbasePrefixHex = work.CoinbasePrefix().ToHexString();
 
         Span<byte> minerTime = stackalloc byte[8];
         // Profile 0 uses the upper half as nonce3. Seeding it with curtime
@@ -155,16 +159,22 @@ public class BitcoinBlake2bJob : BitcoinJob
         return result;
     }
 
-    public override object GetJobParams(bool isNew) =>
-        BuildJobParams(isNew);
+    public override object GetJobParams(bool isNew)
+    {
+        // Async notifications may still serialize a previous result. Keep the cached
+        // payload immutable and copy only the small array before setting clean_jobs.
+        var result = (object[]) jobParams.Clone();
+        result[^1] = isNew;
+        return result;
+    }
 
     private object[] BuildJobParams(bool isNew)
     {
         return new object[]
         {
             JobId,
-            work?.HiddenPrevious().ToHexString(),
-            work?.CoinbasePrefix().ToHexString(),
+            hiddenPreviousHex,
+            coinbasePrefixHex,
             string.Empty,
             Array.Empty<string>(),
             BlockTemplate?.Version.ToString("x8"),

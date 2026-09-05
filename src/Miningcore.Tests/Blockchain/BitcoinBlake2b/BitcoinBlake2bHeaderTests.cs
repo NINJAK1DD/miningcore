@@ -35,12 +35,18 @@ public class BitcoinBlake2bHeaderTests
     {
         var random = new Random(124140);
         byte[] Bytes(int length) { var result = new byte[length]; random.NextBytes(result); return result; }
+        var highTimeSeen = false;
+        var highHeightSeen = false;
         for(var i = 0; i < 512; i++)
         {
+            var timeOnWire = BinaryPrimitives.ReadUInt32LittleEndian(Bytes(4));
+            var height = BinaryPrimitives.ReadUInt32LittleEndian(Bytes(4));
+            highTimeSeen |= timeOnWire > int.MaxValue;
+            highHeightSeen |= height > int.MaxValue;
             var fields = new BitcoinBlake2bHeader.ConsensusFields(
                 0xa0000000 | (uint) random.Next(), Bytes(32), Bytes(32),
-                (uint) random.Next(), 0x207fffff, (ushort) random.Next(1, 65536),
-                0, 0, new byte[16], (uint) random.Next(20, int.MaxValue), Bytes(32));
+                timeOnWire, 0x207fffff, (ushort) random.Next(1, 65536),
+                0, 0, new byte[16], height, Bytes(32));
             var nonce = Bytes(8);
             var time = Bytes(8);
             var extra = Bytes(16);
@@ -60,6 +66,8 @@ public class BitcoinBlake2bHeaderTests
             Assert.Equal(expectedHash, cached.ComputeHash(nonce, time, extra));
             Assert.Equal(expectedHeader, cached.Serialize(nonce, time, extra));
         }
+        Assert.True(highTimeSeen);
+        Assert.True(highHeightSeen);
     }
 
     [Theory]

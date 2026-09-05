@@ -20,6 +20,30 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 public class BitcoinBlake2bJobTests : TestBase
 {
     [Fact]
+    public void JobParameters_PreserveCleanFlagAndReuseImmutableWireStrings()
+    {
+        var (job, _) = CreateJob();
+        var first = job.ForDifficulty(1);
+        var second = job.ForDifficulty(2);
+        var clean = (object[]) first.GetJobParams(true);
+        var refresh = (object[]) first.GetJobParams(false);
+        var other = (object[]) second.GetJobParams(false);
+        Assert.NotSame(clean, refresh);
+        Assert.Equal(true, clean[^1]);
+        Assert.Equal(false, refresh[^1]);
+        Assert.Same(clean[1], refresh[1]);
+        Assert.Same(clean[2], other[2]);
+        Assert.Equal(first.JobId, clean[0]);
+        Assert.Equal(second.JobId, other[0]);
+        clean[0] = "caller mutation";
+        clean[1] = "caller mutation";
+        var fresh = (object[]) first.GetJobParams(true);
+        Assert.Equal(first.JobId, fresh[0]);
+        Assert.Same(refresh[1], fresh[1]);
+        Assert.Equal(false, refresh[^1]);
+    }
+
+    [Fact]
     public void UnissuedJob_RejectsBeforeConsumingSubmissionIdentity()
     {
         var (job, worker) = CreateJob();
