@@ -2603,7 +2603,13 @@ public class Program : ProcessStatusBackgroundService
             pgConfig.Port,
             pgConfig.Database,
             pgConfig.User,
-            SslMode = pgConfig.Tls ? "Require" : "DriverDefault",
+            SslMode = pgConfig.Tls ? "Require" : "<unset>",
+            pgConfig.TlsNoValidate,
+            PasswordConfigured = !string.IsNullOrEmpty(pgConfig.Password),
+            TlsCertConfigured = !string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()),
+            TlsKeyConfigured = !string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()),
+            TlsPasswordConfigured = !string.IsNullOrEmpty(pgConfig.TlsPassword),
+            CommandTimeout = pgConfig.CommandTimeout ?? 300,
         }));
 
         // register connection factory

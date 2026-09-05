@@ -40,6 +40,7 @@ Use this guide by task:
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
+| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
@@ -49,12 +50,28 @@ copying a recovery command from the maintainer section.
 ## Unreleased: PostgreSQL credential-safe diagnostics
 
 PostgreSQL startup debug logging no longer prints the connection string, which could expose
-database and client-certificate passwords. Only host, port, database, user and configured SSL
-policy are logged; certificate/key paths are omitted and control characters are escaped.
-`DriverDefault` means no SSL mode override was supplied, not that encryption is disabled.
-Connection behavior and schema are unchanged. Operators who enabled debug logging on earlier
-builds should treat retained logs as potentially sensitive, restrict access, and rotate exposed
-database or certificate credentials through their normal credential-management procedure.
+database and client-certificate passwords. The explicit allowlist contains host, port, database,
+user, configured SSL mode, `TlsNoValidate`, command timeout (seconds), and four Boolean presence
+flags for the password, certificate, key and certificate password. No credential values or
+certificate/key paths are included, and control characters are escaped.
+
+These fields describe configuration, not negotiated connection security. `<unset>` means no
+SSL mode override was supplied, not that encryption is disabled. Presence flags report explicit
+configuration only (not file existence or credentials supplied by the driver/environment);
+certificate/key paths containing only whitespace count as absent. TLS-specific settings are
+applied only when `tls` is enabled. In the bundled Npgsql 9 driver, `Require` requires encryption
+but **does not validate the server certificate**, regardless of `TlsNoValidate`; see the
+[Npgsql SSL mode documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls).
+This fix changes neither connection behavior nor schema.
+
+All releases up to and including **v0.3.0** contain the old PostgreSQL startup debug log.
+Operators who enabled debug logging should treat retained logs as potentially sensitive,
+restrict access, and rotate exposed database or certificate credentials through their normal
+credential-management procedure. This fix is limited to that startup diagnostic: configuration
+dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets and must not be
+treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
+[configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
+[RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
 
 ## v0.3.0 highlights
 

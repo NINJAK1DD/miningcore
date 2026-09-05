@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Autofac;
 using Miningcore.Configuration;
@@ -9,6 +12,8 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
+// xUnit runs this collection separately from parallel-capable collections as well:
+// temporarily replacing Program.logger must not overlap another test's use of it.
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class PostgresConfigurationLoggingCollection
 {
@@ -18,10 +23,22 @@ public sealed class PostgresConfigurationLoggingCollection
 [Collection(PostgresConfigurationLoggingCollection.Name)]
 public class PostgresConfigurationLoggingTests
 {
+    public static IEnumerable<object[]> DiagnosticCases()
+    {
+        foreach(var tls in new[] { false, true })
+        foreach(var noValidate in new[] { false, true })
+        {
+            yield return new object[] { tls, noValidate, null, null, false, false };
+            yield return new object[] { tls, noValidate, "", 0, false, false };
+            yield return new object[] { tls, noValidate, " \t ", 42, true, false };
+            yield return new object[] { tls, noValidate, "configured", 600, true, true };
+        }
+    }
+
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(bool tls)
+    [MemberData(nameof(DiagnosticCases))]
+    public void ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(bool tls, bool noValidate,
+        string credentialState, int? timeout, bool passwordConfigured, bool pathConfigured)
     {
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
         var loggerField = typeof(Program).GetField("logger", flags);
@@ -42,27 +59,36 @@ public class PostgresConfigurationLoggingTests
             {
                 new PostgresConfig
                 {
-                    Host = "db.example.invalid", Port = 5433, Database = "test\nforged-line", User = "test-user",
-                    Password = "database-secret-must-not-be-logged",
-                    Tls = tls, TlsPassword = "certificate-secret-must-not-be-logged",
-                    TlsCert = "private-certificate-path", TlsKey = "private-key-path",
+                    Host = "db.example.invalid", Port = 5433,
+                    Database = "test\r\n\u0085\u2028\u2029forged-line", User = "test-user",
+                    Password = pathConfigured ? "database-secret-must-not-be-logged" : credentialState,
+                    Tls = tls, TlsNoValidate = noValidate, CommandTimeout = timeout,
+                    TlsPassword = pathConfigured ? "certificate-secret-must-not-be-logged" : credentialState,
+                    TlsCert = pathConfigured ? " private-certificate-path " : credentialState,
+                    TlsKey = pathConfigured ? " private-key-path " : credentialState,
                 },
                 new ContainerBuilder(),
             });
             factory.Flush();
 
-            var entry = Assert.Single(target.Logs);
             const string prefix = "Using PostgreSQL persistence ";
-            Assert.StartsWith(prefix, entry);
+            var entry = Assert.Single(target.Logs.Where(x => x.StartsWith(prefix, StringComparison.Ordinal)));
             var metadata = JObject.Parse(entry[prefix.Length..]);
-            Assert.Equal(5, metadata.Count);
+            Assert.Equal(11, metadata.Count);
             Assert.Equal("db.example.invalid", metadata["Host"]?.Value<string>());
             Assert.Equal(5433, metadata["Port"]?.Value<int>());
-            Assert.Equal("test\nforged-line", metadata["Database"]?.Value<string>());
+            Assert.Equal("test\r\n\u0085\u2028\u2029forged-line", metadata["Database"]?.Value<string>());
             Assert.Equal("test-user", metadata["User"]?.Value<string>());
-            Assert.Equal(tls ? "Require" : "DriverDefault", metadata["SslMode"]?.Value<string>());
-            Assert.DoesNotContain("\n", entry);
-            Assert.DoesNotContain("\r", entry);
+            Assert.Equal(tls ? "Require" : "<unset>", metadata["SslMode"]?.Value<string>());
+            Assert.Equal(noValidate, metadata["TlsNoValidate"]?.Value<bool>());
+            Assert.Equal(passwordConfigured, metadata["PasswordConfigured"]?.Value<bool>());
+            Assert.Equal(passwordConfigured, metadata["TlsPasswordConfigured"]?.Value<bool>());
+            Assert.Equal(pathConfigured, metadata["TlsCertConfigured"]?.Value<bool>());
+            Assert.Equal(pathConfigured, metadata["TlsKeyConfigured"]?.Value<bool>());
+            Assert.Equal(timeout ?? 300, metadata["CommandTimeout"]?.Value<int>());
+            foreach(var separator in new[] { "\n", "\r", "\u0085", "\u2028", "\u2029" })
+                Assert.DoesNotContain(separator, entry);
+            // Inspect every captured message, not just the allowlisted diagnostic, for leaks.
             var output = string.Join("\n", target.Logs);
             Assert.DoesNotContain("database-secret-must-not-be-logged", output);
             Assert.DoesNotContain("certificate-secret-must-not-be-logged", output);
