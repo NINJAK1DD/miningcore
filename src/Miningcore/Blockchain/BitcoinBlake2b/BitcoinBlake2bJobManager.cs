@@ -7,6 +7,9 @@ using Miningcore.Mining;
 using Miningcore.Time;
 using Miningcore.Stratum;
 using Miningcore.Rpc;
+using Miningcore.JsonRpc;
+using NBitcoin;
+using System.Text;
 using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.BitcoinBlake2b;
@@ -22,6 +25,9 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     }
 
     private BitcoinBlake2bTemplate blake2bCoin;
+    private int activationRpcFailures;
+    private DateTime nextActivationRpcAttempt;
+    private JsonRpcError activationRpcError;
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
     {
@@ -76,19 +82,71 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
                 ValidateHeaderV2Template(response.Response);
                 var contract = blake2bCoin.GetNetwork(network.ChainName);
                 if(response.Response.Height == contract.Blake2bActivationHeight)
-                {
-                    var parent = await rpc.ExecuteAsync<JObject>(logger, "getblockheader", ct,
-                        new object[] { response.Response.PreviousBlockhash });
-                    if(parent.Error != null || parent.Response?["bits"]?.Type != JTokenType.String)
-                        throw new PoolStartupException($"Pool '{poolConfig.Id}' cannot verify the activation parent target", poolConfig.Id);
-                    ValidateActivationTarget(parent.Response["bits"].Value<string>(),
-                        response.Response.Bits, contract.Blake2bTargetShift!.Value,
-                        network == NBitcoin.Network.Main ? 0x1d00ffffU : 0x207fffffU,
-                        poolConfig.Id);
-                }
+                    return await VerifyActivationParentAsync(response.Response, contract, ct);
             }
         }
         return response;
+    }
+
+    protected virtual Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct) =>
+        rpc.ExecuteAsync<JObject>(logger, "getblockheader", ct, new object[] { hash });
+
+    internal async Task<RpcResponse<BlockTemplate>> VerifyActivationParentAsync(BlockTemplate template,
+        BitcoinTemplate.BitcoinNetworkParams contract, CancellationToken ct)
+    {
+        if(activationRpcError != null && clock.Now < nextActivationRpcAttempt)
+            return new(null, activationRpcError);
+
+        var parent = await GetActivationParentAsync(template.PreviousBlockhash, ct);
+        if(parent.Error != null)
+        {
+            // No answer is not evidence of a consensus violation. Return the
+            // ordinary RPC error so the shared loop retains its last verified
+            // job (or waits before initial publication), with bounded backoff.
+            activationRpcError = parent.Error;
+            activationRpcFailures = Math.Min(activationRpcFailures + 1, 6);
+            nextActivationRpcAttempt = clock.Now.AddSeconds(Math.Min(30, 1 << (activationRpcFailures - 1)));
+            return new(null, parent.Error);
+        }
+
+        activationRpcFailures = 0;
+        activationRpcError = null;
+        if(parent.Response?["bits"]?.Type != JTokenType.String)
+            throw new PoolStartupException($"Pool '{poolConfig.Id}' received malformed activation parent metadata", poolConfig.Id);
+        ValidateActivationTarget(parent.Response["bits"].Value<string>(), template.Bits,
+            contract.Blake2bTargetShift!.Value, network == Network.Main ? 0x1d00ffffU : 0x207fffffU,
+            poolConfig.Id);
+        return new(template);
+    }
+
+    internal static void ValidateDifficultyForNetwork(double difficulty, Network selectedNetwork)
+    {
+        BitcoinBlake2bHeader.TargetForDifficulty(difficulty);
+        if(selectedNetwork != Network.RegTest && difficulty < 1)
+            throw new ArgumentOutOfRangeException(nameof(difficulty),
+                "Bitcoin BLAKE2b mainnet requires difficulty >= 1; easier targets are isolated-regtest only");
+    }
+
+    internal void ValidateWorkerDifficulty(double difficulty) => ValidateDifficultyForNetwork(difficulty, network);
+
+    internal static void ValidateActivationCoinbaseSize(PoolConfig pc, ClusterConfig cc, BitcoinBlake2bTemplate template)
+    {
+        var coinbaseString = !string.IsNullOrEmpty(cc.PaymentProcessing?.CoinbaseString)
+            ? cc.PaymentProcessing.CoinbaseString.Trim() : "Miningcore";
+        var markerLength = new Script(Op.GetPushOp(Encoding.UTF8.GetBytes(coinbaseString))).Length;
+        foreach(var contract in template.Networks.Values)
+        {
+            // Reserve the largest uint32 height and signed timestamp pushes,
+            // OP_0, fixed extranonce bytes and the 128-bit job discriminator.
+            // The exact runtime guard still checks daemon-supplied aux flags.
+            var maximum = new Script(Op.GetPushOp((long) uint.MaxValue), Op.GetPushOp(long.MaxValue),
+                Op.GetPushOp(0)).Length + BitcoinConstants.ExtranoncePlaceHolderLength +
+                new Script(Op.GetPushOp(new byte[16])).Length + markerLength;
+            if(!string.IsNullOrEmpty(contract.Blake2bActivationHeadline))
+                maximum += new Script(Op.GetPushOp(Encoding.ASCII.GetBytes(contract.Blake2bActivationHeadline))).Length;
+            if(maximum > 100)
+                throw new PoolStartupException($"Pool '{pc.Id}' coinbaseString exceeds the Bitcoin BLAKE2b activation scriptSig budget ({maximum}/100 bytes); shorten it before startup", pc.Id);
+        }
     }
 
     internal static void ValidateActivationTarget(string parentBits, string nextBits,
@@ -114,6 +172,23 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     {
         if(network != NBitcoin.Network.Main && network != NBitcoin.Network.RegTest)
             throw new PoolStartupException($"Pool '{poolConfig.Id}' Bitcoin BLAKE2b supports only the reviewed mainnet and isolated regtest contracts", poolConfig.Id);
+        try
+        {
+            foreach(var endpoint in poolConfig.Ports?.Values ?? Enumerable.Empty<PoolEndpoint>())
+            {
+                ValidateWorkerDifficulty(endpoint.Difficulty);
+                if(endpoint.VarDiff != null)
+                {
+                    ValidateWorkerDifficulty(endpoint.VarDiff.MinDiff);
+                    if(endpoint.VarDiff.MaxDiff.HasValue)
+                        ValidateWorkerDifficulty(endpoint.VarDiff.MaxDiff.Value);
+                }
+            }
+        }
+        catch(ArgumentOutOfRangeException ex)
+        {
+            throw new PoolStartupException($"Pool '{poolConfig.Id}' has an unsupported Bitcoin BLAKE2b mainnet difficulty: {ex.Message}", poolConfig.Id, ex);
+        }
         base.PostChainIdentifyConfigure();
     }
 
@@ -191,6 +266,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             throw new PoolStartupException(
                 $"Pool '{pc.Id}' Bitcoin BLAKE2b supports only SOLO, PPS, PROP and PPLNS accounting",
                 pc.Id);
+        ValidateActivationCoinbaseSize(pc, cc, template);
         var unsupported = new[] { "gbtArgs", "btStream", "mergedMining", "hasLegacyDaemon", "coinbaseTxComment", "soloCoinbasePayout", "bip54Coinbase" };
         if(pc.Extra?.Keys.Any(x => unsupported.Contains(x,
                StringComparer.OrdinalIgnoreCase)) == true)

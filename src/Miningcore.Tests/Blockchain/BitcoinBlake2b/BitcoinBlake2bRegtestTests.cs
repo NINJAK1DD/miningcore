@@ -116,6 +116,17 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });
             Assert.False(configure["result"]["version-rolling"].Value<bool>());
             Assert.Null(worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask);
+            var minimum = await wire.RequestAsync("mining.configure", new[] { "minimum-difficulty" },
+                new Dictionary<string, object> { ["minimum-difficulty.value"] = 3e-9 });
+            Assert.True(minimum["result"]["minimum-difficulty"].Value<bool>());
+            var difficultyMessage = await wire.ReadAsync();
+            Assert.Equal("mining.set_difficulty", difficultyMessage["method"].Value<string>());
+            Assert.Equal(3e-9, difficultyMessage["params"][0].Value<double>());
+            var configuredJob = await wire.ReadAsync();
+            Assert.Equal("mining.notify", configuredJob["method"].Value<string>());
+            Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(BitcoinBlake2bHeader.TargetForDifficulty(3e-9))
+                .ToString("x8"), configuredJob["params"][6].Value<string>());
+            Assert.NotEqual(notify[0], configuredJob["params"][0].Value<string>());
             var rejected = await wire.RequestAsync("mining.submit", destination + ".test",
                 notify[0], "0000000000000000", notify[7], 1000000000000000L);
             Assert.NotNull(rejected["error"]);

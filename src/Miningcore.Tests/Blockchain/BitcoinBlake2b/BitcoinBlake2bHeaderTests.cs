@@ -12,6 +12,33 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bHeaderTests
 {
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(4, false)]
+    [InlineData(0, true)]
+    public void CachedHasher_RequiresUnmaskedFixedTimeProfileZero(byte flags, bool keyed)
+    {
+        var key = new byte[16];
+        if(keyed) key[0] = 1;
+        var fields = new BitcoinBlake2bHeader.ConsensusFields(0xa0000000,
+            new byte[32], new byte[32], 1700000000, 0x207fffff, 1, flags, 0, key, 21, new byte[32]);
+        byte[] Cached() => BitcoinBlake2bHeader.ComputeUnmaskedProfile0Hash(fields,
+            BitcoinBlake2bHeader.HeaderCommitment(fields), BitcoinBlake2bHeader.HiddenPreviousBlockHash(fields.PreviousBlockHash),
+            new byte[8], new byte[8], new byte[16]);
+        if(flags == 0 && !keyed)
+            Assert.Equal(BitcoinBlake2bHeader.ComputeHash(fields, new byte[8], new byte[8], new byte[16]), Cached());
+        else Assert.Throws<InvalidOperationException>(Cached);
+    }
+
+    [Theory]
+    [InlineData(-1, 1, 1, "hash")]
+    [InlineData(0, 0, 1, "assignedTarget")]
+    [InlineData(0, 1, 0, "networkTarget")]
+    public void ProofBounds_NameTheInvalidArgument(int hash, int assigned, int network, string parameter) =>
+        Assert.Equal(parameter, Assert.Throws<ArgumentOutOfRangeException>(() =>
+            BitcoinBlake2bHeader.ClassifyProof(hash, assigned, network)).ParamName);
+
     // Immutable vectors copied from Bitcoin Knots
     // v29.4.1.knots20260508 (8c85b1585dac23f964e2dd32045624de7f02aa58),
     // src/test/data/block_header_v2.json. These exercise every ASIC profile,

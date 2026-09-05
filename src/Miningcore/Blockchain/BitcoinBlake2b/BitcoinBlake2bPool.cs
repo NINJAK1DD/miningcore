@@ -16,6 +16,7 @@ using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Blockchain.BitcoinBlake2b;
 
@@ -109,7 +110,8 @@ public class BitcoinBlake2bPool : BitcoinPool
     protected override async Task OnNewJobAsync(object jobParams)
     {
         currentJobParams = jobParams;
-        await ForEachMinerAsync(async (connection, ct) =>
+        logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
+        async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BitcoinWorkerContext>();
             if(!context.IsSubscribed)
@@ -122,6 +124,7 @@ public class BitcoinBlake2bPool : BitcoinPool
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
                 CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]));
         });
+        await Guard(BroadcastAsync);
     }
 
     protected override async Task OnRequestAsync(StratumConnection connection,
@@ -135,7 +138,7 @@ public class BitcoinBlake2bPool : BitcoinPool
 
         try
         {
-            BitcoinBlake2bHeader.TargetForDifficulty(context.Difficulty);
+            ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
         }
         catch(ArgumentOutOfRangeException)
         {
@@ -148,8 +151,15 @@ public class BitcoinBlake2bPool : BitcoinPool
         }
 
         if(context.IsSubscribed)
+        {
+            // Unlike authorize/suggest-difficulty, the inherited BIP310
+            // handler changes context state without announcing difficulty.
+            if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
+                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty,
+                    new object[] { context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
                 CreateWorkerJob(connection, false));
+        }
     }
 
     protected override object CreateWorkerJob(StratumConnection connection,
@@ -159,6 +169,7 @@ public class BitcoinBlake2bPool : BitcoinPool
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b work has been invalidated");
         var context = connection.ContextAs<BitcoinWorkerContext>();
+        ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
         if(manager.GetJobForStratum() is not BitcoinBlake2bJob job)
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b job is unavailable");

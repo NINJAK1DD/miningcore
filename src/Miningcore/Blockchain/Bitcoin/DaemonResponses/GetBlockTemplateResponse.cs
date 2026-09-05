@@ -81,10 +81,6 @@ public class BlockTemplate
     public uint CurTime { get; set; }
 
     /// <summary>
-    /// Minimum consensus-valid block timestamp returned by GBT.
-    /// </summary>
-
-    /// <summary>
     /// Compressed target of next block
     /// </summary>
     public string Bits { get; set; }

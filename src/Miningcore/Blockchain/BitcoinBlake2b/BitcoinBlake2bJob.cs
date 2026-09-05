@@ -204,7 +204,7 @@ public class BitcoinBlake2bJob : BitcoinJob
             throw new StratumException(StratumError.Other,
                 "version_bits is not supported by Bitcoin BLAKE2b header-v2");
 
-        if(!RegisterSubmit(context.ExtraNonce1.ToLowerInvariant(), extraNonce2.ToLowerInvariant(), nTime.ToLowerInvariant(), nonce.ToLowerInvariant(),
+        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                null))
             throw new StratumException(StratumError.DuplicateShare,
                 "duplicate share");
@@ -216,7 +216,7 @@ public class BitcoinBlake2bJob : BitcoinJob
         combinedExtraNonce.CopyTo(headerExtraNonce, 4);
 
         var hash = BitcoinBlake2bHeader.ComputeUnmaskedProfile0Hash(
-            headerCommitment, hiddenPreviousBlockHash, minerNonce, minerTime,
+            consensusFields, headerCommitment, hiddenPreviousBlockHash, minerNonce, minerTime,
             headerExtraNonce);
         var hashValue = BitcoinBlake2bHeader.HashValue(hash);
         var stratumDifficulty = assignedDifficulty ?? throw new InvalidOperationException(

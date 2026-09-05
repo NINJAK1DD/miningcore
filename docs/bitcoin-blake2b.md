@@ -24,6 +24,9 @@ later hard fork is implemented by the pinned Knots sources listed below.
 - Only mainnet and isolated regtest are configured. Testnet4 and signet are not advertised.
   The regtest fixture uses activation 20 and shift 20; its headline is
   `Miningcore BLAKE2b regtest`. These are a test contract, not mainnet settings.
+  Regtest activation height/headline may be explicitly matched to a custom test node;
+  its target shift remains 20 in the pinned daemon's `consensus/params.h` default.
+  Height/headline overrides do not provide a target-shift override.
 - The node release is stable. The project's compatible DATUM gateway/miner ecosystem is
   still described as public beta. A stable node does not prove compatibility with every
   ASIC, firmware, proxy, rental service or public network deployment.
@@ -89,6 +92,9 @@ do not introduce a new chain into a mixed-version accounting deployment.
 
 Keep the fee entry at zero until its address and intended percentage are reviewed.
 Do not infer current profitability, market value or reserve adequacy from hash-rate telemetry.
+Startup reserves the activation-headline scriptSig budget even if the current job does not
+need the headline. Keep `paymentProcessing.coinbaseString` short; oversized UTF-8 markers
+are rejected before daemon access. Runtime checks also cover daemon-supplied auxiliary flags.
 
 ## Miner protocol and difficulty
 
@@ -120,6 +126,13 @@ The production wire contract is Sia-style **profile 0**, with hasher time rollin
   solely because its assigned share target is harder than the network target.
 - Each job keeps its assigned difficulty snapshot across VarDiff changes. Changed targets
   require fresh notify data as well as `mining.set_difficulty`.
+  Successful BIP310 `minimum-difficulty` changes announce difficulty before the new job too.
+- Mainnet endpoint difficulty and VarDiff minimum/maximum must be at least **1**. This is
+  a conservative miner-compatibility floor from the reviewed CONVOY high-32-bit admission
+  boundary, not a Knots consensus rule. Sub-floor targets are allowed only on isolated
+  regtest for software proof generation. Wider physical hardware ranges need commissioning
+  before this production boundary can be relaxed; firmware doing harder work than the
+  assigned target can otherwise be under-credited, particularly under PPS.
 - Connection suffixes never wrap within a running allocator. A random 128-bit coinbase
   discriminator separates job commitments across processes and restarts. Duplicate work
   remains duplicate even if hexadecimal casing or the assigned target changes.
@@ -132,6 +145,10 @@ uses a zero XOR key. There is no user-supplied header-flags or profile override.
 
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,
   deployment state, and `!blake2b`. Do not remove the gate or substitute the `bitcoin` template.
+- **Activation parent RPC is temporarily unavailable:** work verification retries with
+  exponential backoff from 1 to 30 seconds. No unverified job is published; previously
+  verified work is retained. Transport failures do not stop unrelated pools. A successful
+  but malformed/contradictory consensus response still invokes the terminal failure path.
 - **Malformed or unknown work:** check firmware/proxy field lengths and job preservation.
   Ordinary Bitcoin Stratum translation is not a compatible substitute.
 - **Unexpected low-difficulty shares:** verify the notify compact target and miner protocol,
@@ -163,6 +180,10 @@ operator commissioning beyond isolated regtest.
 ## Immutable source provenance
 
 Protocol baseline rechecked against upstream on 2026-09-04 and 2026-09-05:
+
+Loader constants enforce this reviewed compatibility boundary; they are not independent
+proof of upstream consensus. That evidence is the pinned source audit, official vectors
+and accepted-block integration tests. Changes to these constants require renewed review.
 
 | Contract | Reviewed source |
 | --- | --- |

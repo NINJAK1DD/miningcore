@@ -844,8 +844,10 @@ public class ConfigurationContractTests
                 ? null
                 : BundledCoinTemplates.Value[coin]?["family"]?.Value<string>();
 
-            var enumName = familyName == "bitcoin-blake2b"
-                ? nameof(CoinFamily.BitcoinBlake2b) : familyName;
+            var enumName = typeof(CoinFamily).GetFields()
+                .FirstOrDefault(field => field.GetCustomAttributes(typeof(System.Runtime.Serialization.EnumMemberAttribute), false)
+                    .Cast<System.Runtime.Serialization.EnumMemberAttribute>()
+                    .Any(attribute => string.Equals(attribute.Value, familyName, StringComparison.OrdinalIgnoreCase)))?.Name ?? familyName;
             if(!Enum.TryParse<CoinFamily>(enumName, true, out var family) ||
                !ExampleExtensionContracts.Value.TryGetValue(family,
                    out var contract))

@@ -31,6 +31,9 @@ internal static class BitcoinBlake2bHeader
     private static readonly Blake2b Blake2b256 = new();
     private static readonly byte[] Zero16 = new byte[16];
 
+    // PreviousBlockHash and MerkleRoot are RPC display-order bytes. XorKey
+    // and MergeMiningRightHandSide are serialized-order bytes, as is the
+    // header extranonce passed separately to serialization/hashing methods.
     internal sealed record ConsensusFields(
         uint Version,
         byte[] PreviousBlockHash,
@@ -191,8 +194,7 @@ internal static class BitcoinBlake2bHeader
                 break;
 
             default:
-                throw new InvalidDataException(
-                    $"Unsupported BLAKE2b ASIC profile {profile}");
+                throw new System.Diagnostics.UnreachableException("Two-bit profile selector");
         }
 
         return result;
@@ -213,10 +215,13 @@ internal static class BitcoinBlake2bHeader
         return raw;
     }
 
-    internal static byte[] ComputeUnmaskedProfile0Hash(ReadOnlySpan<byte> commitment,
+    internal static byte[] ComputeUnmaskedProfile0Hash(ConsensusFields fields, ReadOnlySpan<byte> commitment,
         ReadOnlySpan<byte> hiddenPrevious, ReadOnlySpan<byte> nonce,
         ReadOnlySpan<byte> minerTime, ReadOnlySpan<byte> headerExtraNonce)
     {
+        if(fields.Flags != 0 || fields.XorKeyMaskClearBits != 0 ||
+           fields.XorKey.Length != 16 || fields.XorKey.Any(x => x != 0))
+            throw new InvalidOperationException("Cached profile-0 hashing requires fixed time and an unmasked zero-key policy");
         if(hiddenPrevious.Length != 32 || nonce.Length != 8 || minerTime.Length != 8)
             throw new ArgumentException("Invalid profile-0 work dimensions");
         var root = WorkRoot(commitment, headerExtraNonce);
@@ -399,8 +404,12 @@ internal static class BitcoinBlake2bHeader
     internal static (bool Accepted, bool Candidate) ClassifyProof(BigInteger hash,
         BigInteger assignedTarget, BigInteger networkTarget)
     {
-        if(hash < 0 || hash >= (BigInteger.One << 256) || assignedTarget <= 0 || networkTarget <= 0)
+        if(hash < 0 || hash >= (BigInteger.One << 256))
             throw new ArgumentOutOfRangeException(nameof(hash));
+        if(assignedTarget <= 0 || assignedTarget >= (BigInteger.One << 256))
+            throw new ArgumentOutOfRangeException(nameof(assignedTarget));
+        if(networkTarget <= 0 || networkTarget >= (BigInteger.One << 256))
+            throw new ArgumentOutOfRangeException(nameof(networkTarget));
         var candidate = hash <= networkTarget;
         return (candidate || hash <= assignedTarget, candidate);
     }

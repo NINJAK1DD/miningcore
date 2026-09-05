@@ -61,6 +61,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         listener.Start();
         var endpoint = new StratumEndpoint((IPEndPoint) listener.LocalEndpoint,
             new PoolEndpoint { Difficulty = 1e-9 });
+        config.Ports ??= new Dictionary<int, PoolEndpoint>();
+        config.Ports[endpoint.IPEndPoint.Port] = new PoolEndpoint { Difficulty = 1e-9 };
         client = new TcpClient(AddressFamily.InterNetwork);
         client.Connect(endpoint.IPEndPoint);
         var socket = listener.AcceptSocket();
