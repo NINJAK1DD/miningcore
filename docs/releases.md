@@ -46,6 +46,16 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: PostgreSQL credential-safe diagnostics
+
+PostgreSQL startup debug logging no longer prints the connection string, which could expose
+database and client-certificate passwords. Only host, port, database, user and configured SSL
+policy are logged; certificate/key paths are omitted and control characters are escaped.
+`DriverDefault` means no SSL mode override was supplied, not that encryption is disabled.
+Connection behavior and schema are unchanged. Operators who enabled debug logging on earlier
+builds should treat retained logs as potentially sensitive, restrict access, and rotate exposed
+database or certificate credentials through their normal credential-management procedure.
+
 ## v0.3.0 highlights
 
 `v0.3.0` promotes the two v0.3.0 release candidates to the stable minor release. It adds current
