@@ -46,6 +46,18 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: optional notification startup
+
+Omitting the optional `notifications` section no longer causes a constructor null reference
+in the email/Pushover service graph. Omitted, empty or disabled notifications remain optional.
+An enabled admin-email destination without `notifications.email` now raises an explicit
+`PoolStartupException` at service construction, naming the missing configuration.
+
+**Compatibility:** ordinary startup already rejects this incomplete email configuration in
+`Program.ValidateConfig`. Custom containers that bypass that pass now fail at construction
+instead of later notification delivery. Configure the email sender or disable admin notifications;
+do not rely on undeliverable critical alerts. No coin-family, accounting or schema change is made.
+
 ## v0.3.0 highlights
 
 `v0.3.0` promotes the two v0.3.0 release candidates to the stable minor release. It adds current

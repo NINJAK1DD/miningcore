@@ -9,6 +9,7 @@ using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Pushover;
@@ -29,7 +30,13 @@ public class NotificationService : StartupGatedBackgroundService,
         Contract.RequiresNonNull(messageBus);
 
         this.clusterConfig = clusterConfig;
-        emailSenderConfig = clusterConfig.Notifications.Email;
+        emailSenderConfig = clusterConfig.Notifications?.Email;
+        // The normal configuration pass already rejects this. Keep the service boundary
+        // diagnostic explicit for containers or callers that bypass Program.ValidateConfig.
+        if(clusterConfig.Notifications?.Admin?.Enabled == true &&
+           !string.IsNullOrWhiteSpace(clusterConfig.Notifications.Admin.EmailAddress) &&
+           emailSenderConfig == null)
+            throw new PoolStartupException("Admin email notifications require notifications.email configuration");
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
 
