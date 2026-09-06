@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using Autofac;
 using Miningcore.Configuration;
@@ -23,22 +21,42 @@ public sealed class PostgresConfigurationLoggingCollection
 [Collection(PostgresConfigurationLoggingCollection.Name)]
 public class PostgresConfigurationLoggingTests
 {
+    private const string DatabasePassword = "database-secret-must-not-be-logged";
+    private const string CertificatePassword = "certificate-secret-must-not-be-logged";
+    private const string CertificatePath = " private-certificate-path ";
+    private const string KeyPath = " private-key-path ";
+
     public static IEnumerable<object[]> DiagnosticCases()
     {
         foreach(var tls in new[] { false, true })
         foreach(var noValidate in new[] { false, true })
         {
-            yield return new object[] { tls, noValidate, null, null, false, false };
-            yield return new object[] { tls, noValidate, "", 0, false, false };
-            yield return new object[] { tls, noValidate, " \t ", 42, true, false };
-            yield return new object[] { tls, noValidate, "configured", 600, true, true };
+            yield return new object[] { tls, noValidate, null, null, null, null,
+                null, false, false, false, false };
+            // Zero preserves the existing unlimited-timeout setting; this test does not endorse it.
+            yield return new object[] { tls, noValidate, "", "", "", "",
+                0, false, false, false, false };
+            yield return new object[] { tls, noValidate, " \t ", " \t ", " \t ", " \t ",
+                42, true, true, false, false };
+            yield return new object[] { tls, noValidate, DatabasePassword, CertificatePassword, CertificatePath, KeyPath,
+                600, true, true, true, true };
+            // Independent one-field cases reject any swapped or duplicated presence-field mapping.
+            yield return new object[] { tls, noValidate, DatabasePassword, null, null, null,
+                null, true, false, false, false };
+            yield return new object[] { tls, noValidate, null, CertificatePassword, null, null,
+                null, false, true, false, false };
+            yield return new object[] { tls, noValidate, null, null, CertificatePath, null,
+                null, false, false, true, false };
+            yield return new object[] { tls, noValidate, null, null, null, KeyPath,
+                null, false, false, false, true };
         }
     }
 
     [Theory]
     [MemberData(nameof(DiagnosticCases))]
     public void ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(bool tls, bool noValidate,
-        string credentialState, int? timeout, bool passwordConfigured, bool pathConfigured)
+        string password, string tlsPassword, string tlsCert, string tlsKey, int? timeout,
+        bool passwordConfigured, bool tlsPasswordConfigured, bool tlsCertConfigured, bool tlsKeyConfigured)
     {
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
         var loggerField = typeof(Program).GetField("logger", flags);
@@ -61,18 +79,18 @@ public class PostgresConfigurationLoggingTests
                 {
                     Host = "db.example.invalid", Port = 5433,
                     Database = "test\r\n\u0085\u2028\u2029forged-line", User = "test-user",
-                    Password = pathConfigured ? "database-secret-must-not-be-logged" : credentialState,
+                    Password = password,
                     Tls = tls, TlsNoValidate = noValidate, CommandTimeout = timeout,
-                    TlsPassword = pathConfigured ? "certificate-secret-must-not-be-logged" : credentialState,
-                    TlsCert = pathConfigured ? " private-certificate-path " : credentialState,
-                    TlsKey = pathConfigured ? " private-key-path " : credentialState,
+                    TlsPassword = tlsPassword, TlsCert = tlsCert, TlsKey = tlsKey,
                 },
                 new ContainerBuilder(),
             });
             factory.Flush();
 
             const string prefix = "Using PostgreSQL persistence ";
-            var entry = Assert.Single(target.Logs.Where(x => x.StartsWith(prefix, StringComparison.Ordinal)));
+            // Any additional diagnostic requires explicit review, even if it misses our sentinels.
+            var entry = Assert.Single(target.Logs);
+            Assert.StartsWith(prefix, entry);
             var metadata = JObject.Parse(entry[prefix.Length..]);
             Assert.Equal(11, metadata.Count);
             Assert.Equal("db.example.invalid", metadata["Host"]?.Value<string>());
@@ -82,19 +100,19 @@ public class PostgresConfigurationLoggingTests
             Assert.Equal(tls ? "Require" : "<unset>", metadata["SslMode"]?.Value<string>());
             Assert.Equal(noValidate, metadata["TlsNoValidate"]?.Value<bool>());
             Assert.Equal(passwordConfigured, metadata["PasswordConfigured"]?.Value<bool>());
-            Assert.Equal(passwordConfigured, metadata["TlsPasswordConfigured"]?.Value<bool>());
-            Assert.Equal(pathConfigured, metadata["TlsCertConfigured"]?.Value<bool>());
-            Assert.Equal(pathConfigured, metadata["TlsKeyConfigured"]?.Value<bool>());
+            Assert.Equal(tlsPasswordConfigured, metadata["TlsPasswordConfigured"]?.Value<bool>());
+            Assert.Equal(tlsCertConfigured, metadata["TlsCertConfigured"]?.Value<bool>());
+            Assert.Equal(tlsKeyConfigured, metadata["TlsKeyConfigured"]?.Value<bool>());
             Assert.Equal(timeout ?? 300, metadata["CommandTimeout"]?.Value<int>());
             foreach(var separator in new[] { "\n", "\r", "\u0085", "\u2028", "\u2029" })
                 Assert.DoesNotContain(separator, entry);
             // Inspect every captured message, not just the allowlisted diagnostic, for leaks.
             var output = string.Join("\n", target.Logs);
-            Assert.DoesNotContain("database-secret-must-not-be-logged", output);
-            Assert.DoesNotContain("certificate-secret-must-not-be-logged", output);
+            Assert.DoesNotContain(DatabasePassword, output);
+            Assert.DoesNotContain(CertificatePassword, output);
             Assert.DoesNotContain("Password=", output);
-            Assert.DoesNotContain("private-certificate-path", output);
-            Assert.DoesNotContain("private-key-path", output);
+            Assert.DoesNotContain(CertificatePath.Trim(), output);
+            Assert.DoesNotContain(KeyPath.Trim(), output);
         }
         finally
         {

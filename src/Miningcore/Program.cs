@@ -2593,7 +2593,8 @@ public class Program : ProcessStatusBackgroundService
                 connectionString.Append($"SSL Password={pgConfig.TlsPassword};");
         }
 
-        connectionString.Append($"CommandTimeout={pgConfig.CommandTimeout ?? 300};");
+        var commandTimeout = pgConfig.CommandTimeout ?? 300;
+        connectionString.Append($"CommandTimeout={commandTimeout};");
 
         // Allowlist diagnostics instead of redacting a connection string: new secret options
         // must never become log fields. JSON escaping also keeps configured values on one line.
@@ -2609,7 +2610,7 @@ public class Program : ProcessStatusBackgroundService
             TlsCertConfigured = !string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()),
             TlsKeyConfigured = !string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()),
             TlsPasswordConfigured = !string.IsNullOrEmpty(pgConfig.TlsPassword),
-            CommandTimeout = pgConfig.CommandTimeout ?? 300,
+            CommandTimeout = commandTimeout,
         }));
 
         // register connection factory
