@@ -23,6 +23,7 @@ using Miningcore.Rpc;
 using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Time;
 using NBitcoin;
+using NBitcoin.Zcash;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
 using Xunit;
@@ -60,6 +61,10 @@ public partial class BitcoinBlake2bStartupTests : TestBase
     [BitcoinBlake2bIntegrationFact]
     public async Task ProductionContainer_SetupJobManagerReachesRealDaemonAndPublishesJob()
     {
+        // Mirror Program's pre-host network registration. Network.GetNetwork only
+        // looks up registered aliases; this fixture must also work in a fresh test
+        // process without another test first accessing Network.Main or RegTest.
+        ZcashNetworks.Instance.EnsureRegistered();
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
             true, Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
             new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest" }, 19);
