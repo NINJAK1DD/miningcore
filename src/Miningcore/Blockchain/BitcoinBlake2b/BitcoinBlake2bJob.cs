@@ -53,6 +53,10 @@ public class BitcoinBlake2bJob : BitcoinJob
             throw new InvalidDataException(
                 "Bitcoin BLAKE2b daemon returned a header-v1 template");
 
+        if(!string.IsNullOrEmpty(blockTemplate.CoinbaseAux?.Flags))
+            throw new InvalidDataException(
+                "Bitcoin BLAKE2b requires empty coinbaseaux.flags from the reviewed daemon");
+
         var transactionCount = checked((ulong) (blockTemplate.Transactions?.Length ?? 0) + 1);
         if(transactionCount > ushort.MaxValue)
             throw new InvalidDataException(
@@ -84,6 +88,8 @@ public class BitcoinBlake2bJob : BitcoinJob
             (BitcoinConstants.ExtranoncePlaceHolderLength -
              BitcoinBlake2bHeader.ConnectionExtraNonceSize) * 2);
         fixedCoinbase = SerializeCoinbase(fixedExtraNonce1, fixedExtraNonce2);
+        // Check the actual serialized transaction, independently of the startup
+        // size estimate. One parse per source job is intentional defense in depth.
         var coinbaseTransaction = NBitcoin.Transaction.Parse(fixedCoinbase.ToHexString(), network);
         if(coinbaseTransaction.Inputs.Count != 1 ||
            coinbaseTransaction.Inputs[0].ScriptSig.Length is < 2 or > 100)
@@ -92,6 +98,8 @@ public class BitcoinBlake2bJob : BitcoinJob
         Span<byte> coinbaseHash = stackalloc byte[32];
         coinbaseHasher.Digest(fixedCoinbase, coinbaseHash);
         var merkleRootInternal = mt.WithFirst(coinbaseHash.ToArray());
+        // ConsensusFields stores hashes in display order; its serializer alone
+        // converts back to the internal little-endian wire representation.
         var merkleRootDisplay = new uint256(merkleRootInternal).ToString()
             .HexToByteArray();
 
@@ -123,7 +131,7 @@ public class BitcoinBlake2bJob : BitcoinJob
         var seed = BitcoinBlake2bDifficulty.Create(Difficulty);
         assignedTarget = seed.Target;
         assignedBits = seed.Bits;
-        jobParams = BuildJobParams(false);
+        jobParams = BuildJobParams();
     }
 
     protected override byte[] BuildScriptSigFinalBytes(string coinbaseString)
@@ -150,17 +158,19 @@ public class BitcoinBlake2bJob : BitcoinJob
     internal BitcoinBlake2bJob ForDifficulty(BitcoinBlake2bDifficulty assignment)
     {
         ArgumentNullException.ThrowIfNull(assignment);
+        EnsureInitialized();
         var result = (BitcoinBlake2bJob) MemberwiseClone();
         result.assignedDifficulty = assignment.Difficulty;
         result.assignedTarget = assignment.Target;
         result.assignedBits = assignment.Bits;
         result.JobId = JobId + "-" + BitConverter.DoubleToInt64Bits(assignment.Difficulty).ToString("x16");
-        result.jobParams = result.BuildJobParams(false);
+        result.jobParams = result.BuildJobParams();
         return result;
     }
 
     public override object GetJobParams(bool isNew)
     {
+        EnsureInitialized();
         // Async notifications may still serialize a previous result. Keep the cached
         // payload immutable and copy only the small array before setting clean_jobs.
         var result = (object[]) jobParams.Clone();
@@ -168,7 +178,13 @@ public class BitcoinBlake2bJob : BitcoinJob
         return result;
     }
 
-    private object[] BuildJobParams(bool isNew)
+    private void EnsureInitialized()
+    {
+        if(work == null || jobParams == null)
+            throw new InvalidOperationException("Bitcoin BLAKE2b job must be initialized before issuing work");
+    }
+
+    private object[] BuildJobParams()
     {
         return new object[]
         {
@@ -180,7 +196,7 @@ public class BitcoinBlake2bJob : BitcoinJob
             BlockTemplate?.Version.ToString("x8"),
             assignedBits.ToString("x8"),
             initialMinerTime,
-            isNew,
+            false, // Each notification sets clean_jobs on its own array copy.
         };
     }
 
@@ -214,6 +230,8 @@ public class BitcoinBlake2bJob : BitcoinJob
             throw new StratumException(StratumError.Other, ex.Message);
         }
 
+        // Defense in depth for direct callers or future dispatcher changes;
+        // the current wire path already refuses a sixth submit parameter.
         if(versionBits != null)
             throw new StratumException(StratumError.Other,
                 "version_bits is not supported by Bitcoin BLAKE2b header-v2");
@@ -259,6 +277,8 @@ public class BitcoinBlake2bJob : BitcoinJob
             return (share, null);
 
         var header = work.Serialize(minerNonce, minerTime, headerExtraNonce);
+        // Digest hex is Knots' display-order block ID. SubmitBlockAsync uses it
+        // for getblock acceptance verification; do not apply Bitcoin's reversal.
         share.BlockHash = hash.ToHexString();
         return (share, SerializeBlock(header, fixedCoinbase).ToHexString());
     }

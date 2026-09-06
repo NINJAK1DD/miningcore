@@ -1,5 +1,6 @@
 using Autofac;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Mining;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -483,13 +484,10 @@ public static class CoinTemplateLoader
         ValidateBitcoinBlake2bNetwork(filename, coinId, "regtest", regtest,
             requireHeadline: false);
 
-        if(regtest.Blake2bTargetShift != 20)
-            throw new PoolStartupException($"Invalid coin-template '{coinId}' in file '{filename}': regtest target shift must match the reviewed value 20");
+        if(regtest.Blake2bTargetShift != BitcoinBlake2bConsensus.RegtestTargetShift)
+            throw new PoolStartupException($"Invalid coin-template '{coinId}' in file '{filename}': regtest target shift must match the reviewed value {BitcoinBlake2bConsensus.RegtestTargetShift}");
 
-        if(main.Blake2bActivationHeight != 961640 ||
-           main.Blake2bTargetShift != 22 ||
-           !string.Equals(main.Blake2bActivationHeadline,
-               "8-30 NYPost Deride And Conquer", StringComparison.Ordinal))
+        if(!BitcoinBlake2bConsensus.MatchesMainnet(main))
         {
             throw new PoolStartupException(
                 $"Invalid coin-template '{coinId}' in file '{filename}': " +
@@ -525,7 +523,7 @@ public static class CoinTemplateLoader
         {
             throw new PoolStartupException(
                 $"Invalid coin-template '{coinId}' in file '{filename}': " +
-                $"network '{networkName}' activation headline exceeds 80 bytes");
+                $"network '{networkName}' activation headline exceeds 80 printable ASCII characters (80 bytes)");
         }
     }
 

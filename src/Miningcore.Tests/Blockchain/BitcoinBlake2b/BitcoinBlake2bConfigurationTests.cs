@@ -53,16 +53,18 @@ public class BitcoinBlake2bConfigurationTests : TestBase
 
         protected override BitcoinJob CreateJob() => new FaultingJob(truncated);
 
-        internal Task BuildAsync(IDestination address)
+        internal Task BuildAsync(IDestination address, uint height = 21,
+            Network selectedNetwork = null, string coinbaseFlags = null)
         {
-            network = Network.RegTest;
+            network = selectedNetwork ?? Network.RegTest;
             poolAddressDestination = address;
             var template = new BlockTemplate
             {
-                Height = 21, Version = 0xa0000000, CurTime = 1700000000, Bits = "207fffff",
+                Height = height, Version = 0xa0000000, CurTime = 1700000000, Bits = "207fffff",
                 Target = "7fffff" + new string('0', 58), PreviousBlockhash = new string('0', 64),
                 CoinbaseValue = 5000000000, Transactions = Array.Empty<BitcoinBlockTransaction>(),
                 Rules = new[] { "!blake2b" },
+                CoinbaseAux = new CoinbaseAux { Flags = coinbaseFlags },
             };
             return UpdateJob(CancellationToken.None, true, json:
                 new JObject { ["result"] = JObject.FromObject(template) }.ToString());
@@ -134,6 +136,9 @@ public class BitcoinBlake2bConfigurationTests : TestBase
         Assert.Equal("BLAKE2b header-v2", coin.GetAlgorithmName());
         Assert.Equal(1d, coin.ShareMultiplier);
         Assert.True(coin.DisableVersionRolling);
+        Assert.True(BitcoinBlake2bConsensus.MatchesMainnet(coin.Networks["main"]));
+        Assert.Equal(BitcoinBlake2bConsensus.RegtestTargetShift,
+            coin.Networks["regtest"].Blake2bTargetShift);
         Assert.Equal(new[] { "bitcoin-blake2b" }, ModuleInitializer.CoinTemplates
             .Where(x => x.Value.Family == CoinFamily.BitcoinBlake2b)
             .Select(x => x.Key).OrderBy(x => x).ToArray());
@@ -141,6 +146,64 @@ public class BitcoinBlake2bConfigurationTests : TestBase
             template => Assert.True(template.DisableVersionRolling));
         Assert.IsType<BitcoinTemplate>(ModuleInitializer.CoinTemplates["bitcoin"]);
         Assert.Equal("BTC", ModuleInitializer.CoinTemplates["bitcoin"].Symbol);
+    }
+
+    [Theory]
+    [InlineData("blake2bActivationHeight", "961641")]
+    [InlineData("blake2bTargetShift", "21")]
+    [InlineData("blake2bActivationHeadline", "\"wrong headline\"")]
+    public void Loader_RejectsEachChangedMainnetConsensusValue(string property, string json)
+    {
+        var template = ReadTemplate();
+        template["networks"]["main"][property] = JToken.Parse(json);
+        Assert.Throws<PoolStartupException>(() => Load(template));
+    }
+
+    [Theory]
+    [InlineData("height")]
+    [InlineData("shift")]
+    [InlineData("headline")]
+    public async Task Runtime_RejectsChangedMainnetContractAfterTemplateLoading(string field)
+    {
+        var template = Assert.IsType<BitcoinBlake2bTemplate>(Load(ReadTemplate()));
+        var manager = new FaultingManager(container, Substitute.For<IMasterClock>(), false);
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.Main);
+        manager.Configure(new PoolConfig
+        {
+            Id = "blake2b-test", Coin = "bitcoin-blake2b", Template = template,
+            Address = address.ToString(),
+            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 } },
+        }, new ClusterConfig());
+        var main = template.Networks["main"];
+        if(field == "height") main.Blake2bActivationHeight++;
+        if(field == "shift") main.Blake2bTargetShift--;
+        if(field == "headline") main.Blake2bActivationHeadline = "wrong headline";
+
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            manager.BuildAsync(address, 961642, Network.Main));
+        Assert.Contains("activation metadata does not match", error.Message);
+        Assert.Null(manager.GetJobForStratum());
+    }
+
+    [Theory]
+    [InlineData("00")]
+    [InlineData(" ")]
+    [InlineData("not-hex")]
+    public async Task Runtime_RejectsUnexpectedCoinbaseFlagsBeforeSerialization(string flags)
+    {
+        var manager = new FaultingManager(container, Substitute.For<IMasterClock>(), false);
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        manager.Configure(new PoolConfig
+        {
+            Id = "blake2b-test", Coin = "bitcoin-blake2b",
+            Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"],
+            Address = address.ToString(),
+            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 } },
+        }, new ClusterConfig());
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            manager.BuildAsync(address, coinbaseFlags: flags));
+        Assert.Contains("coinbaseaux.flags", error.Message);
+        Assert.Null(manager.GetJobForStratum());
     }
 
     [Theory]
@@ -213,7 +276,9 @@ public class BitcoinBlake2bConfigurationTests : TestBase
         typeof(BitcoinBlake2bExtraNonceProvider).GetField("counter",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .SetValue(provider, (long) uint.MaxValue);
-        Assert.Throws<InvalidOperationException>(() => provider.Next());
+        var error = Assert.Throws<InvalidOperationException>(() => provider.Next());
+        Assert.Contains("4294967296", error.Message);
+        Assert.Contains("4294967295", error.Message);
         Assert.Throws<InvalidOperationException>(() => provider.Next());
     }
 

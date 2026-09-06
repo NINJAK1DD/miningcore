@@ -20,6 +20,30 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 public class BitcoinBlake2bJobTests : TestBase
 {
     [Fact]
+    public void UninitializedJob_RejectsIssuanceWithExplicitDiagnostic()
+    {
+        var job = new BitcoinBlake2bJob();
+        Assert.Contains("initialized", Assert.Throws<InvalidOperationException>(
+            () => job.GetJobParams(false)).Message);
+        Assert.Contains("initialized", Assert.Throws<InvalidOperationException>(
+            () => job.ForDifficulty(1)).Message);
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("00", false)]
+    [InlineData(" ", false)]
+    [InlineData("not-hex", false)]
+    public void CoinbaseFlags_RequireReviewedEmptyInput(string flags, bool accepted)
+    {
+        if(accepted)
+            Assert.NotNull(CreateJob(coinbaseFlags: flags).Item1.GetJobParams(false));
+        else
+            Assert.Contains("coinbaseaux.flags", Assert.Throws<InvalidDataException>(
+                () => CreateJob(coinbaseFlags: flags)).Message);
+    }
+    [Fact]
     public void JobParameters_PreserveCleanFlagAndReuseImmutableWireStrings()
     {
         var (job, _) = CreateJob();
@@ -178,7 +202,8 @@ public class BitcoinBlake2bJobTests : TestBase
         throw new InvalidOperationException("No low-difficulty test proof found");
     }
 
-    private (BitcoinBlake2bJob, StratumConnection) CreateJob(string bits = "207fffff", uint height = 21)
+    private (BitcoinBlake2bJob, StratumConnection) CreateJob(string bits = "207fffff", uint height = 21,
+        string coinbaseFlags = null)
     {
         var coin = (BitcoinBlake2bTemplate) ModuleInitializer.CoinTemplates["bitcoin-blake2b"];
         var target = BitcoinBlake2bHeader.DecodeCompactTarget(BitcoinBlake2bHeader.ParseCompactBits(bits));
@@ -188,6 +213,7 @@ public class BitcoinBlake2bJobTests : TestBase
             Target = target.ToString("x").PadLeft(64, '0'),
             PreviousBlockhash = new string('0', 64), CoinbaseValue = 5000000000,
             Transactions = Array.Empty<BitcoinBlockTransaction>(), Rules = new[] { "!blake2b" },
+            CoinbaseAux = new CoinbaseAux { Flags = coinbaseFlags },
         };
         var clock = Substitute.For<IMasterClock>();
         clock.Now.Returns(DateTime.UtcNow);

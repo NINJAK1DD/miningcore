@@ -61,14 +61,23 @@ changed reviewed version/subversion or missing mandatory GBT rule) stops the **w
 process, including unrelated pools**. Transport outages instead withhold fresh work and retry.
 Stop Miningcore before upgrading its daemon; use a separate Miningcore process for this chain
 if other pools must remain available. Pool-local fail-stop/restart is not implemented.
-The shared Bitcoin-family refresh loop also no longer forces a null-job rebroadcast before
-its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
-dedicated generic-Bitcoin and BLAKE2b lifecycle regressions cover both error-return and exception paths.
+The reviewed activation parameters now share one code contract, checked against the JSON
+catalogue and again at runtime. Unexpected nonempty `coinbaseaux.flags` are rejected explicitly
+before coinbase construction. Header byte order and the supported miner profile are unchanged.
 
 Full-process GPU validation also exposed shared startup issues fixed independently in
 PRs #142 and #143. Their current behavior and compatibility boundaries are documented under
 [optional notification startup](#unreleased-optional-notification-startup) and
 [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+
+## Unreleased: Bitcoin-family initial work refresh
+
+The shared Bitcoin-family refresh loop no longer forces a null-job rebroadcast before
+its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
+generic-Bitcoin and BLAKE2b lifecycle regressions cover error-return and exception paths.
+This also affects canonical SHA-256d Bitcoin, not only the new BLAKE2b family.
+The separate generic notification-array snapshot concern is tracked in
+[#153](https://github.com/NINJAK1DD/miningcore/issues/153); it is not changed here.
 
 ## Unreleased: optional notification startup
 

@@ -14,7 +14,7 @@ internal sealed class BitcoinBlake2bExtraNonceProvider : IExtraNonceProvider
     {
         var value = Interlocked.Increment(ref counter);
         if(value > uint.MaxValue)
-            throw new InvalidOperationException("Bitcoin BLAKE2b connection extranonce space exhausted; restart the pool to create new job commitments");
+            throw new InvalidOperationException($"Bitcoin BLAKE2b connection extranonce space exhausted at counter {value} (maximum {uint.MaxValue}); restart the pool to create new job commitments");
         return value.ToString("x8");
     }
 }

@@ -127,6 +127,15 @@ public class BitcoinBlake2bHeaderTests
             "c31b24420d67f86e524f980a24a18e88f36c821046d5288251b5d88998c69f86");
     }
 
+    [Fact]
+    public void OfficialVectorCorpus_CoversEveryProfileAndNonzeroXorMasks()
+    {
+        var vectors = OfficialHeaderVectors().Select(x => (HeaderVector) x[0]).ToArray();
+        Assert.Equal(new[] { 0, 1, 2, 3 }, vectors.Select(x => x.Profile).Distinct().OrderBy(x => x));
+        Assert.Contains(vectors, x => x.XorKey.Any(c => c != '0'));
+        Assert.Contains(vectors, x => x.ClearBits == 255 && x.XorKey.Any(c => c != '0'));
+    }
+
     [Theory]
     [MemberData(nameof(OfficialHeaderVectors))]
     public void HeaderV2_MatchesStableKnotsVectors(HeaderVector vector)

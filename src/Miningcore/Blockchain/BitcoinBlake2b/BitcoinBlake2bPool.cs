@@ -35,6 +35,9 @@ public class BitcoinBlake2bPool : BitcoinPool
 
     private int jobPipelineFailed;
 
+    private BitcoinBlake2bJobManager Blake2bManager => manager as BitcoinBlake2bJobManager ??
+        throw new InvalidOperationException("Bitcoin BLAKE2b requires its isolated job manager");
+
     protected override Task OnSubmitAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
@@ -110,7 +113,7 @@ public class BitcoinBlake2bPool : BitcoinPool
     protected override async Task OnNewJobAsync(object jobParams)
     {
         currentJobParams = jobParams;
-        logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
+        logger.Info(() => $"Broadcasting base job {((object[]) jobParams)[0]} (worker IDs include a difficulty suffix)");
         async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -138,7 +141,7 @@ public class BitcoinBlake2bPool : BitcoinPool
 
         try
         {
-            ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
+            Blake2bManager.ValidateWorkerDifficulty(context.Difficulty);
         }
         catch(ArgumentOutOfRangeException)
         {
@@ -181,7 +184,7 @@ public class BitcoinBlake2bPool : BitcoinPool
         BitcoinBlake2bJob workerJob;
         try
         {
-            var assignment = ((BitcoinBlake2bJobManager) manager).ValidateWorkerDifficulty(context.Difficulty);
+            var assignment = Blake2bManager.ValidateWorkerDifficulty(context.Difficulty);
             workerJob = job.ForDifficulty(assignment);
         }
         catch(ArgumentOutOfRangeException ex)

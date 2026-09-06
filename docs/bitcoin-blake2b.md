@@ -25,6 +25,9 @@ later hard fork is implemented by the pinned Knots sources listed below.
   stop the process through the consensus-contract fail-stop path. Cached attestation bounds
   detection latency; it does not authenticate binaries or eliminate an endpoint replacement
   between RPC calls. Stop Miningcore before changing its daemon binary or chain configuration.
+  There is no operator version-pin bypass. Urgent security-update compatibility needs a
+  reviewed source/build update, not merely an acknowledged version string; the safe upgrade
+  policy is tracked in [#151](https://github.com/NINJAK1DD/miningcore/issues/151).
   Attestation shares the serialized polling loop, not a background timer: a cache-expiring
   update can pay three additional sequential RPCs. Ordinary template polling refreshes the
   cache even without a new block. This deliberate latency/safety trade-off avoids concurrent
@@ -112,7 +115,8 @@ Startup reserves the activation-headline scriptSig budget even if the current jo
 need the headline. With the shipped network contracts, `paymentProcessing.coinbaseString`
 allows **24 UTF-8 bytes after trimming** (24 ASCII characters, fewer for multibyte text).
 Oversized markers are rejected before daemon access. Pinned Knots emits an empty
-`coinbaseaux` object; runtime checks also cover any unexpected auxiliary flags.
+`coinbaseaux` object; nonempty `coinbaseaux.flags` are refused explicitly before serialization,
+not silently incorporated into the startup budget or reported only as a later length overflow.
 
 ## Miner protocol and difficulty
 
@@ -169,9 +173,33 @@ The production wire contract is Sia-style **profile 0**, with hasher time rollin
   discriminator separates job commitments across processes and restarts. Duplicate work
   remains duplicate even if hexadecimal casing or the assigned target changes.
 
-All four ASIC layouts and XOR-mask variants are covered by consensus primitives, but this
+All four ASIC layouts and nonzero XOR-mask variants are covered by official Knots vector
+tests (`HeaderV2_MatchesStableKnotsVectors`), but this
 does not advertise selectable wire profiles 1–3 or anti-withholding service. Production
 uses a zero XOR key. There is no user-supplied header-flags or profile override.
+
+### Software commissioning adapter contract
+
+The private lab adapter is not a supported public miner distribution. An operator building
+an adapter around the PyBLOCK kernel can use the wire contract above and the public
+[regtest wire fixture](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bWireSession.cs)
+and [independent proof reconstruction](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRegtestTests.cs)
+as executable references:
+
+- Preserve the connection extranonce, exact issued job ID and compact target for each job;
+  do not substitute a target rounded from the numeric difficulty announcement.
+- For profile 0, construct the 52-byte first-stage input as `0x00 || coinb1 || extranonce1 || extranonce2`.
+  Hash it with BLAKE2b-256, then hash `hidden_previous || nonce || miner_time || first_stage_digest`
+  with BLAKE2b-256. All concatenations are decoded bytes, not ASCII hex.
+- Compare the final digest as a big-endian integer against the decoded compact target.
+  Preserve the eight-byte nonce/time fields and submit the exact five-string wire request.
+- Honor `clean_jobs`, target changes and reconnects; stop submitting invalidated work and
+  bound pending jobs, GPU batches and outstanding requests. Repeated miner-requested
+  difficulty changes are not a commissioning stress-test substitute; a dedicated request
+  budget is tracked in [#152](https://github.com/NINJAK1DD/miningcore/issues/152).
+
+First validate against the pinned isolated regtest node. These references do not certify
+third-party miner firmware or provide a production-ready adapter.
 
 ## Troubleshooting and validation limits
 

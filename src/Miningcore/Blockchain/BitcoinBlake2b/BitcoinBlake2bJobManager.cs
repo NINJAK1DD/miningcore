@@ -186,7 +186,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
 
     private JsonRpcError DeferredRpcRetry(JsonRpcError previous, DateTime nextAttempt, string phase) =>
         new(previous.Code,
-            $"Local {phase} retry deferred for {Math.Ceiling((nextAttempt - clock.Now).TotalSeconds)}s; no new RPC attempted; last error: {previous.Message}",
+            $"Local {phase} retry deferred for {Math.Max(0, Math.Ceiling((nextAttempt - clock.Now).TotalSeconds))}s; no new RPC attempted; last error: {previous.Message}",
             previous.Data, previous.InnerException);
 
     protected virtual Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct) =>
@@ -263,7 +263,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             // Reserve the largest uint32 height and signed timestamp pushes,
             // OP_0, fixed extranonce bytes and the 128-bit job discriminator.
             // Pinned Knots 29.4.1 emits an empty coinbaseaux object. The exact
-            // runtime guard also checks any unexpected daemon-supplied flags.
+            // runtime contract rejects unexpected nonempty daemon-supplied flags.
             var maximum = new Script(Op.GetPushOp((long) uint.MaxValue), Op.GetPushOp(long.MaxValue),
                 Op.GetPushOp(0)).Length + BitcoinConstants.ExtranoncePlaceHolderLength +
                 new Script(Op.GetPushOp(new byte[16])).Length + markerLength;
@@ -468,12 +468,15 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
                 $"Pool '{poolConfig.Id}' refuses pre-activation Bitcoin BLAKE2b work at height {template.Height}",
                 poolConfig.Id);
 
-        if(template.Height == activation &&
-           network.ChainName == NBitcoin.ChainName.Mainnet &&
-           !string.Equals(networkContract.Blake2bActivationHeadline,
-               "8-30 NYPost Deride And Conquer", StringComparison.Ordinal))
+        if(network.ChainName == NBitcoin.ChainName.Mainnet &&
+           !BitcoinBlake2bConsensus.MatchesMainnet(networkContract))
             throw new PoolStartupException(
-                $"Pool '{poolConfig.Id}' activation headline does not match the reviewed mainnet consensus value",
+                $"Pool '{poolConfig.Id}' activation metadata does not match the reviewed mainnet consensus values",
+                poolConfig.Id);
+
+        if(!string.IsNullOrEmpty(template.CoinbaseAux?.Flags))
+            throw new PoolStartupException(
+                $"Pool '{poolConfig.Id}' Bitcoin BLAKE2b requires empty coinbaseaux.flags from the reviewed daemon; refusing unexpected coinbase input",
                 poolConfig.Id);
 
         if(template.Transactions == null)
