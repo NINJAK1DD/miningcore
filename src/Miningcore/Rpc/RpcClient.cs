@@ -122,21 +122,25 @@ public class RpcClient
 
     public IObservable<byte[]> WebsocketSubscribe(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint,
         string method, object payload = null,
-        JsonSerializerSettings payloadJsonSerializerSettings = null, int endpointIndex = 1)
+        JsonSerializerSettings payloadJsonSerializerSettings = null, int? endpointIndex = null)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
 
-        Contract.Requires<ArgumentOutOfRangeException>(endpointIndex > 0);
+        endpointIndex = endpointIndex > 0 ? endpointIndex : null;
 
         return WebsocketSubscribeEndpoint(logger, ct, endPoint, method, payload, payloadJsonSerializerSettings, endpointIndex)
             .Publish()
             .RefCount();
     }
 
-    public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct, Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap)
+    public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct,
+        Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap,
+        DaemonEndpointConfig[] configuredEndpoints = null)
     {
-        // Snapshot config-order ordinals once, outside Defer/RefCount resubscription.
-        var endpoints = portMap.Values.Select((value, index) => (value.Socket, value.Topic, Index: index + 1)).ToArray();
+        // Resolve against the full daemon array, not the filtered map or dictionary order.
+        // Snapshot before Defer/RefCount so resubscription retains the same attribution.
+        var endpoints = portMap.Select(entry => (entry.Value.Socket, entry.Value.Topic,
+            Index: RpcDiagnostics.EndpointIndex(configuredEndpoints, entry.Key))).ToArray();
         return endpoints
             .Select(endpoint => ZmqSubscribeEndpoint(logger, ct, endpoint.Socket, endpoint.Topic, endpoint.Index))
             .Merge()
@@ -325,7 +329,7 @@ public class RpcClient
 
     private IObservable<byte[]> WebsocketSubscribeEndpoint(ILogger logger, CancellationToken ct,
         DaemonEndpointConfig endPoint, string method, object payload,
-        JsonSerializerSettings payloadJsonSerializerSettings, int endpointIndex)
+        JsonSerializerSettings payloadJsonSerializerSettings, int? endpointIndex)
     {
         return Observable.Defer(() => Observable.Create<byte[]>(obs =>
         {
@@ -418,31 +422,27 @@ public class RpcClient
                 }
             });
 
-            _ = ObserveSubscriptionWorkerAsync(worker, logger, obs, method, endpointIndex);
+            _ = ObserveSubscriptionWorkerAsync(worker, logger, method, endpointIndex);
             return Disposable.Create(lifetime.Cancel);
         }));
     }
 
     internal static async Task ObserveSubscriptionWorkerAsync(Task worker, ILogger logger,
-        IObserver<byte[]> observer, string method, int endpointIndex)
+        string method, int? endpointIndex)
     {
         try { await worker; }
         catch(Exception ex)
         {
             RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
                 RpcDiagnostics.Stage.Failure, method, failure: ex, endpointIndex: endpointIndex);
-            // A terminal worker fault must not strand subscribers. Do not forward a
-            // payload-bearing exception into arbitrary observer error logging.
-            try { observer.OnError(new IOException("RPC WebSocket subscription terminated")); }
-            catch(Exception observerError)
-            {
-                RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
-                    RpcDiagnostics.Stage.Failure, method, failure: observerError, endpointIndex: endpointIndex);
-            }
+            // Do not signal OnError: job managers merge push updates with polling.
+            // A terminal push-worker fault must not terminate that polling fallback.
+            // The Error-level diagnostic exposes the degraded push path without
+            // forwarding a potentially secret-bearing exception to subscribers.
         }
     }
 
-    private static IObservable<ZMessage> ZmqSubscribeEndpoint(ILogger logger, CancellationToken ct, string url, string topic, int endpointIndex)
+    private static IObservable<ZMessage> ZmqSubscribeEndpoint(ILogger logger, CancellationToken ct, string url, string topic, int? endpointIndex)
     {
         return Observable.Defer(() => Observable.Create<ZMessage>(obs =>
         {
@@ -496,7 +496,7 @@ public class RpcClient
             })
             {
                 IsBackground = true,
-                Name = $"ZMQ subscriber {endpointIndex}",
+                Name = $"ZMQ subscriber {endpointIndex?.ToString() ?? "unknown"}",
             };
 
             thread.Start();

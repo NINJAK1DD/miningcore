@@ -521,8 +521,8 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
                 Ssl = extra.SslWs
             };
 
-            var endpointIndex = Array.IndexOf(poolConfig.Daemons, endpointConfig) + 1;
-            logger.Info(() => $"Subscribing to WebSocket daemon endpoint {endpointIndex}");
+            var endpointIndex = RpcDiagnostics.EndpointIndex(poolConfig.Daemons, endpointConfig);
+            logger.Info(() => $"Subscribing to WebSocket daemon endpoint {endpointIndex?.ToString() ?? "unknown"}");
 
             // stream work updates
             var getWorkObs = rpc.WebsocketSubscribe(logger, ct, wsEndpointConfig, WarthogCommands.Websocket, new[] { WarthogCommands.WebsocketEventRollback, WarthogCommands.WebsocketEventBlockAppend }, endpointIndex: endpointIndex)

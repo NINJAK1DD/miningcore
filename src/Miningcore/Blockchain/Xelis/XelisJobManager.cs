@@ -583,8 +583,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 Ssl = extra.SslWs
             };
 
-            var endpointIndex = Array.IndexOf(poolConfig.Daemons, endpointConfig) + 1;
-            logger.Info(() => $"Subscribing to WebSocket daemon endpoint {endpointIndex}");
+            var endpointIndex = RpcDiagnostics.EndpointIndex(poolConfig.Daemons, endpointConfig);
+            logger.Info(() => $"Subscribing to WebSocket daemon endpoint {endpointIndex?.ToString() ?? "unknown"}");
 
             var subscribeRequest = new SubscribeRequest
             {

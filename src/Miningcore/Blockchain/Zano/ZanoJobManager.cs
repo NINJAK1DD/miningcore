@@ -574,9 +574,13 @@ public class ZanoJobManager : JobManagerBase<ZanoJob>
 
             if(zmq.Count > 0)
             {
-                logger.Info(() => $"Subscribing to {zmq.Count} ZMQ push-update endpoint(s)");
+                foreach(var endpoint in zmq.Keys)
+                {
+                    var endpointIndex = RpcDiagnostics.EndpointIndex(poolConfig.Daemons, endpoint);
+                    logger.Info(() => $"Subscribing to ZMQ daemon endpoint {endpointIndex?.ToString() ?? "unknown"}");
+                }
 
-                var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq)
+                var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq, poolConfig.Daemons)
                     .Select(msg =>
                     {
                         using(msg)

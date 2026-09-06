@@ -53,13 +53,13 @@ copying a recovery command from the maintainer section.
 HTTP single/batch Trace logs and WebSocket Debug logs now use a bounded `RPC diagnostic`
 JSON record instead of requests, responses, subscription payloads or endpoint URLs.
 WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
-or objects. All four ZMQ job-manager startup announcements also report only endpoint counts,
-not URLs or topics. ZMQ lifecycle records and thread names share an opaque numeric subscription
-ordinal (`endpointIndex`), allowing reconnects and thread dumps to be correlated without
-exposing endpoint data. ZMQ ordinals are one-based positions in the configured ZMQ endpoint
-map (eligible entries in configuration order), snapshotted before subscription. They survive
-RefCount resubscription. WebSocket ordinals are one-based positions in `pools[].daemons`;
-all three WebSocket caller announcements now report that index instead of host/port details.
+or objects. All four ZMQ and three WebSocket job-manager startup announcements report daemon
+indices, not URLs, topics or host/port details. Both transports use the same `endpointIndex`:
+the one-based position in the full `pools[].daemons` array, including entries without push
+notifications. ZMQ indices are resolved before subscription and survive RefCount resubscription,
+independently of filtered-map enumeration order. Thread names use the same index. An unknown
+endpoint is represented by JSON null (or `unknown` in announcements/thread names), never a
+guessed first endpoint or a startup failure.
 Built-in RPC command constants populate a finite allowlist, including Bitcoin/AuxPoW, Xelis,
 Cryptonote, Zano and the built-in Ethereum/Cortex prefixes; custom methods/prefixes become
 `other`. A missing method (batch/ZMQ) is JSON null. Batch telemetry now uses `batch`, and
@@ -67,9 +67,9 @@ single-request telemetry uses the same safe method labels. Update monitoring fil
 depended on the old free-form messages or joined batch method names.
 
 The fields are transport, stage, allowlisted method, batch count, HTTP status, WebSocket byte
-count, HTTP decoded UTF-16 character count (`httpResponseChars`), elapsed milliseconds, endpoint
-ID, failure category and numeric failure code. Character counts require no extra response scan.
-Null fields mean not applicable;
+count, HTTP decoded UTF-16 character count (`httpResponseChars`), elapsed milliseconds,
+`endpointIndex`, failure category and numeric failure code. Character counts require no extra
+response scan. Null fields mean not applicable or unknown;
 HTTP status is not a claim that the daemon operation succeeded. Logging performs no payload
 redaction or serialization: request authentication, wire bodies, response/error data, timeouts
 and payout decisions remain unchanged. There is no database migration or TLS-policy change.
@@ -82,10 +82,13 @@ Subscription cancellation and source disposal now have coordinated ownership: cl
 when already cancelled, and disposal waits for worker exit and in-progress cancellation calls.
 Async WebSocket cleanup awaits cancellation-registration removal instead of blocking a worker
 thread. Cancellation/disposal exceptions unrelated to subscription shutdown follow the normal
-retry path. Terminal worker faults are observed and signal a fixed, non-sensitive error to
-subscribers. Catalogue construction failures degrade method labels to `other` rather than
-breaking RPC error handling. Native ZMQ regression tests require the native runtime staged by
-the build; they have been exercised on Windows locally and in Linux CI, not validated on macOS.
+retry path. Terminal worker faults produce a safe Error-level diagnostic without sending
+`OnError` into subscribers: polling merged with push notifications must continue when the push
+worker stops. This preserves the fallback, not automatic recovery of a terminal push worker;
+operators should investigate the diagnostic. Catalogue construction failures degrade method labels
+to `other` rather than breaking RPC error handling. Native ZMQ regression tests require the native
+runtime staged by the build; they have been exercised on Windows locally and in Linux CI, not
+validated on macOS.
 
 **Historical exposure:** releases through v0.3.0 and builds before this fix can record wallet
 passwords and sensitive RPC results at Trace, and subscription secrets/URIs at Debug.

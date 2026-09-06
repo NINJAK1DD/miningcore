@@ -6,6 +6,9 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
+using System.Reactive.Disposables;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -197,6 +200,7 @@ public class RpcDiagnosticTests
         logs.AssertSafe();
         Assert.Contains(logs.Messages, x => x.Contains("\"stage\":\"Subscribe\""));
         Assert.Contains(logs.Messages, x => x.Contains("\"stage\":\"Receive\""));
+        Assert.All(logs.Messages, x => Assert.Contains("\"endpointIndex\":null", x));
     }
 
     [Fact]
@@ -373,21 +377,76 @@ public class RpcDiagnosticTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task TerminalWorkerFaultIsObservedAndSubscriberGetsOnlySafeError(bool observerThrows)
+    public async Task TerminalWorkerFaultPreservesMergedPollingFallback(bool externalStratum)
     {
-        using var logs = new CapturedLogs();
-        Exception delivered = null;
-        var observer = new ErrorObserver(error =>
+        using var logs = new CapturedLogs(NLog.LogLevel.Info);
+        using var polling = new Subject<byte[]>();
+        var worker = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task observed = null;
+        var push = Observable.Create<byte[]>(_ =>
         {
-            delivered = error;
-            if(observerThrows) throw new Exception(UnsafeText);
-        });
-        await RpcClient.ObserveSubscriptionWorkerAsync(Task.FromException(new Exception(UnsafeText)),
-            logs.Logger, observer, UnsafeText, 2);
-        Assert.IsType<IOException>(delivered);
-        Assert.DoesNotContain(Secret, delivered.ToString());
+            observed = RpcClient.ObserveSubscriptionWorkerAsync(worker.Task, logs.Logger, UnsafeText, 2);
+            return Disposable.Empty;
+        }).Publish().RefCount();
+        // Match the job managers' push + polling Merge, including the external
+        // Stratum subscriber without an OnError handler. No clock sleeps needed.
+        var jobs = push.Merge(polling);
+        var delivered = new List<byte[]>();
+        Exception error = null;
+        using var subscription = externalStratum
+            ? jobs.Do(delivered.Add).Subscribe()
+            : jobs.Subscribe(delivered.Add, ex => error = ex);
+        var before = new byte[] { 1 };
+        var after = new byte[] { 2 };
+        polling.OnNext(before);
+        worker.SetException(new Exception(UnsafeText));
+        await observed.WaitAsync(TimeSpan.FromSeconds(10));
+        polling.OnNext(after);
+        Assert.Null(error);
+        Assert.Equal(new[] { before, after }, delivered);
+        Assert.True(polling.HasObservers);
         logs.AssertSafe();
-        Assert.All(logs.Messages, x => Assert.Contains("\"endpointIndex\":2", x));
+        Assert.Contains("\"endpointIndex\":2", Assert.Single(logs.Messages));
+        Assert.Contains("\"stage\":\"Failure\"", logs.Messages[0]);
+    }
+
+    [Fact]
+    public void EndpointLookupUsesFullConfigurationAndDegradesToUnknown()
+    {
+        var first = new DaemonEndpointConfig { Host = Secret };
+        var selected = new DaemonEndpointConfig { Host = Secret };
+        var configured = new[] { first, new DaemonEndpointConfig(), selected };
+        Assert.Equal(1, RpcDiagnostics.EndpointIndex(configured, first));
+        Assert.Equal(3, RpcDiagnostics.EndpointIndex(configured, selected));
+        Assert.Null(RpcDiagnostics.EndpointIndex(configured, new DaemonEndpointConfig { Host = Secret }));
+        Assert.Null(RpcDiagnostics.EndpointIndex(configured, null));
+        Assert.Null(RpcDiagnostics.EndpointIndex(null, selected));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(3)]
+    public async Task WebSocketDiagnosticIndexCannotRejectUsableEndpoint(int? index)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs(NLog.LogLevel.Debug);
+        var message = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = await Server.Start(async context =>
+        {
+            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            await socket.SendAsync(new ArraySegment<byte>(new byte[] { 1 }), WebSocketMessageType.Text, true, deadline.Token);
+            try { await Task.Delay(Timeout.Infinite, context.RequestAborted); }
+            catch(OperationCanceledException) { }
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        using var subscription = client.WebsocketSubscribe(logs.Logger, deadline.Token, server.Endpoint(),
+            "eth_subscribe", endpointIndex: index).Subscribe(bytes => message.TrySetResult(bytes));
+        Assert.Equal(new byte[] { 1 }, await message.Task.WaitAsync(deadline.Token));
+        logs.AssertSafe();
+        Assert.All(logs.Messages, record => Assert.Equal(index > 0 ? index : null,
+            JObject.Parse(record["RPC diagnostic ".Length..])["endpointIndex"].Value<int?>()));
     }
 
     [Fact]
@@ -428,7 +487,8 @@ public class RpcDiagnosticTests
         var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
         var received = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = client.ZmqSubscribe(logs.Logger, CancellationToken.None,
-            new Dictionary<DaemonEndpointConfig, (string, string)> { [endpoint] = (publisher.LastEndpoint, UnsafeText) })
+            new Dictionary<DaemonEndpointConfig, (string, string)> { [endpoint] = (publisher.LastEndpoint, UnsafeText) },
+            new[] { new DaemonEndpointConfig(), new DaemonEndpointConfig(), endpoint })
             .Subscribe(new ZmqObserver(message =>
             {
                 using(message)
@@ -447,6 +507,8 @@ public class RpcDiagnosticTests
         logs.AssertSafe();
         var diagnostic = JObject.Parse(Assert.Single(logs.Messages)["RPC diagnostic ".Length..]);
         Assert.Equal(JTokenType.Null, diagnostic["method"].Type);
+        // The actual publisher maps to daemon 3, not filtered-map position 1.
+        Assert.Equal(3, diagnostic["endpointIndex"].Value<int>());
         Assert.Equal("ZMQ subscriber " + diagnostic["endpointIndex"].Value<long>(), result[2]);
     }
 
@@ -460,9 +522,9 @@ public class RpcDiagnosticTests
         var observable = client.ZmqSubscribe(logs.Logger, CancellationToken.None,
             new Dictionary<DaemonEndpointConfig, (string, string)>
             {
-                [first] = ("invalid-" + Secret + "://first", UnsafeText),
                 [second] = ("invalid-" + Secret + "://second", UnsafeText),
-            });
+                [first] = ("invalid-" + Secret + "://first", UnsafeText),
+            }, new[] { new DaemonEndpointConfig(), first, new DaemonEndpointConfig(), second });
         for(var attempt = 0; attempt < 2; attempt++)
         {
             var offset = logs.Messages.Length;
@@ -475,7 +537,7 @@ public class RpcDiagnosticTests
                 var indices = logs.Messages.Skip(offset)
                     .Select(x => JObject.Parse(x["RPC diagnostic ".Length..])["endpointIndex"].Value<int>())
                     .Distinct().OrderBy(x => x).ToArray();
-                Assert.Equal(new[] { 1, 2 }, indices);
+                Assert.Equal(new[] { 2, 4 }, indices);
             }
         }
         logs.AssertSafe();
@@ -493,6 +555,7 @@ public class RpcDiagnosticTests
         await logs.WaitForFailure();
         logs.AssertSafe();
         Assert.Contains(logs.Messages, x => x.Contains("\"failure\":\"zmq\""));
+        Assert.All(logs.Messages, x => Assert.Contains("\"endpointIndex\":null", x));
     }
 
     private sealed class CapturedLogs : IDisposable
@@ -577,13 +640,6 @@ public class RpcDiagnosticTests
     {
         public void OnNext(byte[] value) => next(value);
         public void OnError(Exception error) { }
-        public void OnCompleted() { }
-    }
-
-    private sealed class ErrorObserver(Action<Exception> error) : IObserver<byte[]>
-    {
-        public void OnNext(byte[] value) { }
-        public void OnError(Exception value) => error(value);
         public void OnCompleted() { }
     }
 

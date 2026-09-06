@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using Miningcore.Configuration;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -14,6 +15,17 @@ internal static class RpcDiagnostics
     internal enum Stage { Request, Response, Connect, Subscribe, Receive, Failure, StopTimeout }
 
     internal static string Method(string method) => RpcMethodCatalog.Label(method);
+
+    // Diagnostic correlation must never make an otherwise usable endpoint fatal.
+    // Unknown/cloned endpoints are not falsely attributed to the first daemon.
+    internal static int? EndpointIndex(DaemonEndpointConfig[] configured, DaemonEndpointConfig endpoint)
+    {
+        if(configured == null || endpoint == null)
+            return null;
+
+        var index = Array.FindIndex(configured, item => ReferenceEquals(item, endpoint));
+        return index >= 0 ? index + 1 : null;
+    }
 
     internal static void Write(ILogger logger, LogLevel level, Transport transport, Stage stage,
         string method = null, int? batchCount = null, int? status = null,
