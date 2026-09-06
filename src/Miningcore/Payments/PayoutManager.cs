@@ -640,7 +640,10 @@ public class PayoutManager : ProcessStatusBackgroundService
         // normal cycle. Never start a new wallet payment after local isolation.
         using var isolatedOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation();
         if(pool is IIsolatedMiningPool && isolatedOperation == null)
+        {
+            logger.Warn(() => $"Skipping wallet payments for isolated pool {config.Id}; balances and liabilities are retained");
             return;
+        }
         var poolBalancesOverMinimum = await cf.Run(con =>
             balanceRepo.GetPoolBalancesOverThresholdAsync(con, config.Id, config.PaymentProcessing.MinimumPayment));
 

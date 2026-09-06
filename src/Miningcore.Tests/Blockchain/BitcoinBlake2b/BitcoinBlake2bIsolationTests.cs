@@ -28,6 +28,43 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bStartupTests
 {
+    [Fact]
+    public void IsolatedFault_ReportsSecondaryFailureWithoutRepeatingPrimaryNotification()
+    {
+        var bus = Substitute.For<IMessageBus>();
+        using var dependencies = Scope();
+        using var scope = dependencies.BeginLifetimeScope(builder => builder.RegisterInstance(bus));
+        var pool = ResolvePool(scope);
+        pool.Configure(LifecycleConfig(), new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}|${exception:format=message}" };
+        var config = new NLog.Config.LoggingConfiguration();
+        config.AddRuleForAllLevels(target);
+        logs.Configuration = config;
+        typeof(StratumServer).GetField("logger", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(pool, logs.GetLogger("secondary-isolation-failure-test"));
+        var callback = typeof(BitcoinBlake2bPool).GetMethod("HandleBlake2bPipelineFailure", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        callback.Invoke(pool, new object[] { new PoolStartupException("primary contract failure") });
+        callback.Invoke(pool, new object[] { new IOException("secondary teardown failure") });
+
+        Assert.Collection(target.Logs,
+            first =>
+            {
+                Assert.StartsWith("Error|", first);
+                Assert.Contains("primary contract failure", first);
+            },
+            second =>
+            {
+                Assert.StartsWith("Debug|Additional Bitcoin BLAKE2b failure after local isolation|", second);
+                Assert.Contains("secondary teardown failure", second);
+            });
+        bus.Received(1).SendMessage(Arg.Any<PoolStatusNotification>(), Arg.Any<string>());
+        bus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
+        Assert.Equal("faulted", pool.MiningState);
+        Assert.Null(pool.TryAcquireOperation());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

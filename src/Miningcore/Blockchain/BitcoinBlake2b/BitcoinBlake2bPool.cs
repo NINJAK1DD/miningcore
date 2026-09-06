@@ -200,8 +200,13 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
     private void FaultPool(Exception ex)
     {
-        if(hostShutdown.IsCancellationRequested || !operations.Close())
+        if(hostShutdown.IsCancellationRequested)
             return;
+        if(!operations.Close())
+        {
+            logger.Debug(ex, "Additional Bitcoin BLAKE2b failure after local isolation");
+            return;
+        }
 
         logger.Error(ex, "Bitcoin BLAKE2b pool faulted; new work and payment operations are disabled. Other pools continue running; operator restart required");
         try
