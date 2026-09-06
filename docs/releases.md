@@ -52,8 +52,8 @@ copying a recovery command from the maintainer section.
 PostgreSQL startup debug logging no longer prints the connection string, which could expose
 database and client-certificate passwords. The explicit allowlist contains host, port, database,
 user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four
-Boolean presence flags for the password, certificate, key and certificate password. No credential values or
-certificate/key paths are included, and control characters are escaped.
+Boolean presence flags for the password, certificate, key and certificate password.
+No credential values or certificate/key paths are included, and control characters are escaped.
 
 These fields describe configuration, not negotiated connection security. `<unset>` means no
 SSL mode override was supplied, not that encryption is disabled. Npgsql 9 defaults to `Prefer`:
@@ -74,7 +74,8 @@ dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets
 treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
 [configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
 [RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
-Connection-policy follow-ups are tracked separately in [TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
+Connection-policy follow-ups are tracked separately in
+[TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
 and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).
 
 ## v0.3.0 highlights

@@ -195,7 +195,7 @@ public class PostgresConfigurationLoggingTests
             var control = JsonConvert.SerializeObject(new { ExampleField = true });
             Assert.Contains("\"exampleField\"", control);
             Assert.Contains("\n", control);
-            Assert.False(JObject.Parse(JsonConvert.SerializeObject(new { Flag = false })).ContainsKey("flag"));
+            Assert.Empty(JObject.Parse(JsonConvert.SerializeObject(new { Flag = false })));
             // False presence flags must survive in the isolated diagnostic despite the active
             // global default-value omission policy. Do not rely only on the all-true TLS case.
             ConfigureAndVerify(false, false, DatabasePassword, null, null, null,
