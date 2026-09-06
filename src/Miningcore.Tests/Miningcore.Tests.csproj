@@ -42,6 +42,9 @@
     <PackageReference Include="NSubstitute" Version="4.4.0" />
     <!-- ConfigurationContractTests requires the public
          XunitException(message, innerException) constructor added in xUnit 2.4.2. -->
+    <!-- When upgrading xUnit or its runner, verify cross-collection DisableParallelization
+         scheduling: PostgresConfigurationLoggingTests relies on it while temporarily
+         changing Program.logger and JsonConvert.DefaultSettings. -->
     <PackageReference Include="xunit" Version="2.4.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
       <PrivateAssets>all</PrivateAssets>

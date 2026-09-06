@@ -40,6 +40,7 @@ Use this guide by task:
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
+| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
@@ -57,6 +58,37 @@ An enabled admin-email destination without `notifications.email` now raises an e
 `Program.ValidateConfig`. Custom containers that bypass that pass now fail at construction
 instead of later notification delivery. Configure the email sender or disable admin notifications;
 do not rely on undeliverable critical alerts. No coin-family, accounting or schema change is made.
+
+## Unreleased: PostgreSQL credential-safe diagnostics
+
+PostgreSQL startup debug logging no longer prints the connection string, which could expose
+database and client-certificate passwords. The explicit allowlist contains host, port, database,
+user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four
+Boolean presence flags for the password, certificate, key and certificate password.
+No credential values or certificate/key paths are included, and control characters are escaped.
+
+These fields describe configuration, not negotiated connection security. `<unset>` means no
+SSL mode override was supplied, not that encryption is disabled. Npgsql 9 defaults to `Prefer`:
+it allows opportunistic TLS without server-certificate validation, or a plaintext connection.
+The `TlsNoValidate` log field reflects the `tlsNoValidate` configuration setting.
+Presence flags describe explicit configuration, not file existence or driver/environment credentials.
+Certificate/key paths containing only whitespace count as absent. TLS-specific settings are
+applied only when `tls` is enabled. In the bundled Npgsql 9 driver, `Require` requires encryption
+but **does not validate the server certificate**, regardless of `tlsNoValidate`; see the
+[Npgsql SSL mode documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls).
+This fix changes neither connection behavior nor schema.
+
+All releases up to and including **v0.3.0** contain the old PostgreSQL startup debug log.
+Operators who enabled debug logging should treat retained logs as potentially sensitive,
+restrict access, and rotate exposed database or certificate credentials through their normal
+credential-management procedure. This fix is limited to that startup diagnostic: configuration
+dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets and must not be
+treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
+[configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
+[RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
+Connection-policy follow-ups are tracked separately in
+[TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
+and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).
 
 ## v0.3.0 highlights
 
@@ -790,6 +822,10 @@ from the container network.
 
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
+
+PostgreSQL startup debug-log filters must now match `Using PostgreSQL persistence ` instead of
+`Using postgres connection string:`. The new single-line JSON diagnostic intentionally omits
+credential values; see [credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
 
 ### Ubuntu 26.04 primary release and source-build support
 
