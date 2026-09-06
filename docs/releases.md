@@ -51,8 +51,8 @@ copying a recovery command from the maintainer section.
 
 PostgreSQL startup debug logging no longer prints the connection string, which could expose
 database and client-certificate passwords. The explicit allowlist contains host, port, database,
-user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four Boolean presence
-flags for the password, certificate, key and certificate password. No credential values or
+user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four
+Boolean presence flags for the password, certificate, key and certificate password. No credential values or
 certificate/key paths are included, and control characters are escaped.
 
 These fields describe configuration, not negotiated connection security. `<unset>` means no
@@ -74,6 +74,8 @@ dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets
 treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
 [configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
 [RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
+Connection-policy follow-ups are tracked separately in [TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
+and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).
 
 ## v0.3.0 highlights
 
@@ -805,12 +807,12 @@ from the container network.
 
 ## Operational and compatibility changes
 
+Review these release-specific changes before upgrading an existing pool. New installations can
+return to them after completing the deployment steps above.
+
 PostgreSQL startup debug-log filters must now match `Using PostgreSQL persistence ` instead of
 `Using postgres connection string:`. The new single-line JSON diagnostic intentionally omits
 credential values; see [credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
-
-Review these release-specific changes before upgrading an existing pool. New installations can
-return to them after completing the deployment steps above.
 
 ### Ubuntu 26.04 primary release and source-build support
 

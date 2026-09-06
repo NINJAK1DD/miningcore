@@ -16,7 +16,8 @@ using Xunit;
 namespace Miningcore.Tests;
 
 // xUnit runs this collection separately from parallel-capable collections as well:
-// temporarily replacing Program.logger must not overlap another test's use of it.
+// v2.4.2 XunitTestAssemblyRunner.RunTestCollectionsAsync awaits all parallel tasks first,
+// then executes non-parallel collections. This protects Program.logger and JsonConvert defaults.
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class PostgresConfigurationLoggingCollection
 {
@@ -59,7 +60,13 @@ public class PostgresConfigurationLoggingTests
 
     [Theory]
     [MemberData(nameof(DiagnosticCases))]
-    public void ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(bool tls, bool noValidate,
+    public void ConfigurePostgres_PreservesConnectionAndSafeDiagnosticContracts(bool tls, bool noValidate,
+        string password, string tlsPassword, string tlsCert, string tlsKey, int? timeout,
+        bool passwordConfigured, bool tlsPasswordConfigured, bool tlsCertConfigured, bool tlsKeyConfigured) =>
+        ConfigureAndVerify(tls, noValidate, password, tlsPassword, tlsCert, tlsKey, timeout,
+            passwordConfigured, tlsPasswordConfigured, tlsCertConfigured, tlsKeyConfigured);
+
+    private static (string ConnectionString, string Diagnostic) ConfigureAndVerify(bool tls, bool noValidate,
         string password, string tlsPassword, string tlsCert, string tlsKey, int? timeout,
         bool passwordConfigured, bool tlsPasswordConfigured, bool tlsCertConfigured, bool tlsKeyConfigured)
     {
@@ -100,6 +107,7 @@ public class PostgresConfigurationLoggingTests
             var connectionField = typeof(PgConnectionFactory).GetField("connectionString",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(connectionField);
+            var actualConnection = Assert.IsType<string>(connectionField.GetValue(connectionFactory));
             var expectedConnection = new StringBuilder(
                 $"Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;User Id=test-user;Password={password};");
             if(tls)
@@ -115,17 +123,7 @@ public class PostgresConfigurationLoggingTests
                     expectedConnection.Append($"SSL Password={tlsPassword};");
             }
             expectedConnection.Append($"CommandTimeout={timeout ?? 300};");
-            Assert.Equal(expectedConnection.ToString(), connectionField.GetValue(connectionFactory));
-            if(tls && noValidate && timeout == 600)
-            {
-                // Fixed reference for the fully populated case: no builder logic or sentinel
-                // interpolation, so changing the reconstruction above cannot redefine this contract.
-                const string goldenConnection = "Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;" +
-                    "User Id=test-user;Password=database-secret-must-not-be-logged;SSL Mode=Require;" +
-                    "Trust Server Certificate=true;SSL Certificate=private-certificate-path;SSL Key=private-key-path;" +
-                    "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;";
-                Assert.Equal(goldenConnection, connectionField.GetValue(connectionFactory));
-            }
+            Assert.Equal(expectedConnection.ToString(), actualConnection);
 
             const string prefix = "Using PostgreSQL persistence ";
             // Any additional diagnostic requires explicit review, even if it misses our sentinels.
@@ -154,11 +152,30 @@ public class PostgresConfigurationLoggingTests
             Assert.DoesNotContain("Password=", output);
             Assert.DoesNotContain(CertificatePath.Trim(), output);
             Assert.DoesNotContain(KeyPath.Trim(), output);
+            return (actualConnection, entry);
         }
         finally
         {
             loggerField.SetValue(null, previous);
         }
+    }
+
+    [Fact]
+    public void ConfigurePostgres_FullyConfiguredTlsMatchesGoldenConnectionAndDiagnostic()
+    {
+        // Unconditional references, independent of the theory data and reconstruction logic.
+        var actual = ConfigureAndVerify(true, true, DatabasePassword, CertificatePassword,
+            CertificatePath, KeyPath, 600, true, true, true, true);
+        const string goldenConnection = "Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;" +
+            "User Id=test-user;Password=database-secret-must-not-be-logged;SSL Mode=Require;" +
+            "Trust Server Certificate=true;SSL Certificate=private-certificate-path;SSL Key=private-key-path;" +
+            "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;";
+        const string goldenDiagnostic = "Using PostgreSQL persistence {\"Host\":\"db.example.invalid\",\"Port\":5433," +
+            "\"Database\":\"test\\r\\n\\u0085\\u2028\\u2029forged-line\",\"User\":\"test-user\",\"SslMode\":\"Require\"," +
+            "\"TlsNoValidate\":true,\"PasswordConfigured\":true,\"TlsCertConfigured\":true,\"TlsKeyConfigured\":true," +
+            "\"TlsPasswordConfigured\":true,\"CommandTimeout\":600}";
+        Assert.Equal(goldenConnection, actual.ConnectionString);
+        Assert.Equal(goldenDiagnostic, actual.Diagnostic);
     }
 
     [Fact]
@@ -178,8 +195,11 @@ public class PostgresConfigurationLoggingTests
             var control = JsonConvert.SerializeObject(new { ExampleField = true });
             Assert.Contains("\"exampleField\"", control);
             Assert.Contains("\n", control);
-            ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(true, true,
-                DatabasePassword, CertificatePassword, CertificatePath, KeyPath, null, true, true, true, true);
+            Assert.False(JObject.Parse(JsonConvert.SerializeObject(new { Flag = false })).ContainsKey("flag"));
+            // False presence flags must survive in the isolated diagnostic despite the active
+            // global default-value omission policy. Do not rely only on the all-true TLS case.
+            ConfigureAndVerify(false, false, DatabasePassword, null, null, null,
+                null, true, false, false, false);
         }
         finally
         {
