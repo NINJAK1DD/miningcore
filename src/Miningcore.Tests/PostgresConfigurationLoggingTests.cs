@@ -1,7 +1,12 @@
+using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text;
 using Autofac;
 using Miningcore.Configuration;
+using Miningcore.Persistence;
+using Miningcore.Persistence.Postgres;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
 using NLog.Config;
@@ -73,6 +78,7 @@ public class PostgresConfigurationLoggingTests
         try
         {
             loggerField.SetValue(null, factory.GetLogger("Core"));
+            var builder = new ContainerBuilder();
             configure.Invoke(null, new object[]
             {
                 new PostgresConfig
@@ -83,15 +89,40 @@ public class PostgresConfigurationLoggingTests
                     Tls = tls, TlsNoValidate = noValidate, CommandTimeout = timeout,
                     TlsPassword = tlsPassword, TlsCert = tlsCert, TlsKey = tlsKey,
                 },
-                new ContainerBuilder(),
+                builder,
             });
             factory.Flush();
+
+            // Inspect the actual registered factory without opening a database connection.
+            // Keep expected values independent of production defaults and diagnostic construction.
+            using var container = builder.Build();
+            var connectionFactory = Assert.IsType<PgConnectionFactory>(container.Resolve<IConnectionFactory>());
+            var connectionField = typeof(PgConnectionFactory).GetField("connectionString",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(connectionField);
+            var expectedConnection = new StringBuilder(
+                $"Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;User Id=test-user;Password={password};");
+            if(tls)
+            {
+                expectedConnection.Append("SSL Mode=Require;");
+                if(noValidate)
+                    expectedConnection.Append("Trust Server Certificate=true;");
+                if(tlsCertConfigured)
+                    expectedConnection.Append($"SSL Certificate={tlsCert.Trim()};");
+                if(tlsKeyConfigured)
+                    expectedConnection.Append($"SSL Key={tlsKey.Trim()};");
+                if(tlsPasswordConfigured)
+                    expectedConnection.Append($"SSL Password={tlsPassword};");
+            }
+            expectedConnection.Append($"CommandTimeout={timeout ?? 300};");
+            Assert.Equal(expectedConnection.ToString(), connectionField.GetValue(connectionFactory));
 
             const string prefix = "Using PostgreSQL persistence ";
             // Any additional diagnostic requires explicit review, even if it misses our sentinels.
             var entry = Assert.Single(target.Logs);
             Assert.StartsWith(prefix, entry);
             var metadata = JObject.Parse(entry[prefix.Length..]);
+            Assert.Equal(prefix + metadata.ToString(Formatting.None), entry);
             Assert.Equal(11, metadata.Count);
             Assert.Equal("db.example.invalid", metadata["Host"]?.Value<string>());
             Assert.Equal(5433, metadata["Port"]?.Value<int>());
@@ -117,6 +148,22 @@ public class PostgresConfigurationLoggingTests
         finally
         {
             loggerField.SetValue(null, previous);
+        }
+    }
+
+    [Fact]
+    public void ConfigurePostgres_DiagnosticDoesNotConsultGlobalJsonDefaults()
+    {
+        var previous = JsonConvert.DefaultSettings;
+        try
+        {
+            JsonConvert.DefaultSettings = () => throw new InvalidOperationException("Global defaults must not be consulted");
+            ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(true, true,
+                DatabasePassword, CertificatePassword, CertificatePath, KeyPath, null, true, true, true, true);
+        }
+        finally
+        {
+            JsonConvert.DefaultSettings = previous;
         }
     }
 }

@@ -2576,9 +2576,10 @@ public class Program : ProcessStatusBackgroundService
         // build connection string
         var connectionString = new StringBuilder($"Server={pgConfig.Host};Port={pgConfig.Port};Database={pgConfig.Database};User Id={pgConfig.User};Password={pgConfig.Password};");
 
+        var sslMode = pgConfig.Tls ? "Require" : null;
         if(pgConfig.Tls)
         {
-            connectionString.Append("SSL Mode=Require;");
+            connectionString.Append($"SSL Mode={sslMode};");
 
             if(pgConfig.TlsNoValidate)
                 connectionString.Append("Trust Server Certificate=true;");
@@ -2598,20 +2599,23 @@ public class Program : ProcessStatusBackgroundService
 
         // Allowlist diagnostics instead of redacting a connection string: new secret options
         // must never become log fields. JSON escaping also keeps configured values on one line.
-        logger.Debug(() => "Using PostgreSQL persistence " + JsonConvert.SerializeObject(new
+        // Use an isolated serializer: process-wide JsonConvert defaults must not change this contract.
+        logger.Debug(() => "Using PostgreSQL persistence " + JObject.FromObject(new
         {
             pgConfig.Host,
             pgConfig.Port,
             pgConfig.Database,
             pgConfig.User,
-            SslMode = pgConfig.Tls ? "Require" : "<unset>",
+            SslMode = sslMode ?? "<unset>",
             pgConfig.TlsNoValidate,
+            // Match connection-string presence rules: passwords are not trimmed, paths are.
+            // TLS presence is configured presence, even when TLS options are not applied.
             PasswordConfigured = !string.IsNullOrEmpty(pgConfig.Password),
             TlsCertConfigured = !string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()),
             TlsKeyConfigured = !string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()),
             TlsPasswordConfigured = !string.IsNullOrEmpty(pgConfig.TlsPassword),
             CommandTimeout = commandTimeout,
-        }));
+        }, JsonSerializer.Create(new JsonSerializerSettings())).ToString(Formatting.None));
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))

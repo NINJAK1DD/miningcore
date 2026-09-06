@@ -59,8 +59,8 @@ These fields describe configuration, not negotiated connection security. `<unset
 SSL mode override was supplied, not that encryption is disabled. Npgsql 9 defaults to `Prefer`:
 it allows opportunistic TLS without server-certificate validation, or a plaintext connection.
 The `TlsNoValidate` log field reflects the `tlsNoValidate` configuration setting.
-Presence flags report explicit
-configuration only (not file existence or credentials supplied by the driver/environment);
+Presence flags report explicit configuration only (not file existence or credentials supplied
+by the driver/environment);
 certificate/key paths containing only whitespace count as absent. TLS-specific settings are
 applied only when `tls` is enabled. In the bundled Npgsql 9 driver, `Require` requires encryption
 but **does not validate the server certificate**, regardless of `tlsNoValidate`; see the
@@ -805,6 +805,10 @@ UID/GID `10001`; its configuration and state mounts must be readable/writable by
 from the container network.
 
 ## Operational and compatibility changes
+
+PostgreSQL startup debug-log filters must now match `Using PostgreSQL persistence ` instead of
+`Using postgres connection string:`. The new single-line JSON diagnostic intentionally omits
+credential values; see [credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
 
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
