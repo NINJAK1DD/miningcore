@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
@@ -8,6 +7,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Postgres;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Serialization;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
@@ -116,6 +116,16 @@ public class PostgresConfigurationLoggingTests
             }
             expectedConnection.Append($"CommandTimeout={timeout ?? 300};");
             Assert.Equal(expectedConnection.ToString(), connectionField.GetValue(connectionFactory));
+            if(tls && noValidate && timeout == 600)
+            {
+                // Fixed reference for the fully populated case: no builder logic or sentinel
+                // interpolation, so changing the reconstruction above cannot redefine this contract.
+                const string goldenConnection = "Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;" +
+                    "User Id=test-user;Password=database-secret-must-not-be-logged;SSL Mode=Require;" +
+                    "Trust Server Certificate=true;SSL Certificate=private-certificate-path;SSL Key=private-key-path;" +
+                    "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;";
+                Assert.Equal(goldenConnection, connectionField.GetValue(connectionFactory));
+            }
 
             const string prefix = "Using PostgreSQL persistence ";
             // Any additional diagnostic requires explicit review, even if it misses our sentinels.
@@ -152,12 +162,22 @@ public class PostgresConfigurationLoggingTests
     }
 
     [Fact]
-    public void ConfigurePostgres_DiagnosticDoesNotConsultGlobalJsonDefaults()
+    public void ConfigurePostgres_DiagnosticIgnoresGlobalJsonFormattingAndNaming()
     {
         var previous = JsonConvert.DefaultSettings;
         try
         {
-            JsonConvert.DefaultSettings = () => throw new InvalidOperationException("Global defaults must not be consulted");
+            // Valid application-wide settings may be used by unrelated dependencies; only the
+            // diagnostic must retain its own PascalCase, compact format and complete field set.
+            JsonConvert.DefaultSettings = () => new JsonSerializerSettings
+            {
+                ContractResolver = new CamelCasePropertyNamesContractResolver(),
+                Formatting = Formatting.Indented,
+                DefaultValueHandling = DefaultValueHandling.Ignore,
+            };
+            var control = JsonConvert.SerializeObject(new { ExampleField = true });
+            Assert.Contains("\"exampleField\"", control);
+            Assert.Contains("\n", control);
             ConfigurePostgres_DebugLoggingDoesNotExposeConnectionSecrets(true, true,
                 DatabasePassword, CertificatePassword, CertificatePath, KeyPath, null, true, true, true, true);
         }

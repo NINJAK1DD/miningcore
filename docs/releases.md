@@ -51,7 +51,7 @@ copying a recovery command from the maintainer section.
 
 PostgreSQL startup debug logging no longer prints the connection string, which could expose
 database and client-certificate passwords. The explicit allowlist contains host, port, database,
-user, configured SSL mode, `TlsNoValidate`, command timeout (seconds), and four Boolean presence
+user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four Boolean presence
 flags for the password, certificate, key and certificate password. No credential values or
 certificate/key paths are included, and control characters are escaped.
 
@@ -59,9 +59,8 @@ These fields describe configuration, not negotiated connection security. `<unset
 SSL mode override was supplied, not that encryption is disabled. Npgsql 9 defaults to `Prefer`:
 it allows opportunistic TLS without server-certificate validation, or a plaintext connection.
 The `TlsNoValidate` log field reflects the `tlsNoValidate` configuration setting.
-Presence flags report explicit configuration only (not file existence or credentials supplied
-by the driver/environment);
-certificate/key paths containing only whitespace count as absent. TLS-specific settings are
+Presence flags describe explicit configuration, not file existence or driver/environment credentials.
+Certificate/key paths containing only whitespace count as absent. TLS-specific settings are
 applied only when `tls` is enabled. In the bundled Npgsql 9 driver, `Require` requires encryption
 but **does not validate the server certificate**, regardless of `tlsNoValidate`; see the
 [Npgsql SSL mode documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls).
