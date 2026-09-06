@@ -22,7 +22,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   Failed attestation RPCs withhold fresh work and retry with bounded exponential backoff
   (1–30 seconds), restarting all identity checks after the delay. Only a complete successful
   attestation resets the backoff. Successful identity or deployment mismatches
-  stop the process through the consensus-contract fail-stop path. Cached attestation bounds
+  fault only the affected BLAKE2b pool and close its mining admission. Cached attestation bounds
   detection latency; it does not authenticate binaries or eliminate an endpoint replacement
   between RPC calls. Stop Miningcore before changing its daemon binary or chain configuration.
   There is no operator version-pin bypass. Urgent security-update compatibility needs a
@@ -212,9 +212,9 @@ third-party miner firmware or provide a production-ready adapter.
   stop unrelated pools. A successful
   but malformed/contradictory consensus response still invokes the terminal failure path.
 - **Malformed or unknown work:** check firmware/proxy field lengths and job preservation.
-  A successful but incompatible daemon identity, chain or deployment response stops the
-  **whole Miningcore process, including unrelated pools** through the shared fail-stop
-  coordinator. This is distinct from retryable transport errors. Stop Miningcore before
+  A successful but incompatible daemon identity, chain or deployment response faults the
+  **affected BLAKE2b pool**, closes its listeners and rejects new submissions. Other pools
+  remain running. This is distinct from retryable transport errors. Stop Miningcore before
   replacing or upgrading a daemon; review compatibility before restarting.
   Ordinary Bitcoin Stratum translation is not a compatible substitute.
 - **Unexpected low-difficulty shares:** verify the notify compact target and miner protocol,
@@ -228,9 +228,32 @@ third-party miner firmware or provide a production-ready adapter.
 - **Accounting pipeline stops:** follow [recovery guidance](troubleshooting.md); never import
   a quarantine file as a recovery journal. Preserve PostgreSQL and all journals first.
 
-Run this experimental chain in a separate Miningcore process if other pools must remain up
-after a positive daemon-contract contradiction. Pool-local fail-stop/restart is not implemented;
-silently softening the shared accounting admission boundary is not a safe substitute.
+### Multi-pool failure isolation
+
+BLAKE2b can share a Miningcore process with other enabled pools. A terminal failure in its
+job pipeline or pool lifetime closes that pool's admission gate and listeners without
+terminating healthy sibling pools. Its public pool API reports `miningState` as `starting`,
+`online` or `faulted`; a fault also produces an operator notification and an error log.
+The state describes local mining availability, not proof of wallet or database health.
+
+New payout cycles and wallet operations are skipped for the faulted pool. Submissions and
+wallet operations already owned before isolation are allowed to finish: cancelling an RPC
+after a daemon accepted a block or payment can lose its financial outcome. A slow owned
+submission remains tracked even after the local connection-drain timeout; disconnected miners
+must not interpret a missing acknowledgement as proof that their share was not recorded.
+Existing accepted relay shares, recorder entries, PPS liabilities and recovery evidence remain
+eligible for persistence. Isolation never discards them or resets their accounting identities.
+
+There is no automatic restart or compatibility bypass. Correct the underlying daemon or
+configuration problem, inspect outstanding block/payment outcomes and restart Miningcore in
+a planned maintenance window. The failed pool stays visibly faulted until that restart.
+Separate services remain an option when independent operator restarts are required.
+
+This is **not** isolation from shared infrastructure failure. Invalid cluster configuration,
+shared startup preflight failures, unrecoverable database/journal failures, uncertain wallet
+outcomes and process-wide resource failures retain their existing fail-closed shutdown policy.
+Other pools cannot safely continue accepting financial work when shared durability is lost.
+
 Explorer metadata remains omitted until a chain-specific service and its block, transaction
 and address routes are verified. Do not substitute a SHA-256d Bitcoin explorer for this fork.
 

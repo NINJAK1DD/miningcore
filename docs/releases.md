@@ -56,11 +56,15 @@ The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and mine
 isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
 Existing schema migrations remain applicable; no new schema is introduced by this feature.
 Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
-**Failure isolation:** a successful but incompatible BLAKE2b daemon response (including a
-changed reviewed version/subversion or missing mandatory GBT rule) stops the **whole Miningcore
-process, including unrelated pools**. Transport outages instead withhold fresh work and retry.
-Stop Miningcore before upgrading its daemon; use a separate Miningcore process for this chain
-if other pools must remain available. Pool-local fail-stop/restart is not implemented.
+**Failure isolation:** multi-pool configurations remain supported. A terminal BLAKE2b pool
+failure (including a changed reviewed daemon version or missing mandatory GBT rule) closes
+only that pool's listeners and new work/payment admission. Healthy sibling pools continue.
+Already-owned submissions and payments finish without pool-local cancellation so accepted
+blocks and liabilities can still be persisted. The pool API exposes its `miningState`; a
+faulted pool requires an operator restart, not an automatic compatibility bypass. Transport
+outages instead withhold fresh work and retry. Shared financial-durability and cluster-wide
+startup failures retain their existing process-wide shutdown safeguards. See the
+[isolation boundary](bitcoin-blake2b.md#multi-pool-failure-isolation) before deployment.
 The reviewed activation parameters now share one code contract, checked against the JSON
 catalogue and again at runtime. Unexpected nonempty `coinbaseaux.flags` are rejected explicitly
 before coinbase construction. Header byte order and the supported miner profile are unchanged.

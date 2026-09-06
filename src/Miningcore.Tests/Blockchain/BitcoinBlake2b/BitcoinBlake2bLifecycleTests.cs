@@ -147,7 +147,11 @@ public partial class BitcoinBlake2bStartupTests
         internal bool AttestationThrows;
         internal string AttestationException = "http";
         internal CancellationTokenSource CancelDuringAttestation;
-        internal string Drift;
+        internal volatile string Drift;
+        internal TaskCompletionSource SubmitEntered;
+        internal TaskCompletionSource SubmitRelease;
+        internal CancellationToken SubmitToken;
+        internal Miningcore.Blockchain.Share SubmittedShare;
         internal int Publications;
         internal int AttestationCalls;
         internal readonly TaskCompletionSource ForcedRefresh = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -161,6 +165,17 @@ public partial class BitcoinBlake2bStartupTests
         internal Task RefreshAsync() => RefreshResultAsync();
         internal Task<RpcResponse<BlockTemplate>> FetchTemplateAsync(CancellationToken ct) => GetBlockTemplateAsync(ct);
         internal Task<(bool IsNew, bool Force)> RefreshResultAsync() => UpdateJob(CancellationToken.None, true);
+        public override Task<bool> ValidateAddressAsync(string address, CancellationToken ct) => Task.FromResult(true);
+        public override async ValueTask<Miningcore.Blockchain.Share> SubmitShareAsync(
+            Miningcore.Stratum.StratumConnection worker, object submission, CancellationToken ct)
+        {
+            if(SubmitEntered == null)
+                return await base.SubmitShareAsync(worker, submission, ct);
+            SubmitToken = ct;
+            SubmitEntered.TrySetResult();
+            await SubmitRelease.Task.WaitAsync(ct);
+            return SubmittedShare;
+        }
         protected override Task<bool> AreDaemonsHealthyAsync(CancellationToken ct) => Task.FromResult(true);
         protected override Task<bool> AreDaemonsConnectedAsync(CancellationToken ct) => Task.FromResult(true);
         protected override Task EnsureDaemonsSynchedAsync(CancellationToken ct) => Task.CompletedTask;

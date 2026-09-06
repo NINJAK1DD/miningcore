@@ -175,6 +175,12 @@ public class PayoutManager : ProcessStatusBackgroundService
         foreach(var pool in pools.Values.ToArray().Where(x => x.Config.Enabled && x.Config.PaymentProcessing.Enabled))
         {
             var poolConfig = pool.Config;
+            using var isolatedOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation();
+            if(pool is IIsolatedMiningPool && isolatedOperation == null)
+            {
+                logger.Warn(() => $"Skipping payments for faulted pool {poolConfig.Id}; balances and liabilities are retained");
+                continue;
+            }
 
             logger.Info(() => $"Processing payments for pool {poolConfig.Id}");
 
@@ -613,6 +619,11 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config,
         IPayoutHandler handler, CancellationToken ct)
     {
+        // Recheck at the wallet-operation boundary, including callers outside the
+        // normal cycle. Never start a new wallet payment after local isolation.
+        using var isolatedOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation();
+        if(pool is IIsolatedMiningPool && isolatedOperation == null)
+            return;
         var poolBalancesOverMinimum = await cf.Run(con =>
             balanceRepo.GetPoolBalancesOverThresholdAsync(con, config.Id, config.PaymentProcessing.MinimumPayment));
 

@@ -577,6 +577,52 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task IsolatedFault_RejectsNewPayoutsWithoutTouchingBalancesOrWallet()
+    {
+        var fixture = CreateFixture();
+        var pool = Substitute.For<IMiningPool, IIsolatedMiningPool>();
+        ((IIsolatedMiningPool) pool).TryAcquireOperation().Returns((IDisposable) null);
+        var handler = Substitute.For<IPayoutHandler>();
+        await fixture.Manager.PayoutPoolBalancesAsync(pool, fixture.Pool, handler, CancellationToken.None);
+        Assert.Empty(fixture.BalanceRepository.ReceivedCalls());
+        Assert.Empty(handler.ReceivedCalls());
+        fixture.PayoutLease.DidNotReceive().BeginFinancialOperation();
+    }
+
+    [Fact]
+    public async Task IsolatedFault_PreservesAnAlreadyOwnedWalletOutcomeAndHealthyPoolPayouts()
+    {
+        var fixture = CreateFixture();
+        var gate = new PoolOperationGate();
+        var pool = Substitute.For<IMiningPool, IIsolatedMiningPool>();
+        ((IIsolatedMiningPool) pool).TryAcquireOperation().Returns(_ => gate.TryAcquire());
+        var handler = Substitute.For<IPayoutHandler>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+        handler.PayoutAsync(pool, Arg.Any<Balance[]>(), Arg.Any<CancellationToken>())
+            .Returns(async _ => { entered.TrySetResult(); await complete.Task; });
+        var payment = fixture.Manager.PayoutPoolBalancesAsync(pool, fixture.Pool, handler, CancellationToken.None);
+        try
+        {
+            await entered.Task.WaitAsync(HostTestTimeout);
+            gate.Close();
+            Assert.False(gate.Drained.IsCompleted);
+            // A separate, ordinary pool still reaches its wallet handler.
+            await fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool, handler, CancellationToken.None);
+            await handler.Received(1).PayoutAsync(fixture.MiningPool, Arg.Any<Balance[]>(), Arg.Any<CancellationToken>());
+            await fixture.Manager.PayoutPoolBalancesAsync(pool, fixture.Pool, handler, CancellationToken.None);
+            await handler.Received(1).PayoutAsync(pool, Arg.Any<Balance[]>(), Arg.Any<CancellationToken>());
+        }
+        finally { complete.TrySetResult(); await payment.WaitAsync(HostTestTimeout); }
+        await gate.Drained.WaitAsync(HostTestTimeout);
+        fixture.PayoutLease.Received(2).CompleteFinancialOperation();
+        fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
+    }
+
+    [Fact]
     public async Task UnknownPayout_NotifiesOnceWithoutMaskingFinancialOutcome()
     {
         var fixture = CreateFixture();

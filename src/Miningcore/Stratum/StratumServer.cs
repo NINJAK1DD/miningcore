@@ -534,8 +534,7 @@ public abstract class StratumServer
         catch(OperationCanceledException) when(timeout.IsCancellationRequested)
         {
             var pending = connectionTasks.Count;
-            var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
-            failStop?.BeginFailStop(ProcessExitCodes.GeneralFailure);
+            OnConnectionDrainTimeout(pending);
 
             foreach(var connection in connections.Values)
             {
@@ -551,11 +550,6 @@ public abstract class StratumServer
                     // A racing dispatch completion may already own disposal.
                 }
             }
-
-            logger.Fatal(
-                "Timed out after {0} while draining {1} Stratum connection task(s). " +
-                "Mining admission is closed and shutdown will continue so Share Recorder retains its recovery window.",
-                ConnectionDrainTimeout, pending);
         }
     }
 
@@ -568,6 +562,17 @@ public abstract class StratumServer
         }
 
         PublishTelemetry(TelemetryCategory.Connections, TimeSpan.Zero, true, connections.Count);
+    }
+
+    // Default behavior stays process-wide. A pool may override only when it has
+    // independently closed local admission and retains ownership of its operations.
+    protected virtual void OnConnectionDrainTimeout(int pending)
+    {
+        ctx.ResolveOptional<IMiningFailStopCoordinator>()?.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        logger.Fatal(
+            "Timed out after {0} while draining {1} Stratum connection task(s). " +
+            "Mining admission is closed and shutdown will continue so Share Recorder retains its recovery window.",
+            ConnectionDrainTimeout, pending);
     }
 
     protected void UnregisterConnection(StratumConnection connection)

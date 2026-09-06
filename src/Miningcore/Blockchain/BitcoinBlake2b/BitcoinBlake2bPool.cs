@@ -10,6 +10,8 @@ using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Nicehash;
+using Miningcore.Extensions;
+using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Stratum;
@@ -21,7 +23,7 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.BitcoinBlake2b;
 
 [CoinFamily(CoinFamily.BitcoinBlake2b)]
-public class BitcoinBlake2bPool : BitcoinPool
+public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 {
     public BitcoinBlake2bPool(IComponentContext ctx,
         JsonSerializerSettings serializerSettings,
@@ -33,14 +35,89 @@ public class BitcoinBlake2bPool : BitcoinPool
     {
     }
 
-    private int jobPipelineFailed;
+    private readonly PoolOperationGate operations = new();
+    private readonly object statusSync = new();
+    private CancellationToken hostShutdown;
+    private int lifetimeStarted;
+    private int online;
+
+    public string MiningState => operations.IsClosed ? "faulted" :
+        Volatile.Read(ref online) != 0 ? "online" : "starting";
+    public IDisposable TryAcquireOperation() => operations.TryAcquire();
+
+    protected override void NotifyPoolOnline()
+    {
+        lock(statusSync)
+        {
+            if(operations.IsClosed)
+                throw new PoolStartupException("Bitcoin BLAKE2b pool faulted during startup", poolConfig.Id);
+            Volatile.Write(ref online, 1);
+            base.NotifyPoolOnline();
+        }
+    }
+
+    public override async Task RunAsync(CancellationToken ct)
+    {
+        if(Interlocked.Exchange(ref lifetimeStarted, 1) != 0)
+            throw new InvalidOperationException("A faulted Bitcoin BLAKE2b pool requires an operator restart");
+        hostShutdown = ct;
+        using var localStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var lifetime = base.RunAsync(localStop.Token);
+        await Task.WhenAny(lifetime, operations.Failure);
+
+        if(lifetime.IsCompleted)
+        {
+            try { await lifetime; }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested) { return; }
+            catch(Exception ex) when(ex is not OutOfMemoryException) { HandleBlake2bPipelineFailure(ex); }
+            if(ct.IsCancellationRequested)
+                return;
+            if(!operations.IsClosed)
+                HandleBlake2bPipelineFailure(new InvalidOperationException("Bitcoin BLAKE2b pool lifetime ended unexpectedly"));
+        }
+
+        // Close listeners and stop background work, but do not cancel an owned
+        // submit/RPC with this pool-local token. It must reach candidate persistence
+        // and statistical/PPS admission even when the miner has disconnected.
+        localStop.Cancel();
+        try { await lifetime; }
+        catch(OperationCanceledException) when(localStop.IsCancellationRequested) { }
+        catch(Exception ex) when(ex is not OutOfMemoryException)
+        {
+            logger.Error(ex, "Bitcoin BLAKE2b isolated pool stopped");
+        }
+
+        try { await operations.Drained.WaitAsync(ct); }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested) { return; }
+        // Remaining faulted is a deliberate lifetime state, not a successful
+        // early exit that would trigger Program's sibling-pool fail-fast policy.
+        await WaitForShutdownAsync(ct);
+    }
+
+    protected override void OnConnect(StratumConnection connection, System.Net.IPEndPoint endpoint)
+    {
+        if(operations.IsClosed)
+            throw new StratumException(StratumError.JobNotFound, "Bitcoin BLAKE2b pool is faulted");
+        base.OnConnect(connection, endpoint);
+    }
+
+    protected override void OnConnectionDrainTimeout(int pending)
+    {
+        if(!operations.IsClosed)
+            base.OnConnectionDrainTimeout(pending);
+        else
+            logger.Error("Bitcoin BLAKE2b connection drain timed out with {0} task(s); local admission remains closed and owned operations remain tracked. Other pools continue running", pending);
+    }
 
     private BitcoinBlake2bJobManager Blake2bManager => manager as BitcoinBlake2bJobManager ??
         throw new InvalidOperationException("Bitcoin BLAKE2b requires its isolated job manager");
 
-    protected override Task OnSubmitAsync(StratumConnection connection,
+    protected override async Task OnSubmitAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
+        using var operation = operations.TryAcquire();
+        if(operation == null)
+            throw new StratumException(StratumError.JobNotFound, "Bitcoin BLAKE2b pool is faulted; work is invalidated");
         // Check raw tokens before BitcoinPool's ParamsAs<string[]> can coerce
         // numbers or Booleans into apparently valid hexadecimal strings.
         try
@@ -56,7 +133,8 @@ public class BitcoinBlake2bPool : BitcoinPool
             ConsiderBan(connection, context, poolConfig.Banning);
             throw;
         }
-        return base.OnSubmitAsync(connection, request, ct);
+        await base.OnSubmitAsync(connection, request,
+            Volatile.Read(ref lifetimeStarted) != 0 ? hostShutdown : ct);
     }
 
     internal static void ValidateSubmissionParameters(object parameters)
@@ -94,24 +172,32 @@ public class BitcoinBlake2bPool : BitcoinPool
 
     private void HandleBlake2bPipelineFailure(Exception ex)
     {
-        if(Interlocked.Exchange(ref jobPipelineFailed, 1) != 0)
+        lock(statusSync)
+            FaultPool(ex);
+    }
+
+    private void FaultPool(Exception ex)
+    {
+        if(hostShutdown.IsCancellationRequested || !operations.Close())
             return;
 
-        logger.Fatal(ex, "Bitcoin BLAKE2b work contract failed; invalidating work and stopping Miningcore");
-        ctx.Resolve<IMiningFailStopCoordinator>().BeginFailStopAndCapture(
-            ProcessExitCodes.GeneralFailure, () =>
-            {
-                foreach(var connection in connections.Values.ToArray())
-                {
-                    connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
-                    Disconnect(connection);
-                }
-                return true;
-            });
+        logger.Error(ex, "Bitcoin BLAKE2b pool faulted; new work and payment operations are disabled. Other pools continue running; operator restart required");
+        try
+        {
+            messageBus.NotifyPoolStatus(this, PoolStatus.Offline);
+            messageBus.SendMessage(new AdminNotification("Bitcoin BLAKE2b pool faulted",
+                $"Pool '{poolConfig.Id}' stopped issuing and accepting mining work after a local failure. Other pools remain running. Inspect its logs and review daemon compatibility before restarting. Already-owned accounting operations are retained."));
+        }
+        catch(Exception notificationError)
+        {
+            logger.Error(notificationError, "Unable to report the isolated Bitcoin BLAKE2b failure; local admission is already closed");
+        }
     }
 
     protected override async Task OnNewJobAsync(object jobParams)
     {
+        if(operations.IsClosed)
+            return;
         currentJobParams = jobParams;
         logger.Info(() => $"Broadcasting base job {((object[]) jobParams)[0]} (worker IDs include a difficulty suffix)");
         async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
@@ -133,6 +219,11 @@ public class BitcoinBlake2bPool : BitcoinPool
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
+        if(operations.IsClosed)
+        {
+            Disconnect(connection);
+            return;
+        }
         var context = connection.ContextAs<BitcoinWorkerContext>();
         var previousDifficulty = context.Difficulty;
         await base.OnRequestAsync(connection, request, ct);
@@ -173,7 +264,7 @@ public class BitcoinBlake2bPool : BitcoinPool
     protected override object CreateWorkerJob(StratumConnection connection,
         bool cleanJob)
     {
-        if(Volatile.Read(ref jobPipelineFailed) != 0)
+        if(operations.IsClosed)
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b work has been invalidated");
         var context = connection.ContextAs<BitcoinWorkerContext>();

@@ -1,0 +1,241 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Net;
+using System.Net.Sockets;
+using System.Reactive.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Autofac;
+using Miningcore.Api.Extensions;
+using Miningcore.Blockchain;
+using Miningcore.Blockchain.BitcoinBlake2b;
+using Miningcore.Configuration;
+using Miningcore.Messaging;
+using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
+using Miningcore.Stratum;
+using Miningcore.Time;
+using Microsoft.Extensions.Hosting;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using NSubstitute;
+using Xunit;
+
+namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
+
+public partial class BitcoinBlake2bStartupTests
+{
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IsolatedFault_ClosesOnlyItsListenerAndKeepsSupervisorAlive(bool duringStartup)
+    {
+        var bus = new MessageBus();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var faulted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = bus.Listen<PoolStatusNotification>().Subscribe(status =>
+        {
+            if(status.Status == PoolStatus.Online) started.TrySetResult();
+            else faulted.TrySetResult();
+        });
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var manager = new LifecycleManager(container, clock);
+        if(duringStartup) manager.Drift = "version";
+        var failStop = Substitute.For<IMiningFailStopCoordinator>();
+        using var dependencies = Scope();
+        using var scope = dependencies.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(manager).As<BitcoinBlake2bJobManager>();
+            builder.RegisterInstance(bus).As<IMessageBus>();
+            builder.RegisterInstance(failStop);
+        });
+        var pool = ResolvePool(scope);
+        using var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint) portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+        var config = LifecycleConfig();
+        config.Enabled = true;
+        config.Ports = new() { [port] = new PoolEndpoint { ListenAddress = "127.0.0.1", Difficulty = 1e-9 } };
+        pool.Configure(config, new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        using var reservations = await new StratumListenerReservationCoordinator().ReserveAllAsync(new[] { config });
+        pool.AttachStratumListenerReservations(reservations);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var process = new ProcessStatus();
+        var siblingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingStopped = false;
+        var stopRequested = false;
+        var lifetime = Program.SupervisePoolLifetimesAsync(new[]
+        {
+            new KeyValuePair<string, Func<CancellationToken, Task>>(config.Id, pool.RunAsync),
+            new KeyValuePair<string, Func<CancellationToken, Task>>("healthy-sibling", async token =>
+            {
+                siblingStarted.TrySetResult();
+                await PoolBase.WaitForShutdownAsync(token);
+                siblingStopped = true;
+            }),
+        }, stop.Token, process, () => { stopRequested = true; stop.Cancel(); });
+        try
+        {
+            await siblingStarted.Task.WaitAsync(stop.Token);
+            if(!duringStartup)
+            {
+                await started.Task.WaitAsync(stop.Token);
+                Assert.Equal("online", pool.MiningState);
+                using var client = new TcpClient();
+                await client.ConnectAsync(IPAddress.Loopback, port, stop.Token);
+                manager.Drift = "version";
+                now = now.AddMinutes(1); // expire the attestation cache
+            }
+            await faulted.Task.WaitAsync(stop.Token);
+            Assert.Equal("faulted", pool.MiningState);
+            Assert.Null(pool.TryAcquireOperation());
+            Assert.False(lifetime.IsCompleted);
+            Assert.False(stopRequested);
+            Assert.False(siblingStopped);
+            Assert.Equal(0, process.ExitCode);
+            failStop.DidNotReceive().BeginFailStop(Arg.Any<int>());
+            Assert.Equal("faulted", config.ToPoolInfo(AutoMapperFactory.CreateMapper(), null, pool).MiningState);
+            if(duringStartup) Assert.False(started.Task.IsCompleted);
+
+            // Wait for asynchronous local cleanup, then prove the real listening
+            // socket was released while the process supervisor remains alive.
+            while(true)
+            {
+                try
+                {
+                    using var rebound = StratumServer.CreateBoundSocket(new IPEndPoint(IPAddress.Loopback, port));
+                    break;
+                }
+                catch(SocketException) { await Task.Delay(10, stop.Token); }
+            }
+            Assert.False(lifetime.IsCompleted);
+        }
+        finally
+        {
+            stop.Cancel();
+            await lifetime.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        Assert.True(siblingStopped);
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IsolatedFault_RetainsOwnedSubmissionButDoesNotBypassGlobalFinancialStop(bool financialStop)
+    {
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var process = new ProcessStatus();
+        var host = Substitute.For<IHostApplicationLifetime>();
+        host.When(x => x.StopApplication()).Do(_ => stop.Cancel());
+        using var global = new MiningFailStopCoordinator(process, host);
+        var bus = new MessageBus(global);
+        var online = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var status = bus.Listen<PoolStatusNotification>().Subscribe(x =>
+        {
+            if(x.Status == PoolStatus.Online) online.TrySetResult();
+        });
+        var published = new TaskCompletionSource<Share>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var persisted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var shares = bus.Listen<Share>().Subscribe(share =>
+        {
+            share.SetPersistenceAdmission(persisted.Task);
+            published.TrySetResult(share);
+        });
+        var clock = new StandardClock();
+        var manager = new LifecycleManager(container, clock)
+        {
+            SubmitEntered = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            SubmitRelease = new(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var dependencies = Scope();
+        using var scope = dependencies.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(manager).As<BitcoinBlake2bJobManager>();
+            builder.RegisterInstance(bus).As<IMessageBus>();
+            builder.RegisterInstance(global).As<IMiningFailStopCoordinator>();
+        });
+        var pool = ResolvePool(scope);
+        using var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint) portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+        var config = LifecycleConfig();
+        config.Enabled = true;
+        config.Banning = new PoolShareBasedBanningConfig();
+        config.Ports = new() { [port] = new PoolEndpoint { ListenAddress = "127.0.0.1", Difficulty = 1e-9 } };
+        manager.SubmittedShare = new Share { PoolId = config.Id, Miner = config.Address, Difficulty = 1e-9,
+            Created = DateTime.UtcNow, IsBlockCandidate = true, BlockHeight = 20, BlockHash = new string('a', 64) };
+        pool.Configure(config, new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        pool.ConnectionDrainTimeout = TimeSpan.FromMilliseconds(100);
+        using var reservations = await new StratumListenerReservationCoordinator().ReserveAllAsync(new[] { config });
+        pool.AttachStratumListenerReservations(reservations);
+        var lifetime = pool.RunAsync(stop.Token);
+        try
+        {
+            await online.Task.WaitAsync(stop.Token);
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, stop.Token);
+            using var reader = new StreamReader(client.GetStream());
+            using var writer = new StreamWriter(client.GetStream(), new UTF8Encoding(false)) { AutoFlush = true };
+            async Task Request(int id, string method, params string[] parameters)
+            {
+                await writer.WriteLineAsync(JsonConvert.SerializeObject(new { id, method, @params = parameters }));
+                while(true)
+                {
+                    var response = JObject.Parse(await reader.ReadLineAsync(stop.Token));
+                    if(response["id"]?.Value<int?>() != id) continue;
+                    Assert.True(response["error"] == null || response["error"].Type == JTokenType.Null);
+                    return;
+                }
+            }
+            await Request(1, "mining.subscribe", "isolation-test");
+            await Request(2, "mining.authorize", config.Address, "x");
+            await writer.WriteLineAsync(JsonConvert.SerializeObject(new { id = 3, method = "mining.submit",
+                @params = new[] { config.Address, "job", new string('0',16), new string('0',16), new string('0',16) } }));
+            await manager.SubmitEntered.Task.WaitAsync(stop.Token);
+            // Inject the same terminal callback as Jobs.OnError while the real
+            // TCP dispatcher owns a pending manager submission.
+            typeof(BitcoinBlake2bPool).GetMethod("HandleBlake2bPipelineFailure", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(pool, new object[] { new PoolStartupException("test daemon contradiction") });
+            await Task.Delay(250, stop.Token); // deliberately exhaust local connection drain
+            Assert.Equal("faulted", pool.MiningState);
+            Assert.False(manager.SubmitToken.IsCancellationRequested);
+            Assert.False(global.IsFailStopRequested);
+            Assert.False(lifetime.IsCompleted);
+            Assert.Null(pool.TryAcquireOperation());
+            if(financialStop)
+            {
+                global.BeginFailStop(ProcessExitCodes.GeneralFailure);
+                await lifetime.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(1, process.ExitCode);
+                Assert.False(published.Task.IsCompleted);
+            }
+            else
+            {
+                manager.SubmitRelease.TrySetResult();
+                Assert.Same(manager.SubmittedShare, await published.Task.WaitAsync(stop.Token));
+                Assert.False(manager.SubmittedShare.PersistenceAdmission.IsCompleted);
+                persisted.TrySetResult();
+                await manager.SubmittedShare.PersistenceAdmission.WaitAsync(stop.Token);
+                Assert.False(global.IsFailStopRequested);
+                Assert.False(lifetime.IsCompleted);
+                Assert.Equal(0, process.ExitCode);
+            }
+        }
+        finally
+        {
+            manager.SubmitRelease.TrySetResult();
+            persisted.TrySetResult();
+            stop.Cancel();
+            try { await lifetime.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+        }
+    }
+}
