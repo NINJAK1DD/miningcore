@@ -47,6 +47,42 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: credential-safe RPC transport diagnostics
+
+HTTP single/batch Trace logs and WebSocket Debug logs now use a bounded `RPC diagnostic`
+JSON record instead of requests, responses, subscription payloads or endpoint URLs.
+WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
+or objects. ZMQ diagnostics also omit endpoint/topic strings. Known RPC methods use an
+explicit allowlist; custom methods become `other`. Batch telemetry now uses `batch`, and
+single-request telemetry uses the same safe method labels. Update monitoring filters that
+depended on the old free-form messages or joined batch method names.
+
+The fields are transport, stage, allowlisted method, batch count, HTTP status, UTF-8 decoded
+response size, elapsed milliseconds and failure category. Null fields mean not applicable;
+HTTP status is not a claim that the daemon operation succeeded. Logging performs no payload
+redaction or serialization: request authentication, wire bodies, response/error data, timeouts
+and payout decisions remain unchanged. There is no database migration or TLS-policy change.
+Subscription cleanup now tolerates an already-finished WebSocket worker after cancellation.
+
+**Historical exposure:** releases through v0.3.0 and builds before this fix can record wallet
+passwords and sensitive RPC results at Trace, and subscription secrets/URIs at Debug.
+Restrict access to retained logs, support bundles, backups and telemetry exports. If exposure
+is suspected, rotate affected RPC credentials, subscription tokens and wallet passphrases
+using the daemon's procedure. A disclosed private key cannot be made safe by changing a
+password; arrange a secure wallet replacement and transfer through the wallet's supported
+procedure. Do not paste old payload traces into public issues. Disabling logging does not
+remove copies already collected.
+
+This is an **RpcClient-owned diagnostic boundary**, not a global log sanitizer. Returned
+daemon error messages, error data and exception causes stay available to callers for
+compatibility. Coin-specific caller logs and subscriber parsing errors are tracked in
+[#154](https://github.com/NINJAK1DD/miningcore/issues/154); treat those as potentially sensitive.
+Configuration dumps remain covered by
+[#144](https://github.com/NINJAK1DD/miningcore/issues/144). TLS certificate validation is not
+established by safe logging. The design follows the
+[OWASP logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+by excluding sensitive inputs rather than trying to enumerate secret-bearing RPC methods.
+
 ## Unreleased: Bitcoin BLAKE2b header-v2
 
 The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
