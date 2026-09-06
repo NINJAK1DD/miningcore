@@ -59,10 +59,12 @@ is missing or whitespace. Construction remains safe for dependency-injection res
 **Compatibility:** normal, non-recovery startup already rejects this incomplete email configuration
 in `Program.ValidateConfig`. Custom hosts that bypass that pass now fail when the notification
 service starts instead of at later delivery. Recovery mode skips these configuration checks and
-does not start this hosted service; its lazy critical sender remains constructible. An attempted
-email without a provider produces a named configuration error within the existing critical-delivery
-aggregate, which recovery failure handlers catch and log. Other configured critical transports can
-still be attempted. Configure the email sender or disable admin notifications; do not rely on
+does not start this hosted service; its lazy critical sender remains constructible. The critical
+sender is a separate, unhosted singleton in normal operation too. An attempted email without a
+provider produces an `InvalidOperationException` naming the missing delivery configuration within
+the existing critical-delivery aggregate, not a startup exception. Failure handlers catch and log
+that aggregate. Other configured critical transports can still be attempted. Configure the email
+sender or disable admin notifications; do not rely on
 undeliverable critical alerts. No coin-family, accounting or schema change is made.
 
 The existing top-level/admin/channel switch semantics are unchanged. Their validation and

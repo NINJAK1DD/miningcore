@@ -451,7 +451,7 @@ public class HostedServiceStartupTests
     [InlineData("")]
     [InlineData(" \t ")]
     [InlineData("admin@example.invalid")]
-    public async Task NotificationService_MissingEmailProviderFailsHostStartupWithoutResolutionWrapper(string recipient)
+    public async Task NotificationService_MissingProviderFailsSequentialHostBeforeLaterServices(string recipient)
     {
         var config = new ClusterConfig
         {
@@ -462,12 +462,12 @@ public class HostedServiceStartupTests
                 {
                     Enabled = true,
                     EmailAddress = recipient,
-                    NotifyBlockFound = true,
                 },
             },
         };
         var messageBus = Substitute.For<IMessageBus>();
 
+        var laterService = Substitute.For<IHostedService>();
         var factory = Substitute.For<IHttpClientFactory>();
         using var httpClient = new HttpClient();
         factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
@@ -479,6 +479,7 @@ public class HostedServiceStartupTests
                 services.AddSingleton(messageBus);
                 services.AddSingleton(factory);
                 services.AddHostedService<NotificationService>();
+                services.AddSingleton(laterService);
             })
             .ConfigureContainer<ContainerBuilder>(builder =>
             {
@@ -489,12 +490,19 @@ public class HostedServiceStartupTests
             .Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        // Autofac must resolve the actual service successfully; the error belongs to StartAsync.
-        var service = host.Services.GetRequiredService<NotificationService>();
-        Assert.NotNull(service);
+        // Match production's separate registrations and sequential, notification-first startup.
+        // Resolve BOTH instances, not just the singleton that is never started by the host.
+        var hosted = host.Services.GetServices<IHostedService>().ToArray();
+        Assert.Equal(2, hosted.Length);
+        var hostedNotification = Assert.IsType<NotificationService>(hosted[0]);
+        Assert.Same(laterService, hosted[1]);
+        var criticalSender = host.Services.GetRequiredService<ICriticalNotificationSender>();
+        Assert.Same(host.Services.GetRequiredService<NotificationService>(), criticalSender);
+        Assert.NotSame(hostedNotification, criticalSender);
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             host.StartAsync(CancellationToken.None).WaitAsync(timeout.Token));
         Assert.Contains("notifications.email", error.Message);
+        await laterService.DidNotReceive().StartAsync(Arg.Any<CancellationToken>());
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
         messageBus.DidNotReceive().Listen<PaymentNotification>();
@@ -524,7 +532,7 @@ public class HostedServiceStartupTests
     }
 
     [Fact]
-    public async Task NotificationService_UnstartedRecoverySenderReportsMissingProviderAtDelivery()
+    public async Task NotificationService_UnstartedCriticalSenderReportsDeliveryConfigurationError()
     {
         var config = new ClusterConfig
         {
@@ -548,7 +556,7 @@ public class HostedServiceStartupTests
         using var container = builder.Build();
         var lazy = container.Resolve<Lazy<ICriticalNotificationSender>>();
         Assert.False(lazy.IsValueCreated);
-        // Recovery resolves this lazy dependency without starting the hosted service.
+        // Recovery and normal critical-failure handling both resolve this unhosted singleton.
         var sender = lazy.Value;
         Assert.IsType<NotificationService>(sender);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -556,7 +564,8 @@ public class HostedServiceStartupTests
         var aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
             sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
         var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
-        var error = Assert.IsType<PoolStartupException>(transport.InnerException);
+        var error = Assert.IsType<InvalidOperationException>(transport.InnerException);
+        Assert.Contains("Email delivery", error.Message);
         Assert.Contains("notifications.email", error.Message);
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
