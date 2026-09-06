@@ -233,20 +233,38 @@ third-party miner firmware or provide a production-ready adapter.
 BLAKE2b can share a Miningcore process with other enabled pools. A terminal failure in its
 job pipeline or pool lifetime closes that pool's admission gate and listeners without
 terminating healthy sibling pools. Its public pool API reports `miningState` as `starting`,
-`online` or `faulted`; a fault also produces an operator notification and an error log.
+`online`, `draining`, `faulted` or `stopping`. `draining` means local admission is closed
+after a fault but previously owned operations remain; `faulted` means that drain has finished.
+`stopping` takes precedence once host shutdown is requested. A fault also produces an
+operator notification and an error log; outstanding drains report counts every 30 seconds.
 The state describes local mining availability, not proof of wallet or database health.
 
-New payout cycles and wallet operations are skipped for the faulted pool. Submissions and
+New payout cycles and wallet operations are skipped for the isolated pool. Block classification
+rechecks admission after database loading and again before committing daemon observations.
+If isolation occurs during classification, **all results are discarded** without changing
+persisted block/reward/balance state. A commit lease acquired before isolation instead allows
+those owned database transitions and their post-commit notifications to finish; it never
+authorizes a later wallet payment, which has its own admission check. Submissions and
 wallet operations already owned before isolation are allowed to finish: cancelling an RPC
 after a daemon accepted a block or payment can lose its financial outcome. A slow owned
 submission remains tracked even after the local connection-drain timeout; disconnected miners
 must not interpret a missing acknowledgement as proof that their share was not recorded.
-Existing accepted relay shares, recorder entries, PPS liabilities and recovery evidence remain
-eligible for persistence. Isolation never discards them or resets their accounting identities.
+The submission lease spans candidate persistence and `PersistenceAdmission`: for ordinary
+shares, that is recorder queue admission (or an emergency journal force-flush), **not** the
+normal queued PostgreSQL commit. Ordinary-share durability continues to rely on the shared
+Share Recorder's flush/failover policy; local isolation neither strengthens nor weakens it.
+Existing accepted relay shares, recorder entries, PPS liabilities and recovery evidence are
+not discarded, and their accounting identities are not reset.
+
+Listener teardown closes miner sockets promptly; it does not wait for an error response to
+reach an unresponsive client. Miners may therefore see a transport close rather than a JSON-RPC
+error. Outstanding submissions retain ownership independently of that socket. Reconnects in
+the teardown window are refused without per-attempt error stack traces.
 
 There is no automatic restart or compatibility bypass. Correct the underlying daemon or
 configuration problem, inspect outstanding block/payment outcomes and restart Miningcore in
-a planned maintenance window. The failed pool stays visibly faulted until that restart.
+a planned maintenance window. The failed pool stays isolated (`draining` then `faulted`)
+until that restart.
 Separate services remain an option when independent operator restarts are required.
 
 This is **not** isolation from shared infrastructure failure. Invalid cluster configuration,

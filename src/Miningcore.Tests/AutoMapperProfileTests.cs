@@ -20,6 +20,8 @@ public class AutoMapperProfileTests
     [Theory]
     [InlineData("starting")]
     [InlineData("online")]
+    [InlineData("draining")]
+    [InlineData("stopping")]
     [InlineData("faulted")]
     public void IsolatedPoolState_IsPublicWithoutChangingOrdinaryPoolResponses(string state)
     {

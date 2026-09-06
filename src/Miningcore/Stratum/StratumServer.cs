@@ -397,7 +397,7 @@ public abstract class StratumServer
         {
             var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
 
-            if(failStop?.IsFailStopRequested == true)
+            if(failStop?.IsFailStopRequested == true || !IsConnectionAdmissionOpen)
             {
                 StratumSocketCleanup.CloseAbortively(socket);
                 return;
@@ -454,7 +454,10 @@ public abstract class StratumServer
                     UnregisterConnection(connection);
             }
 
-            logger.Error(ex);
+            if(!IsConnectionAdmissionOpen && ex is StratumException)
+                logger.Debug("Connection refused because local pool admission is closed");
+            else
+                logger.Error(ex);
         });
     }
 
@@ -593,6 +596,8 @@ public abstract class StratumServer
     // removal of its socket-owning dispatch task. Production subclasses use the completed task.
     protected virtual Task BeforeConnectionTaskRemovalAsync(
         string connectionId) => Task.CompletedTask;
+
+    protected virtual bool IsConnectionAdmissionOpen => true;
 
     protected abstract void OnConnect(StratumConnection connection, IPEndPoint portItem1);
 

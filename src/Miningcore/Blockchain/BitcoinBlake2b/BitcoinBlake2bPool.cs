@@ -1,5 +1,6 @@
 using Autofac;
 using AutoMapper;
+using System.Diagnostics;
 using Microsoft.IO;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -41,7 +42,8 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     private int lifetimeStarted;
     private int online;
 
-    public string MiningState => operations.IsClosed ? "faulted" :
+    public string MiningState => Volatile.Read(ref lifetimeStarted) == 1 && hostShutdown.IsCancellationRequested ? "stopping" :
+        operations.IsClosed ? (operations.ActiveCount > 0 ? "draining" : "faulted") :
         Volatile.Read(ref online) != 0 ? "online" : "starting";
     public IDisposable TryAcquireOperation() => operations.TryAcquire();
 
@@ -58,14 +60,18 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
     public override async Task RunAsync(CancellationToken ct)
     {
-        if(Interlocked.Exchange(ref lifetimeStarted, 1) != 0)
-            throw new InvalidOperationException("A faulted Bitcoin BLAKE2b pool requires an operator restart");
+        // Reserve the one-shot lifetime before publishing its token. A second
+        // caller must neither start another lifetime nor overwrite the first token.
+        if(Interlocked.CompareExchange(ref lifetimeStarted, -1, 0) != 0)
+            throw new InvalidOperationException("Bitcoin BLAKE2b pool lifetime can only be started once");
         hostShutdown = ct;
+        Volatile.Write(ref lifetimeStarted, 1);
         using var localStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var lifetime = base.RunAsync(localStop.Token);
         await Task.WhenAny(lifetime, operations.Failure);
 
-        if(lifetime.IsCompleted)
+        var lifetimeObserved = lifetime.IsCompleted;
+        if(lifetimeObserved)
         {
             try { await lifetime; }
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { return; }
@@ -80,19 +86,35 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         // submit/RPC with this pool-local token. It must reach candidate persistence
         // and statistical/PPS admission even when the miner has disconnected.
         localStop.Cancel();
-        try { await lifetime; }
+        try { if(!lifetimeObserved) await lifetime; }
         catch(OperationCanceledException) when(localStop.IsCancellationRequested) { }
         catch(Exception ex) when(ex is not OutOfMemoryException)
         {
-            logger.Error(ex, "Bitcoin BLAKE2b isolated pool stopped");
+            HandleBlake2bPipelineFailure(ex);
         }
 
-        try { await operations.Drained.WaitAsync(ct); }
+        try { await DrainOperationsAsync(ct); }
         catch(OperationCanceledException) when(ct.IsCancellationRequested) { return; }
         // Remaining faulted is a deliberate lifetime state, not a successful
         // early exit that would trigger Program's sibling-pool fail-fast policy.
         await WaitForShutdownAsync(ct);
     }
+
+    internal TimeSpan DrainReportInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    private async Task DrainOperationsAsync(CancellationToken ct)
+    {
+        var elapsed = Stopwatch.StartNew();
+        while(!operations.Drained.IsCompleted)
+        {
+            logger.Warn("Bitcoin BLAKE2b isolation is draining {0} owned operation(s) after {1:F0}s; no new work is admitted", operations.ActiveCount, elapsed.Elapsed.TotalSeconds);
+            try { await operations.Drained.WaitAsync(DrainReportInterval, ct); }
+            catch(TimeoutException) { }
+        }
+        logger.Info("Bitcoin BLAKE2b isolation drain completed; operator restart required");
+    }
+
+    protected override bool IsConnectionAdmissionOpen => !operations.IsClosed;
 
     protected override void OnConnect(StratumConnection connection, System.Net.IPEndPoint endpoint)
     {
@@ -134,7 +156,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             throw;
         }
         await base.OnSubmitAsync(connection, request,
-            Volatile.Read(ref lifetimeStarted) != 0 ? hostShutdown : ct);
+            Volatile.Read(ref lifetimeStarted) == 1 ? hostShutdown : ct);
     }
 
     internal static void ValidateSubmissionParameters(object parameters)

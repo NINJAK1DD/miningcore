@@ -16,16 +16,19 @@ public class PoolOperationGateTests
         var second = gate.TryAcquire();
         Assert.NotNull(first);
         Assert.NotNull(second);
+        Assert.Equal(2, gate.ActiveCount);
         Assert.True(gate.Close());
         await gate.Failure.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Null(gate.TryAcquire());
         Assert.False(gate.Drained.IsCompleted);
         first.Dispose();
         first.Dispose(); // idempotence must not release somebody else's operation
+        Assert.Equal(1, gate.ActiveCount);
         Assert.False(gate.Drained.IsCompleted);
         Assert.False(gate.Close());
         second.Dispose();
         await gate.Drained.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, gate.ActiveCount);
         Assert.Null(gate.TryAcquire());
     }
 

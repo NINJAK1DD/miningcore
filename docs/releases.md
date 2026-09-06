@@ -60,8 +60,11 @@ Do not use the v0.3.0 binaries with this new example: support requires a build c
 failure (including a changed reviewed daemon version or missing mandatory GBT rule) closes
 only that pool's listeners and new work/payment admission. Healthy sibling pools continue.
 Already-owned submissions and payments finish without pool-local cancellation so accepted
-blocks and liabilities can still be persisted. The pool API exposes its `miningState`; a
-faulted pool requires an operator restart, not an automatic compatibility bypass. Transport
+blocks and liabilities can still be persisted. Daemon classifications completing after isolation
+are discarded before any block/reward/balance commit; database transitions admitted before
+isolation may finish, but do not authorize a new wallet payout. The pool API exposes its
+`miningState`, including `draining` and `stopping`, with periodic outstanding-operation logs.
+A faulted pool requires an operator restart, not an automatic compatibility bypass. Transport
 outages instead withhold fresh work and retry. Shared financial-durability and cluster-wide
 startup failures retain their existing process-wide shutdown safeguards. See the
 [isolation boundary](bitcoin-blake2b.md#multi-pool-failure-isolation) before deployment.

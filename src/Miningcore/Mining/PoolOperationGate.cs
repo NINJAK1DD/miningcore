@@ -9,9 +9,13 @@ public interface IIsolatedMiningPool
     string MiningState { get; }
     // Null means admission is closed. A successful lease must cover the complete
     // asynchronous operation, including persistence/outcome handling, and be disposed.
+    // Observational work (e.g. daemon classification) must acquire a fresh lease
+    // before committing its results; its earlier lease does not establish validity.
     IDisposable TryAcquireOperation();
 }
 
+// Implementation detail of the in-assembly isolated pool. The public interface
+// defines admission ownership, not a requirement for external pools to use this gate.
 internal sealed class PoolOperationGate
 {
     private readonly object sync = new();
@@ -21,6 +25,7 @@ internal sealed class PoolOperationGate
     private int active;
 
     internal bool IsClosed { get { lock(sync) return closed; } }
+    internal int ActiveCount { get { lock(sync) return active; } }
     internal Task Failure => failure.Task;
     internal Task Drained => drained.Task;
 

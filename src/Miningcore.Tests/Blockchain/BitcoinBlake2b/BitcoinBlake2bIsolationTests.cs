@@ -83,6 +83,10 @@ public partial class BitcoinBlake2bStartupTests
         try
         {
             await siblingStarted.Task.WaitAsync(stop.Token);
+            using var rejectedStop = new CancellationTokenSource();
+            rejectedStop.Cancel();
+            var duplicate = await Assert.ThrowsAsync<InvalidOperationException>(() => pool.RunAsync(rejectedStop.Token));
+            Assert.Contains("can only be started once", duplicate.Message);
             if(!duringStartup)
             {
                 await started.Task.WaitAsync(stop.Token);
@@ -122,7 +126,64 @@ public partial class BitcoinBlake2bStartupTests
             await lifetime.WaitAsync(TimeSpan.FromSeconds(5));
         }
         Assert.True(siblingStopped);
+        Assert.Equal("stopping", pool.MiningState);
         Assert.Equal(0, process.ExitCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConnectionDrainTimeout_OnlySuppressesGlobalFailureAfterLocalAdmissionCloses(bool isolated)
+    {
+        var failStop = Substitute.For<IMiningFailStopCoordinator>();
+        using var dependencies = Scope();
+        using var scope = dependencies.BeginLifetimeScope(builder => builder.RegisterInstance(failStop));
+        var pool = ResolvePool(scope);
+        pool.Configure(LifecycleConfig(), new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        var gate = (PoolOperationGate) typeof(BitcoinBlake2bPool)
+            .GetField("operations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool);
+        if(isolated) gate.Close();
+
+        typeof(BitcoinBlake2bPool).GetMethod("OnConnectionDrainTimeout", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(pool, new object[] { 1 });
+
+        failStop.Received(isolated ? 0 : 1).BeginFailStop(ProcessExitCodes.GeneralFailure);
+        Assert.Equal(!isolated, (bool) typeof(BitcoinBlake2bPool)
+            .GetProperty("IsConnectionAdmissionOpen", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool));
+    }
+
+    [Fact]
+    public async Task IsolationDrain_ReportsOutstandingOperationsWithoutAbandoningThem()
+    {
+        using var scope = Scope();
+        var pool = ResolvePool(scope);
+        pool.Configure(LifecycleConfig(), new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var config = new NLog.Config.LoggingConfiguration();
+        config.AddRuleForAllLevels(target);
+        logs.Configuration = config;
+        typeof(StratumServer).GetField("logger", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(pool, logs.GetLogger("isolation-drain-test"));
+        var gate = (PoolOperationGate) typeof(BitcoinBlake2bPool)
+            .GetField("operations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool);
+        using var owned = gate.TryAcquire();
+        gate.Close();
+        pool.DrainReportInterval = TimeSpan.FromMilliseconds(25);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var drain = (Task) typeof(BitcoinBlake2bPool)
+            .GetMethod("DrainOperationsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(pool, new object[] { deadline.Token });
+        try
+        {
+            while(target.Logs.Count < 2) await Task.Delay(10, deadline.Token);
+            Assert.Equal("draining", pool.MiningState);
+            Assert.False(drain.IsCompleted);
+            Assert.All(target.Logs, line => Assert.Contains("draining 1 owned operation(s)", line));
+        }
+        finally { owned.Dispose(); await drain.WaitAsync(deadline.Token); }
+        Assert.Equal("faulted", pool.MiningState);
+        Assert.Contains(target.Logs, line => line.Contains("drain completed", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -205,7 +266,7 @@ public partial class BitcoinBlake2bStartupTests
             typeof(BitcoinBlake2bPool).GetMethod("HandleBlake2bPipelineFailure", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(pool, new object[] { new PoolStartupException("test daemon contradiction") });
             await Task.Delay(250, stop.Token); // deliberately exhaust local connection drain
-            Assert.Equal("faulted", pool.MiningState);
+            Assert.Equal("draining", pool.MiningState);
             Assert.False(manager.SubmitToken.IsCancellationRequested);
             Assert.False(global.IsFailStopRequested);
             Assert.False(lifetime.IsCompleted);

@@ -324,6 +324,42 @@ public class StratumServerTests
             endpoint.IPEndPoint);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunAsync_LocalAdmissionClosureRejectsQuietlyWithoutLeakingConnections(bool closeDuringConnect)
+    {
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}|${exception}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRuleForAllLevels(target);
+        logs.Configuration = logging;
+        var server = new TestStratumServer { AdmissionOpen = closeDuringConnect };
+        server.SetLogger(logs.GetLogger("local-admission-test"));
+        var connected = false;
+        server.ConnectionInitializer = _ =>
+        {
+            connected = true;
+            server.AdmissionOpen = false;
+            throw new StratumException(StratumError.JobNotFound, "local admission closed");
+        };
+        using var stop = new CancellationTokenSource();
+        var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, GetFreePort()), new PoolEndpoint());
+        var lifetime = server.RunListenerAsync(stop.Token, endpoint);
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback, endpoint.IPEndPoint.Port);
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+            Assert.Equal(closeDuringConnect, connected);
+            Assert.Equal(0, server.TrackedConnectionTaskCount);
+            Assert.DoesNotContain(target.Logs, line => line.StartsWith("Error|", StringComparison.Ordinal));
+            Assert.DoesNotContain(target.Logs, line => line.Contains(nameof(StratumException), StringComparison.Ordinal));
+        }
+        finally { stop.Cancel(); await lifetime.WaitAsync(TestTimeout); }
+        using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);
+    }
+
     [Fact]
     public async Task RunAsync_DuplicateConnectionIdRejectsSecondWithoutClosingFirst()
     {
@@ -777,6 +813,9 @@ public class StratumServerTests
         public int ConnectionCount => connections.Count;
 
         public bool ThrowOnConnect { get; set; }
+        public bool AdmissionOpen { get; set; } = true;
+        protected override bool IsConnectionAdmissionOpen => AdmissionOpen;
+        public void SetLogger(Logger value) => logger = value;
 
         public Task RunListenerAsync(CancellationToken ct)
         {
