@@ -24,7 +24,7 @@ internal sealed class RpcSubscriptionLifetime
     internal Task Run(Func<Task> worker) => Task.Run(async () =>
     {
         try { await worker(); }
-        finally { Complete(); }
+        finally { await CompleteAsync(); }
     });
 
     internal void Cancel()
@@ -48,6 +48,17 @@ internal sealed class RpcSubscriptionLifetime
     internal void Complete()
     {
         parentRegistration.Dispose();
+        Finish();
+    }
+
+    internal async ValueTask CompleteAsync()
+    {
+        await parentRegistration.DisposeAsync();
+        Finish();
+    }
+
+    private void Finish()
+    {
         lock(gate)
         {
             if(finished) return;

@@ -155,9 +155,9 @@ public class RpcDiagnosticTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task WebSocket_WireAndReconnectDiagnosticsExcludeSecrets(bool observerFails)
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task WebSocket_WireAndReconnectDiagnosticsExcludeSecrets(int observerFailure)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var logs = new CapturedLogs(NLog.LogLevel.Debug);
@@ -185,13 +185,13 @@ public class RpcDiagnosticTests
             UnsafeText, new object[] { UnsafeText }).Subscribe(new Observer(bytes =>
             {
                 message.TrySetResult(bytes);
-                if(observerFails) throw new InvalidOperationException(UnsafeText);
+                if(observerFailure == 1) throw new InvalidOperationException(UnsafeText);
             }));
         var request = JObject.Parse(await observed.Task.WaitAsync(deadline.Token));
         Assert.Equal(UnsafeText, request["method"].Value<string>());
         Assert.Equal(UnsafeText, request["params"][0].Value<string>());
         Assert.Equal(response, await message.Task.WaitAsync(deadline.Token));
-        if(observerFails)
+        if(observerFailure != 0)
             await logs.WaitForFailure();
         deadline.Cancel();
         logs.AssertSafe();
@@ -260,14 +260,20 @@ public class RpcDiagnosticTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task WebSocket_ConnectAndSerializationFailuresHaveSafeDiagnostics(bool serializationFailure)
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task WebSocket_ConnectAndSerializationFailuresHaveSafeDiagnostics(int failureKind)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var logs = new CapturedLogs(NLog.LogLevel.Debug);
+        var serializationFailure = failureKind != 0;
+        var reconnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = 0;
         await using var server = await Server.Start(async context =>
         {
+            if(Interlocked.Increment(ref connections) == 2) reconnect.TrySetResult();
             if(!serializationFailure)
             {
                 context.Response.StatusCode = 401;
@@ -279,13 +285,21 @@ public class RpcDiagnosticTests
             catch(OperationCanceledException) { }
         });
         var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
-        var settings = new JsonSerializerSettings { Converters = { new ThrowingConverter(new InvalidOperationException(UnsafeText)) } };
+        Exception failure = failureKind switch
+        {
+            2 => new TaskCanceledException(UnsafeText),
+            3 => new ObjectDisposedException(UnsafeText),
+            _ => new InvalidOperationException(UnsafeText),
+        };
+        var settings = new JsonSerializerSettings { Converters = { new ThrowingConverter(failure) } };
         using var subscription = client.WebsocketSubscribe(logs.Logger, deadline.Token, server.Endpoint(),
             UnsafeText, new[] { Secret }, serializationFailure ? settings : null).Subscribe(new Observer(_ => { }));
         await logs.WaitForFailure();
+        if(failureKind >= 2) await reconnect.Task.WaitAsync(deadline.Token);
         deadline.Cancel();
         logs.AssertSafe();
-        Assert.Contains(logs.Messages, x => x.Contains(serializationFailure ? "\"failure\":\"other\"" : "\"failure\":\"websocket\""));
+        var category = failureKind switch { 0 => "websocket", 2 => "cancelled", 3 => "disposed", _ => "other" };
+        Assert.Contains(logs.Messages, x => x.Contains("\"failure\":\"" + category + "\""));
         if(!serializationFailure)
             Assert.Contains(logs.Messages, x => x.Contains("\"httpStatus\":401"));
     }
@@ -346,6 +360,34 @@ public class RpcDiagnosticTests
         Assert.Null(RpcDiagnostics.Method(null));
         Assert.Equal("other", RpcDiagnostics.Method(Secret + "_getWork"));
         Assert.Equal("other", RpcDiagnostics.Method("get_info" + UnsafeText));
+        Assert.Equal("other", RpcDiagnostics.Method("getblockhash"));
+    }
+
+    [Fact]
+    public void CatalogFailureDegradesToAnEmptyVocabulary()
+    {
+        Assert.Empty(RpcMethodCatalog.BuildSafely(() => throw new InvalidOperationException(UnsafeText)));
+        Assert.Empty(RpcMethodCatalog.BuildSafely(() => null));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TerminalWorkerFaultIsObservedAndSubscriberGetsOnlySafeError(bool observerThrows)
+    {
+        using var logs = new CapturedLogs();
+        Exception delivered = null;
+        var observer = new ErrorObserver(error =>
+        {
+            delivered = error;
+            if(observerThrows) throw new Exception(UnsafeText);
+        });
+        await RpcClient.ObserveSubscriptionWorkerAsync(Task.FromException(new Exception(UnsafeText)),
+            logs.Logger, observer, UnsafeText, 2);
+        Assert.IsType<IOException>(delivered);
+        Assert.DoesNotContain(Secret, delivered.ToString());
+        logs.AssertSafe();
+        Assert.All(logs.Messages, x => Assert.Contains("\"endpointIndex\":2", x));
     }
 
     [Fact]
@@ -405,7 +447,38 @@ public class RpcDiagnosticTests
         logs.AssertSafe();
         var diagnostic = JObject.Parse(Assert.Single(logs.Messages)["RPC diagnostic ".Length..]);
         Assert.Equal(JTokenType.Null, diagnostic["method"].Type);
-        Assert.Equal("ZMQ subscriber " + diagnostic["subscriptionId"].Value<long>(), result[2]);
+        Assert.Equal("ZMQ subscriber " + diagnostic["endpointIndex"].Value<long>(), result[2]);
+    }
+
+    [Fact]
+    public async Task ZmqEndpointOrdinalsSurviveRefCountResubscription()
+    {
+        using var logs = new CapturedLogs();
+        var first = new DaemonEndpointConfig();
+        var second = new DaemonEndpointConfig();
+        var client = new RpcClient(first, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var observable = client.ZmqSubscribe(logs.Logger, CancellationToken.None,
+            new Dictionary<DaemonEndpointConfig, (string, string)>
+            {
+                [first] = ("invalid-" + Secret + "://first", UnsafeText),
+                [second] = ("invalid-" + Secret + "://second", UnsafeText),
+            });
+        for(var attempt = 0; attempt < 2; attempt++)
+        {
+            var offset = logs.Messages.Length;
+            using(var subscription = observable.Subscribe(new ZmqObserver(_ => { })))
+            {
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                while(logs.Messages.Skip(offset).Select(x =>
+                    JObject.Parse(x["RPC diagnostic ".Length..])["endpointIndex"].Value<int>()).Distinct().Count() < 2)
+                    await logs.WaitForFailures(1, deadline.Token);
+                var indices = logs.Messages.Skip(offset)
+                    .Select(x => JObject.Parse(x["RPC diagnostic ".Length..])["endpointIndex"].Value<int>())
+                    .Distinct().OrderBy(x => x).ToArray();
+                Assert.Equal(new[] { 1, 2 }, indices);
+            }
+        }
+        logs.AssertSafe();
     }
 
     [Fact]
@@ -441,6 +514,14 @@ public class RpcDiagnosticTests
             try { await target.Failure.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch(TimeoutException) { Assert.True(false, "Expected an RPC Failure diagnostic within 10 seconds"); }
         }
+        public async Task WaitForFailures(int count, CancellationToken ct)
+        {
+            for(var i = 0; i < count; i++)
+            {
+                try { Assert.True(await target.Failures.WaitAsync(TimeSpan.FromSeconds(10), ct), "Expected another RPC Failure diagnostic within 10 seconds"); }
+                catch(OperationCanceledException) { Assert.True(false, "Endpoint Failure diagnostics did not arrive before the test deadline"); }
+            }
+        }
         public void AssertSafe()
         {
             Assert.NotEmpty(Messages);
@@ -454,7 +535,7 @@ public class RpcDiagnosticTests
                 Assert.DoesNotContain(message, c => c is '\r' or '\n' or '\u0085' or '\u2028' or '\u2029');
                 Assert.StartsWith("RPC diagnostic ", message);
                 var data = JObject.Parse(message["RPC diagnostic ".Length..]);
-                Assert.Equal(new[] { "transport", "stage", "method", "batchCount", "httpStatus", "bytes", "responseChars", "elapsedMs", "subscriptionId", "failure", "failureCode" },
+                Assert.Equal(new[] { "transport", "stage", "method", "batchCount", "httpStatus", "bytes", "httpResponseChars", "elapsedMs", "endpointIndex", "failure", "failureCode" },
                     data.Properties().Select(x => x.Name).ToArray());
             }
         }
@@ -465,11 +546,16 @@ public class RpcDiagnosticTests
     {
         public ConcurrentQueue<string> Messages { get; } = new();
         public TaskCompletionSource Failure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public SemaphoreSlim Failures { get; } = new(0);
         protected override void Write(LogEventInfo logEvent)
         {
             var text = Layout.Render(logEvent);
             Messages.Enqueue(text);
-            if(text.Contains("\"stage\":\"Failure\"", StringComparison.Ordinal)) Failure.TrySetResult();
+            if(text.Contains("\"stage\":\"Failure\"", StringComparison.Ordinal))
+            {
+                Failure.TrySetResult();
+                Failures.Release();
+            }
         }
     }
 
@@ -491,6 +577,13 @@ public class RpcDiagnosticTests
     {
         public void OnNext(byte[] value) => next(value);
         public void OnError(Exception error) { }
+        public void OnCompleted() { }
+    }
+
+    private sealed class ErrorObserver(Action<Exception> error) : IObserver<byte[]>
+    {
+        public void OnNext(byte[] value) { }
+        public void OnError(Exception value) => error(value);
         public void OnCompleted() { }
     }
 

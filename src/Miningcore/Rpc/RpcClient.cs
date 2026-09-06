@@ -47,8 +47,6 @@ public class RpcClient
     private readonly IMessageBus messageBus;
     private readonly string poolId;
 
-    private static long nextSubscriptionId;
-
     private static readonly HttpClient httpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
@@ -124,19 +122,23 @@ public class RpcClient
 
     public IObservable<byte[]> WebsocketSubscribe(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint,
         string method, object payload = null,
-        JsonSerializerSettings payloadJsonSerializerSettings = null)
+        JsonSerializerSettings payloadJsonSerializerSettings = null, int endpointIndex = 1)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
 
-        return WebsocketSubscribeEndpoint(logger, ct, endPoint, method, payload, payloadJsonSerializerSettings)
+        Contract.Requires<ArgumentOutOfRangeException>(endpointIndex > 0);
+
+        return WebsocketSubscribeEndpoint(logger, ct, endPoint, method, payload, payloadJsonSerializerSettings, endpointIndex)
             .Publish()
             .RefCount();
     }
 
     public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct, Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap)
     {
-        return portMap.Keys
-            .Select(endPoint => ZmqSubscribeEndpoint(logger, ct, portMap[endPoint].Socket, portMap[endPoint].Topic))
+        // Snapshot config-order ordinals once, outside Defer/RefCount resubscription.
+        var endpoints = portMap.Values.Select((value, index) => (value.Socket, value.Topic, Index: index + 1)).ToArray();
+        return endpoints
+            .Select(endpoint => ZmqSubscribeEndpoint(logger, ct, endpoint.Socket, endpoint.Topic, endpoint.Index))
             .Merge()
             .Publish()
             .RefCount();
@@ -187,7 +189,7 @@ public class RpcClient
 
                 RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                     RpcDiagnostics.Stage.Response, method, status: (int) response.StatusCode,
-                    responseChars: responseContent.Length,
+                    httpResponseChars: responseContent.Length,
                     elapsedMs: sw.ElapsedMilliseconds);
 
                 // deserialize response
@@ -249,7 +251,7 @@ public class RpcClient
 
                 RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                     RpcDiagnostics.Stage.Response, batchCount: batch.Length, status: (int) response.StatusCode,
-                    responseChars: responseContent.Length,
+                    httpResponseChars: responseContent.Length,
                     elapsedMs: sw.ElapsedMilliseconds);
 
                 using(var jreader = new JsonTextReader(new StringReader(responseContent)))
@@ -322,15 +324,15 @@ public class RpcClient
     }
 
     private IObservable<byte[]> WebsocketSubscribeEndpoint(ILogger logger, CancellationToken ct,
-        DaemonEndpointConfig endPoint, string method, object payload = null,
-        JsonSerializerSettings payloadJsonSerializerSettings = null)
+        DaemonEndpointConfig endPoint, string method, object payload,
+        JsonSerializerSettings payloadJsonSerializerSettings, int endpointIndex)
     {
         return Observable.Defer(() => Observable.Create<byte[]>(obs =>
         {
             var lifetime = new RpcSubscriptionLifetime(ct);
             var token = lifetime.Token;
 
-            lifetime.Run(async () =>
+            var worker = lifetime.Run(async () =>
             {
                 var buf = new byte[0x10000];
 
@@ -347,7 +349,7 @@ public class RpcClient
                             client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
                             RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
-                                RpcDiagnostics.Stage.Connect, method);
+                                RpcDiagnostics.Stage.Connect, method, endpointIndex: endpointIndex);
                             client.Options.CollectHttpResponseDetails = true;
                             try { await client.ConnectAsync(uri, token); }
                             finally
@@ -362,7 +364,7 @@ public class RpcClient
                             var requestData = new ArraySegment<byte>(Encoding.UTF8.GetBytes(json));
 
                             RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
-                                RpcDiagnostics.Stage.Subscribe, method);
+                                RpcDiagnostics.Stage.Subscribe, method, endpointIndex: endpointIndex);
                             await client.SendAsync(requestData, WebSocketMessageType.Text, true, token);
 
                             // stream response
@@ -384,7 +386,7 @@ public class RpcClient
                                 } while(!token.IsCancellationRequested && client.State == WebSocketState.Open);
 
                                 RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
-                                    RpcDiagnostics.Stage.Receive, method, bytes: stream.Length);
+                                    RpcDiagnostics.Stage.Receive, method, bytes: stream.Length, endpointIndex: endpointIndex);
 
                                 // publish
                                 obs.OnNext(stream.ToArray());
@@ -392,12 +394,12 @@ public class RpcClient
                         }
                     }
 
-                    catch (TaskCanceledException)
+                    catch (TaskCanceledException) when(token.IsCancellationRequested)
                     {
                         break;
                     }
 
-                    catch (ObjectDisposedException)
+                    catch (ObjectDisposedException) when(token.IsCancellationRequested)
                     {
                         break;
                     }
@@ -405,7 +407,7 @@ public class RpcClient
                     catch(Exception ex)
                     {
                         RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
-                            RpcDiagnostics.Stage.Failure, method, status: handshakeStatus, failure: ex);
+                            RpcDiagnostics.Stage.Failure, method, status: handshakeStatus, failure: ex, endpointIndex: endpointIndex);
                     }
 
                     if(!token.IsCancellationRequested)
@@ -416,17 +418,36 @@ public class RpcClient
                 }
             });
 
+            _ = ObserveSubscriptionWorkerAsync(worker, logger, obs, method, endpointIndex);
             return Disposable.Create(lifetime.Cancel);
         }));
     }
 
-    private static IObservable<ZMessage> ZmqSubscribeEndpoint(ILogger logger, CancellationToken ct, string url, string topic)
+    internal static async Task ObserveSubscriptionWorkerAsync(Task worker, ILogger logger,
+        IObserver<byte[]> observer, string method, int endpointIndex)
+    {
+        try { await worker; }
+        catch(Exception ex)
+        {
+            RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
+                RpcDiagnostics.Stage.Failure, method, failure: ex, endpointIndex: endpointIndex);
+            // A terminal worker fault must not strand subscribers. Do not forward a
+            // payload-bearing exception into arbitrary observer error logging.
+            try { observer.OnError(new IOException("RPC WebSocket subscription terminated")); }
+            catch(Exception observerError)
+            {
+                RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
+                    RpcDiagnostics.Stage.Failure, method, failure: observerError, endpointIndex: endpointIndex);
+            }
+        }
+    }
+
+    private static IObservable<ZMessage> ZmqSubscribeEndpoint(ILogger logger, CancellationToken ct, string url, string topic, int endpointIndex)
     {
         return Observable.Defer(() => Observable.Create<ZMessage>(obs =>
         {
             var lifetime = new RpcSubscriptionLifetime(ct);
             var token = lifetime.Token;
-            var subscriptionId = Interlocked.Increment(ref nextSubscriptionId);
 
             var thread = new Thread(() =>
             {
@@ -444,7 +465,7 @@ public class RpcClient
                                 subSocket.Subscribe(topic);
 
                                 RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.Zmq,
-                                    RpcDiagnostics.Stage.Subscribe, subscriptionId: subscriptionId);
+                                    RpcDiagnostics.Stage.Subscribe, endpointIndex: endpointIndex);
 
                                 while(!token.IsCancellationRequested)
                                 {
@@ -464,7 +485,7 @@ public class RpcClient
                                 break;
 
                             RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.Zmq,
-                                RpcDiagnostics.Stage.Failure, failure: ex, subscriptionId: subscriptionId);
+                                RpcDiagnostics.Stage.Failure, failure: ex, endpointIndex: endpointIndex);
 
                             // do not run wild in case of a persistent error condition
                             Thread.Sleep(1000);
@@ -475,7 +496,7 @@ public class RpcClient
             })
             {
                 IsBackground = true,
-                Name = $"ZMQ subscriber {subscriptionId}",
+                Name = $"ZMQ subscriber {endpointIndex}",
             };
 
             thread.Start();
@@ -486,7 +507,7 @@ public class RpcClient
 
                 if(!thread.Join(TimeSpan.FromSeconds(5)))
                     RpcDiagnostics.Write(logger, LogLevel.Warn, RpcDiagnostics.Transport.Zmq,
-                        RpcDiagnostics.Stage.StopTimeout, subscriptionId: subscriptionId);
+                        RpcDiagnostics.Stage.StopTimeout, endpointIndex: endpointIndex);
 
                 // A timed-out worker retains ownership until it actually exits.
             });

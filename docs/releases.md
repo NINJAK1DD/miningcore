@@ -55,7 +55,11 @@ JSON record instead of requests, responses, subscription payloads or endpoint UR
 WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
 or objects. All four ZMQ job-manager startup announcements also report only endpoint counts,
 not URLs or topics. ZMQ lifecycle records and thread names share an opaque numeric subscription
-ID, allowing reconnects and thread dumps to be correlated without exposing endpoint data.
+ordinal (`endpointIndex`), allowing reconnects and thread dumps to be correlated without
+exposing endpoint data. ZMQ ordinals are one-based positions in the configured ZMQ endpoint
+map (eligible entries in configuration order), snapshotted before subscription. They survive
+RefCount resubscription. WebSocket ordinals are one-based positions in `pools[].daemons`;
+all three WebSocket caller announcements now report that index instead of host/port details.
 Built-in RPC command constants populate a finite allowlist, including Bitcoin/AuxPoW, Xelis,
 Cryptonote, Zano and the built-in Ethereum/Cortex prefixes; custom methods/prefixes become
 `other`. A missing method (batch/ZMQ) is JSON null. Batch telemetry now uses `batch`, and
@@ -63,7 +67,7 @@ single-request telemetry uses the same safe method labels. Update monitoring fil
 depended on the old free-form messages or joined batch method names.
 
 The fields are transport, stage, allowlisted method, batch count, HTTP status, WebSocket byte
-count, HTTP decoded UTF-16 character count (`responseChars`), elapsed milliseconds, subscription
+count, HTTP decoded UTF-16 character count (`httpResponseChars`), elapsed milliseconds, endpoint
 ID, failure category and numeric failure code. Character counts require no extra response scan.
 Null fields mean not applicable;
 HTTP status is not a claim that the daemon operation succeeded. Logging performs no payload
@@ -76,6 +80,12 @@ example 401/403) without logging response headers. Unknown exception types remai
 arbitrary type names and exception text are not a safe diagnostic vocabulary.
 Subscription cancellation and source disposal now have coordinated ownership: cleanup runs even
 when already cancelled, and disposal waits for worker exit and in-progress cancellation calls.
+Async WebSocket cleanup awaits cancellation-registration removal instead of blocking a worker
+thread. Cancellation/disposal exceptions unrelated to subscription shutdown follow the normal
+retry path. Terminal worker faults are observed and signal a fixed, non-sensitive error to
+subscribers. Catalogue construction failures degrade method labels to `other` rather than
+breaking RPC error handling. Native ZMQ regression tests require the native runtime staged by
+the build; they have been exercised on Windows locally and in Linux CI, not validated on macOS.
 
 **Historical exposure:** releases through v0.3.0 and builds before this fix can record wallet
 passwords and sensitive RPC results at Trace, and subscription secrets/URIs at Debug.

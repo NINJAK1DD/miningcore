@@ -54,6 +54,32 @@ public class RpcSubscriptionLifetimeTests
     }
 
     [Fact]
+    public async Task AsyncCompletionWaitsWithoutBlockingWhileParentCallbackRuns()
+    {
+        using var parent = new CancellationTokenSource();
+        var lifetime = new RpcSubscriptionLifetime(parent.Token);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        using var callback = lifetime.Token.Register(() =>
+        {
+            entered.TrySetResult();
+            Assert.True(release.Wait(TimeSpan.FromSeconds(10)));
+        });
+        var cancelling = Task.Run(parent.Cancel);
+        Task completing = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            completing = lifetime.CompleteAsync().AsTask();
+            Assert.False(completing.IsCompleted); // Calling CompleteAsync returned, rather than parking this thread.
+            Assert.False(lifetime.Completion.IsCompleted);
+        }
+        finally { release.Set(); }
+        await Task.WhenAll(cancelling, completing).WaitAsync(TimeSpan.FromSeconds(10));
+        await lifetime.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public async Task ConcurrentParentCancellationUnsubscribeAndWorkerExitAreSafe()
     {
         for(var i = 0; i < 100; i++)

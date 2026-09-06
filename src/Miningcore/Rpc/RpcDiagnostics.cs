@@ -18,7 +18,7 @@ internal static class RpcDiagnostics
     internal static void Write(ILogger logger, LogLevel level, Transport transport, Stage stage,
         string method = null, int? batchCount = null, int? status = null,
         long? bytes = null, long? elapsedMs = null, Exception failure = null,
-        long? subscriptionId = null, int? responseChars = null)
+        long? endpointIndex = null, int? httpResponseChars = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -33,9 +33,9 @@ internal static class RpcDiagnostics
             ["batchCount"] = batchCount,
             ["httpStatus"] = status ?? (failure is HttpRequestException http ? (int?) http.StatusCode : null),
             ["bytes"] = bytes,
-            ["responseChars"] = responseChars,
+            ["httpResponseChars"] = httpResponseChars,
             ["elapsedMs"] = elapsedMs,
-            ["subscriptionId"] = subscriptionId,
+            ["endpointIndex"] = endpointIndex,
             ["failure"] = failure == null ? null : failure switch
             {
                 TimeoutException => "timeout",

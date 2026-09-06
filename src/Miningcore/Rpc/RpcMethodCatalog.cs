@@ -7,7 +7,15 @@ internal static class RpcMethodCatalog
 {
     // Only compile-time constants from these source-controlled protocol vocabularies.
     // Never discover methods from configuration, plugins, payloads or daemon responses.
-    private static readonly FrozenSet<string> methods = Build();
+    private static readonly FrozenSet<string> methods = BuildSafely(Build);
+
+    // Diagnostics must degrade to "other", not poison RPC exception handling with
+    // a cached type-initializer failure if reflection becomes unavailable.
+    internal static FrozenSet<string> BuildSafely(Func<FrozenSet<string>> build)
+    {
+        try { return build() ?? FrozenSet<string>.Empty; }
+        catch(Exception) { return FrozenSet<string>.Empty; }
+    }
 
     internal static string Label(string method) => method == null ? null :
         method.Length <= 64 && methods.Contains(method) ? method : "other";
@@ -28,6 +36,8 @@ internal static class RpcMethodCatalog
             typeof(Blockchain.Warthog.WarthogCommands),
             typeof(Blockchain.Beam.BeamExplorerCommands), typeof(Blockchain.Beam.BeamWalletCommands),
         };
+        // Some vocabularies also contain fixed REST fragments/event names. These
+        // public literals are safe labels; paths with appended private data are not.
         var result = protocols.SelectMany(Constants).ToHashSet(StringComparer.Ordinal);
         foreach(var method in Constants(typeof(Blockchain.Ethereum.EthCommands)))
         {
@@ -40,7 +50,7 @@ internal static class RpcMethodCatalog
         }
 
         // Built-in call sites that do not live in a public command vocabulary.
-        result.UnionWith(new[] { "createauxblock", "submitauxblock", "getdeploymentinfo", "getblockheader", "getblockhash" });
+        result.UnionWith(new[] { "createauxblock", "submitauxblock", "getdeploymentinfo", "getblockheader" });
         return result.ToFrozenSet(StringComparer.Ordinal);
     }
 

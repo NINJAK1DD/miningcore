@@ -583,7 +583,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 Ssl = extra.SslWs
             };
 
-            logger.Info(() => $"Subscribing to WebSocket {(wsEndpointConfig.Ssl ? "wss" : "ws")}://{wsEndpointConfig.Host}:{wsEndpointConfig.Port}");
+            var endpointIndex = Array.IndexOf(poolConfig.Daemons, endpointConfig) + 1;
+            logger.Info(() => $"Subscribing to WebSocket daemon endpoint {endpointIndex}");
 
             var subscribeRequest = new SubscribeRequest
             {
@@ -591,7 +592,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             };
 
             // stream work updates
-            var getWorkObs = rpc.WebsocketSubscribe(logger, ct, wsEndpointConfig, XelisCommands.Subscribe, subscribeRequest)
+            var getWorkObs = rpc.WebsocketSubscribe(logger, ct, wsEndpointConfig, XelisCommands.Subscribe, subscribeRequest, endpointIndex: endpointIndex)
                 .Publish()
                 .RefCount();
 
