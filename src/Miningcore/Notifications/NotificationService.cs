@@ -31,12 +31,6 @@ public class NotificationService : StartupGatedBackgroundService,
 
         this.clusterConfig = clusterConfig;
         emailSenderConfig = clusterConfig.Notifications?.Email;
-        // The normal configuration pass already rejects this. Keep the service boundary
-        // diagnostic explicit for containers or callers that bypass Program.ValidateConfig.
-        if(clusterConfig.Notifications?.Admin?.Enabled == true &&
-           !string.IsNullOrWhiteSpace(clusterConfig.Notifications.Admin.EmailAddress) &&
-           emailSenderConfig == null)
-            throw new PoolStartupException("Admin email notifications require notifications.email configuration");
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
 
@@ -416,6 +410,11 @@ public class NotificationService : StartupGatedBackgroundService,
 
     public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
     {
+        // The critical-sender singleton is separate from the hosted instance under the
+        // current Autofac registrations, even in normal operation. Recovery also resolves
+        // it without hosting. Delivery cannot rely on the hosted startup validation.
+        if(emailSenderConfig == null)
+            throw new InvalidOperationException("Email delivery requires notifications.email configuration");
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
@@ -455,6 +454,13 @@ public class NotificationService : StartupGatedBackgroundService,
 
             if(clusterConfig.Notifications?.Admin?.Enabled == true)
             {
+                // Normal non-recovery validation already requires email configuration.
+                // Validate before subscriptions/readiness, not in the constructor where
+                // Autofac would wrap the named startup error. Block/payment delivery can
+                // use the sender even when the recipient is absent or whitespace.
+                // Keep this aligned with the policy consolidation tracked in issue #148.
+                if(emailSenderConfig == null)
+                    throw new PoolStartupException("Admin email notifications require notifications.email configuration");
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));

@@ -40,6 +40,7 @@ Use this guide by task:
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
+| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
@@ -64,13 +65,64 @@ The shared Bitcoin-family refresh loop also no longer forces a null-job rebroadc
 its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
 dedicated generic-Bitcoin and BLAKE2b lifecycle regressions cover both error-return and exception paths.
 
-Full-process GPU validation also exposed two existing startup issues: an omitted optional
-`notifications` section could prevent service construction, and debug logging printed the
-PostgreSQL connection string. Optional notification configuration now remains safely disabled
-when absent, and database/client-certificate credentials are no longer included in that log.
-Database diagnostics retain only host, port, database, user and the configured SSL policy;
-certificate/key paths are omitted and control characters are escaped. An enabled admin-email
-destination without an email provider also receives an explicit service-startup diagnostic.
+Full-process GPU validation also exposed shared startup issues fixed independently in
+PRs #142 and #143. Their current behavior and compatibility boundaries are documented under
+[optional notification startup](#unreleased-optional-notification-startup) and
+[PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+
+## Unreleased: optional notification startup
+
+Omitting the optional `notifications` section no longer causes a constructor null reference
+in the email/Pushover service graph. Omitted or empty sections and disabled admin notifications
+remain optional.
+Enabled admin notifications without `notifications.email` now raise an explicit
+`PoolStartupException` before hosted-service subscriptions or readiness, even when the recipient
+is missing or whitespace. Construction remains safe for dependency-injection resolution.
+
+**Compatibility:** normal, non-recovery startup already rejects this incomplete email configuration
+in `Program.ValidateConfig`. Custom hosts that bypass that pass now fail when the notification
+service starts instead of at later delivery. Recovery mode skips these configuration checks and
+does not start this hosted service; its lazy critical sender remains constructible. The critical
+sender is a separate, unhosted singleton in normal operation too. An attempted email without a
+provider produces an `InvalidOperationException` naming the missing delivery configuration within
+the existing critical-delivery aggregate, not a startup exception. Failure handlers catch and log
+that aggregate. Other configured critical transports can still be attempted. Configure the email
+sender or disable admin notifications; do not rely on
+undeliverable critical alerts. No coin-family, accounting or schema change is made.
+
+The existing top-level/admin/channel switch semantics are unchanged. Their validation and
+documentation mismatch is tracked separately in [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148).
+
+## Unreleased: PostgreSQL credential-safe diagnostics
+
+PostgreSQL startup debug logging no longer prints the connection string, which could expose
+database and client-certificate passwords. The explicit allowlist contains host, port, database,
+user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four
+Boolean presence flags for the password, certificate, key and certificate password.
+No credential values or certificate/key paths are included, and control characters are escaped.
+
+These fields describe configuration, not negotiated connection security. `<unset>` means no
+SSL mode override was supplied, not that encryption is disabled. Npgsql 9 defaults to `Prefer`:
+it allows opportunistic TLS without server-certificate validation, or a plaintext connection.
+The `TlsNoValidate` log field reflects the `tlsNoValidate` configuration setting.
+Presence flags describe explicit configuration, not file existence or driver/environment credentials.
+Certificate/key paths containing only whitespace count as absent. TLS-specific settings are
+applied only when `tls` is enabled. In the bundled Npgsql 9 driver, `Require` requires encryption
+but **does not validate the server certificate**, regardless of `tlsNoValidate`; see the
+[Npgsql SSL mode documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls).
+This fix changes neither connection behavior nor schema.
+
+All releases up to and including **v0.3.0** contain the old PostgreSQL startup debug log.
+Operators who enabled debug logging should treat retained logs as potentially sensitive,
+restrict access, and rotate exposed database or certificate credentials through their normal
+credential-management procedure. This fix is limited to that startup diagnostic: configuration
+dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets and must not be
+treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
+[configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
+[RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
+Connection-policy follow-ups are tracked separately in
+[TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
+and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).
 
 ## v0.3.0 highlights
 
@@ -804,6 +856,10 @@ from the container network.
 
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
+
+PostgreSQL startup debug-log filters must now match `Using PostgreSQL persistence ` instead of
+`Using postgres connection string:`. The new single-line JSON diagnostic intentionally omits
+credential values; see [credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
 
 ### Ubuntu 26.04 primary release and source-build support
 
