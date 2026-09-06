@@ -41,6 +41,7 @@ Use this guide by task:
 | Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
+| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#unreleased-credential-safe-rpc-transport-diagnostics) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
@@ -52,17 +53,29 @@ copying a recovery command from the maintainer section.
 HTTP single/batch Trace logs and WebSocket Debug logs now use a bounded `RPC diagnostic`
 JSON record instead of requests, responses, subscription payloads or endpoint URLs.
 WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
-or objects. ZMQ diagnostics also omit endpoint/topic strings. Known RPC methods use an
-explicit allowlist; custom methods become `other`. Batch telemetry now uses `batch`, and
+or objects. All four ZMQ job-manager startup announcements also report only endpoint counts,
+not URLs or topics. ZMQ lifecycle records and thread names share an opaque numeric subscription
+ID, allowing reconnects and thread dumps to be correlated without exposing endpoint data.
+Built-in RPC command constants populate a finite allowlist, including Bitcoin/AuxPoW, Xelis,
+Cryptonote, Zano and the built-in Ethereum/Cortex prefixes; custom methods/prefixes become
+`other`. A missing method (batch/ZMQ) is JSON null. Batch telemetry now uses `batch`, and
 single-request telemetry uses the same safe method labels. Update monitoring filters that
 depended on the old free-form messages or joined batch method names.
 
-The fields are transport, stage, allowlisted method, batch count, HTTP status, UTF-8 decoded
-response size, elapsed milliseconds and failure category. Null fields mean not applicable;
+The fields are transport, stage, allowlisted method, batch count, HTTP status, WebSocket byte
+count, HTTP decoded UTF-16 character count (`responseChars`), elapsed milliseconds, subscription
+ID, failure category and numeric failure code. Character counts require no extra response scan.
+Null fields mean not applicable;
 HTTP status is not a claim that the daemon operation succeeded. Logging performs no payload
 redaction or serialization: request authentication, wire bodies, response/error data, timeouts
 and payout decisions remain unchanged. There is no database migration or TLS-policy change.
-Subscription cleanup now tolerates an already-finished WebSocket worker after cancellation.
+Failures distinguish timeouts with a structural `TimeoutException` cause from cancellations.
+Numeric codes identify .NET `WebSocketError` / `HttpRequestError`, native socket errors or ZMQ
+errno, according to the failure category. WebSocket handshake failures retain HTTP status (for
+example 401/403) without logging response headers. Unknown exception types remain `other`;
+arbitrary type names and exception text are not a safe diagnostic vocabulary.
+Subscription cancellation and source disposal now have coordinated ownership: cleanup runs even
+when already cancelled, and disposal waits for worker exit and in-progress cancellation calls.
 
 **Historical exposure:** releases through v0.3.0 and builds before this fix can record wallet
 passwords and sensitive RPC results at Trace, and subscription secrets/URIs at Debug.
@@ -81,7 +94,8 @@ Configuration dumps remain covered by
 [#144](https://github.com/NINJAK1DD/miningcore/issues/144). TLS certificate validation is not
 established by safe logging. The design follows the
 [OWASP logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
-by excluding sensitive inputs rather than trying to enumerate secret-bearing RPC methods.
+by excluding payloads and endpoint data entirely rather than enumerating secret-bearing RPC
+methods. Method labels are separately allowlisted from source-controlled protocol constants.
 
 ## Unreleased: Bitcoin BLAKE2b header-v2
 

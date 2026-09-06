@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
+using ZeroMQ;
 
 namespace Miningcore.Rpc;
 
@@ -12,19 +13,12 @@ internal static class RpcDiagnostics
     internal enum Transport { Http, WebSocket, Zmq }
     internal enum Stage { Request, Response, Connect, Subscribe, Receive, Failure, StopTimeout }
 
-    internal static string Method(string method) => method switch
-    {
-        "walletpassphrase" or "walletlock" or "getblocktemplate" or "submitblock" or
-        "getblock" or "getblockhash" or "getblockchaininfo" or "getnetworkinfo" or
-        "getdeploymentinfo" or "getbalance" or "gettransaction" or "sendmany" or
-        "sendtoaddress" or "validateaddress" or "getinfo" or "getmininginfo" or
-        "eth_subscribe" or "eth_getWork" or "eth_submitWork" => method,
-        _ => "other",
-    };
+    internal static string Method(string method) => RpcMethodCatalog.Label(method);
 
     internal static void Write(ILogger logger, LogLevel level, Transport transport, Stage stage,
         string method = null, int? batchCount = null, int? status = null,
-        long? bytes = null, long? elapsedMs = null, Exception failure = null)
+        long? bytes = null, long? elapsedMs = null, Exception failure = null,
+        long? subscriptionId = null, int? responseChars = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -37,17 +31,36 @@ internal static class RpcDiagnostics
             ["stage"] = stage.ToString(),
             ["method"] = Method(method),
             ["batchCount"] = batchCount,
-            ["httpStatus"] = status,
+            ["httpStatus"] = status ?? (failure is HttpRequestException http ? (int?) http.StatusCode : null),
             ["bytes"] = bytes,
+            ["responseChars"] = responseChars,
             ["elapsedMs"] = elapsedMs,
+            ["subscriptionId"] = subscriptionId,
             ["failure"] = failure == null ? null : failure switch
             {
+                TimeoutException => "timeout",
+                OperationCanceledException { InnerException: TimeoutException } => "timeout",
                 OperationCanceledException => "cancelled",
                 JsonException => "json",
                 HttpRequestException => "http",
                 WebSocketException => "websocket",
                 InvalidDataException => "invalid-data",
+                ZException => "zmq",
+                System.Net.Sockets.SocketException => "socket",
+                ObjectDisposedException => "disposed",
+                ArgumentException => "argument",
+                IOException => "io",
+                // Do not use arbitrary exception type names: custom/dynamic types
+                // need not have safe names. Numeric platform codes supply detail.
                 _ => "other",
+            },
+            ["failureCode"] = failure switch
+            {
+                WebSocketException ws => (int?) ws.WebSocketErrorCode,
+                HttpRequestException request => (int?) request.HttpRequestError,
+                ZException zmq => zmq.Error?.Number,
+                System.Net.Sockets.SocketException socket => socket.NativeErrorCode,
+                _ => null,
             },
         };
         logger.Log(level, "RPC diagnostic " + data.ToString(Formatting.None));

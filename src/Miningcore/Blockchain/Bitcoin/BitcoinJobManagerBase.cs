@@ -111,7 +111,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
             if(zmq.Count > 0)
             {
-                logger.Info(() => $"Subscribing to ZMQ push-updates from {string.Join(", ", zmq.Values)}");
+                logger.Info(() => $"Subscribing to {zmq.Count} ZMQ push-update endpoint(s)");
 
                 var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq)
                     .Select(msg =>

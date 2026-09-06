@@ -54,6 +54,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Miningcore\Miningcore.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="ZeroMQ">
+      <HintPath>..\..\libs\ZeroMQ.dll</HintPath>
+    </Reference>
     <ProjectReference Include="..\Miningcore.Tests.ProcessHost\Miningcore.Tests.ProcessHost.csproj" />
   </ItemGroup>
 

@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Reflection;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -23,17 +26,22 @@ using NLog;
 using NLog.Targets;
 using NSubstitute;
 using Xunit;
+using ZeroMQ;
 
 namespace Miningcore.Tests.Rpc;
 
-[CollectionDefinition("RPC diagnostic global settings", DisableParallelization = true)]
-public class RpcDiagnosticCollection { }
+[CollectionDefinition(Name, DisableParallelization = true)]
+public class RpcDiagnosticCollection
+{
+    public const string Name = "RPC diagnostic global settings";
+}
 
-[Collection("RPC diagnostic global settings")]
+[Collection(RpcDiagnosticCollection.Name)]
 public class RpcDiagnosticTests
 {
     private const string Secret = "synthetic-private-secret";
     private const string UnsafeText = Secret + "\r\n\u0085\u2028\u2029forged-log";
+    private static readonly string EncodedCredentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("rpc-user:" + Secret));
 
     [Theory]
     [InlineData(false, "success")]
@@ -56,7 +64,7 @@ public class RpcDiagnosticTests
             try
             {
                 Assert.Contains(Secret, context.Request.QueryString.Value);
-                Assert.Equal("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("rpc-user:" + Secret)),
+                Assert.Equal("Basic " + EncodedCredentials,
                     context.Request.Headers.Authorization.ToString());
                 using var reader = new StreamReader(context.Request.Body);
                 var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
@@ -184,8 +192,7 @@ public class RpcDiagnosticTests
         Assert.Equal(UnsafeText, request["params"][0].Value<string>());
         Assert.Equal(response, await message.Task.WaitAsync(deadline.Token));
         if(observerFails)
-            while(!logs.Messages.Any(x => x.Contains("\"stage\":\"Failure\"")))
-                await Task.Delay(10, deadline.Token);
+            await logs.WaitForFailure();
         deadline.Cancel();
         logs.AssertSafe();
         Assert.Contains(logs.Messages, x => x.Contains("\"stage\":\"Subscribe\""));
@@ -275,17 +282,150 @@ public class RpcDiagnosticTests
         var settings = new JsonSerializerSettings { Converters = { new ThrowingConverter(new InvalidOperationException(UnsafeText)) } };
         using var subscription = client.WebsocketSubscribe(logs.Logger, deadline.Token, server.Endpoint(),
             UnsafeText, new[] { Secret }, serializationFailure ? settings : null).Subscribe(new Observer(_ => { }));
-        while(!logs.Messages.Any(x => x.Contains("\"stage\":\"Failure\"")))
-            await Task.Delay(10, deadline.Token);
+        await logs.WaitForFailure();
         deadline.Cancel();
         logs.AssertSafe();
         Assert.Contains(logs.Messages, x => x.Contains(serializationFailure ? "\"failure\":\"other\"" : "\"failure\":\"websocket\""));
+        if(!serializationFailure)
+            Assert.Contains(logs.Messages, x => x.Contains("\"httpStatus\":401"));
+    }
+
+    [Theory]
+    [InlineData("listunspent")]
+    [InlineData("createauxblock")]
+    [InlineData("submitauxblock")]
+    [InlineData("get_info")]
+    [InlineData("get_miner_work")]
+    [InlineData("get_difficulty")]
+    [InlineData("getblockheaderbyhash")]
+    [InlineData("ctxc_getWork")]
+    [InlineData("ctxc_submitWork")]
+    [InlineData("subscribe")]
+    public async Task BuiltInMethods_PreserveDistinctWireAndTelemetryLabels(string method)
+    {
+        using var logs = new CapturedLogs();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync(deadline.Token));
+            Assert.Equal(method, request["method"].Value<string>());
+            await context.Response.WriteAsync(new JObject
+            {
+                ["id"] = request["id"], ["result"] = new JObject(),
+            }.ToString(Formatting.None), deadline.Token);
+        });
+        var bus = Substitute.For<IMessageBus>();
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), bus, "test");
+        Assert.Null((await client.ExecuteAsync<JToken>(logs.Logger, method, deadline.Token)).Error);
+        var telemetry = bus.ReceivedCalls().SelectMany(x => x.GetArguments()).OfType<TelemetryEvent>();
+        Assert.Equal(method, Assert.Single(telemetry).Info);
+        logs.AssertSafe();
+        Assert.All(logs.Messages, x => Assert.Equal(method, JObject.Parse(x["RPC diagnostic ".Length..])["method"].Value<string>()));
+    }
+
+    [Fact]
+    public void BuiltInCatalog_CoversCommandConstantsWithoutAcceptingDynamicPrefixes()
+    {
+        var types = typeof(RpcClient).Assembly.GetTypes().Where(x =>
+            x.Namespace?.StartsWith("Miningcore.Blockchain.", StringComparison.Ordinal) == true &&
+            x.Name.EndsWith("Commands", StringComparison.Ordinal));
+        foreach(var type in types)
+        foreach(var field in type.GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(x => x.IsLiteral && x.FieldType == typeof(string)))
+        {
+            var value = (string) field.GetRawConstantValue();
+            var methods = type.Name == "EthCommands" && value.StartsWith('_')
+                ? new[] { "eth" + value, "ctxc" + value } : new[] { value };
+            foreach(var method in methods)
+            {
+                Assert.InRange(method.Length, 1, 64);
+                Assert.Equal(method, RpcDiagnostics.Method(method));
+            }
+        }
+        Assert.Null(RpcDiagnostics.Method(null));
+        Assert.Equal("other", RpcDiagnostics.Method(Secret + "_getWork"));
+        Assert.Equal("other", RpcDiagnostics.Method("get_info" + UnsafeText));
+    }
+
+    [Fact]
+    public void Failures_PreserveSafeCodesAndDistinguishTimeoutFromCancellation()
+    {
+        using var logs = new CapturedLogs();
+        var cases = new (Exception Error, string Category, int? Code, int? Status)[]
+        {
+            (new TaskCanceledException(UnsafeText, new TimeoutException(UnsafeText)), "timeout", null, null),
+            (new OperationCanceledException(UnsafeText), "cancelled", null, null),
+            (new System.Net.Http.HttpRequestException(UnsafeText, null, HttpStatusCode.Forbidden), "http", 0, 403),
+            (new WebSocketException(WebSocketError.NotAWebSocket, UnsafeText), "websocket", (int) WebSocketError.NotAWebSocket, null),
+            (new ZException(ZError.EINVAL), "zmq", ZError.EINVAL.Number, null),
+            (new InvalidOperationException(UnsafeText), "other", null, null),
+        };
+        foreach(var item in cases)
+            RpcDiagnostics.Write(logs.Logger, NLog.LogLevel.Error, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Failure, failure: item.Error);
+        logs.AssertSafe();
+        var records = logs.Messages.Select(x => JObject.Parse(x["RPC diagnostic ".Length..])).ToArray();
+        for(var i = 0; i < cases.Length; i++)
+        {
+            Assert.Equal(cases[i].Category, records[i]["failure"].Value<string>());
+            Assert.Equal(cases[i].Code, records[i]["failureCode"].Value<int?>());
+            Assert.Equal(cases[i].Status, records[i]["httpStatus"].Value<int?>());
+            Assert.Equal(JTokenType.Null, records[i]["method"].Type);
+        }
+    }
+
+    [Fact]
+    public void Zmq_DeliversSecretTopicAndPayloadWithoutLoggingThem()
+    {
+        using var logs = new CapturedLogs(NLog.LogLevel.Debug);
+        using var publisher = new ZSocket(ZSocketType.XPUB);
+        publisher.ReceiveTimeout = TimeSpan.FromSeconds(10);
+        publisher.Bind("tcp://127.0.0.1:*");
+        var endpoint = new DaemonEndpointConfig();
+        var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var received = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = client.ZmqSubscribe(logs.Logger, CancellationToken.None,
+            new Dictionary<DaemonEndpointConfig, (string, string)> { [endpoint] = (publisher.LastEndpoint, UnsafeText) })
+            .Subscribe(new ZmqObserver(message =>
+            {
+                using(message)
+                    received.TrySetResult(new[] { message[0].ReadString(), message[1].ReadString(), Thread.CurrentThread.Name });
+            }));
+        // XPUB acknowledges the subscription: no sleep/slow-joiner race before publishing.
+        using var subscribed = publisher.ReceiveFrame();
+        Assert.NotNull(subscribed);
+        using var outgoing = new ZMessage { new ZFrame(UnsafeText), new ZFrame(Secret) };
+        publisher.SendMessage(outgoing);
+        var result = received.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        Assert.Equal(UnsafeText, result[0]);
+        Assert.Equal(Secret, result[1]);
+        Assert.StartsWith("ZMQ subscriber ", result[2]);
+        Assert.DoesNotContain(Secret, result[2]);
+        logs.AssertSafe();
+        var diagnostic = JObject.Parse(Assert.Single(logs.Messages)["RPC diagnostic ".Length..]);
+        Assert.Equal(JTokenType.Null, diagnostic["method"].Type);
+        Assert.Equal("ZMQ subscriber " + diagnostic["subscriptionId"].Value<long>(), result[2]);
+    }
+
+    [Fact]
+    public async Task Zmq_RejectsSecretEndpointWithoutLoggingIt()
+    {
+        using var logs = new CapturedLogs(NLog.LogLevel.Debug);
+        var endpoint = new DaemonEndpointConfig();
+        var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        using var subscription = client.ZmqSubscribe(logs.Logger, CancellationToken.None,
+            new Dictionary<DaemonEndpointConfig, (string, string)> { [endpoint] = ("invalid-" + Secret + "://" + Secret, UnsafeText) })
+            .Subscribe(new ZmqObserver(_ => { }));
+        await logs.WaitForFailure();
+        logs.AssertSafe();
+        Assert.Contains(logs.Messages, x => x.Contains("\"failure\":\"zmq\""));
     }
 
     private sealed class CapturedLogs : IDisposable
     {
         private readonly LogFactory factory = new();
-        private readonly MemoryTarget target = new() { Layout = "${message}${exception:format=tostring}" };
+        private readonly ConcurrentLogTarget target = new() { Layout = "${message}${exception:format=tostring}" };
         public CapturedLogs(NLog.LogLevel minimum = null)
         {
             var config = new NLog.Config.LoggingConfiguration();
@@ -295,7 +435,12 @@ public class RpcDiagnosticTests
         }
         public NLog.ILogger Logger { get; }
         public void Disable() => factory.Configuration = new NLog.Config.LoggingConfiguration();
-        public string[] Messages => target.Logs.ToArray();
+        public string[] Messages => target.Messages.ToArray();
+        public async Task WaitForFailure()
+        {
+            try { await target.Failure.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch(TimeoutException) { Assert.True(false, "Expected an RPC Failure diagnostic within 10 seconds"); }
+        }
         public void AssertSafe()
         {
             Assert.NotEmpty(Messages);
@@ -303,16 +448,36 @@ public class RpcDiagnosticTests
             {
                 Assert.DoesNotContain(Secret, message);
                 Assert.DoesNotContain("rpc-user", message);
+                Assert.DoesNotContain(EncodedCredentials, message);
                 Assert.DoesNotContain("127.0.0.1", message);
                 Assert.True(message.Length < 512);
                 Assert.DoesNotContain(message, c => c is '\r' or '\n' or '\u0085' or '\u2028' or '\u2029');
                 Assert.StartsWith("RPC diagnostic ", message);
                 var data = JObject.Parse(message["RPC diagnostic ".Length..]);
-                Assert.Equal(new[] { "transport", "stage", "method", "batchCount", "httpStatus", "bytes", "elapsedMs", "failure" },
+                Assert.Equal(new[] { "transport", "stage", "method", "batchCount", "httpStatus", "bytes", "responseChars", "elapsedMs", "subscriptionId", "failure", "failureCode" },
                     data.Properties().Select(x => x.Name).ToArray());
             }
         }
         public void Dispose() => factory.Dispose();
+    }
+
+    private sealed class ConcurrentLogTarget : TargetWithLayout
+    {
+        public ConcurrentQueue<string> Messages { get; } = new();
+        public TaskCompletionSource Failure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override void Write(LogEventInfo logEvent)
+        {
+            var text = Layout.Render(logEvent);
+            Messages.Enqueue(text);
+            if(text.Contains("\"stage\":\"Failure\"", StringComparison.Ordinal)) Failure.TrySetResult();
+        }
+    }
+
+    private sealed class ZmqObserver(Action<ZMessage> next) : IObserver<ZMessage>
+    {
+        public void OnNext(ZMessage value) => next(value);
+        public void OnError(Exception error) { }
+        public void OnCompleted() { }
     }
 
     private sealed class ThrowingConverter(Exception error) : JsonConverter

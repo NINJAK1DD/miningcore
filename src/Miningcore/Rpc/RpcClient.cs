@@ -47,6 +47,8 @@ public class RpcClient
     private readonly IMessageBus messageBus;
     private readonly string poolId;
 
+    private static long nextSubscriptionId;
+
     private static readonly HttpClient httpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
@@ -185,7 +187,7 @@ public class RpcClient
 
                 RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                     RpcDiagnostics.Stage.Response, method, status: (int) response.StatusCode,
-                    bytes: logger.IsTraceEnabled ? Encoding.UTF8.GetByteCount(responseContent) : null,
+                    responseChars: responseContent.Length,
                     elapsedMs: sw.ElapsedMilliseconds);
 
                 // deserialize response
@@ -247,7 +249,7 @@ public class RpcClient
 
                 RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                     RpcDiagnostics.Stage.Response, batchCount: batch.Length, status: (int) response.StatusCode,
-                    bytes: logger.IsTraceEnabled ? Encoding.UTF8.GetByteCount(responseContent) : null,
+                    responseChars: responseContent.Length,
                     elapsedMs: sw.ElapsedMilliseconds);
 
                 using(var jreader = new JsonTextReader(new StringReader(responseContent)))
@@ -325,94 +327,96 @@ public class RpcClient
     {
         return Observable.Defer(() => Observable.Create<byte[]>(obs =>
         {
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var lifetime = new RpcSubscriptionLifetime(ct);
+            var token = lifetime.Token;
 
-            Task.Run(async () =>
+            lifetime.Run(async () =>
             {
-                using(cts)
+                var buf = new byte[0x10000];
+
+                while(!token.IsCancellationRequested)
                 {
-                    var buf = new byte[0x10000];
-
-                    while(!cts.IsCancellationRequested)
+                    int? handshakeStatus = null;
+                    try
                     {
-                        try
+                        using(var client = new ClientWebSocket())
                         {
-                            using(var client = new ClientWebSocket())
+                            // connect
+                            var protocol = endPoint.Ssl ? "wss" : "ws";
+                            var uri = new Uri($"{protocol}://{endPoint.Host}:{endPoint.Port}{endPoint.HttpPath}");
+                            client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+
+                            RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
+                                RpcDiagnostics.Stage.Connect, method);
+                            client.Options.CollectHttpResponseDetails = true;
+                            try { await client.ConnectAsync(uri, token); }
+                            finally
                             {
-                                // connect
-                                var protocol = endPoint.Ssl ? "wss" : "ws";
-                                var uri = new Uri($"{protocol}://{endPoint.Host}:{endPoint.Port}{endPoint.HttpPath}");
-                                client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+                                if(client.HttpStatusCode != 0)
+                                    handshakeStatus = (int) client.HttpStatusCode;
+                            }
 
-                                RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
-                                    RpcDiagnostics.Stage.Connect, method);
-                                await client.ConnectAsync(uri, cts.Token);
+                            // subscribe
+                            var request = new JsonRpcRequest(method, payload, GetRequestId());
+                            var json = JsonConvert.SerializeObject(request, payloadJsonSerializerSettings);
+                            var requestData = new ArraySegment<byte>(Encoding.UTF8.GetBytes(json));
 
-                                // subscribe
-                                var request = new JsonRpcRequest(method, payload, GetRequestId());
-                                var json = JsonConvert.SerializeObject(request, payloadJsonSerializerSettings);
-                                var requestData = new ArraySegment<byte>(Encoding.UTF8.GetBytes(json));
+                            RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
+                                RpcDiagnostics.Stage.Subscribe, method);
+                            await client.SendAsync(requestData, WebSocketMessageType.Text, true, token);
 
-                                RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
-                                    RpcDiagnostics.Stage.Subscribe, method);
-                                await client.SendAsync(requestData, WebSocketMessageType.Text, true, cts.Token);
+                            // stream response
+                            while(!token.IsCancellationRequested && client.State == WebSocketState.Open)
+                            {
+                                await using var stream = new MemoryStream();
 
-                                // stream response
-                                while(!cts.IsCancellationRequested && client.State == WebSocketState.Open)
+                                do
                                 {
-                                    await using var stream = new MemoryStream();
+                                    var response = await client.ReceiveAsync(buf, token);
 
-                                    do
-                                    {
-                                        var response = await client.ReceiveAsync(buf, cts.Token);
+                                    if(response.MessageType == WebSocketMessageType.Binary)
+                                        throw new InvalidDataException("expected text, received binary data");
 
-                                        if(response.MessageType == WebSocketMessageType.Binary)
-                                            throw new InvalidDataException("expected text, received binary data");
+                                    await stream.WriteAsync(buf, 0, response.Count, token);
 
-                                        await stream.WriteAsync(buf, 0, response.Count, cts.Token);
+                                    if(response.EndOfMessage)
+                                        break;
+                                } while(!token.IsCancellationRequested && client.State == WebSocketState.Open);
 
-                                        if(response.EndOfMessage)
-                                            break;
-                                    } while(!cts.IsCancellationRequested && client.State == WebSocketState.Open);
+                                RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
+                                    RpcDiagnostics.Stage.Receive, method, bytes: stream.Length);
 
-                                    RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
-                                        RpcDiagnostics.Stage.Receive, method, bytes: stream.Length);
-
-                                    // publish
-                                    obs.OnNext(stream.ToArray());
-                                }
+                                // publish
+                                obs.OnNext(stream.ToArray());
                             }
                         }
+                    }
 
-                        catch (TaskCanceledException)
-                        {
-                            break;
-                        }
+                    catch (TaskCanceledException)
+                    {
+                        break;
+                    }
 
-                        catch (ObjectDisposedException)
-                        {
-                            break;
-                        }
+                    catch (ObjectDisposedException)
+                    {
+                        break;
+                    }
 
-                        catch(Exception ex)
-                        {
-                            RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
-                                RpcDiagnostics.Stage.Failure, method, failure: ex);
-                        }
+                    catch(Exception ex)
+                    {
+                        RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
+                            RpcDiagnostics.Stage.Failure, method, status: handshakeStatus, failure: ex);
+                    }
 
-                        if(!cts.IsCancellationRequested)
-                            await Task.Delay(TimeSpan.FromSeconds(5), cts.Token);
+                    if(!token.IsCancellationRequested)
+                    {
+                        try { await Task.Delay(TimeSpan.FromSeconds(5), token); }
+                        catch(OperationCanceledException) when(token.IsCancellationRequested) { break; }
                     }
                 }
-            }, cts.Token);
-
-            return Disposable.Create(() =>
-            {
-                // The worker owns disposal and may already have finished after
-                // external cancellation. Unsubscribing must remain idempotent.
-                try { cts.Cancel(); }
-                catch(ObjectDisposedException) { }
             });
+
+            return Disposable.Create(lifetime.Cancel);
         }));
     }
 
@@ -420,65 +424,71 @@ public class RpcClient
     {
         return Observable.Defer(() => Observable.Create<ZMessage>(obs =>
         {
-            var tcs = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var lifetime = new RpcSubscriptionLifetime(ct);
+            var token = lifetime.Token;
+            var subscriptionId = Interlocked.Increment(ref nextSubscriptionId);
 
             var thread = new Thread(() =>
             {
-                while(!tcs.IsCancellationRequested)
+                try
                 {
-                    try
+                    while(!token.IsCancellationRequested)
                     {
-                        using(var subSocket = new ZSocket(ZSocketType.SUB))
+                        try
                         {
-                            //subSocket.Options.ReceiveHighWatermark = 1000;
-                            subSocket.ReceiveTimeout = TimeSpan.FromSeconds(1);
-                            subSocket.Connect(url);
-                            subSocket.Subscribe(topic);
-
-                            RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.Zmq,
-                                RpcDiagnostics.Stage.Subscribe);
-
-                            while(!tcs.IsCancellationRequested)
+                            using(var subSocket = new ZSocket(ZSocketType.SUB))
                             {
-                                var msg = subSocket.ReceiveMessage(out var error);
+                                //subSocket.Options.ReceiveHighWatermark = 1000;
+                                subSocket.ReceiveTimeout = TimeSpan.FromSeconds(1);
+                                subSocket.Connect(url);
+                                subSocket.Subscribe(topic);
 
-                                if(msg != null)
-                                    obs.OnNext(msg);
-                                else if(error != ZError.EAGAIN && error != ZError.ETIMEDOUT)
-                                    throw new ZException(error);
+                                RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.Zmq,
+                                    RpcDiagnostics.Stage.Subscribe, subscriptionId: subscriptionId);
+
+                                while(!token.IsCancellationRequested)
+                                {
+                                    var msg = subSocket.ReceiveMessage(out var error);
+
+                                    if(msg != null)
+                                        obs.OnNext(msg);
+                                    else if(error != ZError.EAGAIN && error != ZError.ETIMEDOUT)
+                                        throw new ZException(error);
+                                }
                             }
                         }
-                    }
 
-                    catch(Exception ex)
-                    {
-                        if(tcs.IsCancellationRequested)
-                            break;
+                        catch(Exception ex)
+                        {
+                            if(token.IsCancellationRequested)
+                                break;
 
-                        RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.Zmq,
-                            RpcDiagnostics.Stage.Failure, failure: ex);
+                            RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.Zmq,
+                                RpcDiagnostics.Stage.Failure, failure: ex, subscriptionId: subscriptionId);
 
-                        // do not run wild in case of a persistent error condition
-                        Thread.Sleep(1000);
+                            // do not run wild in case of a persistent error condition
+                            Thread.Sleep(1000);
+                        }
                     }
                 }
+                finally { lifetime.Complete(); }
             })
             {
                 IsBackground = true,
-                Name = "ZMQ subscriber",
+                Name = $"ZMQ subscriber {subscriptionId}",
             };
 
             thread.Start();
 
             return Disposable.Create(() =>
             {
-                tcs.Cancel();
+                lifetime.Cancel();
 
                 if(!thread.Join(TimeSpan.FromSeconds(5)))
                     RpcDiagnostics.Write(logger, LogLevel.Warn, RpcDiagnostics.Transport.Zmq,
-                        RpcDiagnostics.Stage.StopTimeout);
+                        RpcDiagnostics.Stage.StopTimeout, subscriptionId: subscriptionId);
 
-                tcs.Dispose();
+                // A timed-out worker retains ownership until it actually exits.
             });
         }));
     }

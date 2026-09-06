@@ -246,6 +246,9 @@ page operators. Also alert on a sustained degraded gauge, a new fallback episode
 timeout/transport-failure histogram counts. The ordinary
 `miningcore_rpcrequest_execution_time` series remains useful for other RPC methods, but these
 auxiliary-specific series are the authoritative view of failed and cancelled template attempts.
+The credential-safe RPC diagnostic change preserves built-in method labels, including
+`createauxblock` and `submitauxblock`. Batch calls use `method="batch"`; unknown/custom methods
+use `method="other"` to avoid leaking configured data or creating unbounded label cardinality.
 
 ### Candidate ownership and deadlines
 
