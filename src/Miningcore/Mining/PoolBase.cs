@@ -77,6 +77,11 @@ public abstract class PoolBase : StratumServer,
     private StratumListenerReservationSession stratumListenerReservations;
 
     protected abstract Task SetupJobManager(CancellationToken ct);
+    protected virtual void NotifyPoolOnline()
+    {
+        LogPoolInfo();
+        messageBus.NotifyPoolStatus(this, PoolStatus.Online);
+    }
     protected abstract WorkerContextBase CreateWorkerContext();
 
     protected double? GetStaticDiffFromPassparts(string[] parts)
@@ -435,9 +440,7 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
                     listener.Activate();
             }
 
-            LogPoolInfo();
-
-            messageBus.NotifyPoolStatus(this, PoolStatus.Online);
+            NotifyPoolOnline();
 
             if(poolConfig.EnableInternalStratum == true)
                 await RunStratum(ct, listeners);

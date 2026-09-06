@@ -62,6 +62,15 @@ public partial class PoolInfo
     // Configuration Properties directly mapping to PoolConfig (omitting security relevant fields)
     public string Id { get; set; }
 
+    // Local mining availability, not a claim about payment completion or daemon health.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string MiningState { get; set; }
+
+    // Latched local isolation survives "stopping"; shutdown-only failures do not
+    // set this flag. No exception details.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? MiningFaulted { get; set; }
+
     public ApiCoinConfig Coin { get; set; }
     public Dictionary<int, ApiPoolEndpoint> Ports { get; set; }
 

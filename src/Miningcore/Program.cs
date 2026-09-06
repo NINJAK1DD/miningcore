@@ -2280,7 +2280,8 @@ public class Program : ProcessStatusBackgroundService
                         "before the PPS runtime contract was checked",
                         pool.Id);
             }
-            else if(pool.Template.Family != CoinFamily.Bitcoin)
+            else if(pool.Template.Family is not (CoinFamily.Bitcoin or
+                    CoinFamily.BitcoinBlake2b))
                 throw new PoolStartupException(
                     $"Pool '{pool.Id}' uses PPS, which is currently supported only by the " +
                     "audited Bitcoin-family share and reward contract",

@@ -47,6 +47,49 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: Bitcoin BLAKE2b header-v2
+
+The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
+29.4.1.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
+direct-coinbase settlement on another chain, or implement the DATUM pool protocol.
+The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and miner contract,
+isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
+Existing schema migrations remain applicable; no new schema is introduced by this feature.
+Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
+**Failure isolation:** multi-pool configurations remain supported. A terminal BLAKE2b pool
+failure (including a changed reviewed daemon version or missing mandatory GBT rule) closes
+only that pool's listeners and new work/payment admission. Healthy sibling pools continue.
+Already-owned submissions and payments finish without pool-local cancellation so accepted
+blocks and liabilities can still be persisted. Daemon classifications completing after isolation
+are discarded before any block/reward/balance commit; database transitions admitted before
+isolation may finish, but do not authorize a new wallet payout. The pool API exposes its
+`miningState`, including `draining` and `stopping`, plus a `miningFaulted` flag that preserves
+the local fault signal during shutdown. Drain warnings count outstanding admission leases
+(including nested leases), starting after 30 seconds rather than during fast drains. The
+first three secondary failures remain visible at Info; later failures use Debug without
+repeating the primary notification.
+A faulted pool requires an operator restart, not an automatic compatibility bypass. Transport
+outages instead withhold fresh work and retry. Shared financial-durability and cluster-wide
+startup failures retain their existing process-wide shutdown safeguards. See the
+[isolation boundary](bitcoin-blake2b.md#multi-pool-failure-isolation) before deployment.
+The reviewed activation parameters now share one code contract, checked against the JSON
+catalogue and again at runtime. Unexpected nonempty `coinbaseaux.flags` are rejected explicitly
+before coinbase construction. Header byte order and the supported miner profile are unchanged.
+
+Full-process GPU validation also exposed shared startup issues fixed independently in
+PRs #142 and #143. Their current behavior and compatibility boundaries are documented under
+[optional notification startup](#unreleased-optional-notification-startup) and
+[PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+
+## Unreleased: Bitcoin-family initial work refresh
+
+The shared Bitcoin-family refresh loop no longer forces a null-job rebroadcast before
+its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
+generic-Bitcoin and BLAKE2b lifecycle regressions cover error-return and exception paths.
+This also affects canonical SHA-256d Bitcoin, not only the new BLAKE2b family.
+The separate generic notification-array snapshot concern is tracked in
+[#153](https://github.com/NINJAK1DD/miningcore/issues/153); it is not changed here.
+
 ## Unreleased: optional notification startup
 
 Omitting the optional `notifications` section no longer causes a constructor null reference

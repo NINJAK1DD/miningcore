@@ -439,7 +439,8 @@ internal static class ShareAccounting
         if(pool.Template == null && allowUnavailableTemplate)
             return;
 
-        if(pool.Template?.Family != CoinFamily.Bitcoin)
+        if(pool.Template?.Family is not (CoinFamily.Bitcoin or
+               CoinFamily.BitcoinBlake2b))
             throw new InvalidDataException(
                 $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
     }

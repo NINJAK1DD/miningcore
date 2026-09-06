@@ -44,6 +44,7 @@ for the expected miner fleet before deployment.
 | Example | Use it for |
 | --- | --- |
 | [`bitcoin_pool.json`](bitcoin_pool.json) | One direct-coinbase Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
+| [`bitcoin_blake2b_pool.json`](bitcoin_blake2b_pool.json) | Separate BLAKE2b header-v2 chain, custodial SOLO; requires the [pinned Knots and miner contract](../docs/bitcoin-blake2b.md), not SHA-256d Bitcoin hardware |
 | [`bitcoin_direct_solo_pool.json`](bitcoin_direct_solo_pool.json) | Direct-coinbase Bitcoin SOLO with an operator fee output; complete the [direct-SOLO guide](../docs/bitcoin-direct-solo.md) before use |
 | [`bitcoin_cash_pool.json`](bitcoin_cash_pool.json) | One Bitcoin Cash SOLO pool using CashAddr and low/high SHA-256 ports |
 | [`bitcoin_bitcoin_cash_pool.json`](bitcoin_bitcoin_cash_pool.json) | Independent Bitcoin and Bitcoin Cash pools with separate daemon and Stratum ports |

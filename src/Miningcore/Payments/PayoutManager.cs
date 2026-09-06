@@ -175,6 +175,12 @@ public class PayoutManager : ProcessStatusBackgroundService
         foreach(var pool in pools.Values.ToArray().Where(x => x.Config.Enabled && x.Config.PaymentProcessing.Enabled))
         {
             var poolConfig = pool.Config;
+            using var isolatedOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation();
+            if(pool is IIsolatedMiningPool && isolatedOperation == null)
+            {
+                logger.Warn(() => $"Skipping payments for faulted pool {poolConfig.Id}; balances and liabilities are retained");
+                continue;
+            }
 
             logger.Info(() => $"Processing payments for pool {poolConfig.Id}");
 
@@ -304,14 +310,31 @@ public class PayoutManager : ProcessStatusBackgroundService
         return family;
     }
 
-    private async Task UpdatePoolBalancesAsync(IMiningPool pool, PoolConfig poolConfig, IPayoutHandler handler, IPayoutScheme scheme, CancellationToken ct)
+    internal async Task UpdatePoolBalancesAsync(IMiningPool pool, PoolConfig poolConfig, IPayoutHandler handler, IPayoutScheme scheme, CancellationToken ct)
     {
         var blocksToClassify = await LoadBlocksForClassificationAsync(pool,
             ct);
 
-        // classify
-        var updatedBlocks = await handler.ClassifyBlocksAsync(pool,
-            blocksToClassify, ct);
+        Block[] updatedBlocks;
+        // Database loading may outlive local isolation. Do not begin new daemon
+        // observations merely because the outer payout cycle already owns a lease.
+        using(var classificationOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation())
+        {
+            if(pool is IIsolatedMiningPool && classificationOperation == null)
+                return;
+            updatedBlocks = await handler.ClassifyBlocksAsync(pool, blocksToClassify, ct);
+        }
+
+        // Classification is observational, unlike an already-broadcast payment.
+        // Discard the whole result if the daemon contract failed while it ran.
+        // Once acquired, this separate lease owns all resulting DB transitions;
+        // a later fault must let those transactions and post-commit reports finish.
+        using var commitOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation();
+        if(pool is IIsolatedMiningPool && commitOperation == null)
+        {
+            logger.Warn(() => $"Discarding block classifications for isolated pool {poolConfig.Id}; persisted block and balance state is unchanged");
+            return;
+        }
 
         if(updatedBlocks.Any())
         {
@@ -613,6 +636,14 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal async Task PayoutPoolBalancesAsync(IMiningPool pool, PoolConfig config,
         IPayoutHandler handler, CancellationToken ct)
     {
+        // Recheck at the wallet-operation boundary, including callers outside the
+        // normal cycle. Never start a new wallet payment after local isolation.
+        using var isolatedOperation = (pool as IIsolatedMiningPool)?.TryAcquireOperation();
+        if(pool is IIsolatedMiningPool && isolatedOperation == null)
+        {
+            logger.Warn(() => $"Skipping wallet payments for isolated pool {config.Id}; balances and liabilities are retained");
+            return;
+        }
         var poolBalancesOverMinimum = await cf.Run(con =>
             balanceRepo.GetPoolBalancesOverThresholdAsync(con, config.Id, config.PaymentProcessing.MinimumPayment));
 

@@ -40,7 +40,8 @@ Current support is deliberately narrow:
 | --- | --- |
 | Direct audited `Bitcoin`-family pool | Supported |
 | Integrated LTC/DOGE | Supported independently on parent and auxiliary |
-| Non-Bitcoin-family pool | Rejected before listeners open |
+| Isolated `bitcoin-blake2b` family | Uses the same ledger; requires its [reviewed daemon/miner contract](bitcoin-blake2b.md) |
+| Other non-Bitcoin-family pools | Rejected before listeners open |
 | `PPBS` | No production payout-scheme implementation |
 | `PPLNSBF` | Separate scheme; excluded from integrated LTC/DOGE pooled accounting |
 

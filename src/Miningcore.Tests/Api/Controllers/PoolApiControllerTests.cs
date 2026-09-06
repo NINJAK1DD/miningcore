@@ -43,6 +43,7 @@ public class PoolApiControllerTests
             }, nameof(AlephiumPaymentProcessingConfigExtra.WalletPassword)),
         Contract(CoinFamily.Beam, null),
         BitcoinContract(CoinFamily.Bitcoin),
+        BitcoinContract(CoinFamily.BitcoinBlake2b),
         Contract(CoinFamily.Conceal,
             typeof(ConcealPoolPaymentProcessingConfigExtra),
             new Dictionary<string, object>

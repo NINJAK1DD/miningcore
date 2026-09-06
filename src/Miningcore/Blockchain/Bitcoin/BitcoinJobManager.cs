@@ -33,7 +33,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         this.blockCandidateRecorder = blockCandidateRecorder;
     }
 
-    private BitcoinTemplate coin;
+    protected BitcoinTemplate coin;
     private readonly IBlockCandidateRecorder blockCandidateRecorder;
     private bool bip54CoinbaseEnabled;
     private bool directCoinbasePayoutEnabled;
@@ -120,9 +120,20 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         return new RpcResponse<BlockTemplate>(result!.ResultAs<BlockTemplate>());
     }
 
-    private BitcoinJob CreateJob()
+    protected virtual BitcoinJob CreateJob()
     {
         return new();
+    }
+
+    protected virtual void InitializeJob(BitcoinJob job,
+        BlockTemplate blockTemplate)
+    {
+        job.InitWithCoinbasePolicy(blockTemplate, NextJobId(),
+            poolConfig, extraPoolConfig, clusterConfig, clock,
+            poolAddressDestination, network, isPoS, ShareMultiplier,
+            coin.CoinbaseHasherValue, coin.HeaderHasherValue,
+            !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ??
+                coin.BlockHasherValue, bip54CoinbaseEnabled);
     }
 
     protected override void PostChainIdentifyConfigure()
@@ -177,7 +188,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             if(response.Error != null)
             {
                 logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
-                return (false, forceUpdate);
+                // A forced refresh can rebroadcast verified old work, but
+                // must never publish null before the first job exists.
+                return (false, forceUpdate && currentJob != null);
             }
 
             var blockTemplate = response.Response;
@@ -217,11 +230,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
                 job = CreateJob();
 
-                job.InitWithCoinbasePolicy(blockTemplate, NextJobId(),
-                    poolConfig, extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
-                    ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue,
-                    !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ?? coin.BlockHasherValue,
-                    bip54CoinbaseEnabled);
+                InitializeJob(job, blockTemplate);
 
                 if(isNew)
                 {
@@ -267,7 +276,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
         }
 
-        return (false, forceUpdate);
+        return (false, forceUpdate && currentJob != null);
     }
 
     protected override object GetJobParamsForStratum(bool isNew)

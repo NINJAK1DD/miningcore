@@ -145,6 +145,7 @@ internal static class PaymentProcessingExtraProjection
                         result.SetKeepTransactionFees(name, value, wireValue))),
             [CoinFamily.Beam] = Contract(),
             [CoinFamily.Bitcoin] = bitcoin,
+            [CoinFamily.BitcoinBlake2b] = bitcoin,
             [CoinFamily.Conceal] =
                 Contract<ConcealPoolPaymentProcessingConfigExtra>(
                 Field<decimal?>(nameof(ConcealPoolPaymentProcessingConfigExtra.

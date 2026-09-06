@@ -276,9 +276,10 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
             HttpPath = $"/wallet/{WalletName}",
         };
 
-        public static async Task<BitcoinCoreRegtestNode> StartAsync(bool walletBroadcast)
+        public static async Task<BitcoinCoreRegtestNode> StartAsync(bool walletBroadcast,
+            string binaryOverride = null, string[] extraArguments = null, int initialBlocks = 110)
         {
-            var binary = Environment.GetEnvironmentVariable(
+            var binary = binaryOverride ?? Environment.GetEnvironmentVariable(
                 BitcoinCoreIntegrationFactAttribute.BinaryEnvironmentVariable);
             var dataDirectory = Path.Combine(Path.GetTempPath(),
                 $"miningcore-bitcoin-regtest-{Guid.NewGuid():N}");
@@ -312,6 +313,9 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
             })
                 startInfo.ArgumentList.Add(argument);
 
+            foreach(var argument in extraArguments ?? Array.Empty<string>())
+                startInfo.ArgumentList.Add(argument);
+
             var process = Process.Start(startInfo) ??
                 throw new InvalidOperationException("Unable to start bitcoind");
             var node = new BitcoinCoreRegtestNode(process, dataDirectory, rpcPort);
@@ -322,7 +326,8 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
                 await node.RootRpcAsync("createwallet", WalletName);
                 // Fund the wallet with several mature coinbase outputs so parallel
                 // sendtoaddress calls cannot contend for a single spendable UTXO.
-                await node.GenerateAsync(110, CancellationToken.None);
+                if(initialBlocks > 0)
+                    await node.GenerateAsync(initialBlocks, CancellationToken.None);
                 return node;
             }
             catch
