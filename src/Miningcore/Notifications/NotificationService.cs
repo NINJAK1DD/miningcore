@@ -31,12 +31,6 @@ public class NotificationService : StartupGatedBackgroundService,
 
         this.clusterConfig = clusterConfig;
         emailSenderConfig = clusterConfig.Notifications?.Email;
-        // The normal configuration pass already rejects this. Keep the service boundary
-        // diagnostic explicit for containers or callers that bypass Program.ValidateConfig.
-        if(clusterConfig.Notifications?.Admin?.Enabled == true &&
-           !string.IsNullOrWhiteSpace(clusterConfig.Notifications.Admin.EmailAddress) &&
-           emailSenderConfig == null)
-            throw new PoolStartupException("Admin email notifications require notifications.email configuration");
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
 
@@ -416,6 +410,9 @@ public class NotificationService : StartupGatedBackgroundService,
 
     public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
     {
+        // Recovery can resolve the critical sender without starting hosted services.
+        // Keep missing-provider failures explicit at the transport boundary as well.
+        EnsureEmailSenderConfigured();
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
@@ -440,6 +437,12 @@ public class NotificationService : StartupGatedBackgroundService,
         logger.Error(ex);
     }
 
+    private void EnsureEmailSenderConfigured()
+    {
+        if(emailSenderConfig == null)
+            throw new PoolStartupException("Admin email notifications require notifications.email configuration");
+    }
+
     private IObservable<IObservable<Unit>> Subscribe<T>(Func<T, CancellationToken, Task> handler, CancellationToken ct)
     {
         return messageBus.Listen<T>()
@@ -455,6 +458,11 @@ public class NotificationService : StartupGatedBackgroundService,
 
             if(clusterConfig.Notifications?.Admin?.Enabled == true)
             {
+                // Normal non-recovery validation already requires email configuration.
+                // Validate before subscriptions/readiness, not in the constructor where
+                // Autofac would wrap the named startup error. Block/payment delivery can
+                // use the sender even when the recipient is absent or whitespace.
+                EnsureEmailSenderConfigured();
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));

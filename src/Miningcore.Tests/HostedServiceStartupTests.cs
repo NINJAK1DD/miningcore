@@ -8,7 +8,10 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Autofac;
+using Autofac.Extensions.DependencyInjection;
 using AutoMapper;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
@@ -444,30 +447,120 @@ public class HostedServiceStartupTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void NotificationService_MissingEmailProviderHasExplicitStartupDiagnostic(bool enabled)
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \t ")]
+    [InlineData("admin@example.invalid")]
+    public async Task NotificationService_MissingEmailProviderFailsHostStartupWithoutResolutionWrapper(string recipient)
     {
         var config = new ClusterConfig
         {
             Pools = Array.Empty<PoolConfig>(),
             Notifications = new NotificationsConfig
             {
-                Admin = new AdminNotifications { Enabled = enabled, EmailAddress = "admin@example.invalid" },
+                Admin = new AdminNotifications
+                {
+                    Enabled = true,
+                    EmailAddress = recipient,
+                    NotifyBlockFound = true,
+                },
             },
         };
         var messageBus = Substitute.For<IMessageBus>();
 
-        if(enabled)
+        var factory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        using var host = new HostBuilder()
+            .UseServiceProviderFactory(new AutofacServiceProviderFactory())
+            .ConfigureServices(services =>
+            {
+                services.AddSingleton(config);
+                services.AddSingleton(messageBus);
+                services.AddSingleton(factory);
+                services.AddHostedService<NotificationService>();
+            })
+            .ConfigureContainer<ContainerBuilder>(builder =>
+            {
+                builder.RegisterType<PushoverClient>().SingleInstance();
+                builder.RegisterType<NotificationService>()
+                    .AsSelf().As<ICriticalNotificationSender>().SingleInstance();
+            })
+            .Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        // Autofac must resolve the actual service successfully; the error belongs to StartAsync.
+        var service = host.Services.GetRequiredService<NotificationService>();
+        Assert.NotNull(service);
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            host.StartAsync(CancellationToken.None).WaitAsync(timeout.Token));
+        Assert.Contains("notifications.email", error.Message);
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
+    }
+
+    [Fact]
+    public async Task NotificationService_DisabledAdminWithoutEmailProviderStartsWithoutSubscriptions()
+    {
+        var messageBus = Substitute.For<IMessageBus>();
+        using var service = new NotificationService(new ClusterConfig
         {
-            var error = Assert.Throws<PoolStartupException>(() =>
-                new NotificationService(config, null, messageBus));
-            Assert.Contains("notifications.email", error.Message);
-        }
-        else
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications { Enabled = false, EmailAddress = "admin@example.invalid" },
+            },
+        }, null, messageBus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await service.StartAsync(CancellationToken.None).WaitAsync(timeout.Token);
+        await service.SendCriticalAdminNotificationAsync(new AdminNotification("test", "disabled"), timeout.Token);
+        await service.StopAsync(timeout.Token);
+
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
+    }
+
+    [Fact]
+    public async Task NotificationService_UnstartedRecoverySenderReportsMissingProviderAtDelivery()
+    {
+        var config = new ClusterConfig
         {
-            using var service = new NotificationService(config, null, messageBus);
-        }
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications { Enabled = true, EmailAddress = "admin@example.invalid" },
+            },
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+        var factory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(config);
+        builder.RegisterInstance(messageBus).As<IMessageBus>();
+        builder.RegisterInstance(factory).As<IHttpClientFactory>();
+        builder.RegisterType<PushoverClient>().SingleInstance();
+        builder.RegisterType<NotificationService>()
+            .AsSelf().As<ICriticalNotificationSender>().SingleInstance();
+        using var container = builder.Build();
+        var lazy = container.Resolve<Lazy<ICriticalNotificationSender>>();
+        Assert.False(lazy.IsValueCreated);
+        // Recovery resolves this lazy dependency without starting the hosted service.
+        var sender = lazy.Value;
+        Assert.IsType<NotificationService>(sender);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
+            sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
+        var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
+        var error = Assert.IsType<PoolStartupException>(transport.InnerException);
+        Assert.Contains("notifications.email", error.Message);
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
     }
 
     [Fact]

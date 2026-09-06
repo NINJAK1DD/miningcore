@@ -50,14 +50,23 @@ copying a recovery command from the maintainer section.
 ## Unreleased: optional notification startup
 
 Omitting the optional `notifications` section no longer causes a constructor null reference
-in the email/Pushover service graph. Omitted, empty or disabled notifications remain optional.
-An enabled admin-email destination without `notifications.email` now raises an explicit
-`PoolStartupException` at service construction, naming the missing configuration.
+in the email/Pushover service graph. Omitted or empty sections and disabled admin notifications
+remain optional.
+Enabled admin notifications without `notifications.email` now raise an explicit
+`PoolStartupException` before hosted-service subscriptions or readiness, even when the recipient
+is missing or whitespace. Construction remains safe for dependency-injection resolution.
 
-**Compatibility:** ordinary startup already rejects this incomplete email configuration in
-`Program.ValidateConfig`. Custom containers that bypass that pass now fail at construction
-instead of later notification delivery. Configure the email sender or disable admin notifications;
-do not rely on undeliverable critical alerts. No coin-family, accounting or schema change is made.
+**Compatibility:** normal, non-recovery startup already rejects this incomplete email configuration
+in `Program.ValidateConfig`. Custom hosts that bypass that pass now fail when the notification
+service starts instead of at later delivery. Recovery mode skips these configuration checks and
+does not start this hosted service; its lazy critical sender remains constructible. An attempted
+email without a provider produces a named configuration error within the existing critical-delivery
+aggregate, which recovery failure handlers catch and log. Other configured critical transports can
+still be attempted. Configure the email sender or disable admin notifications; do not rely on
+undeliverable critical alerts. No coin-family, accounting or schema change is made.
+
+The existing top-level/admin/channel switch semantics are unchanged. Their validation and
+documentation mismatch is tracked separately in [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148).
 
 ## Unreleased: PostgreSQL credential-safe diagnostics
 
