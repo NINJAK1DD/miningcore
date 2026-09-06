@@ -237,7 +237,8 @@ terminating healthy sibling pools. Its public pool API reports `miningState` as 
 after a fault but previously owned operations remain; `faulted` means that drain has finished.
 `stopping` takes precedence once host shutdown is requested. The separate `miningFaulted`
 Boolean stays true after a local fault, including during host shutdown, so operators can
-still identify a faulted pool while restarting. It is false before a local fault; ordinary
+still identify a faulted pool while restarting. Failures arising only during host shutdown
+do not trigger local isolation or set this flag. It is false before local isolation; ordinary
 non-isolated pool responses omit both fields. A fault also produces an operator notification
 and an error log. The first three secondary failures are logged at Info, then further failures
 at Debug without repeating notifications; expected host-shutdown noise remains suppressed.

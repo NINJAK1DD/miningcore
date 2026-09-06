@@ -7,7 +7,8 @@ namespace Miningcore.Mining;
 public interface IIsolatedMiningPool
 {
     string MiningState { get; }
-    // Latched local fault, retained even while MiningState reports host shutdown.
+    // Latched local isolation, retained during host shutdown. Shutdown-only
+    // failures do not set this flag.
     bool MiningFaulted { get; }
     // Null means admission is closed. A successful lease must cover the complete
     // asynchronous operation, including persistence/outcome handling, and be disposed.

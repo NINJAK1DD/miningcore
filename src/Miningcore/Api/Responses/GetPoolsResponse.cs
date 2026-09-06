@@ -66,7 +66,8 @@ public partial class PoolInfo
     [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string MiningState { get; set; }
 
-    // Latched local fault survives the transient "stopping" state. No exception details.
+    // Latched local isolation survives "stopping"; shutdown-only failures do not
+    // set this flag. No exception details.
     [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? MiningFaulted { get; set; }
 
