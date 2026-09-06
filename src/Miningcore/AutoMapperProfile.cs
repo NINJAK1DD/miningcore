@@ -88,6 +88,7 @@ public class AutoMapperProfile : Profile
 
         CreateMap<PoolConfig, Api.Responses.PoolInfo>()
             .ForMember(dest => dest.MiningState, opt => opt.Ignore())
+            .ForMember(dest => dest.MiningFaulted, opt => opt.Ignore())
             .ForMember(dest => dest.Coin, opt => opt.MapFrom(src => src.Template))
             .ForMember(dest => dest.Ports, opt => opt.Ignore())
             .ForMember(dest => dest.ShareBasedBanning, opt => opt.MapFrom(src => src.Banning))

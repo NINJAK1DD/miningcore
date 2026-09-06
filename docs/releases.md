@@ -63,7 +63,11 @@ Already-owned submissions and payments finish without pool-local cancellation so
 blocks and liabilities can still be persisted. Daemon classifications completing after isolation
 are discarded before any block/reward/balance commit; database transitions admitted before
 isolation may finish, but do not authorize a new wallet payout. The pool API exposes its
-`miningState`, including `draining` and `stopping`, with periodic outstanding-operation logs.
+`miningState`, including `draining` and `stopping`, plus a `miningFaulted` flag that preserves
+the local fault signal during shutdown. Drain warnings count outstanding admission leases
+(including nested leases), starting after 30 seconds rather than during fast drains. The
+first three secondary failures remain visible at Info; later failures use Debug without
+repeating the primary notification.
 A faulted pool requires an operator restart, not an automatic compatibility bypass. Transport
 outages instead withhold fresh work and retry. Shared financial-durability and cluster-wide
 startup failures retain their existing process-wide shutdown safeguards. See the

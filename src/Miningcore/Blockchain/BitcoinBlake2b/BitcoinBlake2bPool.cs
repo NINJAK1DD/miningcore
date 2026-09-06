@@ -41,10 +41,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     private CancellationToken hostShutdown;
     private int lifetimeStarted;
     private int online;
+    private int secondaryFailureReports;
 
     public string MiningState => Volatile.Read(ref lifetimeStarted) == 1 && hostShutdown.IsCancellationRequested ? "stopping" :
         operations.IsClosed ? (operations.ActiveCount > 0 ? "draining" : "faulted") :
         Volatile.Read(ref online) != 0 ? "online" : "starting";
+    public bool MiningFaulted => operations.IsClosed;
     public IDisposable TryAcquireOperation() => operations.TryAcquire();
 
     protected override void NotifyPoolOnline()
@@ -107,9 +109,14 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         var elapsed = Stopwatch.StartNew();
         while(!operations.Drained.IsCompleted)
         {
-            logger.Warn("Bitcoin BLAKE2b isolation is draining {0} owned operation(s) after {1:F0}s; no new work is admitted", operations.ActiveCount, elapsed.Elapsed.TotalSeconds);
             try { await operations.Drained.WaitAsync(DrainReportInterval, ct); }
-            catch(TimeoutException) { }
+            catch(TimeoutException)
+            {
+                ct.ThrowIfCancellationRequested();
+                var activeLeases = operations.ActiveCount;
+                if(activeLeases > 0)
+                    logger.Warn("Bitcoin BLAKE2b isolation is draining {0} outstanding admission lease(s) after {1:F0}s; nested leases are counted separately; no new work is admitted", activeLeases, elapsed.Elapsed.TotalSeconds);
+            }
         }
         logger.Info("Bitcoin BLAKE2b isolation drain completed; operator restart required");
     }
@@ -204,7 +211,15 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             return;
         if(!operations.Close())
         {
-            logger.Debug(ex, "Additional Bitcoin BLAKE2b failure after local isolation");
+            // FaultPool is serialized by statusSync. Cap production-level reports
+            // without losing subsequent evidence when Debug logging is enabled.
+            if(secondaryFailureReports < 3)
+            {
+                secondaryFailureReports++;
+                logger.Info(ex, "Additional Bitcoin BLAKE2b failure after local isolation ({0}/3 Info reports; subsequent failures use Debug)", secondaryFailureReports);
+            }
+            else
+                logger.Debug(ex, "Additional Bitcoin BLAKE2b failure after local isolation");
             return;
         }
 

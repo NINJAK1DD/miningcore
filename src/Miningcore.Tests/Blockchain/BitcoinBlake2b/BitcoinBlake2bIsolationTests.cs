@@ -46,22 +46,21 @@ public partial class BitcoinBlake2bStartupTests
         var callback = typeof(BitcoinBlake2bPool).GetMethod("HandleBlake2bPipelineFailure", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
         callback.Invoke(pool, new object[] { new PoolStartupException("primary contract failure") });
-        callback.Invoke(pool, new object[] { new IOException("secondary teardown failure") });
+        for(var i = 1; i <= 5; i++)
+            callback.Invoke(pool, new object[] { new IOException($"secondary teardown failure {i}") });
 
-        Assert.Collection(target.Logs,
-            first =>
-            {
-                Assert.StartsWith("Error|", first);
-                Assert.Contains("primary contract failure", first);
-            },
-            second =>
-            {
-                Assert.StartsWith("Debug|Additional Bitcoin BLAKE2b failure after local isolation|", second);
-                Assert.Contains("secondary teardown failure", second);
-            });
+        Assert.Equal(6, target.Logs.Count);
+        Assert.StartsWith("Error|", target.Logs[0]);
+        Assert.Contains("primary contract failure", target.Logs[0]);
+        for(var i = 1; i <= 5; i++)
+        {
+            Assert.StartsWith($"{(i <= 3 ? "Info" : "Debug")}|Additional Bitcoin BLAKE2b failure after local isolation", target.Logs[i]);
+            Assert.Contains($"secondary teardown failure {i}", target.Logs[i]);
+        }
         bus.Received(1).SendMessage(Arg.Any<PoolStatusNotification>(), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
         Assert.Equal("faulted", pool.MiningState);
+        Assert.True(pool.MiningFaulted);
         Assert.Null(pool.TryAcquireOperation());
     }
 
@@ -128,6 +127,7 @@ public partial class BitcoinBlake2bStartupTests
             {
                 await started.Task.WaitAsync(stop.Token);
                 Assert.Equal("online", pool.MiningState);
+                Assert.False(pool.MiningFaulted);
                 using var client = new TcpClient();
                 await client.ConnectAsync(IPAddress.Loopback, port, stop.Token);
                 manager.Drift = "version";
@@ -164,6 +164,8 @@ public partial class BitcoinBlake2bStartupTests
         }
         Assert.True(siblingStopped);
         Assert.Equal("stopping", pool.MiningState);
+        Assert.True(pool.MiningFaulted);
+        Assert.True(config.ToPoolInfo(AutoMapperFactory.CreateMapper(), null, pool).MiningFaulted);
         Assert.Equal(0, process.ExitCode);
     }
 
@@ -205,6 +207,7 @@ public partial class BitcoinBlake2bStartupTests
         var gate = (PoolOperationGate) typeof(BitcoinBlake2bPool)
             .GetField("operations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool);
         using var owned = gate.TryAcquire();
+        using var nested = gate.TryAcquire();
         gate.Close();
         pool.DrainReportInterval = TimeSpan.FromMilliseconds(25);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -216,11 +219,52 @@ public partial class BitcoinBlake2bStartupTests
             while(target.Logs.Count < 2) await Task.Delay(10, deadline.Token);
             Assert.Equal("draining", pool.MiningState);
             Assert.False(drain.IsCompleted);
-            Assert.All(target.Logs, line => Assert.Contains("draining 1 owned operation(s)", line));
+            Assert.All(target.Logs, line => Assert.Contains("draining 2 outstanding admission lease(s)", line));
+            Assert.All(target.Logs, line => Assert.Contains("nested leases are counted separately", line));
+            nested.Dispose();
+            Assert.Equal("draining", pool.MiningState);
         }
-        finally { owned.Dispose(); await drain.WaitAsync(deadline.Token); }
+        finally { nested.Dispose(); owned.Dispose(); await drain.WaitAsync(deadline.Token); }
         Assert.Equal("faulted", pool.MiningState);
         Assert.Contains(target.Logs, line => line.Contains("drain completed", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IsolationDrain_QuietUntilReportIntervalAndNoWarningForFastDrain(bool outstanding)
+    {
+        using var scope = Scope();
+        var pool = ResolvePool(scope);
+        pool.Configure(LifecycleConfig(), new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var config = new NLog.Config.LoggingConfiguration();
+        config.AddRuleForAllLevels(target);
+        logs.Configuration = config;
+        typeof(StratumServer).GetField("logger", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(pool, logs.GetLogger("fast-isolation-drain-test"));
+        var gate = (PoolOperationGate) typeof(BitcoinBlake2bPool)
+            .GetField("operations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool);
+        using var owned = outstanding ? gate.TryAcquire() : null;
+        gate.Close();
+        // No timing race: this interval exceeds the test's cancellation deadline.
+        pool.DrainReportInterval = TimeSpan.FromMinutes(1);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var drain = (Task) typeof(BitcoinBlake2bPool)
+            .GetMethod("DrainOperationsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(pool, new object[] { deadline.Token });
+        try
+        {
+            if(outstanding)
+            {
+                Assert.False(drain.IsCompleted);
+                Assert.Empty(target.Logs);
+            }
+        }
+        finally { owned?.Dispose(); await drain.WaitAsync(deadline.Token); }
+        Assert.StartsWith("Info|Bitcoin BLAKE2b isolation drain completed", Assert.Single(target.Logs));
+        Assert.True(pool.MiningFaulted);
     }
 
     [Theory]

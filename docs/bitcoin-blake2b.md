@@ -235,8 +235,16 @@ job pipeline or pool lifetime closes that pool's admission gate and listeners wi
 terminating healthy sibling pools. Its public pool API reports `miningState` as `starting`,
 `online`, `draining`, `faulted` or `stopping`. `draining` means local admission is closed
 after a fault but previously owned operations remain; `faulted` means that drain has finished.
-`stopping` takes precedence once host shutdown is requested. A fault also produces an
-operator notification and an error log; outstanding drains report counts every 30 seconds.
+`stopping` takes precedence once host shutdown is requested. The separate `miningFaulted`
+Boolean stays true after a local fault, including during host shutdown, so operators can
+still identify a faulted pool while restarting. It is false before a local fault; ordinary
+non-isolated pool responses omit both fields. A fault also produces an operator notification
+and an error log. The first three secondary failures are logged at Info, then further failures
+at Debug without repeating notifications; expected host-shutdown noise remains suppressed.
+Outstanding drains warn after the first 30 seconds and every 30 seconds thereafter until
+completion. Counts are outstanding admission leases, including nested payout-cycle and
+classification/commit leases, not distinct shares, payments or RPCs. Fast drains emit only
+the completion message.
 The state describes local mining availability, not proof of wallet or database health.
 
 New payout cycles and wallet operations are skipped for the isolated pool. Block classification

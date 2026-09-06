@@ -7,6 +7,8 @@ namespace Miningcore.Mining;
 public interface IIsolatedMiningPool
 {
     string MiningState { get; }
+    // Latched local fault, retained even while MiningState reports host shutdown.
+    bool MiningFaulted { get; }
     // Null means admission is closed. A successful lease must cover the complete
     // asynchronous operation, including persistence/outcome handling, and be disposed.
     // Observational work (e.g. daemon classification) must acquire a fresh lease
@@ -25,6 +27,8 @@ internal sealed class PoolOperationGate
     private int active;
 
     internal bool IsClosed { get { lock(sync) return closed; } }
+    // Counts admission leases, including nested payout-cycle/boundary leases,
+    // not distinct shares, payments or RPC calls.
     internal int ActiveCount { get { lock(sync) return active; } }
     internal Task Failure => failure.Task;
     internal Task Drained => drained.Task;
