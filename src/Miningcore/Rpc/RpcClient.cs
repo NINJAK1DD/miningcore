@@ -74,6 +74,8 @@ public class RpcClient
 
         catch(TaskCanceledException ex)
         {
+            RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Failure, method, failure: ex);
             // Preserve the structural cause. Callers that need to distinguish a
             // client-side timeout/cancellation from a daemon error must not have to
             // pattern-match this synthetic message.
@@ -83,9 +85,12 @@ public class RpcClient
 
         catch(Exception ex)
         {
+            RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Failure, method, failure: ex);
             if(throwOnError)
                 throw;
 
+            // Caller-observable data is preserved; unsafe consumer logging is tracked in #154.
             return new RpcResponse<TResponse>(null, new JsonRpcError(-500, ex.Message, null, ex));
         }
     }
@@ -110,25 +115,37 @@ public class RpcClient
 
         catch(Exception ex)
         {
+            RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Failure, batchCount: batch.Length, failure: ex);
+            // Caller-observable data is preserved; unsafe consumer logging is tracked in #154.
             return Enumerable.Repeat(new RpcResponse<JToken>(null, new JsonRpcError(-500, ex.Message, null, ex)), batch.Length).ToArray();
         }
     }
 
     public IObservable<byte[]> WebsocketSubscribe(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint,
         string method, object payload = null,
-        JsonSerializerSettings payloadJsonSerializerSettings = null)
+        JsonSerializerSettings payloadJsonSerializerSettings = null, int? endpointIndex = null)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
 
-        return WebsocketSubscribeEndpoint(logger, ct, endPoint, method, payload, payloadJsonSerializerSettings)
+        endpointIndex = endpointIndex > 0 ? endpointIndex : null;
+
+        return WebsocketSubscribeEndpoint(logger, ct, endPoint, method, payload, payloadJsonSerializerSettings, endpointIndex)
             .Publish()
             .RefCount();
     }
 
-    public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct, Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap)
+    public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct,
+        Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap,
+        DaemonEndpointConfig[] configuredEndpoints)
     {
-        return portMap.Keys
-            .Select(endPoint => ZmqSubscribeEndpoint(logger, ct, portMap[endPoint].Socket, portMap[endPoint].Topic))
+        // Callers must supply mapping context, or explicitly choose null for unknown.
+        // Resolve against the full daemon array, not the filtered map or dictionary order.
+        // Snapshot before Defer/RefCount so resubscription retains the same attribution.
+        var endpoints = portMap.Select(entry => (entry.Value.Socket, entry.Value.Topic,
+            Index: RpcDiagnostics.EndpointIndex(configuredEndpoints, entry.Key))).ToArray();
+        return endpoints
+            .Select(endpoint => ZmqSubscribeEndpoint(logger, ct, endpoint.Socket, endpoint.Topic, endpoint.Index))
             .Merge()
             .Publish()
             .RefCount();
@@ -168,7 +185,8 @@ public class RpcClient
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth.ToByteArrayBase64());
             }
 
-            logger.Trace(() => $"Sending RPC request to {requestUrl}: {json}");
+            RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Request, method);
 
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
@@ -176,14 +194,17 @@ public class RpcClient
                 // read response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
-                logger.Trace(() => $"Received RPC response: {responseContent}");
+                RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                    RpcDiagnostics.Stage.Response, method, status: (int) response.StatusCode,
+                    httpResponseChars: responseContent.Length,
+                    elapsedMs: sw.ElapsedMilliseconds);
 
                 // deserialize response
                 using(var jreader = new JsonTextReader(new StringReader(responseContent)))
                 {
                     var result = serializer.Deserialize<JsonRpcResponse>(jreader);
 
-                    messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, method, sw.Elapsed, response.IsSuccessStatusCode);
+                    messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, RpcDiagnostics.Method(method), sw.Elapsed, response.IsSuccessStatusCode);
 
                     return result;
                 }
@@ -226,7 +247,8 @@ public class RpcClient
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth.ToByteArrayBase64());
             }
 
-            logger.Trace(() => $"Sending RPC request to {requestUrl}: {json}");
+            RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Request, batchCount: batch.Length);
 
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
@@ -234,13 +256,16 @@ public class RpcClient
                 // deserialize response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
-                logger.Trace(() => $"Received RPC response: {responseContent}");
+                RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
+                    RpcDiagnostics.Stage.Response, batchCount: batch.Length, status: (int) response.StatusCode,
+                    httpResponseChars: responseContent.Length,
+                    elapsedMs: sw.ElapsedMilliseconds);
 
                 using(var jreader = new JsonTextReader(new StringReader(responseContent)))
                 {
                     var result = serializer.Deserialize<JsonRpcResponse<JToken>[]>(jreader);
 
-                    messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, string.Join(", ", batch.Select(x => x.Method)),
+                    messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, "batch",
                         sw.Elapsed, response.IsSuccessStatusCode);
 
                     return OrderBatchResponses(rpcRequests, result);
@@ -306,152 +331,194 @@ public class RpcClient
     }
 
     private IObservable<byte[]> WebsocketSubscribeEndpoint(ILogger logger, CancellationToken ct,
-        DaemonEndpointConfig endPoint, string method, object payload = null,
-        JsonSerializerSettings payloadJsonSerializerSettings = null)
+        DaemonEndpointConfig endPoint, string method, object payload,
+        JsonSerializerSettings payloadJsonSerializerSettings, int? endpointIndex)
     {
         return Observable.Defer(() => Observable.Create<byte[]>(obs =>
         {
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var lifetime = new RpcSubscriptionLifetime(ct, () => RpcDiagnostics.Write(logger, LogLevel.Error,
+                RpcDiagnostics.Transport.WebSocket, RpcDiagnostics.Stage.CancellationCallbackFailure,
+                method, endpointIndex: endpointIndex));
+            var token = lifetime.Token;
 
-            Task.Run(async () =>
+            var worker = lifetime.Run(async () =>
             {
-                using(cts)
+                var buf = new byte[0x10000];
+
+                while(!token.IsCancellationRequested)
                 {
-                    var buf = new byte[0x10000];
-
-                    while(!cts.IsCancellationRequested)
-                    {
-                        try
-                        {
-                            using(var client = new ClientWebSocket())
-                            {
-                                // connect
-                                var protocol = endPoint.Ssl ? "wss" : "ws";
-                                var uri = new Uri($"{protocol}://{endPoint.Host}:{endPoint.Port}{endPoint.HttpPath}");
-                                client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
-
-                                logger.Debug(() => $"Establishing WebSocket connection to {uri}");
-                                await client.ConnectAsync(uri, cts.Token);
-
-                                // subscribe
-                                var request = new JsonRpcRequest(method, payload, GetRequestId());
-                                var json = JsonConvert.SerializeObject(request, payloadJsonSerializerSettings);
-                                var requestData = new ArraySegment<byte>(Encoding.UTF8.GetBytes(json));
-
-                                logger.Debug(() => $"Sending WebSocket subscription request `{json}` to {uri}");
-                                await client.SendAsync(requestData, WebSocketMessageType.Text, true, cts.Token);
-
-                                // stream response
-                                while(!cts.IsCancellationRequested && client.State == WebSocketState.Open)
-                                {
-                                    await using var stream = new MemoryStream();
-
-                                    do
-                                    {
-                                        var response = await client.ReceiveAsync(buf, cts.Token);
-
-                                        if(response.MessageType == WebSocketMessageType.Binary)
-                                            throw new InvalidDataException("expected text, received binary data");
-
-                                        await stream.WriteAsync(buf, 0, response.Count, cts.Token);
-
-                                        if(response.EndOfMessage)
-                                            break;
-                                    } while(!cts.IsCancellationRequested && client.State == WebSocketState.Open);
-
-                                    logger.Debug(() => $"Received WebSocket message with length {stream.Length}");
-
-                                    // publish
-                                    obs.OnNext(stream.ToArray());
-                                }
-                            }
-                        }
-
-                        catch (TaskCanceledException)
-                        {
-                            break;
-                        }
-
-                        catch (ObjectDisposedException)
-                        {
-                            break;
-                        }
-
-                        catch(Exception ex)
-                        {
-                            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while streaming websocket responses. Reconnecting in 5s");
-                        }
-
-                        if(!cts.IsCancellationRequested)
-                            await Task.Delay(TimeSpan.FromSeconds(5), cts.Token);
-                    }
-                }
-            }, cts.Token);
-
-            return Disposable.Create(() => { cts.Cancel(); });
-        }));
-    }
-
-    private static IObservable<ZMessage> ZmqSubscribeEndpoint(ILogger logger, CancellationToken ct, string url, string topic)
-    {
-        return Observable.Defer(() => Observable.Create<ZMessage>(obs =>
-        {
-            var tcs = CancellationTokenSource.CreateLinkedTokenSource(ct);
-
-            var thread = new Thread(() =>
-            {
-                while(!tcs.IsCancellationRequested)
-                {
+                    int? handshakeStatus = null;
                     try
                     {
-                        using(var subSocket = new ZSocket(ZSocketType.SUB))
+                        using(var client = new ClientWebSocket())
                         {
-                            //subSocket.Options.ReceiveHighWatermark = 1000;
-                            subSocket.ReceiveTimeout = TimeSpan.FromSeconds(1);
-                            subSocket.Connect(url);
-                            subSocket.Subscribe(topic);
+                            // connect
+                            var protocol = endPoint.Ssl ? "wss" : "ws";
+                            var uri = new Uri($"{protocol}://{endPoint.Host}:{endPoint.Port}{endPoint.HttpPath}");
+                            client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
-                            logger.Debug($"Subscribed to {url}/{topic}");
-
-                            while(!tcs.IsCancellationRequested)
+                            RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
+                                RpcDiagnostics.Stage.Connect, method, endpointIndex: endpointIndex);
+                            client.Options.CollectHttpResponseDetails = true;
+                            try { await client.ConnectAsync(uri, token); }
+                            finally
                             {
-                                var msg = subSocket.ReceiveMessage(out var error);
+                                if(client.HttpStatusCode != 0)
+                                    handshakeStatus = (int) client.HttpStatusCode;
+                            }
 
-                                if(msg != null)
-                                    obs.OnNext(msg);
-                                else if(error != ZError.EAGAIN && error != ZError.ETIMEDOUT)
-                                    throw new ZException(error);
+                            // subscribe
+                            var request = new JsonRpcRequest(method, payload, GetRequestId());
+                            var json = JsonConvert.SerializeObject(request, payloadJsonSerializerSettings);
+                            var requestData = new ArraySegment<byte>(Encoding.UTF8.GetBytes(json));
+
+                            RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
+                                RpcDiagnostics.Stage.Subscribe, method, endpointIndex: endpointIndex);
+                            await client.SendAsync(requestData, WebSocketMessageType.Text, true, token);
+
+                            // stream response
+                            while(!token.IsCancellationRequested && client.State == WebSocketState.Open)
+                            {
+                                await using var stream = new MemoryStream();
+
+                                do
+                                {
+                                    var response = await client.ReceiveAsync(buf, token);
+
+                                    if(response.MessageType == WebSocketMessageType.Binary)
+                                        throw new InvalidDataException("expected text, received binary data");
+
+                                    await stream.WriteAsync(buf, 0, response.Count, token);
+
+                                    if(response.EndOfMessage)
+                                        break;
+                                } while(!token.IsCancellationRequested && client.State == WebSocketState.Open);
+
+                                RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
+                                    RpcDiagnostics.Stage.Receive, method, bytes: stream.Length, endpointIndex: endpointIndex);
+
+                                // publish
+                                obs.OnNext(stream.ToArray());
                             }
                         }
+                    }
+
+                    catch (TaskCanceledException) when(token.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    catch (ObjectDisposedException) when(token.IsCancellationRequested)
+                    {
+                        break;
                     }
 
                     catch(Exception ex)
                     {
-                        if(tcs.IsCancellationRequested)
-                            break;
+                        RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
+                            RpcDiagnostics.Stage.Failure, method, status: handshakeStatus, failure: ex, endpointIndex: endpointIndex);
+                    }
 
-                        logger.Error(ex);
-
-                        // do not run wild in case of a persistent error condition
-                        Thread.Sleep(1000);
+                    if(!token.IsCancellationRequested)
+                    {
+                        // Task.Delay can only cancel through this token. Retain the
+                        // filter to make the shutdown-only boundary explicit.
+                        try { await Task.Delay(TimeSpan.FromSeconds(5), token); }
+                        catch(OperationCanceledException) when(token.IsCancellationRequested) { break; }
                     }
                 }
+            });
+
+            _ = ObserveSubscriptionWorkerAsync(worker, logger, method, endpointIndex);
+            return Disposable.Create(lifetime.Cancel);
+        }));
+    }
+
+    internal static async Task ObserveSubscriptionWorkerAsync(Task worker, ILogger logger,
+        string method, int? endpointIndex)
+    {
+        try { await worker; }
+        catch(Exception ex)
+        {
+            RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.WebSocket,
+                RpcDiagnostics.Stage.Failure, method, failure: ex, endpointIndex: endpointIndex);
+            // Do not signal OnError: job managers merge push updates with polling.
+            // A terminal push-worker fault must not terminate that polling fallback.
+            // The Error-level diagnostic exposes the degraded push path without
+            // forwarding a potentially secret-bearing exception to subscribers.
+        }
+    }
+
+    private static IObservable<ZMessage> ZmqSubscribeEndpoint(ILogger logger, CancellationToken ct, string url, string topic, int? endpointIndex)
+    {
+        return Observable.Defer(() => Observable.Create<ZMessage>(obs =>
+        {
+            var lifetime = new RpcSubscriptionLifetime(ct, () => RpcDiagnostics.Write(logger, LogLevel.Error,
+                RpcDiagnostics.Transport.Zmq, RpcDiagnostics.Stage.CancellationCallbackFailure,
+                endpointIndex: endpointIndex));
+            var token = lifetime.Token;
+
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    while(!token.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            using(var subSocket = new ZSocket(ZSocketType.SUB))
+                            {
+                                //subSocket.Options.ReceiveHighWatermark = 1000;
+                                subSocket.ReceiveTimeout = TimeSpan.FromSeconds(1);
+                                subSocket.Connect(url);
+                                subSocket.Subscribe(topic);
+
+                                RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.Zmq,
+                                    RpcDiagnostics.Stage.Subscribe, endpointIndex: endpointIndex);
+
+                                while(!token.IsCancellationRequested)
+                                {
+                                    var msg = subSocket.ReceiveMessage(out var error);
+
+                                    if(msg != null)
+                                        obs.OnNext(msg);
+                                    else if(error != ZError.EAGAIN && error != ZError.ETIMEDOUT)
+                                        throw new ZException(error);
+                                }
+                            }
+                        }
+
+                        catch(Exception ex)
+                        {
+                            if(token.IsCancellationRequested)
+                                break;
+
+                            RpcDiagnostics.Write(logger, LogLevel.Error, RpcDiagnostics.Transport.Zmq,
+                                RpcDiagnostics.Stage.Failure, failure: ex, endpointIndex: endpointIndex);
+
+                            // do not run wild in case of a persistent error condition
+                            Thread.Sleep(1000);
+                        }
+                    }
+                }
+                finally { lifetime.Complete(); }
             })
             {
                 IsBackground = true,
-                Name = $"ZMQ subscriber {topic}",
+                Name = $"ZMQ subscriber {endpointIndex?.ToString() ?? "unknown"}",
             };
 
             thread.Start();
 
             return Disposable.Create(() =>
             {
-                tcs.Cancel();
+                lifetime.Cancel();
 
                 if(!thread.Join(TimeSpan.FromSeconds(5)))
-                    logger.Warn(() => $"ZMQ subscriber for {url}/{topic} did not stop within 5 seconds");
+                    RpcDiagnostics.Write(logger, LogLevel.Warn, RpcDiagnostics.Transport.Zmq,
+                        RpcDiagnostics.Stage.StopTimeout, endpointIndex: endpointIndex);
 
-                tcs.Dispose();
+                // A timed-out worker retains ownership until it actually exits.
             });
         }));
     }

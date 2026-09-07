@@ -616,9 +616,13 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
             if(zmq.Count > 0)
             {
-                logger.Info(() => $"Subscribing to ZMQ push-updates from {string.Join(", ", zmq.Values)}");
+                foreach(var endpoint in zmq.Keys)
+                {
+                    var endpointIndex = RpcDiagnostics.EndpointIndex(poolConfig.Daemons, endpoint);
+                    logger.Info(() => $"Subscribing to ZMQ daemon endpoint {endpointIndex?.ToString() ?? "unknown"}");
+                }
 
-                var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq)
+                var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq, poolConfig.Daemons)
                     .Select(msg =>
                     {
                         using(msg)

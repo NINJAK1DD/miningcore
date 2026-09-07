@@ -647,14 +647,15 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
                 Ssl = extra.SslWs
             };
 
-            logger.Info(() => $"Subscribing to WebSocket {(wsEndpointConfig.Ssl ? "wss" : "ws")}://{wsEndpointConfig.Host}:{wsEndpointConfig.Port}");
+            var endpointIndex = RpcDiagnostics.EndpointIndex(poolConfig.Daemons, endpointConfig);
+            logger.Info(() => $"Subscribing to WebSocket daemon endpoint {endpointIndex?.ToString() ?? "unknown"}");
 
             var wsSubscription = "newHeads";
             var isRetry = false;
 
         retry:
             // stream work updates
-            var getWorkObs = rpc.WebsocketSubscribe(logger, ct, wsEndpointConfig, coin.RpcMethodPrefix + EC.Subscribe, new[] { wsSubscription })
+            var getWorkObs = rpc.WebsocketSubscribe(logger, ct, wsEndpointConfig, coin.RpcMethodPrefix + EC.Subscribe, new[] { wsSubscription }, endpointIndex: endpointIndex)
                 .Publish()
                 .RefCount();
 

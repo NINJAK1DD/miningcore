@@ -41,11 +41,82 @@ Use this guide by task:
 | Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
+| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#unreleased-credential-safe-rpc-transport-diagnostics) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
+
+## Unreleased: credential-safe RPC transport diagnostics
+
+**Monitoring change:** Prometheus/Grafana dashboards using joined RPC batch-method labels
+must switch to `batch`; custom/unrecognized single-method labels now become `other`.
+
+HTTP single/batch Trace logs and WebSocket Debug logs now use a bounded `RPC diagnostic`
+JSON record instead of requests, responses, subscription payloads or endpoint URLs.
+WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
+or objects. All four ZMQ and three WebSocket job-manager startup announcements report daemon
+indices, not URLs, topics or host/port details. Both transports use the same `endpointIndex`:
+the one-based position in the full `pools[].daemons` array, including entries without push
+notifications. ZMQ indices are resolved before subscription and survive RefCount resubscription,
+independently of filtered-map enumeration order. Thread names use the same index. An unknown
+endpoint is represented by JSON null (or `unknown` in announcements/thread names), never a
+guessed first endpoint or a startup failure.
+Built-in RPC command constants populate a finite allowlist, including Bitcoin/AuxPoW, Xelis,
+Cryptonote, Zano and the built-in Ethereum/Cortex prefixes; custom methods/prefixes become
+`other`. A missing method (batch/ZMQ) is JSON null. Batch telemetry now uses `batch`, and
+single-request telemetry uses the same safe method labels. Update monitoring filters that
+depended on the old free-form messages or joined batch method names.
+
+The fields are transport, stage, allowlisted method, batch count, HTTP status, WebSocket byte
+count, HTTP decoded UTF-16 character count (`httpResponseChars`), elapsed milliseconds,
+`endpointIndex`, failure category and numeric failure code. Character counts require no extra
+response scan. Null fields mean not applicable or unknown;
+HTTP status is not a claim that the daemon operation succeeded. Logging performs no payload
+redaction or serialization: request authentication, wire bodies, response/error data, timeouts
+and payout decisions remain unchanged. There is no database migration or TLS-policy change.
+Failures distinguish timeouts with a structural `TimeoutException` cause from cancellations.
+Numeric codes identify .NET `WebSocketError` / `HttpRequestError`, native socket errors or ZMQ
+errno, according to the failure category. WebSocket handshake failures retain HTTP status (for
+example 401/403) without logging response headers. A null WebSocket `httpStatus` means no
+HTTP status was captured, not that the connection or TLS succeeded. Unknown exception types
+remain `other`; arbitrary type names and exception text are not a safe diagnostic vocabulary.
+Subscription cancellation and source disposal now have coordinated ownership: cleanup runs even
+when already cancelled, and disposal waits for worker exit and in-progress cancellation calls.
+Async WebSocket cleanup awaits cancellation-registration removal instead of blocking a worker
+thread. Throwing callbacks on RPC subscription tokens cannot interrupt unsubscribe or propagate
+into parent shutdown; all callbacks on that token still run. A fixed `CancellationCallbackFailure`
+diagnostic reports the problem without exception text. Reporting is best-effort if the logging
+target itself fails.
+Cancellation/disposal exceptions unrelated to subscription shutdown follow the normal
+retry path. Terminal worker faults produce a safe Error-level diagnostic without sending
+`OnError` into subscribers: polling merged with push notifications must continue when the push
+worker stops. This preserves the fallback, not automatic recovery of a terminal push worker;
+operators should investigate the diagnostic. Catalogue construction failures degrade method labels
+to `other` rather than breaking RPC error handling. Native ZMQ regression tests require the native
+runtime staged by the build; they have been exercised on Windows locally and in Linux CI, not
+validated on macOS.
+
+**Historical exposure:** releases through v0.3.0 and builds before this fix can record wallet
+passwords and sensitive RPC results at Trace, and subscription secrets/URIs at Debug.
+Restrict access to retained logs, support bundles, backups and telemetry exports. If exposure
+is suspected, rotate affected RPC credentials, subscription tokens and wallet passphrases
+using the daemon's procedure. A disclosed private key cannot be made safe by changing a
+password; arrange a secure wallet replacement and transfer through the wallet's supported
+procedure. Do not paste old payload traces into public issues. Disabling logging does not
+remove copies already collected.
+
+This is an **RpcClient-owned diagnostic boundary**, not a global log sanitizer. Returned
+daemon error messages, error data and exception causes stay available to callers for
+compatibility. Coin-specific caller logs and subscriber parsing errors are tracked in
+[#154](https://github.com/NINJAK1DD/miningcore/issues/154); treat those as potentially sensitive.
+Configuration dumps remain covered by
+[#144](https://github.com/NINJAK1DD/miningcore/issues/144). TLS certificate validation is not
+established by safe logging. The design follows the
+[OWASP logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+by excluding payloads and endpoint data entirely rather than enumerating secret-bearing RPC
+methods. Method labels are separately allowlisted from source-controlled protocol constants.
 
 ## Unreleased: Bitcoin BLAKE2b header-v2
 
