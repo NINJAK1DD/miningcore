@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System;
 using System.Net.Http;
 using System.Runtime.ExceptionServices;
@@ -109,7 +110,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
 
         var callGetVersion = walletRpc.GetVersionAsync(new kaspaWalletd.GetVersionRequest());
         var walletVersion = await Guard(() => callGetVersion.ResponseAsync,
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaPayoutHandler.ConfigureAsync", failure: ex));
         callGetVersion.Dispose();
 
         if(!string.IsNullOrEmpty(walletVersion?.Version))
@@ -182,7 +183,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                     IncludeTransactions = true,
                 };
                 await Guard(() => stream.RequestStream.WriteAsync(request),
-                    ex=> logger.Debug(ex));
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaPayoutHandler.ClassifyBlocksAsync", failure: ex));
                 await foreach (var blockInfo in stream.ResponseStream.ReadAllAsync(ct))
                 {
                     // We lost that battle
@@ -221,7 +222,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                             IncludeTransactions = false,
                         };
                         await Guard(() => stream.RequestStream.WriteAsync(requestConfirmations),
-                            ex=> logger.Debug(ex));
+                            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaPayoutHandler.ClassifyBlocksAsync", failure: ex));
                         await foreach (var responseConfirmations in stream.ResponseStream.ReadAllAsync(ct))
                         {
                             logger.Debug(() => $"[{LogCategory}] Block {block.BlockHeight} [{responseConfirmations.GetBlocksResponse.BlockHashes.Count}]");
@@ -255,7 +256,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                                     IncludeTransactions = true,
                                 };
                                 await Guard(() => stream.RequestStream.WriteAsync(requestChildren),
-                                    ex=> logger.Debug(ex));
+                                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaPayoutHandler.ClassifyBlocksAsync", failure: ex));
                                 await foreach (var responseChildren in stream.ResponseStream.ReadAllAsync(ct))
                                 {
                                     // we only need the transaction(s) related to the block reward
@@ -550,7 +551,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
                         {
                             WalletSubmissionOutcome.RethrowIfUnknown(ex,
                                 "Kaspa wallet transaction broadcast");
-                            logger.Warn(ex);
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "KaspaPayoutHandler.PayoutTrackedAsync", failure: ex);
                             TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
                             txFailures.Add(Tuple.Create(amount, ex));
                             continue;
@@ -611,7 +612,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
             }).ToArray();
             var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
-            logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "KaspaPayoutHandler.PayoutTrackedAsync");
 
             NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
         }
@@ -628,7 +629,7 @@ public class KaspaPayoutHandler : PayoutHandlerBase,
         return await Guard(() => call.ResponseAsync, ex =>
         {
             RethrowCancellation(ex, ct);
-            logger.Debug(ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaPayoutHandler.GetPayoutWalletBalanceAsync", failure: ex);
         });
     }
 

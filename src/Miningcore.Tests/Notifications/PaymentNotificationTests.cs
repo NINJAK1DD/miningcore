@@ -140,7 +140,7 @@ public class PaymentNotificationTests
     }
 
     [Fact]
-    public void EmailFormatting_EncodesEveryDynamicReconciliationField()
+    public void EmailFormatting_EncodesMetadataAndWithholdsUntrustedReconciliationText()
     {
         var notification = new PaymentNotification("pool<b>fake</b>&value",
             "reason<b>fake</b>&value", 1, "COIN<b>fake</b>&value")
@@ -162,9 +162,9 @@ public class PaymentNotificationTests
         Assert.Contains("pool&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
         Assert.Contains("COIN&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
         Assert.Contains("address&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
-        Assert.Contains("tx&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
-        Assert.Contains("detail&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
-        Assert.Contains("reason&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
+        Assert.Contains("unverified transaction identifier withheld", rendered.EmailMessage);
+        Assert.DoesNotContain("detail&lt;b&gt;", rendered.EmailMessage);
+        Assert.DoesNotContain("reason&lt;b&gt;", rendered.EmailMessage);
         Assert.DoesNotContain("<b>fake</b>", rendered.EmailMessage);
         Assert.Contains("<br/>", rendered.EmailMessage);
     }
@@ -279,8 +279,8 @@ public class PaymentNotificationTests
                     {
                         Address = "kaspa:recipient",
                         Amount = 1m,
-                        TransactionId = "tx-recipient",
-                        TransactionIds = new[] { "tx-split", "tx-recipient" },
+                        TransactionId = new string('b', 64),
+                        TransactionIds = new[] { new string('a', 64), new string('b', 64) },
                     },
                 },
             },
@@ -289,8 +289,8 @@ public class PaymentNotificationTests
         var rendered = NotificationService.FormatPaymentNotification(notification,
             "KAS", "https://explorer.test/{0}");
 
-        Assert.Contains("transactions tx-split, tx-recipient " +
-            "(canonical tx-recipient)", rendered.EmailMessage);
+        Assert.Contains($"transactions {new string('a', 64)}, {new string('b', 64)} " +
+            $"(canonical {new string('b', 64)})", rendered.EmailMessage);
     }
 
     private static PayoutReconciliationEntry Entry(string address, decimal amount,

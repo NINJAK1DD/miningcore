@@ -137,7 +137,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         var info = await rpcClient.ExecuteAsync<GetChainInfoResponse>(logger, XelisCommands.GetChainInfo, ct);
         if(info.Error != null)
         {
-            logger.Warn(() => $"[{LogCategory}] '{XelisCommands.GetChainInfo}': {info.Error.Message} (Code {info.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.ClassifyBlocksAsync", code: info.Error?.Code);
             return blocks;
         }
 
@@ -166,7 +166,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 var response = await rpcClient.ExecuteAsync<GetBlockByHashResponse>(logger, XelisCommands.GetBlockByHash, ct, getBlockByHashRequest);
                 if(response.Error != null)
                 {
-                    logger.Warn(() => $"[{LogCategory}] '{XelisCommands.GetBlockByHash}': {response.Error.Message} (Code {response.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.ClassifyBlocksAsync", code: response.Error?.Code);
 
                     // we lost that battle
                     if(response.Error.Code == (int)XelisRPCErrorCode.RPC_INVALID_PARAMS)
@@ -270,13 +270,13 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
             var validateAddress = await rpcClient.ExecuteAsync<ValidateAddressResponse>(logger, XelisCommands.ValidateAddress, ct, validateAddressRequest);
             if(validateAddress.Error != null)
-                logger.Warn(()=> $"[{LogCategory}] Address {pair.Key} is not valid: {validateAddress.Error.Message} (Code {validateAddress.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.PayoutTrackedAsync", code: validateAddress.Error?.Code);
         }
 
         var responseBalance = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.GetBalance, ct);
         if(responseBalance.Error != null)
         {
-            logger.Warn(()=> $"[{LogCategory}] '{XelisWalletCommands.GetBalance}': {responseBalance.Error.Message} (Code {responseBalance.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.PayoutTrackedAsync", code: responseBalance.Error?.Code);
             return;
         }
 
@@ -330,7 +330,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 var estimateFeesResponse = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.EstimateFees, ct, estimateFeesRequest);
                 if(estimateFeesResponse.Error != null)
                 {
-                    logger.Warn(()=> $"[{LogCategory}] '{XelisWalletCommands.EstimateFees}': {estimateFeesResponse.Error.Message} (Code {estimateFeesResponse.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.PayoutTrackedAsync", code: estimateFeesResponse.Error?.Code);
                     continue;
                 }
 
@@ -367,7 +367,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
             if(buildTransactionResponse.Error != null)
             {
-                logger.Error(()=> $"[{LogCategory}] '{XelisWalletCommands.BuildTransaction}': {buildTransactionResponse.Error.Message} (Code {buildTransactionResponse.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisPayoutHandler.PayoutTrackedAsync", code: buildTransactionResponse.Error?.Code);
                 NotifyPayoutFailure(poolConfig.Id, page, $"Daemon command '{XelisWalletCommands.BuildTransaction}' returned error: {buildTransactionResponse.Error.Message} code {buildTransactionResponse.Error.Code}", null);
                 continue;
             }
@@ -398,7 +398,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         var status = await rpcClient.ExecuteAsync<GetStatusResponse>(logger, XelisCommands.GetStatus, ct);
         if(status.Error != null)
         {
-            logger.Warn(() => $"'{XelisCommands.GetStatus}': {status.Error.Message} (Code {status.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.EnsureDaemonsSynchedAsync", code: status.Error?.Code);
             return false;
         }
 

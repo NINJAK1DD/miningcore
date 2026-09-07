@@ -146,13 +146,13 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         block.Reward = 0;
                         result.Add(block);
 
-                        logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned due to daemon error {cmdResult.Error.Code}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "HandshakePayoutHandler.ClassifyBlocksAsync");
 
                         messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                     }
 
                     else
-                        logger.Warn(() => $"[{LogCategory}] Daemon reports error '{cmdResult.Error.Message}' (Code {cmdResult.Error.Code}) for transaction {page[j].TransactionConfirmationData}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "HandshakePayoutHandler.ClassifyBlocksAsync", code: cmdResult.Error?.Code);
                 }
 
                 // missing transaction details are interpreted as "orphaned"
@@ -283,7 +283,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     var error = FormatPreflightError(
                         HandshakeWalletCommands.GetWalletInfo, walletInfo?.Error,
                         walletInfo == null || walletInfo.Response == null);
-                    logger.Error(() => $"[{LogCategory}] {error}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakePayoutHandler.PayoutTrackedAsync");
                     NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                     return;
                 }
@@ -300,7 +300,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         var error = FormatPreflightError(
                             HandshakeWalletCommands.SelectWallet, selection?.Error,
                             selection == null);
-                        logger.Error(() => $"[{LogCategory}] {error}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakePayoutHandler.PayoutTrackedAsync");
                         NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                         return;
                     }
@@ -368,7 +368,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                             var error = FormatPreflightError(
                                 HandshakeWalletCommands.WalletPassPhrase,
                                 unlockResult?.Error, unlockResult == null);
-                            logger.Error(() => $"[{LogCategory}] {error}");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakePayoutHandler.PayoutTrackedAsync");
                             NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                         }
 
@@ -376,7 +376,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                         {
                             const string error = "Wallet is locked but walletPassword " +
                                 "was not configured. Unable to send funds.";
-                            logger.Error(() => $"[{LogCategory}] {error}");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakePayoutHandler.PayoutTrackedAsync");
                             NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                         }
                     }
@@ -385,7 +385,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                     {
                         var error = $"{HandshakeWalletCommands.SendMany} returned " +
                             $"error: {result.Error.Message} code {result.Error.Code}";
-                        logger.Error(() => $"[{LogCategory}] {error}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakePayoutHandler.PayoutTrackedAsync");
 
                         NotifyPayoutFailure(poolConfig.Id, balances, error, null);
                     }
@@ -499,7 +499,7 @@ public class HandshakePayoutHandler : PayoutHandlerBase,
                 }).ToArray();
                 var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
-                logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakePayoutHandler.PayoutTrackedAsync");
 
                 NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
             }

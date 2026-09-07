@@ -350,10 +350,10 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(transition.FallbackStarted && transition.Template != null)
         {
-            logger.Warn(() => $"Auxiliary template update failed; continuing parent mining with cached auxiliary template {transition.Template.Height} [{transition.Template.Hash}]: {transition.Failure}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState");
         }
         else if(transition.Degraded)
-            logger.Debug(() => $"Auxiliary template remains degraded: {transition.Failure}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState");
         else if(transition.Recovered && transition.Template != null)
         {
             logger.Info(() => $"Auxiliary template updates recovered at block {transition.Template.Height} [{transition.Template.Hash}]");
@@ -382,7 +382,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             if(parentResponse.Error != null || parentResponse.Response == null)
             {
                 var error = parentResponse.Error?.Message ?? "empty response";
-                logger.Warn(() => $"Unable to update parent job: {error}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob");
                 return (false, forceUpdate);
             }
 
@@ -422,7 +422,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     // fallback episode; publish the unavailable level directly.
                     PublishAuxiliaryTemplateState(
                         auxiliaryTemplateState.ReportUnavailable());
-                    logger.Warn(() => $"Unable to create initial auxiliary job: {error}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob");
                     return (false, forceUpdate);
                 }
 
@@ -523,7 +523,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         }
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MergedMiningBitcoinJobManager.UpdateJob", failure: ex);
         }
         finally
         {
@@ -953,7 +953,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             // The Stratum request path normally observes this exception too. The manager-level
             // observer is required for EOF races where DispatchAsync has already stopped
             // awaiting the request processor.
-            logger.Error(ex, () => $"Merged-mining candidate operation {operationId} failed");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MergedMiningBitcoinJobManager.ObserveCandidateOperationAsync", failure: ex);
         }
         finally
         {
@@ -1039,7 +1039,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             // Local proof validation has already succeeded. A malformed/missing JSON-RPC batch,
             // transport exception or operation timeout cannot prove that litecoind rejected the
             // candidate, so persist an exact-hash marker for normal active-chain reconciliation.
-            logger.Error(ex, () => $"Parent submission outcome for block {share.BlockHeight} [{share.BlockHash}] could not be classified; durable reconciliation queued");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MergedMiningBitcoinJobManager.SubmitAndPersistParentBlockAsync", failure: ex);
             acceptResponse = new SubmitResult(false, null, true);
         }
         share.IsBlockCandidate = acceptResponse.Accepted;
@@ -1263,7 +1263,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(!accepted && !uncertain)
         {
             var error = submitResponse.Error?.Message ?? submitResponse.Response?.ToString() ?? "rejected";
-            logger.Warn(() => $"Auxiliary block {template.Height} [{template.Hash}] was not accepted: {error}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.SubmitAuxiliaryBlockAsync");
             return false;
         }
 

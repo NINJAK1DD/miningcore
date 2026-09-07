@@ -98,7 +98,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                             client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, 1);
                             client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1);
                             client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
-                            logger.Debug(() => $"Establishing socket connection with `{iPAddress.First().ToString()}:{port}`");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient");
                             await client.ConnectAsync(ipEndPoint, cts.Token);
                             if (client.Connected)
                                 logger.Debug(() => $"Socket connection succesffuly established");
@@ -109,7 +109,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                             string data = null;
                             int receivedBytes;
 
-                            logger.Debug(() => $"Sending request `{json}`");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient");
                             // send
                             await stream.WriteAsync(requestData, 0, requestData.Length, cts.Token);
 
@@ -121,7 +121,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
                                 // Translate data bytes to an UTF8 string.
                                 data = Encoding.UTF8.GetString(receiveBuffer, 0, receivedBytes);
-                                logger.Debug(() => $"Received Socket message: {data}");
+                                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient");
 
                                 // detect new lines
                                 string[] lines = data.Split(
@@ -166,7 +166,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
                         catch(Exception ex)
                         {
-                            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while streaming socket responses. Reconnecting in 10s");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamJobManager.BeamSubscribeStratumApiSocketClient", failure: ex);
                         }
                         
                         if(!cts.IsCancellationRequested)
@@ -260,7 +260,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
         catch(Exception ex)
         {
-            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while updating new job");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -328,7 +328,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
         catch(Exception ex)
         {
-            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while updating network stats");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamJobManager.UpdateNetworkStatsAsync", failure: ex);
         }
     }
     
@@ -367,7 +367,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                     client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, 1);
                     client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1);
                     client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
-                    logger.Debug(() => $"[Submit Block] - Establishing socket connection with `{iPAddress.First().ToString()}:{port}`");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.SubmitBlock");
                     await client.ConnectAsync(ipEndPoint, cts.Token);
                     if (client.Connected)
                         logger.Debug(() => $"[Submitting block] - Socket connection succesffuly established");
@@ -376,7 +376,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                     string json = JsonConvert.SerializeObject(request, payloadJsonSerializerSettings);
                     byte[] requestData = Encoding.UTF8.GetBytes($"{json}\r\n");
 
-                    logger.Debug(() => $"[Submitting block] - Sending request `{json}`");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.SubmitBlock");
                     // send
                     await stream.WriteAsync(requestData, 0, requestData.Length, cts.Token);
 
@@ -568,7 +568,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         var jsonSerializerSettings = ctx.Resolve<JsonSerializerSettings>();
         
         explorerRestClient = new SimpleRestClient(httpClientFactory, "http://" + explorerDaemonEndpoints.First().Host.ToString() + ":" + explorerDaemonEndpoints.First().Port.ToString() + "/");
-        logger.Debug(() => $"`beam-node-explorer` URL: http://{explorerDaemonEndpoints.First().Host.ToString()}:{explorerDaemonEndpoints.First().Port.ToString()}/");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.ConfigureDaemons");
         
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
@@ -594,26 +594,26 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         
         catch(Exception)
         {
-            logger.Debug(() => $"`beam-node-explorer` daemon does not seem to be running...");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsHealthyAsync");
             return false;
         }
     }
 
     protected override async Task<bool> AreDaemonsConnectedAsync(CancellationToken ct)
     {
-        logger.Debug(() => "Checking if `beam-node-explorer` daemon is connected...");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync");
         
         try
         {
             var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
-            logger.Debug(() => $"`beam-node-explorer` is connected to {responseExplorerRestClient?.PeersCount} peer(s): Latest blockHeight known: {responseExplorerRestClient?.Height}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync");
             
             return (responseExplorerRestClient?.PeersCount > 0);
         }
         
         catch(Exception)
         {
-            logger.Debug(() => $"`beam-node-explorer` daemon does not seem to be running...");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync");
             return false;
         }
     }
@@ -635,7 +635,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
                 if(responseWalletRpc.Error != null)
                 {
-                    logger.Debug(() => $"`wallet-api` daemon response: {responseWalletRpc.Error.Message} (Code {responseWalletRpc.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.EnsureDaemonsSynchedAsync", code: responseWalletRpc.Error?.Code);
                 }
 
                 else
@@ -726,7 +726,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 

@@ -42,6 +42,7 @@ public static class ObservableExtensions
 
     public static IObservable<T> SafeDo<T>(this IObservable<T> source, Action<T> action, ILogger logger)
     {
-        return source.Do(x => Guard(()=> action(x), logger.Error));
+        return source.Do(x => Guard(()=> action(x), ex =>
+            Rpc.RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "ObservableExtensions.SafeDo", failure: ex)));
     }
 }

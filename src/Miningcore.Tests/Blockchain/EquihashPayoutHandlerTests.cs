@@ -124,7 +124,8 @@ public class EquihashPayoutHandlerTests
         messageBus.Received(1).SendMessage(
             Arg.Is<AdminNotification>(x =>
                 x.Subject == "Payout wallet relock failed" &&
-                x.Message.Contains("lock unavailable")),
+                x.Message.Contains("Check wallet lock state immediately") &&
+                !x.Message.Contains("lock unavailable")),
             Arg.Any<string>());
     }
 

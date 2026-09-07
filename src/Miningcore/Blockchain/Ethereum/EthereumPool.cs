@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -271,7 +272,7 @@ public class EthereumPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPool.OnSubmitAsync", failure: ex);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -444,11 +445,11 @@ public class EthereumPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(_ => Observable.FromAsync(() =>
                     Guard(OnNewJobAsync,
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EthereumPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EthereumPool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -574,7 +575,7 @@ public class EthereumPool : PoolBase
                 case var _ when request.Method == coin.RpcMethodPrefix + EthereumStratumMethods.GetWork:
                     if(!extraPoolConfig.EnableEthashStratumV1)
                     {
-                        logger.Info(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPool.OnRequestAsync");
 
                         await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     }
@@ -590,7 +591,7 @@ public class EthereumPool : PoolBase
                 case var _ when request.Method == coin.RpcMethodPrefix + EthereumStratumMethods.SubmitWork:
                     if(!extraPoolConfig.EnableEthashStratumV1)
                     {
-                        logger.Info(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPool.OnRequestAsync");
 
                         await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     }
@@ -619,7 +620,7 @@ public class EthereumPool : PoolBase
                     break;
 
                 default:
-                    logger.Info(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;

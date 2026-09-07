@@ -1205,7 +1205,7 @@ public class BitcoinPayoutHandlerTests : TestBase
             fixture.Config.Template.Symbol, fixture.Config.Template.ExplorerTxLink);
         Assert.Equal("Payout Outcome Uncertain Notification", rendered.Subject);
         Assert.Contains("Payout batch totalling 3 DOGE", rendered.EmailMessage);
-        Assert.Contains("Accepted and persisted: 1 DOGE to DTest1, transaction payout-txid",
+        Assert.Contains("Accepted and persisted: 1 DOGE to DTest1, transaction [unverified transaction identifier withheld]",
             rendered.EmailMessage);
         Assert.Contains("Uncertain: 2 DOGE to DTest2", rendered.EmailMessage);
         Assert.DoesNotContain("Failed to pay out", rendered.EmailMessage);

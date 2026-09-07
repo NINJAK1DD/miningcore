@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using Autofac;
 using AutoMapper;
 using System.Diagnostics;
@@ -216,14 +217,14 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             if(secondaryFailureReports < 3)
             {
                 secondaryFailureReports++;
-                logger.Info(ex, "Additional Bitcoin BLAKE2b failure after local isolation ({0}/3 Info reports; subsequent failures use Debug)", secondaryFailureReports);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinBlake2bPool.FaultPool", failure: ex);
             }
             else
-                logger.Debug(ex, "Additional Bitcoin BLAKE2b failure after local isolation");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinBlake2bPool.FaultPool", failure: ex);
             return;
         }
 
-        logger.Error(ex, "Bitcoin BLAKE2b pool faulted; new work and payment operations are disabled. Other pools continue running; operator restart required");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPool.FaultPool", failure: ex);
         try
         {
             messageBus.NotifyPoolStatus(this, PoolStatus.Offline);
@@ -232,7 +233,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
         catch(Exception notificationError)
         {
-            logger.Error(notificationError, "Unable to report the isolated Bitcoin BLAKE2b failure; local admission is already closed");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPool.FaultPool", failure: notificationError);
         }
     }
 

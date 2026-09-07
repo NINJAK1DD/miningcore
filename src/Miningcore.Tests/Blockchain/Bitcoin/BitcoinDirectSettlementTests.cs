@@ -400,7 +400,8 @@ public class BitcoinDirectSettlementTests : TestBase
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject.Contains("settlement mismatch") &&
                 notification.Message.Contains(block.Hash) &&
-                notification.Message.Contains("coinbase transaction id")),
+                notification.Message.Contains("coinbase transaction ID") &&
+                notification.Message.Contains("Sensitive verification detail is withheld")),
             Arg.Any<string>());
 
         var laterBus = Substitute.For<IMessageBus>();

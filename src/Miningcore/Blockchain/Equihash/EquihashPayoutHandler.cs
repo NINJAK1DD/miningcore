@@ -82,7 +82,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         var responseZSendMany = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, new object[] { poolExtraConfig.ZAddress, new [] { new ZSendManyRecipient { Address = poolExtraConfig.ZAddress, Amount = 0.0m } }, ZMinConfirmations, TransferFee, "WrongPrivacyPolicy" }); // we willingly provide the wrong parameter for "PrivacyPolicy" in order to detect its support and more importantly not accidently altering the pool wallet
         supportsZSendManyPrivacyPolicy = responseZSendMany.Error?.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
         if(responseZSendMany.Error?.Code != null)
-            logger.Debug(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} 'PrivacyPolicy' support returned error: {responseZSendMany.Error?.Message} code {responseZSendMany.Error?.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EquihashPayoutHandler.ConfigureAsync");
     }
 
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
@@ -216,7 +216,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             if(balanceResponse.Error != null || (decimal) (double) balanceResponse.Response - TransferFee < pageAmount)
             {
                 if(balanceResponse.Error != null)
-                    logger.Warn(() => $"[{LogCategory}] {EquihashCommands.ZGetBalance} returned error: {balanceResponse.Error.Message} code {balanceResponse.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashPayoutHandler.PayoutZSendManyAsync", code: balanceResponse.Error?.Code);
                 else
                     logger.Info(() => $"[{LogCategory}] Insufficient shielded balance for payment of {FormatAmount(pageAmount)}");
 
@@ -308,7 +308,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                                 case ZOperationStatus.Cancelled:
                                 case ZOperationStatus.Failed:
-                                    logger.Error(() => $"{EquihashCommands.ZSendMany} failed: {operationResult.Error.Message} code {operationResult.Error.Code}");
+                                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutZSendManyAsync", code: operationResult.Error?.Code);
                                     NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.ZSendMany} failed: {operationResult.Error.Message} code {operationResult.Error.Code}", null);
 
                                     continueWaiting = false;
@@ -355,7 +355,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                 ? $"{BitcoinCommands.WalletPassphrase} returned error: " +
                                   $"{unlockResponse.Error.Message} code {unlockResponse.Error.Code}"
                                 : $"{BitcoinCommands.WalletPassphrase} returned an empty response";
-                            logger.Error(() => $"[{LogCategory}] {error}");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutZSendManyAsync");
                             NotifyPayoutFailure(poolConfig.Id, page, error, null);
                             break;
                         }
@@ -371,7 +371,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                 else
                 {
-                    logger.Error(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} returned error: {response.Error.Message} code {response.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutZSendManyAsync", code: response.Error?.Code);
 
                     NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.ZSendMany} returned error: {response.Error.Message} code {response.Error.Code}", null);
                 }
@@ -476,7 +476,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                                 case ZOperationStatus.Cancelled:
                                 case ZOperationStatus.Failed:
-                                    logger.Error(() => $"{EquihashCommands.SendCurrency} failed: {operationResult.Error.Message} code {operationResult.Error.Code}");
+                                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutSendCurrencyAsync", code: operationResult.Error?.Code);
                                     NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.SendCurrency} failed: {operationResult.Error.Message} code {operationResult.Error.Code}", null);
 
                                     continueWaiting = false;
@@ -523,7 +523,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                 ? $"{BitcoinCommands.WalletPassphrase} returned error: " +
                                   $"{unlockResponse.Error.Message} code {unlockResponse.Error.Code}"
                                 : $"{BitcoinCommands.WalletPassphrase} returned an empty response";
-                            logger.Error(() => $"[{LogCategory}] {error}");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutSendCurrencyAsync");
                             NotifyPayoutFailure(poolConfig.Id, page, error, null);
                             break;
                         }
@@ -539,7 +539,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                 else
                 {
-                    logger.Error(() => $"[{LogCategory}] {EquihashCommands.SendCurrency} returned error: {response.Error.Message} code {response.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutSendCurrencyAsync", code: response.Error?.Code);
 
                     NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.SendCurrency} returned error: {response.Error.Message} code {response.Error.Code}", null);
                 }
@@ -569,9 +569,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         if(response.Error != null)
         {
             if(response.Error.Code == (int)BitcoinRPCErrorCode.RPC_WALLET_INSUFFICIENT_FUNDS || response.Error.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMS || response.Error.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMETER)
-                logger.Info(() => $"[{LogCategory}] No funds to shield: {response.Error.Message} code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EquihashPayoutHandler.ShieldCoinbaseAsync", code: response.Error?.Code);
             else
-                logger.Error(() => $"[{LogCategory}] {EquihashCommands.ZShieldCoinbase} returned an unexpected error: {response.Error.Message} code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseAsync", code: response.Error?.Code);
 
             return;
         }
@@ -594,7 +594,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                 if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
                 {
-                    logger.Error(() => $"Unrecognized operation status: {operationResult.Status}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseAsync");
                     break;
                 }
 
@@ -608,7 +608,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                     case ZOperationStatus.Cancelled:
                     case ZOperationStatus.Failed:
-                        logger.Error(() => $"{EquihashCommands.ZShieldCoinbase} failed: {operationResult.Error.Message} code {operationResult.Error.Code}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseAsync", code: operationResult.Error?.Code);
 
                         continueWaiting = false;
                         continue;
@@ -630,7 +630,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         if(unspentResponse.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] {BitcoinCommands.ListUnspent} returned error: {unspentResponse.Error.Message} code {unspentResponse.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseEmulatedAsync", code: unspentResponse.Error?.Code);
             return;
         }
 
@@ -673,7 +673,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         if(sendResponse.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} returned error: {unspentResponse.Error.Message} code {unspentResponse.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseEmulatedAsync", code: unspentResponse.Error?.Code);
             return;
         }
 
@@ -701,7 +701,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                 if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
                 {
-                    logger.Error(() => $"Unrecognized operation status: {operationResult.Status}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseEmulatedAsync");
                     break;
                 }
 
@@ -718,7 +718,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
                     case ZOperationStatus.Cancelled:
                     case ZOperationStatus.Failed:
-                        logger.Error(() => $"{EquihashCommands.ZSendMany} failed: {operationResult.Error.Message} code {operationResult.Error.Code}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseEmulatedAsync", code: operationResult.Error?.Code);
 
                         continueWaiting = false;
                         continue;

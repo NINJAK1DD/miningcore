@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Ergo.Configuration;
@@ -61,7 +62,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
         if(ex is ApiException<ApiError> apiException)
             error = apiException.Result.Detail ?? apiException.Result.Reason;
 
-        logger.Warn(() => $"{action}: {error}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ErgoPayoutHandler.ReportAndRethrowApiError");
 
         if(rethrow)
             throw ex;
@@ -147,7 +148,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
             var headerBatch = page.Select(block => ergoClient.GetFullBlockAtAsync((int) block.BlockHeight, ct)).ToArray();
 
             await Guard(()=> Task.WhenAll(headerBatch),
-                ex=> logger.Debug(ex));
+                ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoPayoutHandler.ClassifyBlocksAsync", failure: ex));
 
             for(var j = 0; j < page.Length; j++)
             {
@@ -157,7 +158,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
                 if(!headerTask.IsCompletedSuccessfully)
                 {
                     if(headerTask.IsFaulted)
-                        logger.Warn(()=> $"Failed to fetch block {block.BlockHeight}: {headerTask.Exception?.InnerException?.Message ?? headerTask.Exception?.Message}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ErgoPayoutHandler.ClassifyBlocksAsync");
                     else
                         logger.Warn(()=> $"Failed to fetch block {block.BlockHeight}: {headerTask.Status.ToString().ToLower()}");
 
@@ -170,7 +171,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
                 var blockBatch = headerIds.Select(x=> ergoClient.GetFullBlockByIdAsync(x, ct)).ToArray();
 
                 await Guard(()=> Task.WhenAll(blockBatch),
-                    ex=> logger.Debug(ex));
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoPayoutHandler.ClassifyBlocksAsync", failure: ex));
 
                 var blockHandled = false;
                 var pkMismatchCount = 0;
@@ -310,7 +311,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
 
         catch(PaymentException ex)
         {
-            logger.Error(() => $"[{LogCategory}] {ex.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ErgoPayoutHandler.PayoutAsync", failure: ex);
 
             NotifyPayoutFailure(poolConfig.Id, balances, ex.Message, null);
         }

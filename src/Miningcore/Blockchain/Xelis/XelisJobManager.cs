@@ -138,7 +138,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -178,12 +178,12 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         var response = await rpc.ExecuteAsync<object>(logger, XelisCommands.SubmitBlock, ct, block);
         if(response.Error != null)
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {response.Error.Message} (Code {response.Error.Code})");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {response.Error.Message} (Code {response.Error.Code})"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisJobManager.SubmitBlockAsync", code: response.Error?.Code);
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError} (Code {response.Error.Code})"));
             return false;
         }
         
-        logger.Debug(() => $"{XelisCommands.SubmitBlock}': {response.Response}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisJobManager.SubmitBlockAsync");
 
         return (bool)response.Response;
     }
@@ -356,7 +356,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         var response = await rpc.ExecuteAsync<SplitAddressResponse>(logger, XelisCommands.SplitAddress, ct, splitAddressRequest);
         if(response.Error != null)
         {
-            logger.Debug(() => $"'{address}': {response.Error.Message} (Code {response.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisJobManager.NormalizeAddressAsync", code: response.Error?.Code);
             return address;
         }
 
@@ -376,7 +376,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         var response = await rpc.ExecuteAsync<ValidateAddressResponse>(logger, XelisCommands.ValidateAddress, ct, validateAddressRequest);
         if(response.Error != null)
         {
-            logger.Warn(() => $"'{address}': {response.Error.Message} (Code {response.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisJobManager.ValidateAddressAsync", code: response.Error?.Code);
             return false;
         }
 
@@ -417,7 +417,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         var info = await rpc.ExecuteAsync<GetChainInfoResponse>(logger, XelisCommands.GetChainInfo, ct);
         if(info.Error != null)
         {
-            logger.Warn(() => $"'{XelisCommands.GetChainInfo}': {info.Error.Message} (Code {info.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisJobManager.AreDaemonsHealthyAsync", code: info.Error?.Code);
             return false;
         }
 
@@ -433,7 +433,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             var balance = await rpcWallet.ExecuteAsync<object>(logger, XelisWalletCommands.GetBalance, ct);
 
             if(balance.Error != null)
-                logger.Debug(() => $"'{XelisWalletCommands.GetBalance}': {balance.Error.Message} (Code {balance.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisJobManager.AreDaemonsHealthyAsync", code: balance.Error?.Code);
 
             return balance.Error == null;
         }
@@ -448,7 +448,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         var status = await rpc.ExecuteAsync<GetStatusResponse>(logger, XelisCommands.GetStatus, ct);
         if(status.Error != null)
         {
-            logger.Warn(() => $"'{XelisCommands.GetStatus}': {status.Error.Message} (Code {status.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisJobManager.AreDaemonsConnectedAsync", code: status.Error?.Code);
             return false;
         }
 
@@ -469,7 +469,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             {
                 var status = await rpc.ExecuteAsync<GetStatusResponse>(logger, XelisCommands.GetStatus, ct);
                 if(status.Error != null)
-                    logger.Warn(() => $"'{XelisCommands.GetStatus}': {status.Error.Message} (Code {status.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisJobManager.EnsureDaemonsSynchedAsync", code: status.Error?.Code);
 
                 if(status.Response.BestTopoHeight <= status.Response.MedianTopoHeight)
                 {
@@ -480,7 +480,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
             catch(Exception e)
             {
-                logger.Error(e);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.EnsureDaemonsSynchedAsync", failure: e);
             }
 
             if(!syncPendingNotificationShown)
@@ -527,7 +527,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         if(extractKeyFromAddress.Error != null)
             throw new PoolStartupException($"Pool address public key '{poolConfig.Address}': {extractKeyFromAddress.Error} (Code {extractKeyFromAddress.Error.Code})", poolConfig.Id);
 
-        logger.Info(() => $"Pool address public key: {extractKeyFromAddress.Response.PublicKey}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "XelisJobManager.PostStartInitAsync");
         poolPublicKey = extractKeyFromAddress.Response.PublicKey;
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
@@ -547,7 +547,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 

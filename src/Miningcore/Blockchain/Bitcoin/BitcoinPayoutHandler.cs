@@ -197,8 +197,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     directBlock.NotifyBlockConfirmationProgressOnUpdate = false;
                     directBlock.NotifyBlockUnlockedOnUpdate = false;
                     result.Add(directBlock);
-                    logger.Error(ex, () =>
-                        $"[{LogCategory}] Quarantined direct SOLO block {directBlock.BlockHeight} [{directBlock.Hash}] because its immutable settlement evidence could not be verified");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.ClassifyBlocksAsync", failure: ex);
                 }
             }
 
@@ -305,7 +304,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 if(string.IsNullOrEmpty(coinbaseTransaction))
                 {
                     var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
-                    logger.Warn(() => $"[{LogCategory}] Unable to reconcile auxiliary block {block.BlockHeight} [{blockHash}]: {error}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyBlocksAsync");
 
                     if(blockIsActive)
                     {
@@ -435,13 +434,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         result.Add(block);
                         ClearUnavailableActiveBlockGrace(block);
 
-                        logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned due to daemon error {cmdResult.Error.Code}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinPayoutHandler.ClassifyBlocksAsync");
 
                         block.NotifyBlockUnlockedOnUpdate = true;
                     }
 
                     else
-                        logger.Warn(() => $"[{LogCategory}] Daemon reports error '{cmdResult.Error.Message}' (Code {cmdResult.Error.Code}) for transaction {block.TransactionConfirmationData}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyBlocksAsync", code: cmdResult.Error?.Code);
                 }
 
                 // missing transaction details are interpreted as "orphaned"
@@ -579,11 +578,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         BitcoinDirectSubmission.SubmittedUncertain;
                     block.Status = BlockStatus.Pending;
                     NotifyDirectSettlementMismatchGrace(block, ex.Message);
-                    logger.Warn(ex,
-                        $"[{LogCategory}] Direct SOLO block " +
-                        $"{block.BlockHeight} [{block.Hash}] remains " +
-                        "replayable because its active-chain coinbase does " +
-                        "not match the immutable settlement evidence");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync", failure: ex);
                     return true;
                 }
                 catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
@@ -594,11 +589,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     block.DirectSubmissionState =
                         BitcoinDirectSubmission.SubmittedUncertain;
                     block.Status = BlockStatus.Pending;
-                    logger.Warn(ex,
-                        $"[{LogCategory}] Direct SOLO block " +
-                        $"{block.BlockHeight} [{block.Hash}] remains " +
-                        "replayable because the daemon returned malformed " +
-                        "active-block data");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync", failure: ex);
                     return true;
                 }
                 block.DirectSubmissionAttempts = checked(
@@ -683,8 +674,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 return true;
             }
 
-            logger.Warn(() =>
-                $"[{LogCategory}] Unable to inspect direct SOLO block {block.BlockHeight} [{block.Hash}]: {response.Error.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync", code: response.Error?.Code);
             if(wasPending)
                 return false;
 
@@ -714,10 +704,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
         catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
         {
-            logger.Warn(ex,
-                $"[{LogCategory}] Deferred classification of direct SOLO " +
-                $"block {block.BlockHeight} [{block.Hash}] because the daemon " +
-                "returned malformed block data");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync", failure: ex);
             if(wasPending)
                 return false;
 
@@ -743,11 +730,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         catch(BitcoinDirectSettlementMismatchException ex)
         {
             NotifyDirectSettlementMismatchGrace(block, ex.Message);
-            logger.Warn(ex,
-                $"[{LogCategory}] Deferred classification of direct SOLO " +
-                $"block {block.BlockHeight} [{block.Hash}] because its " +
-                "active-chain coinbase does not match the immutable " +
-                "settlement evidence");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync", failure: ex);
             if(wasPending)
                 return false;
 
@@ -756,10 +739,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
         catch(Exception ex) when(IsMalformedDirectDaemonData(ex))
         {
-            logger.Warn(ex,
-                $"[{LogCategory}] Deferred classification of direct SOLO " +
-                $"block {block.BlockHeight} [{block.Hash}] because the daemon " +
-                "returned malformed coinbase data");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync", failure: ex);
             if(wasPending)
                 return false;
 
@@ -1032,7 +1012,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         var message = $"Pool {poolConfig.Id} direct-SOLO block " +
             $"{block.BlockHeight} [{block.Hash}] has failed exact on-chain " +
             $"coinbase settlement verification for at least " +
-            $"{(int) UncertainBlockLifetime.TotalMinutes} minutes: {reason}. " +
+            $"{(int) UncertainBlockLifetime.TotalMinutes} minutes. Sensitive verification detail is withheld. " +
             "Miningcore has not credited or paid this block and has kept the " +
             "record pending or replayable. Compare the stored block, coinbase " +
             "transaction ID and output scripts/amounts with an independent " +
@@ -1048,10 +1028,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             activeBlockGracePeriodTracker.ReleaseNotification(block.PoolId,
                 block.Id, block.Hash, episodeType);
-            logger.Error(ex, () =>
-                $"[{LogCategory}] Unable to emit delayed direct-SOLO " +
-                $"settlement-mismatch notification for block " +
-                $"{block.BlockHeight} [{block.Hash}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.NotifyDirectSettlementMismatchGrace", failure: ex);
         }
     }
 
@@ -1074,7 +1051,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         var message = $"Pool {poolConfig.Id} block {block.BlockHeight} [{block.Hash}] " +
             $"({block.Type}) has had unavailable active-chain verification for at least " +
             $"{(int) UncertainBlockLifetime.TotalMinutes} minutes because " +
-            $"{reason} and the daemon could not verify whether the block is still active. " +
+            "the daemon could not verify whether the block is still active. Sensitive verification detail is withheld. " +
             "Check getblock/gettransaction RPC behaviour, wallet indexing, and any RPC proxy before manually intervening.";
 
         try
@@ -1088,7 +1065,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         {
             activeBlockGracePeriodTracker.ReleaseNotification(block.PoolId, block.Id,
                 block.Hash, block.Type);
-            logger.Error(ex, () => $"[{LogCategory}] Unable to emit delayed reconciliation admin notification for block {block.BlockHeight} [{block.Hash}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.NotifyUnavailableActiveBlockGrace", failure: ex);
         }
     }
 
@@ -1298,7 +1275,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                         var failure = $"{BitcoinCommands.WalletPassphrase} returned error: " +
                             $"{unlockResult.Error.Message} code {unlockResult.Error.Code}";
-                        logger.Error(() => $"[{LogCategory}] {failure}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.PayoutAsync");
                         TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id,
                             payableBalances, failure, null), "failure");
                         return;
@@ -1308,7 +1285,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     {
                         const string failure = "Wallet is locked but walletPassword was not " +
                             "configured. Unable to send funds.";
-                        logger.Error(() => $"[{LogCategory}] {failure}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.PayoutAsync");
                         TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id,
                             payableBalances, failure, null), "failure");
                         return;
@@ -1317,7 +1294,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 else
                 {
-                    logger.Error(() => $"[{LogCategory}] {BitcoinCommands.SendMany} returned error: {result.Error.Message} code {result.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.PayoutAsync", code: result.Error?.Code);
 
                     TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id, payableBalances,
                         $"{BitcoinCommands.SendMany} returned error: " +
@@ -1747,8 +1724,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
         catch(Exception ex)
         {
-            logger.Error(ex, () =>
-                $"[{LogCategory}] Unable to emit payout {outcome} notification");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.TryNotifyPayout", failure: ex);
         }
     }
 

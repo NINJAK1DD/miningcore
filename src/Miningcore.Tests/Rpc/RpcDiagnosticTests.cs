@@ -585,7 +585,7 @@ public class RpcDiagnosticTests
         Assert.All(logs.Messages, x => Assert.Contains("\"endpointIndex\":null", x));
     }
 
-    private sealed class CapturedLogs : IDisposable
+    internal sealed class CapturedLogs : IDisposable
     {
         private readonly LogFactory factory = new();
         private readonly ConcurrentLogTarget target = new() { Layout = "${message}${exception:format=tostring}" };
@@ -670,7 +670,7 @@ public class RpcDiagnosticTests
         public void OnCompleted() { }
     }
 
-    private sealed class Server(WebApplication app, Uri address) : IAsyncDisposable
+    internal sealed class Server(WebApplication app, Uri address) : IAsyncDisposable
     {
         public DaemonEndpointConfig Endpoint() => new()
         {

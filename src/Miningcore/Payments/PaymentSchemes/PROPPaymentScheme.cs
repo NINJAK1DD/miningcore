@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Data;
 using System.Data.Common;
 using System.Net.Sockets;
@@ -257,6 +258,6 @@ public class PROPPaymentScheme : IPayoutScheme
 
     private static void OnPolicyRetry(Exception ex, int retry, object context)
     {
-        logger.Warn(() => $"Retry {retry} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "PROPPaymentScheme.OnPolicyRetry", failure: ex);
     }
 }

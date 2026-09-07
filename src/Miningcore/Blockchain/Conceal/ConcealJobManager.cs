@@ -69,7 +69,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ConcealJobManager.UpdateJob", code: response.Error?.Code);
                 return false;
             }
 
@@ -118,7 +118,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -173,7 +173,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.UpdateNetworkStatsAsync", failure: e);
         }
     }
 
@@ -185,8 +185,8 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
         {
             var error = response.Error?.Message ?? response.Response?.Status;
 
-            logger.Warn(() => $"Block {share.BlockHeight} [{blobHash[..6]}] submission failed with: {error}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {error}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ConcealJobManager.SubmitBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return false;
         }
 
@@ -402,7 +402,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 ConcealCommands.GetBlockTemplate, ct, request);
 
             if(response.Error != null)
-                logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealJobManager.AreDaemonsHealthyAsync", code: response.Error?.Code);
 
             if(response.Error is {Code: -9})
                 return false;
@@ -427,7 +427,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             var response2 = await walletRpc.ExecuteAsync<GetBalanceResponse>(logger, ConcealWalletCommands.GetBalance, ct, request2);
             
             if(response2.Error != null)
-                logger.Debug(() => $"walletd daemon response: {response2.Error.Message} (Code {response2.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealJobManager.AreDaemonsHealthyAsync", code: response2.Error?.Code);
 
             return response2.Error == null;
         }
@@ -486,7 +486,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                     ConcealCommands.GetBlockTemplate, ct, request);
 
                 if(response.Error != null)
-                    logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealJobManager.EnsureDaemonsSynchedAsync", code: response.Error?.Code);
 
                 var info = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
 
@@ -499,7 +499,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
             catch(Exception e)
             {
-                logger.Error(e);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.EnsureDaemonsSynchedAsync", failure: e);
             }
 
             if(!syncPendingNotificationShown)
@@ -571,7 +571,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 

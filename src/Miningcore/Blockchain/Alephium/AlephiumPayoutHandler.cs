@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System;
 using Autofac;
 using AutoMapper;
@@ -114,7 +115,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                 int blockRewardTransactionIndex = 0;
 
                 var isBlockInMainChain = await Guard(() => alephiumClient.GetBlockflowIsBlockInMainChainAsync((string) block.Hash, ct),
-                    ex=> logger.Debug(ex));
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumPayoutHandler.ClassifyBlocksAsync", failure: ex));
 
                 // Starting with Rhone-Upgrade - https://docs.alephium.org/integration/mining/#rhone-upgrade - "Ghost" uncles are now a thing on ALPH
                 // When a Block is not found in main chain, we must check now if it could be a "ghost" uncle
@@ -124,7 +125,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
                     // get uncle block info
                     blockInfo = await Guard(() => alephiumClient.UncleHashAsync((string) block.Hash, ct),
-                        ex=> logger.Debug(ex));
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumPayoutHandler.ClassifyBlocksAsync", failure: ex));
 
                     // Dang, not even a "ghost" uncle, we definitely lost that battle :'(
                     if(blockInfo == null)
@@ -164,7 +165,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
                     // get block info
                     blockInfo = await Guard(() => alephiumClient.HashAsync((string) block.Hash, ct),
-                        ex=> logger.Debug(ex));
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumPayoutHandler.ClassifyBlocksAsync", failure: ex));
 
                     logger.Debug(() => $"[{LogCategory}] Block {block.BlockHeight} [{block.Hash}] contains {blockInfo.Transactions.Count} transaction(s)");
 
@@ -181,7 +182,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                 {
                     // get wallet miner's addresses
                     var walletMinersAddresses = await Guard(() => alephiumClient.GetMinersAddressesAsync(ct),
-                        ex=> logger.Debug(ex));
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumPayoutHandler.ClassifyBlocksAsync", failure: ex));
 
                     // We only need the transaction related to our block type
                     blockReward = blockRewardTransaction.Unsigned.FixedOutputs.ElementAtOrDefault(blockRewardTransactionIndex);
@@ -390,7 +391,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
                 var wealthyPoolAddressUtxos = await alephiumClient.GetAddressesAddressUtxosAsync(wealthyPoolAddress[1].Address, ct);
                 if(!string.IsNullOrEmpty(wealthyPoolAddressUtxos?.Warning))
                 {
-                    logger.Warn(() => $"[{LogCategory}] Pool wallet address: {wealthyPoolAddress[1].Address} maybe can't be used anymore: {wealthyPoolAddressUtxos.Warning}. Please fix it");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "AlephiumPayoutHandler.PayoutAsync");
                     return;
                 }
 
@@ -692,9 +693,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
     private void RecordPayoutPreparationFailure(Balance[] balances, string detail,
         Exception exception = null)
     {
-        logger.Warn(() => exception == null
-            ? $"[{LogCategory}] {detail}"
-            : $"[{LogCategory}] {detail}: {exception}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "AlephiumPayoutHandler.RecordPayoutPreparationFailure", failure: exception);
         NotifyPayoutFailure(poolConfig.Id, balances, detail, exception);
     }
 
@@ -783,7 +782,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
     {
         var error = GetApiError(ex);
 
-        logger.Warn(() => $"{action}: {error}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "AlephiumPayoutHandler.ReportAndRethrowApiError");
 
         if(rethrow)
             throw ex;

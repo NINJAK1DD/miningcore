@@ -250,7 +250,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
 
                         var uncleResponses = await rpcClient.ExecuteBatchAsync(logger, ct, uncleBatch);
 
-                        logger.Info(() => $"[{LogCategory}] Fetched {uncleResponses.Count(x => x.Error == null && x.Response != null)} uncles for block {blockInfo2.Height}");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPayoutHandler.ClassifyBlocksAsync");
 
                         var uncle = uncleResponses.Where(x => x.Error == null && x.Response != null)
                             .Select(x => x.Response.ToObject<DaemonResponses.Block>())
@@ -381,7 +381,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
                     WalletSubmissionOutcome.RethrowIfUnknown(ex,
                         coin.RpcMethodPrefix + EC.SendTx);
 
-                    logger.Error(ex);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumPayoutHandler.PayoutTrackedAsync", failure: ex);
 
                     NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
                 }

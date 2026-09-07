@@ -83,7 +83,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
 
         else
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealPayoutHandler.HandleSendTransactionResponseAsync", code: response.Error?.Code);
 
             NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}", null);
             return false;
@@ -102,7 +102,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
         
         if(response.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ConcealWalletCommands.GetBalance}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealPayoutHandler.EnsureBalance", code: response.Error?.Code);
             return false;
         }
 
@@ -322,7 +322,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
 
                 if(rpcResult.Error != null)
                 {
-                    logger.Debug(() => $"[{LogCategory}] Daemon reports error '{rpcResult.Error.Message}' (Code {rpcResult.Error.Code}) for block {block.BlockHeight}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealPayoutHandler.ClassifyBlocksAsync", code: rpcResult.Error?.Code);
                     continue;
                 }
 

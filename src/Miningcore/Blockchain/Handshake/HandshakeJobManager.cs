@@ -70,7 +70,7 @@ public class HandshakeJobManager : BitcoinJobManagerBase<HandshakeJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "HandshakeJobManager.UpdateJob", code: response.Error?.Code);
                 return (false, forceUpdate);
             }
 
@@ -130,7 +130,7 @@ public class HandshakeJobManager : BitcoinJobManagerBase<HandshakeJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakeJobManager.UpdateJob", failure: ex);
         }
 
         return (false, forceUpdate);

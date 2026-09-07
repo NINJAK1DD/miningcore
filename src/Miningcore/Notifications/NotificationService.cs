@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Net;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -190,7 +191,7 @@ public class NotificationService : StartupGatedBackgroundService,
                 notification.Reconciliation?.NotAttempted, symbol);
 
             if(!string.IsNullOrWhiteSpace(notification.Error))
-                sections.Add($"Reason: {HtmlEncode(notification.Error)}");
+                sections.Add(RpcConsumerDiagnostics.WithheldError);
 
             var pushoverSections = new List<string>
             {
@@ -214,9 +215,9 @@ public class NotificationService : StartupGatedBackgroundService,
 
         var emailFailureMessage = FormatHtmlFailedAmount(notification, symbol) + " " +
             $"from pool {HtmlEncode(notification.PoolId)}: " +
-            HtmlEncode(notification.Error);
+            RpcConsumerDiagnostics.WithheldError;
         var pushoverFailureMessage = FormatFailedAmount(notification, symbol) + " " +
-            $"from pool {notification.PoolId}: {notification.Error}";
+            $"from pool {notification.PoolId}: {RpcConsumerDiagnostics.WithheldError}";
         return ("Payout Failure Notification", emailFailureMessage,
             TruncateForPushover(pushoverFailureMessage), false);
     }
@@ -250,18 +251,18 @@ public class NotificationService : StartupGatedBackgroundService,
                 transactionIds = new[] { x.TransactionId };
 
             if(transactionIds.Length == 1)
-                parts.Add($"transaction {HtmlEncode(transactionIds[0])}");
+                parts.Add($"transaction {HtmlEncode(RpcConsumerDiagnostics.TransactionId(transactionIds[0]))}");
             else if(transactionIds.Length > 1)
             {
                 var transactionDetail = $"transactions " +
-                    string.Join(", ", transactionIds.Select(HtmlEncode));
+                    string.Join(", ", transactionIds.Select(RpcConsumerDiagnostics.TransactionId).Select(HtmlEncode));
                 if(!string.IsNullOrWhiteSpace(x.TransactionId))
-                    transactionDetail += $" (canonical {HtmlEncode(x.TransactionId)})";
+                    transactionDetail += $" (canonical {HtmlEncode(RpcConsumerDiagnostics.TransactionId(x.TransactionId))})";
                 parts.Add(transactionDetail);
             }
 
             if(!string.IsNullOrWhiteSpace(x.Detail))
-                parts.Add(HtmlEncode(x.Detail));
+                parts.Add("Sensitive reconciliation detail withheld; retain the original evidence for manual reconciliation.");
 
             return string.Join(", ", parts);
         });
@@ -436,7 +437,7 @@ public class NotificationService : StartupGatedBackgroundService,
 
     private void LogGuarded(Exception ex)
     {
-        logger.Error(ex);
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NotificationService.LogGuarded", failure: ex);
     }
 
     private IObservable<IObservable<Unit>> Subscribe<T>(Func<T, CancellationToken, Task> handler, CancellationToken ct)

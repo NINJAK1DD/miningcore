@@ -48,6 +48,25 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: credential-safe RPC consumer diagnostics
+
+Audited job managers, payout handlers and shared recovery/notification consumers
+no longer render daemon error messages or parsing exceptions directly. Bounded
+`RPC consumer diagnostic` records identify operations, failure categories and
+numeric daemon codes where available. Update monitoring filters for this prefix.
+Beam explorer diagnostics omit URLs and socket diagnostics omit request/response
+payloads; CryptoNote transfer logs omit secret keys.
+
+Payment alerts withhold free-form error/reconciliation detail and malformed
+transaction identifiers while preserving outcomes, amounts and reconciliation
+groups. Original RPC results and private evidence remain unchanged. Host-facing
+daemon startup and pool-run failures also use safe diagnostics. No database
+migration, wallet decision, TLS policy or timeout change is introduced.
+
+See the [consumer audit and operator guide](rpc-consumer-diagnostics.md) for
+covered families, historical exposure guidance and explicit scope limits. This
+complements transport hardening; it is not a global log/configuration redactor.
+
 ## Unreleased: credential-safe RPC transport diagnostics
 
 **Monitoring change:** Prometheus/Grafana dashboards using joined RPC batch-method labels
@@ -109,8 +128,9 @@ remove copies already collected.
 
 This is an **RpcClient-owned diagnostic boundary**, not a global log sanitizer. Returned
 daemon error messages, error data and exception causes stay available to callers for
-compatibility. Coin-specific caller logs and subscriber parsing errors are tracked in
-[#154](https://github.com/NINJAK1DD/miningcore/issues/154); treat those as potentially sensitive.
+compatibility. Coin-specific caller logs and parsing errors are covered by the
+[separate consumer boundary](rpc-consumer-diagnostics.md); original error objects
+and private reconciliation evidence remain sensitive.
 Configuration dumps remain covered by
 [#144](https://github.com/NINJAK1DD/miningcore/issues/144). TLS certificate validation is not
 established by safe logging. The design follows the

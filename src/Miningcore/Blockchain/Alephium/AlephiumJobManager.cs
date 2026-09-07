@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System;
 using static System.Array;
 using System.Globalization;
@@ -240,7 +241,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
                         catch(Exception ex)
                         {
-                            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while streaming socket responses. Reconnecting in 10s");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.AlephiumSubscribeStratumApiSocketClient", failure: ex);
                         }
                         
                         if(!cts.IsCancellationRequested)
@@ -375,7 +376,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
                 catch(Exception ex)
                 {
-                    logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while updating new job");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.UpdateJob", failure: ex);
                 }
 
                 return false;
@@ -399,14 +400,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
         catch(Exception ex)
         {
-            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while updating network stats");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.UpdateNetworkStatsAsync", failure: ex);
         }
     }
 
     private async Task ShowDaemonSyncProgressAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-            ex => logger.Debug(ex));
+            ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.ShowDaemonSyncProgressAsync", failure: ex));
 
         if(info?.SelfReady != true || info?.Synced != true)
             logger.Info(() => $"Daemon is downloading headers ...");
@@ -593,7 +594,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
             return false;
 
         var validity = await Guard(() => rpc.GetAddressesAddressGroupAsync(address, ct),
-            ex => logger.Debug(ex));
+            ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.ValidateAddress", failure: ex));
 
         return validity?.Group1 >= 0;
     }
@@ -694,7 +695,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 
@@ -727,7 +728,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected override async Task<bool> AreDaemonsHealthyAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsHealthyAsync", failure: ex));
 
         if(info?.SelfReady != true || info?.Synced != true)
             return false;
@@ -738,13 +739,13 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected override async Task<bool> AreDaemonsConnectedAsync(CancellationToken ct)
     {
         var infosChainParams = await Guard(() => rpc.GetInfosChainParamsAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
 
         var info = await Guard(() => rpc.GetInfosInterCliquePeerInfoAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
         
         var nodeInfo = await Guard(() => rpc.GetInfosNodeAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
         
         // update stats
         if(!string.IsNullOrEmpty(nodeInfo?.BuildInfo.ReleaseVersion))
@@ -775,7 +776,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         do
         {
             var work = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-                ex=> logger.Debug(ex));
+                ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.EnsureDaemonsSynchedAsync", failure: ex));
 
             var isSynched = (work?.SelfReady == true && work?.Synced == true);
 

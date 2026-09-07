@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Reactive.Linq;
 using Autofac;
 using Miningcore.Blockchain.Ergo.Configuration;
@@ -156,12 +157,12 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
         catch(ApiException<ApiError> ex)
         {
-            logger.Error(() => $"Error during {nameof(UpdateJob)}: {ex.Result.Detail ?? ex.Result.Reason}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ErgoJobManager.UpdateJob", failure: ex);
         }
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ErgoJobManager.UpdateJob", failure: ex);
         }
 
         return (false, forceUpdate);
@@ -182,7 +183,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
     private async Task ShowDaemonSyncProgressAsync()
     {
         var info = await Guard(() => rpc.GetNodeInfoAsync(),
-            ex => logger.Debug(ex));
+            ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoJobManager.ShowDaemonSyncProgressAsync", failure: ex));
 
         if(info?.FullHeight.HasValue == true && info.HeadersHeight.HasValue)
         {
@@ -209,14 +210,14 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
         catch(ApiException<ApiError> ex)
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {ex.Result.Detail ?? ex.Result.Reason ?? ex.Message}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {ex.Result.Detail ?? ex.Result.Reason}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ErgoJobManager.SubmitBlockAsync", failure: ex);
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
         }
 
         catch(Exception ex)
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {ex.Message}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {ex.Message}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ErgoJobManager.SubmitBlockAsync", failure: ex);
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
         }
 
         return false;
@@ -339,7 +340,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
             return false;
 
         var validity = await Guard(() => rpc.CheckAddressValidityAsync(address, ct),
-            ex => logger.Debug(ex));
+            ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoJobManager.ValidateAddress", failure: ex));
 
         return validity?.IsValid == true;
     }
@@ -429,7 +430,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
     protected override async Task<bool> AreDaemonsConnectedAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetNodeInfoAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoJobManager.AreDaemonsConnectedAsync", failure: ex));
 
         return info?.PeersCount > 0;
     }
@@ -443,7 +444,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
         do
         {
             var work = await Guard(() => rpc.MiningRequestBlockCandidateAsync(ct),
-                ex=> logger.Debug(ex));
+                ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoJobManager.EnsureDaemonsSynchedAsync", failure: ex));
 
             var isSynched = !string.IsNullOrEmpty(work?.Msg);
 

@@ -51,11 +51,13 @@ public partial class BitcoinBlake2bStartupTests
 
         Assert.Equal(6, target.Logs.Count);
         Assert.StartsWith("Error|", target.Logs[0]);
-        Assert.Contains("primary contract failure", target.Logs[0]);
+        Assert.Contains("\"operation\":\"BitcoinBlake2bPool.FaultPool\"", target.Logs[0]);
+        Assert.DoesNotContain("primary contract failure", target.Logs[0]);
         for(var i = 1; i <= 5; i++)
         {
-            Assert.StartsWith($"{(i <= 3 ? "Info" : "Debug")}|Additional Bitcoin BLAKE2b failure after local isolation", target.Logs[i]);
-            Assert.Contains($"secondary teardown failure {i}", target.Logs[i]);
+            Assert.StartsWith($"{(i <= 3 ? "Info" : "Debug")}|RPC consumer diagnostic ", target.Logs[i]);
+            Assert.Contains("\"failure\":\"io\"", target.Logs[i]);
+            Assert.DoesNotContain($"secondary teardown failure {i}", target.Logs[i]);
         }
         bus.Received(1).SendMessage(Arg.Any<PoolStatusNotification>(), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
