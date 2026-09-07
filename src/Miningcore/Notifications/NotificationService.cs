@@ -213,11 +213,16 @@ public class NotificationService : StartupGatedBackgroundService,
                 TruncateForPushover(string.Join("\n", pushoverSections)), false);
         }
 
+        // Conclusive failures do not carry the uncertain-outcome reconciliation
+        // requirement. Keep both channels credential-safe without implying a held lease.
+        const string conclusiveFailureGuidance =
+            "Payout failed conclusively; sensitive error detail is withheld. " +
+            "Check the operation diagnostics and correct the cause before retrying.";
         var emailFailureMessage = FormatHtmlFailedAmount(notification, symbol) + " " +
             $"from pool {HtmlEncode(notification.PoolId)}: " +
-            RpcConsumerDiagnostics.WithheldError;
+            conclusiveFailureGuidance;
         var pushoverFailureMessage = FormatFailedAmount(notification, symbol) + " " +
-            $"from pool {notification.PoolId}: {RpcConsumerDiagnostics.WithheldError}";
+            $"from pool {notification.PoolId}: {conclusiveFailureGuidance}";
         return ("Payout Failure Notification", emailFailureMessage,
             TruncateForPushover(pushoverFailureMessage), false);
     }

@@ -12,6 +12,46 @@ namespace Miningcore.Tests.Notifications;
 
 public class PaymentNotificationTests
 {
+    [Theory]
+    [InlineData(PaymentNotificationOutcome.Failure)]
+    [InlineData(PaymentNotificationOutcome.Success)] // Legacy Error-only initializer.
+    [InlineData(PaymentNotificationOutcome.Uncertain)]
+    public void FailureAlerts_KeepConclusiveAndUncertainGuidanceDistinct(
+        PaymentNotificationOutcome outcome)
+    {
+        const string error = "synthetic-secret https://user:password@invalid/?key=secret\r\nforged-line";
+        var notification = new PaymentNotification
+        {
+            PoolId = "test", Symbol = "BTC", Amount = 1,
+            Error = error, Outcome = outcome,
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+
+        Assert.False(rendered.IsSuccess);
+        Assert.Equal(error, notification.Error);
+        Assert.Equal(outcome, notification.Outcome);
+        foreach(var message in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.DoesNotContain("synthetic-secret", message);
+            Assert.DoesNotContain("user:password", message);
+            Assert.DoesNotContain("forged-line", message);
+            if(outcome == PaymentNotificationOutcome.Uncertain)
+            {
+                Assert.Contains("uncertain", message);
+                Assert.Contains("reconcile", message);
+                Assert.DoesNotContain("failed conclusively", message);
+            }
+            else
+            {
+                Assert.Contains("failed conclusively", message);
+                Assert.Contains("correct the cause before retrying", message);
+                Assert.DoesNotContain("uncertain", message);
+                Assert.DoesNotContain("reconcil", message);
+                Assert.DoesNotContain("ownership", message);
+            }
+        }
+    }
+
     [Fact]
     public void WebSocketSerialization_NormalSuccessUsesOutcomeAwareAggregates()
     {
