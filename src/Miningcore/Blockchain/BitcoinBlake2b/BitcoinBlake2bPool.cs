@@ -217,6 +217,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             if(secondaryFailureReports < 3)
             {
                 secondaryFailureReports++;
+                logger.Info("Additional failure after pool isolation ({0}/3 Info reports; subsequent failures use Debug). Operator restart is required.", secondaryFailureReports);
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinBlake2bPool.FaultPool", failure: ex);
             }
             else
@@ -225,6 +226,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
 
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPool.FaultPool", failure: ex);
+        logger.Error("Bitcoin BLAKE2b pool faulted; operator restart required. Other pools remain running; already-owned accounting operations are retained.");
         try
         {
             messageBus.NotifyPoolStatus(this, PoolStatus.Offline);

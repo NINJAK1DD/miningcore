@@ -263,7 +263,7 @@ public class ErgoPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "ErgoPool.OnSubmitAsync", failure: ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "ErgoPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);

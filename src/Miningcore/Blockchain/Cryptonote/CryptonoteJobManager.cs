@@ -376,7 +376,7 @@ public class CryptonoteJobManager : JobManagerBase<CryptonoteJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for monero-pools require an additional entry of category \'wallet' pointing to the wallet daemon)", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for monero-pools require an additional entry of category \'wallet' pointing to the wallet daemon)", pc.Id);
         }
 
         ConfigureDaemons();
@@ -606,7 +606,7 @@ public class CryptonoteJobManager : JobManagerBase<CryptonoteJob>
 
             // ensure pool owns wallet
             if(clusterConfig.PaymentProcessing?.Enabled == true && addressResponse.Response?.Address != poolConfig.Address)
-                throw new PoolStartupException($"Wallet-Daemon does not own pool-address '{poolConfig.Address}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         var info = infoResponse.Response.ToObject<GetInfoResponse>();
@@ -626,7 +626,7 @@ public class CryptonoteJobManager : JobManagerBase<CryptonoteJob>
                     networkType = CryptonoteNetworkType.Test;
                     break;
                 default:
-                    throw new PoolStartupException($"Unsupport net type '{info.NetType}'", poolConfig.Id);
+                    throw new TrustedPoolStartupException("Unsupported network type; verify daemon network and coin configuration", poolConfig.Id);
             }
         }
 
@@ -636,23 +636,23 @@ public class CryptonoteJobManager : JobManagerBase<CryptonoteJob>
         // address validation
         poolAddressBase58Prefix = CryptonoteBindings.DecodeAddress(poolConfig.Address);
         if(poolAddressBase58Prefix == 0)
-            throw new PoolStartupException("Unable to decode pool-address", poolConfig.Id);
+            throw new TrustedPoolStartupException("Unable to decode pool-address", poolConfig.Id);
 
         switch(networkType)
         {
             case CryptonoteNetworkType.Main:
                 if(poolAddressBase58Prefix != coin.AddressPrefix)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
 
             case CryptonoteNetworkType.Stage:
                 if(poolAddressBase58Prefix != coin.AddressPrefixStagenet)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixStagenet}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixStagenet}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
 
             case CryptonoteNetworkType.Test:
                 if(poolAddressBase58Prefix != coin.AddressPrefixTestnet)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
         }
 

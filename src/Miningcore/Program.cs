@@ -1112,6 +1112,10 @@ public class Program : ProcessStatusBackgroundService
         {
             throw;
         }
+        catch(TrustedPoolStartupException)
+        {
+            throw;
+        }
         catch(Exception ex)
         {
             // A first-job await/runtime pool failure can originate in a daemon

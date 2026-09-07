@@ -251,7 +251,7 @@ public class ZanoJobManager : JobManagerBase<ZanoJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for monero-pools require an additional entry of category \'wallet' pointing to the wallet daemon)", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for monero-pools require an additional entry of category \'wallet' pointing to the wallet daemon)", pc.Id);
         }
 
         ConfigureDaemons();
@@ -454,7 +454,7 @@ public class ZanoJobManager : JobManagerBase<ZanoJob>
 
             // ensure pool owns wallet
             if(clusterConfig.PaymentProcessing?.Enabled == true && addressResponse.Response?.Address != poolConfig.Address)
-                throw new PoolStartupException($"Wallet-Daemon does not own pool-address '{poolConfig.Address}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         var info = infoResponse.Response.ToObject<GetInfoResponse>();
@@ -471,7 +471,7 @@ public class ZanoJobManager : JobManagerBase<ZanoJob>
                     networkType = ZanoNetworkType.Test;
                     break;
                 default:
-                    throw new PoolStartupException($"Unsupport net type '{info.NetType}'", poolConfig.Id);
+                    throw new TrustedPoolStartupException("Unsupported network type; verify daemon network and coin configuration", poolConfig.Id);
             }
         }
 
@@ -481,18 +481,18 @@ public class ZanoJobManager : JobManagerBase<ZanoJob>
         // address validation
         poolAddressBase58Prefix = CryptonoteBindings.DecodeAddress(poolConfig.Address);
         if(poolAddressBase58Prefix == 0)
-            throw new PoolStartupException("Unable to decode pool-address", poolConfig.Id);
+            throw new TrustedPoolStartupException("Unable to decode pool-address", poolConfig.Id);
 
         switch(networkType)
         {
             case ZanoNetworkType.Main:
                 if(poolAddressBase58Prefix != coin.AddressPrefix && poolAddressBase58Prefix != coin.AuditableAddressPrefix)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix} or {coin.AuditableAddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix} or {coin.AuditableAddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
 
             case ZanoNetworkType.Test:
                 if(poolAddressBase58Prefix != coin.AddressPrefixTestnet && poolAddressBase58Prefix != coin.AuditableAddressPrefixTestnet)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet} or {coin.AuditableAddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet} or {coin.AuditableAddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
         }
 

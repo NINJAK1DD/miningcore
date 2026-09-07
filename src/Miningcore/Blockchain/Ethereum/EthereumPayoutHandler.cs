@@ -383,7 +383,7 @@ public class EthereumPayoutHandler : PayoutHandlerBase,
 
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumPayoutHandler.PayoutTrackedAsync", failure: ex);
 
-                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, ex);
                 }
             }
         }

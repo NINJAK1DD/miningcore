@@ -270,7 +270,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 var errors = results.Where(x => x.Error != null).ToArray();
 
                 if(errors.Any())
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsAsync", code: errors[0].Error?.Code);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsAsync", code: errors[0].Error?.Code, failedCount: errors.Length);
             }
 
             var miningInfoResponse = results[0].Response.ToObject<MiningInfo>();
@@ -518,7 +518,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 var errors = results.Where(x => x.Error != null).ToArray();
 
                 if(errors.Any())
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsLegacyAsync", code: errors[0].Error?.Code);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsLegacyAsync", code: errors[0].Error?.Code, failedCount: errors.Length);
             }
 
             var connectionCountResponse = results[0].Response.ToObject<object>();
@@ -689,7 +689,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         // ensure pool owns wallet
         if(validateAddressResponse is not {IsValid: true})
-            throw new PoolStartupException($"Daemon reports pool-address '{poolConfig.Address}' as invalid", poolConfig.Id);
+            throw new TrustedPoolStartupException("Daemon reports the configured pool address as invalid", poolConfig.Id);
 
         isPoS = ResolveProofOfStakeMode(poolConfig.Template, difficultyResponse);
         
@@ -729,7 +729,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         else if(submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_MISC_ERROR || submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMS)
             hasSubmitBlockMethod = true;
         else
-            throw new PoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
 
         if(!hasLegacyDaemon)
             await UpdateNetworkStatsAsync(ct);
@@ -854,7 +854,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(string.IsNullOrWhiteSpace(encoded))
         {
-            throw new PoolStartupException(
+            throw new TrustedPoolStartupException(
                 $"Pool '{poolConfig.Id}' requires 'pubKey' because its raw public key " +
                 "was not returned by validateaddress",
                 poolConfig.Id);
@@ -866,7 +866,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
         catch(Exception ex)
         {
-            throw new PoolStartupException(
+            throw new TrustedPoolStartupException(
                 $"Pool '{poolConfig.Id}' has an invalid 'pubKey' value",
                 poolConfig.Id, ex);
         }

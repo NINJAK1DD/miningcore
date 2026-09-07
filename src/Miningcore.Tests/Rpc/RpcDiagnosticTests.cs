@@ -302,7 +302,7 @@ public class RpcDiagnosticTests
         if(failureKind >= 2) await reconnect.Task.WaitAsync(deadline.Token);
         deadline.Cancel();
         logs.AssertSafe();
-        var category = failureKind switch { 0 => "websocket", 2 => "cancelled", 3 => "disposed", _ => "other" };
+        var category = failureKind switch { 0 => "websocket", 2 => "cancelled", 3 => "disposed", _ => "invalid-operation" };
         Assert.Contains(logs.Messages, x => x.Contains("\"failure\":\"" + category + "\""));
         if(!serializationFailure)
             Assert.Contains(logs.Messages, x => x.Contains("\"httpStatus\":401"));
@@ -486,7 +486,7 @@ public class RpcDiagnosticTests
             (new System.Net.Http.HttpRequestException(UnsafeText, null, HttpStatusCode.Forbidden), "http", 0, 403),
             (new WebSocketException(WebSocketError.NotAWebSocket, UnsafeText), "websocket", (int) WebSocketError.NotAWebSocket, null),
             (new ZException(ZError.EINVAL), "zmq", ZError.EINVAL.Number, null),
-            (new InvalidOperationException(UnsafeText), "other", null, null),
+            (new InvalidOperationException(UnsafeText), "invalid-operation", null, null),
         };
         foreach(var item in cases)
             RpcDiagnostics.Write(logs.Logger, NLog.LogLevel.Error, RpcDiagnostics.Transport.Http,

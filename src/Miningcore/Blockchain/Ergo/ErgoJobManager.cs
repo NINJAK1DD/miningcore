@@ -353,7 +353,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException($"Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Pool address is not configured", poolConfig.Id);
 
         var validity = await Guard(() => rpc.CheckAddressValidityAsync(poolConfig.Address, ct),
             ex=> throw new PoolStartupException($"Error validating pool address: {ex}", poolConfig.Id));
@@ -418,7 +418,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
             ex=> throw new PoolStartupException($"Daemon reports: {ex.Message}", poolConfig.Id));
 
         if(info?.IsMining != true)
-            throw new PoolStartupException("Mining is disabled in Ergo Daemon", poolConfig.Id);
+            throw new TrustedPoolStartupException("Mining is disabled in Ergo Daemon", poolConfig.Id);
 
         // update stats
         if(!string.IsNullOrEmpty(info?.AppVersion))

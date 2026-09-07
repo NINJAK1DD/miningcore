@@ -303,8 +303,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 if(string.IsNullOrEmpty(coinbaseTransaction))
                 {
-                    var error = response.Error?.Message ?? "block or coinbase transaction is not available yet";
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyBlocksAsync");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyBlocksAsync", code: response.Error?.Code);
 
                     if(blockIsActive)
                     {
@@ -1277,7 +1276,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             $"{unlockResult.Error.Message} code {unlockResult.Error.Code}";
                         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.PayoutAsync");
                         TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id,
-                            payableBalances, failure, null), "failure");
+                            payableBalances, failure, null, daemonCode: unlockResult.Error.Code), "failure");
                         return;
                     }
 
@@ -1287,7 +1286,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                             "configured. Unable to send funds.";
                         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.PayoutAsync");
                         TryNotifyPayout(() => NotifyPayoutFailure(poolConfig.Id,
-                            payableBalances, failure, null), "failure");
+                            payableBalances, failure, null, reason: PaymentFailureReason.WalletPasswordMissing), "failure");
                         return;
                     }
                 }
@@ -1300,7 +1299,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         $"{BitcoinCommands.SendMany} returned error: " +
                         $"{result.Error.Message} code {result.Error.Code}", null,
                         amounts.Values.Sum(),
-                        amounts.Values.Sum() - payableBalances.Sum(x => x.Amount)), "failure");
+                        amounts.Values.Sum() - payableBalances.Sum(x => x.Amount), daemonCode: result.Error.Code), "failure");
                 }
             }
         }

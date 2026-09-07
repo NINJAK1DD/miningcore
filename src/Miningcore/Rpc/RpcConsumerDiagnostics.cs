@@ -8,27 +8,14 @@ namespace Miningcore.Rpc;
 // reconciliation evidence: application code still needs the original values.
 internal static class RpcConsumerDiagnostics
 {
-    internal static string Failure(Exception exception) => exception switch
-    {
-        null => "unknown",
-        OperationCanceledException { InnerException: TimeoutException } => "timeout",
-        OperationCanceledException => "cancelled",
-        TimeoutException => "timeout",
-        JsonException => "json",
-        HttpRequestException => "http",
-        System.Net.WebSockets.WebSocketException => "websocket",
-        System.Net.Sockets.SocketException => "socket",
-        InvalidDataException => "invalid-data",
-        IOException => "io",
-        ObjectDisposedException => "disposed",
-        ArgumentException => "argument",
-        _ => "other",
-    };
+    internal static string Failure(Exception exception) => Diagnostics.DiagnosticFailure.Category(exception);
+    internal enum Stage { Connect, Request, Response, Rejected, Degraded, Unavailable }
 
     // No exception is ever attached to the NLog event. The finite catalogue also
     // rejects arbitrary labels from future/plugin callers.
     internal static void Write(ILogger logger, LogLevel level, string operation,
-        Exception failure = null, int? code = null)
+        Exception failure = null, int? code = null, string poolId = null,
+        int? failedCount = null, Stage? stage = null, string connectionId = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -38,11 +25,16 @@ internal static class RpcConsumerDiagnostics
             ["operation"] = operation != null && RpcConsumerOperations.All.Contains(operation) ? operation : "other",
             ["failure"] = failure == null ? null : Failure(failure),
             ["code"] = code,
+            ["failureCode"] = Diagnostics.DiagnosticFailure.Code(failure),
+            ["poolId"] = poolId,
+            ["failedCount"] = failedCount,
+            ["stage"] = stage?.ToString(),
+            ["connectionId"] = connectionId,
         }.ToString(Formatting.None));
     }
 
     internal const string WithheldError =
-        "Remote operation failed; sensitive error detail is withheld. See the operation diagnostic and reconcile before retrying an uncertain payment.";
+        "Remote operation failed; sensitive error detail is withheld. See the operation diagnostic.";
 
     // Malformed wallet responses may put arbitrary text in a purported txid.
     // Keep the exact returned value in reconciliation evidence, not in an alert.

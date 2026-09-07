@@ -14,6 +14,43 @@ public class PaymentNotificationTests
 {
     [Theory]
     [InlineData(PaymentNotificationOutcome.Failure)]
+    [InlineData(PaymentNotificationOutcome.Uncertain)]
+    public void FailureAlerts_ShowTypedCategoryAndCodeWithoutRemoteText(PaymentNotificationOutcome outcome)
+    {
+        const string secret = "synthetic-secret-password";
+        var notification = new PaymentNotification("test", secret, 1, "BTC")
+        {
+            Outcome = outcome,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(new System.Net.Http.HttpRequestException(secret), -13),
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        foreach(var text in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.Contains("Failure category: http", text);
+            Assert.Contains("daemon code: -13", text);
+            Assert.DoesNotContain(secret, text);
+        }
+        Assert.Equal(secret, notification.Error);
+        Assert.DoesNotContain("failureDiagnostic", SerializePayment(notification).ToString(), System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MissingWalletPassword_ProvidesSafeConfigurationAction()
+    {
+        var notification = new PaymentNotification("test", "private daemon text", 1, "BTC")
+        {
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(reason: PaymentFailureReason.WalletPasswordMissing),
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        foreach(var text in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.Contains("walletPassword was not configured", text);
+            Assert.DoesNotContain("private daemon text", text);
+        }
+    }
+
+    [Theory]
+    [InlineData(PaymentNotificationOutcome.Failure)]
     [InlineData(PaymentNotificationOutcome.Success)] // Legacy Error-only initializer.
     [InlineData(PaymentNotificationOutcome.Uncertain)]
     public void FailureAlerts_KeepConclusiveAndUncertainGuidanceDistinct(
@@ -38,7 +75,8 @@ public class PaymentNotificationTests
             if(outcome == PaymentNotificationOutcome.Uncertain)
             {
                 Assert.Contains("uncertain", message);
-                Assert.Contains("reconcile", message);
+                Assert.Contains("reconcile", message, System.StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("error details.", message.Replace("withheld error details.", string.Empty));
                 Assert.DoesNotContain("failed conclusively", message);
             }
             else

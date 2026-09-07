@@ -257,7 +257,7 @@ public class SatoshicashPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "SatoshicashPool.OnSubmitAsync", failure: ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "SatoshicashPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);

@@ -54,13 +54,20 @@ Audited job managers, payout handlers and shared recovery/notification consumers
 no longer render daemon error messages or parsing exceptions directly. Bounded
 `RPC consumer diagnostic` records identify operations, failure categories and
 numeric daemon codes where available. Update monitoring filters for this prefix.
+Shared payout errors retain pool identity, and share rejections retain bounded
+reason codes and server-assigned connection identity. Audited local startup errors
+and critical recovery/ownership instructions remain actionable without remote text.
 Beam explorer diagnostics omit URLs and socket diagnostics omit request/response
 payloads; CryptoNote transfer logs omit secret keys.
 
 Payment alerts withhold free-form error/reconciliation detail and malformed
 transaction identifiers while preserving outcomes, amounts and reconciliation
-groups. Original RPC results and private evidence remain unchanged. Host-facing
-daemon startup and pool-run failures also use safe diagnostics. No database
+groups. Original RPC results and private evidence remain unchanged. Alerts
+distinguish conclusive failures from uncertain outcomes: only uncertain
+payments require reconciliation before retrying or releasing ownership. Safe typed
+failure metadata can identify a missing wallet-unlock configuration without echoing
+the original error. Host-facing daemon startup and pool-run failures also use safe
+diagnostics. No database
 migration, wallet decision, TLS policy or timeout change is introduced.
 
 See the [consumer audit and operator guide](rpc-consumer-diagnostics.md) for

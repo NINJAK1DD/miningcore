@@ -272,7 +272,7 @@ public class EthereumPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPool.OnSubmitAsync", failure: ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "EthereumPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);

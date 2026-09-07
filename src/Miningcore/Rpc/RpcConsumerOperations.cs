@@ -8,6 +8,10 @@ internal static class RpcConsumerOperations
 {
     internal static readonly FrozenSet<string> All = new[]
     {
+        "MetricsPublisher.ExecuteAsync",
+        "StatsRecorder.UpdateAsync",
+        "StatsRecorder.GcAsync",
+        "StatsRecorder.OnPolicyRetry",
         "Program.RunPool",
         "AlephiumPayoutHandler.PayoutAsync",
         "AlephiumJobManager.AlephiumSubscribeStratumApiSocketClient",
@@ -151,7 +155,6 @@ internal static class RpcConsumerOperations
         "MergedMiningBitcoinJobManager.SubmitAndPersistParentBlockAsync",
         "MergedMiningBitcoinJobManager.SubmitAuxiliaryBlockAsync",
         "MergedMiningBitcoinJobManager.UpdateJob",
-        "MergedMiningLoggerExtensions.Error",
         "NexaJobManager.SubmitBlockAsync",
         "NexaJobManager.UpdateJob",
         "NexaPool.OnRequestAsync",

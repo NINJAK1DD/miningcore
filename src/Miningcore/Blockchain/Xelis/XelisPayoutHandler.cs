@@ -368,7 +368,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
             if(buildTransactionResponse.Error != null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisPayoutHandler.PayoutTrackedAsync", code: buildTransactionResponse.Error?.Code);
-                NotifyPayoutFailure(poolConfig.Id, page, $"Daemon command '{XelisWalletCommands.BuildTransaction}' returned error: {buildTransactionResponse.Error.Message} code {buildTransactionResponse.Error.Code}", null);
+                NotifyPayoutFailure(poolConfig.Id, page, $"Daemon command '{XelisWalletCommands.BuildTransaction}' returned error: {buildTransactionResponse.Error.Message} code {buildTransactionResponse.Error.Code}", null, daemonCode: buildTransactionResponse.Error.Code);
                 continue;
             }
 

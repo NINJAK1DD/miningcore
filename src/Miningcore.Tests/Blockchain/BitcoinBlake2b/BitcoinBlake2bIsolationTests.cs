@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -49,15 +50,18 @@ public partial class BitcoinBlake2bStartupTests
         for(var i = 1; i <= 5; i++)
             callback.Invoke(pool, new object[] { new IOException($"secondary teardown failure {i}") });
 
-        Assert.Equal(6, target.Logs.Count);
-        Assert.StartsWith("Error|", target.Logs[0]);
-        Assert.Contains("\"operation\":\"BitcoinBlake2bPool.FaultPool\"", target.Logs[0]);
-        Assert.DoesNotContain("primary contract failure", target.Logs[0]);
+        var diagnostics = target.Logs.Where(x => x.Contains("|RPC consumer diagnostic ")).ToArray();
+        Assert.Equal(6, diagnostics.Length);
+        Assert.StartsWith("Error|", diagnostics[0]);
+        Assert.Contains("\"operation\":\"BitcoinBlake2bPool.FaultPool\"", diagnostics[0]);
+        Assert.DoesNotContain("primary contract failure", diagnostics[0]);
+        Assert.Contains(target.Logs, x => x.Contains("pool faulted; operator restart required"));
+        Assert.Equal(3, target.Logs.Count(x => x.Contains("Info reports; subsequent failures use Debug")));
         for(var i = 1; i <= 5; i++)
         {
-            Assert.StartsWith($"{(i <= 3 ? "Info" : "Debug")}|RPC consumer diagnostic ", target.Logs[i]);
-            Assert.Contains("\"failure\":\"io\"", target.Logs[i]);
-            Assert.DoesNotContain($"secondary teardown failure {i}", target.Logs[i]);
+            Assert.StartsWith($"{(i <= 3 ? "Info" : "Debug")}|RPC consumer diagnostic ", diagnostics[i]);
+            Assert.Contains("\"failure\":\"io\"", diagnostics[i]);
+            Assert.DoesNotContain($"secondary teardown failure {i}", diagnostics[i]);
         }
         bus.Received(1).SendMessage(Arg.Any<PoolStatusNotification>(), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());

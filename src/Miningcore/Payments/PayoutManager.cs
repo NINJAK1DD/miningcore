@@ -210,7 +210,7 @@ public class PayoutManager : ProcessStatusBackgroundService
 
             catch(InvalidOperationException ex)
             {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: ex.InnerException ?? ex, poolId: poolConfig.Id);
             }
 
             catch(AggregateException ex)
@@ -218,18 +218,18 @@ public class PayoutManager : ProcessStatusBackgroundService
                 switch(ex.InnerException)
                 {
                     case HttpRequestException httpEx:
-                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: httpEx);
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: httpEx, poolId: poolConfig.Id);
                         break;
 
                     default:
-                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: ex);
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: ex.InnerException ?? ex, poolId: poolConfig.Id);
                         break;
                 }
             }
 
             catch(Exception ex)
             {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.ProcessPoolsAsync", failure: ex, poolId: poolConfig.Id);
             }
         }
 
@@ -713,7 +713,10 @@ public class PayoutManager : ProcessStatusBackgroundService
     {
         messageBus.SendMessage(new PaymentNotification(pool.Id, ex.Message,
             balances.Sum(x => x.Amount), pool.Template.Symbol, balances.Length,
-            null, null, null));
+            null, null, null)
+        {
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(ex.InnerException ?? ex),
+        });
 
         return Task.CompletedTask;
     }
@@ -749,6 +752,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             null, null, null)
         {
             Outcome = PaymentNotificationOutcome.Uncertain,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(ex.InnerException ?? ex),
             Reconciliation = reconciliation,
             SubmittedAmount = submittedAmount,
             PrecisionAdjustment = precisionAdjustment,
@@ -838,6 +842,7 @@ public class PayoutManager : ProcessStatusBackgroundService
 
                 catch(PayoutOutcomeUncertainException ex)
                 {
+                    logger.Fatal("Payout processing stopped with an unknown wallet outcome. Durable ownership is retained until wallet reconciliation.");
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "PayoutManager.ExecuteCoreAsync", failure: ex);
                     // The host logs BackgroundService failures again. Do not pass
                     // wallet error text or reconciliation details to that logger.

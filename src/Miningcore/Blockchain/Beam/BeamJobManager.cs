@@ -98,7 +98,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                             client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, 1);
                             client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1);
                             client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
-                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient", stage: RpcConsumerDiagnostics.Stage.Connect);
                             await client.ConnectAsync(ipEndPoint, cts.Token);
                             if (client.Connected)
                                 logger.Debug(() => $"Socket connection succesffuly established");
@@ -109,7 +109,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                             string data = null;
                             int receivedBytes;
 
-                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient", stage: RpcConsumerDiagnostics.Stage.Request);
                             // send
                             await stream.WriteAsync(requestData, 0, requestData.Length, cts.Token);
 
@@ -121,7 +121,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
                                 // Translate data bytes to an UTF8 string.
                                 data = Encoding.UTF8.GetString(receiveBuffer, 0, receivedBytes);
-                                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient");
+                                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.BeamSubscribeStratumApiSocketClient", stage: RpcConsumerDiagnostics.Stage.Response);
 
                                 // detect new lines
                                 string[] lines = data.Split(
@@ -438,7 +438,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
             .ToArray();
 
         if(explorerDaemonEndpoints.Length == 0)
-            throw new PoolStartupException("Explorer-RPC daemon is not configured (Daemon configuration for beam-pools require an additional entry of category \'" + BeamConstants.ExplorerDaemonCategory + "' pointing to the explorer daemon)", pc.Id);
+            throw new TrustedPoolStartupException("Explorer-RPC daemon is not configured (Daemon configuration for beam-pools require an additional entry of category \'" + BeamConstants.ExplorerDaemonCategory + "' pointing to the explorer daemon)", pc.Id);
         
         if(cc.PaymentProcessing?.Enabled == true && pc.PaymentProcessing?.Enabled == true)
         {
@@ -455,7 +455,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for beam-pools require an additional entry of category \'" + BeamConstants.WalletDaemonCategory + "' pointing to the wallet daemon)", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for beam-pools require an additional entry of category \'" + BeamConstants.WalletDaemonCategory + "' pointing to the wallet daemon)", pc.Id);
         }
 
         ConfigureDaemons();
@@ -585,35 +585,34 @@ public class BeamJobManager : JobManagerBase<BeamJob>
             if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
             {
                 var responseWalletRpc = await walletRpc.ExecuteAsync<GetBalanceResponse>(logger, BeamWalletCommands.GetBalance, ct);
-
+                if(responseWalletRpc.Error != null)
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsHealthyAsync", code: responseWalletRpc.Error.Code, stage: RpcConsumerDiagnostics.Stage.Rejected);
                 return responseWalletRpc.Error == null;
             }
             
             return true;
         }
         
-        catch(Exception)
+        catch(Exception ex)
         {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsHealthyAsync");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsHealthyAsync", failure: ex);
             return false;
         }
     }
 
     protected override async Task<bool> AreDaemonsConnectedAsync(CancellationToken ct)
     {
-        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync");
-        
         try
         {
             var responseExplorerRestClient = await explorerRestClient.Get<GetStatusResponse>(BeamExplorerCommands.GetStatus, ct);
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync");
+            logger.Debug("Daemon peer count: {0}", responseExplorerRestClient?.PeersCount ?? 0);
             
             return (responseExplorerRestClient?.PeersCount > 0);
         }
         
-        catch(Exception)
+        catch(Exception ex)
         {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.AreDaemonsConnectedAsync", failure: ex);
             return false;
         }
     }
@@ -674,7 +673,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         
         catch(Exception)
         {
-            throw new PoolStartupException($"Init RPC failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Init RPC failed...", poolConfig.Id);
         }
         
         
@@ -686,10 +685,10 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         // address validation
         var responseWalletRpc = await walletRpc.ExecuteAsync<ValidateAddressResponse>(logger, BeamWalletCommands.ValidateAddress, ct, request);
         if(responseWalletRpc.Response?.IsValid == false)
-            throw new PoolStartupException("Invalid pool address", poolConfig.Id);
+            throw new TrustedPoolStartupException("Invalid pool address", poolConfig.Id);
         
         if(responseWalletRpc.Response?.Type.ToLower() != "regular")
-            throw new PoolStartupException("Pool address must be {'type': 'regular', 'expiration': 'never'}", poolConfig.Id);
+            throw new TrustedPoolStartupException("Pool address must be {'type': 'regular', 'expiration': 'never'}", poolConfig.Id);
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
@@ -697,7 +696,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
 
             // ensure pool owns wallet
             if(responseWalletRpc2.Response?.IsMine == false)
-                throw new PoolStartupException($"Wallet-Daemon does not own pool address '{poolConfig.Address}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         // update stats
@@ -740,7 +739,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         var extraDaemonEndpoint = daemonEndpoint.Extra.SafeExtensionDataAs<BeamDaemonEndpointConfigExtra>();
         
         if(string.IsNullOrEmpty(extraDaemonEndpoint?.ApiKey))
-            throw new PoolStartupException("Beam-node daemon `apiKey` not provided", poolConfig.Id);
+            throw new TrustedPoolStartupException("Beam-node daemon `apiKey` not provided", poolConfig.Id);
 
         var blockFound = blockFoundSubject.Synchronize();
         

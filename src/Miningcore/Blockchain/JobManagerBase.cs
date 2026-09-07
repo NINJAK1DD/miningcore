@@ -5,6 +5,7 @@ using Autofac;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Util;
 using NLog;
@@ -115,6 +116,10 @@ public abstract class JobManagerBase<TJob>
             await PostStartInitAsync(ct);
         }
         catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(TrustedPoolStartupException)
         {
             throw;
         }

@@ -339,7 +339,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
 
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamPayoutHandler.PayoutTrackedAsync", failure: ex);
 
-                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, ex);
                 }
             }
         }

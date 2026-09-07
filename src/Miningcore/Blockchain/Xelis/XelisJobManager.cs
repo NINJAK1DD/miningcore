@@ -243,7 +243,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for xelis-pools require an additional entry of category 'wallet' pointing to the wallet http port: https://docs.xelis.io/getting-started/configuration#wallet )", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for xelis-pools require an additional entry of category 'wallet' pointing to the wallet http port: https://docs.xelis.io/getting-started/configuration#wallet )", pc.Id);
         }
 
         base.Configure(pc, cc);
@@ -403,7 +403,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for xelis-pools require an additional entry of category 'wallet' pointing to the wallet http port: https://docs.xelis.io/getting-started/configuration#wallet )", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for xelis-pools require an additional entry of category 'wallet' pointing to the wallet http port: https://docs.xelis.io/getting-started/configuration#wallet )", poolConfig.Id);
 
             rpcWallet = new RpcClient(walletDaemonEndpoints.First(), jsonSerializerSettings, messageBus, poolConfig.Id);
         }
@@ -497,11 +497,11 @@ public class XelisJobManager : JobManagerBase<XelisJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException("Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException("Pool address is not configured", poolConfig.Id);
 
         var info = await rpc.ExecuteAsync<GetChainInfoResponse>(logger, XelisCommands.GetChainInfo, ct);
         if(info.Error != null)
-            throw new PoolStartupException("Init RPC failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException("Init RPC failed...", poolConfig.Id);
 
         network = info.Response.Network;
 

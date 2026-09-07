@@ -117,12 +117,12 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             return;
 
         if(!string.Equals(parentCoin.Symbol, "LTC", StringComparison.OrdinalIgnoreCase))
-            throw new PoolStartupException("Merged mining currently requires Litecoin as the parent chain", pc.Id);
+            throw new TrustedPoolStartupException("Merged mining currently requires Litecoin as the parent chain", pc.Id);
 
         EnsureSupportedMergedMiningPayout(pc, "parent");
 
         if(string.IsNullOrWhiteSpace(mergedMiningConfig.AuxPoolId))
-            throw new PoolStartupException("mergedMining.auxPoolId is required", pc.Id);
+            throw new TrustedPoolStartupException("mergedMining.auxPoolId is required", pc.Id);
 
         auxiliaryPoolConfig = cc.Pools.FirstOrDefault(x =>
             string.Equals(x.Id, mergedMiningConfig.AuxPoolId, StringComparison.OrdinalIgnoreCase));
@@ -131,7 +131,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             throw new PoolStartupException($"Auxiliary pool '{mergedMiningConfig.AuxPoolId}' was not found", pc.Id);
 
         if(string.Equals(auxiliaryPoolConfig.Id, pc.Id, StringComparison.OrdinalIgnoreCase))
-            throw new PoolStartupException("Parent and auxiliary pool ids must be different", pc.Id);
+            throw new TrustedPoolStartupException("Parent and auxiliary pool ids must be different", pc.Id);
 
         if(auxiliaryPoolConfig.Enabled != true)
             throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' must be enabled", pc.Id);
@@ -141,7 +141,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' must use the Bitcoin coin family", pc.Id);
 
         if(!string.Equals(auxiliaryCoin.Symbol, "DOGE", StringComparison.OrdinalIgnoreCase))
-            throw new PoolStartupException("Merged mining currently requires Dogecoin as the auxiliary chain", pc.Id);
+            throw new TrustedPoolStartupException("Merged mining currently requires Dogecoin as the auxiliary chain", pc.Id);
 
         EnsureSupportedMergedMiningPayout(auxiliaryPoolConfig, "auxiliary");
         usesPairedAccounting = pc.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO ||
@@ -350,6 +350,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(transition.FallbackStarted && transition.Template != null)
         {
+            logger.Warn("Auxiliary template updates degraded; using cached block {0} [{1}]", transition.Template.Height, RpcConsumerDiagnostics.TransactionId(transition.Template.Hash));
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState");
         }
         else if(transition.Degraded)
@@ -381,8 +382,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
             if(parentResponse.Error != null || parentResponse.Response == null)
             {
-                var error = parentResponse.Error?.Message ?? "empty response";
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob", code: parentResponse.Error?.Code, stage: RpcConsumerDiagnostics.Stage.Unavailable);
                 return (false, forceUpdate);
             }
 
@@ -417,7 +417,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
                 if(!hasAuxiliaryTemplate)
                 {
-                    var error = DescribeAuxiliaryTemplateRpcFailure(auxiliaryRequest);
                     // With no usable template there cannot be an earlier cached
                     // fallback episode; publish the unavailable level directly.
                     PublishAuxiliaryTemplateState(
@@ -1262,8 +1261,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(!accepted && !uncertain)
         {
-            var error = submitResponse.Error?.Message ?? submitResponse.Response?.ToString() ?? "rejected";
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.SubmitAuxiliaryBlockAsync");
+            logger.Warn("Auxiliary block {0} [{1}] was not accepted", template.Height, RpcConsumerDiagnostics.TransactionId(template.Hash));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.SubmitAuxiliaryBlockAsync", code: submitResponse.Error?.Code, stage: RpcConsumerDiagnostics.Stage.Rejected);
             return false;
         }
 

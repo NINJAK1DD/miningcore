@@ -192,6 +192,9 @@ public class NotificationService : StartupGatedBackgroundService,
 
             if(!string.IsNullOrWhiteSpace(notification.Error))
                 sections.Add(RpcConsumerDiagnostics.WithheldError);
+            sections.Add("Reconcile wallet history before retrying or releasing ownership.");
+            if(notification.FailureDiagnostic != null)
+                sections.Add(HtmlEncode(notification.FailureDiagnostic.Summary));
 
             var pushoverSections = new List<string>
             {
@@ -207,7 +210,9 @@ public class NotificationService : StartupGatedBackgroundService,
                 "Uncertain", notification.Reconciliation?.Uncertain, symbol);
             AppendPushoverReconciliationSummary(pushoverSections,
                 "Not attempted", notification.Reconciliation?.NotAttempted, symbol);
-            pushoverSections.Add("See email and logs for recipient, transaction, and error details.");
+            pushoverSections.Add("See email for the recipient/transaction reconciliation summary. Consult retained private reconciliation evidence and wallet history for withheld error details.");
+            if(notification.FailureDiagnostic != null)
+                pushoverSections.Add(notification.FailureDiagnostic.Summary);
 
             return (subject, string.Join("<br/>", sections),
                 TruncateForPushover(string.Join("\n", pushoverSections)), false);
@@ -218,11 +223,13 @@ public class NotificationService : StartupGatedBackgroundService,
         const string conclusiveFailureGuidance =
             "Payout failed conclusively; sensitive error detail is withheld. " +
             "Check the operation diagnostics and correct the cause before retrying.";
+        var failureSummary = notification.FailureDiagnostic?.Summary;
         var emailFailureMessage = FormatHtmlFailedAmount(notification, symbol) + " " +
             $"from pool {HtmlEncode(notification.PoolId)}: " +
-            conclusiveFailureGuidance;
+            conclusiveFailureGuidance + (failureSummary == null ? string.Empty : " " + HtmlEncode(failureSummary));
         var pushoverFailureMessage = FormatFailedAmount(notification, symbol) + " " +
-            $"from pool {notification.PoolId}: {conclusiveFailureGuidance}";
+            $"from pool {notification.PoolId}: {conclusiveFailureGuidance}" +
+            (failureSummary == null ? string.Empty : " " + failureSummary);
         return ("Payout Failure Notification", emailFailureMessage,
             TruncateForPushover(pushoverFailureMessage), false);
     }

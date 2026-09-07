@@ -178,6 +178,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             "Recovery-journal replay was intentionally suppressed because the PostgreSQL commit outcome is uncertain");
 
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterForUncertainCommitAsync", failure: commitError);
+        logger.Fatal("Stopping after an uncertain PostgreSQL commit for {0} share(s). Records were not copied to the recovery journal to avoid duplicate accounting. Preserve fatal-state evidence {1} and recovery file {2}.", shares.Count, fatalState.FatalStateFilename, absoluteRecoveryFilename);
 
         try
         {
@@ -213,6 +214,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
 
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAfterCommittedCleanupAsync", failure: cleanupError);
+        logger.Fatal("Stopping after PostgreSQL committed {0} share(s), but cleanup failed. These records were not copied to recovery journal {1}; investigate before restarting.", shares.Count, absoluteRecoveryFilename);
 
         if(!TryClaimNotificationSeverity(1))
             return;
@@ -237,6 +239,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
 
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAfterReplaySafeCommittedCleanupAsync", failure: cleanupError);
+        logger.Fatal("Stopping after PostgreSQL committed {0} direct-block outbox record(s), but cleanup failed. Recovery journal {1}; replay-safe duplicate written: {2}. PostgreSQL remains authoritative.", shares.Count, absoluteRecoveryFilename, journalError == null);
         if(journalError != null)
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecoveryFailureHandler.StopClusterAfterReplaySafeCommittedCleanupAsync", failure: journalError);
 
@@ -266,6 +269,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
 
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterForReplaySafeUncertainCommitAsync", failure: commitError);
+        logger.Fatal("Stopping after an uncertain PostgreSQL commit for {0} direct-block submission(s). Replay-safe records are in {1}; preserve fatal-state evidence {2} and reconcile before resuming.", shares.Count, absoluteRecoveryFilename, fatalState.FatalStateFilename);
 
         try
         {

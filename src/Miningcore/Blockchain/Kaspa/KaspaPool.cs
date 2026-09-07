@@ -310,7 +310,7 @@ public class KaspaPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "KaspaPool.OnSubmitAsync", failure: ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "KaspaPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);

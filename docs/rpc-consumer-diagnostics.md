@@ -13,9 +13,14 @@ Affected messages use the prefix `RPC consumer diagnostic ` and compact JSON:
 
 | Field | Meaning |
 | --- | --- |
-| `operation` | Finite, reviewed `Class.Method` label. Unknown labels become `other`. Pool-scoped loggers retain their pool identity; shared service records require surrounding operation context. |
+| `operation` | Finite, reviewed `Class.Method` label. Unknown labels become `other`. Pool-scoped loggers retain their pool identity; shared payout failures also supply `poolId` directly. |
 | `failure` | Fixed structural exception category, or null for a daemon-result diagnostic. |
 | `code` | Numeric daemon error code where available. Null means not captured, not success. |
+| `failureCode` | Numeric native, HTTP, WebSocket, gRPC, ZeroMQ or Stratum code, where available. |
+| `poolId` | Configured pool identity supplied by shared-service callers; JSON-escaped, not inferred from error text. |
+| `failedCount` | Number of failed RPC batch members when captured. |
+| `stage` | Fixed connect/request/response/rejected/degraded/unavailable stage where needed. |
+| `connectionId` | Server-assigned connection identity for share rejection correlation; never miner-supplied user-agent or password text. |
 
 No exception object, message, stack trace, URL, payload or response body enters this
 projection. Global Json.NET settings cannot change it. Update monitoring filters
@@ -42,13 +47,24 @@ Daemon startup and pool-run failures can also be printed by generic host logging
 These boundaries expose a safe `PoolStartupException` subtype and retain the original
 failure in an internal JSON-ignored property, not `InnerException`. Cancellation
 remains cancellation. Operators receive the pool and failure category rather than
-potentially sensitive remote text. Earlier configuration validation retains its
-named diagnostics.
+potentially sensitive remote text. Explicitly audited local configuration errors use
+`TrustedPoolStartupException`, retaining actionable address, key and daemon-setup
+diagnostics even inside job-manager startup. An ordinary `PoolStartupException` is
+not automatically trusted: several existing throw sites contain raw remote text.
 
 The final payout-host boundary similarly retains the uncertain-payout exception
 classification and private original evidence, while withholding the original cause
 from generic host logging. It does not release a retained ownership lease or turn
 an uncertain outcome into a conclusive failure.
+
+Transport and consumer diagnostics share one fixed structural classifier. Null-reference
+and invalid-operation failures have explicit labels; gRPC and Stratum errors retain
+numeric codes. Share rejection labels distinguish stale jobs, duplicate shares, low
+difficulty and authorization failures without echoing arbitrary `StratumException.Message`.
+Raw stack traces and runtime type names remain excluded: they can be overridden or
+contain private build paths. Debuggers/private evidence, not a second plaintext log
+target, remain the place to inspect original causes. General service consumers reuse
+this projection; the shared classifier lives in `Miningcore.Diagnostics`.
 
 ## Alerts and reconciliation
 
@@ -58,6 +74,22 @@ uncertain outcomes, amounts, recipient counts and reconciliation groups, but omi
 free-form `Error` and `Detail` text. Uncertain-payment alerts show only structurally
 valid 32-byte hexadecimal transaction IDs (optionally `0x`-prefixed). Malformed IDs
 are withheld, not repaired. Exact returned values remain in the original evidence.
+
+Failure alerts include separately constructed structural categories and daemon codes
+when the producer captured them. Source-authored configuration hints (such as a missing
+`walletPassword`) are explicit, not inferred by matching remote text. The legacy `Error`
+property is preserved for compatibility and private evidence, not repurposed as trusted
+display text. Conclusive failures recommend correcting the cause before retrying;
+only uncertain payouts require wallet reconciliation before retrying or releasing ownership.
+Email contains a recipient/transaction summary; withheld details must be inspected in
+retained private evidence and wallet history, not expected in email or logs.
+
+Critical shutdown narratives retain counts, recovery locations, ownership/restart
+instructions and structurally valid candidate hashes. `TransactionConfirmationData`
+is not a universally safe chain identifier: it can carry composite submission evidence,
+so it remains private. Pool identity, block type, height and validated block hash identify
+the candidate in the alert. Unsupported transaction-ID formats are conservatively withheld
+from uncertain-payment summaries; this validator is not a cross-chain consensus rule.
 
 Keep private evidence access-controlled. Compare ledger and wallet history before
 releasing an uncertain payout lease or retrying a payment. Never import quarantine
@@ -72,7 +104,9 @@ The fix does not authenticate daemons or prevent them lying about chain state.
 
 Original in-process errors, private recovery/fatal-state evidence and debugger
 inspection remain sensitive. Configuration dumps are tracked in
-[#144](https://github.com/NINJAK1DD/miningcore/issues/144). Share-relay transport,
+[#144](https://github.com/NINJAK1DD/miningcore/issues/144); the separate miner-facing
+Stratum parser/transport audit is tracked in
+[#157](https://github.com/NINJAK1DD/miningcore/issues/157). Share-relay transport,
 generic process crash reports, unrelated API/configuration output and external
 daemon logs are not claimed to be globally sanitized here.
 
@@ -91,3 +125,6 @@ templates, block rejection, wallet relocking, startup reporting and payment rend
 checking unchanged original RPC data and financial outcomes. Existing transport,
 payout, recovery, PostgreSQL and pinned-daemon tests provide complementary evidence;
 they do not certify every coin family against its live daemon.
+The source-inventory test checks catalogue equality rather than a minimum call count,
+and explicitly skips outside a repository checkout; runtime tests still run there.
+Its sink scan is a regression heuristic, not a proof of global redaction.

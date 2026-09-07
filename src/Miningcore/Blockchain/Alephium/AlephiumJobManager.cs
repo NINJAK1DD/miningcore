@@ -270,7 +270,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         var extraDaemonEndpoint = daemonEndpoint.Extra.SafeExtensionDataAs<AlephiumDaemonEndpointConfigExtra>();
         
         if(extraDaemonEndpoint?.MinerApiPort == null)
-            throw new PoolStartupException("Alephium Node's Miner API Port `minerApiPort` not provided", poolConfig.Id);
+            throw new TrustedPoolStartupException("Alephium Node's Miner API Port `minerApiPort` not provided", poolConfig.Id);
         
         var blockFound = blockFoundSubject.Synchronize();
         var pollTimerRestart = blockFoundSubject.Synchronize();
@@ -627,14 +627,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException($"Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Pool address is not configured", poolConfig.Id);
 
         // Payment-processing setup
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
             // validate pool wallet name
             if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig.WalletName))
-                throw new PoolStartupException($"Pool payment wallet name is not configured", poolConfig.Id);
+                throw new TrustedPoolStartupException($"Pool payment wallet name is not configured", poolConfig.Id);
             
             // check configured pool wallet name belongs to wallet
             var validityWalletName = await Guard(() => rpc.NameAsync(extraPoolPaymentProcessingConfig.WalletName, ct),
@@ -682,7 +682,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
                 network = "devnet";
                 break;
             default:
-                throw new PoolStartupException($"Unsupport network type '{infosChainParams?.NetworkId}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Unsupported network type; verify daemon network and coin configuration", poolConfig.Id);
         }
 
         // update stats

@@ -28,7 +28,7 @@ public class PayoutOutcomeUncertainException : Exception
     // Payment classification, notifications and lease handling consume the original
     // exception before this projection; the original remains privately available.
     internal PayoutOutcomeUncertainException ForHostReporting() => new(
-        "Payout processing stopped with an unknown wallet outcome. Durable ownership is retained; reconcile wallet history before restarting.")
+        "Payout processing stopped with an unknown wallet outcome. Durable ownership is retained; reconcile wallet history before restarting.", null, Reconciliation)
     {
         OriginalFailure = this,
     };

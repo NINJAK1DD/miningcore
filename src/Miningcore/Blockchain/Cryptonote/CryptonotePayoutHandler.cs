@@ -79,7 +79,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.HandleTransferResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -110,7 +110,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.HandleTransferSplitResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }

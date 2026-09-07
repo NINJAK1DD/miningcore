@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -11,6 +12,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Autofac.Features.Metadata;
 using AutoMapper;
 using Microsoft.AspNetCore.Http;
 using Miningcore.Blockchain;
@@ -26,6 +28,8 @@ using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Rpc;
+using Miningcore.Stratum;
+using Miningcore.Rest;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -40,6 +44,107 @@ public class RpcConsumerDiagnosticTests
 {
     private const string Secret = "synthetic-private-secret";
     private const string Malicious = Secret + " https://user:password@invalid/secret?token=key\r\n\u0085\u2028\u2029forged-line";
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedPayoutFailures_IdentifyBothPoolsAtErrorLevel(bool aggregate)
+    {
+        var previous = LogManager.Configuration;
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}${exception:format=tostring}" };
+        var config = new NLog.Config.LoggingConfiguration();
+        config.AddRule(LogLevel.Error, LogLevel.Fatal, target);
+        LogManager.Configuration = config;
+        try
+        {
+            var handler = Substitute.For<IPayoutHandler>();
+            Exception cause = new HttpRequestException(Malicious);
+            Exception failure = aggregate ? new AggregateException(Malicious, cause) : new InvalidOperationException(Malicious, cause);
+            handler.ConfigureAsync(Arg.Any<ClusterConfig>(), Arg.Any<PoolConfig>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromException(failure));
+            var builder = new ContainerBuilder();
+            builder.RegisterInstance(new[] { new Meta<Lazy<IPayoutHandler, CoinFamilyAttribute>>(
+                new Lazy<IPayoutHandler, CoinFamilyAttribute>(() => handler, new CoinFamilyAttribute(CoinFamily.Bitcoin)),
+                new Dictionary<string, object>()) })
+                .As<IEnumerable<Meta<Lazy<IPayoutHandler, CoinFamilyAttribute>>>>();
+            using var container = builder.Build();
+            using var manager = new PayoutManager(container, Substitute.For<IConnectionFactory>(),
+                Substitute.For<IBlockRepository>(), Substitute.For<IShareRepository>(), Substitute.For<IBalanceRepository>(),
+                new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig() },
+                Substitute.For<IMessageBus>(), Substitute.For<IPayoutManagerLease>(), new ProcessStatus());
+            foreach(var id in new[] { "pool-one", "pool-two" })
+            {
+                var pool = Substitute.For<IMiningPool>();
+                pool.Config.Returns(new PoolConfig { Id = id, Enabled = true,
+                    Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+                    PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true } });
+                typeof(PayoutManager).GetMethod("AttachPool", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(manager, new object[] { pool });
+            }
+            await (Task) typeof(PayoutManager).GetMethod("ProcessPoolsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(manager, new object[] { CancellationToken.None })!;
+            Assert.Equal(2, target.Logs.Count);
+            var records = target.Logs.Select(x => JObject.Parse(x["RPC consumer diagnostic ".Length..])).ToArray();
+            Assert.Equal(new[] { "pool-one", "pool-two" }, records.Select(x => x["poolId"].Value<string>()).OrderBy(x => x));
+            Assert.All(records, x => Assert.Equal("http", x["failure"].Value<string>()));
+            AssertSafe(target.Logs.ToArray());
+        }
+        finally { LogManager.Configuration = previous; }
+    }
+
+    [Fact]
+    public async Task TrustedStartupDiagnostic_PreservesActionableMessageAndPrivateCause()
+    {
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        using var container = new ContainerBuilder().Build();
+        var original = Assert.Throws<TrustedPoolStartupException>(() =>
+            BitcoinJobManagerBase<BitcoinJob>.ResolvePoolPublicKey(new PoolConfig { Id = "test", PubKey = Malicious }, null));
+        var consumer = new StartupConsumer(container, logs.Logger, original);
+        var error = await Assert.ThrowsAsync<TrustedPoolStartupException>(() => consumer.StartAsync(CancellationToken.None));
+        Assert.Same(original, error);
+        Assert.Contains("invalid 'pubKey'", error.Message);
+        Assert.Null(error.InnerException);
+        Assert.DoesNotContain(Secret, error.ToString());
+    }
+
+    [Theory]
+    [InlineData(StratumError.JobNotFound, "job-not-found")]
+    [InlineData(StratumError.DuplicateShare, "duplicate-share")]
+    [InlineData(StratumError.LowDifficultyShare, "low-difficulty-share")]
+    [InlineData(StratumError.UnauthorizedWorker, "unauthorized-worker")]
+    public void ShareRejection_RetainsBoundedReasonNotArbitraryMessage(StratumError code, string reason)
+    {
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        RpcConsumerDiagnostics.Write(logs.Logger, LogLevel.Info, "BitcoinPool.OnSubmitAsync", new StratumException(code, Malicious), connectionId: "server-session");
+        var record = JObject.Parse(Assert.Single(logs.Messages)["RPC consumer diagnostic ".Length..]);
+        Assert.Equal(reason, record["failure"].Value<string>());
+        Assert.Equal((int) code, record["failureCode"].Value<int>());
+        Assert.Equal("server-session", record["connectionId"].Value<string>());
+        AssertSafe(logs.Messages);
+    }
+
+    [Fact]
+    public async Task BeamHealthAndConnectivity_ClassifyRestFailure()
+    {
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        using var container = new ContainerBuilder().Build();
+        using var http = new HttpClient(new FailingHttpHandler());
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        var consumer = new BeamConsumer(container, logs.Logger);
+        typeof(BeamJobManager).GetField("explorerRestClient", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(consumer, new SimpleRestClient(factory, "http://invalid/"));
+        Assert.False(await consumer.Healthy());
+        Assert.False(await consumer.Connected());
+        Assert.Equal(2, logs.Messages.Length);
+        Assert.All(logs.Messages, x => Assert.Contains("\"failure\":\"http\"", x));
+        AssertSafe(logs.Messages);
+    }
+
+    private sealed class FailingHttpHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromException<HttpResponseMessage>(new HttpRequestException(Malicious));
+    }
 
     [Fact]
     public async Task BeamSocketConsumer_PreservesWireDataWithoutLoggingPayloadOrParserText()
@@ -92,6 +197,7 @@ public class RpcConsumerDiagnosticTests
         Assert.IsType<PayoutOutcomeUncertainException>(projected);
         Assert.Same(original, projected.OriginalFailure);
         Assert.Same(evidence, projected.OriginalFailure.Reconciliation);
+        Assert.Same(evidence, projected.Reconciliation);
         Assert.Null(projected.InnerException);
         Assert.DoesNotContain(Secret, projected.ToString());
         Assert.Contains("unknown wallet outcome", projected.Message);
@@ -111,7 +217,7 @@ public class RpcConsumerDiagnosticTests
         AssertSafe(logs.Messages);
     }
 
-    [Fact]
+    [SourceCheckoutFact]
     public void ConsumerSource_UsesReviewedLabelsAndDoesNotReintroduceDirectErrorSinks()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -119,26 +225,28 @@ public class RpcConsumerDiagnosticTests
             directory = directory.Parent;
         Assert.NotNull(directory);
         var root = Path.Combine(directory!.FullName, "src", "Miningcore");
-        var operations = 0;
+        var operations = new HashSet<string>();
         foreach(var file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
                     .Where(x => !x.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)))
         {
             var source = File.ReadAllText(file);
             foreach(Match match in Regex.Matches(source,
-                        "RpcConsumerDiagnostics\\.Write\\(logger,\\s*(?:NLog\\.)?LogLevel\\.[A-Za-z]+,\\s*\"([^\"]+)\""))
+                        "RpcConsumerDiagnostics\\.Write\\([^,]+,\\s*[^,]+,\\s*\"([^\"]+)\""))
             {
                 Assert.Contains(match.Groups[1].Value, RpcConsumerOperations.All);
-                operations++;
+                operations.Add(match.Groups[1].Value);
             }
-            if(!file.Contains(Path.DirectorySeparatorChar + "Blockchain" + Path.DirectorySeparatorChar)) continue;
-            foreach(Match sink in Regex.Matches(source, @"logger\.(?:Trace|Debug|Info|Warn|Error|Fatal)\(.*?\);", RegexOptions.Singleline))
+            if(!file.Contains(Path.DirectorySeparatorChar + "Blockchain" + Path.DirectorySeparatorChar) &&
+                !file.Contains(Path.DirectorySeparatorChar + "Payments" + Path.DirectorySeparatorChar) &&
+                !new[] { "StatsRecorder.cs", "ShareRecorder.cs", "ShareRecoveryFailureHandler.cs", "CandidatePersistenceFailureHandler.cs", "MetricsPublisher.cs", "NotificationService.cs" }.Contains(Path.GetFileName(file))) continue;
+            foreach(Match sink in Regex.Matches(source, @"\b\w*[Ll]ogg?er\.(?:Trace|Debug|Info|Warn|Error|Fatal)\(.*?\);", RegexOptions.Singleline))
             {
                 Assert.DoesNotMatch(@"\.Error\??\.Message|\.TxKey\b|\.Warning\b|\b(?:ex|exception)\.(?:Message|ToString)\b", sink.Value);
-                Assert.DoesNotMatch(@"^logger\.\w+\((?:ex|exception)\s*[,)]", sink.Value);
+                Assert.DoesNotMatch(@"^\w+\.\w+\((?:ex|exception)\s*[,)]", sink.Value);
                 Assert.DoesNotMatch(@"\{(?:json|data|payload|line)\}", sink.Value);
             }
         }
-        Assert.True(operations > 300, "The consumer inventory must cover the cross-family call sites.");
+        Assert.Equal(RpcConsumerOperations.All.OrderBy(x => x), operations.OrderBy(x => x));
         Assert.All(RpcConsumerOperations.All, value => Assert.True(value.Length < 128));
     }
 
@@ -212,6 +320,8 @@ public class RpcConsumerDiagnosticTests
         Assert.False(await consumer.Submit(deadline.Token));
         var notification = Assert.Single(bus.ReceivedCalls().SelectMany(x => x.GetArguments()).OfType<AdminNotification>());
         Assert.Equal("Block submission failed", notification.Subject);
+        Assert.DoesNotContain("payment", notification.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("reconcil", notification.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(Secret, notification.Message);
         Assert.Contains("withheld", notification.Message);
         AssertSafe(logs.Messages);
@@ -285,7 +395,7 @@ public class RpcConsumerDiagnosticTests
         else
         {
             var data = JObject.Parse(Assert.Single(logs.Messages)["RPC consumer diagnostic ".Length..]);
-            Assert.Equal(new[] { "operation", "failure", "code" }, data.Properties().Select(x => x.Name));
+            Assert.Equal(new[] { "operation", "failure", "code", "failureCode", "poolId", "failedCount", "stage", "connectionId" }, data.Properties().Select(x => x.Name));
             Assert.Equal("other", data["operation"].Value<string>());
             Assert.Equal("other", data["failure"].Value<string>());
             Assert.Equal(int.MinValue, data["code"].Value<int>());
@@ -351,6 +461,8 @@ public class RpcConsumerDiagnosticTests
         { logger = log; }
         internal IObservable<string> SubscribeBeam(CancellationToken ct, DaemonEndpointConfig endpoint, object request) =>
             BeamSubscribeStratumApiSocketClient(ct, endpoint, request);
+        internal Task<bool> Healthy() => AreDaemonsHealthyAsync(CancellationToken.None);
+        internal Task<bool> Connected() => AreDaemonsConnectedAsync(CancellationToken.None);
     }
 
     private sealed class EthereumConsumer : EthereumJobManager
@@ -386,5 +498,17 @@ public class RpcConsumerDiagnosticTests
         protected override Task EnsureDaemonsSynchedAsync(CancellationToken ct) => Task.CompletedTask;
         protected override Task PostStartInitAsync(CancellationToken ct) => Task.CompletedTask;
         public override object GetJobForStratum() => null;
+    }
+}
+
+public sealed class SourceCheckoutFactAttribute : FactAttribute
+{
+    public SourceCheckoutFactAttribute()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while(directory != null && !Directory.Exists(Path.Combine(directory.FullName, "src", "Miningcore", "Rpc")))
+            directory = directory.Parent;
+        if(directory == null)
+            Skip = "Source-inventory audit requires a repository checkout; runtime diagnostic tests remain enabled.";
     }
 }

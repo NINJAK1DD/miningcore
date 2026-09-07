@@ -80,7 +80,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ZanoPayoutHandler.HandleTransferResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -109,7 +109,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ZanoPayoutHandler.HandleTransferSplitResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }

@@ -487,7 +487,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         await foreach (var info in stream.ResponseStream.ReadAllAsync(ct))
         {
             if(!string.IsNullOrEmpty(info.GetInfoResponse.Error?.Message))
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.ShowDaemonSyncProgressAsync");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.ShowDaemonSyncProgressAsync", stage: RpcConsumerDiagnostics.Stage.Rejected);
 
             if(info.GetInfoResponse.IsSynced != true && info.GetInfoResponse.IsUtxoIndexed != true)
                 logger.Info(() => $"Daemon is downloading headers ...");
@@ -741,7 +741,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException($"Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Pool address is not configured", poolConfig.Id);
         
         // we need a stream to communicate with Kaspad
         var stream = rpc.MessageStream(null, null, ct);
@@ -779,7 +779,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
                 throw new PoolStartupException($"Daemon reports: {info.GetInfoResponse.Error?.Message}", poolConfig.Id);
             
             if(info.GetInfoResponse.IsUtxoIndexed != true)
-                throw new PoolStartupException("UTXO index is disabled", poolConfig.Id);
+                throw new TrustedPoolStartupException("UTXO index is disabled", poolConfig.Id);
             
             extraData = (string) info.GetInfoResponse.ServerVersion + (!string.IsNullOrEmpty(extraData) ? "." + extraData : "");
             break;
@@ -837,7 +837,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for kaspa-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for kaspa-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
         }
 
         base.Configure(pc, cc);
@@ -887,12 +887,12 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         {
             if(!string.IsNullOrEmpty(info.GetInfoResponse.Error?.Message))
             {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.AreDaemonsHealthyAsync");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.AreDaemonsHealthyAsync", stage: RpcConsumerDiagnostics.Stage.Rejected);
                 return false;
             }
             
             if(info.GetInfoResponse.IsUtxoIndexed != true)
-                throw new PoolStartupException("UTXO index is disabled", poolConfig.Id);
+                throw new TrustedPoolStartupException("UTXO index is disabled", poolConfig.Id);
             
             // update stats
             if(info.GetInfoResponse.ServerVersion != null)
@@ -935,7 +935,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         {
             if(!string.IsNullOrEmpty(info.GetConnectedPeerInfoResponse.Error?.Message))
             {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.AreDaemonsConnectedAsync");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.AreDaemonsConnectedAsync", stage: RpcConsumerDiagnostics.Stage.Rejected);
                 return false;
             }
             else
@@ -968,7 +968,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
             await foreach (var info in stream.ResponseStream.ReadAllAsync(ct))
             {
                 if(!string.IsNullOrEmpty(info.GetInfoResponse.Error?.Message))
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.EnsureDaemonsSynchedAsync");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "KaspaJobManager.EnsureDaemonsSynchedAsync", stage: RpcConsumerDiagnostics.Stage.Rejected);
 
                 isSynched = (info.GetInfoResponse.IsSynced == true && info.GetInfoResponse.IsUtxoIndexed == true);
                 break;

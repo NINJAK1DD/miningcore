@@ -417,14 +417,14 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException("Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException("Pool address is not configured", poolConfig.Id);
 
         // test daemon
         try
         {
             var responseChain = await restClient.Get<GetChainInfoResponse>(WarthogCommands.GetChainInfo, ct);
             if(responseChain?.Code == null)
-                throw new PoolStartupException("Init RPC failed...", poolConfig.Id);
+                throw new TrustedPoolStartupException("Init RPC failed...", poolConfig.Id);
             
             isJanusHash = responseChain.Data.IsJanusHash;
             if(isJanusHash)
@@ -434,7 +434,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         catch(Exception)
         {
             logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetChainInfo}' daemon does not seem to be running...");
-            throw new PoolStartupException("Init RPC failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException("Init RPC failed...", poolConfig.Id);
         }
 
         try
@@ -453,14 +453,14 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         catch(Exception)
         {
             logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetBlockTemplate}' daemon does not seem to be running...");
-            throw new PoolStartupException($"Pool address check failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Pool address check failed...", poolConfig.Id);
         }
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
             // validate pool address privateKey
             if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
-                throw new PoolStartupException("Pool address private key is not configured", poolConfig.Id);
+                throw new TrustedPoolStartupException("Pool address private key is not configured", poolConfig.Id);
 
             try
             {
@@ -475,7 +475,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             catch(Exception)
             {
                 logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetWallet}' daemon does not seem to be running...");
-                throw new PoolStartupException($"Pool address private key check failed...", poolConfig.Id);
+                throw new TrustedPoolStartupException($"Pool address private key check failed...", poolConfig.Id);
             }
         }
 

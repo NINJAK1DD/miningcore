@@ -390,7 +390,7 @@ public class BitcoinPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinPool.OnSubmitAsync", failure: ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -674,10 +674,11 @@ public class BitcoinPool : PoolBase
             return;
 
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "BitcoinPool.HandleJobPipelineFailure", failure: ex);
+        logger.Fatal("Invalidating all work and stopping Miningcore because direct-SOLO job construction failed. Operator investigation and restart are required.");
 
         Guard(() => messageBus.SendMessage(new AdminNotification(
             "Bitcoin direct-SOLO job delivery stopped",
-            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely: {RpcConsumerDiagnostics.WithheldError}")));
+            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely. Operator investigation and restart are required. {RpcConsumerDiagnostics.WithheldError}")));
 
         void InvalidateWork()
         {

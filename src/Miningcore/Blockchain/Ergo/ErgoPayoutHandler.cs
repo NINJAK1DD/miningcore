@@ -313,7 +313,7 @@ public class ErgoPayoutHandler : PayoutHandlerBase,
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ErgoPayoutHandler.PayoutAsync", failure: ex);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, ex.Message, null);
+            NotifyPayoutFailure(poolConfig.Id, balances, ex.Message, ex);
         }
 
         finally

@@ -85,7 +85,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealPayoutHandler.HandleSendTransactionResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }

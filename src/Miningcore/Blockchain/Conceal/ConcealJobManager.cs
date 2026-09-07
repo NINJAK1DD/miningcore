@@ -238,7 +238,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 networkType = ConcealNetworkType.Test;
                 break;
             default:
-                throw new PoolStartupException($"Unsupport net type '{NetworkTypeOverride}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Unsupported network type; verify daemon network and coin configuration", poolConfig.Id);
         }
         
         // extract standard daemon endpoints
@@ -268,7 +268,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for conceal-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for conceal-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
         }
 
         ConfigureDaemons();
@@ -524,19 +524,19 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             var infoResponse = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
         
             if(infoResponse?.Status != "OK")
-                throw new PoolStartupException($"Init RPC failed...", poolConfig.Id);
+                throw new TrustedPoolStartupException($"Init RPC failed...", poolConfig.Id);
         }
         
         catch(Exception)
         {
             logger.Debug(() => $"conceald daemon does not seem to be running...");
-            throw new PoolStartupException($"Init RPC failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Init RPC failed...", poolConfig.Id);
         }
         
         // address validation
         poolAddressBase58Prefix = CryptonoteBindings.DecodeAddress(poolConfig.Address);
         if(poolAddressBase58Prefix == 0)
-            throw new PoolStartupException("Unable to decode pool-address", poolConfig.Id);
+            throw new TrustedPoolStartupException("Unable to decode pool-address", poolConfig.Id);
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
@@ -545,19 +545,19 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             // ensure pool owns wallet
             //if(clusterConfig.PaymentProcessing?.Enabled == true && addressResponse.Response?.Address != poolConfig.Address)
             if(clusterConfig.PaymentProcessing?.Enabled == true && Exists(addressResponse.Response?.Address, element => element == poolConfig.Address) == false)
-                throw new PoolStartupException($"Wallet-Daemon does not own pool-address '{poolConfig.Address}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         switch(networkType)
         {
             case ConcealNetworkType.Main:
                 if(poolAddressBase58Prefix != coin.AddressPrefix)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
             
             case ConcealNetworkType.Test:
                 if(poolAddressBase58Prefix != coin.AddressPrefixTestnet)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
         }
 

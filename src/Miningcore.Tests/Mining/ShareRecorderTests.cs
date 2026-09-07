@@ -6418,7 +6418,9 @@ public class ShareRecorderTests
 
         await handler.StopClusterAsync(new[] { CreateDurableCandidate("ltc-parent") },
             new InvalidOperationException("parent failed"), null, true);
-        await handler.StopClusterAsync(new[] { CreateDurableCandidate("doge-aux", "auxpow") },
+        var auxiliaryCandidate = CreateDurableCandidate(new string('b', 64), "auxpow");
+        auxiliaryCandidate.TransactionConfirmationData = "private-submission-evidence";
+        await handler.StopClusterAsync(new[] { auxiliaryCandidate },
             new InvalidOperationException("aux failed"),
             new IOException("journal failed"), false);
 
@@ -6436,7 +6438,8 @@ public class ShareRecorderTests
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject == "Escalated block-candidate durability loss" &&
                 notification.Message.Contains("pool=doge-solo") &&
-                !notification.Message.Contains("doge-aux") &&
+                notification.Message.Contains(new string('b', 64)) &&
+                !notification.Message.Contains("private-submission-evidence") &&
                 notification.Message.Contains(fatalState.FatalStateFilename)),
             Arg.Any<CancellationToken>());
     }

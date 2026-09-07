@@ -441,7 +441,8 @@ public abstract class PayoutHandlerBase
 
     protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances,
         string error, Exception ex, decimal? submittedAmount = null,
-        decimal? precisionAdjustment = null)
+        decimal? precisionAdjustment = null, int? daemonCode = null,
+        PaymentFailureReason reason = PaymentFailureReason.Unknown)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -452,6 +453,7 @@ public abstract class PayoutHandlerBase
         {
             SubmittedAmount = submittedAmount,
             PrecisionAdjustment = precisionAdjustment,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(ex, daemonCode, reason),
         });
     }
 

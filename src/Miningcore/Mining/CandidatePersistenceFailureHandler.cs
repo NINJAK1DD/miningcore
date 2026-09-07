@@ -53,7 +53,7 @@ public sealed class CandidatePersistenceFailureHandler :
 
         var candidateDetails = string.Join("; ", candidates.Select(candidate =>
             $"pool={candidate.PoolId}, miner={candidate.Miner}, height={candidate.BlockHeight}, " +
-            $"type={candidate.BlockType ?? "(none)"}"));
+            $"type={candidate.BlockType ?? "(none)"}, hash={RpcConsumerDiagnostics.TransactionId(candidate.BlockHash)}"));
         var durability = journalSucceeded
             ? "The candidate was written to the recovery journal, but the unexpected database failure makes the live persistence pipeline unsafe."
             : "Neither PostgreSQL nor the recovery journal durably stored the candidate.";

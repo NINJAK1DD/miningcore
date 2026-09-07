@@ -309,7 +309,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                 case ZOperationStatus.Cancelled:
                                 case ZOperationStatus.Failed:
                                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutZSendManyAsync", code: operationResult.Error?.Code);
-                                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.ZSendMany} failed: {operationResult.Error.Message} code {operationResult.Error.Code}", null);
+                                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.ZSendMany} failed: {operationResult.Error.Message} code {operationResult.Error.Code}", null, daemonCode: operationResult.Error.Code);
 
                                     continueWaiting = false;
                                     continue;
@@ -364,7 +364,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     else
                     {
                         logger.Error(() => $"[{LogCategory}] Wallet is locked but walletPassword was not configured. Unable to send funds.");
-                        NotifyPayoutFailure(poolConfig.Id, page, "Wallet is locked but walletPassword was not configured. Unable to send funds.", null);
+                        NotifyPayoutFailure(poolConfig.Id, page, "Wallet is locked but walletPassword was not configured. Unable to send funds.", null, reason: PaymentFailureReason.WalletPasswordMissing);
                         break;
                     }
                 }
@@ -373,7 +373,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 {
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutZSendManyAsync", code: response.Error?.Code);
 
-                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.ZSendMany} returned error: {response.Error.Message} code {response.Error.Code}", null);
+                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.ZSendMany} returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
                 }
             }
         }
@@ -477,7 +477,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                 case ZOperationStatus.Cancelled:
                                 case ZOperationStatus.Failed:
                                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutSendCurrencyAsync", code: operationResult.Error?.Code);
-                                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.SendCurrency} failed: {operationResult.Error.Message} code {operationResult.Error.Code}", null);
+                                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.SendCurrency} failed: {operationResult.Error.Message} code {operationResult.Error.Code}", null, daemonCode: operationResult.Error.Code);
 
                                     continueWaiting = false;
                                     continue;
@@ -532,7 +532,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     else
                     {
                         logger.Error(() => $"[{LogCategory}] Wallet is locked but walletPassword was not configured. Unable to send funds.");
-                        NotifyPayoutFailure(poolConfig.Id, page, "Wallet is locked but walletPassword was not configured. Unable to send funds.", null);
+                        NotifyPayoutFailure(poolConfig.Id, page, "Wallet is locked but walletPassword was not configured. Unable to send funds.", null, reason: PaymentFailureReason.WalletPasswordMissing);
                         break;
                     }
                 }
@@ -541,7 +541,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 {
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.PayoutSendCurrencyAsync", code: response.Error?.Code);
 
-                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.SendCurrency} returned error: {response.Error.Message} code {response.Error.Code}", null);
+                    NotifyPayoutFailure(poolConfig.Id, page, $"{EquihashCommands.SendCurrency} returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
                 }
             }
         }
