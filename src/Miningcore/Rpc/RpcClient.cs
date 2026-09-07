@@ -135,8 +135,9 @@ public class RpcClient
 
     public IObservable<ZMessage> ZmqSubscribe(ILogger logger, CancellationToken ct,
         Dictionary<DaemonEndpointConfig, (string Socket, string Topic)> portMap,
-        DaemonEndpointConfig[] configuredEndpoints = null)
+        DaemonEndpointConfig[] configuredEndpoints)
     {
+        // Callers must supply mapping context, or explicitly choose null for unknown.
         // Resolve against the full daemon array, not the filtered map or dictionary order.
         // Snapshot before Defer/RefCount so resubscription retains the same attribution.
         var endpoints = portMap.Select(entry => (entry.Value.Socket, entry.Value.Topic,
@@ -416,6 +417,8 @@ public class RpcClient
 
                     if(!token.IsCancellationRequested)
                     {
+                        // Task.Delay can only cancel through this token. Retain the
+                        // filter to make the shutdown-only boundary explicit.
                         try { await Task.Delay(TimeSpan.FromSeconds(5), token); }
                         catch(OperationCanceledException) when(token.IsCancellationRequested) { break; }
                     }

@@ -406,8 +406,9 @@ public class RpcDiagnosticTests
         Assert.Equal(new[] { before, after }, delivered);
         Assert.True(polling.HasObservers);
         logs.AssertSafe();
-        Assert.Contains("\"endpointIndex\":2", Assert.Single(logs.Messages));
-        Assert.Contains("\"stage\":\"Failure\"", logs.Messages[0]);
+        var diagnostic = Assert.Single(logs.Messages);
+        Assert.Contains("\"endpointIndex\":2", diagnostic);
+        Assert.Contains("\"stage\":\"Failure\"", diagnostic);
     }
 
     [Fact]
@@ -550,7 +551,8 @@ public class RpcDiagnosticTests
         var endpoint = new DaemonEndpointConfig();
         var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
         using var subscription = client.ZmqSubscribe(logs.Logger, CancellationToken.None,
-            new Dictionary<DaemonEndpointConfig, (string, string)> { [endpoint] = ("invalid-" + Secret + "://" + Secret, UnsafeText) })
+            new Dictionary<DaemonEndpointConfig, (string, string)> { [endpoint] = ("invalid-" + Secret + "://" + Secret, UnsafeText) },
+            configuredEndpoints: null)
             .Subscribe(new ZmqObserver(_ => { }));
         await logs.WaitForFailure();
         logs.AssertSafe();
