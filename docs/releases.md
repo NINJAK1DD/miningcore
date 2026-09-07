@@ -50,6 +50,9 @@ copying a recovery command from the maintainer section.
 
 ## Unreleased: credential-safe RPC transport diagnostics
 
+**Monitoring change:** Prometheus/Grafana dashboards using joined RPC batch-method labels
+must switch to `batch`; custom/unrecognized single-method labels now become `other`.
+
 HTTP single/batch Trace logs and WebSocket Debug logs now use a bounded `RPC diagnostic`
 JSON record instead of requests, responses, subscription payloads or endpoint URLs.
 WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
@@ -76,12 +79,17 @@ and payout decisions remain unchanged. There is no database migration or TLS-pol
 Failures distinguish timeouts with a structural `TimeoutException` cause from cancellations.
 Numeric codes identify .NET `WebSocketError` / `HttpRequestError`, native socket errors or ZMQ
 errno, according to the failure category. WebSocket handshake failures retain HTTP status (for
-example 401/403) without logging response headers. Unknown exception types remain `other`;
-arbitrary type names and exception text are not a safe diagnostic vocabulary.
+example 401/403) without logging response headers. A null WebSocket `httpStatus` means no
+HTTP status was captured, not that the connection or TLS succeeded. Unknown exception types
+remain `other`; arbitrary type names and exception text are not a safe diagnostic vocabulary.
 Subscription cancellation and source disposal now have coordinated ownership: cleanup runs even
 when already cancelled, and disposal waits for worker exit and in-progress cancellation calls.
 Async WebSocket cleanup awaits cancellation-registration removal instead of blocking a worker
-thread. Cancellation/disposal exceptions unrelated to subscription shutdown follow the normal
+thread. Throwing callbacks on RPC subscription tokens cannot interrupt unsubscribe or propagate
+into parent shutdown; all callbacks on that token still run. A fixed `CancellationCallbackFailure`
+diagnostic reports the problem without exception text. Reporting is best-effort if the logging
+target itself fails.
+Cancellation/disposal exceptions unrelated to subscription shutdown follow the normal
 retry path. Terminal worker faults produce a safe Error-level diagnostic without sending
 `OnError` into subscribers: polling merged with push notifications must continue when the push
 worker stops. This preserves the fallback, not automatic recovery of a terminal push worker;

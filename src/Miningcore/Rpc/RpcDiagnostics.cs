@@ -12,7 +12,7 @@ namespace Miningcore.Rpc;
 internal static class RpcDiagnostics
 {
     internal enum Transport { Http, WebSocket, Zmq }
-    internal enum Stage { Request, Response, Connect, Subscribe, Receive, Failure, StopTimeout }
+    internal enum Stage { Request, Response, Connect, Subscribe, Receive, Failure, StopTimeout, CancellationCallbackFailure }
 
     internal static string Method(string method) => RpcMethodCatalog.Label(method);
 
@@ -27,6 +27,11 @@ internal static class RpcDiagnostics
         return index >= 0 ? index + 1 : null;
     }
 
+    /// <remarks>
+    /// httpResponseChars counts decoded UTF-16 code units (String.Length), not wire
+    /// bytes or Unicode code points. A null handshake status means no HTTP status
+    /// was captured; it does not establish whether a connection or TLS succeeded.
+    /// </remarks>
     internal static void Write(ILogger logger, LogLevel level, Transport transport, Stage stage,
         string method = null, int? batchCount = null, int? status = null,
         long? bytes = null, long? elapsedMs = null, Exception failure = null,

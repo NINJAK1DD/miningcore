@@ -411,6 +411,31 @@ public class RpcDiagnosticTests
         Assert.Contains("\"stage\":\"Failure\"", diagnostic);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancellationCallbackFailureHasOnlyFixedSafeDiagnostic(bool zmq)
+    {
+        using var logs = new CapturedLogs(NLog.LogLevel.Info);
+        var lifetime = new RpcSubscriptionLifetime(CancellationToken.None, () =>
+            RpcDiagnostics.Write(logs.Logger, NLog.LogLevel.Error,
+                zmq ? RpcDiagnostics.Transport.Zmq : RpcDiagnostics.Transport.WebSocket,
+                RpcDiagnostics.Stage.CancellationCallbackFailure, endpointIndex: 2));
+        using var callback = lifetime.Token.Register(() => throw new Exception(UnsafeText));
+        using var unsubscribe = Disposable.Create(lifetime.Cancel);
+        try
+        {
+            unsubscribe.Dispose();
+            Assert.True(lifetime.Token.IsCancellationRequested);
+            logs.AssertSafe();
+            var diagnostic = Assert.Single(logs.Messages);
+            Assert.Contains("\"stage\":\"CancellationCallbackFailure\"", diagnostic);
+            Assert.Contains("\"failure\":null", diagnostic);
+        }
+        finally { await lifetime.CompleteAsync(); }
+        await lifetime.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Fact]
     public void EndpointLookupUsesFullConfigurationAndDegradesToUnknown()
     {

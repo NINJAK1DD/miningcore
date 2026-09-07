@@ -7,12 +7,14 @@ internal sealed class RpcSubscriptionLifetime
     private readonly object gate = new();
     private readonly CancellationTokenSource source = new();
     private readonly CancellationTokenRegistration parentRegistration;
+    private readonly Action onCancellationCallbackFailure;
     private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int cancelling;
     private bool finished;
 
-    internal RpcSubscriptionLifetime(CancellationToken parent)
+    internal RpcSubscriptionLifetime(CancellationToken parent, Action onCancellationCallbackFailure = null)
     {
+        this.onCancellationCallbackFailure = onCancellationCallbackFailure;
         Token = source.Token;
         parentRegistration = parent.Register(Cancel);
     }
@@ -34,7 +36,15 @@ internal sealed class RpcSubscriptionLifetime
             if(finished) return;
             cancelling++;
         }
-        try { source.Cancel(); }
+        try { source.Cancel(throwOnFirstException: false); }
+        catch(AggregateException)
+        {
+            // All callbacks have run and cancellation is already set. Their errors
+            // must not interrupt parent shutdown or Rx unsubscribe. Report only a
+            // fixed signal: callback exceptions can contain credentials/payloads.
+            try { onCancellationCallbackFailure?.Invoke(); }
+            catch(Exception) { /* Best-effort reporting must not break cleanup either. */ }
+        }
         finally
         {
             lock(gate)

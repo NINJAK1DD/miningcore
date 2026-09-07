@@ -35,10 +35,11 @@ public class RpcSubscriptionLifetimeTests
         var lifetime = new RpcSubscriptionLifetime(CancellationToken.None);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var release = new ManualResetEventSlim();
+        var callbackTimedOut = false;
         using var callback = lifetime.Token.Register(() =>
         {
             entered.TrySetResult();
-            Assert.True(release.Wait(TimeSpan.FromSeconds(10)));
+            callbackTimedOut = !release.Wait(TimeSpan.FromSeconds(10));
         });
         var cancelling = Task.Run(lifetime.Cancel);
         try
@@ -50,6 +51,7 @@ public class RpcSubscriptionLifetimeTests
         }
         finally { release.Set(); }
         await cancelling.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(callbackTimedOut); // Callback exceptions are intentionally contained by Cancel.
         await lifetime.Completion.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
@@ -60,10 +62,11 @@ public class RpcSubscriptionLifetimeTests
         var lifetime = new RpcSubscriptionLifetime(parent.Token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var release = new ManualResetEventSlim();
+        var callbackTimedOut = false;
         using var callback = lifetime.Token.Register(() =>
         {
             entered.TrySetResult();
-            Assert.True(release.Wait(TimeSpan.FromSeconds(10)));
+            callbackTimedOut = !release.Wait(TimeSpan.FromSeconds(10));
         });
         var cancelling = Task.Run(parent.Cancel);
         Task completing = null;
@@ -76,7 +79,39 @@ public class RpcSubscriptionLifetimeTests
         }
         finally { release.Set(); }
         await Task.WhenAll(cancelling, completing).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(callbackTimedOut);
         await lifetime.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CallbackAndReporterExceptionsCannotInterruptCleanup(bool viaParent)
+    {
+        using var parent = new CancellationTokenSource();
+        var reports = 0;
+        var callbacks = 0;
+        var lifetime = new RpcSubscriptionLifetime(parent.Token, () =>
+        {
+            reports++;
+            throw new InvalidOperationException("reporter failed");
+        });
+        using var first = lifetime.Token.Register(() => { callbacks++; throw new Exception("callback one"); });
+        using var second = lifetime.Token.Register(() => { callbacks++; throw new Exception("callback two"); });
+        using var third = lifetime.Token.Register(() => callbacks++);
+        try
+        {
+            if(viaParent) parent.Cancel();
+            else lifetime.Cancel();
+            Assert.True(lifetime.Token.IsCancellationRequested);
+            Assert.Equal(3, callbacks);
+            Assert.Equal(1, reports);
+            Assert.False(lifetime.Completion.IsCompleted);
+        }
+        finally { await lifetime.CompleteAsync(); }
+        await lifetime.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        lifetime.Cancel();
+        Assert.Equal(1, reports);
     }
 
     [Fact]

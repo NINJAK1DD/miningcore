@@ -90,6 +90,7 @@ public class RpcClient
             if(throwOnError)
                 throw;
 
+            // Caller-observable data is preserved; unsafe consumer logging is tracked in #154.
             return new RpcResponse<TResponse>(null, new JsonRpcError(-500, ex.Message, null, ex));
         }
     }
@@ -116,6 +117,7 @@ public class RpcClient
         {
             RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                 RpcDiagnostics.Stage.Failure, batchCount: batch.Length, failure: ex);
+            // Caller-observable data is preserved; unsafe consumer logging is tracked in #154.
             return Enumerable.Repeat(new RpcResponse<JToken>(null, new JsonRpcError(-500, ex.Message, null, ex)), batch.Length).ToArray();
         }
     }
@@ -334,7 +336,9 @@ public class RpcClient
     {
         return Observable.Defer(() => Observable.Create<byte[]>(obs =>
         {
-            var lifetime = new RpcSubscriptionLifetime(ct);
+            var lifetime = new RpcSubscriptionLifetime(ct, () => RpcDiagnostics.Write(logger, LogLevel.Error,
+                RpcDiagnostics.Transport.WebSocket, RpcDiagnostics.Stage.CancellationCallbackFailure,
+                method, endpointIndex: endpointIndex));
             var token = lifetime.Token;
 
             var worker = lifetime.Run(async () =>
@@ -449,7 +453,9 @@ public class RpcClient
     {
         return Observable.Defer(() => Observable.Create<ZMessage>(obs =>
         {
-            var lifetime = new RpcSubscriptionLifetime(ct);
+            var lifetime = new RpcSubscriptionLifetime(ct, () => RpcDiagnostics.Write(logger, LogLevel.Error,
+                RpcDiagnostics.Transport.Zmq, RpcDiagnostics.Stage.CancellationCallbackFailure,
+                endpointIndex: endpointIndex));
             var token = lifetime.Token;
 
             var thread = new Thread(() =>

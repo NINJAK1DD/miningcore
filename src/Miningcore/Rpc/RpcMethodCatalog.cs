@@ -17,6 +17,8 @@ internal static class RpcMethodCatalog
         catch(Exception) { return FrozenSet<string>.Empty; }
     }
 
+    // 64 bounds diagnostic labels even if a future built-in constant grows. Audit
+    // the record-size/cardinality contract before raising it; tests also pin the limit.
     internal static string Label(string method) => method == null ? null :
         method.Length <= 64 && methods.Contains(method) ? method : "other";
 
