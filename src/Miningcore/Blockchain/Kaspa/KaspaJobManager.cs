@@ -798,7 +798,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
             call.Dispose();
 
             if(!walletAddresses.Address.Contains(poolConfig.Address))
-                throw new PoolStartupException($"Pool address: {poolConfig.Address} is not controlled by pool wallet", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         await UpdateNetworkStatsAsync(ct);

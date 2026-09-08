@@ -39,9 +39,16 @@ internal static class RpcConsumerDiagnostics
     // Malformed wallet responses may put arbitrary text in a purported txid.
     // Keep the exact returned value in reconciliation evidence, not in an alert.
     internal static string TransactionId(string value)
+        => IsHexIdentifier(value) ? value : "[unverified transaction identifier withheld]";
+
+    // Block hashes have distinct operator-facing semantics from payment txids.
+    // Callers supply any surrounding punctuation; null is absence, not rejection.
+    internal static string BlockHash(string value)
+        => value == null ? "(none)" : IsHexIdentifier(value) ? value : "withheld";
+
+    private static bool IsHexIdentifier(string value)
     {
         var hex = value != null && value.StartsWith("0x", StringComparison.Ordinal) ? value.AsSpan(2) : value.AsSpan();
-        return hex.Length == 64 && hex.IndexOfAnyExcept("0123456789abcdefABCDEF") < 0
-            ? value : "[unverified transaction identifier withheld]";
+        return hex.Length == 64 && hex.IndexOfAnyExcept("0123456789abcdefABCDEF") < 0;
     }
 }

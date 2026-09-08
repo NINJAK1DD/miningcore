@@ -656,14 +656,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
                 ex=> throw new PoolStartupException($"Error validating pool payment wallet name: {ex}", poolConfig.Id));
             
             if (validityWalletMinerAddresses?.Addresses1.Count < 4)
-                throw new PoolStartupException($"Pool payment wallet name: {extraPoolPaymentProcessingConfig.WalletName} must have 4 miner's addresses", poolConfig.Id);
+                throw new TrustedPoolStartupException("The configured pool payment wallet must have 4 miner addresses", poolConfig.Id);
             
             // check configured address belongs to wallet
             var walletAddresses = await Guard(() => rpc.NameAddressesAddressAsync(extraPoolPaymentProcessingConfig.WalletName, poolConfig.Address, ct),
                 ex=> throw new PoolStartupException($"Pool address: {poolConfig.Address} is not controlled by pool wallet name: {extraPoolPaymentProcessingConfig.WalletName} - Error: {ex}", poolConfig.Id));
 
             if(walletAddresses.Address != poolConfig.Address)
-                throw new PoolStartupException($"Pool address: {poolConfig.Address} is not controlled by pool wallet name: {extraPoolPaymentProcessingConfig.WalletName}", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
         
         var infosChainParams = await Guard(() => rpc.GetInfosChainParamsAsync(ct),

@@ -128,17 +128,17 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             string.Equals(x.Id, mergedMiningConfig.AuxPoolId, StringComparison.OrdinalIgnoreCase));
 
         if(auxiliaryPoolConfig == null)
-            throw new PoolStartupException($"Auxiliary pool '{mergedMiningConfig.AuxPoolId}' was not found", pc.Id);
+            throw new TrustedPoolStartupException("Configured mergedMining.auxPoolId was not found; check the auxiliary pool id", pc.Id);
 
         if(string.Equals(auxiliaryPoolConfig.Id, pc.Id, StringComparison.OrdinalIgnoreCase))
             throw new TrustedPoolStartupException("Parent and auxiliary pool ids must be different", pc.Id);
 
         if(auxiliaryPoolConfig.Enabled != true)
-            throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' must be enabled", pc.Id);
+            throw new TrustedPoolStartupException("The configured auxiliary pool must be enabled", pc.Id);
 
         auxiliaryCoin = auxiliaryPoolConfig.Template as BitcoinTemplate;
         if(auxiliaryCoin == null)
-            throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' must use the Bitcoin coin family", pc.Id);
+            throw new TrustedPoolStartupException("The configured auxiliary pool must use the Bitcoin coin family", pc.Id);
 
         if(!string.Equals(auxiliaryCoin.Symbol, "DOGE", StringComparison.OrdinalIgnoreCase))
             throw new TrustedPoolStartupException("Merged mining currently requires Dogecoin as the auxiliary chain", pc.Id);
@@ -350,14 +350,14 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(transition.FallbackStarted && transition.Template != null)
         {
-            logger.Warn("Auxiliary template updates degraded; using cached block {0} [{1}]", transition.Template.Height, RpcConsumerDiagnostics.TransactionId(transition.Template.Hash));
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState");
+            logger.Warn("Auxiliary template updates degraded; using cached block {0} [{1}]", transition.Template.Height, RpcConsumerDiagnostics.BlockHash(transition.Template.Hash));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState", stage: RpcConsumerDiagnostics.Stage.Degraded);
         }
         else if(transition.Degraded)
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "MergedMiningBitcoinJobManager.PublishAuxiliaryTemplateState", stage: RpcConsumerDiagnostics.Stage.Degraded);
         else if(transition.Recovered && transition.Template != null)
         {
-            logger.Info(() => $"Auxiliary template updates recovered at block {transition.Template.Height} [{transition.Template.Hash}]");
+            logger.Info(() => $"Auxiliary template updates recovered at block {transition.Template.Height} [{RpcConsumerDiagnostics.BlockHash(transition.Template.Hash)}]");
         }
     }
 
@@ -1261,7 +1261,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         if(!accepted && !uncertain)
         {
-            logger.Warn("Auxiliary block {0} [{1}] was not accepted", template.Height, RpcConsumerDiagnostics.TransactionId(template.Hash));
+            logger.Warn("Auxiliary block {0} [{1}] was not accepted", template.Height, RpcConsumerDiagnostics.BlockHash(template.Hash));
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.SubmitAuxiliaryBlockAsync", code: submitResponse.Error?.Code, stage: RpcConsumerDiagnostics.Stage.Rejected);
             return false;
         }

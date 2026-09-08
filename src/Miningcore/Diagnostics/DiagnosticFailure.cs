@@ -1,6 +1,7 @@
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using Miningcore.Stratum;
+using Miningcore.Blockchain.Alephium;
 using Newtonsoft.Json;
 using ZeroMQ;
 
@@ -17,6 +18,7 @@ internal static class DiagnosticFailure
         OperationCanceledException { InnerException: TimeoutException } => "timeout",
         OperationCanceledException => "cancelled",
         JsonException => "json",
+        FormatException => "format",
         HttpRequestException => "http",
         WebSocketException => "websocket",
         InvalidDataException => "invalid-data",
@@ -37,6 +39,17 @@ internal static class DiagnosticFailure
             StratumError.NotSubscribed => "not-subscribed",
             _ => "share-rejected",
         },
+        AlephiumStratumException alephium => alephium.Code switch
+        {
+            AlephiumStratumError.JobNotFound => "job-not-found",
+            AlephiumStratumError.InvalidJobChainIndex => "invalid-job-chain-index",
+            AlephiumStratumError.InvalidWorker => "invalid-worker",
+            AlephiumStratumError.InvalidNonce => "invalid-nonce",
+            AlephiumStratumError.DuplicatedShare => "duplicate-share",
+            AlephiumStratumError.LowDifficultyShare => "low-difficulty-share",
+            AlephiumStratumError.InvalidBlockChainIndex => "invalid-block-chain-index",
+            _ => "share-rejected",
+        },
         _ => "other",
     };
 
@@ -48,6 +61,7 @@ internal static class DiagnosticFailure
         SocketException socket => socket.NativeErrorCode,
         Grpc.Core.RpcException grpc => (int) grpc.StatusCode,
         StratumException stratum => (int) stratum.Code,
+        AlephiumStratumException alephium => (int) alephium.Code,
         _ => null,
     };
 }

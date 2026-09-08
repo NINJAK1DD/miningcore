@@ -41,7 +41,10 @@ The [source catalogue](../src/Miningcore/Rpc/RpcConsumerOperations.cs) defines t
 diagnostic vocabulary, not permitted RPC operations. This is an output-only change:
 original RPC errors, parsing exceptions and reconciliation objects are not rewritten.
 Submission classification, wallet decisions, accounting, retries and fail-stop exit
-codes retain their existing behavior.
+codes retain their existing behavior. Xelis additionally rejects non-hexadecimal
+`miner_work` before publishing a job: the previous shared hex decoder was permissive.
+Valid hex, including the existing optional `0x` prefix, retains its meaning. The raw
+template never enters the diagnostic, even when it is valid.
 
 Daemon startup and pool-run failures can also be printed by generic host logging.
 These boundaries expose a safe `PoolStartupException` subtype and retain the original
@@ -61,10 +64,15 @@ Transport and consumer diagnostics share one fixed structural classifier. Null-r
 and invalid-operation failures have explicit labels; gRPC and Stratum errors retain
 numeric codes. Share rejection labels distinguish stale jobs, duplicate shares, low
 difficulty and authorization failures without echoing arbitrary `StratumException.Message`.
+Alephium's separate Stratum enumeration is mapped independently: its code 22 means
+invalid worker, not the standard Stratum duplicate-share meaning. Unknown codes retain
+their number with the bounded `share-rejected` category.
 Raw stack traces and runtime type names remain excluded: they can be overridden or
 contain private build paths. Debuggers/private evidence, not a second plaintext log
 target, remain the place to inspect original causes. General service consumers reuse
-this projection; the shared classifier lives in `Miningcore.Diagnostics`.
+this projection; the shared classifier lives in `Miningcore.Diagnostics`. The
+`RpcConsumerDiagnostics` name/namespace retains the RPC-consumer audit contract;
+reuse by shared services does not imply that every service output is audited.
 
 ## Alerts and reconciliation
 
@@ -90,6 +98,10 @@ is not a universally safe chain identifier: it can carry composite submission ev
 so it remains private. Pool identity, block type, height and validated block hash identify
 the candidate in the alert. Unsupported transaction-ID formats are conservatively withheld
 from uncertain-payment summaries; this validator is not a cross-chain consensus rule.
+Block hashes use separate wording: absent hashes are `(none)` and malformed hashes are
+`withheld`, rather than reporting a transaction-ID failure. Auxiliary degraded/recovered
+announcements apply the same hash boundary. Telemetry callback failures retain distinct
+operation labels, and degraded auxiliary-template records carry the `Degraded` stage.
 
 Keep private evidence access-controlled. Compare ledger and wallet history before
 releasing an uncertain payout lease or retrying a payment. Never import quarantine
@@ -128,3 +140,7 @@ they do not certify every coin family against its live daemon.
 The source-inventory test checks catalogue equality rather than a minimum call count,
 and explicitly skips outside a repository checkout; runtime tests still run there.
 Its sink scan is a regression heuristic, not a proof of global redaction.
+Shared mining/notification consumers are scanned by directory, with explicit exclusions
+for relay transport and generic host-shutdown signalling. Exclusion paths must continue
+to exist, so a rename requires revisiting the audit scope. A metadata regression pins
+nonparallel collection membership for all four NLog configuration-mutating test groups.

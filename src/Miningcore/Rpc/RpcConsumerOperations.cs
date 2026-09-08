@@ -8,7 +8,13 @@ internal static class RpcConsumerOperations
 {
     internal static readonly FrozenSet<string> All = new[]
     {
-        "MetricsPublisher.ExecuteAsync",
+        "MetricsPublisher.OnTelemetryEvent",
+        "MetricsPublisher.OnHashrateNotification",
+        "MetricsPublisher.OnAuxiliaryTemplateRpcTelemetry",
+        "MetricsPublisher.OnAuxiliaryTemplateStateTelemetry",
+        "MetricsPublisher.OnShareAccountingTelemetry",
+        "MetricsPublisher.OnMergedMiningAttributionRejected",
+        "MetricsPublisher.OnUnsupportedShareRelayWireFormat",
         "StatsRecorder.UpdateAsync",
         "StatsRecorder.GcAsync",
         "StatsRecorder.OnPolicyRetry",

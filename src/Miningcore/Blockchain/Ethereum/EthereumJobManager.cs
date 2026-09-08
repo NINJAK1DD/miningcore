@@ -300,8 +300,6 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         if(response.Error != null || (bool?) response.Response == false)
         {
-            var error = response.Error?.Message ?? response?.Response?.ToString();
-
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EthereumJobManager.SubmitBlockAsync");
             messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
 

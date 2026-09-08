@@ -6,7 +6,7 @@ public enum PaymentFailureReason { Unknown, WalletPasswordMissing }
 
 // Created independently of the retained free-form error. Never infer a safe hint
 // by matching or echoing a daemon message.
-internal sealed class PaymentFailureDiagnostic
+internal sealed record PaymentFailureDiagnostic
 {
     private PaymentFailureDiagnostic() { }
     internal string Category { get; private init; }

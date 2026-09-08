@@ -88,9 +88,14 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             var blockTemplate = responseBlockTemplate.Response;
             var job = currentJob;
 
-            logger.Debug(() => $" blockHeader.TopoHeight [{blockHeader.TopoHeight}] || blockTemplate.Difficulty [{blockTemplate.Difficulty}]] || blockTemplate.Template [{blockTemplate.Template}]");
+            logger.Debug(() => $"blockHeader.TopoHeight [{blockHeader.TopoHeight}] || blockTemplate.Difficulty [{blockTemplate.Difficulty}]");
 
-            var newHash = blockTemplate.Template.HexToByteArray().AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork, XelisConstants.BlockTemplateOffsetTimestamp).ToHexString();
+            // HexToByteArray is permissive; reject malformed daemon work before
+            // publishing a chain-height notification or constructing a job.
+            var minerWork = blockTemplate.Template;
+            var workBytes = Convert.FromHexString(minerWork?.StartsWith("0x", StringComparison.Ordinal) == true
+                ? minerWork[2..] : minerWork);
+            var newHash = workBytes.AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork, XelisConstants.BlockTemplateOffsetTimestamp).ToHexString();
             var isNew = currentJob == null ||
                 (newHash != job?.PrevHash);
 

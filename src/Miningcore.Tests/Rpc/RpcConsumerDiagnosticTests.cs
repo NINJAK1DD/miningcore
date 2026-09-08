@@ -18,6 +18,8 @@ using Microsoft.AspNetCore.Http;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Beam;
+using Miningcore.Blockchain.Alephium;
+using Miningcore.Blockchain.Xelis;
 using Miningcore.Blockchain.Ethereum;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
@@ -44,6 +46,130 @@ public class RpcConsumerDiagnosticTests
 {
     private const string Secret = "synthetic-private-secret";
     private const string Malicious = Secret + " https://user:password@invalid/secret?token=key\r\n\u0085\u2028\u2029forged-line";
+
+    [Fact]
+    public void GlobalLoggingMutators_AreExcludedFromParallelCollections()
+    {
+        // xUnit 2.4.2 runs DisableParallelization collections after awaiting all
+        // parallel collections. Different collection names do not defeat that rule.
+        foreach(var type in new[] { typeof(RpcConsumerDiagnosticTests),
+            typeof(Miningcore.Tests.Payments.PayoutManagerLoggingTests),
+            typeof(IPAccessWhitelistLoggingTests), typeof(Miningcore.Tests.Mining.ShareRecorderTests) })
+        {
+            var collection = Assert.Single(type.CustomAttributes.Where(x => x.AttributeType == typeof(CollectionAttribute)));
+            var name = collection.ConstructorArguments[0].Value;
+            var definition = Assert.Single(type.Assembly.GetTypes().SelectMany(x => x.CustomAttributes)
+                .Where(x => x.AttributeType == typeof(CollectionDefinitionAttribute) && Equals(x.ConstructorArguments[0].Value, name)));
+            Assert.Contains(definition.NamedArguments,
+                x => x.MemberName == "DisableParallelization" && Equals(x.TypedValue.Value, true));
+        }
+    }
+
+    [Theory]
+    [InlineData(AlephiumStratumError.JobNotFound, "job-not-found")]
+    [InlineData(AlephiumStratumError.InvalidJobChainIndex, "invalid-job-chain-index")]
+    [InlineData(AlephiumStratumError.InvalidWorker, "invalid-worker")]
+    [InlineData(AlephiumStratumError.InvalidNonce, "invalid-nonce")]
+    [InlineData(AlephiumStratumError.DuplicatedShare, "duplicate-share")]
+    [InlineData(AlephiumStratumError.LowDifficultyShare, "low-difficulty-share")]
+    [InlineData(AlephiumStratumError.InvalidBlockChainIndex, "invalid-block-chain-index")]
+    [InlineData(AlephiumStratumError.MinusOne, "share-rejected")]
+    [InlineData((AlephiumStratumError) 1000, "share-rejected")]
+    public void AlephiumRejection_KeepsItsOwnCodeAndSafeReason(AlephiumStratumError code, string reason)
+    {
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        var error = new AlephiumStratumException(code, Malicious);
+        RpcConsumerDiagnostics.Write(logs.Logger, LogLevel.Info, "AlephiumPool.OnSubmitAsync", error, connectionId: "server-session");
+        var record = JObject.Parse(Assert.Single(logs.Messages)["RPC consumer diagnostic ".Length..]);
+        Assert.Equal(reason, record["failure"].Value<string>());
+        Assert.Equal((int) code, record["failureCode"].Value<int>());
+        Assert.Equal("server-session", record["connectionId"].Value<string>());
+        Assert.Equal(Malicious, error.Message);
+        AssertSafe(logs.Messages);
+    }
+
+    [Fact]
+    public async Task XelisMinerWork_MalformedRemotePayloadIsNeverLoggedOrPublished()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        await using var server = await RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            await context.Response.WriteAsync(new JObject
+            {
+                ["id"] = request["id"],
+                ["result"] = new JObject { ["template"] = "00", ["topoheight"] = 123,
+                    ["difficulty"] = 1, ["miner_work"] = Malicious },
+                ["error"] = null,
+            }.ToString(Formatting.None));
+        });
+        using var container = new ContainerBuilder().Build();
+        var bus = Substitute.For<IMessageBus>();
+        var rpc = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), bus, "test");
+        var consumer = new XelisConsumer(container, bus, rpc, logs.Logger);
+        Assert.False(await consumer.Refresh(deadline.Token));
+        Assert.Null(consumer.CurrentJob);
+        Assert.DoesNotContain(bus.ReceivedCalls(), call => call.GetArguments().OfType<NewChainHeightNotification>().Any());
+        AssertSafe(logs.Messages);
+        var diagnostic = Assert.Single(logs.Messages.Where(x => x.StartsWith("RPC consumer diagnostic ", StringComparison.Ordinal)));
+        Assert.Contains("\"operation\":\"XelisJobManager.UpdateJob\"", diagnostic);
+        Assert.Contains("\"failure\":\"format\"", diagnostic);
+        var raw = await rpc.ExecuteAsync<Miningcore.Blockchain.Xelis.DaemonResponses.GetBlockTemplateResponse>(
+            logs.Logger, "get_miner_work", deadline.Token);
+        Assert.Equal(Malicious, raw.Response.Template);
+    }
+
+    [Theory]
+    [InlineData(null, "(none)")]
+    [InlineData("", "withheld")]
+    [InlineData(Malicious, "withheld")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public void BlockHashProjection_DistinguishesMissingAndInvalid(string value, string expected)
+    {
+        Assert.Equal(expected, RpcConsumerDiagnostics.BlockHash(value));
+    }
+
+    [Fact]
+    public void PaymentFailureMetadata_HasValueEquality()
+    {
+        var first = PaymentFailureDiagnostic.Create(new HttpRequestException(Malicious), -13);
+        var second = PaymentFailureDiagnostic.Create(new HttpRequestException("different private cause"), -13);
+        Assert.Equal(first, second);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task XelisMinerWork_ValidHexStillPublishes(bool prefixed)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        var minerWork = (prefixed ? "0x" : "") + new string('a', 224);
+        await using var server = await RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            await context.Response.WriteAsync(new JObject
+            {
+                ["id"] = request["id"],
+                ["result"] = new JObject { ["template"] = new string('0', 256),
+                    ["topoheight"] = 123, ["difficulty"] = 1024, ["miner_work"] = minerWork },
+                ["error"] = null,
+            }.ToString(Formatting.None));
+        });
+        using var container = new ContainerBuilder().Build();
+        var bus = Substitute.For<IMessageBus>();
+        var rpc = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), bus, "test");
+        var consumer = new XelisConsumer(container, bus, rpc, logs.Logger);
+        Assert.True(await consumer.Refresh(deadline.Token), string.Join("\n", logs.Messages));
+        Assert.Equal(new string('a', 64), consumer.CurrentJob.PrevHash);
+        Assert.Equal(minerWork, consumer.CurrentJob.BlockTemplate.Template);
+        Assert.Contains(bus.ReceivedCalls(), call => call.GetArguments().OfType<NewChainHeightNotification>().Any());
+        Assert.DoesNotContain(logs.Messages, x => x.Contains(minerWork, StringComparison.Ordinal));
+    }
 
     [Theory]
     [InlineData(false)]
@@ -226,6 +352,11 @@ public class RpcConsumerDiagnosticTests
         Assert.NotNull(directory);
         var root = Path.Combine(directory!.FullName, "src", "Miningcore");
         var operations = new HashSet<string>();
+        // Explicitly scoped-out relay transport and generic host-shutdown errors.
+        // New/renamed shared consumers are scanned by directory, not a basename list.
+        var exclusions = new[] { "Mining/ShareRelay.cs", "Mining/ShareReceiver.cs", "Mining/MiningFailStopCoordinator.cs" }
+            .Select(x => Path.Combine(root, x.Replace('/', Path.DirectorySeparatorChar))).ToHashSet();
+        Assert.All(exclusions, file => Assert.True(File.Exists(file), $"Revisit renamed audit exclusion: {file}"));
         foreach(var file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
                     .Where(x => !x.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)))
         {
@@ -238,12 +369,15 @@ public class RpcConsumerDiagnosticTests
             }
             if(!file.Contains(Path.DirectorySeparatorChar + "Blockchain" + Path.DirectorySeparatorChar) &&
                 !file.Contains(Path.DirectorySeparatorChar + "Payments" + Path.DirectorySeparatorChar) &&
-                !new[] { "StatsRecorder.cs", "ShareRecorder.cs", "ShareRecoveryFailureHandler.cs", "CandidatePersistenceFailureHandler.cs", "MetricsPublisher.cs", "NotificationService.cs" }.Contains(Path.GetFileName(file))) continue;
+                !file.Contains(Path.DirectorySeparatorChar + "Mining" + Path.DirectorySeparatorChar) &&
+                !file.Contains(Path.DirectorySeparatorChar + "Notifications" + Path.DirectorySeparatorChar)) continue;
+            if(exclusions.Contains(file)) continue;
             foreach(Match sink in Regex.Matches(source, @"\b\w*[Ll]ogg?er\.(?:Trace|Debug|Info|Warn|Error|Fatal)\(.*?\);", RegexOptions.Singleline))
             {
                 Assert.DoesNotMatch(@"\.Error\??\.Message|\.TxKey\b|\.Warning\b|\b(?:ex|exception)\.(?:Message|ToString)\b", sink.Value);
                 Assert.DoesNotMatch(@"^\w+\.\w+\((?:ex|exception)\s*[,)]", sink.Value);
                 Assert.DoesNotMatch(@"\{(?:json|data|payload|line)\}", sink.Value);
+                Assert.DoesNotMatch(@"\{blockTemplate\.Template\}", sink.Value);
             }
         }
         Assert.Equal(RpcConsumerOperations.All.OrderBy(x => x), operations.OrderBy(x => x));
@@ -463,6 +597,20 @@ public class RpcConsumerDiagnosticTests
             BeamSubscribeStratumApiSocketClient(ct, endpoint, request);
         internal Task<bool> Healthy() => AreDaemonsHealthyAsync(CancellationToken.None);
         internal Task<bool> Connected() => AreDaemonsConnectedAsync(CancellationToken.None);
+    }
+
+    private sealed class XelisConsumer : XelisJobManager
+    {
+        internal XelisConsumer(IComponentContext container, IMessageBus bus, RpcClient client, ILogger log)
+            : base(container, Substitute.For<IMasterClock>(), bus, Substitute.For<IExtraNonceProvider>())
+        {
+            logger = log; poolConfig = new PoolConfig { Id = "test", Address = "test-address", Template = new XelisCoinTemplate { Symbol = "XEL" } };
+            typeof(XelisJobManager).GetField("rpc", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, client);
+            typeof(XelisJobManager).GetField("network", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, "mainnet");
+            typeof(XelisJobManager).GetField("coin", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, poolConfig.Template);
+        }
+        internal XelisJob CurrentJob => currentJob;
+        internal Task<bool> Refresh(CancellationToken ct) => UpdateJob(ct);
     }
 
     private sealed class EthereumConsumer : EthereumJobManager

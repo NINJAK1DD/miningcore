@@ -780,9 +780,7 @@ public class AlephiumPayoutHandler : PayoutHandlerBase,
 
     private void ReportAndRethrowApiError(string action, Exception ex, bool rethrow = true)
     {
-        var error = GetApiError(ex);
-
-        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "AlephiumPayoutHandler.ReportAndRethrowApiError");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "AlephiumPayoutHandler.ReportAndRethrowApiError", failure: ex);
 
         if(rethrow)
             throw ex;

@@ -385,7 +385,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
             var walletAddresses = await rpc.WalletAddressesAsync(ct);
 
             if(!walletAddresses.Contains(poolConfig.Address))
-                throw new PoolStartupException($"Pool address {poolConfig.Address} is not controlled by wallet", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         // update stats

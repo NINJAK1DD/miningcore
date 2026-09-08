@@ -183,8 +183,6 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         if(response.Error != null || response?.Response?.Status != "OK")
         {
-            var error = response.Error?.Message ?? response.Response?.Status;
-
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ConcealJobManager.SubmitBlockAsync");
             messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return false;
