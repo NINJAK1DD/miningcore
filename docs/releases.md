@@ -59,10 +59,14 @@ There is no database, daemon, payout or runtime serialization change.
 The unreleased diagnostic format is **version 2** (superseding PR #159's initial, unreleased
 version 1). Reviewed numeric settings and Boolean switches remain visible. Bounded enum names
 such as `PPLNS` and `Integrated` replace the old serializer's numeric enum values. Reviewed
-strings become `[set]`/null, logging level uses a closed vocabulary, API addresses become
+strings become null/`[blank]`/`[set]`, logging level uses a closed vocabulary, API and Stratum addresses become
 categories, and reviewed string arrays become counts. Actual credentials, paths, addresses,
-extension names/payloads and arbitrary strings never appear. Presence means non-null, including
-empty/whitespace strings; it does not prove a value is usable, a file exists, or credentials work.
+extension names/payloads and arbitrary strings never appear. `[blank]` distinguishes empty or
+whitespace-only input from nonblank `[set]`; markers do not assert runtime effectiveness. For
+example, PostgreSQL ignores blank certificate paths but can consume whitespace passwords. They
+do not prove a value is usable, a file exists, or credentials work. Listener categories likewise
+distinguish absent/blank input without claiming what startup will bind. Closed-output failures
+report `output-unavailable`, not an unreadable configuration file.
 See [safe configuration dumps](configuration.md#safe-configuration-dumps) for the full policy.
 
 ### Historical behavior and exposure boundary

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,7 +28,10 @@ public class ConfigurationDiagnosticTests
         Assert.Empty(result.Logs);
         var expected = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
             "Fixtures", "config-diagnostics-v2.json"));
-        Assert.Equal(expected.Replace("\r\n", "\n").TrimEnd(), result.Output.Replace("\r\n", "\n").TrimEnd());
+        Assert.True(expected.Replace("\r\n", "\n").TrimEnd() == result.Output.Replace("\r\n", "\n").TrimEnd(),
+            "The diagnostic snapshot is stale. From the repository root, rebuild Miningcore, then run " +
+            "pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1. " +
+            "Review the fixture diff before accepting any diagnostic contract change.");
     }
 
     [Theory]
@@ -57,12 +61,27 @@ public class ConfigurationDiagnosticTests
             yield return new object[] { dump, info, first, config };
     }
 
+    // Keep fast information-path coverage when developers filter ExhaustiveCli.
     [Theory]
+    [InlineData("-dc", "-h", true, "invalid")]
+    [InlineData("--dumpconfig", "--help", false, "missing")]
+    [InlineData("-dc", "-?", false, "absent")]
+    [InlineData("--dumpconfig", "-v", true, "invalid")]
+    [InlineData("-dc", "--version", false, "missing")]
+    [InlineData("--dumpconfig", "--version", true, "absent")]
+    [InlineData("-dc", "--help", false, "invalid")]
+    [InlineData("--dumpconfig", "-v", false, "invalid")]
+    public Task PublicDump_RepresentativeInformationOptions(
+        string dump, string info, bool first, string config) =>
+        PublicDump_InformationOptionsWinWithoutReadingConfig(dump, info, first, config);
+
+    [Theory]
+    [Trait("Category", "ExhaustiveCli")]
     [MemberData(nameof(InformationCombinations))]
     public async Task PublicDump_InformationOptionsWinWithoutReadingConfig(
         string dump, string info, bool first, string config)
     {
-        var result = await RunDump(config == "invalid" ? "{\"" + Secret : null, dump,
+        var result = await RunDump(config == "invalid" ? "{\"" + Secret : null,
             arguments: filename => (config == "absent" ? Array.Empty<string>() : new[] { "-c", filename })
                 .Concat(first ? new[] { info, dump } : new[] { dump, info }).ToArray());
         Assert.Equal(0, result.ExitCode);
@@ -80,7 +99,7 @@ public class ConfigurationDiagnosticTests
     [InlineData("--")]
     public async Task PublicDump_ConservativePreScanNeverExecutesOtherCommands(string prefix)
     {
-        var result = await RunDump(null, "-dc", arguments: _ => new[] { prefix, "-dc" });
+        var result = await RunDump(null, arguments: _ => new[] { prefix, "-dc" });
         Assert.NotEqual(0, result.ExitCode);
         Assert.Empty(result.Output);
         Assert.Empty(result.Logs);
@@ -90,7 +109,7 @@ public class ConfigurationDiagnosticTests
     [Fact]
     public async Task PublicDump_PreservesPrecedenceOverSchemaGeneration()
     {
-        var result = await RunDump(Fixture().ToString(), "-dc",
+        var result = await RunDump(Fixture().ToString(),
             arguments: filename => new[] { "-gcs", "generated-schema.json", "-c", filename, "-dc" });
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(result.Error);
@@ -129,10 +148,104 @@ public class ConfigurationDiagnosticTests
         }
     }
 
+    [Fact]
+    public void Projection_EveryPublicPropertyHasExactlyOneExplicitReviewDecision()
+    {
+        var included = ConfigurationDiagnosticProjection.ReviewedMembers
+            .Select(field => (field.Owner, field.Property.Name));
+        var excluded = ConfigurationDiagnosticProjection.ExcludedProperties
+            .Select(field => (field.Owner, field.Property.Name));
+        var decisions = included.Concat(excluded).ToArray();
+        var properties = ConfigurationDiagnosticProjection.ReviewedObjectTypes
+            .SelectMany(owner => owner.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                .Select(property => (Owner: owner, property.Name))).ToArray();
+        var missing = properties.Except(decisions).Select(field => $"{field.Owner.Name}.{field.Name}").ToArray();
+        Assert.True(missing.Length == 0,
+            "Add an explicit diagnostic policy or exclusion for: " + string.Join(", ", missing));
+        Assert.Empty(decisions.Except(properties));
+        Assert.Equal(decisions.Length, decisions.Distinct().Count());
+    }
+
+    [Fact]
+    public void Projection_EmittedKeysIncludingGeneratedSuffixesAreUnique() =>
+        AssertUniqueOutputNames(ConfigurationDiagnosticProjection.ReviewedMembers);
+
+    [Fact]
+    public void Projection_CollisionGuardDetectsGeneratedCountKey()
+    {
+        var owner = typeof(CollisionFixture);
+        Assert.Throws<Xunit.Sdk.EqualException>(() => AssertUniqueOutputNames(new[]
+        {
+            (owner, owner.GetProperty(nameof(CollisionFixture.CoinTemplates)), "count"),
+            (owner, owner.GetProperty(nameof(CollisionFixture.CoinTemplatesCount)), "value"),
+        }));
+    }
+
+    private static void AssertUniqueOutputNames(
+        IEnumerable<(Type Owner, PropertyInfo Property, string Policy)> fields)
+    {
+        var keys = fields.Select(field => (field.Owner,
+            Name: ConfigurationDiagnosticProjection.GetOutputName(field.Property, field.Policy))).ToArray();
+        Assert.Equal(keys.Length, keys.Distinct().Count());
+    }
+
+    private sealed class CollisionFixture
+    {
+        public string[] CoinTemplates { get; set; }
+        public int CoinTemplatesCount { get; set; }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("--help")]
+    [InlineData("--version")]
+    public async Task PublicDump_ClosedOutputIsNotReportedAsUnreadableConfiguration(string information)
+    {
+        var result = await RunDump(Fixture().ToString(), arguments: filename => information == null
+            ? new[] { "-dc", "-c", filename }
+            : new[] { "-dc", information }, closedOutput: true);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Output);
+        Assert.Empty(result.Logs);
+        Assert.Equal(FailureMessage("output-unavailable"), result.Error);
+    }
+
+    [Fact]
+    public void FailureCategory_IoErrorsAreScopedToTheFailingStage()
+    {
+        var error = new IOException(Secret);
+        Assert.Equal("usage", Program.GetConfigDiagnosticFailureCategory(Program.ConfigDiagnosticStage.Arguments, error));
+        Assert.Equal("unreadable", Program.GetConfigDiagnosticFailureCategory(Program.ConfigDiagnosticStage.Read, error));
+        Assert.Equal("internal", Program.GetConfigDiagnosticFailureCategory(Program.ConfigDiagnosticStage.Project, error));
+        Assert.Equal("output-unavailable", Program.GetConfigDiagnosticFailureCategory(Program.ConfigDiagnosticStage.Output, error));
+    }
+
+    [Fact]
+    public void Projection_PropertiesAreSortedAndSourceArrayOrderIsPreserved()
+    {
+        var config = new ClusterConfig { Pools = new[]
+        {
+            new PoolConfig { BlockRefreshInterval = 22, Daemons = new[]
+            {
+                new DaemonEndpointConfig { Port = 9002 }, new DaemonEndpointConfig { Port = 9001 },
+            } },
+            new PoolConfig { BlockRefreshInterval = 11 },
+        } };
+        var output = (JObject) JObject.Parse(Program.SerializeConfigDiagnostics(config))["configuration"];
+        foreach(var section in output.DescendantsAndSelf().OfType<JObject>())
+        {
+            var keys = section.Properties().Select(property => property.Name).ToArray();
+            Assert.Equal(keys.OrderBy(key => key, StringComparer.Ordinal), keys);
+        }
+        Assert.Equal(new[] { 22, 11 }, output["pools"].Select(pool => pool["blockRefreshInterval"].Value<int>()));
+        Assert.Equal(new[] { 9002, 9001 }, output["pools"][0]["daemons"].Select(daemon => daemon["port"].Value<int>()));
+    }
+
     [Theory]
     [InlineData(null, null)]
-    [InlineData("", "[set]")]
-    [InlineData("  ", "[set]")]
+    [InlineData("", "[blank]")]
+    [InlineData("  ", "[blank]")]
+    [InlineData("\r\n\t\u2003", "[blank]")]
     [InlineData(Secret, "[set]")]
     public void Projection_PresenceNeverEmitsValuesOrClaimsUsability(string value, string expected)
     {
@@ -177,17 +290,24 @@ public class ConfigurationDiagnosticTests
     [InlineData("172.15.0.1", "other")]
     [InlineData("172.32.0.1", "other")]
     [InlineData("203.0.113.1", "other")]
-    [InlineData("", "other")]
+    [InlineData("", "blank")]
+    [InlineData(" \t\r\n", "blank")]
+    [InlineData("100.64.0.1", "other")]
+    [InlineData("100.127.255.254", "other")]
     [InlineData(Secret, "other")]
     public void Projection_AddressCategoriesAndArrayCountsNeverEmitContent(string address, string expected)
     {
-        var config = new ClusterConfig { CoinTemplates = new[] { Secret }, Api = new ApiConfig
+        var config = new ClusterConfig { CoinTemplates = new[] { Secret },
+        Pools = new[] { new PoolConfig { Ports = new Dictionary<int, PoolEndpoint>
+            { [3333] = new PoolEndpoint { ListenAddress = address } } } }, Api = new ApiConfig
         {
             ListenAddress = address, AdminIpWhitelist = new[] { Secret, Secret },
             MetricsIpWhitelist = Array.Empty<string>(), RateLimiting = new ApiRateLimitConfig(),
         } };
         var output = JObject.Parse(Program.SerializeConfigDiagnostics(config))["configuration"];
         Assert.Equal(expected, output["api"]["listenAddressCategory"].Value<string>());
+        Assert.Equal(expected, output["pools"][0]["ports"]["3333"]["listenAddressCategory"].Value<string>());
+        Assert.Null(output["pools"][0]["ports"]["3333"]["listenAddress"]);
         Assert.Equal(1, output["coinTemplatesCount"]);
         Assert.Equal(2, output["api"]["adminIpWhitelistCount"]);
         Assert.Equal(0, output["api"]["metricsIpWhitelistCount"]);
@@ -220,7 +340,7 @@ public class ConfigurationDiagnosticTests
         Assert.All(config.DescendantsAndSelf().OfType<JValue>()
                 .Where(value => value.Type == JTokenType.String),
             value => Assert.Contains(value.Value<string>(),
-                new[] { "PPLNS", "PROP", "SOLO", "PPS", "PPBS", "PPLNSBF", "Integrated", "IpTables", "[omitted]", "[set]", "other" }));
+                new[] { "PPLNS", "PROP", "SOLO", "PPS", "PPBS", "PPLNSBF", "Integrated", "IpTables", "[omitted]", "[set]", "[blank]", "other" }));
     }
 
     [Theory]
@@ -398,8 +518,20 @@ public class ConfigurationDiagnosticTests
         return document;
     }
 
+    private static Task<(int ExitCode, string Output, string Error, string Logs)> RunDump(
+        string content, string option, string mode = null) =>
+        RunDump(content, filename =>
+        {
+            var arguments = new List<string> { option };
+            if(mode is not ("missing-option" or "help"))
+                arguments.AddRange(new[] { "-c", filename });
+            if(mode == "unknown-option")
+                arguments.Add("--" + Secret);
+            return arguments.ToArray();
+        }, createConfig: mode != "missing-file");
+
     private static async Task<(int ExitCode, string Output, string Error, string Logs)> RunDump(
-        string content, string option, string mode = null, Func<string, string[]> arguments = null)
+        string content, Func<string, string[]> arguments, bool createConfig = true, bool closedOutput = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), "miningcore-dump-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -407,7 +539,7 @@ public class ConfigurationDiagnosticTests
         var logfile = Path.Combine(directory, "captured.log");
         try
         {
-            if(content != null && mode != "missing-file")
+            if(content != null && createConfig)
                 await File.WriteAllTextAsync(filename, content);
             var start = new ProcessStartInfo("dotnet")
             {
@@ -419,25 +551,12 @@ public class ConfigurationDiagnosticTests
             {
                 "exec", "--runtimeconfig", Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.runtimeconfig.json"),
                 "--depsfile", Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.deps.json"),
-                Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"), "config-dump", logfile,
+                Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"),
+                closedOutput ? "config-dump-closed-output" : "config-dump", logfile,
             })
                 start.ArgumentList.Add(argument);
-            if(arguments != null)
-            {
-                foreach(var argument in arguments(filename))
-                    start.ArgumentList.Add(argument);
-            }
-            else
-            {
-                start.ArgumentList.Add(option);
-                if(mode is not ("missing-option" or "help"))
-                {
-                    start.ArgumentList.Add("-c");
-                    start.ArgumentList.Add(filename);
-                }
-            }
-            if(mode == "unknown-option")
-                start.ArgumentList.Add("--" + Secret);
+            foreach(var argument in arguments(filename))
+                start.ArgumentList.Add(argument);
             start.Environment["MININGCORE_ADMIN_API_TOKEN"] = Secret;
             start.Environment["PGPASSWORD"] = Secret;
             start.Environment["PGSSLKEY"] = Secret;
@@ -472,5 +591,7 @@ public class ConfigurationDiagnosticTests
     }
 
     private static string FailureMessage(string category) =>
-        $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.{Environment.NewLine}";
+        (category == "output-unavailable"
+            ? "Configuration dump failed (output-unavailable). Check the stdout destination or pipeline. Input details are withheld."
+            : $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.") + Environment.NewLine;
 }

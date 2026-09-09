@@ -108,7 +108,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(PostgresConfig.TlsKey), nameof(PostgresConfig.TlsPassword)),
             [typeof(PoolConfig)] = Fields<PoolConfig>(nameof(PoolConfig.Id), nameof(PoolConfig.Coin),
                 nameof(PoolConfig.Address), nameof(PoolConfig.PubKey)),
-            [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(nameof(PoolEndpoint.ListenAddress), nameof(PoolEndpoint.Name),
+            [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(nameof(PoolEndpoint.Name),
                 nameof(PoolEndpoint.TlsPfxFile), nameof(PoolEndpoint.TlsPfxPassword)),
             [typeof(DaemonEndpointConfig)] = Fields<DaemonEndpointConfig>(nameof(DaemonEndpointConfig.Host),
                 nameof(DaemonEndpointConfig.User), nameof(DaemonEndpointConfig.Password),
@@ -133,6 +133,18 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(TcpProxyProtocolConfig)] = Fields<TcpProxyProtocolConfig>(nameof(TcpProxyProtocolConfig.ProxyAddresses)),
         };
 
+    // Deliberate omissions are review decisions too. Tests require new public
+    // properties to acquire an explicit policy; runtime remains fail-closed.
+    private static readonly IReadOnlyDictionary<Type, PropertyInfo[]> ExcludedMembers =
+        new Dictionary<Type, PropertyInfo[]>
+        {
+            [typeof(PoolConfig)] = Fields<PoolConfig>(nameof(PoolConfig.Extra), nameof(PoolConfig.Template)),
+            [typeof(DaemonEndpointConfig)] = Fields<DaemonEndpointConfig>(nameof(DaemonEndpointConfig.Extra)),
+            [typeof(PoolPaymentProcessingConfig)] = Fields<PoolPaymentProcessingConfig>(
+                nameof(PoolPaymentProcessingConfig.Extra), nameof(PoolPaymentProcessingConfig.PayoutSchemeConfig)),
+            [typeof(ApiRateLimitConfig)] = Fields<ApiRateLimitConfig>(nameof(ApiRateLimitConfig.Rules)),
+        };
+
     // Expose immutable descriptors to tests so scalar/type drift cannot silently
     // degrade reviewed diagnostics. No configuration instances are exposed.
     internal static IEnumerable<Type> ReviewedObjectTypes => Members.Keys;
@@ -144,7 +156,21 @@ internal static class ConfigurationDiagnosticProjection
             {
                 (typeof(ClusterLoggingConfig), typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), "category"),
                 (typeof(ApiConfig), typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), "category"),
+                (typeof(PoolEndpoint), typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress)), "category"),
             });
+
+    internal static IEnumerable<(Type Owner, PropertyInfo Property)> ExcludedProperties =>
+        ExcludedMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property)));
+
+    // Use this same mapping for emission and contract tests, including generated
+    // suffixes. Checking CLR names alone misses FooCount/Foo+Count collisions.
+    internal static string GetOutputName(PropertyInfo property, string policy) =>
+        Naming.GetPropertyName(property.Name, false) + (policy switch
+        {
+            "count" => "Count",
+            "category" when property.Name == nameof(ApiConfig.ListenAddress) => "Category",
+            _ => string.Empty,
+        });
 
     internal static string Serialize(ClusterConfig config) => new JObject
     {
@@ -167,31 +193,42 @@ internal static class ConfigurationDiagnosticProjection
         {
             var result = new JObject();
             foreach(var property in properties)
-                result.Add(Naming.GetPropertyName(property.Name, false),
+                result.Add(GetOutputName(property, "value"),
                     Project(property.GetValue(value)));
             if(PresenceMembers.TryGetValue(type, out var presence))
                 foreach(var property in presence)
                 {
                     var field = property.GetValue(value);
-                    result.Add(Naming.GetPropertyName(property.Name, false), field == null ? JValue.CreateNull() :
-                        new JValue(field is string ? "[set]" : Omitted));
+                    result.Add(GetOutputName(property, "presence"), field switch
+                    {
+                        null => JValue.CreateNull(),
+                        string text => new JValue(string.IsNullOrWhiteSpace(text) ? "[blank]" : "[set]"),
+                        _ => new JValue(Omitted),
+                    });
                 }
             if(CountMembers.TryGetValue(type, out var counts))
                 foreach(var property in counts)
                 {
                     var field = property.GetValue(value);
-                    result.Add(Naming.GetPropertyName(property.Name, false) + "Count", field == null ? JValue.CreateNull() :
+                    result.Add(GetOutputName(property, "count"), field == null ? JValue.CreateNull() :
                         field is string[] array ? new JValue(array.Length) : new JValue(Omitted));
                 }
             if(type == typeof(ClusterLoggingConfig))
             {
                 var level = ((ClusterLoggingConfig) value).Level?.ToLowerInvariant();
-                result.Add("level", level == null ? JValue.CreateNull() :
+                result.Add(GetOutputName(typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), "category"), level == null ? JValue.CreateNull() :
                     new JValue(level is "trace" or "debug" or "info" or "warn" or "error" or "fatal" or "off" ? level : Omitted));
             }
             if(type == typeof(ApiConfig))
-                result.Add("listenAddressCategory", ClassifyListenAddress(((ApiConfig) value).ListenAddress));
-            return result;
+                result.Add(GetOutputName(typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), "category"),
+                    ClassifyListenAddress(((ApiConfig) value).ListenAddress));
+            if(type == typeof(PoolEndpoint))
+                result.Add(GetOutputName(typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress)), "category"),
+                    ClassifyListenAddress(((PoolEndpoint) value).ListenAddress));
+            // Group all policies by emitted name for easy human scanning. Ports
+            // remain numerically ordered below; arrays keep source-file order.
+            return new JObject(result.Properties().OrderBy(property => property.Name, StringComparer.Ordinal)
+                .Select(property => new JProperty(property.Name, property.Value)));
         }
 
         // Only the reviewed container types are admitted. Never traverse Extra,
@@ -228,6 +265,8 @@ internal static class ConfigurationDiagnosticProjection
     {
         if(value == null)
             return JValue.CreateNull();
+        if(string.IsNullOrWhiteSpace(value))
+            return new JValue("blank");
         if(value == "*")
             return new JValue("any");
         if(!IPAddress.TryParse(value, out var address))
@@ -239,6 +278,8 @@ internal static class ConfigurationDiagnosticProjection
         if(IPAddress.IsLoopback(address))
             return new JValue("loopback");
         var bytes = address.GetAddressBytes();
+        // RFC6598 shared/CGNAT space is intentionally not labeled private. It
+        // remains 'other', as do public, multicast and unrecognized addresses.
         var privateAddress = bytes.Length == 4
             ? bytes[0] == 10 || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) ||
               (bytes[0] == 192 && bytes[1] == 168) || (bytes[0] == 169 && bytes[1] == 254)

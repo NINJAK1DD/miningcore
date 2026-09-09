@@ -11,7 +11,7 @@ using Miningcore.Mining;
 using Newtonsoft.Json;
 using MiningcoreProgram = Miningcore.Program;
 
-if(args.Length > 1 && string.Equals(args[0], "config-dump", StringComparison.Ordinal))
+if(args.Length > 1 && args[0] is "config-dump" or "config-dump-closed-output")
 {
     var target = new NLog.Targets.FileTarget("captured-dump-logs")
     {
@@ -23,6 +23,8 @@ if(args.Length > 1 && string.Equals(args[0], "config-dump", StringComparison.Ord
     NLog.LogManager.Configuration = logging;
     try
     {
+        if(args[0] == "config-dump-closed-output")
+            Console.SetOut(new ClosedDiagnosticOutput());
         return await MiningcoreProgram.Main(args.Skip(2).ToArray());
     }
     finally
@@ -111,4 +113,11 @@ static async Task<int> RunApiListenerAsync(string[] args)
 
     await host.RunAsync();
     return 0;
+}
+
+sealed class ClosedDiagnosticOutput : TextWriter
+{
+    public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+    public override void Write(char value) => throw new IOException("ISSUE144_SYNTHETIC_SECRET");
+    public override void Write(string value) => throw new IOException("ISSUE144_SYNTHETIC_SECRET");
 }

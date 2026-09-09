@@ -131,40 +131,40 @@ public class Program : ProcessStatusBackgroundService
         // normal startup reporting, which can include input values and paths.
         if(args.Any(LooksLikeDumpConfigOption))
         {
-            var parsingArguments = true;
+            var stage = ConfigDiagnosticStage.Arguments;
             return await RunStartupBoundaryAsync(() =>
             {
                 var app = ParseCommandLine(args, suppressDiagnostics: true);
                 // Parse quietly first; only generated information may escape the
                 // boundary. Never replay parser output containing argument text.
                 app.Out = Console.Out;
-                if(app.OptionHelp.HasValue())
+                if(app.OptionHelp?.HasValue() == true)
                 {
+                    stage = ConfigDiagnosticStage.Output;
                     app.ShowHelp(usePager: false);
                     return Task.CompletedTask;
                 }
                 if(versionOption.HasValue())
                 {
+                    stage = ConfigDiagnosticStage.Output;
                     app.ShowVersion();
                     return Task.CompletedTask;
                 }
                 if(!configFileOption.HasValue())
                     throw new InvalidOperationException();
-                parsingArguments = false;
+                stage = ConfigDiagnosticStage.Read;
                 var config = ReadConfig(configFileOption.Value(), ConfigurationReadOptions.Quiet);
-                Console.WriteLine(SerializeConfigDiagnostics(config));
+                stage = ConfigDiagnosticStage.Project;
+                var diagnostics = SerializeConfigDiagnostics(config);
+                stage = ConfigDiagnosticStage.Output;
+                Console.WriteLine(diagnostics);
                 return Task.CompletedTask;
             }, error =>
             {
-                var category = parsingArguments ? "usage" : error switch
-                {
-                    JSchemaValidationException => "schema-invalid",
-                    JsonReaderException => "invalid-json",
-                    JsonException => "invalid-configuration",
-                    IOException or UnauthorizedAccessException => "unreadable",
-                    _ => "internal",
-                };
-                Console.Error.WriteLine($"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.");
+                var category = GetConfigDiagnosticFailureCategory(stage, error);
+                Console.Error.WriteLine(category == "output-unavailable"
+                    ? "Configuration dump failed (output-unavailable). Check the stdout destination or pipeline. Input details are withheld."
+                    : $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.");
                 return Task.CompletedTask;
             }, () => 0);
         }
@@ -1284,6 +1284,24 @@ public class Program : ProcessStatusBackgroundService
     internal static string SerializeConfigDiagnostics(ClusterConfig config) =>
         ConfigurationDiagnosticProjection.Serialize(config);
 
+    internal enum ConfigDiagnosticStage { Arguments, Read, Project, Output }
+
+    internal static string GetConfigDiagnosticFailureCategory(ConfigDiagnosticStage stage, Exception error) =>
+        stage switch
+        {
+            ConfigDiagnosticStage.Arguments => "usage",
+            ConfigDiagnosticStage.Output when error is IOException or ObjectDisposedException or UnauthorizedAccessException => "output-unavailable",
+            ConfigDiagnosticStage.Read => error switch
+            {
+                JSchemaValidationException => "schema-invalid",
+                JsonReaderException => "invalid-json",
+                JsonException => "invalid-configuration",
+                IOException or UnauthorizedAccessException => "unreadable",
+                _ => "internal",
+            },
+            _ => "internal",
+        };
+
     private static readonly char[] OptionNameValueSeparators = { ' ', ':', '=' };
 
     internal static bool LooksLikeDumpConfigOption(string argument)
@@ -1401,7 +1419,7 @@ public class Program : ProcessStatusBackgroundService
         var app = new CommandLineApplication
         {
             FullName = "Miningcore",
-            OptionNameValueSeparators = OptionNameValueSeparators,
+            OptionNameValueSeparators = OptionNameValueSeparators.ToArray(),
             ShortVersionGetter = GetVersion,
             LongVersionGetter = GetVersion
         };
