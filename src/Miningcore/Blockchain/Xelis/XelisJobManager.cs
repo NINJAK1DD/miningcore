@@ -97,8 +97,10 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 throw new FormatException("Missing miner work");
             var workBytes = Convert.FromHexString(minerWork.StartsWith("0x", StringComparison.Ordinal)
                 ? minerWork[2..] : minerWork);
-            if(workBytes.Length < XelisConstants.BlockTemplateOffsetTimestamp)
-                throw new FormatException("Miner work is shorter than the header-work field");
+            // MinerWork is fixed-width, including the timestamp, nonce, extra nonce
+            // and public key after the initial header-work hash.
+            if(workBytes.Length != XelisConstants.BlockWorkSize)
+                throw new FormatException("Miner work has an invalid length");
             var newHash = workBytes.AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork,
                 XelisConstants.BlockTemplateOffsetTimestamp - XelisConstants.BlockTemplateOffsetBlockHeaderWork).ToHexString();
             var isNew = currentJob == null ||

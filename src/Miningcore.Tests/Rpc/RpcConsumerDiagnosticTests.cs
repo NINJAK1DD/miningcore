@@ -89,14 +89,19 @@ public class RpcConsumerDiagnosticTests
         AssertSafe(logs.Messages);
     }
 
+    public static IEnumerable<object[]> MalformedXelisMinerWork()
+    {
+        foreach(var work in new[] { Malicious, null, "", "0", "00", "0x", "0x00" })
+            yield return new object[] { work };
+
+        // Pin protocol field boundaries independently of the production size constant.
+        foreach(var length in new[] { 31, 32, 39, 40, 79, 80, 111, 113 })
+        foreach(var prefix in new[] { "", "0x" })
+            yield return new object[] { prefix + new string('a', length * 2) };
+    }
+
     [Theory]
-    [InlineData(Malicious)]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("0")]
-    [InlineData("00")]
-    [InlineData("0x")]
-    [InlineData("0x00")]
+    [MemberData(nameof(MalformedXelisMinerWork))]
     public async Task XelisMinerWork_MalformedRemotePayloadIsNeverLoggedOrPublished(string minerWork)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -108,8 +113,9 @@ public class RpcConsumerDiagnosticTests
             await context.Response.WriteAsync(new JObject
             {
                 ["id"] = request["id"],
-                ["result"] = new JObject { ["template"] = "00", ["topoheight"] = 123,
-                    ["difficulty"] = 1, ["miner_work"] = minerWork },
+                // Keep the rest of the template valid so only MinerWork is rejected.
+                ["result"] = new JObject { ["template"] = new string('0', 256), ["topoheight"] = 123,
+                    ["difficulty"] = 1024, ["miner_work"] = minerWork },
                 ["error"] = null,
             }.ToString(Formatting.None));
         });

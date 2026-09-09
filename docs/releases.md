@@ -59,8 +59,10 @@ reason codes and server-assigned connection identity. Audited local startup erro
 and critical recovery/ownership instructions remain actionable without remote text.
 Beam explorer diagnostics omit URLs and socket diagnostics omit request/response
 payloads; CryptoNote transfer logs omit secret keys.
-Xelis template diagnostics omit raw `miner_work`, and malformed non-hex work is rejected
-before job publication; valid work and its optional `0x` prefix remain supported.
+Xelis template diagnostics omit raw `miner_work`. Non-hex work and work that is not
+exactly 112 bytes are rejected before job or chain-height publication, matching the
+[XELIS MinerWork contract](https://docs.xelis.io/developers-api/stratum).
+Valid work and its optional `0x` prefix remain supported.
 Alephium share errors retain their own numeric codes and fixed rejection categories.
 
 Payment alerts withhold free-form error/reconciliation detail and malformed
