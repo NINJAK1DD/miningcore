@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -8,8 +9,9 @@ namespace Miningcore.Configuration;
 
 /// <summary>
 /// A deliberately lossy diagnostic contract, independent of runtime JSON contracts.
-/// Only the exact types and members below may be read. No string-valued configuration,
-/// extension data, arbitrary dictionary, converter, or derived type is traversed.
+/// Only the exact types and members below may be read. Arbitrary strings are never
+/// emitted: explicit presence/category policies are separate from value projection.
+/// No extension data, arbitrary dictionary, converter, or derived type is traversed.
 /// Adding a runtime property does NOT add it to diagnostics: review this allowlist.
 /// </summary>
 internal static class ConfigurationDiagnosticProjection
@@ -94,10 +96,60 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(RewardRecipient)] = Fields<RewardRecipient>(nameof(RewardRecipient.Percentage)),
         };
 
+    private static readonly IReadOnlyDictionary<Type, PropertyInfo[]> PresenceMembers =
+        new Dictionary<Type, PropertyInfo[]>
+        {
+            [typeof(ClusterConfig)] = Fields<ClusterConfig>(nameof(ClusterConfig.ClusterName),
+                nameof(ClusterConfig.ShareRecoveryFile), nameof(ClusterConfig.ShareRecoveryStateDirectory)),
+            [typeof(ClusterLoggingConfig)] = Fields<ClusterLoggingConfig>(nameof(ClusterLoggingConfig.LogFile),
+                nameof(ClusterLoggingConfig.ApiLogFile), nameof(ClusterLoggingConfig.LogBaseDirectory)),
+            [typeof(PostgresConfig)] = Fields<PostgresConfig>(nameof(PostgresConfig.Host), nameof(PostgresConfig.User),
+                nameof(PostgresConfig.Password), nameof(PostgresConfig.Database), nameof(PostgresConfig.TlsCert),
+                nameof(PostgresConfig.TlsKey), nameof(PostgresConfig.TlsPassword)),
+            [typeof(PoolConfig)] = Fields<PoolConfig>(nameof(PoolConfig.Id), nameof(PoolConfig.Coin),
+                nameof(PoolConfig.Address), nameof(PoolConfig.PubKey)),
+            [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(nameof(PoolEndpoint.ListenAddress), nameof(PoolEndpoint.Name),
+                nameof(PoolEndpoint.TlsPfxFile), nameof(PoolEndpoint.TlsPfxPassword)),
+            [typeof(DaemonEndpointConfig)] = Fields<DaemonEndpointConfig>(nameof(DaemonEndpointConfig.Host),
+                nameof(DaemonEndpointConfig.User), nameof(DaemonEndpointConfig.Password),
+                nameof(DaemonEndpointConfig.HttpPath), nameof(DaemonEndpointConfig.Category)),
+            [typeof(ApiTlsConfig)] = Fields<ApiTlsConfig>(nameof(ApiTlsConfig.TlsPfxFile), nameof(ApiTlsConfig.TlsPfxPassword)),
+            [typeof(EmailSenderConfig)] = Fields<EmailSenderConfig>(nameof(EmailSenderConfig.Host), nameof(EmailSenderConfig.User),
+                nameof(EmailSenderConfig.Password), nameof(EmailSenderConfig.FromAddress), nameof(EmailSenderConfig.FromName)),
+            [typeof(PushoverConfig)] = Fields<PushoverConfig>(nameof(PushoverConfig.User), nameof(PushoverConfig.Token)),
+            [typeof(AdminNotifications)] = Fields<AdminNotifications>(nameof(AdminNotifications.EmailAddress)),
+            [typeof(ShareRelayConfig)] = Fields<ShareRelayConfig>(nameof(ShareRelayConfig.PublishUrl), nameof(ShareRelayConfig.SharedEncryptionKey)),
+            [typeof(ShareRelayEndpointConfig)] = Fields<ShareRelayEndpointConfig>(nameof(ShareRelayEndpointConfig.Url), nameof(ShareRelayEndpointConfig.SharedEncryptionKey)),
+            [typeof(RewardRecipient)] = Fields<RewardRecipient>(nameof(RewardRecipient.Address), nameof(RewardRecipient.Type)),
+            [typeof(ClusterPaymentProcessingConfig)] = Fields<ClusterPaymentProcessingConfig>(nameof(ClusterPaymentProcessingConfig.CoinbaseString)),
+        };
+
+    private static readonly IReadOnlyDictionary<Type, PropertyInfo[]> CountMembers =
+        new Dictionary<Type, PropertyInfo[]>
+        {
+            [typeof(ClusterConfig)] = Fields<ClusterConfig>(nameof(ClusterConfig.CoinTemplates)),
+            [typeof(ApiConfig)] = Fields<ApiConfig>(nameof(ApiConfig.AdminIpWhitelist), nameof(ApiConfig.MetricsIpWhitelist)),
+            [typeof(ApiRateLimitConfig)] = Fields<ApiRateLimitConfig>(nameof(ApiRateLimitConfig.IpWhitelist)),
+            [typeof(TcpProxyProtocolConfig)] = Fields<TcpProxyProtocolConfig>(nameof(TcpProxyProtocolConfig.ProxyAddresses)),
+        };
+
+    // Expose immutable descriptors to tests so scalar/type drift cannot silently
+    // degrade reviewed diagnostics. No configuration instances are exposed.
+    internal static IEnumerable<Type> ReviewedObjectTypes => Members.Keys;
+    internal static IEnumerable<(Type Owner, PropertyInfo Property, string Policy)> ReviewedMembers =>
+        Members.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, "value")))
+            .Concat(PresenceMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, "presence"))))
+            .Concat(CountMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, "count"))))
+            .Concat(new[]
+            {
+                (typeof(ClusterLoggingConfig), typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), "category"),
+                (typeof(ApiConfig), typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), "category"),
+            });
+
     internal static string Serialize(ClusterConfig config) => new JObject
     {
-        ["diagnosticFormatVersion"] = 1,
-        ["notice"] = "Lossy diagnostic projection; strings, paths, credentials, extension data and unreviewed fields omitted. Not a reusable configuration.",
+        ["diagnosticFormatVersion"] = 2,
+        ["notice"] = "Lossy diagnostic projection; credential values, paths, extension data and unreviewed fields omitted. Reviewed strings use presence markers or bounded categories. Not a reusable configuration.",
         ["configuration"] = Project(config),
     }.ToString(Formatting.Indented);
 
@@ -117,6 +169,28 @@ internal static class ConfigurationDiagnosticProjection
             foreach(var property in properties)
                 result.Add(Naming.GetPropertyName(property.Name, false),
                     Project(property.GetValue(value)));
+            if(PresenceMembers.TryGetValue(type, out var presence))
+                foreach(var property in presence)
+                {
+                    var field = property.GetValue(value);
+                    result.Add(Naming.GetPropertyName(property.Name, false), field == null ? JValue.CreateNull() :
+                        new JValue(field is string ? "[set]" : Omitted));
+                }
+            if(CountMembers.TryGetValue(type, out var counts))
+                foreach(var property in counts)
+                {
+                    var field = property.GetValue(value);
+                    result.Add(Naming.GetPropertyName(property.Name, false) + "Count", field == null ? JValue.CreateNull() :
+                        field is string[] array ? new JValue(array.Length) : new JValue(Omitted));
+                }
+            if(type == typeof(ClusterLoggingConfig))
+            {
+                var level = ((ClusterLoggingConfig) value).Level?.ToLowerInvariant();
+                result.Add("level", level == null ? JValue.CreateNull() :
+                    new JValue(level is "trace" or "debug" or "info" or "warn" or "error" or "fatal" or "off" ? level : Omitted));
+            }
+            if(type == typeof(ApiConfig))
+                result.Add("listenAddressCategory", ClassifyListenAddress(((ApiConfig) value).ListenAddress));
             return result;
         }
 
@@ -148,5 +222,27 @@ internal static class ConfigurationDiagnosticProjection
             decimal item => new JValue(item),
             _ => new JValue(Omitted),
         };
+    }
+
+    private static JToken ClassifyListenAddress(string value)
+    {
+        if(value == null)
+            return JValue.CreateNull();
+        if(value == "*")
+            return new JValue("any");
+        if(!IPAddress.TryParse(value, out var address))
+            return new JValue("other"); // No DNS, endpoint probing, or arbitrary text.
+        if(address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+        if(address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any))
+            return new JValue("any");
+        if(IPAddress.IsLoopback(address))
+            return new JValue("loopback");
+        var bytes = address.GetAddressBytes();
+        var privateAddress = bytes.Length == 4
+            ? bytes[0] == 10 || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) ||
+              (bytes[0] == 192 && bytes[1] == 168) || (bytes[0] == 169 && bytes[1] == 254)
+            : (bytes[0] & 0xfe) == 0xfc || address.IsIPv6LinkLocal;
+        return new JValue(privateAddress ? "private" : "other");
     }
 }

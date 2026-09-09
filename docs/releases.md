@@ -42,11 +42,55 @@ Use this guide by task:
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
 | Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
 | Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#unreleased-credential-safe-rpc-transport-diagnostics) |
+| Review historical full configuration dumps and the null-output bug | [Credential-safe configuration dumps](#unreleased-credential-safe-configuration-dumps) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
+
+## Unreleased: credential-safe configuration dumps
+
+[PR #159](https://github.com/NINJAK1DD/miningcore/pull/159) restores useful `-dc`/`--dumpconfig`
+output and hardens it with an exact-type/member allowlist. The command reads `-c <configfile>`
+without starting services, resolving environment credentials or loading coin-template files.
+There is no database, daemon, payout or runtime serialization change.
+
+The unreleased diagnostic format is **version 2** (superseding PR #159's initial, unreleased
+version 1). Reviewed numeric settings and Boolean switches remain visible. Bounded enum names
+such as `PPLNS` and `Integrated` replace the old serializer's numeric enum values. Reviewed
+strings become `[set]`/null, logging level uses a closed vocabulary, API addresses become
+categories, and reviewed string arrays become counts. Actual credentials, paths, addresses,
+extension names/payloads and arbitrary strings never appear. Presence means non-null, including
+empty/whitespace strings; it does not prove a value is usable, a file exists, or credentials work.
+See [safe configuration dumps](configuration.md#safe-configuration-dumps) for the full policy.
+
+### Historical behavior and exposure boundary
+
+The boundary is source-based, not an assumed vulnerability affecting every fork release:
+
+- At upstream [e17b7cf3 (2018-10-07)](https://github.com/NINJAK1DD/miningcore/commit/e17b7cf376efc55fde58361aa4d033d3c49bef6e),
+  the CLI read the configuration before serializing it in full. Dumps from this implementation
+  could contain configured credentials.
+- Upstream [350d05fc (2022-01-02)](https://github.com/NINJAK1DD/miningcore/commit/350d05fc973c0a3f8912b3be062d4235821c9384)
+  moved dump dispatch before configuration loading. The ordinary fresh-process CLI then printed
+  `null`, not configuration credentials. The reviewed fork lineage through v0.3.0 inherited this
+  broken ordering. This PR is a functionality fix plus hardening, not evidence that those fork
+  releases leaked configuration-file credentials through ordinary `-dc` invocation.
+- PR #159 loads the file and emits the safe diagnostic envelope. Custom patches, embedded callers
+  and separately invoked full-object serializers must be assessed by their actual behavior; a
+  calendar date or version label alone cannot establish their safety.
+
+Operators who retained **full configuration dumps** from the older upstream implementation or
+custom builds should restrict access to logs, journals and support attachments. If credentials
+were exposed to unauthorized recipients, remove/restrict retained copies where possible and rotate
+the affected credentials through normal operational procedures. A retained literal `null` does
+not justify credential rotation by itself. No live exposure incident is claimed here.
+
+The new output is a lossy summary, not a backup/export or an extension-field spelling checker.
+Tools consuming the previously broken command should explicitly check `diagnosticFormatVersion`.
+No unsafe export option is provided. Topology, presence, counts and feature switches remain
+sensitive operational metadata; normal startup logs and other commands are outside this boundary.
 
 ## Unreleased: credential-safe RPC consumer diagnostics
 
@@ -243,6 +287,11 @@ dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets
 treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
 [configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
 [RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
+That historical scope warning is superseded for the dump command by
+[credential-safe configuration dumps](#unreleased-credential-safe-configuration-dumps) and
+[PR #159](https://github.com/NINJAK1DD/miningcore/pull/159); the section also clarifies which older
+implementations emitted full dumps versus literal `null`. RPC changes are documented separately
+in the unreleased transport/consumer sections above.
 Connection-policy follow-ups are tracked separately in
 [TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
 and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).

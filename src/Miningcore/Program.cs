@@ -129,22 +129,45 @@ public class Program : ProcessStatusBackgroundService
     {
         // Keep the entire diagnostic command (including parse errors) outside
         // normal startup reporting, which can include input values and paths.
-        if(args.Any(arg => arg is "-dc" or "--dumpconfig" ||
-            arg.StartsWith("-dc=", StringComparison.Ordinal) ||
-            arg.StartsWith("--dumpconfig=", StringComparison.Ordinal)))
+        if(args.Any(LooksLikeDumpConfigOption))
+        {
+            var parsingArguments = true;
             return await RunStartupBoundaryAsync(() =>
             {
-                ParseCommandLine(args, suppressDiagnostics: true);
+                var app = ParseCommandLine(args, suppressDiagnostics: true);
+                // Parse quietly first; only generated information may escape the
+                // boundary. Never replay parser output containing argument text.
+                app.Out = Console.Out;
+                if(app.OptionHelp.HasValue())
+                {
+                    app.ShowHelp(usePager: false);
+                    return Task.CompletedTask;
+                }
+                if(versionOption.HasValue())
+                {
+                    app.ShowVersion();
+                    return Task.CompletedTask;
+                }
                 if(!configFileOption.HasValue())
                     throw new InvalidOperationException();
-                DumpParsedConfig(ReadConfig(configFileOption.Value(),
-                    suppressDiagnostics: true));
+                parsingArguments = false;
+                var config = ReadConfig(configFileOption.Value(), ConfigurationReadOptions.Quiet);
+                Console.WriteLine(SerializeConfigDiagnostics(config));
                 return Task.CompletedTask;
-            }, _ =>
+            }, error =>
             {
-                Console.Error.WriteLine("Configuration dump failed. Supply -c <configfile> with a readable, valid configuration. Input details are withheld.");
+                var category = parsingArguments ? "usage" : error switch
+                {
+                    JSchemaValidationException => "schema-invalid",
+                    JsonReaderException => "invalid-json",
+                    JsonException => "invalid-configuration",
+                    IOException or UnauthorizedAccessException => "unreadable",
+                    _ => "internal",
+                };
+                Console.Error.WriteLine($"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.");
                 return Task.CompletedTask;
             }, () => 0);
+        }
 
         IProcessStatus processStatus = null;
 
@@ -1258,13 +1281,21 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    private static void DumpParsedConfig(ClusterConfig config)
-    {
-        Console.WriteLine(SerializeParsedConfig(config));
-    }
-
-    internal static string SerializeParsedConfig(ClusterConfig config) =>
+    internal static string SerializeConfigDiagnostics(ClusterConfig config) =>
         ConfigurationDiagnosticProjection.Serialize(config);
+
+    private static readonly char[] OptionNameValueSeparators = { ' ', ':', '=' };
+
+    internal static bool LooksLikeDumpConfigOption(string argument)
+    {
+        // CommandLineUtils 4.0.2 recognizes space, ':' and '=' within tokens.
+        // Mirror all three, not just '='; malformed NoValue arguments can hold
+        // secrets. This conservative pre-scan also catches '-rs -dc' (a value)
+        // and tokens after '--': false positives fail closed, never run recovery.
+        var separator = argument.IndexOfAny(OptionNameValueSeparators);
+        var option = separator < 0 ? argument : argument[..separator];
+        return option is "-dc" or "--dumpconfig";
+    }
 
     private static void GenerateJsonConfigSchema()
     {
@@ -1370,6 +1401,7 @@ public class Program : ProcessStatusBackgroundService
         var app = new CommandLineApplication
         {
             FullName = "Miningcore",
+            OptionNameValueSeparators = OptionNameValueSeparators,
             ShortVersionGetter = GetVersion,
             LongVersionGetter = GetVersion
         };
@@ -1384,7 +1416,8 @@ public class Program : ProcessStatusBackgroundService
 
         versionOption = app.Option("-v|--version", "Version Information", CommandOptionType.NoValue);
         configFileOption = app.Option("-c|--config <configfile>", "Configuration File", CommandOptionType.SingleValue);
-        app.Option("-dc|--dumpconfig", "Dump a safe, lossy diagnostic projection of -c <configfile>; omit strings, credentials, paths and extension data (not a configuration export)", CommandOptionType.NoValue);
+        // Handled early in Main; registered here for help text and parse acceptance.
+        app.Option("-dc|--dumpconfig", "Dump a safe, lossy diagnostic projection of -c <configfile>; omits credential values, paths and extension data (not a configuration export)", CommandOptionType.NoValue);
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
         verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
             "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
@@ -1396,19 +1429,38 @@ public class Program : ProcessStatusBackgroundService
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 
-        app.Execute(args);
+        if(suppressDiagnostics)
+            app.Parse(args);
+        else
+            app.Execute(args);
 
         return app;
     }
 
-    internal static ClusterConfig ReadConfig(string file,
-        bool skipApiListenerSettings = false, bool suppressDiagnostics = false)
+    [Flags]
+    internal enum ConfigurationReadOptions
     {
+        None = 0,
+        Recovery = 1,
+        Quiet = 2,
+    }
+
+    // Preserve existing recovery callers without adding adjacent Boolean options.
+    internal static ClusterConfig ReadConfig(string file, bool skipApiListenerSettings = false) =>
+        ReadConfig(file, skipApiListenerSettings ? ConfigurationReadOptions.Recovery : ConfigurationReadOptions.None);
+
+    internal static ClusterConfig ReadConfig(string file, ConfigurationReadOptions options)
+    {
+        // Quiet is consumed by the guarded diagnostic command: retain original
+        // exception types for its closed failure categories, never their text.
+        // Ordinary/recovery callers keep the existing startup error contract.
+        var skipApiListenerSettings = options.HasFlag(ConfigurationReadOptions.Recovery);
+        var quiet = options.HasFlag(ConfigurationReadOptions.Quiet);
         try
         {
-            if(!suppressDiagnostics)
+            if(!quiet)
                 Console.WriteLine($"Using configuration file '{file}'");
-            if(skipApiListenerSettings && !suppressDiagnostics)
+            if(skipApiListenerSettings && !quiet)
                 Console.WriteLine(
                     "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");
@@ -1461,22 +1513,22 @@ public class Program : ProcessStatusBackgroundService
             }
         }
 
-        catch(JSchemaValidationException ex)
+        catch(JSchemaValidationException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(JsonSerializationException ex)
+        catch(JsonSerializationException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(JsonException ex)
+        catch(JsonException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(IOException ex)
+        catch(IOException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }

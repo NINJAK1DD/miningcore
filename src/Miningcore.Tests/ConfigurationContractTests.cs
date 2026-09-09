@@ -1385,7 +1385,7 @@ public class ConfigurationContractTests
 
     [Theory]
     [MemberData(nameof(DateLookingConfigurationStrings))]
-    public void NormalStartupAndRuntimeSerialization_PreserveDateLookingStrings(
+    public void NormalStartup_PreservesDateLookingConfigurationStrings(
         string configuredValue)
     {
         var document = ReadExampleConfigDocument();
@@ -1412,15 +1412,6 @@ public class ConfigurationContractTests
                 config.PaymentProcessing.Interval);
             Assert.Equal(paymentDocument["minimumPayment"]?.Value<decimal>(),
                 pool.PaymentProcessing.MinimumPayment);
-
-            var dumped = ParseConfigurationDocument(
-                JsonConvert.SerializeObject(config,
-                    ConfigurationJson.CreateSerializerSettings()));
-            var dumpedValue = dumped.SelectToken(
-                "pools[0].paymentProcessing.walletName");
-
-            Assert.Equal(JTokenType.String, dumpedValue?.Type);
-            Assert.Equal(configuredValue, dumpedValue?.Value<string>());
         }
         finally
         {

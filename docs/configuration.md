@@ -47,10 +47,25 @@ databases or daemons, loading coin-template files, importing shares, or configur
 It uses the normal JSON/schema loading policy, but does not run live deployment validation or
 resolve environment credentials. Consequently success does not prove a deployment is usable.
 
-The JSON envelope contains `diagnosticFormatVersion: 1`, a notice, and `configuration`. Only
-explicitly reviewed numeric/boolean settings, bounded enum names and section structure are
-included. Pool and daemon array positions remain available for correlation; numeric Stratum
-port keys are retained. Null sections stay null. The following audit defines the omission boundary:
+The JSON envelope contains `diagnosticFormatVersion: 2`, a notice, and `configuration`. Explicitly
+reviewed numeric/boolean settings, bounded enum names (for example `PPLNS`, not its numeric value)
+and section structure are included. Pool and daemon array positions remain available for
+correlation; numeric Stratum port keys are retained. Null sections stay null. Reviewed strings
+use presence markers: null remains null; every non-null string, including empty/whitespace, becomes
+`[set]`. This does not indicate validity, file existence, or successful authentication.
+
+Exceptions are explicit bounded metadata, never raw strings:
+
+- `logging.level`: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off` (case-normalized), null,
+  or `[omitted]` for any other value.
+- `api.listenAddressCategory`: null, `any` (wildcard/unspecified address), `loopback`, `private`
+  (RFC1918, IPv4/IPv6 link-local or IPv6 unique-local), or `other` (including invalid values).
+  IPv4-mapped IPv6 is normalized. No DNS or network lookup occurs.
+- `coinTemplatesCount`, `adminIpWhitelistCount`, `metricsIpWhitelistCount`, `ipWhitelistCount`
+  and `proxyAddressesCount`: array length, or null for an absent array. Elements are never read.
+
+The following audit defines which actual values/payloads are omitted; reviewed string fields can
+still have presence markers as described above:
 
 | Surface | Omitted from diagnostic output |
 | --- | --- |
@@ -64,7 +79,7 @@ port keys are retained. Null sections stay null. The following audit defines the
 | Unknown fields | Names and values are not traversed or emitted, including numeric/boolean extension values and names resembling allowed fields |
 | Environment | No environment dump or credential resolution; the admin API token and PostgreSQL environment credentials are not included |
 
-All arbitrary configuration strings are omitted, even apparently harmless names: credentials can
+All arbitrary configuration string values are omitted, even apparently harmless names: credentials can
 be embedded in URLs, paths, identifiers or extension keys. Allowlists are specific to exact CLR
 types and members, not recursive property-name matching. New runtime fields and derived types
 are not automatically admitted. Unreviewed types and invalid enum values are represented by
@@ -72,25 +87,32 @@ are not automatically admitted. Unreviewed types and invalid enum values are rep
 JSON converters, the schema, API serialization and normal startup behavior are unchanged.
 
 Unreadable files, malformed JSON, schema failures and invalid command arguments on the dump path
-produce a nonzero exit code and a fixed diagnostic without input values, exception text or file
-paths. Detailed errors from **normal startup and other commands** are outside this boundary;
+produce a nonzero exit code and a fixed diagnostic with one category: `usage`, `unreadable`,
+`invalid-json`, `schema-invalid`, `invalid-configuration` (including duplicates or binding/syntax
+policy errors), or `internal`. No input values, exception text or file paths are included. Start
+with the named category, inspect the original file privately, and check the schema and reviewed
+coin-family examples for extension spelling. Unknown extension fields are not validated by this
+summary. Normal startup can give detailed errors **but may start services if validation succeeds**;
+use a controlled environment and do not publish its logs unreviewed.
+Detailed errors from **normal startup and other commands** are outside this boundary;
 review those logs before sharing. This command is not a global log-redaction feature. The summary
 still exposes topology, numeric settings and feature switches: share it only with appropriate
 recipients. It cannot prevent a user deliberately encoding a secret in an allowed numeric setting.
 
-Compatibility: the former full-object serializer was unsafe for support exports and could include
-credentials. The CLI also reached that serializer before loading the requested file, potentially
-printing `null`; the new command requires `-c` and actually reads that file. Treat any historical
-full dumps, service journals, tickets and copied support reports as sensitive. If credentials were
-shared with an unauthorized recipient, restrict/remove retained copies where possible and rotate
-the affected credentials under your operational procedures. This is a precaution, not a claim of
-a known production exposure.
+Help (`-h`, `-?`, `--help`) and version (`-v`, `--version`) take precedence over a dump without
+reading its file. Parsing remains guarded: malformed options encountered before help produce safe
+usage failures. A dump retains precedence over schema generation and recovery commands; it never
+executes them. The conservative pre-scan also guards dump-looking tokens supplied as another
+option's value or after `--`. Space, `:` and `=` separators share the parser's explicit policy.
+
+For source/version boundaries, the upstream full-dump behavior, the fork's inherited `null`-output
+bug, and credential-rotation guidance, see the
+[release notes](releases.md#unreleased-credential-safe-configuration-dumps).
 
 Do not round-trip the diagnostic JSON into Miningcore, use it as a backup, or use it to check
 spelling in omitted extension fields. Keep the original configuration under service-account-only
 permissions and use the schema and reviewed examples when editing it. No unsafe export switch is
-provided: preserving the old full dump would undermine the diagnostic boundary. Existing consumers
-must explicitly adopt the versioned summary format.
+provided. Check `diagnosticFormatVersion` before consuming this summary programmatically.
 
 Design references: [OWASP logging data exclusions](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html#data-to-exclude)
 and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help/html/T_Newtonsoft_Json_JsonExtensionDataAttribute.htm).

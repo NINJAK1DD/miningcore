@@ -1,0 +1,334 @@
+{
+  "diagnosticFormatVersion": 2,
+  "notice": "Lossy diagnostic projection; credential values, paths, extension data and unreviewed fields omitted. Reviewed strings use presence markers or bounded categories. Not a reusable configuration.",
+  "configuration": {
+    "instanceId": 1,
+    "logging": {
+      "enableConsoleLog": true,
+      "enableConsoleColors": true,
+      "perPoolLogFile": false,
+      "gpdrCompliant": false,
+      "logFile": "[set]",
+      "apiLogFile": "[set]",
+      "logBaseDirectory": "[set]",
+      "level": "info"
+    },
+    "banning": {
+      "manager": "Integrated",
+      "banOnJunkReceive": true,
+      "banOnInvalidShares": true,
+      "banOnLoginFailure": true
+    },
+    "persistence": {
+      "postgres": {
+        "port": 5432,
+        "tls": false,
+        "tlsNoValidate": false,
+        "commandTimeout": 60,
+        "enableLegacyTimestamps": null,
+        "host": "[set]",
+        "user": "[set]",
+        "password": "[set]",
+        "database": "[set]",
+        "tlsCert": null,
+        "tlsKey": null,
+        "tlsPassword": null
+      }
+    },
+    "paymentProcessing": {
+      "enabled": true,
+      "interval": 600,
+      "shareAccountingPruneBatchSize": 50000,
+      "shareAccountingRetentionDays": 30,
+      "coinbaseString": "[set]"
+    },
+    "notifications": {
+      "enabled": false,
+      "email": {
+        "port": 587,
+        "host": "[set]",
+        "user": "[set]",
+        "password": "[set]",
+        "fromAddress": "[set]",
+        "fromName": "[set]"
+      },
+      "pushover": {
+        "enabled": false,
+        "user": "[set]",
+        "token": "[set]"
+      },
+      "admin": {
+        "enabled": false,
+        "notifyBlockFound": true,
+        "notifyPaymentSuccess": true,
+        "emailAddress": "[set]"
+      }
+    },
+    "api": {
+      "enabled": true,
+      "port": 4000,
+      "adminPort": 4001,
+      "metricsPort": 4002,
+      "tls": null,
+      "rateLimiting": {
+        "disabled": false,
+        "ipWhitelistCount": 1
+      },
+      "legacyNullValueHandling": false,
+      "adminIpWhitelistCount": 1,
+      "metricsIpWhitelistCount": 1,
+      "listenAddressCategory": "loopback"
+    },
+    "statistics": {
+      "updateInterval": 60,
+      "hashrateCalculationWindow": 5,
+      "gcInterval": 24,
+      "cleanupDays": 30
+    },
+    "nicehash": {
+      "enableAutoDiff": true
+    },
+    "memory": null,
+    "shareRelay": null,
+    "shareRelays": null,
+    "equihashMaxThreads": null,
+    "cryptonightMaxThreads": null,
+    "pools": [
+      {
+        "enabled": true,
+        "ports": {
+          "3032": {
+            "difficulty": 1024.0,
+            "tcpProxyProtocol": {
+              "enable": false,
+              "mandatory": false,
+              "proxyAddressesCount": 1
+            },
+            "varDiff": {
+              "minDiff": 512.0,
+              "maxDiff": null,
+              "maxDelta": null,
+              "targetTime": 15.0,
+              "retargetTime": 90.0,
+              "variancePercent": 30.0
+            },
+            "tls": false,
+            "tlsAuto": false,
+            "listenAddress": "[set]",
+            "name": "[set]",
+            "tlsPfxFile": null,
+            "tlsPfxPassword": null
+          },
+          "3033": {
+            "difficulty": 65536.0,
+            "tcpProxyProtocol": null,
+            "varDiff": {
+              "minDiff": 32768.0,
+              "maxDiff": null,
+              "maxDelta": null,
+              "targetTime": 15.0,
+              "retargetTime": 90.0,
+              "variancePercent": 30.0
+            },
+            "tls": false,
+            "tlsAuto": false,
+            "listenAddress": "[set]",
+            "name": "[set]",
+            "tlsPfxFile": null,
+            "tlsPfxPassword": null
+          }
+        },
+        "daemons": [
+          {
+            "port": 9332,
+            "ssl": false,
+            "http2": false,
+            "host": "[set]",
+            "user": "[set]",
+            "password": "[set]",
+            "httpPath": null,
+            "category": null
+          }
+        ],
+        "paymentProcessing": {
+          "enabled": true,
+          "minimumPayment": 0.01,
+          "payoutScheme": "SOLO",
+          "ppsShareRetentionDays": 7
+        },
+        "banning": {
+          "enabled": true,
+          "checkThreshold": 50,
+          "invalidPercent": 50.0,
+          "time": 600,
+          "minerEffortPercent": null,
+          "minerEffortTime": null
+        },
+        "rewardRecipients": [
+          {
+            "percentage": 0.0,
+            "address": "[set]",
+            "type": null
+          }
+        ],
+        "clientConnectionTimeout": 600,
+        "jobRebroadcastTimeout": 10,
+        "blockRefreshInterval": 1000,
+        "enableInternalStratum": true,
+        "enableAsicBoost": null,
+        "vardiffIdleSweepInterval": 30,
+        "id": "[set]",
+        "coin": "[set]",
+        "address": "[set]",
+        "pubKey": null
+      },
+      {
+        "enabled": true,
+        "ports": {
+          "3042": {
+            "difficulty": 1024.0,
+            "tcpProxyProtocol": null,
+            "varDiff": null,
+            "tls": false,
+            "tlsAuto": false,
+            "listenAddress": "[set]",
+            "name": "[set]",
+            "tlsPfxFile": null,
+            "tlsPfxPassword": null
+          }
+        },
+        "daemons": [
+          {
+            "port": 22555,
+            "ssl": false,
+            "http2": false,
+            "host": "[set]",
+            "user": "[set]",
+            "password": "[set]",
+            "httpPath": null,
+            "category": null
+          }
+        ],
+        "paymentProcessing": {
+          "enabled": true,
+          "minimumPayment": 1.0,
+          "payoutScheme": "SOLO",
+          "ppsShareRetentionDays": 7
+        },
+        "banning": {
+          "enabled": true,
+          "checkThreshold": 50,
+          "invalidPercent": 50.0,
+          "time": 600,
+          "minerEffortPercent": null,
+          "minerEffortTime": null
+        },
+        "rewardRecipients": [
+          {
+            "percentage": 0.0,
+            "address": "[set]",
+            "type": null
+          }
+        ],
+        "clientConnectionTimeout": 600,
+        "jobRebroadcastTimeout": 10,
+        "blockRefreshInterval": 1000,
+        "enableInternalStratum": false,
+        "enableAsicBoost": null,
+        "vardiffIdleSweepInterval": null,
+        "id": "[set]",
+        "coin": "[set]",
+        "address": "[set]",
+        "pubKey": null
+      },
+      {
+        "enabled": false,
+        "ports": {
+          "3052": {
+            "difficulty": 8192.0,
+            "tcpProxyProtocol": null,
+            "varDiff": {
+              "minDiff": 4096.0,
+              "maxDiff": null,
+              "maxDelta": null,
+              "targetTime": 15.0,
+              "retargetTime": 90.0,
+              "variancePercent": 30.0
+            },
+            "tls": false,
+            "tlsAuto": false,
+            "listenAddress": "[set]",
+            "name": "[set]",
+            "tlsPfxFile": null,
+            "tlsPfxPassword": null
+          },
+          "3053": {
+            "difficulty": 1048576.0,
+            "tcpProxyProtocol": null,
+            "varDiff": {
+              "minDiff": 524288.0,
+              "maxDiff": null,
+              "maxDelta": null,
+              "targetTime": 15.0,
+              "retargetTime": 90.0,
+              "variancePercent": 30.0
+            },
+            "tls": false,
+            "tlsAuto": false,
+            "listenAddress": "[set]",
+            "name": "[set]",
+            "tlsPfxFile": null,
+            "tlsPfxPassword": null
+          }
+        },
+        "daemons": [
+          {
+            "port": 8332,
+            "ssl": false,
+            "http2": false,
+            "host": "[set]",
+            "user": "[set]",
+            "password": "[set]",
+            "httpPath": null,
+            "category": null
+          }
+        ],
+        "paymentProcessing": {
+          "enabled": false,
+          "minimumPayment": 0.001,
+          "payoutScheme": "SOLO",
+          "ppsShareRetentionDays": 7
+        },
+        "banning": {
+          "enabled": true,
+          "checkThreshold": 50,
+          "invalidPercent": 50.0,
+          "time": 600,
+          "minerEffortPercent": null,
+          "minerEffortTime": null
+        },
+        "rewardRecipients": [
+          {
+            "percentage": 0.0,
+            "address": "[set]",
+            "type": null
+          }
+        ],
+        "clientConnectionTimeout": 600,
+        "jobRebroadcastTimeout": 10,
+        "blockRefreshInterval": 1000,
+        "enableInternalStratum": false,
+        "enableAsicBoost": null,
+        "vardiffIdleSweepInterval": null,
+        "id": "[set]",
+        "coin": "[set]",
+        "address": "[set]",
+        "pubKey": null
+      }
+    ],
+    "clusterName": "[set]",
+    "shareRecoveryFile": "[set]",
+    "shareRecoveryStateDirectory": null,
+    "coinTemplatesCount": null
+  }
+}
