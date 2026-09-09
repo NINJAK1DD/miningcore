@@ -1,7 +1,5 @@
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using Miningcore.Stratum;
-using Miningcore.Blockchain.Alephium;
 using Newtonsoft.Json;
 using ZeroMQ;
 
@@ -30,24 +28,17 @@ internal static class DiagnosticFailure
         IOException => "io",
         NullReferenceException => "null-reference",
         InvalidOperationException => "invalid-operation",
-        StratumException stratum => stratum.Code switch
+        IBoundedShareFailure share => share.DiagnosticKind switch
         {
-            StratumError.JobNotFound => "job-not-found",
-            StratumError.DuplicateShare => "duplicate-share",
-            StratumError.LowDifficultyShare => "low-difficulty-share",
-            StratumError.UnauthorizedWorker => "unauthorized-worker",
-            StratumError.NotSubscribed => "not-subscribed",
-            _ => "share-rejected",
-        },
-        AlephiumStratumException alephium => alephium.Code switch
-        {
-            AlephiumStratumError.JobNotFound => "job-not-found",
-            AlephiumStratumError.InvalidJobChainIndex => "invalid-job-chain-index",
-            AlephiumStratumError.InvalidWorker => "invalid-worker",
-            AlephiumStratumError.InvalidNonce => "invalid-nonce",
-            AlephiumStratumError.DuplicatedShare => "duplicate-share",
-            AlephiumStratumError.LowDifficultyShare => "low-difficulty-share",
-            AlephiumStratumError.InvalidBlockChainIndex => "invalid-block-chain-index",
+            ShareFailureKind.JobNotFound => "job-not-found",
+            ShareFailureKind.DuplicateShare => "duplicate-share",
+            ShareFailureKind.LowDifficultyShare => "low-difficulty-share",
+            ShareFailureKind.UnauthorizedWorker => "unauthorized-worker",
+            ShareFailureKind.NotSubscribed => "not-subscribed",
+            ShareFailureKind.InvalidJobChainIndex => "invalid-job-chain-index",
+            ShareFailureKind.InvalidWorker => "invalid-worker",
+            ShareFailureKind.InvalidNonce => "invalid-nonce",
+            ShareFailureKind.InvalidBlockChainIndex => "invalid-block-chain-index",
             _ => "share-rejected",
         },
         _ => "other",
@@ -60,8 +51,7 @@ internal static class DiagnosticFailure
         ZException zmq => zmq.Error?.Number,
         SocketException socket => socket.NativeErrorCode,
         Grpc.Core.RpcException grpc => (int) grpc.StatusCode,
-        StratumException stratum => (int) stratum.Code,
-        AlephiumStratumException alephium => (int) alephium.Code,
+        IBoundedShareFailure share => share.DiagnosticCode,
         _ => null,
     };
 }

@@ -38,13 +38,15 @@ a conclusive payment failure: check the outcome and retained reconciliation evid
 | Shared consumers | Pool worker and observable callbacks, payout retries/ownership, wallet relocking, recorder fallback, candidate/recovery failure reporting and notification delivery failures. |
 
 The [source catalogue](../src/Miningcore/Rpc/RpcConsumerOperations.cs) defines the
-diagnostic vocabulary, not permitted RPC operations. This is an output-only change:
-original RPC errors, parsing exceptions and reconciliation objects are not rewritten.
+diagnostic vocabulary, not permitted RPC operations. The diagnostic projection does
+not rewrite original RPC errors, parsing exceptions or reconciliation objects.
 Submission classification, wallet decisions, accounting, retries and fail-stop exit
 codes retain their existing behavior. Xelis additionally rejects non-hexadecimal
 `miner_work` before publishing a job: the previous shared hex decoder was permissive.
 Valid hex, including the existing optional `0x` prefix, retains its meaning. The raw
 template never enters the diagnostic, even when it is valid.
+Null, empty and too-short header-work fields are explicitly classified as `format`
+failures, rather than incidental argument exceptions from hex decoding or slicing.
 
 Daemon startup and pool-run failures can also be printed by generic host logging.
 These boundaries expose a safe `PoolStartupException` subtype and retain the original
@@ -67,6 +69,9 @@ difficulty and authorization failures without echoing arbitrary `StratumExceptio
 Alephium's separate Stratum enumeration is mapped independently: its code 22 means
 invalid worker, not the standard Stratum duplicate-share meaning. Unknown codes retain
 their number with the bounded `share-rejected` category.
+Each share exception implements an internal enum-and-code diagnostic contract; the
+shared classifier does not depend on a coin family or accept free-form labels from
+exceptions. Unknown diagnostic enum values also map to `share-rejected`.
 Raw stack traces and runtime type names remain excluded: they can be overridden or
 contain private build paths. Debuggers/private evidence, not a second plaintext log
 target, remain the place to inspect original causes. General service consumers reuse

@@ -22,6 +22,7 @@ using Miningcore.Blockchain.Alephium;
 using Miningcore.Blockchain.Xelis;
 using Miningcore.Blockchain.Ethereum;
 using Miningcore.Configuration;
+using Miningcore.Diagnostics;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications;
@@ -88,8 +89,15 @@ public class RpcConsumerDiagnosticTests
         AssertSafe(logs.Messages);
     }
 
-    [Fact]
-    public async Task XelisMinerWork_MalformedRemotePayloadIsNeverLoggedOrPublished()
+    [Theory]
+    [InlineData(Malicious)]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("0")]
+    [InlineData("00")]
+    [InlineData("0x")]
+    [InlineData("0x00")]
+    public async Task XelisMinerWork_MalformedRemotePayloadIsNeverLoggedOrPublished(string minerWork)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var logs = new RpcDiagnosticTests.CapturedLogs();
@@ -101,7 +109,7 @@ public class RpcConsumerDiagnosticTests
             {
                 ["id"] = request["id"],
                 ["result"] = new JObject { ["template"] = "00", ["topoheight"] = 123,
-                    ["difficulty"] = 1, ["miner_work"] = Malicious },
+                    ["difficulty"] = 1, ["miner_work"] = minerWork },
                 ["error"] = null,
             }.ToString(Formatting.None));
         });
@@ -118,7 +126,25 @@ public class RpcConsumerDiagnosticTests
         Assert.Contains("\"failure\":\"format\"", diagnostic);
         var raw = await rpc.ExecuteAsync<Miningcore.Blockchain.Xelis.DaemonResponses.GetBlockTemplateResponse>(
             logs.Logger, "get_miner_work", deadline.Token);
-        Assert.Equal(Malicious, raw.Response.Template);
+        Assert.Equal(minerWork, raw.Response.Template);
+    }
+
+    [Fact]
+    public void BoundedShareFailure_UnknownKindCannotIntroduceAnArbitraryLabel()
+    {
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        RpcConsumerDiagnostics.Write(logs.Logger, LogLevel.Info, "AlephiumPool.OnSubmitAsync", new UnknownShareFailure());
+        var record = JObject.Parse(Assert.Single(logs.Messages)["RPC consumer diagnostic ".Length..]);
+        Assert.Equal("share-rejected", record["failure"].Value<string>());
+        Assert.Equal(1234, record["failureCode"].Value<int>());
+        AssertSafe(logs.Messages);
+    }
+
+    private sealed class UnknownShareFailure : Exception, IBoundedShareFailure
+    {
+        internal UnknownShareFailure() : base(Malicious) { }
+        public ShareFailureKind DiagnosticKind => (ShareFailureKind) 1234;
+        public int DiagnosticCode => 1234;
     }
 
     [Theory]
@@ -237,6 +263,10 @@ public class RpcConsumerDiagnosticTests
     [InlineData(StratumError.DuplicateShare, "duplicate-share")]
     [InlineData(StratumError.LowDifficultyShare, "low-difficulty-share")]
     [InlineData(StratumError.UnauthorizedWorker, "unauthorized-worker")]
+    [InlineData(StratumError.NotSubscribed, "not-subscribed")]
+    [InlineData(StratumError.Other, "share-rejected")]
+    [InlineData(StratumError.MinusOne, "share-rejected")]
+    [InlineData((StratumError) 1000, "share-rejected")]
     public void ShareRejection_RetainsBoundedReasonNotArbitraryMessage(StratumError code, string reason)
     {
         using var logs = new RpcDiagnosticTests.CapturedLogs();

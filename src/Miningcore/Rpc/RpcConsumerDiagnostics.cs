@@ -38,6 +38,8 @@ internal static class RpcConsumerDiagnostics
 
     // Malformed wallet responses may put arbitrary text in a purported txid.
     // Keep the exact returned value in reconciliation evidence, not in an alert.
+    // Returns a complete display value, including brackets around its fallback.
+    // Unlike BlockHash, this existing payment-alert contract owns its punctuation.
     internal static string TransactionId(string value)
         => IsHexIdentifier(value) ? value : "[unverified transaction identifier withheld]";
 

@@ -93,9 +93,14 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             // HexToByteArray is permissive; reject malformed daemon work before
             // publishing a chain-height notification or constructing a job.
             var minerWork = blockTemplate.Template;
-            var workBytes = Convert.FromHexString(minerWork?.StartsWith("0x", StringComparison.Ordinal) == true
+            if(minerWork == null)
+                throw new FormatException("Missing miner work");
+            var workBytes = Convert.FromHexString(minerWork.StartsWith("0x", StringComparison.Ordinal)
                 ? minerWork[2..] : minerWork);
-            var newHash = workBytes.AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork, XelisConstants.BlockTemplateOffsetTimestamp).ToHexString();
+            if(workBytes.Length < XelisConstants.BlockTemplateOffsetTimestamp)
+                throw new FormatException("Miner work is shorter than the header-work field");
+            var newHash = workBytes.AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork,
+                XelisConstants.BlockTemplateOffsetTimestamp - XelisConstants.BlockTemplateOffsetBlockHeaderWork).ToHexString();
             var isNew = currentJob == null ||
                 (newHash != job?.PrevHash);
 
