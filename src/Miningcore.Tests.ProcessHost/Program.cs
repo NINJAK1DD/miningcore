@@ -11,6 +11,26 @@ using Miningcore.Mining;
 using Newtonsoft.Json;
 using MiningcoreProgram = Miningcore.Program;
 
+if(args.Length > 1 && string.Equals(args[0], "config-dump", StringComparison.Ordinal))
+{
+    var target = new NLog.Targets.FileTarget("captured-dump-logs")
+    {
+        FileName = args[1],
+        Layout = "${level}|${message}|${exception:format=ToString}",
+    };
+    var logging = new NLog.Config.LoggingConfiguration();
+    logging.AddRule(NLog.LogLevel.Trace, NLog.LogLevel.Fatal, target);
+    NLog.LogManager.Configuration = logging;
+    try
+    {
+        return await MiningcoreProgram.Main(args.Skip(2).ToArray());
+    }
+    finally
+    {
+        NLog.LogManager.Shutdown();
+    }
+}
+
 if(args.Length > 0 && string.Equals(args[0], "hold",
        StringComparison.Ordinal))
     return await HoldRecoveryOwnershipAsync(args);

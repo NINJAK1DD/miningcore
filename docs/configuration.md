@@ -31,8 +31,69 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Enable Litecoin–Dogecoin merged mining | [LTC/DOGE merged mining](#ltcdoge-merged-mining) |
 | Protect emergency share persistence | [Share recovery storage](#share-recovery-storage) |
 | Validate an edited file | [Validate changes safely](#validate-changes-safely) |
+| Produce a credential-safe diagnostic summary | [Safe configuration dumps](#safe-configuration-dumps) |
 
 For symptom-first diagnostics, use [Troubleshooting](troubleshooting.md).
+
+## Safe configuration dumps
+
+```console
+dotnet Miningcore.dll -c /etc/miningcore/config.json --dumpconfig
+```
+
+`-dc` is the short alias. The command reads the specified file and emits a **lossy diagnostic
+projection**, not a configuration export. It exits without starting listeners, connecting to
+databases or daemons, loading coin-template files, importing shares, or configuring file logging.
+It uses the normal JSON/schema loading policy, but does not run live deployment validation or
+resolve environment credentials. Consequently success does not prove a deployment is usable.
+
+The JSON envelope contains `diagnosticFormatVersion: 1`, a notice, and `configuration`. Only
+explicitly reviewed numeric/boolean settings, bounded enum names and section structure are
+included. Pool and daemon array positions remain available for correlation; numeric Stratum
+port keys are retained. Null sections stay null. The following audit defines the omission boundary:
+
+| Surface | Omitted from diagnostic output |
+| --- | --- |
+| PostgreSQL | Host, database, user, password, TLS certificate/private-key paths and TLS password |
+| Daemon RPC and auxiliary daemons | Host, user, password, category, HTTP path, API keys and all extension payloads, including nested merged-mining configuration |
+| Pool and payout configuration | IDs, coin names, addresses, public keys, wallet passwords/private keys, all `payoutSchemeConfig` data and all extension payloads |
+| API and Stratum TLS | Certificate paths and passwords; listener addresses and address allowlists are also omitted |
+| SMTP and Pushover | Host, usernames, passwords, token, sender and recipient identities |
+| Share relays and ZeroMQ configuration | URLs, topics, shared encryption keys and nested extension endpoints |
+| Logging, recovery, templates and labels | All filenames, directories, template paths/content, free-form labels and coinbase text |
+| Unknown fields | Names and values are not traversed or emitted, including numeric/boolean extension values and names resembling allowed fields |
+| Environment | No environment dump or credential resolution; the admin API token and PostgreSQL environment credentials are not included |
+
+All arbitrary configuration strings are omitted, even apparently harmless names: credentials can
+be embedded in URLs, paths, identifiers or extension keys. Allowlists are specific to exact CLR
+types and members, not recursive property-name matching. New runtime fields and derived types
+are not automatically admitted. Unreviewed types and invalid enum values are represented by
+`[omitted]` if encountered in a reviewed slot. Runtime configuration objects, extension dictionaries,
+JSON converters, the schema, API serialization and normal startup behavior are unchanged.
+
+Unreadable files, malformed JSON, schema failures and invalid command arguments on the dump path
+produce a nonzero exit code and a fixed diagnostic without input values, exception text or file
+paths. Detailed errors from **normal startup and other commands** are outside this boundary;
+review those logs before sharing. This command is not a global log-redaction feature. The summary
+still exposes topology, numeric settings and feature switches: share it only with appropriate
+recipients. It cannot prevent a user deliberately encoding a secret in an allowed numeric setting.
+
+Compatibility: the former full-object serializer was unsafe for support exports and could include
+credentials. The CLI also reached that serializer before loading the requested file, potentially
+printing `null`; the new command requires `-c` and actually reads that file. Treat any historical
+full dumps, service journals, tickets and copied support reports as sensitive. If credentials were
+shared with an unauthorized recipient, restrict/remove retained copies where possible and rotate
+the affected credentials under your operational procedures. This is a precaution, not a claim of
+a known production exposure.
+
+Do not round-trip the diagnostic JSON into Miningcore, use it as a backup, or use it to check
+spelling in omitted extension fields. Keep the original configuration under service-account-only
+permissions and use the schema and reviewed examples when editing it. No unsafe export switch is
+provided: preserving the old full dump would undermine the diagnostic boundary. Existing consumers
+must explicitly adopt the versioned summary format.
+
+Design references: [OWASP logging data exclusions](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html#data-to-exclude)
+and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help/html/T_Newtonsoft_Json_JsonExtensionDataAttribute.htm).
 
 ## Main sections
 

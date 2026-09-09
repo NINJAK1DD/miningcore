@@ -127,6 +127,25 @@ public class Program : ProcessStatusBackgroundService
 
     public static async Task<int> Main(string[] args)
     {
+        // Keep the entire diagnostic command (including parse errors) outside
+        // normal startup reporting, which can include input values and paths.
+        if(args.Any(arg => arg is "-dc" or "--dumpconfig" ||
+            arg.StartsWith("-dc=", StringComparison.Ordinal) ||
+            arg.StartsWith("--dumpconfig=", StringComparison.Ordinal)))
+            return await RunStartupBoundaryAsync(() =>
+            {
+                ParseCommandLine(args, suppressDiagnostics: true);
+                if(!configFileOption.HasValue())
+                    throw new InvalidOperationException();
+                DumpParsedConfig(ReadConfig(configFileOption.Value(),
+                    suppressDiagnostics: true));
+                return Task.CompletedTask;
+            }, _ =>
+            {
+                Console.Error.WriteLine("Configuration dump failed. Supply -c <configfile> with a readable, valid configuration. Input details are withheld.");
+                return Task.CompletedTask;
+            }, () => 0);
+
         IProcessStatus processStatus = null;
 
         return await RunStartupBoundaryAsync(async () =>
@@ -138,12 +157,6 @@ public class Program : ProcessStatusBackgroundService
             if(versionOption.HasValue())
             {
                 app.ShowVersion();
-                return;
-            }
-
-            if(dumpConfigOption.HasValue())
-            {
-                DumpParsedConfig(clusterConfig);
                 return;
             }
 
@@ -451,7 +464,6 @@ public class Program : ProcessStatusBackgroundService
     private static ILogger logger;
     private static CommandOption versionOption;
     private static CommandOption configFileOption;
-    private static CommandOption dumpConfigOption;
     private static CommandOption shareRecoveryOption;
     private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption acknowledgeShareRecoveryStateOption;
@@ -1248,13 +1260,11 @@ public class Program : ProcessStatusBackgroundService
 
     private static void DumpParsedConfig(ClusterConfig config)
     {
-        Console.WriteLine("\nCurrent configuration as parsed from config file:");
         Console.WriteLine(SerializeParsedConfig(config));
     }
 
     internal static string SerializeParsedConfig(ClusterConfig config) =>
-        JsonConvert.SerializeObject(config,
-            ConfigurationJson.CreateSerializerSettings(Formatting.Indented));
+        ConfigurationDiagnosticProjection.Serialize(config);
 
     private static void GenerateJsonConfigSchema()
     {
@@ -1354,7 +1364,8 @@ public class Program : ProcessStatusBackgroundService
             .ToString());
     }
 
-    private static CommandLineApplication ParseCommandLine(string[] args)
+    private static CommandLineApplication ParseCommandLine(string[] args,
+        bool suppressDiagnostics = false)
     {
         var app = new CommandLineApplication
         {
@@ -1363,9 +1374,17 @@ public class Program : ProcessStatusBackgroundService
             LongVersionGetter = GetVersion
         };
 
+        if(suppressDiagnostics)
+        {
+            // The CLI library may print an invalid argument before throwing.
+            // Do not allow that text to bypass the dump's safe error boundary.
+            app.Out = TextWriter.Null;
+            app.Error = TextWriter.Null;
+        }
+
         versionOption = app.Option("-v|--version", "Version Information", CommandOptionType.NoValue);
         configFileOption = app.Option("-c|--config <configfile>", "Configuration File", CommandOptionType.SingleValue);
-        dumpConfigOption = app.Option("-dc|--dumpconfig", "Dump the configuration (useful for trouble-shooting typos in the config file)",CommandOptionType.NoValue);
+        app.Option("-dc|--dumpconfig", "Dump a safe, lossy diagnostic projection of -c <configfile>; omit strings, credentials, paths and extension data (not a configuration export)", CommandOptionType.NoValue);
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
         verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
             "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
@@ -1383,12 +1402,13 @@ public class Program : ProcessStatusBackgroundService
     }
 
     internal static ClusterConfig ReadConfig(string file,
-        bool skipApiListenerSettings = false)
+        bool skipApiListenerSettings = false, bool suppressDiagnostics = false)
     {
         try
         {
-            Console.WriteLine($"Using configuration file '{file}'");
-            if(skipApiListenerSettings)
+            if(!suppressDiagnostics)
+                Console.WriteLine($"Using configuration file '{file}'");
+            if(skipApiListenerSettings && !suppressDiagnostics)
                 Console.WriteLine(
                     "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");

@@ -24,6 +24,11 @@ authoritative procedures instead of duplicating recovery SQL or release commands
 Use the [release guide](releases.md) for installation, the [configuration guide](configuration.md)
 for settings, and the [database guide](database.md) for backup and schema preparation.
 
+For support diagnostics, use the [safe configuration dump](configuration.md#safe-configuration-dumps).
+It omits credentials and arbitrary strings by default, but is not a reusable configuration or a
+global log scrubber. Treat historical full configuration dumps and ordinary startup logs as sensitive;
+review stored journals and support attachments before sharing them.
+
 ## Normal service checks
 
 For a systemd installation:

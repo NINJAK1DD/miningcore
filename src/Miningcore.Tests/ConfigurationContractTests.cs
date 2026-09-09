@@ -1385,7 +1385,7 @@ public class ConfigurationContractTests
 
     [Theory]
     [MemberData(nameof(DateLookingConfigurationStrings))]
-    public void NormalStartupAndParsedConfigDump_PreserveDateLookingStrings(
+    public void NormalStartupAndRuntimeSerialization_PreserveDateLookingStrings(
         string configuredValue)
     {
         var document = ReadExampleConfigDocument();
@@ -1414,7 +1414,8 @@ public class ConfigurationContractTests
                 pool.PaymentProcessing.MinimumPayment);
 
             var dumped = ParseConfigurationDocument(
-                Program.SerializeParsedConfig(config));
+                JsonConvert.SerializeObject(config,
+                    ConfigurationJson.CreateSerializerSettings()));
             var dumpedValue = dumped.SelectToken(
                 "pools[0].paymentProcessing.walletName");
 
