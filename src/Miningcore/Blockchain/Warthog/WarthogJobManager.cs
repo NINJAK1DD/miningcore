@@ -114,7 +114,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -134,7 +134,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogJobManager.UpdateNetworkStatsAsync", failure: e);
         }
     }
 
@@ -154,8 +154,8 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             var response = await restClient.Post<WarthogSubmitBlockResponse>(WarthogCommands.SubmitBlock, block, ct);
             if(response?.Error != null)
             {
-                logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {response.Error}");
-                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {response.Error}"));
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogJobManager.SubmitBlockAsync");
+                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
                 return false;
             }
 
@@ -164,7 +164,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogJobManager.SubmitBlockAsync", failure: e);
             return false;
         }
     }
@@ -309,7 +309,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             var response = await restClient.Get<WarthogBlockTemplate>(WarthogCommands.GetBlockTemplate.Replace(WarthogCommands.DataLabel, address), ct);
             if(response?.Error != null)
             {
-                logger.Warn(() => $"'{address}': {response.Error} (Code {response?.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogJobManager.ValidateAddressAsync");
                 return false;
             }
 
@@ -345,7 +345,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             var response = await restClient.Get<GetChainInfoResponse>(WarthogCommands.GetChainInfo, ct);
             if(response?.Error != null)
             {
-                logger.Warn(() => $"'{WarthogCommands.GetChainInfo}': {response.Error} (Code {response?.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogJobManager.AreDaemonsHealthyAsync");
                 return false;
             }
 
@@ -395,7 +395,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
                     logger.Debug(() => $"'{WarthogCommands.DaemonName}' daemon did not responded...");
 
                 if(response?.Error != null)
-                    logger.Debug(() => $"'{WarthogCommands.GetChainInfo}': {response.Error} (Code {response?.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "WarthogJobManager.EnsureDaemonsSynchedAsync");
 
                 if(response.Data.Synced)
                 {
@@ -417,14 +417,14 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException("Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException("Pool address is not configured", poolConfig.Id);
 
         // test daemon
         try
         {
             var responseChain = await restClient.Get<GetChainInfoResponse>(WarthogCommands.GetChainInfo, ct);
             if(responseChain?.Code == null)
-                throw new PoolStartupException("Init RPC failed...", poolConfig.Id);
+                throw new TrustedPoolStartupException("Init RPC failed...", poolConfig.Id);
             
             isJanusHash = responseChain.Data.IsJanusHash;
             if(isJanusHash)
@@ -434,7 +434,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         catch(Exception)
         {
             logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetChainInfo}' daemon does not seem to be running...");
-            throw new PoolStartupException("Init RPC failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException("Init RPC failed...", poolConfig.Id);
         }
 
         try
@@ -453,14 +453,14 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         catch(Exception)
         {
             logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetBlockTemplate}' daemon does not seem to be running...");
-            throw new PoolStartupException($"Pool address check failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Pool address check failed...", poolConfig.Id);
         }
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
             // validate pool address privateKey
             if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
-                throw new PoolStartupException("Pool address private key is not configured", poolConfig.Id);
+                throw new TrustedPoolStartupException("Pool address private key is not configured", poolConfig.Id);
 
             try
             {
@@ -475,7 +475,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             catch(Exception)
             {
                 logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetWallet}' daemon does not seem to be running...");
-                throw new PoolStartupException($"Pool address private key check failed...", poolConfig.Id);
+                throw new TrustedPoolStartupException($"Pool address private key check failed...", poolConfig.Id);
             }
         }
 
@@ -485,7 +485,7 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 

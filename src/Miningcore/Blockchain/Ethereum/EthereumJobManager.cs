@@ -86,7 +86,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -136,7 +136,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -154,7 +154,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         if(responses.Any(x => x.Error != null))
         {
-            logger.Warn(() => $"Error(s) refreshing blocktemplate: {responses.First(x => x.Error != null).Error.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EthereumJobManager.GetBlockTemplateAsync", code: responses.First(x => x.Error != null).Error?.Code);
             return null;
         }
 
@@ -259,7 +259,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
                     .ToArray();
 
                 if(errors.Any())
-                    logger.Warn(() => $"Error(s) refreshing network stats: {string.Join(", ", errors.Select(y => y.Error.Message))})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EthereumJobManager.UpdateNetworkStatsAsync", code: errors[0].Error?.Code);
             }
 
             // extract results
@@ -284,7 +284,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.UpdateNetworkStatsAsync", failure: e);
         }
     }
 
@@ -300,10 +300,8 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         if(response.Error != null || (bool?) response.Response == false)
         {
-            var error = response.Error?.Message ?? response?.Response?.ToString();
-
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {error}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {error}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EthereumJobManager.SubmitBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
 
             return false;
         }
@@ -483,7 +481,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
 
         if(response.Error != null)
         {
-            logger.Error(() => $"Daemon reports: {response.Error.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.AreDaemonsHealthyAsync", code: response.Error?.Code);
             return false;
         }
         
@@ -495,12 +493,12 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
         var response = await rpc.ExecuteAsync<string>(logger, EC.GetPeerCount, ct);
         
         if(response.Error != null)
-            logger.Error(() => $"Daemon reports: {response.Error.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.AreDaemonsConnectedAsync", code: response.Error?.Code);
 
         var clientVersion = await rpc.ExecuteAsync<string>(logger, EC.GetClientVersion, ct);
         
         if(clientVersion.Error != null)
-            logger.Error(() => $"Daemon reports: {clientVersion.Error.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.AreDaemonsConnectedAsync", code: clientVersion.Error?.Code);
 
         // update stats
         if(!string.IsNullOrEmpty(clientVersion.Response))
@@ -577,7 +575,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
         Observable.Interval(TimeSpan.FromMinutes(10))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EthereumJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 

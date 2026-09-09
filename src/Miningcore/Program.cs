@@ -31,6 +31,7 @@ using Miningcore.Api.Responses;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Rpc;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Crypto.Hashing.Ethash.Etchash;
@@ -1099,7 +1100,30 @@ public class Program : ProcessStatusBackgroundService
         pools[poolConfig.Id] = pool;
 
         // go
-        await pool.RunAsync(ct);
+        try
+        {
+            await pool.RunAsync(ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(RpcConsumerStartupException)
+        {
+            throw;
+        }
+        catch(TrustedPoolStartupException)
+        {
+            throw;
+        }
+        catch(Exception ex)
+        {
+            // A first-job await/runtime pool failure can originate in a daemon
+            // parser after JobManager.StartAsync returned. Host logging must not
+            // render that remote text either; fail-stop semantics are unchanged.
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "Program.RunPool", failure: ex);
+            throw new RpcConsumerStartupException(poolConfig.Id, ex);
+        }
     }
 
     private Task RecoverSharesAsync(string recoveryFilename)

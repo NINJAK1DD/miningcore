@@ -53,32 +53,8 @@ internal static class RpcDiagnostics
             ["httpResponseChars"] = httpResponseChars,
             ["elapsedMs"] = elapsedMs,
             ["endpointIndex"] = endpointIndex,
-            ["failure"] = failure == null ? null : failure switch
-            {
-                TimeoutException => "timeout",
-                OperationCanceledException { InnerException: TimeoutException } => "timeout",
-                OperationCanceledException => "cancelled",
-                JsonException => "json",
-                HttpRequestException => "http",
-                WebSocketException => "websocket",
-                InvalidDataException => "invalid-data",
-                ZException => "zmq",
-                System.Net.Sockets.SocketException => "socket",
-                ObjectDisposedException => "disposed",
-                ArgumentException => "argument",
-                IOException => "io",
-                // Do not use arbitrary exception type names: custom/dynamic types
-                // need not have safe names. Numeric platform codes supply detail.
-                _ => "other",
-            },
-            ["failureCode"] = failure switch
-            {
-                WebSocketException ws => (int?) ws.WebSocketErrorCode,
-                HttpRequestException request => (int?) request.HttpRequestError,
-                ZException zmq => zmq.Error?.Number,
-                System.Net.Sockets.SocketException socket => socket.NativeErrorCode,
-                _ => null,
-            },
+            ["failure"] = failure == null ? null : Diagnostics.DiagnosticFailure.Category(failure),
+            ["failureCode"] = Diagnostics.DiagnosticFailure.Code(failure),
         };
         logger.Log(level, "RPC diagnostic " + data.ToString(Formatting.None));
     }

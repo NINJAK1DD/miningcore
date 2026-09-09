@@ -12,6 +12,84 @@ namespace Miningcore.Tests.Notifications;
 
 public class PaymentNotificationTests
 {
+    [Theory]
+    [InlineData(PaymentNotificationOutcome.Failure)]
+    [InlineData(PaymentNotificationOutcome.Uncertain)]
+    public void FailureAlerts_ShowTypedCategoryAndCodeWithoutRemoteText(PaymentNotificationOutcome outcome)
+    {
+        const string secret = "synthetic-secret-password";
+        var notification = new PaymentNotification("test", secret, 1, "BTC")
+        {
+            Outcome = outcome,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(new System.Net.Http.HttpRequestException(secret), -13),
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        foreach(var text in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.Contains("Failure category: http", text);
+            Assert.Contains("daemon code: -13", text);
+            Assert.DoesNotContain(secret, text);
+        }
+        Assert.Equal(secret, notification.Error);
+        Assert.DoesNotContain("failureDiagnostic", SerializePayment(notification).ToString(), System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MissingWalletPassword_ProvidesSafeConfigurationAction()
+    {
+        var notification = new PaymentNotification("test", "private daemon text", 1, "BTC")
+        {
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(reason: PaymentFailureReason.WalletPasswordMissing),
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        foreach(var text in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.Contains("walletPassword was not configured", text);
+            Assert.DoesNotContain("private daemon text", text);
+        }
+    }
+
+    [Theory]
+    [InlineData(PaymentNotificationOutcome.Failure)]
+    [InlineData(PaymentNotificationOutcome.Success)] // Legacy Error-only initializer.
+    [InlineData(PaymentNotificationOutcome.Uncertain)]
+    public void FailureAlerts_KeepConclusiveAndUncertainGuidanceDistinct(
+        PaymentNotificationOutcome outcome)
+    {
+        const string error = "synthetic-secret https://user:password@invalid/?key=secret\r\nforged-line";
+        var notification = new PaymentNotification
+        {
+            PoolId = "test", Symbol = "BTC", Amount = 1,
+            Error = error, Outcome = outcome,
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+
+        Assert.False(rendered.IsSuccess);
+        Assert.Equal(error, notification.Error);
+        Assert.Equal(outcome, notification.Outcome);
+        foreach(var message in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.DoesNotContain("synthetic-secret", message);
+            Assert.DoesNotContain("user:password", message);
+            Assert.DoesNotContain("forged-line", message);
+            if(outcome == PaymentNotificationOutcome.Uncertain)
+            {
+                Assert.Contains("uncertain", message);
+                Assert.Contains("reconcile", message, System.StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("error details.", message.Replace("withheld error details.", string.Empty));
+                Assert.DoesNotContain("failed conclusively", message);
+            }
+            else
+            {
+                Assert.Contains("failed conclusively", message);
+                Assert.Contains("correct the cause before retrying", message);
+                Assert.DoesNotContain("uncertain", message);
+                Assert.DoesNotContain("reconcil", message);
+                Assert.DoesNotContain("ownership", message);
+            }
+        }
+    }
+
     [Fact]
     public void WebSocketSerialization_NormalSuccessUsesOutcomeAwareAggregates()
     {
@@ -140,7 +218,7 @@ public class PaymentNotificationTests
     }
 
     [Fact]
-    public void EmailFormatting_EncodesEveryDynamicReconciliationField()
+    public void EmailFormatting_EncodesMetadataAndWithholdsUntrustedReconciliationText()
     {
         var notification = new PaymentNotification("pool<b>fake</b>&value",
             "reason<b>fake</b>&value", 1, "COIN<b>fake</b>&value")
@@ -162,9 +240,9 @@ public class PaymentNotificationTests
         Assert.Contains("pool&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
         Assert.Contains("COIN&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
         Assert.Contains("address&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
-        Assert.Contains("tx&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
-        Assert.Contains("detail&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
-        Assert.Contains("reason&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
+        Assert.Contains("unverified transaction identifier withheld", rendered.EmailMessage);
+        Assert.DoesNotContain("detail&lt;b&gt;", rendered.EmailMessage);
+        Assert.DoesNotContain("reason&lt;b&gt;", rendered.EmailMessage);
         Assert.DoesNotContain("<b>fake</b>", rendered.EmailMessage);
         Assert.Contains("<br/>", rendered.EmailMessage);
     }
@@ -279,8 +357,8 @@ public class PaymentNotificationTests
                     {
                         Address = "kaspa:recipient",
                         Amount = 1m,
-                        TransactionId = "tx-recipient",
-                        TransactionIds = new[] { "tx-split", "tx-recipient" },
+                        TransactionId = new string('b', 64),
+                        TransactionIds = new[] { new string('a', 64), new string('b', 64) },
                     },
                 },
             },
@@ -289,8 +367,8 @@ public class PaymentNotificationTests
         var rendered = NotificationService.FormatPaymentNotification(notification,
             "KAS", "https://explorer.test/{0}");
 
-        Assert.Contains("transactions tx-split, tx-recipient " +
-            "(canonical tx-recipient)", rendered.EmailMessage);
+        Assert.Contains($"transactions {new string('a', 64)}, {new string('b', 64)} " +
+            $"(canonical {new string('b', 64)})", rendered.EmailMessage);
     }
 
     private static PayoutReconciliationEntry Entry(string address, decimal amount,

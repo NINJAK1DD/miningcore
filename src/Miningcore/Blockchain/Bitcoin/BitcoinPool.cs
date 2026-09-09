@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -389,7 +390,7 @@ public class BitcoinPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -441,7 +442,7 @@ public class BitcoinPool : PoolBase
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Unable to convert suggested difficulty {request.Params}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.OnSuggestDifficultyAsync", failure: ex);
         }
     }
 
@@ -665,19 +666,19 @@ public class BitcoinPool : PoolBase
     {
         if(!manager.DirectCoinbasePayoutEnabled)
         {
-            logger.Debug(ex, nameof(OnNewJobAsync));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinPool.HandleJobPipelineFailure", failure: ex);
             return;
         }
 
         if(Interlocked.Exchange(ref directJobPipelineFailed, 1) != 0)
             return;
 
-        logger.Fatal(ex,
-            "Direct SOLO job delivery failed after startup. Invalidating all work and stopping Miningcore to prevent mining against an unverifiable coinbase contract");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "BitcoinPool.HandleJobPipelineFailure", failure: ex);
+        logger.Fatal("Invalidating all work and stopping Miningcore because direct-SOLO job construction failed. Operator investigation and restart are required.");
 
         Guard(() => messageBus.SendMessage(new AdminNotification(
             "Bitcoin direct-SOLO job delivery stopped",
-            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely: {ex.Message}")));
+            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely. Operator investigation and restart are required. {RpcConsumerDiagnostics.WithheldError}")));
 
         void InvalidateWork()
         {
@@ -690,8 +691,7 @@ public class BitcoinPool : PoolBase
                 }
                 catch(Exception invalidateError)
                 {
-                    logger.Error(invalidateError,
-                        "Failed to invalidate a direct SOLO worker during fail-stop");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.HandleJobPipelineFailure", failure: invalidateError);
                 }
             }
         }
@@ -761,7 +761,7 @@ public class BitcoinPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
@@ -847,7 +847,7 @@ public class BitcoinPool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;

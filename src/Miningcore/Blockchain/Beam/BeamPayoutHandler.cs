@@ -99,7 +99,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         
         if(response.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{BeamWalletCommands.GetBalance}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamPayoutHandler.EnsureBalance", code: response.Error?.Code);
             return false;
         }
 
@@ -242,7 +242,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
 
                 if(rpcResult.Error != null)
                 {
-                    logger.Debug(() => $"[{LogCategory}] Daemon reports error '{rpcResult.Error.Message}' (Code {rpcResult.Error.Code}) for block {block.BlockHeight}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamPayoutHandler.ClassifyBlocksAsync", code: rpcResult.Error?.Code);
                     continue;
                 }
 
@@ -337,9 +337,9 @@ public class BeamPayoutHandler : PayoutHandlerBase,
                     WalletSubmissionOutcome.RethrowIfUnknown(ex,
                         BeamWalletCommands.SendTransaction);
 
-                    logger.Error(ex);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamPayoutHandler.PayoutTrackedAsync", failure: ex);
 
-                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, ex);
                 }
             }
         }

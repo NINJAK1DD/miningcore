@@ -91,7 +91,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             }
             else
             {
-                logger.Debug(() => $"Daemon reports error: {response.Error?.Message}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinJobManager.EnsureDaemonsSynchedAsync");
             }
 
             if(!syncPendingNotificationShown)
@@ -187,7 +187,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManager.UpdateJob", code: response.Error?.Code);
                 // A forced refresh can rebroadcast verified old work, but
                 // must never publish null before the first job exists.
                 return (false, forceUpdate && currentJob != null);
@@ -273,7 +273,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManager.UpdateJob", failure: ex);
         }
 
         return (false, forceUpdate && currentJob != null);
@@ -341,10 +341,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                             $"{block.BlockHeight} [{block.Hash}]",
                             poolConfig.Id, ex);
 
-                    logger.Error(ex, () =>
-                        $"Quarantined malformed direct-SOLO replay evidence " +
-                        $"for block {block.BlockHeight} [{block.Hash}] before " +
-                        "opening Stratum");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManager.ReplayPreparedDirectSubmissionsAsync", failure: ex);
                     continue;
                 }
 
@@ -366,9 +363,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                 }
                 catch(Exception ex)
                 {
-                    logger.Warn(ex, () =>
-                        $"Startup replay of direct-SOLO block " +
-                        $"{block.BlockHeight} [{block.Hash}] was inconclusive");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManager.ReplayPreparedDirectSubmissionsAsync", failure: ex);
                     outcome = BitcoinDirectSubmissionOutcome.Ambiguous;
                 }
 
@@ -721,8 +716,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             if((result.Accepted || result.Duplicate) &&
                !exactActiveSubmission)
             {
-                logger.Error(() => $"Daemon returned coinbase transaction " +
-                    $"'{result.CoinbaseTx ?? "<missing>"}' for direct-SOLO block " +
+                logger.Error(() => $"Daemon returned a missing or mismatched coinbase transaction for direct-SOLO block " +
                     $"{share.BlockHeight} [{share.BlockHash}], but Miningcore " +
                     $"serialized '{localCoinbaseTx}'; durable reconciliation queued");
                 SendDirectSubmissionNotification(
@@ -750,9 +744,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         }
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Direct-SOLO submission outcome for block " +
-                $"{share.BlockHeight} [{share.BlockHash}] could not be classified; " +
-                "the pre-submission durable record will be reconciled");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManager.PersistAndSubmitDirectCandidateAsync", failure: ex);
             SendDirectSubmissionNotification(
                 "Direct SOLO block submission outcome is uncertain",
                 $"Pool {share.PoolId} could not classify submission of block " +
@@ -781,10 +773,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         }
         catch(Exception ex)
         {
-            logger.Error(ex, () =>
-                $"Could not persist direct-SOLO submission state for block " +
-                $"{candidate.BlockHeight} [{candidate.BlockHash}]; the durable " +
-                "prepared payload remains replayable");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManager.RecordDirectSubmissionOutcomeSafelyAsync", failure: ex);
         }
     }
 
@@ -797,8 +786,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Failed to publish a direct-SOLO submission-reconciliation notification");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManager.SendDirectSubmissionNotification", failure: ex);
         }
     }
 

@@ -114,7 +114,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashJobManager.UpdateJob", code: response.Error?.Code);
                 return (false, forceUpdate);
             }
 
@@ -172,7 +172,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashJobManager.UpdateJob", failure: ex);
         }
 
         return (false, forceUpdate);
@@ -353,8 +353,8 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
 
         if((!isPBaaSActive && !string.IsNullOrEmpty(submitError)) || (isPBaaSActive && !submitError.Contains("accepted")))
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashJobManager.SubmitVeruscoinBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return new SubmitResult(false, null);
         }
 

@@ -5,6 +5,7 @@ using Autofac;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Util;
 using NLog;
@@ -108,9 +109,28 @@ public abstract class JobManagerBase<TJob>
 
         logger.Info(() => "Starting Job Manager ...");
 
-        await StartDaemonAsync(ct);
-        await EnsureDaemonsSynchedAsync(ct);
-        await PostStartInitAsync(ct);
+        try
+        {
+            await StartDaemonAsync(ct);
+            await EnsureDaemonsSynchedAsync(ct);
+            await PostStartInitAsync(ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(TrustedPoolStartupException)
+        {
+            throw;
+        }
+        catch(Exception ex)
+        {
+            Rpc.RpcConsumerDiagnostics.Write(logger, LogLevel.Error,
+                "JobManagerBase.StartAsync", failure: ex);
+            // Host startup also logs exceptions. Keep the original available to
+            // in-process inspection, but not as InnerException/ToString output.
+            throw new Rpc.RpcConsumerStartupException(poolConfig.Id, ex);
+        }
 
         logger.Info(() => "Job Manager Online");
     }

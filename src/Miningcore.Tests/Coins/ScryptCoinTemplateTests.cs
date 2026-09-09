@@ -606,7 +606,7 @@ public class ScryptCoinTemplateTests : TestBase
             Template = GetTemplate("blockchaincoinx"),
         };
 
-        var ex = Assert.Throws<PoolStartupException>(() =>
+        var ex = Assert.Throws<TrustedPoolStartupException>(() =>
             BitcoinJobManagerBase<BitcoinJob>.ResolvePoolPublicKey(pool,
                 new ValidateAddressResponse()));
 

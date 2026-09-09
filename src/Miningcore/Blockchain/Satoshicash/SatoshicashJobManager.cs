@@ -107,7 +107,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "SatoshicashJobManager.UpdateJob", code: response.Error?.Code);
                 return (false, forceUpdate);
             }
 
@@ -170,7 +170,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "SatoshicashJobManager.UpdateJob", failure: ex);
         }
 
         return (false, forceUpdate);

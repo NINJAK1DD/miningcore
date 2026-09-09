@@ -78,9 +78,9 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
         else
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ZanoWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ZanoPayoutHandler.HandleTransferResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -107,9 +107,9 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
         else
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ZanoWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ZanoPayoutHandler.HandleTransferSplitResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ZanoWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -187,7 +187,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
         if(responseBalance.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ZanoWalletCommands.GetBalance}' returned error: {responseBalance.Error.Message} code {responseBalance.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ZanoPayoutHandler.EnsureBalance", code: responseBalance.Error?.Code);
             return false;
         }
 
@@ -281,7 +281,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
             if(walletSupportsTransferSplit)
             {
-                logger.Error(() => $"[{LogCategory}] Daemon command '{ZanoWalletCommands.Transfer}' returned error: {transferResponse.Error.Message} code {transferResponse.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ZanoPayoutHandler.PayoutBatch", code: transferResponse.Error?.Code);
                 logger.Info(() => $"[{LogCategory}] Retrying transfer using {ZanoWalletCommands.TransferSplit}");
 
                 TrackPayoutSubmission(ct, balances);
@@ -484,7 +484,7 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
                 if(rpcResult.Error != null)
                 {
-                    logger.Debug(() => $"[{LogCategory}] Daemon reports error '{rpcResult.Error.Message}' (Code {rpcResult.Error.Code}) for block {block.BlockHeight}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ZanoPayoutHandler.ClassifyBlocksAsync", code: rpcResult.Error?.Code);
                     continue;
                 }
 

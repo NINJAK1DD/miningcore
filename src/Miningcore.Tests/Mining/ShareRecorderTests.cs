@@ -6418,7 +6418,9 @@ public class ShareRecorderTests
 
         await handler.StopClusterAsync(new[] { CreateDurableCandidate("ltc-parent") },
             new InvalidOperationException("parent failed"), null, true);
-        await handler.StopClusterAsync(new[] { CreateDurableCandidate("doge-aux", "auxpow") },
+        var auxiliaryCandidate = CreateDurableCandidate(new string('b', 64), "auxpow");
+        auxiliaryCandidate.TransactionConfirmationData = "private-submission-evidence";
+        await handler.StopClusterAsync(new[] { auxiliaryCandidate },
             new InvalidOperationException("aux failed"),
             new IOException("journal failed"), false);
 
@@ -6435,7 +6437,9 @@ public class ShareRecorderTests
         await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject == "Escalated block-candidate durability loss" &&
-                notification.Message.Contains("doge-aux") &&
+                notification.Message.Contains("pool=doge-solo") &&
+                notification.Message.Contains(new string('b', 64)) &&
+                !notification.Message.Contains("private-submission-evidence") &&
                 notification.Message.Contains(fatalState.FatalStateFilename)),
             Arg.Any<CancellationToken>());
     }
@@ -6880,7 +6884,7 @@ public class ShareRecorderTests
     }
 
     [Fact]
-    public async Task ShareRecoveryFailureHandler_LogsDatabaseWriteAndRollbackCauses()
+    public async Task ShareRecoveryFailureHandler_ReportsSafeCategoriesAndRetainsOriginalCauses()
     {
         var previousConfiguration = LogManager.Configuration;
         var target = new MemoryTarget
@@ -6916,9 +6920,12 @@ public class ShareRecorderTests
             LogManager.Flush();
             var output = string.Join("\n", target.Logs);
 
-            Assert.Contains("postgres insert failed", output);
-            Assert.Contains("journal write failed", output);
-            Assert.Contains("journal rollback flush failed", output);
+            Assert.Contains("\"failure\":\"io\"", output);
+            Assert.DoesNotContain("postgres insert failed", output);
+            Assert.DoesNotContain("journal write failed", output);
+            Assert.DoesNotContain("journal rollback flush failed", output);
+            fatalState.Received(1).MarkFatalShares(Arg.Any<IReadOnlyCollection<Share>>(),
+                Arg.Is<Exception>(ex => ex.Message == "postgres insert failed"), journalError);
         }
         finally
         {

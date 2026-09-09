@@ -69,7 +69,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ConcealJobManager.UpdateJob", code: response.Error?.Code);
                 return false;
             }
 
@@ -118,7 +118,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.UpdateJob", failure: ex);
         }
 
         return false;
@@ -173,7 +173,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.UpdateNetworkStatsAsync", failure: e);
         }
     }
 
@@ -183,10 +183,8 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         if(response.Error != null || response?.Response?.Status != "OK")
         {
-            var error = response.Error?.Message ?? response.Response?.Status;
-
-            logger.Warn(() => $"Block {share.BlockHeight} [{blobHash[..6]}] submission failed with: {error}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {error}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ConcealJobManager.SubmitBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return false;
         }
 
@@ -238,7 +236,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 networkType = ConcealNetworkType.Test;
                 break;
             default:
-                throw new PoolStartupException($"Unsupport net type '{NetworkTypeOverride}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Unsupported network type; verify daemon network and coin configuration", poolConfig.Id);
         }
         
         // extract standard daemon endpoints
@@ -268,7 +266,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 .ToArray();
 
             if(walletDaemonEndpoints.Length == 0)
-                throw new PoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for conceal-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
+                throw new TrustedPoolStartupException("Wallet-RPC daemon is not configured (Daemon configuration for conceal-pools require an additional entry of category 'wallet' pointing to the wallet daemon)", pc.Id);
         }
 
         ConfigureDaemons();
@@ -402,7 +400,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                 ConcealCommands.GetBlockTemplate, ct, request);
 
             if(response.Error != null)
-                logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealJobManager.AreDaemonsHealthyAsync", code: response.Error?.Code);
 
             if(response.Error is {Code: -9})
                 return false;
@@ -427,7 +425,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             var response2 = await walletRpc.ExecuteAsync<GetBalanceResponse>(logger, ConcealWalletCommands.GetBalance, ct, request2);
             
             if(response2.Error != null)
-                logger.Debug(() => $"walletd daemon response: {response2.Error.Message} (Code {response2.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealJobManager.AreDaemonsHealthyAsync", code: response2.Error?.Code);
 
             return response2.Error == null;
         }
@@ -486,7 +484,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
                     ConcealCommands.GetBlockTemplate, ct, request);
 
                 if(response.Error != null)
-                    logger.Debug(() => $"conceald daemon response: {response.Error.Message} (Code {response.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealJobManager.EnsureDaemonsSynchedAsync", code: response.Error?.Code);
 
                 var info = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
 
@@ -499,7 +497,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
             catch(Exception e)
             {
-                logger.Error(e);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.EnsureDaemonsSynchedAsync", failure: e);
             }
 
             if(!syncPendingNotificationShown)
@@ -524,19 +522,19 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             var infoResponse = await restClient.Get<GetInfoResponse>(ConcealConstants.DaemonRpcGetInfoLocation, ct);
         
             if(infoResponse?.Status != "OK")
-                throw new PoolStartupException($"Init RPC failed...", poolConfig.Id);
+                throw new TrustedPoolStartupException($"Init RPC failed...", poolConfig.Id);
         }
         
         catch(Exception)
         {
             logger.Debug(() => $"conceald daemon does not seem to be running...");
-            throw new PoolStartupException($"Init RPC failed...", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Init RPC failed...", poolConfig.Id);
         }
         
         // address validation
         poolAddressBase58Prefix = CryptonoteBindings.DecodeAddress(poolConfig.Address);
         if(poolAddressBase58Prefix == 0)
-            throw new PoolStartupException("Unable to decode pool-address", poolConfig.Id);
+            throw new TrustedPoolStartupException("Unable to decode pool-address", poolConfig.Id);
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
@@ -545,19 +543,19 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
             // ensure pool owns wallet
             //if(clusterConfig.PaymentProcessing?.Enabled == true && addressResponse.Response?.Address != poolConfig.Address)
             if(clusterConfig.PaymentProcessing?.Enabled == true && Exists(addressResponse.Response?.Address, element => element == poolConfig.Address) == false)
-                throw new PoolStartupException($"Wallet-Daemon does not own pool-address '{poolConfig.Address}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
 
         switch(networkType)
         {
             case ConcealNetworkType.Main:
                 if(poolAddressBase58Prefix != coin.AddressPrefix)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefix}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
             
             case ConcealNetworkType.Test:
                 if(poolAddressBase58Prefix != coin.AddressPrefixTestnet)
-                    throw new PoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
+                    throw new TrustedPoolStartupException($"Invalid pool address prefix. Expected {coin.AddressPrefixTestnet}, got {poolAddressBase58Prefix}", poolConfig.Id);
                 break;
         }
 
@@ -571,7 +569,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 

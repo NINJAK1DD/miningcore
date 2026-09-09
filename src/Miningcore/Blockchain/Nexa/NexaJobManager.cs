@@ -95,7 +95,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
-                logger.Warn(() => $"Unable to update job. GetMiningCandidate failed. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.UpdateJob", code: response.Error?.Code);
                 return (false, forceUpdate);
             }
 
@@ -112,7 +112,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
                 var gbtResponse = await GetBlockTemplateAsync(ct);
                 if(gbtResponse.Error != null)
                 {
-                    logger.Warn(() => $"Unable to update job. GetBlockTemplate failed. Daemon responded with: {gbtResponse.Error.Message} Code {gbtResponse.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.UpdateJob", code: gbtResponse.Error?.Code);
                     return (false, forceUpdate);
                 }
                 blockTemplate = gbtResponse.Response;
@@ -162,7 +162,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NexaJobManager.UpdateJob", failure: ex);
         }
 
         return (false, forceUpdate);
@@ -317,8 +317,8 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
 
         if(!string.IsNullOrEmpty(submitError))
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.SubmitBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return new SubmitResult(false, null, null);
         }
 

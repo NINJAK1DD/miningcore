@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System;
 using static System.Array;
 using System.Globalization;
@@ -240,7 +241,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
                         catch(Exception ex)
                         {
-                            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while streaming socket responses. Reconnecting in 10s");
+                            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.AlephiumSubscribeStratumApiSocketClient", failure: ex);
                         }
                         
                         if(!cts.IsCancellationRequested)
@@ -269,7 +270,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         var extraDaemonEndpoint = daemonEndpoint.Extra.SafeExtensionDataAs<AlephiumDaemonEndpointConfigExtra>();
         
         if(extraDaemonEndpoint?.MinerApiPort == null)
-            throw new PoolStartupException("Alephium Node's Miner API Port `minerApiPort` not provided", poolConfig.Id);
+            throw new TrustedPoolStartupException("Alephium Node's Miner API Port `minerApiPort` not provided", poolConfig.Id);
         
         var blockFound = blockFoundSubject.Synchronize();
         var pollTimerRestart = blockFoundSubject.Synchronize();
@@ -375,7 +376,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
                 catch(Exception ex)
                 {
-                    logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while updating new job");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.UpdateJob", failure: ex);
                 }
 
                 return false;
@@ -399,14 +400,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
         catch(Exception ex)
         {
-            logger.Error(() => $"{ex.GetType().Name} '{ex.Message}' while updating network stats");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.UpdateNetworkStatsAsync", failure: ex);
         }
     }
 
     private async Task ShowDaemonSyncProgressAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-            ex => logger.Debug(ex));
+            ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.ShowDaemonSyncProgressAsync", failure: ex));
 
         if(info?.SelfReady != true || info?.Synced != true)
             logger.Info(() => $"Daemon is downloading headers ...");
@@ -593,7 +594,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
             return false;
 
         var validity = await Guard(() => rpc.GetAddressesAddressGroupAsync(address, ct),
-            ex => logger.Debug(ex));
+            ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.ValidateAddress", failure: ex));
 
         return validity?.Group1 >= 0;
     }
@@ -626,14 +627,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException($"Pool address is not configured", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Pool address is not configured", poolConfig.Id);
 
         // Payment-processing setup
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
         {
             // validate pool wallet name
             if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig.WalletName))
-                throw new PoolStartupException($"Pool payment wallet name is not configured", poolConfig.Id);
+                throw new TrustedPoolStartupException($"Pool payment wallet name is not configured", poolConfig.Id);
             
             // check configured pool wallet name belongs to wallet
             var validityWalletName = await Guard(() => rpc.NameAsync(extraPoolPaymentProcessingConfig.WalletName, ct),
@@ -655,14 +656,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
                 ex=> throw new PoolStartupException($"Error validating pool payment wallet name: {ex}", poolConfig.Id));
             
             if (validityWalletMinerAddresses?.Addresses1.Count < 4)
-                throw new PoolStartupException($"Pool payment wallet name: {extraPoolPaymentProcessingConfig.WalletName} must have 4 miner's addresses", poolConfig.Id);
+                throw new TrustedPoolStartupException("The configured pool payment wallet must have 4 miner addresses", poolConfig.Id);
             
             // check configured address belongs to wallet
             var walletAddresses = await Guard(() => rpc.NameAddressesAddressAsync(extraPoolPaymentProcessingConfig.WalletName, poolConfig.Address, ct),
                 ex=> throw new PoolStartupException($"Pool address: {poolConfig.Address} is not controlled by pool wallet name: {extraPoolPaymentProcessingConfig.WalletName} - Error: {ex}", poolConfig.Id));
 
             if(walletAddresses.Address != poolConfig.Address)
-                throw new PoolStartupException($"Pool address: {poolConfig.Address} is not controlled by pool wallet name: {extraPoolPaymentProcessingConfig.WalletName}", poolConfig.Id);
+                throw new TrustedPoolStartupException("Wallet daemon does not own the configured pool address", poolConfig.Id);
         }
         
         var infosChainParams = await Guard(() => rpc.GetInfosChainParamsAsync(ct),
@@ -681,7 +682,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
                 network = "devnet";
                 break;
             default:
-                throw new PoolStartupException($"Unsupport network type '{infosChainParams?.NetworkId}'", poolConfig.Id);
+                throw new TrustedPoolStartupException("Unsupported network type; verify daemon network and coin configuration", poolConfig.Id);
         }
 
         // update stats
@@ -694,7 +695,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
-                    ex=> logger.Error(ex))))
+                    ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "AlephiumJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 
@@ -727,7 +728,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected override async Task<bool> AreDaemonsHealthyAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsHealthyAsync", failure: ex));
 
         if(info?.SelfReady != true || info?.Synced != true)
             return false;
@@ -738,13 +739,13 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected override async Task<bool> AreDaemonsConnectedAsync(CancellationToken ct)
     {
         var infosChainParams = await Guard(() => rpc.GetInfosChainParamsAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
 
         var info = await Guard(() => rpc.GetInfosInterCliquePeerInfoAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
         
         var nodeInfo = await Guard(() => rpc.GetInfosNodeAsync(ct),
-            ex=> logger.Debug(ex));
+            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
         
         // update stats
         if(!string.IsNullOrEmpty(nodeInfo?.BuildInfo.ReleaseVersion))
@@ -775,7 +776,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         do
         {
             var work = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-                ex=> logger.Debug(ex));
+                ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.EnsureDaemonsSynchedAsync", failure: ex));
 
             var isSynched = (work?.SelfReady == true && work?.Synced == true);
 

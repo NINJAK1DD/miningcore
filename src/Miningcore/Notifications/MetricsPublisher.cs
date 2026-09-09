@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -390,47 +391,47 @@ public class MetricsPublisher : StartupGatedBackgroundService
         {
             var telemetryEvents = messageBus.Listen<TelemetryEvent>()
                 .ObserveOn(TaskPoolScheduler.Default)
-                .Do(x=> Guard(()=> OnTelemetryEvent(x), ex=> logger.Error(ex.Message)))
+                .Do(x=> Guard(()=> OnTelemetryEvent(x), ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnTelemetryEvent", failure: ex)))
                 .Select(_=> Unit.Default);
 
             var hashrateNotifications = messageBus.Listen<HashrateNotification>()
                 .ObserveOn(TaskPoolScheduler.Default)
-                .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> logger.Error(ex.Message)))
+                .Do(x=> Guard(()=> OnHashrateNotification(x), ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnHashrateNotification", failure: ex)))
                 .Select(_=> Unit.Default);
 
             var auxiliaryTemplateRpcTelemetry = messageBus
                 .Listen<AuxiliaryTemplateRpcTelemetryEvent>()
                 .ObserveOn(TaskPoolScheduler.Default)
                 .Do(x => Guard(() => OnAuxiliaryTemplateRpcTelemetry(x),
-                    ex => logger.Error(ex.Message)))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnAuxiliaryTemplateRpcTelemetry", failure: ex)))
                 .Select(_ => Unit.Default);
 
             var auxiliaryTemplateStateTelemetry = messageBus
                 .Listen<AuxiliaryTemplateStateTelemetryEvent>()
                 .ObserveOn(TaskPoolScheduler.Default)
                 .Do(x => Guard(() => OnAuxiliaryTemplateStateTelemetry(x),
-                    ex => logger.Error(ex.Message)))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnAuxiliaryTemplateStateTelemetry", failure: ex)))
                 .Select(_ => Unit.Default);
 
             var shareAccountingTelemetry = messageBus
                 .Listen<ShareAccountingTelemetryEvent>()
                 .ObserveOn(TaskPoolScheduler.Default)
                 .Do(x => Guard(() => OnShareAccountingTelemetry(x),
-                    ex => logger.Error(ex.Message)))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnShareAccountingTelemetry", failure: ex)))
                 .Select(_ => Unit.Default);
 
             var mergedMiningAttributionRejected = messageBus
                 .Listen<MergedMiningAttributionRejectedTelemetryEvent>()
                 .ObserveOn(TaskPoolScheduler.Default)
                 .Do(x => Guard(() => OnMergedMiningAttributionRejected(x),
-                    ex => logger.Error(ex.Message)))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnMergedMiningAttributionRejected", failure: ex)))
                 .Select(_ => Unit.Default);
 
             var unsupportedShareRelayWireFormat = messageBus
                 .Listen<UnsupportedShareRelayWireFormatTelemetryEvent>()
                 .ObserveOn(TaskPoolScheduler.Default)
                 .Do(x => Guard(() => OnUnsupportedShareRelayWireFormat(x),
-                    ex => logger.Error(ex.Message)))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnUnsupportedShareRelayWireFormat", failure: ex)))
                 .Select(_ => Unit.Default);
 
             var processing = Observable.Merge(telemetryEvents, hashrateNotifications,

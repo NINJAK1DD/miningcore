@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Data;
 using System.Data.Common;
 using System.Threading;
@@ -87,8 +88,8 @@ public abstract class PayoutHandlerBase
         catch(Exception ex)
         {
             var message = $"Pool {poolConfig?.Id ?? "unknown"} could not relock its " +
-                $"payout wallet after payment processing: {ex.Message}";
-            logger.Error(ex, () => $"[{LogCategory}] {message}");
+                $"payout wallet after payment processing ({RpcConsumerDiagnostics.Failure(ex)}). Check wallet lock state immediately.";
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.RelockPayoutWalletSafelyAsync", failure: ex);
 
             try
             {
@@ -97,8 +98,7 @@ public abstract class PayoutHandlerBase
             }
             catch(Exception notificationError)
             {
-                logger.Error(notificationError, () =>
-                    $"[{LogCategory}] Unable to publish payout-wallet relock alert");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.RelockPayoutWalletSafelyAsync", failure: notificationError);
             }
         }
     }
@@ -121,7 +121,7 @@ public abstract class PayoutHandlerBase
 
     protected virtual void OnRetry(Exception ex, TimeSpan timeSpan, int retry, object context)
     {
-        logger.Warn(() => $"[{LogCategory}] Retry {1} in {timeSpan} due to: {ex}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "PayoutHandlerBase.OnRetry", failure: ex);
     }
 
     public virtual async Task<decimal> UpdateBlockRewardBalancesAsync(IDbConnection con, IDbTransaction tx, IMiningPool pool, Block block, CancellationToken ct)
@@ -200,8 +200,7 @@ public abstract class PayoutHandlerBase
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
-                $"{JsonConvert.SerializeObject(balances.Where(x => x.Amount > 0).ToDictionary(x => x.Address, x => x.Amount))}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.PersistPaymentsAsync", failure: ex);
             throw new PayoutOutcomeUncertainException(
                 "Wallet submission succeeded but its payment records could not be persisted", ex);
         }
@@ -273,8 +272,7 @@ public abstract class PayoutHandlerBase
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
-                $"{JsonConvert.SerializeObject(balances.Where(x => x.Key.Amount > 0).ToDictionary(x => x.Key.Address, x => x.Key.Amount))}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.PersistPaymentsAsync", failure: ex);
             throw new PayoutOutcomeUncertainException(
                 "One or more wallet submissions succeeded but their payment records could not be persisted", ex);
         }
@@ -438,13 +436,13 @@ public abstract class PayoutHandlerBase
 
     private void FlushPayoutNotifications(PayoutReconciliationTracker tracker)
     {
-        tracker.FlushNotifications(ex => logger.Error(ex, () =>
-            $"[{LogCategory}] Unable to emit conclusive payout notification"));
+        tracker.FlushNotifications(ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.FlushPayoutNotifications", failure: ex));
     }
 
     protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances,
         string error, Exception ex, decimal? submittedAmount = null,
-        decimal? precisionAdjustment = null)
+        decimal? precisionAdjustment = null, int? daemonCode = null,
+        PaymentFailureReason reason = PaymentFailureReason.Unknown)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -455,6 +453,7 @@ public abstract class PayoutHandlerBase
         {
             SubmittedAmount = submittedAmount,
             PrecisionAdjustment = precisionAdjustment,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(ex, daemonCode, reason),
         });
     }
 

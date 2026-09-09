@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Data;
@@ -599,7 +600,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             if(!hasLoggedPolicyFallbackFailure)
             {
-                logger.Fatal(ex, "Fatal error during candidate recovery fallback. Block candidate will be lost!");
+                logger.Fatal("Fatal error during candidate recovery fallback. Block candidate durability is at risk; preserve evidence and investigate before restarting.");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.PersistBlockCandidateDurablyAsync", failure: ex);
                 hasLoggedPolicyFallbackFailure = true;
             }
         }
@@ -665,7 +667,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(Exception ex)
         {
-            logger.Warn(ex, () => "Late PostgreSQL candidate attempt failed after recovery-journal fallback");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ShareRecorder.ObserveLateCandidateDatabaseAttemptAsync", failure: ex);
         }
     }
 
@@ -825,7 +827,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             catch(Exception ex)
             {
-                logger.Error(ex, () => $"Unable to emit block-found notification for pool {poolId}, block {block.BlockHeight} [{block.Hash}] after persistence committed");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecorder.NotifyPersistedBlocks", failure: ex);
             }
         }
     }
@@ -837,13 +839,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
     private static void OnPolicyRetry(Exception ex, TimeSpan timeSpan, int retry, object context)
     {
-        logger.Warn(() => $"Retry {retry} in {timeSpan} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ShareRecorder.OnPolicyRetry", failure: ex);
     }
 
     private Task OnPolicyFallbackAsync(Exception ex, Context context)
     {
         context[PolicyContextKeyDatabaseError] = ex;
-        logger.Warn(() => $"Fallback due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ShareRecorder.OnPolicyFallbackAsync", failure: ex);
         return Task.CompletedTask;
     }
 
@@ -2413,8 +2415,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Unable to emit share-recorder fallback notification after the recovery journal was durably flushed");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecorder.NotifyAdminOnPolicyFallbackSafely", failure: ex);
         }
     }
 
@@ -2553,8 +2554,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // Releasing ownership here would permit a replacement process to race it, so
                 // retain the native lock explicitly until this failed process exits.
                 retainOwnershipUntilProcessExit = true;
-                logger.Fatal(ex,
-                    "Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit");
+                logger.Fatal("Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit.");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.StopCoreAsync", failure: ex);
                 throw new TimeoutException(
                     "Deferred share-recovery evidence exceeded the shared shutdown deadline", ex);
             }
@@ -2562,7 +2563,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             {
                 // A faulted task is complete and no longer mutating the directory. Log the evidence
                 // failure, release the recorder-owned lease in finally, and preserve the stop failure.
-                logger.Fatal(ex, "Deferred share-recovery evidence failed during shutdown");
+                logger.Fatal("Deferred share-recovery evidence failed during shutdown; preserve the recovery directory for operator investigation.");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.StopCoreAsync", failure: ex);
                 throw;
             }
         }
@@ -2635,7 +2637,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(Exception ex)
         {
-            logger.Fatal(ex, "Share persistence queues terminated due to error");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.ObservePersistenceQueuesAsync", failure: ex);
+            logger.Fatal("Share persistence queues terminated due to error; mining is stopping. Preserve PostgreSQL and recovery evidence.");
             throw;
         }
     }

@@ -270,7 +270,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 var errors = results.Where(x => x.Error != null).ToArray();
 
                 if(errors.Any())
-                    logger.Warn(() => $"Error(s) refreshing network stats: {string.Join(", ", errors.Select(y => y.Error.Message))}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsAsync", code: errors[0].Error?.Code, failedCount: errors.Length);
             }
 
             var miningInfoResponse = results[0].Response.ToObject<MiningInfo>();
@@ -286,7 +286,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.UpdateNetworkStatsAsync", failure: e);
         }
     }
 
@@ -334,9 +334,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(!string.IsNullOrEmpty(submitError) && !duplicateSubmission && !inconclusiveSubmission)
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.SubmitBlockAsync", code: submitResult.Error?.Code);
             if(!outcome.Ambiguous || notifyAmbiguous)
-                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
                 outcome.Ambiguous, outcome.Duplicate);
         }
@@ -518,7 +518,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 var errors = results.Where(x => x.Error != null).ToArray();
 
                 if(errors.Any())
-                    logger.Warn(() => $"Error(s) refreshing network stats: {string.Join(", ", errors.Select(y => y.Error.Message))}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsLegacyAsync", code: errors[0].Error?.Code, failedCount: errors.Length);
             }
 
             var connectionCountResponse = results[0].Response.ToObject<object>();
@@ -529,7 +529,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.UpdateNetworkStatsLegacyAsync", failure: e);
         }
     }
 
@@ -553,9 +553,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(response.Error != null || response.Response == null)
         {
-            logger.Error(() => response.Error != null
-                ? $"Daemon reports: {response.Error.Message}"
-                : "Daemon returned no blockchain information");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.AreDaemonsHealthyAsync", code: response.Error?.Code);
             return false;
         }
 
@@ -691,7 +689,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         // ensure pool owns wallet
         if(validateAddressResponse is not {IsValid: true})
-            throw new PoolStartupException($"Daemon reports pool-address '{poolConfig.Address}' as invalid", poolConfig.Id);
+            throw new TrustedPoolStartupException("Daemon reports the configured pool address as invalid", poolConfig.Id);
 
         isPoS = ResolveProofOfStakeMode(poolConfig.Template, difficultyResponse);
         
@@ -731,7 +729,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         else if(submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_MISC_ERROR || submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMS)
             hasSubmitBlockMethod = true;
         else
-            throw new PoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
 
         if(!hasLegacyDaemon)
             await UpdateNetworkStatsAsync(ct);
@@ -742,7 +740,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         Observable.Interval(TimeSpan.FromMinutes(10))
             .Select(_ => Observable.FromAsync(() =>
                 Guard(()=> !hasLegacyDaemon ? UpdateNetworkStatsAsync(ct) : UpdateNetworkStatsLegacyAsync(ct),
-                    ex => logger.Error(ex))))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 
@@ -856,7 +854,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(string.IsNullOrWhiteSpace(encoded))
         {
-            throw new PoolStartupException(
+            throw new TrustedPoolStartupException(
                 $"Pool '{poolConfig.Id}' requires 'pubKey' because its raw public key " +
                 "was not returned by validateaddress",
                 poolConfig.Id);
@@ -868,7 +866,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
         catch(Exception ex)
         {
-            throw new PoolStartupException(
+            throw new TrustedPoolStartupException(
                 $"Pool '{poolConfig.Id}' has an invalid 'pubKey' value",
                 poolConfig.Id, ex);
         }

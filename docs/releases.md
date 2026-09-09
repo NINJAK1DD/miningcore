@@ -48,6 +48,37 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: credential-safe RPC consumer diagnostics
+
+Audited job managers, payout handlers and shared recovery/notification consumers
+no longer render daemon error messages or parsing exceptions directly. Bounded
+`RPC consumer diagnostic` records identify operations, failure categories and
+numeric daemon codes where available. Update monitoring filters for this prefix.
+Shared payout errors retain pool identity, and share rejections retain bounded
+reason codes and server-assigned connection identity. Audited local startup errors
+and critical recovery/ownership instructions remain actionable without remote text.
+Beam explorer diagnostics omit URLs and socket diagnostics omit request/response
+payloads; CryptoNote transfer logs omit secret keys.
+Xelis template diagnostics omit raw `miner_work`. Non-hex work and work that is not
+exactly 112 bytes are rejected before job or chain-height publication, matching the
+[XELIS MinerWork contract](https://docs.xelis.io/developers-api/stratum).
+Valid work and its optional `0x` prefix remain supported.
+Alephium share errors retain their own numeric codes and fixed rejection categories.
+
+Payment alerts withhold free-form error/reconciliation detail and malformed
+transaction identifiers while preserving outcomes, amounts and reconciliation
+groups. Original RPC results and private evidence remain unchanged. Alerts
+distinguish conclusive failures from uncertain outcomes: only uncertain
+payments require reconciliation before retrying or releasing ownership. Safe typed
+failure metadata can identify a missing wallet-unlock configuration without echoing
+the original error. Host-facing daemon startup and pool-run failures also use safe
+diagnostics. No database
+migration, wallet decision, TLS policy or timeout change is introduced.
+
+See the [consumer audit and operator guide](rpc-consumer-diagnostics.md) for
+covered families, historical exposure guidance and explicit scope limits. This
+complements transport hardening; it is not a global log/configuration redactor.
+
 ## Unreleased: credential-safe RPC transport diagnostics
 
 **Monitoring change:** Prometheus/Grafana dashboards using joined RPC batch-method labels
@@ -109,8 +140,9 @@ remove copies already collected.
 
 This is an **RpcClient-owned diagnostic boundary**, not a global log sanitizer. Returned
 daemon error messages, error data and exception causes stay available to callers for
-compatibility. Coin-specific caller logs and subscriber parsing errors are tracked in
-[#154](https://github.com/NINJAK1DD/miningcore/issues/154); treat those as potentially sensitive.
+compatibility. Coin-specific caller logs and parsing errors are covered by the
+[separate consumer boundary](rpc-consumer-diagnostics.md); original error objects
+and private reconciliation evidence remain sensitive.
 Configuration dumps remain covered by
 [#144](https://github.com/NINJAK1DD/miningcore/issues/144). TLS certificate validation is not
 established by safe logging. The design follows the
