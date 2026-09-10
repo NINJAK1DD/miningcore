@@ -154,6 +154,7 @@ internal static class ConfigurationDiagnosticProjection
         };
 
     // Resolve reflected members and derived names once, not once per port/dump.
+    // Must follow Naming and CategorySuffixes: static initializers run in textual order.
     private static readonly string LoggingLevelOutputName =
         GetOutputName(typeof(ClusterLoggingConfig), LoggingLevelProperty, DiagnosticPolicy.Category);
     private static readonly string ApiListenAddressOutputName =

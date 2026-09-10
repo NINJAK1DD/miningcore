@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
@@ -32,13 +33,16 @@ try {
     # stdout bytes so invalid UTF-8 is rejected rather than silently replaced.
     $stdout = $process.StandardOutput.BaseStream.CopyToAsync($output)
     $stderr = $process.StandardError.BaseStream.CopyToAsync([System.IO.Stream]::Null)
-    if(-not $process.WaitForExit(60000)) {
+    $timedOut = -not $process.WaitForExit(60000)
+    if($timedOut) {
         $process.Kill($true)
         $process.WaitForExit()
-        throw 'Diagnostics timed out.'
     }
-    $null = $stdout.GetAwaiter().GetResult()
-    $null = $stderr.GetAwaiter().GetResult()
+    # Observe both drain tasks, including after timeout, before finally disposes
+    # the destination stream. WhenAll waits for both even if either task faults.
+    $null = [System.Threading.Tasks.Task]::WhenAll([System.Threading.Tasks.Task[]]@(
+        $stdout, $stderr)).GetAwaiter().GetResult()
+    if($timedOut) { throw 'Diagnostics timed out.' }
     if($process.ExitCode -ne 0) { throw 'Diagnostics failed.' }
     $json = [System.Text.UTF8Encoding]::new($false, $true).GetString($output.ToArray())
 }

@@ -141,7 +141,7 @@ the reviewed snapshot from the repository root. On Linux (Bash, Python 3 and .NE
 bash scripts/release/update-config-diagnostics-snapshot.sh
 ```
 
-On Windows or another host with PowerShell:
+On Windows or another host with PowerShell 7 (Windows PowerShell 5.1 is not supported):
 
 ```powershell
 pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1
@@ -155,8 +155,13 @@ new output fields. The snapshot is a review gate, not automatic approval of a wi
 The shared isolated failure-preservation suite exercises both helpers in CI and can be run on
 Linux with `python3 scripts/release/test-config-diagnostics-snapshot.py` (requires Bash, Python 3
 and PowerShell 7; missing interpreters fail the suite). It does not use a real configuration.
+CI also runs the same PowerShell contract on Windows. To run it locally on Windows, use
+`python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests`
+with Python 3, PowerShell 7 and the .NET 10 SDK installed. The Windows fixture builds a small
+test-only executable to simulate `dotnet`; it does not execute Miningcore or use live configuration.
 Both helpers strip a leading UTF-8 BOM, reject invalid UTF-8, and suppress child-process stderr
-on success as well as failure.
+on success as well as failure. Failure wording may differ by platform; the shared contract is
+nonzero exit, preservation of the old fixture, and no replay of child stderr.
 
 CI retains the exhaustive 60-case subprocess information-option matrix. For a faster local pass,
 exclude its `ExhaustiveCli` trait; eight representative combinations remain in the ordinary suite:

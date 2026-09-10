@@ -353,6 +353,10 @@ jobs:
       with:
         dotnet-version: 10.0.x
 
+    - name: Test PowerShell configuration diagnostic snapshot helper on Windows
+      shell: pwsh
+      run: python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests -v
+
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
       with:

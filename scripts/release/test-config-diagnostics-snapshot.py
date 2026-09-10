@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise both snapshot helpers' guards in isolated synthetic Linux repos.
+"""Exercise snapshot helpers' guards in isolated synthetic repositories.
 
-Requires Bash, Python 3 and PowerShell 7; a missing interpreter fails, never skips.
+Linux: run both helpers with Bash, Python 3 and PowerShell 7.
+Windows: select PowerShellSnapshotHelperTests; also requires the .NET 10 SDK.
+A missing interpreter fails, never skips.
 """
 
 import json
@@ -17,6 +19,25 @@ SENTINEL = b"reviewed fixture must survive failure\n"
 
 
 class SnapshotHelperContract:
+    @classmethod
+    def setUpClass(cls):
+        if os.name == "nt":
+            # Build a real apphost once; .cmd/shebang shims do not exercise the
+            # helper's shell-free Windows ProcessStartInfo execution path.
+            directory = tempfile.TemporaryDirectory(prefix="miningcore fake dotnet build ")
+            cls.addClassCleanup(directory.cleanup)
+            cls.windows_shim = Path(directory.name) / "bin"
+            project = Path(__file__).parent / "fixtures/ConfigDiagnosticsFakeDotnet/ConfigDiagnosticsFakeDotnet.csproj"
+            result = subprocess.run([
+                "dotnet", "build", str(project), "--configuration", "Release",
+                "--output", str(cls.windows_shim),
+                "-p:BaseIntermediateOutputPath=" + str(Path(directory.name) / "obj") + os.sep,
+                "--verbosity", "quiet",
+            ], capture_output=True, timeout=120, check=False)
+            if result.returncode != 0:
+                raise RuntimeError("Could not build the Windows test fixture: " +
+                                   (result.stdout + result.stderr).decode("utf-8", errors="replace"))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="miningcore snapshot tests ")
         self.addCleanup(self.directory.cleanup)
@@ -38,6 +59,11 @@ class SnapshotHelperContract:
         (self.root / "status").write_text("0", encoding="utf-8")
         self.bin = self.root / "fake-bin"
         self.bin.mkdir()
+        if os.name == "nt":
+            for artifact in self.windows_shim.iterdir():
+                if artifact.is_file():
+                    shutil.copyfile(artifact, self.bin / artifact.name)
+            return
         dotnet = self.bin / "dotnet"
         dotnet.write_text(
             "#!/usr/bin/env python3\n"
