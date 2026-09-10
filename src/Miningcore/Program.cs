@@ -127,6 +127,50 @@ public class Program : ProcessStatusBackgroundService
 
     public static async Task<int> Main(string[] args)
     {
+        // Keep the entire diagnostic command (including parse errors) outside
+        // normal startup reporting, which can include input values and paths.
+        if(args.Any(LooksLikeDumpConfigOption))
+        {
+            var stage = ConfigDiagnosticStage.Arguments;
+            return await RunStartupBoundaryAsync(() =>
+            {
+                var app = ParseCommandLine(args, suppressDiagnostics: true);
+                // Parse quietly first; only generated information may escape the
+                // boundary. Never replay parser output containing argument text.
+                app.Out = Console.Out;
+                if(app.OptionHelp?.HasValue() == true)
+                {
+                    stage = ConfigDiagnosticStage.Output;
+                    app.ShowHelp(usePager: false);
+                    return Task.CompletedTask;
+                }
+                if(versionOption.HasValue())
+                {
+                    stage = ConfigDiagnosticStage.Output;
+                    app.ShowVersion();
+                    return Task.CompletedTask;
+                }
+                if(!configFileOption.HasValue())
+                    throw new InvalidOperationException();
+                stage = ConfigDiagnosticStage.Read;
+                var config = ReadConfig(configFileOption.Value(), ConfigurationReadOptions.Quiet);
+                stage = ConfigDiagnosticStage.Project;
+                var diagnostics = SerializeConfigDiagnostics(config);
+                stage = ConfigDiagnosticStage.Output;
+                Console.WriteLine(diagnostics);
+                return Task.CompletedTask;
+            }, error =>
+            {
+                var category = GetConfigDiagnosticFailureCategory(stage, error);
+                Console.Error.WriteLine(category == "output-unavailable"
+                    ? "Configuration dump failed (output-unavailable). Check the stdout destination or pipeline. Input details are withheld."
+                    : category == "internal"
+                    ? "Configuration dump failed (internal). Check the Miningcore installation and diagnostic tooling. Input details are withheld."
+                    : $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.");
+                return Task.CompletedTask;
+            }, () => 0);
+        }
+
         IProcessStatus processStatus = null;
 
         return await RunStartupBoundaryAsync(async () =>
@@ -138,12 +182,6 @@ public class Program : ProcessStatusBackgroundService
             if(versionOption.HasValue())
             {
                 app.ShowVersion();
-                return;
-            }
-
-            if(dumpConfigOption.HasValue())
-            {
-                DumpParsedConfig(clusterConfig);
                 return;
             }
 
@@ -451,7 +489,6 @@ public class Program : ProcessStatusBackgroundService
     private static ILogger logger;
     private static CommandOption versionOption;
     private static CommandOption configFileOption;
-    private static CommandOption dumpConfigOption;
     private static CommandOption shareRecoveryOption;
     private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption acknowledgeShareRecoveryStateOption;
@@ -1246,15 +1283,39 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    private static void DumpParsedConfig(ClusterConfig config)
-    {
-        Console.WriteLine("\nCurrent configuration as parsed from config file:");
-        Console.WriteLine(SerializeParsedConfig(config));
-    }
+    internal static string SerializeConfigDiagnostics(ClusterConfig config) =>
+        ConfigurationDiagnosticProjection.Serialize(config);
 
-    internal static string SerializeParsedConfig(ClusterConfig config) =>
-        JsonConvert.SerializeObject(config,
-            ConfigurationJson.CreateSerializerSettings(Formatting.Indented));
+    internal enum ConfigDiagnosticStage { Arguments, Read, Project, Output }
+
+    internal static string GetConfigDiagnosticFailureCategory(ConfigDiagnosticStage stage, Exception error) =>
+        stage switch
+        {
+            ConfigDiagnosticStage.Arguments => "usage",
+            ConfigDiagnosticStage.Output when error is IOException or ObjectDisposedException or UnauthorizedAccessException => "output-unavailable",
+            ConfigDiagnosticStage.Read => error switch
+            {
+                JSchemaValidationException => "schema-invalid",
+                JsonReaderException => "invalid-json",
+                JsonException => "invalid-configuration",
+                IOException or UnauthorizedAccessException => "unreadable",
+                _ => "internal",
+            },
+            _ => "internal",
+        };
+
+    private static readonly char[] OptionNameValueSeparators = { ' ', ':', '=' };
+
+    internal static bool LooksLikeDumpConfigOption(string argument)
+    {
+        // CommandLineUtils 4.0.2 recognizes space, ':' and '=' within tokens.
+        // Mirror all three, not just '='; malformed NoValue arguments can hold
+        // secrets. This conservative pre-scan also catches '-rs -dc' (a value)
+        // and tokens after '--': false positives fail closed, never run recovery.
+        var separator = argument.IndexOfAny(OptionNameValueSeparators);
+        var option = separator < 0 ? argument : argument[..separator];
+        return option is "-dc" or "--dumpconfig";
+    }
 
     private static void GenerateJsonConfigSchema()
     {
@@ -1354,18 +1415,29 @@ public class Program : ProcessStatusBackgroundService
             .ToString());
     }
 
-    private static CommandLineApplication ParseCommandLine(string[] args)
+    private static CommandLineApplication ParseCommandLine(string[] args,
+        bool suppressDiagnostics = false)
     {
         var app = new CommandLineApplication
         {
             FullName = "Miningcore",
+            OptionNameValueSeparators = OptionNameValueSeparators.ToArray(),
             ShortVersionGetter = GetVersion,
             LongVersionGetter = GetVersion
         };
 
+        if(suppressDiagnostics)
+        {
+            // The CLI library may print an invalid argument before throwing.
+            // Do not allow that text to bypass the dump's safe error boundary.
+            app.Out = TextWriter.Null;
+            app.Error = TextWriter.Null;
+        }
+
         versionOption = app.Option("-v|--version", "Version Information", CommandOptionType.NoValue);
         configFileOption = app.Option("-c|--config <configfile>", "Configuration File", CommandOptionType.SingleValue);
-        dumpConfigOption = app.Option("-dc|--dumpconfig", "Dump the configuration (useful for trouble-shooting typos in the config file)",CommandOptionType.NoValue);
+        // Handled early in Main; registered here for help text and parse acceptance.
+        app.Option("-dc|--dumpconfig", "Dump a safe, lossy diagnostic projection of -c <configfile>; omits credential values, paths and extension data (not a configuration export)", CommandOptionType.NoValue);
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
         verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
             "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
@@ -1377,18 +1449,38 @@ public class Program : ProcessStatusBackgroundService
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 
-        app.Execute(args);
+        if(suppressDiagnostics)
+            app.Parse(args);
+        else
+            app.Execute(args);
 
         return app;
     }
 
-    internal static ClusterConfig ReadConfig(string file,
-        bool skipApiListenerSettings = false)
+    [Flags]
+    internal enum ConfigurationReadOptions
     {
+        None = 0,
+        Recovery = 1,
+        Quiet = 2,
+    }
+
+    // Preserve existing recovery callers without adding adjacent Boolean options.
+    internal static ClusterConfig ReadConfig(string file, bool skipApiListenerSettings = false) =>
+        ReadConfig(file, skipApiListenerSettings ? ConfigurationReadOptions.Recovery : ConfigurationReadOptions.None);
+
+    internal static ClusterConfig ReadConfig(string file, ConfigurationReadOptions options)
+    {
+        // Quiet is consumed by the guarded diagnostic command: retain user-file
+        // exception types and distinguish bundled-schema failures, never their text.
+        // Ordinary/recovery callers keep the existing startup error contract.
+        var skipApiListenerSettings = options.HasFlag(ConfigurationReadOptions.Recovery);
+        var quiet = options.HasFlag(ConfigurationReadOptions.Quiet);
         try
         {
-            Console.WriteLine($"Using configuration file '{file}'");
-            if(skipApiListenerSettings)
+            if(!quiet)
+                Console.WriteLine($"Using configuration file '{file}'");
+            if(skipApiListenerSettings && !quiet)
                 Console.WriteLine(
                     "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");
@@ -1431,7 +1523,7 @@ public class Program : ProcessStatusBackgroundService
                     using(var documentReader = document.CreateReader())
                     using(var validatingReader = new JSchemaValidatingReader(documentReader)
                     {
-                        Schema =  LoadSchema()
+                        Schema = LoadSchema(quiet)
                     })
                     {
                         return serializer.Deserialize<ClusterConfig>(
@@ -1441,22 +1533,22 @@ public class Program : ProcessStatusBackgroundService
             }
         }
 
-        catch(JSchemaValidationException ex)
+        catch(JSchemaValidationException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(JsonSerializationException ex)
+        catch(JsonSerializationException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(JsonException ex)
+        catch(JsonException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(IOException ex)
+        catch(IOException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
@@ -1795,14 +1887,25 @@ public class Program : ProcessStatusBackgroundService
             property.Remove();
     }
 
-    private static JSchema LoadSchema()
+    private sealed class ConfigurationSchemaException(Exception innerException)
+        : Exception("Unable to load the bundled configuration schema.", innerException);
+
+    private static JSchema LoadSchema(bool quiet)
     {
         var basePath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
         var path = Path.Combine(basePath, "config.schema.json");
 
-        using(var reader = new JsonTextReader(new StreamReader(File.OpenRead(path))))
+        try
         {
+            using var reader = new JsonTextReader(new StreamReader(File.OpenRead(path)));
             return JSchema.Load(reader);
+        }
+        catch(Exception ex) when(quiet && ex is IOException or UnauthorizedAccessException or JsonException or JSchemaException)
+        {
+            // These failures belong to the installation, not the user's file.
+            // Preserve ordinary/recovery exceptions; diagnostics classify this
+            // private wrapper as internal without exposing its cause or path.
+            throw new ConfigurationSchemaException(ex);
         }
     }
 

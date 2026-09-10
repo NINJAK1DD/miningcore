@@ -31,8 +31,150 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Enable Litecoin–Dogecoin merged mining | [LTC/DOGE merged mining](#ltcdoge-merged-mining) |
 | Protect emergency share persistence | [Share recovery storage](#share-recovery-storage) |
 | Validate an edited file | [Validate changes safely](#validate-changes-safely) |
+| Produce a credential-safe diagnostic summary | [Safe configuration dumps](#safe-configuration-dumps) |
 
 For symptom-first diagnostics, use [Troubleshooting](troubleshooting.md).
+
+## Safe configuration dumps
+
+```console
+dotnet Miningcore.dll -c /etc/miningcore/config.json --dumpconfig
+```
+
+`-dc` is the short alias. The command reads the specified file and emits a **lossy diagnostic
+projection**, not a configuration export. It exits without starting listeners, connecting to
+databases or daemons, loading coin-template files, importing shares, or configuring file logging.
+It uses the normal JSON/schema loading policy, but does not run live deployment validation or
+resolve environment credentials. Consequently success does not prove a deployment is usable.
+
+The JSON envelope contains `diagnosticFormatVersion: 2`, a notice, and `configuration`. Explicitly
+reviewed numeric/boolean settings, bounded enum names (for example `PPLNS`, not its numeric value)
+and section structure are included. Pool and daemon arrays preserve **config-file order**, so an
+operator can map each index back to the original file when sharing the dump; IDs/coin names are
+not disclosed. Numeric Stratum port keys are retained and ordered numerically. Object properties
+from all policies are sorted by emitted name; the envelope retains the fixed order
+`diagnosticFormatVersion`, `notice`, `configuration`. Null sections stay null. Reviewed strings use three
+states: null (absent), `[blank]` (empty or whitespace-only), and `[set]` (nonblank). These describe
+input shape, not runtime effectiveness: a blank certificate path is ignored by PostgreSQL setup,
+whereas a whitespace password can be significant. Values are never modified, and markers do not
+prove validity, file existence or successful authentication.
+
+Exceptions are explicit bounded metadata, never raw strings:
+
+- `logging.level`: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off` (case-normalized), null,
+  or `[omitted]` for any other value.
+- `api.listenAddressCategory` and `pools[].ports.<port>.listenAddressCategory`: null (absent),
+  `blank` (empty/whitespace), `any` (wildcard/unspecified address), `loopback`, `private`
+  (RFC1918, IPv4/IPv6 link-local or IPv6 unique-local), or `other` (including invalid values).
+  IPv4-mapped IPv6 is normalized. RFC6598 shared/CGNAT space (`100.64.0.0/10`) is not RFC1918
+  private space and deliberately remains `other`. These are input categories, not effective bind
+  results; defaults/validation still apply at startup. No DNS or network lookup occurs.
+- `coinTemplatesCount`, `adminIpWhitelistCount`, `metricsIpWhitelistCount`, `ipWhitelistCount`
+  and `proxyAddressesCount`: array length, or null for an absent array. Elements are never read.
+
+Brackets deliberately distinguish presence/omission markers (`[blank]`, `[set]`, `[omitted]`) from
+bare category vocabulary (`blank`, `any`, etc.); matching `[blank]` alone will not find blank listeners.
+
+The following audit defines which actual values/payloads are omitted; reviewed string fields can
+still have presence markers as described above:
+
+| Surface | Omitted from diagnostic output |
+| --- | --- |
+| PostgreSQL | Host, database, user, password, TLS certificate/private-key paths and TLS password |
+| Daemon RPC and auxiliary daemons | Host, user, password, category, HTTP path, API keys and all extension payloads, including nested merged-mining configuration |
+| Pool and payout configuration | IDs, coin names, addresses, public keys, wallet passwords/private keys, all `payoutSchemeConfig` data and all extension payloads |
+| API and Stratum TLS | Certificate paths and passwords; listener addresses and address allowlists are also omitted |
+| SMTP and Pushover | Host, usernames, passwords, token, sender and recipient identities |
+| Share relays and ZeroMQ configuration | URLs, topics, shared encryption keys and nested extension endpoints |
+| Logging, recovery, templates and labels | All filenames, directories, template paths/content, free-form labels and coinbase text |
+| Unknown fields | Names and values are not traversed or emitted, including numeric/boolean extension values and names resembling allowed fields |
+| Environment | No environment dump or credential resolution; the admin API token and PostgreSQL environment credentials are not included |
+
+All arbitrary configuration string values are omitted, even apparently harmless names: credentials can
+be embedded in URLs, paths, identifiers or extension keys. Allowlists are specific to exact CLR
+types and members, not recursive property-name matching. New runtime fields and derived types
+are not automatically admitted. Unreviewed types and invalid enum values are represented by
+`[omitted]` if encountered in a reviewed slot. Runtime configuration objects, extension dictionaries,
+JSON converters, the schema, API serialization and normal startup behavior are unchanged.
+
+Unreadable files, malformed JSON, schema failures and invalid command arguments on the dump path
+produce a nonzero exit code and a fixed diagnostic with one category: `usage`, `unreadable`,
+`invalid-json`, `schema-invalid`, `invalid-configuration` (including duplicates or binding/syntax
+policy errors), `output-unavailable` (for example closed stdout), or `internal`. Only read-stage
+I/O failures for the user configuration are called `unreadable`; a missing, inaccessible or
+malformed bundled `config.schema.json` is an installation failure (`internal`). Projection
+or output failures are not blamed on the file. Internal failures advise checking the installation
+and diagnostic tooling without disclosing paths or exception details.
+No input values, exception text or file paths are included. Start
+with the named category. For configuration errors, inspect the original file privately and check the schema and reviewed
+coin-family examples for extension spelling. Unknown extension fields are not validated by this
+summary. Normal startup can give detailed errors **but may start services if validation succeeds**;
+use a controlled environment and do not publish its logs unreviewed.
+Detailed errors from **normal startup and other commands** are outside this boundary;
+review those logs before sharing. This command is not a global log-redaction feature. The summary
+still exposes topology, numeric settings and feature switches: share it only with appropriate
+recipients. It cannot prevent a user deliberately encoding a secret in an allowed numeric setting.
+
+Help (`-h`, `-?`, `--help`) and version (`-v`, `--version`) take precedence over a dump without
+reading its file. Parsing remains guarded: malformed options encountered before help produce safe
+usage failures. A dump retains precedence over schema generation and recovery commands; it never
+executes them. The conservative pre-scan also guards dump-looking tokens supplied as another
+option's value or after `--`. Space, `:` and `=` separators share the parser's explicit policy.
+
+For source/version boundaries, the upstream full-dump behavior, the fork's inherited `null`-output
+bug, and credential-rotation guidance, see the
+[release notes](releases.md#unreleased-credential-safe-configuration-dumps).
+
+Do not round-trip the diagnostic JSON into Miningcore, use it as a backup, or use it to check
+spelling in omitted extension fields. Keep the original configuration under service-account-only
+permissions and use the schema and reviewed examples when editing it. No unsafe export switch is
+provided. Check `diagnosticFormatVersion` before consuming this summary programmatically.
+
+### Maintaining the diagnostic contract
+
+Every public property of a reviewed type must have exactly one explicit value, presence, count,
+category or excluded policy. Tests check both CLR types and emitted JSON names (including generated
+`Count`/`Category` suffixes). New properties remain omitted at runtime until reviewed, but fail the
+inventory test rather than silently losing diagnostic usefulness.
+
+After intentionally changing the public example or projection, rebuild Miningcore and regenerate
+the reviewed snapshot from the repository root. On Linux (Bash, Python 3 and .NET):
+
+```console
+bash scripts/release/update-config-diagnostics-snapshot.sh
+```
+
+On Windows or another host with PowerShell 7 (Windows PowerShell 5.1 is not supported):
+
+```powershell
+pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1
+```
+
+Both helpers use the Debug build by default (pass `Release` to Bash or `-Configuration Release` to
+PowerShell), accept only the checked-in public example, and write UTF-8 without a BOM, with LF line
+endings, only after a successful command and JSON/format-version/configuration-object validation.
+Review the diff in `src/Miningcore.Tests/Fixtures/config-diagnostics-v2.json`; do not blindly accept
+new output fields. The snapshot is a review gate, not automatic approval of a wider output policy.
+The shared isolated failure-preservation suite exercises both helpers in CI and can be run on
+Linux with `python3 scripts/release/test-config-diagnostics-snapshot.py` (requires Bash, Python 3
+and PowerShell 7; missing interpreters fail the suite). It does not use a real configuration.
+CI also runs the same PowerShell contract on Windows. To run it locally on Windows, use
+`python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests`
+with Python 3, PowerShell 7 and the .NET 10 SDK installed. The Windows fixture builds a small
+test-only executable to simulate `dotnet`; it does not execute Miningcore or use live configuration.
+Both helpers strip a leading UTF-8 BOM, reject invalid UTF-8, and suppress child-process stderr
+on success as well as failure. Failure wording may differ by platform; the shared contract is
+nonzero exit, preservation of the old fixture, and no replay of child stderr.
+
+CI retains the exhaustive 60-case subprocess information-option matrix. For a faster local pass,
+exclude its `ExhaustiveCli` trait; eight representative combinations remain in the ordinary suite:
+
+```console
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --filter "Category!=ExhaustiveCli"
+```
+
+Design references: [OWASP logging data exclusions](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html#data-to-exclude)
+and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help/html/T_Newtonsoft_Json_JsonExtensionDataAttribute.htm).
 
 ## Main sections
 
