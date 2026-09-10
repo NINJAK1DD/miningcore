@@ -585,6 +585,14 @@ public class ConfigurationDiagnosticTests
         return document;
     }
 
+    [Fact]
+    public async Task DumpHarness_RejectsConflictingFailureModes()
+    {
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            RunDump(null, _ => Array.Empty<string>(), closedOutput: true, schema: "valid"));
+        Assert.Equal("schema", error.ParamName);
+    }
+
     private static Task<(int ExitCode, string Output, string Error, string Logs)> RunDump(
         string content, string option, string mode = null) =>
         RunDump(content, filename =>
@@ -601,6 +609,9 @@ public class ConfigurationDiagnosticTests
         string content, Func<string, string[]> arguments, bool createConfig = true, bool closedOutput = false,
         string schema = null)
     {
+        if(closedOutput && schema != null)
+            throw new ArgumentException("Closed-output and isolated-schema test modes are mutually exclusive.", nameof(schema));
+
         var directory = Path.Combine(Path.GetTempPath(), "miningcore-dump-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var filename = Path.Combine(directory, Secret + ".json");

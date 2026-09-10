@@ -30,6 +30,8 @@ if(args.Length > 1 && args[0] is "config-dump" or "config-dump-closed-output" or
             // the real test output/schema untouched so parallel tests are safe.
             var entry = Path.Combine(Environment.CurrentDirectory,
                 "installation-ISSUE144_SYNTHETIC_SECRET", "Miningcore.Tests.ProcessHost.dll");
+            // This copy supplies only Location; no code in it executes, so it
+            // deliberately needs neither dependencies nor a copied .deps.json.
             Assembly.SetEntryAssembly(Assembly.LoadFile(entry));
         }
         if(args[0] == "config-dump-closed-output")
