@@ -16,6 +16,8 @@ namespace Miningcore.Configuration;
 /// </summary>
 internal static class ConfigurationDiagnosticProjection
 {
+    internal enum DiagnosticPolicy { Value, Presence, Count, Category }
+
     private const string Omitted = "[omitted]";
     private static readonly CamelCaseNamingStrategy Naming = new();
 
@@ -133,6 +135,17 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(TcpProxyProtocolConfig)] = Fields<TcpProxyProtocolConfig>(nameof(TcpProxyProtocolConfig.ProxyAddresses)),
         };
 
+    // Logging level is a bounded value vocabulary; listener categories are
+    // derived metadata. Suffixes are explicit per reviewed member, not inferred
+    // from a coincidentally matching CLR name on another type.
+    private static readonly IReadOnlyDictionary<PropertyInfo, string> CategorySuffixes =
+        new Dictionary<PropertyInfo, string>
+        {
+            [typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level))] = string.Empty,
+            [typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress))] = "Category",
+            [typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress))] = "Category",
+        };
+
     // Deliberate omissions are review decisions too. Tests require new public
     // properties to acquire an explicit policy; runtime remains fail-closed.
     private static readonly IReadOnlyDictionary<Type, PropertyInfo[]> ExcludedMembers =
@@ -148,28 +161,24 @@ internal static class ConfigurationDiagnosticProjection
     // Expose immutable descriptors to tests so scalar/type drift cannot silently
     // degrade reviewed diagnostics. No configuration instances are exposed.
     internal static IEnumerable<Type> ReviewedObjectTypes => Members.Keys;
-    internal static IEnumerable<(Type Owner, PropertyInfo Property, string Policy)> ReviewedMembers =>
-        Members.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, "value")))
-            .Concat(PresenceMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, "presence"))))
-            .Concat(CountMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, "count"))))
-            .Concat(new[]
-            {
-                (typeof(ClusterLoggingConfig), typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), "category"),
-                (typeof(ApiConfig), typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), "category"),
-                (typeof(PoolEndpoint), typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress)), "category"),
-            });
+    internal static IEnumerable<(Type Owner, PropertyInfo Property, DiagnosticPolicy Policy)> ReviewedMembers =>
+        Members.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, DiagnosticPolicy.Value)))
+            .Concat(PresenceMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, DiagnosticPolicy.Presence))))
+            .Concat(CountMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, DiagnosticPolicy.Count))))
+            .Concat(CategorySuffixes.Keys.Select(property => (property.DeclaringType, property, DiagnosticPolicy.Category)));
 
     internal static IEnumerable<(Type Owner, PropertyInfo Property)> ExcludedProperties =>
         ExcludedMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property)));
 
     // Use this same mapping for emission and contract tests, including generated
     // suffixes. Checking CLR names alone misses FooCount/Foo+Count collisions.
-    internal static string GetOutputName(PropertyInfo property, string policy) =>
+    internal static string GetOutputName(PropertyInfo property, DiagnosticPolicy policy) =>
         Naming.GetPropertyName(property.Name, false) + (policy switch
         {
-            "count" => "Count",
-            "category" when property.Name == nameof(ApiConfig.ListenAddress) => "Category",
-            _ => string.Empty,
+            DiagnosticPolicy.Count => "Count",
+            DiagnosticPolicy.Category => CategorySuffixes[property],
+            DiagnosticPolicy.Value or DiagnosticPolicy.Presence => string.Empty,
+            _ => throw new ArgumentOutOfRangeException(nameof(policy)),
         });
 
     internal static string Serialize(ClusterConfig config) => new JObject
@@ -191,44 +200,48 @@ internal static class ConfigurationDiagnosticProjection
         var type = value.GetType();
         if(Members.TryGetValue(type, out var properties))
         {
-            var result = new JObject();
+            // Keep tokens unparented until the final sorted object is built.
+            // Rebuilding an intermediate JObject would clone every subtree.
+            var fields = new List<(string Name, JToken Value)>();
             foreach(var property in properties)
-                result.Add(GetOutputName(property, "value"),
-                    Project(property.GetValue(value)));
+                fields.Add((GetOutputName(property, DiagnosticPolicy.Value),
+                    Project(property.GetValue(value))));
             if(PresenceMembers.TryGetValue(type, out var presence))
                 foreach(var property in presence)
                 {
                     var field = property.GetValue(value);
-                    result.Add(GetOutputName(property, "presence"), field switch
+                    fields.Add((GetOutputName(property, DiagnosticPolicy.Presence), field switch
                     {
                         null => JValue.CreateNull(),
                         string text => new JValue(string.IsNullOrWhiteSpace(text) ? "[blank]" : "[set]"),
                         _ => new JValue(Omitted),
-                    });
+                    }));
                 }
             if(CountMembers.TryGetValue(type, out var counts))
                 foreach(var property in counts)
                 {
                     var field = property.GetValue(value);
-                    result.Add(GetOutputName(property, "count"), field == null ? JValue.CreateNull() :
-                        field is string[] array ? new JValue(array.Length) : new JValue(Omitted));
+                    fields.Add((GetOutputName(property, DiagnosticPolicy.Count), field == null ? JValue.CreateNull() :
+                        field is string[] array ? new JValue(array.Length) : new JValue(Omitted)));
                 }
             if(type == typeof(ClusterLoggingConfig))
             {
                 var level = ((ClusterLoggingConfig) value).Level?.ToLowerInvariant();
-                result.Add(GetOutputName(typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), "category"), level == null ? JValue.CreateNull() :
-                    new JValue(level is "trace" or "debug" or "info" or "warn" or "error" or "fatal" or "off" ? level : Omitted));
+                fields.Add((GetOutputName(typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), DiagnosticPolicy.Category), level == null ? JValue.CreateNull() :
+                    new JValue(level is "trace" or "debug" or "info" or "warn" or "error" or "fatal" or "off" ? level : Omitted)));
             }
             if(type == typeof(ApiConfig))
-                result.Add(GetOutputName(typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), "category"),
-                    ClassifyListenAddress(((ApiConfig) value).ListenAddress));
+                fields.Add((GetOutputName(typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), DiagnosticPolicy.Category),
+                    ClassifyListenAddress(((ApiConfig) value).ListenAddress)));
             if(type == typeof(PoolEndpoint))
-                result.Add(GetOutputName(typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress)), "category"),
-                    ClassifyListenAddress(((PoolEndpoint) value).ListenAddress));
+                fields.Add((GetOutputName(typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress)), DiagnosticPolicy.Category),
+                    ClassifyListenAddress(((PoolEndpoint) value).ListenAddress)));
             // Group all policies by emitted name for easy human scanning. Ports
             // remain numerically ordered below; arrays keep source-file order.
-            return new JObject(result.Properties().OrderBy(property => property.Name, StringComparer.Ordinal)
-                .Select(property => new JProperty(property.Name, property.Value)));
+            var result = new JObject();
+            foreach(var field in fields.OrderBy(field => field.Name, StringComparer.Ordinal))
+                result.Add(field.Name, field.Value);
+            return result;
         }
 
         // Only the reviewed container types are admitted. Never traverse Extra,

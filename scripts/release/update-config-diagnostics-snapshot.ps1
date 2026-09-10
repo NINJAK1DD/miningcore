@@ -21,7 +21,9 @@ if($LASTEXITCODE -ne 0) {
 }
 $json = ($lines -join "`n") + "`n"
 $document = ConvertFrom-Json -InputObject $json
-if($document.diagnosticFormatVersion -ne 2 -or $null -eq $document.configuration) {
+if($document -isnot [pscustomobject] -or
+    ($document.diagnosticFormatVersion -isnot [int] -and $document.diagnosticFormatVersion -isnot [long]) -or
+    $document.diagnosticFormatVersion -ne 2 -or $document.configuration -isnot [pscustomobject]) {
     throw 'Unexpected diagnostic contract; review the format before replacing the snapshot.'
 }
 [System.IO.File]::WriteAllText($snapshot, $json, [System.Text.UTF8Encoding]::new($false))

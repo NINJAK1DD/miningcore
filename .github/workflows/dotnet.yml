@@ -51,6 +51,10 @@ jobs:
       shell: bash
       run: python3 scripts/release/test-doc-links.py
 
+    - name: Test configuration diagnostic snapshot helper
+      shell: bash
+      run: python3 scripts/release/test-config-diagnostics-snapshot.py
+
     - name: Test Linux native build failure propagation
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
@@ -75,6 +79,7 @@ jobs:
         scripts/release/test-odocrypt-source-inventory.sh
         scripts/release/test-odocrypt-source-verifiers.sh
         scripts/release/test-release-install-docs.sh
+        scripts/release/update-config-diagnostics-snapshot.sh
         scripts/release/test-ubuntu-source-build.sh
 
     - name: Test Linux native symbol contracts

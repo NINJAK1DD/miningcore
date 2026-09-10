@@ -52,7 +52,8 @@ reviewed numeric/boolean settings, bounded enum names (for example `PPLNS`, not 
 and section structure are included. Pool and daemon arrays preserve **config-file order**, so an
 operator can map each index back to the original file when sharing the dump; IDs/coin names are
 not disclosed. Numeric Stratum port keys are retained and ordered numerically. Object properties
-from all policies are sorted by emitted name. Null sections stay null. Reviewed strings use three
+from all policies are sorted by emitted name; the envelope retains the fixed order
+`diagnosticFormatVersion`, `notice`, `configuration`. Null sections stay null. Reviewed strings use three
 states: null (absent), `[blank]` (empty or whitespace-only), and `[set]` (nonblank). These describe
 input shape, not runtime effectiveness: a blank certificate path is ignored by PostgreSQL setup,
 whereas a whitespace password can be significant. Values are never modified, and markers do not
@@ -70,6 +71,9 @@ Exceptions are explicit bounded metadata, never raw strings:
   results; defaults/validation still apply at startup. No DNS or network lookup occurs.
 - `coinTemplatesCount`, `adminIpWhitelistCount`, `metricsIpWhitelistCount`, `ipWhitelistCount`
   and `proxyAddressesCount`: array length, or null for an absent array. Elements are never read.
+
+Brackets deliberately distinguish presence/omission markers (`[blank]`, `[set]`, `[omitted]`) from
+bare category vocabulary (`blank`, `any`, etc.); matching `[blank]` alone will not find blank listeners.
 
 The following audit defines which actual values/payloads are omitted; reviewed string fields can
 still have presence markers as described above:
@@ -131,16 +135,25 @@ category or excluded policy. Tests check both CLR types and emitted JSON names (
 inventory test rather than silently losing diagnostic usefulness.
 
 After intentionally changing the public example or projection, rebuild Miningcore and regenerate
-the reviewed snapshot from the repository root:
+the reviewed snapshot from the repository root. On Linux (Bash, Python 3 and .NET):
+
+```console
+bash scripts/release/update-config-diagnostics-snapshot.sh
+```
+
+On Windows or another host with PowerShell:
 
 ```powershell
 pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1
 ```
 
-The helper uses the Debug build by default (`-Configuration Release` selects Release), accepts only
-the checked-in public example, and writes UTF-8 only after the command and JSON validation succeed.
+Both helpers use the Debug build by default (pass `Release` to Bash or `-Configuration Release` to
+PowerShell), accept only the checked-in public example, and write UTF-8 without a BOM, with LF line
+endings, only after a successful command and JSON/format-version/configuration-object validation.
 Review the diff in `src/Miningcore.Tests/Fixtures/config-diagnostics-v2.json`; do not blindly accept
 new output fields. The snapshot is a review gate, not automatic approval of a wider output policy.
+The Linux helper's isolated failure-preservation tests run in CI and can be run with
+`python3 scripts/release/test-config-diagnostics-snapshot.py`; they do not use a real configuration.
 
 CI retains the exhaustive 60-case subprocess information-option matrix. For a faster local pass,
 exclude its `ExhaustiveCli` trait; eight representative combinations remain in the ordinary suite:

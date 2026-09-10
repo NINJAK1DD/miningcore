@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -11,6 +12,7 @@ using Miningcore.Configuration;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using DiagnosticPolicy = Miningcore.Configuration.ConfigurationDiagnosticProjection.DiagnosticPolicy;
 
 namespace Miningcore.Tests;
 
@@ -30,7 +32,8 @@ public class ConfigurationDiagnosticTests
             "Fixtures", "config-diagnostics-v2.json"));
         Assert.True(expected.Replace("\r\n", "\n").TrimEnd() == result.Output.Replace("\r\n", "\n").TrimEnd(),
             "The diagnostic snapshot is stale. From the repository root, rebuild Miningcore, then run " +
-            "pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1. " +
+            "bash scripts/release/update-config-diagnostics-snapshot.sh (Linux), or " +
+            "pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1 (PowerShell). " +
             "Review the fixture diff before accepting any diagnostic contract change.");
     }
 
@@ -135,13 +138,13 @@ public class ConfigurationDiagnosticTests
         {
             Assert.Contains(field.Owner, objects);
             var type = field.Property.PropertyType;
-            if(field.Policy is "presence" or "category")
+            if(field.Policy is DiagnosticPolicy.Presence or DiagnosticPolicy.Category)
                 Assert.Equal(typeof(string), type);
-            else if(field.Policy == "count")
+            else if(field.Policy == DiagnosticPolicy.Count)
                 Assert.Equal(typeof(string[]), type);
             else
             {
-                Assert.Equal("value", field.Policy);
+                Assert.Equal(DiagnosticPolicy.Value, field.Policy);
                 Assert.True(supported.Contains(Nullable.GetUnderlyingType(type) ?? type),
                     $"Review diagnostic policy after type drift: {field.Owner.Name}.{field.Property.Name} ({type})");
             }
@@ -168,31 +171,51 @@ public class ConfigurationDiagnosticTests
 
     [Fact]
     public void Projection_EmittedKeysIncludingGeneratedSuffixesAreUnique() =>
-        AssertUniqueOutputNames(ConfigurationDiagnosticProjection.ReviewedMembers);
+        Assert.Empty(FindOutputNameCollisions(ConfigurationDiagnosticProjection.ReviewedMembers));
 
     [Fact]
     public void Projection_CollisionGuardDetectsGeneratedCountKey()
     {
         var owner = typeof(CollisionFixture);
-        Assert.Throws<Xunit.Sdk.EqualException>(() => AssertUniqueOutputNames(new[]
+        var collision = Assert.Single(FindOutputNameCollisions(new[]
         {
-            (owner, owner.GetProperty(nameof(CollisionFixture.CoinTemplates)), "count"),
-            (owner, owner.GetProperty(nameof(CollisionFixture.CoinTemplatesCount)), "value"),
+            (owner, owner.GetProperty(nameof(CollisionFixture.CoinTemplates)), DiagnosticPolicy.Count),
+            (owner, owner.GetProperty(nameof(CollisionFixture.CoinTemplatesCount)), DiagnosticPolicy.Value),
         }));
+        Assert.Equal((owner, "coinTemplatesCount"), collision.Key);
+        Assert.Equal(new[] { nameof(CollisionFixture.CoinTemplates), nameof(CollisionFixture.CoinTemplatesCount) },
+            collision.Select(field => field.Property.Name));
     }
 
-    private static void AssertUniqueOutputNames(
-        IEnumerable<(Type Owner, PropertyInfo Property, string Policy)> fields)
-    {
-        var keys = fields.Select(field => (field.Owner,
-            Name: ConfigurationDiagnosticProjection.GetOutputName(field.Property, field.Policy))).ToArray();
-        Assert.Equal(keys.Length, keys.Distinct().Count());
-    }
+    private static IEnumerable<IGrouping<(Type Owner, string Name),
+        (Type Owner, PropertyInfo Property, DiagnosticPolicy Policy)>> FindOutputNameCollisions(
+        IEnumerable<(Type Owner, PropertyInfo Property, DiagnosticPolicy Policy)> fields) =>
+        fields.GroupBy(field => (field.Owner,
+                Name: ConfigurationDiagnosticProjection.GetOutputName(field.Property, field.Policy)))
+            .Where(group => group.Count() > 1);
+
+    [Theory]
+    [InlineData(typeof(ApiConfig), nameof(ApiConfig.ListenAddress), "listenAddressCategory")]
+    [InlineData(typeof(PoolEndpoint), nameof(PoolEndpoint.ListenAddress), "listenAddressCategory")]
+    [InlineData(typeof(ClusterLoggingConfig), nameof(ClusterLoggingConfig.Level), "level")]
+    public void Projection_CategoryOutputNamesAreExplicitPerMember(Type owner, string name, string expected) =>
+        Assert.Equal(expected, ConfigurationDiagnosticProjection.GetOutputName(owner.GetProperty(name), DiagnosticPolicy.Category));
+
+    [Fact]
+    public void Projection_CategoryNamesDoNotImplicitlyAdmitUnreviewedMembers() =>
+        Assert.Throws<KeyNotFoundException>(() => ConfigurationDiagnosticProjection.GetOutputName(
+            typeof(CollisionFixture).GetProperty(nameof(CollisionFixture.ListenAddress)), DiagnosticPolicy.Category));
+
+    [Fact]
+    public void Projection_InvalidPolicyFailsClosed() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => ConfigurationDiagnosticProjection.GetOutputName(
+            typeof(CollisionFixture).GetProperty(nameof(CollisionFixture.CoinTemplates)), (DiagnosticPolicy) int.MaxValue));
 
     private sealed class CollisionFixture
     {
         public string[] CoinTemplates { get; set; }
         public int CoinTemplatesCount { get; set; }
+        public string ListenAddress { get; set; }
     }
 
     [Theory]
@@ -225,18 +248,29 @@ public class ConfigurationDiagnosticTests
     {
         var config = new ClusterConfig { Pools = new[]
         {
-            new PoolConfig { BlockRefreshInterval = 22, Daemons = new[]
+            new PoolConfig { BlockRefreshInterval = 22, Ports = new Dictionary<int, PoolEndpoint>
+            {
+                [3333] = new PoolEndpoint(), [443] = new PoolEndpoint(),
+            }, Daemons = new[]
             {
                 new DaemonEndpointConfig { Port = 9002 }, new DaemonEndpointConfig { Port = 9001 },
             } },
             new PoolConfig { BlockRefreshInterval = 11 },
         } };
-        var output = (JObject) JObject.Parse(Program.SerializeConfigDiagnostics(config))["configuration"];
+        var envelope = JObject.Parse(Program.SerializeConfigDiagnostics(config));
+        Assert.Equal(new[] { "diagnosticFormatVersion", "notice", "configuration" },
+            envelope.Properties().Select(property => property.Name));
+        var output = (JObject) envelope["configuration"];
         foreach(var section in output.DescendantsAndSelf().OfType<JObject>())
         {
             var keys = section.Properties().Select(property => property.Name).ToArray();
-            Assert.Equal(keys.OrderBy(key => key, StringComparer.Ordinal), keys);
+            if(section.Parent is JProperty { Name: "ports" })
+                Assert.Equal(keys.OrderBy(key => int.Parse(key, CultureInfo.InvariantCulture)), keys);
+            else
+                Assert.Equal(keys.OrderBy(key => key, StringComparer.Ordinal), keys);
         }
+        Assert.Equal(new[] { "443", "3333" }, ((JObject) output["pools"][0]["ports"])
+            .Properties().Select(property => property.Name));
         Assert.Equal(new[] { 22, 11 }, output["pools"].Select(pool => pool["blockRefreshInterval"].Value<int>()));
         Assert.Equal(new[] { 9002, 9001 }, output["pools"][0]["daemons"].Select(daemon => daemon["port"].Value<int>()));
     }
