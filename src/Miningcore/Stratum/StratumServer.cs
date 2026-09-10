@@ -419,9 +419,9 @@ public abstract class StratumServer
             // init connection
             connection = new StratumConnection(logger, rmsm, clock,
                 CreateConnectionId(),
-                clusterConfig.Logging.GPDRCompliant, failStop?.Token ?? default);
+                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default);
 
-            logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging.GPDRCompliant)}:{remoteEndpoint.Port} ...");
+            logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}:{remoteEndpoint.Port} ...");
 
             RegisterConnection(connection);
             registered = true;

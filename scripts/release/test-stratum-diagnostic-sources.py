@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Conservative architecture guard for reviewed direct Stratum logger calls.
 
-This is not a C# parser or a taint analyzer. Exact reviewed invocations are removed
-before checking for any remaining direct logger member access. New direct calls,
-including exception/request/token overloads, require an explicit source audit.
-Whitespace is ignored (including in literals); aliases and indirect sinks still
-require the documented review and captured-output tests.
+This is not a C# parser or a taint analyzer. Each exact reviewed logger access must
+match its listed occurrence count before removal. New calls require a source audit.
+A narrow miner-identity scan also covers all Blockchain and Mining C# files, rather
+than discovering scope from the wording that a regression could remove. Whitespace
+is ignored for exact matching (including in literals). The call scanner handles
+ordinary/verbatim strings and comments, not the complete C# grammar; aliases,
+indirect sinks and new language constructs still require review and runtime tests.
 """
 
 import re
 import sys
+from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,7 +26,7 @@ APPROVED = {
     ),
     "src/Miningcore/Stratum/StratumServer.cs": (
         r'''logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");''',
-        r'''logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging.GPDRCompliant)}:{remoteEndpoint.Port} ...");''',
+        r'''logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}:{remoteEndpoint.Port} ...");''',
         r'''logger.Debug("Connection refused because local pool admission is closed");''',
         r'''logger.Fatal(
             "Timed out after {0} while draining {1} Stratum connection task(s). " +
@@ -31,17 +35,68 @@ APPROVED = {
         r'''logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned client @ {connection.RemoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");''',
+        # Existing AuthenticationException and security-IOException branches each
+        # contain this exact message. Both occurrences are explicitly reviewed.
+        r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");''',
         r'''logger.Debug(() => $"[{connection.ConnectionId}] {completion}");''',
         r'''logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");''',
     ),
+    "src/Miningcore/Stratum/StratumDiagnostics.cs": (
+        r'''logger.IsEnabled(level)''',
+        r'''logger.Log(level, "Stratum diagnostic " + record.ToString(Formatting.None));''',
+    ),
 }
 
+IDENTITY_ROOTS = ("src/Miningcore/Blockchain", "src/Miningcore/Mining")
+DIRECT_FACTORY = re.compile(r"\bLogManager\s*\.\s*GetCurrentClassLogger\s*\(\s*\)\s*\.\s*[A-Za-z_]")
+CALL_START = re.compile(r"\blogger\s*\.\s*[A-Za-z_][A-Za-z_0-9]*\s*\(")
+IDENTITY = re.compile(
+    r"\bcontext\s*\??\.\s*(?:Miner|Worker|UserAgent)\b|"
+    r"\b(?:workerValue|minerName|jobId|passParts)\b|"
+    r"\bshare\s*\??\.\s*Miner\b|\brequest\s*\??\.\s*Params\b"
+)
+# Retain source offsets so identifier checks see interpolation contents, while
+# parentheses in a quoted message do not truncate the enclosing logger call.
+LITERALS_AND_COMMENTS = re.compile(
+    r'//[^\n]*|/\*[\s\S]*?\*/|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
+)
 
-def unreviewed_accesses(source: str, approved: list[str]) -> list[str]:
+
+def identity_accesses(source: str) -> list[str]:
+    masked = LITERALS_AND_COMMENTS.sub(lambda match: " " * len(match[0]), source)
+    findings = []
+    if DIRECT_FACTORY.search(masked):
+        findings.append("inline LogManager.GetCurrentClassLogger")
+    for call in CALL_START.finditer(masked):
+        depth = 1
+        end = call.end()
+        while end < len(masked) and depth:
+            if masked[end] == "(":
+                depth += 1
+            elif masked[end] == ")":
+                depth -= 1
+            end += 1
+        if depth:
+            findings.append("unbalanced logger invocation requires review")
+        elif IDENTITY.search(source[call.end():end]):
+            findings.append("miner identity/request field in logger invocation")
+    return findings
+
+
+def unreviewed_accesses(source: str, approved: Sequence[str]) -> list[str]:
     remaining = re.sub(r"\s+", "", source)
-    for invocation in approved:
-        remaining = remaining.replace(re.sub(r"\s+", "", invocation), "")
-    return re.findall(r"\blogger\.[A-Za-z_][A-Za-z_0-9]*", remaining)
+    findings = []
+    expected = Counter(re.sub(r"\s+", "", invocation) for invocation in approved)
+    for needle, expected_count in expected.items():
+        count = remaining.count(needle)
+        if count != expected_count:
+            findings.append(f"approved logger access occurs {count} times, expected {expected_count}")
+        for _ in range(expected_count):
+            remaining = remaining.replace(needle, "", 1)
+    findings.extend(re.findall(r"\blogger\.[A-Za-z_][A-Za-z_0-9]*", remaining))
+    if DIRECT_FACTORY.search(remaining):
+        findings.append("inline LogManager.GetCurrentClassLogger")
+    return findings
 
 
 def main() -> int:
@@ -55,6 +110,7 @@ def main() -> int:
         'logger.Trace(JToken.FromObject(request));',
         'logger.Log(new LogEventInfo { Exception = error });',
         'logger.\nWarn(\nrequest\n);',
+        'LogManager.GetCurrentClassLogger().Error(error, "safe-looking message");',
     ]
     for source in fixtures:
         if not unreviewed_accesses(source, []):
@@ -63,9 +119,38 @@ def main() -> int:
         joined = "\n".join(approved)
         if unreviewed_accesses(joined, approved):
             raise AssertionError("Source guard failed its approved fixture")
+        for invocation in approved:
+            if not unreviewed_accesses(joined + invocation, approved):
+                raise AssertionError("Source guard accepted a duplicated approved access")
+            if not unreviewed_accesses(joined.replace(invocation, "", 1), approved):
+                raise AssertionError("Source guard accepted a missing approved access")
         for source in fixtures:
             if not unreviewed_accesses(joined + source, approved):
                 raise AssertionError("Approved calls hid an unreviewed invocation")
+
+    identity_fixtures = [
+        'logger.Info(() => $"Authorized {context.Miner}");',
+        'logger.Debug(() => context.Worker);',
+        'logger.Info("{0}", context?.UserAgent);',
+        'logger.Warn(Format(workerValue, Nested(minerName)));',
+        'logger.Info("literal ) (", share.Miner);',
+        'logger.Info(@"literal "")""", request.Params);',
+        'logger.\nWarn(\njobId\n);',
+        'logger.Info("{0}", passParts);',
+        'LogManager.GetCurrentClassLogger().Error(error);',
+    ]
+    for source in identity_fixtures:
+        if not identity_accesses(source):
+            raise AssertionError("Identity guard failed its negative fixture")
+    for source in (
+        'logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");',
+        'logger.Info("safe"); Use(context.Miner);',
+        '// logger.Info(context.Miner);\nlogger.Debug("safe");',
+        'logger.Info("safe", /* ) */ connection.ConnectionId);',
+        'private static readonly ILogger logger = LogManager.GetCurrentClassLogger();',
+    ):
+        if identity_accesses(source):
+            raise AssertionError("Identity guard failed its safe fixture")
 
     failed = False
     for relative, approved in APPROVED.items():
@@ -73,9 +158,18 @@ def main() -> int:
         if findings:
             failed = True
             print(f"{relative}: unreviewed direct logger access: {', '.join(findings)}", file=sys.stderr)
+    for relative in IDENTITY_ROOTS:
+        directory = ROOT / relative
+        if not directory.is_dir():
+            raise AssertionError(f"Missing guarded source directory: {relative}")
+        for path in sorted(directory.rglob("*.cs")):
+            findings = identity_accesses(path.read_text(encoding="utf-8"))
+            if findings:
+                failed = True
+                print(f"{path.relative_to(ROOT)}: {', '.join(findings)}", file=sys.stderr)
     if failed:
         return 1
-    print("Stratum direct-logger architecture guard and negative fixtures passed")
+    print("Stratum direct-logger and miner-identity guards and negative fixtures passed")
     return 0
 
 

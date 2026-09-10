@@ -94,6 +94,52 @@ public class StratumDiagnosticTests
     }
 
     [Fact]
+    public void OptionalFields_AreOmittedForEveryEventWithoutLosingUnknownRequestMethod()
+    {
+        using var logs = new Capture();
+        foreach(var operation in System.Enum.GetValues<StratumDiagnostics.Event>())
+            StratumDiagnostics.Write(logs.Logger, LogLevel.Debug, operation);
+
+        foreach(var record in logs.Records)
+        {
+            var request = record["event"].Value<string>() == "Request";
+            Assert.Equal(request ? 2 : 1, record.Count);
+            if(request) Assert.Equal("other", record["method"].Value<string>());
+            Assert.DoesNotContain(record.Properties(), x => x.Value.Type == JTokenType.Null);
+        }
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData("ReceiveWait")]
+    [InlineData("BufferWait")]
+    public void WaitingRecords_ContainOnlyEventAndConnectionId(string eventName)
+    {
+        using var logs = new Capture();
+        var operation = System.Enum.Parse<StratumDiagnostics.Event>(eventName);
+        StratumDiagnostics.Write(logs.Logger, LogLevel.Debug, operation, "0HN7A1B2C3D4E");
+        Assert.Equal("Stratum diagnostic {\"event\":\"" + operation + "\",\"connectionId\":\"0HN7A1B2C3D4E\"}", Assert.Single(logs.Messages));
+        Assert.True(Encoding.UTF8.GetByteCount(Assert.Single(logs.Messages)) < 80);
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public void OptionalFields_RetainZeroValuesAndIgnoreEventInapplicableMethodAndReason()
+    {
+        using var logs = new Capture();
+        StratumDiagnostics.Write(logs.Logger, LogLevel.Debug, StratumDiagnostics.Event.Receive,
+            failure: new SocketException(0), method: Hostile, bytes: 0, port: 0);
+        var record = Assert.Single(logs.Records);
+        Assert.Equal(0, record["bytes"].Value<long>());
+        Assert.Equal(0, record["port"].Value<int>());
+        Assert.Equal(0, record["code"].Value<int>());
+        Assert.Null(record["connectionId"]);
+        Assert.Null(record["method"]);
+        Assert.Null(record["reason"]);
+        logs.AssertSafe();
+    }
+
+    [Fact]
     public void Vocabulary_CoversAllDeclaredMethodsAndRejectsArbitraryValues()
     {
         var declared = typeof(StratumConnection).Assembly.GetTypes()
@@ -214,7 +260,7 @@ public class StratumDiagnosticTests
         Assert.Equal(0, server.Completions);
         Assert.Equal(0, server.Requests);
         server.Bans.Received(banned ? 1 : 0).Ban(IPAddress.Loopback, TimeSpan.FromMinutes(3));
-        Assert.Contains(logs.Records, x => x["failure"].Value<string>() == "json");
+        Assert.Contains(logs.Records, x => x["failure"]?.Value<string>() == "json");
         logs.AssertSafe();
     }
 
@@ -232,7 +278,7 @@ public class StratumDiagnosticTests
         Assert.Equal(0, server.Requests);
         Assert.Equal(1, server.Errors);
         server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
-        Assert.Contains(logs.Records, x => x["failure"].Value<string>() == "invalid-data");
+        Assert.Contains(logs.Records, x => x["failure"]?.Value<string>() == "invalid-data");
         logs.AssertSafe();
     }
 
@@ -287,7 +333,7 @@ public class StratumDiagnosticTests
         Assert.Equal(valid ? 1 : 0, server.Requests);
         Assert.Equal(valid ? 0 : 1, server.Errors);
         if(!valid)
-            Assert.Contains(logs.Records, x => x["failure"].Value<string>() == failure);
+            Assert.Contains(logs.Records, x => x["failure"]?.Value<string>() == failure);
         server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
         Assert.Contains(logs.Records, x => x["event"].Value<string>() == "ProxyHeader");
         logs.AssertSafe();
@@ -433,7 +479,7 @@ public class StratumDiagnosticTests
         Assert.Equal(0, server.Requests);
         Assert.Equal(1, server.Errors);
         server.Bans.Received(banned ? 1 : 0).Ban(IPAddress.Loopback, TimeSpan.FromMinutes(3));
-        Assert.Contains(logs.Records, x => x["failure"].Value<string>() is "tls-handshake" or "io");
+        Assert.Contains(logs.Records, x => x["failure"]?.Value<string>() is "tls-handshake" or "io");
         logs.AssertSafe();
     }
 
@@ -612,7 +658,7 @@ public class StratumDiagnosticTests
             await run.WaitAsync(Deadline);
             subscription?.Dispose();
         }
-        Assert.All(logs.Records.Where(x => x["event"].Value<string>() == "Drain"), x => Assert.Equal(JTokenType.Null, x["connectionId"].Type));
+        Assert.All(logs.Records.Where(x => x["event"].Value<string>() == "Drain"), x => Assert.Null(x["connectionId"]));
         Assert.Equal(0, server.ConnectionCount);
         Assert.Equal(0, server.TrackedConnectionTaskCount);
         using var rebound = StratumServer.CreateBoundSocket(reservation.Endpoint.IPEndPoint);
@@ -624,7 +670,9 @@ public class StratumDiagnosticTests
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
-    public async Task Listener_BannedIpLogging_HonorsPrivacyWithoutChangingBanDecision(bool censor, bool alreadyConnected)
+    [InlineData(null, false)]
+    [InlineData(null, true)]
+    public async Task Listener_BannedIpLogging_HonorsPrivacyWithoutChangingBanDecision(bool? censor, bool alreadyConnected)
     {
         using var logs = new Capture();
         using var container = new ContainerBuilder().Build();
@@ -652,8 +700,8 @@ public class StratumDiagnosticTests
         }
         finally { lifetime.Cancel(); await run.WaitAsync(Deadline); }
         var message = Assert.Single(logs.Messages.Where(x => x.Contains("Disconnecting banned", StringComparison.Ordinal)));
-        Assert.EndsWith(IPAddress.Loopback.CensorOrReturn(censor).ToString(), message);
-        if(censor) Assert.DoesNotContain("127.0.0.1", message);
+        Assert.EndsWith(IPAddress.Loopback.CensorOrReturn(censor == true).ToString(), message);
+        if(censor == true) Assert.DoesNotContain("127.0.0.1", message);
         Assert.Equal(alreadyConnected ? 1 : 0, server.Requests);
         Assert.Equal(0, server.ConnectionCount);
         logs.AssertSafe();
@@ -736,7 +784,8 @@ public class StratumDiagnosticTests
         }
         public IBanManager Bans { get; } = Substitute.For<IBanManager>();
         public int Requests { get; private set; }
-        public void CensorIps(bool censor) => clusterConfig.Logging.GPDRCompliant = censor;
+        public void CensorIps(bool? censor) => clusterConfig.Logging = censor.HasValue
+            ? new ClusterLoggingConfig { GPDRCompliant = censor.Value } : null;
         public int Errors { get; private set; }
         public int Completions { get; private set; }
         public bool ThrowInTerminalCallback { get; init; }
@@ -850,6 +899,7 @@ public class StratumDiagnosticTests
         public void AssertSafe()
         {
             Assert.NotEmpty(target.Messages);
+            Assert.All(Records, record => Assert.DoesNotContain(record.Properties(), x => x.Value.Type == JTokenType.Null));
             Assert.All(target.Messages, message =>
             {
                 Assert.DoesNotContain(Secret, message);

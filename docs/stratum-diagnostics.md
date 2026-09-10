@@ -60,16 +60,20 @@ ports remain typed numeric metadata, not copies of password-control strings.
 
 New transport records start with `Stratum diagnostic ` followed by compact JSON:
 
+`event` is always present. Optional fields are omitted when unavailable or inapplicable;
+the projection does not emit explicit JSON nulls. This keeps read-cycle waiting events
+to the event name and server connection ID, without a growing set of empty fields.
+
 | Field | Meaning |
 | --- | --- |
 | `event` | Finite `StratumDiagnostics.Event` value; unknown enum values become `other`. |
-| `connectionId` | Server-generated correlation ID, or null before a connection exists. Never a JSON-RPC ID, worker/session ID or proxy field. |
-| `failure` | Shared fixed structural category, null for non-failure events; authentication errors use `tls-handshake`, cryptographic errors use `cryptographic`. |
-| `code` | Numeric native/protocol error code where available; null does not mean success. |
-| `method` | Reviewed protocol method for `Request` events only; otherwise null. Unknown methods become `other`. |
-| `bytes` | Received/buffered/serialized/header byte count where relevant; otherwise null. |
-| `port` | Configured listener port for listener/certificate failures; otherwise null. |
-| `reason` | Certificate-load reason: `file-not-found`, `access-denied`, `file-io`, `invalid-certificate-or-password`, or `other`; otherwise null. |
+| `connectionId` | Server-generated correlation ID, omitted before a connection exists or for aggregate drain failures. Never a JSON-RPC ID, worker/session ID or proxy field. |
+| `failure` | Shared fixed structural category, omitted for non-failure events; authentication errors use `tls-handshake`, cryptographic errors use `cryptographic`. |
+| `code` | Numeric native/protocol error code where available; absence does not mean success. Zero codes are retained. |
+| `method` | Reviewed protocol method for `Request` events only. Unknown or missing request methods become `other`; the field is omitted for other events. |
+| `bytes` | Received/buffered/serialized/header byte count where relevant, including zero; otherwise omitted. |
+| `port` | Configured listener port for listener/certificate failures; otherwise omitted. |
+| `reason` | Certificate-load reason: `file-not-found`, `access-denied`, `file-io`, `invalid-certificate-or-password`, or `other`; otherwise omitted. |
 
 Socket error codes are platform-native; Windows and Linux numbers need not match.
 Share errors retain the existing fixed `job-not-found`, `duplicate-share`,
@@ -85,9 +89,16 @@ may share a runtime error: the diagnostic deliberately does not invent a distinc
 Use the retained pool/listener port to locate its PFX setting in private configuration,
 then check file existence/access and certificate/password correctness. Configured
 filenames remain withheld: operator-controlled text can still contain secrets or
-private filesystem details. These fields are additive to the diagnostic JSON contract.
+private filesystem details.
 
 ## Compatibility and limits
+
+Earlier PR revisions emitted optional fields as explicit nulls. Consumers must accept
+missing optional properties as unavailable, tolerate additive fields, and not require
+a fixed property count. Conditional field additions use the concrete JSON tree, not
+ambient serializer settings. The RPC consumer record retains its existing field shape;
+its shared failure-category changes are covered in the
+[RPC compatibility notes](rpc-consumer-diagnostics.md#compatibility).
 
 Only diagnostic output and telemetry label projection change. The original request,
 reply, exception, authorization result, share/counter updates, mining fail-stop gate,
@@ -117,6 +128,10 @@ identities, block metadata, difficulty, counts and timing remain operational met
 The existing IP-censor flag is now honored consistently by both early banned-IP and
 already-connected banned-client messages. It remains partial address masking, not
 an anonymity guarantee, and does not authorize raw identity or credential logging.
+Connection initialization and acceptance logging also tolerate an absent `Logging`
+object, treating censoring as not enabled, consistently with the banned-IP paths.
+This removes an incidental null-reference connection rejection for that configuration;
+explicitly configured privacy settings and ban decisions retain their meaning.
 Databases, accepted-share/accounting records, payout records, API responses, periodic
 worker statistics/notifications, wire replies, external proxies, plugins and arbitrary
 application logs are not globally redacted by this change. Do not put credentials in
@@ -149,10 +164,17 @@ Real listener tests also capture accept/listen/task-removal/drain failures and m
 malformed, or wrong-password certificate diagnostics, and verify exclusive socket
 rebinding after cleanup. Tests cover omitted method fields and both banned-IP privacy
 paths. Shared TLS/cryptographic categories are checked across Stratum/RPC projections.
-The lightweight `scripts/release/test-stratum-diagnostic-sources.py` CI guard rejects
-new unreviewed direct logger calls in the server/connection files, with negative
-fixtures for exception/request/token overloads. It is not a C# taint analyzer and
-does not replace review of aliases, indirect consumers or new coin implementations.
+The lightweight `scripts/release/test-stratum-diagnostic-sources.py` CI guard pins
+reviewed direct logger occurrence counts in the server, connection and projection
+files. Both existing identical TLS-ban messages are explicitly listed; adding or
+removing an occurrence requires review. Negative fixtures cover duplicated/missing
+approved accesses and exception/request/token overloads. A narrow call scan across
+all Blockchain/Mining C# sources rejects known raw miner-identity/request fields in
+direct logger calls, including multiline/nested expressions. Inline
+`LogManager.GetCurrentClassLogger().…` calls are also rejected in these scopes.
+The scan does not derive its scope from `identity withheld` markers that a regression
+could remove. It is not a full C# parser or taint analyzer: aliases, indirect consumers
+and new language constructs still require review and captured-output tests.
 
 Run the focused tests plus existing lifecycle and share-rejection regressions:
 

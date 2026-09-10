@@ -65,6 +65,10 @@ Listener/certificate failures also identify the configured port, and certificate
 errors distinguish missing/inaccessible files from invalid certificates or passwords
 without exposing filesystem paths or exception text. TLS/cryptographic categories
 are shared with RPC consumers. Banned-client messages honor the existing IP-censor flag.
+Stratum JSON omits unavailable optional fields instead of emitting null padding;
+consumers must accept absent properties. RPC/payment alert filters that previously
+matched `failure=other` must account for the shared `tls-handshake` and `cryptographic`
+categories; their record shape and payment behavior are unchanged.
 Authorization, stale-job and block-acceptance diagnostics no longer echo miner
 identity/user-agent text. Unknown request-method telemetry labels become `other`;
 known protocol methods retain their labels.

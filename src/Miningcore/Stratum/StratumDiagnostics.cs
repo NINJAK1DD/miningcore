@@ -45,17 +45,27 @@ internal static class StratumDiagnostics
 
         // A concrete token tree avoids ambient Json.NET converters/settings.
         // Never attach the exception: NLog layouts can render it independently.
-        logger.Log(level, "Stratum diagnostic " + new JObject
+        // Optional fields are absent, not null padding on every read-cycle event.
+        var record = new JObject
         {
             ["event"] = Enum.IsDefined(operation) ? operation.ToString() : "other",
-            ["connectionId"] = connectionId,
-            ["failure"] = failure == null ? null : DiagnosticFailure.Category(failure),
-            ["code"] = DiagnosticFailure.Code(failure),
-            ["method"] = operation == Event.Request ? Method(method) : null,
-            ["bytes"] = bytes,
-            ["port"] = port,
-            ["reason"] = operation == Event.CertificateLoad ? CertificateReason(failure) : null,
-        }.ToString(Formatting.None));
+        };
+        if(connectionId != null)
+            record["connectionId"] = connectionId;
+        if(failure != null)
+            record["failure"] = DiagnosticFailure.Category(failure);
+        if(DiagnosticFailure.Code(failure) is { } code)
+            record["code"] = code;
+        if(operation == Event.Request)
+            record["method"] = Method(method);
+        if(bytes.HasValue)
+            record["bytes"] = bytes.Value;
+        if(port.HasValue)
+            record["port"] = port.Value;
+        if(operation == Event.CertificateLoad && CertificateReason(failure) is { } reason)
+            record["reason"] = reason;
+
+        logger.Log(level, "Stratum diagnostic " + record.ToString(Formatting.None));
     }
 
     // Certificate loaders can wrap file-access failures in CryptographicException.

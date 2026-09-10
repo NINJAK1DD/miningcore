@@ -79,6 +79,21 @@ this projection; the shared classifier lives in `Miningcore.Diagnostics`. The
 `RpcConsumerDiagnostics` name/namespace retains the RPC-consumer audit contract;
 reuse by shared services does not imply that every service output is audited.
 
+## Compatibility
+
+The Stratum hardening in [#157](https://github.com/NINJAK1DD/miningcore/issues/157)
+adds two categories to the shared `DiagnosticFailure` vocabulary:
+`AuthenticationException` now produces `tls-handshake`, and `CryptographicException`
+produces `cryptographic`, instead of their former `other` classification. This also
+affects RPC-consumer and shared payment-failure diagnostics using that classifier,
+not just Stratum logs. Update alerts and dashboards that relied on `failure=other`
+to include the more-specific categories where appropriate.
+
+These are diagnostic classifications only: payment outcomes, retry/reconciliation
+decisions and original private exception evidence do not change. The RPC-consumer
+JSON field shape is unchanged; omission of unavailable optional fields in the new
+Stratum projection is a separate contract, not a global serializer setting.
+
 ## Alerts and reconciliation
 
 Block-rejection and wallet-relock alerts retain the operation and required action
