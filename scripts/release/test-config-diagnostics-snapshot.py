@@ -21,6 +21,9 @@ SENTINEL = b"reviewed fixture must survive failure\n"
 class SnapshotHelperContract:
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
+        if shutil.which(cls.interpreter[0]) is None:
+            raise RuntimeError(f"Required interpreter not found: {cls.interpreter[0]}")
         if os.name == "nt":
             # Build a real apphost once; .cmd/shebang shims do not exercise the
             # helper's shell-free Windows ProcessStartInfo execution path.
@@ -39,6 +42,7 @@ class SnapshotHelperContract:
                                    (result.stdout + result.stderr).decode("utf-8", errors="replace"))
 
     def setUp(self):
+        super().setUp()
         self.directory = tempfile.TemporaryDirectory(prefix="miningcore snapshot tests ")
         self.addCleanup(self.directory.cleanup)
         # Windows runner TEMP may use an 8.3 alias (e.g. RUNNER~1), whereas
@@ -108,6 +112,8 @@ class SnapshotHelperContract:
         )
 
     def assert_invoked(self):
+        # Keep paired with test_synthetic_child_contract: the self-test proves
+        # the stub, while this check prevents wrong-argv failures passing guards.
         self.assertTrue((self.root / "invoked").exists(), "Synthetic dotnet was not invoked")
         self.assertEqual(
             json.loads((self.root / "expected-args.json").read_text(encoding="utf-8")),

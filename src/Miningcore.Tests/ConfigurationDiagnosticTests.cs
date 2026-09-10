@@ -435,6 +435,34 @@ public class ConfigurationDiagnosticTests
         Assert.Equal(output, Program.SerializeConfigDiagnostics(config));
     }
 
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("directory")]
+    [InlineData("malformed-json")]
+    [InlineData("invalid-schema")]
+    [InlineData("valid")]
+    public async Task PublicDump_BundledSchemaFailuresArePrivateInstallationErrors(string schema)
+    {
+        var result = await RunDump(Fixture().ToString(),
+            filename => new[] { "--dumpconfig", "-c", filename }, schema: schema);
+        Assert.Empty(result.Logs);
+        Assert.DoesNotContain(Secret, result.Output + result.Error);
+        if(schema == "valid")
+        {
+            // A control proves the relocated entry assembly can read its schema
+            // and execute the real dump, rather than failing during test setup.
+            Assert.Equal(0, result.ExitCode);
+            Assert.Empty(result.Error);
+            Assert.Equal(2, JObject.Parse(result.Output)["diagnosticFormatVersion"].Value<int>());
+        }
+        else
+        {
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(result.Output);
+            Assert.Equal(FailureMessage("internal"), result.Error);
+        }
+    }
+
     [Fact]
     public void Projection_NeverTraversesUnknownObjectsOrRuntimeTemplates()
     {
@@ -570,7 +598,8 @@ public class ConfigurationDiagnosticTests
         }, createConfig: mode != "missing-file");
 
     private static async Task<(int ExitCode, string Output, string Error, string Logs)> RunDump(
-        string content, Func<string, string[]> arguments, bool createConfig = true, bool closedOutput = false)
+        string content, Func<string, string[]> arguments, bool createConfig = true, bool closedOutput = false,
+        string schema = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), "miningcore-dump-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -580,6 +609,23 @@ public class ConfigurationDiagnosticTests
         {
             if(content != null && createConfig)
                 await File.WriteAllTextAsync(filename, content);
+            if(schema != null)
+            {
+                var installation = Path.Combine(directory, "installation-" + Secret);
+                Directory.CreateDirectory(installation);
+                File.Copy(Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"),
+                    Path.Combine(installation, "Miningcore.Tests.ProcessHost.dll"));
+                var schemaPath = Path.Combine(installation, "config.schema.json");
+                switch(schema)
+                {
+                    case "missing": break;
+                    case "directory": Directory.CreateDirectory(schemaPath); break;
+                    case "malformed-json": await File.WriteAllTextAsync(schemaPath, "{\"" + Secret); break;
+                    case "invalid-schema": await File.WriteAllTextAsync(schemaPath, "{\"type\":\"" + Secret + "\"}"); break;
+                    case "valid": File.Copy(Path.Combine(AppContext.BaseDirectory, "config.schema.json"), schemaPath); break;
+                    default: throw new ArgumentOutOfRangeException(nameof(schema));
+                }
+            }
             var start = new ProcessStartInfo("dotnet")
             {
                 UseShellExecute = false, CreateNoWindow = true,
@@ -591,7 +637,8 @@ public class ConfigurationDiagnosticTests
                 "exec", "--runtimeconfig", Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.runtimeconfig.json"),
                 "--depsfile", Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.deps.json"),
                 Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"),
-                closedOutput ? "config-dump-closed-output" : "config-dump", logfile,
+                schema != null ? "config-dump-isolated-schema" :
+                    closedOutput ? "config-dump-closed-output" : "config-dump", logfile,
             })
                 start.ArgumentList.Add(argument);
             foreach(var argument in arguments(filename))
@@ -632,5 +679,7 @@ public class ConfigurationDiagnosticTests
     private static string FailureMessage(string category) =>
         (category == "output-unavailable"
             ? "Configuration dump failed (output-unavailable). Check the stdout destination or pipeline. Input details are withheld."
+            : category == "internal"
+            ? "Configuration dump failed (internal). Check the Miningcore installation and diagnostic tooling. Input details are withheld."
             : $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.") + Environment.NewLine;
 }

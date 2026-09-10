@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -11,7 +12,7 @@ using Miningcore.Mining;
 using Newtonsoft.Json;
 using MiningcoreProgram = Miningcore.Program;
 
-if(args.Length > 1 && args[0] is "config-dump" or "config-dump-closed-output")
+if(args.Length > 1 && args[0] is "config-dump" or "config-dump-closed-output" or "config-dump-isolated-schema")
 {
     var target = new NLog.Targets.FileTarget("captured-dump-logs")
     {
@@ -23,6 +24,14 @@ if(args.Length > 1 && args[0] is "config-dump" or "config-dump-closed-output")
     NLog.LogManager.Configuration = logging;
     try
     {
+        if(args[0] == "config-dump-isolated-schema")
+        {
+            // Only this disposable child sees the synthetic installation. Keep
+            // the real test output/schema untouched so parallel tests are safe.
+            var entry = Path.Combine(Environment.CurrentDirectory,
+                "installation-ISSUE144_SYNTHETIC_SECRET", "Miningcore.Tests.ProcessHost.dll");
+            Assembly.SetEntryAssembly(Assembly.LoadFile(entry));
+        }
         if(args[0] == "config-dump-closed-output")
             Console.SetOut(new ClosedDiagnosticOutput());
         return await MiningcoreProgram.Main(args.Skip(2).ToArray());

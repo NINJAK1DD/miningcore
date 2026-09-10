@@ -101,9 +101,12 @@ Unreadable files, malformed JSON, schema failures and invalid command arguments 
 produce a nonzero exit code and a fixed diagnostic with one category: `usage`, `unreadable`,
 `invalid-json`, `schema-invalid`, `invalid-configuration` (including duplicates or binding/syntax
 policy errors), `output-unavailable` (for example closed stdout), or `internal`. Only read-stage
-I/O failures are called `unreadable`; projection or output failures are not blamed on the file.
+I/O failures for the user configuration are called `unreadable`; a missing, inaccessible or
+malformed bundled `config.schema.json` is an installation failure (`internal`). Projection
+or output failures are not blamed on the file. Internal failures advise checking the installation
+and diagnostic tooling without disclosing paths or exception details.
 No input values, exception text or file paths are included. Start
-with the named category, inspect the original file privately, and check the schema and reviewed
+with the named category. For configuration errors, inspect the original file privately and check the schema and reviewed
 coin-family examples for extension spelling. Unknown extension fields are not validated by this
 summary. Normal startup can give detailed errors **but may start services if validation succeeds**;
 use a controlled environment and do not publish its logs unreviewed.

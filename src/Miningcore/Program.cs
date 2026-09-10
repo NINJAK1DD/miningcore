@@ -164,6 +164,8 @@ public class Program : ProcessStatusBackgroundService
                 var category = GetConfigDiagnosticFailureCategory(stage, error);
                 Console.Error.WriteLine(category == "output-unavailable"
                     ? "Configuration dump failed (output-unavailable). Check the stdout destination or pipeline. Input details are withheld."
+                    : category == "internal"
+                    ? "Configuration dump failed (internal). Check the Miningcore installation and diagnostic tooling. Input details are withheld."
                     : $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.");
                 return Task.CompletedTask;
             }, () => 0);
@@ -1469,8 +1471,8 @@ public class Program : ProcessStatusBackgroundService
 
     internal static ClusterConfig ReadConfig(string file, ConfigurationReadOptions options)
     {
-        // Quiet is consumed by the guarded diagnostic command: retain original
-        // exception types for its closed failure categories, never their text.
+        // Quiet is consumed by the guarded diagnostic command: retain user-file
+        // exception types and distinguish bundled-schema failures, never their text.
         // Ordinary/recovery callers keep the existing startup error contract.
         var skipApiListenerSettings = options.HasFlag(ConfigurationReadOptions.Recovery);
         var quiet = options.HasFlag(ConfigurationReadOptions.Quiet);
@@ -1521,7 +1523,7 @@ public class Program : ProcessStatusBackgroundService
                     using(var documentReader = document.CreateReader())
                     using(var validatingReader = new JSchemaValidatingReader(documentReader)
                     {
-                        Schema =  LoadSchema()
+                        Schema = LoadSchema(quiet)
                     })
                     {
                         return serializer.Deserialize<ClusterConfig>(
@@ -1885,14 +1887,25 @@ public class Program : ProcessStatusBackgroundService
             property.Remove();
     }
 
-    private static JSchema LoadSchema()
+    private sealed class ConfigurationSchemaException(Exception innerException)
+        : Exception("Unable to load the bundled configuration schema.", innerException);
+
+    private static JSchema LoadSchema(bool quiet)
     {
         var basePath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
         var path = Path.Combine(basePath, "config.schema.json");
 
-        using(var reader = new JsonTextReader(new StreamReader(File.OpenRead(path))))
+        try
         {
+            using var reader = new JsonTextReader(new StreamReader(File.OpenRead(path)));
             return JSchema.Load(reader);
+        }
+        catch(Exception ex) when(quiet && ex is IOException or UnauthorizedAccessException or JsonException or JSchemaException)
+        {
+            // These failures belong to the installation, not the user's file.
+            // Preserve ordinary/recovery exceptions; diagnostics classify this
+            // private wrapper as internal without exposing its cause or path.
+            throw new ConfigurationSchemaException(ex);
         }
     }
 
