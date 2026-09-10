@@ -70,6 +70,7 @@ class SnapshotHelperContract:
             "import json, pathlib, sys\n"
             "root = pathlib.Path(__file__).resolve().parent.parent\n"
             "(root / 'invoked').touch()\n"
+            "(root / 'actual-args.json').write_text(json.dumps(sys.argv[1:]))\n"
             "if sys.argv[1:] != json.loads((root / 'expected-args.json').read_text()):\n"
             "    sys.exit(99)\n"
             "sys.stdout.buffer.write((root / 'response.json').read_bytes())\n"
@@ -82,16 +83,20 @@ class SnapshotHelperContract:
     def assembly(self, configuration):
         return self.root / f"src/Miningcore/bin/{configuration}/net10.0/Miningcore.dll"
 
-    def run_helper(self, *arguments):
+    def prepare_run(self, *arguments):
         # Isolate subcases so an unexpected write/invocation is reported once,
         # rather than contaminating every subsequent guard assertion.
         self.snapshot.write_bytes(SENTINEL)
         (self.root / "invoked").unlink(missing_ok=True)
+        (self.root / "actual-args.json").unlink(missing_ok=True)
         configuration = arguments[0] if arguments else "Debug"
         (self.root / "expected-args.json").write_text(json.dumps([
             str(self.assembly(configuration)), "--dumpconfig", "-c",
             str(self.root / "config.example.json"),
         ]), encoding="utf-8")
+
+    def run_helper(self, *arguments):
+        self.prepare_run(*arguments)
         return subprocess.run(
             [*self.interpreter, str(self.helper), *arguments],
             cwd=self.root.parent,
@@ -99,10 +104,34 @@ class SnapshotHelperContract:
             capture_output=True, timeout=15, check=False,
         )
 
-    def assert_preserved(self, result):
+    def assert_invoked(self):
+        self.assertTrue((self.root / "invoked").exists(), "Synthetic dotnet was not invoked")
+        self.assertEqual(
+            json.loads((self.root / "expected-args.json").read_text(encoding="utf-8")),
+            json.loads((self.root / "actual-args.json").read_text(encoding="utf-8")),
+        )
+
+    def assert_preserved(self, result, invoked=True):
         self.assertNotEqual(0, result.returncode)
         self.assertEqual(SENTINEL, self.snapshot.read_bytes())
         self.assertNotIn(b"synthetic subprocess diagnostic", result.stdout + result.stderr)
+        if invoked:
+            self.assert_invoked()
+
+    def test_synthetic_child_contract(self):
+        # Prove the stub itself works before interpreting helper failures.
+        # Its input, output and arguments are entirely synthetic and safe to
+        # include in an assertion; the real helper still suppresses stderr.
+        self.prepare_run()
+        arguments = json.loads((self.root / "expected-args.json").read_text(encoding="utf-8"))
+        child = self.bin / ("dotnet.exe" if os.name == "nt" else "dotnet")
+        result = subprocess.run([str(child), *arguments], capture_output=True,
+                                timeout=15, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_invoked()
+        self.assertEqual(self.response.read_bytes(), result.stdout)
+        self.assertEqual(b"synthetic subprocess diagnostic", result.stderr)
+        self.assertEqual(SENTINEL, self.snapshot.read_bytes())
 
     def test_default_debug_and_release_preserve_format_with_utf8_lf_no_bom(self):
         expected = '{\n  "diagnosticFormatVersion": 2,\n  "notice": "caf\u00e9",\n  "configuration": {}\n}\n'.encode("utf-8")
@@ -111,6 +140,7 @@ class SnapshotHelperContract:
                 with self.subTest(arguments=arguments, bom=bom):
                     self.response.write_bytes(bom + expected.replace(b"\n", b"\r\n"))
                     result = self.run_helper(*arguments)
+                    self.assert_invoked()
                     self.assertEqual(0, result.returncode, result.stderr)
                     self.assertEqual(expected, self.snapshot.read_bytes())
                     self.assertNotIn(b"synthetic subprocess diagnostic", result.stdout + result.stderr)
@@ -121,13 +151,13 @@ class SnapshotHelperContract:
 
     def test_missing_assembly_does_not_invoke_dotnet(self):
         self.assembly("Debug").unlink()
-        self.assert_preserved(self.run_helper())
+        self.assert_preserved(self.run_helper(), invoked=False)
         self.assertFalse((self.root / "invoked").exists())
 
     def test_rejects_invalid_arguments_without_invoking_dotnet(self):
         for arguments in (("../Release",), ("Debug", "production.json"), ("--help",), ("",)):
             with self.subTest(arguments=arguments):
-                self.assert_preserved(self.run_helper(*arguments))
+                self.assert_preserved(self.run_helper(*arguments), invoked=False)
                 self.assertFalse((self.root / "invoked").exists())
 
     def test_malformed_json_and_encoding_preserve_fixture(self):

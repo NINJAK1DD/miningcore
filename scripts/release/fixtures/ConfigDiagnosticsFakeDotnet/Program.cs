@@ -6,6 +6,7 @@ using System.Text.Json;
 // shim reads or writes lives in its isolated synthetic fixture directory.
 var root = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.FullName;
 using(File.Create(Path.Combine(root, "invoked"))) { }
+File.WriteAllText(Path.Combine(root, "actual-args.json"), JsonSerializer.Serialize(args));
 var expected = JsonSerializer.Deserialize<string[]>(File.ReadAllText(Path.Combine(root, "expected-args.json")));
 if(expected == null || !args.SequenceEqual(expected, StringComparer.Ordinal))
     return 99;
