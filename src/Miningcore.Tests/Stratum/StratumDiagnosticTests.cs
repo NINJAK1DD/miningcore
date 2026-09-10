@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Reactive;
+using System.Reactive.Linq;
 using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -27,6 +28,9 @@ using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Alephium;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
+using Miningcore.Diagnostics;
+using Miningcore.Rpc;
+using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Nicehash;
 using Miningcore.Persistence;
@@ -57,6 +61,7 @@ public class StratumDiagnosticTests
         yield return new object[] { new JsonSerializationException(Hostile), "json" };
         yield return new object[] { new InvalidDataException(Hostile), "invalid-data" };
         yield return new object[] { new AuthenticationException(Hostile), "tls-handshake" };
+        yield return new object[] { new CryptographicException(Hostile), "cryptographic" };
         yield return new object[] { new IOException(Hostile) { Source = Hostile }, "io" };
         yield return new object[] { new ArgumentException(Hostile, Hostile), "argument" };
         yield return new object[] { new FormatException(Hostile), "format" };
@@ -74,13 +79,14 @@ public class StratumDiagnosticTests
         using var logs = new Capture();
         foreach(var operation in System.Enum.GetValues<StratumDiagnostics.Event>())
             StratumDiagnostics.Write(logs.Logger, LogLevel.Error, operation,
-                "server-connection", failure, Hostile, long.MaxValue);
+                "server-connection", failure, Hostile, long.MaxValue, 65535);
 
         foreach(var record in logs.Records)
         {
             Assert.Equal(category, record["failure"].Value<string>());
             Assert.Equal("server-connection", record["connectionId"].Value<string>());
             Assert.Equal(long.MaxValue, record["bytes"].Value<long>());
+            Assert.Equal(65535, record["port"].Value<int>());
             if(failure is StratumException share)
                 Assert.Equal((int) share.Code, record["code"].Value<int>());
         }
@@ -134,6 +140,7 @@ public class StratumDiagnosticTests
     }
 
     [Theory]
+    [InlineData(null)]
     [InlineData("mining.authorize")]
     [InlineData("ctxc_submitLogin")]
     [InlineData("ctxc_getWork")]
@@ -160,6 +167,8 @@ public class StratumDiagnosticTests
                     ["id"] = Hostile, ["method"] = method,
                     ["params"] = new JArray(Hostile + ".worker", Hostile, new JObject { ["agent"] = Hostile }),
                 };
+                if(method == null)
+                    request.Remove("method");
                 await tcp.Send(request.ToString(Formatting.None) + "\n");
                 var response = JObject.Parse(await tcp.Reader.ReadLineAsync().WaitAsync(Deadline));
                 Assert.Equal(Hostile, response["id"].Value<string>());
@@ -170,7 +179,7 @@ public class StratumDiagnosticTests
         Assert.All(requests, x => Assert.Equal(Hostile, x.ParamsAs<JArray>()[1].Value<string>()));
         var telemetry = bus.ReceivedCalls().SelectMany(x => x.GetArguments()).OfType<TelemetryEvent>()
             .Where(x => x.Category == TelemetryCategory.StratumRequest).ToArray();
-        var expectedMethods = new[] { knownMethod, "other", "other", "mining.submit" };
+        var expectedMethods = new[] { knownMethod ?? "other", "other", "other", "mining.submit" };
         Assert.Equal(expectedMethods, telemetry.Select(x => x.Info));
         Assert.Equal(1, server.Completions);
         Assert.Equal(0, server.Errors);
@@ -178,6 +187,8 @@ public class StratumDiagnosticTests
             .Select(x => x["method"].Value<string>()));
         Assert.Contains(logs.Records, x => x["event"].Value<string>() == "Send" && x["bytes"].Value<long>() > 0);
         Assert.Contains(logs.Records, x => x["event"].Value<string>() == "Buffer" && x["bytes"].Value<long>() > 0);
+        Assert.Contains(logs.Records, x => x["event"].Value<string>() == "ReceiveWait");
+        Assert.Contains(logs.Records, x => x["event"].Value<string>() == "BufferWait");
         server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
         logs.AssertSafe();
     }
@@ -467,8 +478,11 @@ public class StratumDiagnosticTests
         logs.AssertSafe();
     }
 
-    [Fact]
-    public async Task Listener_CertificateLoadFailure_DoesNotDisclosePathOrPassword()
+    [Theory]
+    [InlineData("missing", "file-not-found")]
+    [InlineData("wrong-password", "invalid-certificate-or-password")]
+    [InlineData("invalid", "invalid-certificate-or-password")]
+    public async Task Listener_CertificateLoadFailure_DoesNotDisclosePathOrPassword(string mode, string reason)
     {
         using var logs = new Capture();
         using var container = new ContainerBuilder().Build();
@@ -478,10 +492,170 @@ public class StratumDiagnosticTests
             Tls = true, TlsPfxFile = Path.Combine(Path.GetTempPath(), Secret + Guid.NewGuid().ToString("N") + ".pfx"),
             TlsPfxPassword = Hostile,
         });
-        await Assert.ThrowsAnyAsync<CryptographicException>(() => server.RunAsync(CancellationToken.None, reservation));
-        Assert.Equal("CertificateLoad", Assert.Single(logs.Records)["event"].Value<string>());
+        var path = reservation.Endpoint.PoolEndpoint.TlsPfxFile;
+        try
+        {
+            if(mode == "wrong-password")
+            {
+                using var key = RSA.Create(2048);
+                var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
+                File.WriteAllBytes(path, certificate.Export(X509ContentType.Pfx, "different-synthetic-password"));
+            }
+            else if(mode == "invalid")
+                File.WriteAllText(path, Hostile);
+            await Assert.ThrowsAnyAsync<CryptographicException>(() => server.RunAsync(CancellationToken.None, reservation));
+        }
+        finally { if(mode != "missing") File.Delete(path); }
+        var record = Assert.Single(logs.Records);
+        Assert.Equal("CertificateLoad", record["event"].Value<string>());
+        Assert.Equal("cryptographic", record["failure"].Value<string>());
+        Assert.Equal(reason, record["reason"].Value<string>());
+        Assert.Equal(reservation.Endpoint.IPEndPoint.Port, record["port"].Value<int>());
         Assert.Equal(0, server.TrackedConnectionTaskCount);
         using var rebound = StratumServer.CreateBoundSocket(reservation.Endpoint.IPEndPoint);
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData(false, "tls-handshake")]
+    [InlineData(true, "cryptographic")]
+    public void SharedFailureCategories_AgreeAcrossStratumAndRpcConsumers(bool crypto, string category)
+    {
+        using var logs = new Capture();
+        Exception failure = crypto ? new CryptographicException(Hostile) : new AuthenticationException(Hostile);
+        Assert.Equal(category, DiagnosticFailure.Category(failure));
+        StratumDiagnostics.Write(logs.Logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, failure: failure);
+        RpcConsumerDiagnostics.Write(logs.Logger, LogLevel.Error, "BitcoinPool.OnSubmitAsync", failure);
+        Assert.Equal(category, Assert.Single(logs.Records)["failure"].Value<string>());
+        var rpc = JObject.Parse(Assert.Single(logs.Messages.Where(x => x.StartsWith("RPC consumer diagnostic ", StringComparison.Ordinal)))["RPC consumer diagnostic ".Length..]);
+        Assert.Equal(category, rpc["failure"].Value<string>());
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public void CertificateReason_UsesBoundedStructuralCausesOnly()
+    {
+        Assert.Equal("access-denied", StratumDiagnostics.CertificateReason(new CryptographicException(Hostile, new UnauthorizedAccessException(Hostile))));
+        Assert.Equal("file-not-found", StratumDiagnostics.CertificateReason(new DirectoryNotFoundException(Hostile)));
+        Assert.Equal("file-io", StratumDiagnostics.CertificateReason(new CryptographicException(Hostile, new IOException(Hostile))));
+        Assert.Equal("other", StratumDiagnostics.CertificateReason(new HostileException()));
+        Exception failure = new FileNotFoundException(Hostile);
+        for(var i = 0; i < 10; i++) failure = new CryptographicException(Hostile, failure);
+        Assert.Equal("other", StratumDiagnostics.CertificateReason(failure));
+    }
+
+    [Fact]
+    public async Task Listener_UnexpectedAcceptCleanupFailure_RetainsPortWithoutExceptionText()
+    {
+        using var logs = new Capture();
+        using var container = new ContainerBuilder().Build();
+        var bus = Substitute.For<IMessageBus>();
+        bus.When(x => x.SendMessage(Arg.Is<TelemetryEvent>(x => x.Category == TelemetryCategory.Connections && x.Total == 0), Arg.Any<string>()))
+            .Do(_ => throw new Exception(Hostile));
+        var server = new DiagnosticServer(container, bus, logs.Logger)
+        {
+            Initialize = _ => throw new Exception(Hostile),
+        };
+        using var reservation = CreateReservation(new PoolEndpoint());
+        using var lifetime = new CancellationTokenSource(Deadline);
+        var run = server.RunAsync(lifetime.Token, reservation);
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(reservation.Endpoint.IPEndPoint, lifetime.Token);
+            await logs.WaitForEvent("ListenError");
+        }
+        finally { lifetime.Cancel(); await run.WaitAsync(Deadline); }
+        var record = Assert.Single(logs.Records.Where(x => x["event"].Value<string>() == "ListenError"));
+        Assert.Equal(reservation.Endpoint.IPEndPoint.Port, record["port"].Value<int>());
+        Assert.Equal(0, server.ConnectionCount);
+        using var rebound = StratumServer.CreateBoundSocket(reservation.Endpoint.IPEndPoint);
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public async Task Listener_FaultedTcpDispatchDuringDrain_IsSafeAndReleasesOwnership()
+    {
+        using var logs = new Capture();
+        using var container = new ContainerBuilder().Build();
+        // Complete observer cleanup synchronously when the drain log is observed, so
+        // the real faulted dispatch remains in the snapshot until that path is exercised.
+        var remove = new TaskCompletionSource();
+        IDisposable subscription = null;
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Initialize = connection => subscription = connection.Terminated.Subscribe(_ => throw new Exception(Hostile)),
+            RemovingTask = _ => remove.Task,
+        };
+        logs.OnMessage = message => { if(message.Contains("\"event\":\"Drain\"", StringComparison.Ordinal)) remove.TrySetResult(); };
+        using var reservation = CreateReservation(new PoolEndpoint());
+        using var lifetime = new CancellationTokenSource(Deadline);
+        var run = server.RunAsync(lifetime.Token, reservation);
+        try
+        {
+            using(var client = new TcpClient(AddressFamily.InterNetwork))
+            {
+                await client.ConnectAsync(reservation.Endpoint.IPEndPoint, lifetime.Token);
+                await client.GetStream().WriteAsync(Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"mining.authorize\"}\n"), lifetime.Token);
+                using var reader = new StreamReader(client.GetStream());
+                Assert.True(JObject.Parse(await reader.ReadLineAsync(lifetime.Token))["result"].Value<bool>());
+            }
+            lifetime.Cancel();
+            await logs.WaitForEvent("Drain");
+            await run.WaitAsync(Deadline);
+        }
+        finally
+        {
+            remove.TrySetResult();
+            lifetime.Cancel();
+            await run.WaitAsync(Deadline);
+            subscription?.Dispose();
+        }
+        Assert.All(logs.Records.Where(x => x["event"].Value<string>() == "Drain"), x => Assert.Equal(JTokenType.Null, x["connectionId"].Type));
+        Assert.Equal(0, server.ConnectionCount);
+        Assert.Equal(0, server.TrackedConnectionTaskCount);
+        using var rebound = StratumServer.CreateBoundSocket(reservation.Endpoint.IPEndPoint);
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Listener_BannedIpLogging_HonorsPrivacyWithoutChangingBanDecision(bool censor, bool alreadyConnected)
+    {
+        using var logs = new Capture();
+        using var container = new ContainerBuilder().Build();
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger);
+        server.CensorIps(censor);
+        server.Bans.IsBanned(Arg.Any<IPAddress>()).Returns(!alreadyConnected);
+        using var reservation = CreateReservation(new PoolEndpoint());
+        using var lifetime = new CancellationTokenSource(Deadline);
+        var run = server.RunAsync(lifetime.Token, reservation);
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(reservation.Endpoint.IPEndPoint, lifetime.Token);
+            if(alreadyConnected)
+            {
+                var request = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"mining.authorize\"}\n");
+                await client.GetStream().WriteAsync(request, lifetime.Token);
+                using var reader = new StreamReader(client.GetStream(), Encoding.UTF8, false, 1024, true);
+                Assert.True(JObject.Parse(await reader.ReadLineAsync(lifetime.Token))["result"].Value<bool>());
+                server.Bans.IsBanned(Arg.Any<IPAddress>()).Returns(true);
+                await client.GetStream().WriteAsync(request, lifetime.Token);
+            }
+            while(!logs.Messages.Any(x => x.Contains("Disconnecting banned", StringComparison.Ordinal)))
+                await Task.Delay(10, lifetime.Token);
+        }
+        finally { lifetime.Cancel(); await run.WaitAsync(Deadline); }
+        var message = Assert.Single(logs.Messages.Where(x => x.Contains("Disconnecting banned", StringComparison.Ordinal)));
+        Assert.EndsWith(IPAddress.Loopback.CensorOrReturn(censor).ToString(), message);
+        if(censor) Assert.DoesNotContain("127.0.0.1", message);
+        Assert.Equal(alreadyConnected ? 1 : 0, server.Requests);
+        Assert.Equal(0, server.ConnectionCount);
         logs.AssertSafe();
     }
 
@@ -562,6 +736,7 @@ public class StratumDiagnosticTests
         }
         public IBanManager Bans { get; } = Substitute.For<IBanManager>();
         public int Requests { get; private set; }
+        public void CensorIps(bool censor) => clusterConfig.Logging.GPDRCompliant = censor;
         public int Errors { get; private set; }
         public int Completions { get; private set; }
         public bool ThrowInTerminalCallback { get; init; }
@@ -662,6 +837,7 @@ public class StratumDiagnosticTests
             Logger = factory.GetLogger("stratum-diagnostic-test");
         }
         public ILogger Logger { get; }
+        public Action<string> OnMessage { set => target.OnMessage = value; }
         public string[] Messages => target.Messages.ToArray();
         public async Task WaitForEvent(string operation)
         {
@@ -694,12 +870,15 @@ public class StratumDiagnosticTests
 
     private sealed class CaptureTarget : TargetWithLayout
     {
+        public Action<string> OnMessage { get; set; }
         public ConcurrentQueue<string> Messages { get; } = new();
         public ConcurrentQueue<LogEventInfo> Events { get; } = new();
         protected override void Write(LogEventInfo logEvent)
         {
             Events.Enqueue(logEvent);
-            Messages.Enqueue(Layout.Render(logEvent));
+            var message = Layout.Render(logEvent);
+            Messages.Enqueue(message);
+            OnMessage?.Invoke(message);
         }
     }
 }

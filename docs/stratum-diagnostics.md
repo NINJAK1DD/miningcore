@@ -22,18 +22,26 @@ log event: a custom NLog exception layout cannot recover it. This projection doe
 not invoke exception `Message`/`ToString`, serialize requests, or use ambient
 Json.NET converters/settings.
 
+The method projection also closes an unbounded telemetry-cardinality path. Previously,
+distinct arbitrary request methods flowed into Prometheus label values and could grow
+registry memory and scrape output indefinitely. The closed vocabulary bounds that
+dimension; it is not a general request-rate or memory-budget defense. Debug records
+still have per-event serialization cost. They return before constructing JSON when
+disabled; the concrete JSON tree retains escaping and serializer-setting isolation.
+Pooling/hand-written serialization is deferred until profiling demonstrates a need.
+
 ## Inventory and output boundaries
 
 | Source / path | Untrusted fields previously reachable | Retained diagnostic output |
 | --- | --- | --- |
-| `StratumConnection.FillReceivePipeAsync`, `ProcessReceivePipeAsync` | Full buffered miner JSON, including incomplete requests and credentials | Server connection ID, received/buffered byte count; fixed waiting messages |
+| `StratumConnection.FillReceivePipeAsync`, `ProcessReceivePipeAsync` | Full buffered miner JSON, including incomplete requests and credentials | Server connection ID, received/buffered byte count; structured `ReceiveWait`/`BufferWait` events |
 | `StratumConnection.SendMessage` | Serialized reply/notification, echoed IDs, arbitrary error text | Server connection ID and serialized byte count before the newline |
 | `StratumConnection.ProcessProxyHeader` | Raw trusted-proxy header, including malformed addresses/ports | Header byte count; successfully parsed numeric client IP under existing logging settings |
 | `StratumConnection.DispatchAsync` terminal callbacks | Raw callback/teardown exception and inner exception text | Fixed terminal-callback event, structural failure and numeric code |
 | `StratumServer.OnRequestAsync` and Ethereum V1 warnings | Miner method and JSON-RPC request ID; telemetry method label | Finite method vocabulary; request ID omitted; unknown telemetry methods grouped as `other` |
 | `StratumServer.OnConnectionError` | Parser message/path, socket/TLS/IO/argument/other exceptions | Connection ID, failure category and numeric code; existing fixed ban messages |
-| Server listen, accept, tracked/untracked completion, task removal and drain observers | Exceptions propagated from callbacks/connection tasks | Fixed event and failure category, connection ID where owned |
-| Server certificate load | Exception text and configured certificate path | `CertificateLoad` event and structural category; no path or password |
+| Server listen, accept, tracked/untracked completion, task removal and drain observers | Exceptions propagated from callbacks/connection tasks | Fixed event and failure category, connection ID where owned; listener errors retain the port |
+| Server certificate load | Exception text and configured certificate path | `CertificateLoad` event, port, structural category and bounded reason; no path or password |
 | Coin-pool authorization and hello handlers | Miner/worker identity, arbitrary user agent, Kaspa validation error text | Authorized/unauthorized/hello outcome, connection ID and existing ban duration; fixed invalid-address reason |
 | Xelis, Alephium, Kaspa job lookup | Miner identity and submitted job ID | Connection ID and `job-not-found`; original lookup/ASIC compatibility logic unchanged |
 | Coin job-manager block-acceptance logs, including merged Bitcoin | Miner identity | Existing block height/hash with identity withheld |
@@ -56,10 +64,12 @@ New transport records start with `Stratum diagnostic ` followed by compact JSON:
 | --- | --- |
 | `event` | Finite `StratumDiagnostics.Event` value; unknown enum values become `other`. |
 | `connectionId` | Server-generated correlation ID, or null before a connection exists. Never a JSON-RPC ID, worker/session ID or proxy field. |
-| `failure` | Fixed structural category, null for non-failure events; TLS authentication errors use `tls-handshake`. |
+| `failure` | Shared fixed structural category, null for non-failure events; authentication errors use `tls-handshake`, cryptographic errors use `cryptographic`. |
 | `code` | Numeric native/protocol error code where available; null does not mean success. |
 | `method` | Reviewed protocol method for `Request` events only; otherwise null. Unknown methods become `other`. |
 | `bytes` | Received/buffered/serialized/header byte count where relevant; otherwise null. |
+| `port` | Configured listener port for listener/certificate failures; otherwise null. |
+| `reason` | Certificate-load reason: `file-not-found`, `access-denied`, `file-io`, `invalid-certificate-or-password`, or `other`; otherwise null. |
 
 Socket error codes are platform-native; Windows and Linux numbers need not match.
 Share errors retain the existing fixed `job-not-found`, `duplicate-share`,
@@ -68,6 +78,14 @@ numeric codes. Alephium's separate error-code mapping remains independent.
 Connection correlation is supplied by `CorrelationIdGenerator`, not extracted from
 miner input. Extensions must preserve that trust boundary and add new method labels
 explicitly; they must not use arbitrary strings as diagnostic vocabulary.
+
+Certificate reasons inspect exception types and at most four cryptographic wrappers,
+not messages, paths or textual native errors. Invalid PFX data and a wrong password
+may share a runtime error: the diagnostic deliberately does not invent a distinction.
+Use the retained pool/listener port to locate its PFX setting in private configuration,
+then check file existence/access and certificate/password correctness. Configured
+filenames remain withheld: operator-controlled text can still contain secrets or
+private filesystem details. These fields are additive to the diagnostic JSON contract.
 
 ## Compatibility and limits
 
@@ -84,9 +102,21 @@ names, worker strings, exception text or the old NET/PIPE payload dumps. Known m
 labels remain available. Detailed raw causes require controlled private debugging,
 not a second plaintext target or a switch that restores payload logging.
 
+Worker names and user agents remain arbitrary miner input even after authorization;
+they can contain the same password as any other request field. Neither Debug level
+nor `Logging.GPDRCompliant=false` makes that text safe. These logs intentionally cannot
+reconstruct a connection-to-worker-name mapping. For Bitcoin-family subscriptions,
+correlate the server connection ID returned in the subscription reply with timestamps;
+other identity investigations require authorized private runtime/accounting evidence.
+Configured Ethash prefixes also remain behind the bounded projection, including in
+V1 warning branches: matching a request to a configured prefix is not a confidentiality
+check. Custom prefixes require explicit vocabulary review, not direct interpolation.
+
 Existing fixed connection/lifecycle messages, numeric IP addresses, configured pool
 identities, block metadata, difficulty, counts and timing remain operational metadata.
-IP censoring retains its existing scope; this is not an IP-anonymization change.
+The existing IP-censor flag is now honored consistently by both early banned-IP and
+already-connected banned-client messages. It remains partial address masking, not
+an anonymity guarantee, and does not authorize raw identity or credential logging.
 Databases, accepted-share/accounting records, payout records, API responses, periodic
 worker statistics/notifications, wire replies, external proxies, plugins and arbitrary
 application logs are not globally redacted by this change. Do not put credentials in
@@ -115,8 +145,14 @@ and the Ethash V1 method names composed from bundled coin prefixes (including
 Cortex's four `ctxc_*` methods). Runtime configuration does not expand the diagnostic
 vocabulary; custom prefixes require explicit review. TCP tests verify the Cortex
 labels in request logs and telemetry while rejecting hostile method suffixes.
-Real listener tests also capture accept/task-removal failures and missing-certificate
-diagnostics, and verify immediate exclusive socket rebinding after cleanup.
+Real listener tests also capture accept/listen/task-removal/drain failures and missing,
+malformed, or wrong-password certificate diagnostics, and verify exclusive socket
+rebinding after cleanup. Tests cover omitted method fields and both banned-IP privacy
+paths. Shared TLS/cryptographic categories are checked across Stratum/RPC projections.
+The lightweight `scripts/release/test-stratum-diagnostic-sources.py` CI guard rejects
+new unreviewed direct logger calls in the server/connection files, with negative
+fixtures for exception/request/token overloads. It is not a C# taint analyzer and
+does not replace review of aliases, indirect consumers or new coin implementations.
 
 Run the focused tests plus existing lifecycle and share-rejection regressions:
 

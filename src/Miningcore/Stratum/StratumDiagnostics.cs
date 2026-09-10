@@ -1,4 +1,4 @@
-using System.Security.Authentication;
+using System.Security.Cryptography;
 using Miningcore.Diagnostics;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -14,7 +14,7 @@ internal static class StratumDiagnostics
     {
         Receive, Buffer, Send, ProxyHeader, Request, ConnectionError,
         AcceptError, ListenError, TerminalCallback, UntrackedCompletion,
-        Completion, TaskRemoval, Drain, CertificateLoad,
+        Completion, TaskRemoval, Drain, CertificateLoad, ReceiveWait, BufferWait,
     }
 
     internal static string Method(string method) => method switch
@@ -38,7 +38,7 @@ internal static class StratumDiagnostics
 
     internal static void Write(ILogger logger, LogLevel level, Event operation,
         string connectionId = null, Exception failure = null, string method = null,
-        long? bytes = null)
+        long? bytes = null, int? port = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -49,11 +49,33 @@ internal static class StratumDiagnostics
         {
             ["event"] = Enum.IsDefined(operation) ? operation.ToString() : "other",
             ["connectionId"] = connectionId,
-            ["failure"] = failure is AuthenticationException ? "tls-handshake" :
-                failure == null ? null : DiagnosticFailure.Category(failure),
+            ["failure"] = failure == null ? null : DiagnosticFailure.Category(failure),
             ["code"] = DiagnosticFailure.Code(failure),
             ["method"] = operation == Event.Request ? Method(method) : null,
             ["bytes"] = bytes,
+            ["port"] = port,
+            ["reason"] = operation == Event.CertificateLoad ? CertificateReason(failure) : null,
         }.ToString(Formatting.None));
+    }
+
+    // Certificate loaders can wrap file-access failures in CryptographicException.
+    // Inspect only a bounded structural chain, never messages, paths or HRESULT text.
+    internal static string CertificateReason(Exception failure)
+    {
+        for(var depth = 0; depth < 4 && failure is CryptographicException { InnerException: not null }; depth++)
+            failure = failure.InnerException;
+
+        if(failure is CryptographicException { InnerException: not null })
+            return "other";
+
+        return failure switch
+        {
+            null => null,
+            FileNotFoundException or DirectoryNotFoundException => "file-not-found",
+            UnauthorizedAccessException => "access-denied",
+            IOException => "file-io",
+            CryptographicException => "invalid-certificate-or-password",
+            _ => "other",
+        };
     }
 }

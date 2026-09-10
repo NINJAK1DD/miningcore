@@ -141,10 +141,7 @@ public class CryptonotePool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            if(!string.IsNullOrEmpty(context.Worker))
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
-            else
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized miner (identity withheld)");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
         }
 
         else

@@ -382,7 +382,8 @@ public abstract class StratumServer
 
             catch(Exception ex)
             {
-                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ListenError, failure: ex);
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ListenError,
+                    failure: ex, port: port.IPEndPoint.Port);
             }
         }
     }
@@ -608,7 +609,7 @@ public abstract class StratumServer
         // boot pre-connected clients
         if(banManager?.IsBanned(connection.RemoteEndpoint.Address) == true)
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned client @ {connection.RemoteEndpoint.Address}");
+            logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned client @ {connection.RemoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
             Disconnect(connection);
             return;
         }
@@ -782,7 +783,8 @@ public abstract class StratumServer
                     cert = Guard(() => X509CertificateLoader.LoadPkcs12FromFile(
                         port.PoolEndpoint.TlsPfxFile, port.PoolEndpoint.TlsPfxPassword), ex =>
                     {
-                        StratumDiagnostics.Write(logger, LogLevel.Info, StratumDiagnostics.Event.CertificateLoad, failure: ex);
+                        StratumDiagnostics.Write(logger, LogLevel.Info, StratumDiagnostics.Event.CertificateLoad,
+                            failure: ex, port: port.IPEndPoint.Port);
                         throw ex;
                     });
 
@@ -803,7 +805,7 @@ public abstract class StratumServer
 
         if(banManager.IsBanned(remoteEndpoint.Address))
         {
-            logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address}");
+            logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
             StratumSocketCleanup.CloseAbortively(socket);
 
             return true;

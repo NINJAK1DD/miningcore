@@ -367,7 +367,7 @@ public class StratumConnection
     {
         while(!ct.IsCancellationRequested)
         {
-            logger.Debug(() => $"[{ConnectionId}] [NET] Waiting for data ...");
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ReceiveWait, ConnectionId);
 
             var memory = receivePipe.Writer.GetMemory(MaxInboundRequestLength + 1);
 
@@ -395,7 +395,7 @@ public class StratumConnection
     {
         while(!ct.IsCancellationRequested)
         {
-            logger.Debug(() => $"[{ConnectionId}] [PIPE] Waiting for data ...");
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.BufferWait, ConnectionId);
 
             var result = await receivePipe.Reader.ReadAsync(ct);
 

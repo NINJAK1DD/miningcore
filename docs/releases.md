@@ -51,10 +51,20 @@ copying a recovery command from the maintainer section.
 
 ## Unreleased: credential-safe Stratum diagnostics
 
-[#157](https://github.com/NINJAK1DD/miningcore/issues/157) removes raw miner JSON,
+[#157](https://github.com/NINJAK1DD/miningcore/issues/157) closes the unbounded
+Stratum request-method telemetry-label path: distinct miner-supplied method names
+could create continually growing Prometheus series, consuming memory and inflating
+metrics scrapes. A fixed method vocabulary now bounds that cardinality, with unknown
+methods grouped as `other`. This does not replace request-rate or resource limits.
+
+The same change removes raw miner JSON,
 response payloads, request IDs, PROXY headers and exception text from the audited
 Stratum transport/error logs. Diagnostics retain fixed event/rejection categories,
 numeric error codes, byte counts and server-assigned connection correlation.
+Listener/certificate failures also identify the configured port, and certificate
+errors distinguish missing/inaccessible files from invalid certificates or passwords
+without exposing filesystem paths or exception text. TLS/cryptographic categories
+are shared with RPC consumers. Banned-client messages honor the existing IP-censor flag.
 Authorization, stale-job and block-acceptance diagnostics no longer echo miner
 identity/user-agent text. Unknown request-method telemetry labels become `other`;
 known protocol methods retain their labels.
