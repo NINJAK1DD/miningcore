@@ -51,7 +51,7 @@ jobs:
       shell: bash
       run: python3 scripts/release/test-doc-links.py
 
-    - name: Test configuration diagnostic snapshot helper
+    - name: Test Bash and PowerShell configuration diagnostic snapshot helpers
       shell: bash
       run: python3 scripts/release/test-config-diagnostics-snapshot.py
 
@@ -79,8 +79,8 @@ jobs:
         scripts/release/test-odocrypt-source-inventory.sh
         scripts/release/test-odocrypt-source-verifiers.sh
         scripts/release/test-release-install-docs.sh
-        scripts/release/update-config-diagnostics-snapshot.sh
         scripts/release/test-ubuntu-source-build.sh
+        scripts/release/update-config-diagnostics-snapshot.sh
 
     - name: Test Linux native symbol contracts
       shell: bash

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise the Linux snapshot helper's guards in an isolated, synthetic repo."""
+"""Exercise both snapshot helpers' guards in isolated synthetic Linux repos.
+
+Requires Bash, Python 3 and PowerShell 7; a missing interpreter fails, never skips.
+"""
 
 import json
 import os
@@ -10,18 +13,18 @@ import tempfile
 import unittest
 
 
-HELPER = Path(__file__).with_name("update-config-diagnostics-snapshot.sh")
 SENTINEL = b"reviewed fixture must survive failure\n"
 
 
-class SnapshotHelperTests(unittest.TestCase):
+class SnapshotHelperContract:
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="miningcore snapshot tests ")
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.helper = self.root / "scripts/release" / HELPER.name
+        source = Path(__file__).with_name(self.helper_name)
+        self.helper = self.root / "scripts/release" / source.name
         self.helper.parent.mkdir(parents=True)
-        shutil.copyfile(HELPER, self.helper)
+        shutil.copyfile(source, self.helper)
         for configuration in ("Debug", "Release"):
             assembly = self.assembly(configuration)
             assembly.parent.mkdir(parents=True)
@@ -54,13 +57,17 @@ class SnapshotHelperTests(unittest.TestCase):
         return self.root / f"src/Miningcore/bin/{configuration}/net10.0/Miningcore.dll"
 
     def run_helper(self, *arguments):
+        # Isolate subcases so an unexpected write/invocation is reported once,
+        # rather than contaminating every subsequent guard assertion.
+        self.snapshot.write_bytes(SENTINEL)
+        (self.root / "invoked").unlink(missing_ok=True)
         configuration = arguments[0] if arguments else "Debug"
         (self.root / "expected-args.json").write_text(json.dumps([
             str(self.assembly(configuration)), "--dumpconfig", "-c",
             str(self.root / "config.example.json"),
         ]), encoding="utf-8")
         return subprocess.run(
-            ["bash", str(self.helper), *arguments],
+            [*self.interpreter, str(self.helper), *arguments],
             cwd=self.root.parent,
             env={**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"]},
             capture_output=True, timeout=15, check=False,
@@ -74,11 +81,13 @@ class SnapshotHelperTests(unittest.TestCase):
     def test_default_debug_and_release_preserve_format_with_utf8_lf_no_bom(self):
         expected = '{\n  "diagnosticFormatVersion": 2,\n  "notice": "caf\u00e9",\n  "configuration": {}\n}\n'.encode("utf-8")
         for arguments in ((), ("Debug",), ("Release",)):
-            with self.subTest(arguments=arguments):
-                self.response.write_bytes(b"\xef\xbb\xbf" + expected.replace(b"\n", b"\r\n"))
-                result = self.run_helper(*arguments)
-                self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(expected, self.snapshot.read_bytes())
+            for bom in (b"", b"\xef\xbb\xbf"):
+                with self.subTest(arguments=arguments, bom=bom):
+                    self.response.write_bytes(bom + expected.replace(b"\n", b"\r\n"))
+                    result = self.run_helper(*arguments)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(expected, self.snapshot.read_bytes())
+                    self.assertNotIn(b"synthetic subprocess diagnostic", result.stdout + result.stderr)
 
     def test_nonzero_exit_never_overwrites_even_valid_json(self):
         (self.root / "status").write_text("1", encoding="utf-8")
@@ -96,25 +105,38 @@ class SnapshotHelperTests(unittest.TestCase):
                 self.assertFalse((self.root / "invoked").exists())
 
     def test_malformed_json_and_encoding_preserve_fixture(self):
-        for response in (b"", b"{", b"{} {}", b"\xff"):
+        for response in (b"", b"{", b"{} {}", b"\xff",
+                         b'{"diagnosticFormatVersion":2,"configuration":{"bad":"\xff"}}'):
             with self.subTest(response=response):
                 self.response.write_bytes(response)
                 self.assert_preserved(self.run_helper())
 
     def test_wrong_contract_preserves_fixture(self):
         for document in (
-            None, [], {},
+            None, [], {}, [{"diagnosticFormatVersion": 2, "configuration": {}}],
             {"diagnosticFormatVersion": 1, "configuration": {}},
             {"diagnosticFormatVersion": "2", "configuration": {}},
             {"diagnosticFormatVersion": 2.0, "configuration": {}},
+            {"diagnosticFormatVersion": True, "configuration": {}},
             {"diagnosticFormatVersion": 2},
             {"diagnosticFormatVersion": 2, "configuration": None},
             {"diagnosticFormatVersion": 2, "configuration": []},
+            {"diagnosticFormatVersion": 2, "configuration": [{}]},
             {"diagnosticFormatVersion": 2, "configuration": "not an object"},
         ):
             with self.subTest(document=document):
                 self.response.write_text(json.dumps(document), encoding="utf-8")
                 self.assert_preserved(self.run_helper())
+
+
+class BashSnapshotHelperTests(SnapshotHelperContract, unittest.TestCase):
+    helper_name = "update-config-diagnostics-snapshot.sh"
+    interpreter = ("bash",)
+
+
+class PowerShellSnapshotHelperTests(SnapshotHelperContract, unittest.TestCase):
+    helper_name = "update-config-diagnostics-snapshot.ps1"
+    interpreter = ("pwsh", "-NoProfile", "-File")
 
 
 if __name__ == "__main__":

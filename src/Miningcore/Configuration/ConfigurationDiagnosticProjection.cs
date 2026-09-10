@@ -137,14 +137,29 @@ internal static class ConfigurationDiagnosticProjection
 
     // Logging level is a bounded value vocabulary; listener categories are
     // derived metadata. Suffixes are explicit per reviewed member, not inferred
-    // from a coincidentally matching CLR name on another type.
-    private static readonly IReadOnlyDictionary<PropertyInfo, string> CategorySuffixes =
-        new Dictionary<PropertyInfo, string>
+    // from a coincidentally matching CLR name on another type. Keep the reviewed
+    // owner explicit: an inherited property's DeclaringType is not its owner.
+    private static readonly PropertyInfo LoggingLevelProperty =
+        typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level));
+    private static readonly PropertyInfo ApiListenAddressProperty =
+        typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress));
+    private static readonly PropertyInfo PoolListenAddressProperty =
+        typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress));
+    private static readonly IReadOnlyDictionary<(Type Owner, PropertyInfo Property), string> CategorySuffixes =
+        new Dictionary<(Type Owner, PropertyInfo Property), string>
         {
-            [typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level))] = string.Empty,
-            [typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress))] = "Category",
-            [typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress))] = "Category",
+            [(typeof(ClusterLoggingConfig), LoggingLevelProperty)] = string.Empty,
+            [(typeof(ApiConfig), ApiListenAddressProperty)] = "Category",
+            [(typeof(PoolEndpoint), PoolListenAddressProperty)] = "Category",
         };
+
+    // Resolve reflected members and derived names once, not once per port/dump.
+    private static readonly string LoggingLevelOutputName =
+        GetOutputName(typeof(ClusterLoggingConfig), LoggingLevelProperty, DiagnosticPolicy.Category);
+    private static readonly string ApiListenAddressOutputName =
+        GetOutputName(typeof(ApiConfig), ApiListenAddressProperty, DiagnosticPolicy.Category);
+    private static readonly string PoolListenAddressOutputName =
+        GetOutputName(typeof(PoolEndpoint), PoolListenAddressProperty, DiagnosticPolicy.Category);
 
     // Deliberate omissions are review decisions too. Tests require new public
     // properties to acquire an explicit policy; runtime remains fail-closed.
@@ -165,18 +180,18 @@ internal static class ConfigurationDiagnosticProjection
         Members.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, DiagnosticPolicy.Value)))
             .Concat(PresenceMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, DiagnosticPolicy.Presence))))
             .Concat(CountMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property, DiagnosticPolicy.Count))))
-            .Concat(CategorySuffixes.Keys.Select(property => (property.DeclaringType, property, DiagnosticPolicy.Category)));
+            .Concat(CategorySuffixes.Keys.Select(member => (member.Owner, member.Property, DiagnosticPolicy.Category)));
 
     internal static IEnumerable<(Type Owner, PropertyInfo Property)> ExcludedProperties =>
         ExcludedMembers.SelectMany(pair => pair.Value.Select(property => (pair.Key, property)));
 
     // Use this same mapping for emission and contract tests, including generated
     // suffixes. Checking CLR names alone misses FooCount/Foo+Count collisions.
-    internal static string GetOutputName(PropertyInfo property, DiagnosticPolicy policy) =>
+    internal static string GetOutputName(Type owner, PropertyInfo property, DiagnosticPolicy policy) =>
         Naming.GetPropertyName(property.Name, false) + (policy switch
         {
             DiagnosticPolicy.Count => "Count",
-            DiagnosticPolicy.Category => CategorySuffixes[property],
+            DiagnosticPolicy.Category => CategorySuffixes[(owner, property)],
             DiagnosticPolicy.Value or DiagnosticPolicy.Presence => string.Empty,
             _ => throw new ArgumentOutOfRangeException(nameof(policy)),
         });
@@ -204,13 +219,13 @@ internal static class ConfigurationDiagnosticProjection
             // Rebuilding an intermediate JObject would clone every subtree.
             var fields = new List<(string Name, JToken Value)>();
             foreach(var property in properties)
-                fields.Add((GetOutputName(property, DiagnosticPolicy.Value),
+                fields.Add((GetOutputName(type, property, DiagnosticPolicy.Value),
                     Project(property.GetValue(value))));
             if(PresenceMembers.TryGetValue(type, out var presence))
                 foreach(var property in presence)
                 {
                     var field = property.GetValue(value);
-                    fields.Add((GetOutputName(property, DiagnosticPolicy.Presence), field switch
+                    fields.Add((GetOutputName(type, property, DiagnosticPolicy.Presence), field switch
                     {
                         null => JValue.CreateNull(),
                         string text => new JValue(string.IsNullOrWhiteSpace(text) ? "[blank]" : "[set]"),
@@ -221,20 +236,20 @@ internal static class ConfigurationDiagnosticProjection
                 foreach(var property in counts)
                 {
                     var field = property.GetValue(value);
-                    fields.Add((GetOutputName(property, DiagnosticPolicy.Count), field == null ? JValue.CreateNull() :
+                    fields.Add((GetOutputName(type, property, DiagnosticPolicy.Count), field == null ? JValue.CreateNull() :
                         field is string[] array ? new JValue(array.Length) : new JValue(Omitted)));
                 }
             if(type == typeof(ClusterLoggingConfig))
             {
                 var level = ((ClusterLoggingConfig) value).Level?.ToLowerInvariant();
-                fields.Add((GetOutputName(typeof(ClusterLoggingConfig).GetProperty(nameof(ClusterLoggingConfig.Level)), DiagnosticPolicy.Category), level == null ? JValue.CreateNull() :
+                fields.Add((LoggingLevelOutputName, level == null ? JValue.CreateNull() :
                     new JValue(level is "trace" or "debug" or "info" or "warn" or "error" or "fatal" or "off" ? level : Omitted)));
             }
             if(type == typeof(ApiConfig))
-                fields.Add((GetOutputName(typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), DiagnosticPolicy.Category),
+                fields.Add((ApiListenAddressOutputName,
                     ClassifyListenAddress(((ApiConfig) value).ListenAddress)));
             if(type == typeof(PoolEndpoint))
-                fields.Add((GetOutputName(typeof(PoolEndpoint).GetProperty(nameof(PoolEndpoint.ListenAddress)), DiagnosticPolicy.Category),
+                fields.Add((PoolListenAddressOutputName,
                     ClassifyListenAddress(((PoolEndpoint) value).ListenAddress)));
             // Group all policies by emitted name for easy human scanning. Ports
             // remain numerically ordered below; arrays keep source-file order.

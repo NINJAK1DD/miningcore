@@ -191,7 +191,7 @@ public class ConfigurationDiagnosticTests
         (Type Owner, PropertyInfo Property, DiagnosticPolicy Policy)>> FindOutputNameCollisions(
         IEnumerable<(Type Owner, PropertyInfo Property, DiagnosticPolicy Policy)> fields) =>
         fields.GroupBy(field => (field.Owner,
-                Name: ConfigurationDiagnosticProjection.GetOutputName(field.Property, field.Policy)))
+                Name: ConfigurationDiagnosticProjection.GetOutputName(field.Owner, field.Property, field.Policy)))
             .Where(group => group.Count() > 1);
 
     [Theory]
@@ -199,17 +199,22 @@ public class ConfigurationDiagnosticTests
     [InlineData(typeof(PoolEndpoint), nameof(PoolEndpoint.ListenAddress), "listenAddressCategory")]
     [InlineData(typeof(ClusterLoggingConfig), nameof(ClusterLoggingConfig.Level), "level")]
     public void Projection_CategoryOutputNamesAreExplicitPerMember(Type owner, string name, string expected) =>
-        Assert.Equal(expected, ConfigurationDiagnosticProjection.GetOutputName(owner.GetProperty(name), DiagnosticPolicy.Category));
+        Assert.Equal(expected, ConfigurationDiagnosticProjection.GetOutputName(owner, owner.GetProperty(name), DiagnosticPolicy.Category));
 
     [Fact]
     public void Projection_CategoryNamesDoNotImplicitlyAdmitUnreviewedMembers() =>
         Assert.Throws<KeyNotFoundException>(() => ConfigurationDiagnosticProjection.GetOutputName(
-            typeof(CollisionFixture).GetProperty(nameof(CollisionFixture.ListenAddress)), DiagnosticPolicy.Category));
+            typeof(CollisionFixture), typeof(CollisionFixture).GetProperty(nameof(CollisionFixture.ListenAddress)), DiagnosticPolicy.Category));
+
+    [Fact]
+    public void Projection_CategoryPolicyIsBoundToItsReviewedOwner() =>
+        Assert.Throws<KeyNotFoundException>(() => ConfigurationDiagnosticProjection.GetOutputName(
+            typeof(PoolEndpoint), typeof(ApiConfig).GetProperty(nameof(ApiConfig.ListenAddress)), DiagnosticPolicy.Category));
 
     [Fact]
     public void Projection_InvalidPolicyFailsClosed() =>
         Assert.Throws<ArgumentOutOfRangeException>(() => ConfigurationDiagnosticProjection.GetOutputName(
-            typeof(CollisionFixture).GetProperty(nameof(CollisionFixture.CoinTemplates)), (DiagnosticPolicy) int.MaxValue));
+            typeof(CollisionFixture), typeof(CollisionFixture).GetProperty(nameof(CollisionFixture.CoinTemplates)), (DiagnosticPolicy) int.MaxValue));
 
     private sealed class CollisionFixture
     {

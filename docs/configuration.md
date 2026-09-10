@@ -152,8 +152,11 @@ PowerShell), accept only the checked-in public example, and write UTF-8 without 
 endings, only after a successful command and JSON/format-version/configuration-object validation.
 Review the diff in `src/Miningcore.Tests/Fixtures/config-diagnostics-v2.json`; do not blindly accept
 new output fields. The snapshot is a review gate, not automatic approval of a wider output policy.
-The Linux helper's isolated failure-preservation tests run in CI and can be run with
-`python3 scripts/release/test-config-diagnostics-snapshot.py`; they do not use a real configuration.
+The shared isolated failure-preservation suite exercises both helpers in CI and can be run on
+Linux with `python3 scripts/release/test-config-diagnostics-snapshot.py` (requires Bash, Python 3
+and PowerShell 7; missing interpreters fail the suite). It does not use a real configuration.
+Both helpers strip a leading UTF-8 BOM, reject invalid UTF-8, and suppress child-process stderr
+on success as well as failure.
 
 CI retains the exhaustive 60-case subprocess information-option matrix. For a faster local pass,
 exclude its `ExhaustiveCli` trait; eight representative combinations remain in the ordinary suite:
