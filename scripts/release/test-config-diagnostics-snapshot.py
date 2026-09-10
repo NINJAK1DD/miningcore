@@ -41,7 +41,10 @@ class SnapshotHelperContract:
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="miningcore snapshot tests ")
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        # Windows runner TEMP may use an 8.3 alias (e.g. RUNNER~1), whereas
+        # PowerShell expands it in PSScriptRoot. Resolve once so exact argv
+        # checks compare the same canonical spelling on every platform.
+        self.root = Path(self.directory.name).resolve()
         source = Path(__file__).with_name(self.helper_name)
         self.helper = self.root / "scripts/release" / source.name
         self.helper.parent.mkdir(parents=True)
