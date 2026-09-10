@@ -21,6 +21,7 @@ using Microsoft.IO;
 using Miningcore.Banning;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Ethereum;
 using Miningcore.Blockchain.Xelis;
 using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Alephium;
@@ -110,7 +111,35 @@ public class StratumDiagnosticTests
     }
 
     [Fact]
-    public async Task Tcp_RequestsAndResponsesRetainSecretsOnlyOnWire_AndTelemetryIsBounded()
+    public void Vocabulary_CoversBundledEthashV1PrefixesWithoutAcceptingArbitraryPrefixes()
+    {
+        // The pool composes these names at runtime, so scanning method constants alone
+        // cannot detect a missing bundled coin prefix (for example Cortex's ctxc).
+        var templates = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "coins.json")));
+        var defaultPrefix = new EthereumCoinTemplate().RpcMethodPrefix;
+        var prefixes = templates.Properties().Select(x => x.Value)
+            .Where(x => x["family"]?.Value<string>() == "ethereum")
+            .Select(x => x["rpcMethodPrefix"]?.Value<string>() ?? defaultPrefix).Distinct().ToArray();
+        Assert.Contains("ctxc", prefixes);
+        foreach(var prefix in prefixes)
+        foreach(var suffix in new[] { EthereumStratumMethods.SubmitLogin, EthereumStratumMethods.GetWork,
+            EthereumStratumMethods.SubmitWork, EthereumStratumMethods.SubmitHashrate })
+        {
+            var method = prefix + suffix;
+            Assert.Equal(method, StratumDiagnostics.Method(method));
+            Assert.Equal("other", StratumDiagnostics.Method(method + Hostile));
+            Assert.Equal("other", StratumDiagnostics.Method(Hostile + method));
+            Assert.Equal("other", StratumDiagnostics.Method("unreviewed-prefix" + suffix));
+        }
+    }
+
+    [Theory]
+    [InlineData("mining.authorize")]
+    [InlineData("ctxc_submitLogin")]
+    [InlineData("ctxc_getWork")]
+    [InlineData("ctxc_submitWork")]
+    [InlineData("ctxc_submitHashrate")]
+    public async Task Tcp_RequestsAndResponsesRetainSecretsOnlyOnWire_AndTelemetryIsBounded(string knownMethod)
     {
         using var logs = new Capture();
         using var container = new ContainerBuilder().Build();
@@ -124,7 +153,7 @@ public class StratumDiagnosticTests
         };
         await using(var tcp = await TcpSession.Start(logs.Logger, server))
         {
-            foreach(var method in new[] { "mining.authorize", Hostile, "mining.submit" })
+            foreach(var method in new[] { knownMethod, Hostile, knownMethod + Hostile, "mining.submit" })
             {
                 var request = new JObject
                 {
@@ -137,14 +166,16 @@ public class StratumDiagnosticTests
                 Assert.True(JToken.DeepEquals(request["params"], response["result"]));
             }
         }
-        Assert.Equal(new[] { "mining.authorize", Hostile, "mining.submit" }, requests.Select(x => x.Method));
+        Assert.Equal(new[] { knownMethod, Hostile, knownMethod + Hostile, "mining.submit" }, requests.Select(x => x.Method));
         Assert.All(requests, x => Assert.Equal(Hostile, x.ParamsAs<JArray>()[1].Value<string>()));
         var telemetry = bus.ReceivedCalls().SelectMany(x => x.GetArguments()).OfType<TelemetryEvent>()
             .Where(x => x.Category == TelemetryCategory.StratumRequest).ToArray();
-        Assert.Equal(new[] { "mining.authorize", "other", "mining.submit" }, telemetry.Select(x => x.Info));
+        var expectedMethods = new[] { knownMethod, "other", "other", "mining.submit" };
+        Assert.Equal(expectedMethods, telemetry.Select(x => x.Info));
         Assert.Equal(1, server.Completions);
         Assert.Equal(0, server.Errors);
-        Assert.Equal(3, logs.Records.Count(x => x["event"].Value<string>() == "Request"));
+        Assert.Equal(expectedMethods, logs.Records.Where(x => x["event"].Value<string>() == "Request")
+            .Select(x => x["method"].Value<string>()));
         Assert.Contains(logs.Records, x => x["event"].Value<string>() == "Send" && x["bytes"].Value<long>() > 0);
         Assert.Contains(logs.Records, x => x["event"].Value<string>() == "Buffer" && x["bytes"].Value<long>() > 0);
         server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);

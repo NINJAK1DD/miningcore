@@ -110,7 +110,11 @@ Malformed TLS handshakes run through the actual server TLS stream. It checks wir
 replies, preserved input values, telemetry labels/counts, callback counts, and ban
 addresses/durations. Structural exception cases include a type whose `Message` and
 `ToString` throw; every transport event is tested against every failure fixture.
-Known-method coverage is checked against all declared `*StratumMethods` constants.
+Known-method coverage is checked against all declared `*StratumMethods` constants
+and the Ethash V1 method names composed from bundled coin prefixes (including
+Cortex's four `ctxc_*` methods). Runtime configuration does not expand the diagnostic
+vocabulary; custom prefixes require explicit review. TCP tests verify the Cortex
+labels in request logs and telemetry while rejecting hostile method suffixes.
 Real listener tests also capture accept/task-removal failures and missing-certificate
 diagnostics, and verify immediate exclusive socket rebinding after cleanup.
 

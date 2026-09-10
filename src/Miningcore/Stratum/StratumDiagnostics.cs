@@ -28,6 +28,9 @@ internal static class StratumDiagnostics
         "mining.set_target" or "mining.suggest_target" or "connection.set_gzip" or
         "client.mining.unknown" or "set_extranonce" or "alph_submitHashrate" or "eth_submitLogin" or
         "eth_getWork" or "eth_submitWork" or "eth_submitHashrate" or
+        // Bundled Cortex Ethash V1 methods are composed from the ctxc coin prefix.
+        // Keep exact literals: accepting arbitrary prefixes would reopen this boundary.
+        "ctxc_submitLogin" or "ctxc_getWork" or "ctxc_submitWork" or "ctxc_submitHashrate" or
         "_submitLogin" or "_getWork" or "_submitWork" or "_submitHashrate" or
         "login" or "job" or "getjob" or "submit" or "solution" or "keepalived" => method,
         _ => "other",
