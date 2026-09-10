@@ -307,7 +307,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             job = context.GetJob(jobId);
 
             if(job == null)
-                logger.Warn(() => $"[{context.Miner}] => jobId: {jobId} - Last known job: {context.validJobs.ToArray().FirstOrDefault()?.JobId}");
+                logger.Warn(() => $"[{worker.ConnectionId}] Share rejected: job-not-found");
         }
 
         if(job == null)
@@ -337,7 +337,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 OnBlockFound();
 

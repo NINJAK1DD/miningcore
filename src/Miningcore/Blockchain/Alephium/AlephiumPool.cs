@@ -79,7 +79,7 @@ public class AlephiumPool : PoolBase
 
         await connection.RespondAsync(response);
 
-        logger.Info(() => $"[{connection.ConnectionId}] Hello {context.UserAgent}");
+        logger.Info(() => $"[{connection.ConnectionId}] Miner hello received (user agent withheld)");
     }
 
     protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
@@ -169,7 +169,7 @@ public class AlephiumPool : PoolBase
             await connection.NotifyAsync(AlephiumStratumMethods.SetExtraNonce, manager.GetSubscriberData(connection));
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}]{(!string.IsNullOrEmpty(context.UserAgent) ? $"[{context.UserAgent}]" : string.Empty)} Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -214,7 +214,7 @@ public class AlephiumPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 

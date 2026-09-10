@@ -246,7 +246,7 @@ public abstract class PoolBase : StratumServer,
             var minerEffort = await cf.Run(con => shareRepo.GetMinerEffortBetweenCreatedAsync(con, poolConfig.Id, connection.Context.Miner, dateStart, clock.Now, ct));
             if(minerEffort.HasValue)
             {
-                logger.Debug(() => $"[{connection.Context.Miner}] Checking effort for worker: {minerEffort.Value}%");
+                logger.Debug(() => $"[{connection.ConnectionId}] Checking effort for worker: {minerEffort.Value}%");
 
                 if(minerEffort.Value >= poolConfig.Banning.MinerEffortPercent.Value)
                 {

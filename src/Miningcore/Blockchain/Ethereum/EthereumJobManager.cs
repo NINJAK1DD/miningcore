@@ -453,7 +453,7 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
             
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} (miner identity withheld)");
                 
                 OnBlockFound();
             }

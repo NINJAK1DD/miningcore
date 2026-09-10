@@ -382,7 +382,7 @@ public abstract class StratumServer
 
             catch(Exception ex)
             {
-                logger.Error(ex);
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ListenError, failure: ex);
             }
         }
     }
@@ -457,7 +457,8 @@ public abstract class StratumServer
             if(!IsConnectionAdmissionOpen && ex is StratumException)
                 logger.Debug("Connection refused because local pool admission is closed");
             else
-                logger.Error(ex);
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.AcceptError,
+                    connection?.ConnectionId, ex);
         });
     }
 
@@ -470,9 +471,7 @@ public abstract class StratumServer
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Unexpected failure while finalising untracked Stratum connection {0}",
-                connectionId);
+            StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.UntrackedCompletion, connectionId, ex);
         }
     }
 
@@ -487,9 +486,7 @@ public abstract class StratumServer
         {
             // Dispatch reports connection errors through OnConnectionError. This observer exists
             // to keep the task rooted and guarantee removal even if a callback itself fails.
-            logger.Error(ex,
-                "Unexpected failure while finalising Stratum connection {0}",
-                connectionId);
+            StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.Completion, connectionId, ex);
         }
         finally
         {
@@ -499,9 +496,7 @@ public abstract class StratumServer
             }
             catch(Exception ex)
             {
-                logger.Error(ex,
-                    "Unexpected failure before removing Stratum connection task {0}",
-                    connectionId);
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.TaskRemoval, connectionId, ex);
             }
 
             connectionTasks.TryRemove(connectionId, out _);
@@ -530,7 +525,7 @@ public abstract class StratumServer
                 {
                     // Connection dispatch already reports its own failure. Continue draining
                     // the remaining tasks rather than allowing one fault to consume shutdown.
-                    logger.Debug(ex, "A Stratum connection faulted while shutdown was draining it");
+                    StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Drain, failure: ex);
                 }
             }
         }
@@ -618,13 +613,14 @@ public abstract class StratumServer
             return;
         }
 
-        logger.Debug(() => $"[{connection.ConnectionId}] Dispatching request '{request.Method}' [{request.Id}]");
+        StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Request,
+            connection.ConnectionId, method: request.Method);
 
         var tsRequest = new Timestamped<JsonRpcRequest>(request, clock.Now);
 
         await OnRequestAsync(connection, tsRequest, ct);
 
-        PublishTelemetry(TelemetryCategory.StratumRequest, request.Method, clock.Now - tsRequest.Timestamp);
+        PublishTelemetry(TelemetryCategory.StratumRequest, StratumDiagnostics.Method(request.Method), clock.Now - tsRequest.Timestamp);
     }
 
     /// <summary>
@@ -685,16 +681,16 @@ public abstract class StratumServer
         {
             case SocketException sockEx:
                 if(!ignoredSocketErrors.Contains(sockEx.ErrorCode))
-                    logger.Error(() => $"[{connection.ConnectionId}] Connection error: {ex}");
+                    StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, ex);
                 break;
 
             case InvalidDataException idEx:
-                logger.Error(() => $"[{connection.ConnectionId}] Connection error: {idEx}");
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, idEx);
                 break;
 
             case JsonException jsonEx:
                 // junk received (invalid json)
-                logger.Error(() => $"[{connection.ConnectionId}] Connection json error: {jsonEx.Message}");
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, jsonEx);
 
                 if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                 {
@@ -705,7 +701,7 @@ public abstract class StratumServer
 
             case AuthenticationException authEx:
                 // junk received (SSL handshake)
-                logger.Error(() => $"[{connection.ConnectionId}] Connection json error: {authEx.Message}");
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, authEx);
 
                 if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                 {
@@ -716,7 +712,7 @@ public abstract class StratumServer
 
             case IOException ioEx:
                 // junk received (SSL handshake)
-                logger.Error(() => $"[{connection.ConnectionId}] Connection json error: {ioEx.Message}");
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, ioEx);
 
                 if(ioEx.Source == "System.Net.Security")
                 {
@@ -734,7 +730,7 @@ public abstract class StratumServer
 
             case ArgumentException argEx:
                 if(argEx.TargetSite != streamWriterCtor || argEx.ParamName != "stream")
-                    logger.Error(() => $"[{connection.ConnectionId}] Connection error: {ex}");
+                    StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, ex);
                 break;
 
             case InvalidOperationException:
@@ -742,7 +738,7 @@ public abstract class StratumServer
                 break;
 
             default:
-                logger.Error(() => $"[{connection.ConnectionId}] Connection error: {ex}");
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, ex);
                 break;
         }
 
@@ -786,7 +782,7 @@ public abstract class StratumServer
                     cert = Guard(() => X509CertificateLoader.LoadPkcs12FromFile(
                         port.PoolEndpoint.TlsPfxFile, port.PoolEndpoint.TlsPfxPassword), ex =>
                     {
-                        logger.Info(() => $"Failed to load TLS certificate {port.PoolEndpoint.TlsPfxFile}: {ex.Message}");
+                        StratumDiagnostics.Write(logger, LogLevel.Info, StratumDiagnostics.Event.CertificateLoad, failure: ex);
                         throw ex;
                     });
 

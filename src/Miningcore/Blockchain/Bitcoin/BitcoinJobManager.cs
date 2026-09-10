@@ -620,7 +620,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             {
                 logger.Info(() => isDirectCoinbase
                     ? $"Daemon accepted direct-SOLO block {share.BlockHeight} [{share.BlockHash}]"
-                    : $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                    : $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 // persist the coinbase transaction-hash to allow the payment processor
                 // to verify later on that the pool has received the reward for the block

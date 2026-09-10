@@ -482,12 +482,12 @@ public class BeamJobManager : JobManagerBase<BeamJob>
         
         if (responseWalletRpc.Response?.Type.ToLower() == "max_privacy")
         {
-            logger.Warn(() => $"Worker {address} uses a 'Max Privacy' wallet, intended to be used only one time");
+            logger.Warn(() => $"Worker (identity withheld) uses a 'Max Privacy' wallet, intended to be used only one time");
         }
         
         else if (responseWalletRpc.Response?.Type.ToLower() == "offline")
         {
-            logger.Info(() => $"Worker {address} uses an 'Offline' wallet. Number of offline payments left: {responseWalletRpc.Response?.Payments}");
+            logger.Info(() => $"Worker (identity withheld) uses an 'Offline' wallet. Number of offline payments left: {responseWalletRpc.Response?.Payments}");
             return (responseWalletRpc.Response?.Payments > 0);
         }
 
@@ -544,7 +544,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
             
             SubmitBlock(ct, daemonEndpoints.First(), shareSubmitRequest, share);
             
-            logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+            logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
                             
             // persist the coinbase transaction-hash to allow the payment processor
             // Be aware for BEAM, the block verification and confirmation must be performed with `share.BlockHash` if the socket did not return a `Nonceprefix` after login

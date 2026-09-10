@@ -49,6 +49,22 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: credential-safe Stratum diagnostics
+
+[#157](https://github.com/NINJAK1DD/miningcore/issues/157) removes raw miner JSON,
+response payloads, request IDs, PROXY headers and exception text from the audited
+Stratum transport/error logs. Diagnostics retain fixed event/rejection categories,
+numeric error codes, byte counts and server-assigned connection correlation.
+Authorization, stale-job and block-acceptance diagnostics no longer echo miner
+identity/user-agent text. Unknown request-method telemetry labels become `other`;
+known protocol methods retain their labels.
+
+Wire replies, authorization/share decisions, counters, bans and connection lifecycle
+are unchanged. Update monitoring that relied on raw messages, and review retained
+Debug logs or error fragments for historical credential exposure. This is not global
+redaction of databases, statistics, APIs, notifications or third-party logs. See the
+[complete inventory, retained metadata and verification contract](stratum-diagnostics.md).
+
 ## Unreleased: credential-safe configuration dumps
 
 [PR #159](https://github.com/NINJAK1DD/miningcore/pull/159) restores useful `-dc`/`--dumpconfig`

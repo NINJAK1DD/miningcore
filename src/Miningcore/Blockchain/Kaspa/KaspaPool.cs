@@ -137,11 +137,11 @@ public class KaspaPool : PoolBase
         // assumes that minerName is an address
         var (kaspaAddressUtility, errorKaspaAddressUtility) = KaspaUtils.ValidateAddress(minerName, manager.Network, coin);
         if (errorKaspaAddressUtility != null)
-            logger.Warn(() => $"[{connection.ConnectionId}]{(!string.IsNullOrEmpty(context.UserAgent) ? $"[{context.UserAgent}]" : string.Empty)} Unauthorized worker: {errorKaspaAddressUtility}");
+            logger.Warn(() => $"[{connection.ConnectionId}] Unauthorized worker: invalid-address");
         else
         {
             context.IsAuthorized = true;
-            logger.Info(() => $"[{connection.ConnectionId}]{(!string.IsNullOrEmpty(context.UserAgent) ? $"[{context.UserAgent}]" : string.Empty)} worker: {minerName} => {KaspaConstants.KaspaAddressType[kaspaAddressUtility.KaspaAddress.Version()]}");
+            logger.Info(() => $"[{connection.ConnectionId}] Worker address validated");
         }
 
         context.Miner = minerName;
@@ -164,7 +164,7 @@ public class KaspaPool : PoolBase
             await connection.RespondAsync(response);
             
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -217,7 +217,7 @@ public class KaspaPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
