@@ -503,7 +503,7 @@ public class StratumDiagnosticTests
         {
             using(var client = new TcpClient(AddressFamily.InterNetwork))
             {
-                await client.ConnectAsync(endpoint, lifetime.Token);
+                await ConnectForListenerTestAsync(client, endpoint, lifetime.Token, expectAbort: duringAccept);
                 if(!duringAccept)
                 {
                     await client.GetStream().WriteAsync(Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"mining.authorize\"}\n"), lifetime.Token);
@@ -609,7 +609,7 @@ public class StratumDiagnosticTests
         try
         {
             using var client = new TcpClient(AddressFamily.InterNetwork);
-            await client.ConnectAsync(reservation.Endpoint.IPEndPoint, lifetime.Token);
+            await ConnectForListenerTestAsync(client, reservation.Endpoint.IPEndPoint, lifetime.Token, expectAbort: true);
             await logs.WaitForEvent("ListenError");
         }
         finally { lifetime.Cancel(); await run.WaitAsync(Deadline); }
@@ -685,7 +685,7 @@ public class StratumDiagnosticTests
         try
         {
             using var client = new TcpClient(AddressFamily.InterNetwork);
-            await client.ConnectAsync(reservation.Endpoint.IPEndPoint, lifetime.Token);
+            await ConnectForListenerTestAsync(client, reservation.Endpoint.IPEndPoint, lifetime.Token, expectAbort: !alreadyConnected);
             if(alreadyConnected)
             {
                 var request = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"mining.authorize\"}\n");
@@ -705,6 +705,21 @@ public class StratumDiagnosticTests
         Assert.Equal(alreadyConnected ? 1 : 0, server.Requests);
         Assert.Equal(0, server.ConnectionCount);
         logs.AssertSafe();
+    }
+
+    private static async Task ConnectForListenerTestAsync(TcpClient client, IPEndPoint endpoint,
+        CancellationToken ct, bool expectAbort)
+    {
+        try
+        {
+            await client.ConnectAsync(endpoint, ct);
+        }
+        catch(SocketException ex) when(expectAbort && ex.SocketErrorCode == SocketError.ConnectionReset)
+        {
+            // An intentional server-side abort can win the race with connect's
+            // completion on Linux. Only that result is allowed, and the caller
+            // must still observe the expected server diagnostic and cleanup.
+        }
     }
 
     private static StratumListenerReservation CreateReservation(PoolEndpoint settings)
