@@ -73,14 +73,20 @@ if [[ -n "$explicit_unit" ]]; then
     validate_unit "$explicit_unit"
     pg_unit="$explicit_unit"
 else
+    discovery_output=
+    if ! discovery_output=$(systemctl list-units \
+        --type=service \
+        --state=running \
+        --no-legend \
+        --plain \
+        'postgresql@*.service'); then
+        echo "Unable to query systemd for local PostgreSQL clusters; ordering was not changed." >&2
+        exit 69
+    fi
+
     mapfile -t pg_units < <(
-        systemctl list-units \
-            --type=service \
-            --state=running \
-            --no-legend \
-            --plain \
-            'postgresql@*.service' |
-        awk '{ print $1 }' |
+        printf '%s\n' "$discovery_output" |
+        awk 'NF { print $1 }' |
         sort -u
     )
 
