@@ -1,0 +1,8 @@
+# Example only. Do not copy the PostgreSQL unit name blindly.
+# Discover the local cluster with:
+#   systemctl list-units --type=service --state=running 'postgresql@*.service' --no-legend --plain
+# Prefer configure-postgresql-ordering.sh, which refuses ambiguous multi-cluster hosts.
+
+[Unit]
+Wants=postgresql@17-main.service
+After=postgresql@17-main.service
