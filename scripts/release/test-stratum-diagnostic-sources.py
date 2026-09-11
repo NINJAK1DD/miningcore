@@ -53,13 +53,29 @@ CALL_START = re.compile(r"\blogger\s*\.\s*[A-Za-z_][A-Za-z_0-9]*\s*\(")
 IDENTITY = re.compile(
     r"\bcontext\s*\??\.\s*(?:Miner|Worker|UserAgent)\b|"
     r"\b(?:workerValue|minerName|jobId|passParts)\b|"
-    r"\bshare\s*\??\.\s*Miner\b|\brequest\s*\??\.\s*Params\b"
+    r"\bshare\s*\??\.\s*Miner\b|\brequest\s*\??\.\s*(?:Params|Id|Method)\b"
+)
+# Permit only the reviewed, closed-vocabulary projection, not a whole logger
+# invocation containing it. Any adjacent raw field must still fail the scan.
+# Qualified lookalikes and more complex arguments require explicit review.
+SAFE_METHOD = re.compile(
+    r"(?<![\w.@])StratumDiagnostics\s*\.\s*Method\s*\(\s*request\s*\??\.\s*Method\s*\)"
 )
 # Retain source offsets so identifier checks see interpolation contents, while
 # parentheses in a quoted message do not truncate the enclosing logger call.
 LITERALS_AND_COMMENTS = re.compile(
     r'//[^\n]*|/\*[\s\S]*?\*/|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
 )
+
+
+def without_safe_methods(arguments: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        # A whitespace/comment-separated qualifier must not turn a lookalike
+        # helper into the trusted projection. Leave those fields for rejection.
+        prefix = re.sub(r"//[^\n]*|/\*[\s\S]*?\*/", "", arguments[:match.start()]).rstrip()
+        return match[0] if prefix.endswith((".", ":")) else ""
+
+    return SAFE_METHOD.sub(replace, arguments)
 
 
 def identity_accesses(source: str) -> list[str]:
@@ -78,7 +94,7 @@ def identity_accesses(source: str) -> list[str]:
             end += 1
         if depth:
             findings.append("unbalanced logger invocation requires review")
-        elif IDENTITY.search(source[call.end():end]):
+        elif IDENTITY.search(without_safe_methods(source[call.end():end])):
             findings.append("miner identity/request field in logger invocation")
     return findings
 
@@ -138,6 +154,22 @@ def main() -> int:
         'logger.\nWarn(\njobId\n);',
         'logger.Info("{0}", passParts);',
         'LogManager.GetCurrentClassLogger().Error(error);',
+        'logger.Debug(() => $"request {request.Id}");',
+        'logger.Warn(() => request.Method);',
+        'logger.Info("{0}", request?.Id);',
+        'logger.\nWarn(\nrequest ?. Method\n);',
+        'logger.Info("{0}", Format(request.Id));',
+        'logger.Warn(() => $"{StratumDiagnostics.Method(request.Method)} {request.Method}");',
+        'logger.Warn(StratumDiagnostics.Method(request.Method), request.Id);',
+        'logger.Warn(StratumDiagnostics.Method(request.Id));',
+        'logger.Warn(StratumDiagnostics.Method(request.Method + request.Params));',
+        'logger.Warn(Other.StratumDiagnostics.Method(request.Method));',
+        'logger.Warn(Other. \n StratumDiagnostics.Method(request.Method));',
+        'logger.Warn(Other./* qualifier */StratumDiagnostics.Method(request.Method));',
+        'logger.Warn(Other::StratumDiagnostics.Method(request.Method));',
+        'logger.Warn(FakeStratumDiagnostics.Method(request.Method));',
+        'logger.Warn(@StratumDiagnostics.Method(request.Method));',
+        'logger.Warn(() => $"StratumDiagnostics.Method({request.Method})");',
     ]
     for source in identity_fixtures:
         if not identity_accesses(source):
@@ -148,6 +180,9 @@ def main() -> int:
         '// logger.Info(context.Miner);\nlogger.Debug("safe");',
         'logger.Info("safe", /* ) */ connection.ConnectionId);',
         'private static readonly ILogger logger = LogManager.GetCurrentClassLogger();',
+        'logger.Warn(() => $"Use of Ethash Stratum V1 method: {StratumDiagnostics.Method(request.Method)}");',
+        'logger.Warn("{0}", StratumDiagnostics . Method ( request ?. Method ));',
+        'logger.Warn(StratumDiagnostics.Method(request.Method)); Use(request.Id);',
     ):
         if identity_accesses(source):
             raise AssertionError("Identity guard failed its safe fixture")

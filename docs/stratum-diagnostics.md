@@ -170,7 +170,11 @@ files. Both existing identical TLS-ban messages are explicitly listed; adding or
 removing an occurrence requires review. Negative fixtures cover duplicated/missing
 approved accesses and exception/request/token overloads. A narrow call scan across
 all Blockchain/Mining C# sources rejects known raw miner-identity/request fields in
-direct logger calls, including multiline/nested expressions. Inline
+direct logger calls, including raw `request.Id`, `request.Method` and
+`request.Params` in multiline/nested expressions. Only the exact bounded
+`StratumDiagnostics.Method(request.Method)` projection (including whitespace and
+null-conditional access variants) is permitted; an adjacent raw field, a lookalike
+helper or an expanded argument still fails. Inline
 `LogManager.GetCurrentClassLogger().…` calls are also rejected in these scopes.
 The scan does not derive its scope from `identity withheld` markers that a regression
 could remove. It is not a full C# parser or taint analyzer: aliases, indirect consumers

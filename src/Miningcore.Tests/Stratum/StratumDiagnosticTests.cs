@@ -707,18 +707,68 @@ public class StratumDiagnosticTests
         logs.AssertSafe();
     }
 
-    private static async Task ConnectForListenerTestAsync(TcpClient client, IPEndPoint endpoint,
-        CancellationToken ct, bool expectAbort)
+    [Theory]
+    [InlineData(SocketError.ConnectionReset, true, true)]
+    [InlineData(SocketError.ConnectionAborted, true, true)]
+    [InlineData(SocketError.ConnectionReset, false, false)]
+    [InlineData(SocketError.ConnectionAborted, false, false)]
+    [InlineData(SocketError.ConnectionRefused, true, false)]
+    [InlineData(SocketError.ConnectionRefused, false, false)]
+    [InlineData(SocketError.TimedOut, true, false)]
+    [InlineData(SocketError.TimedOut, false, false)]
+    public async Task ListenerConnect_OnlyToleratesExpectedAbort(SocketError error, bool expectAbort, bool tolerated)
+    {
+        var failure = new SocketException((int) error);
+        var operation = ConnectForListenerTestAsync(() => Task.FromException(failure), expectAbort);
+        if(tolerated)
+            await operation;
+        else
+            Assert.Same(failure, await Assert.ThrowsAsync<SocketException>(() => operation));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ListenerConnect_CancellationStillPropagates(bool expectAbort)
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var operation = ConnectForListenerTestAsync(() => Task.FromCanceled(cancellation.Token), expectAbort);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        Assert.True(operation.IsCanceled);
+    }
+
+    [Fact]
+    public async Task ListenerConnect_NonSocketFailureStillPropagates()
+    {
+        var failure = new InvalidOperationException("synthetic connect failure");
+        Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ConnectForListenerTestAsync(() => Task.FromException(failure), expectAbort: true)));
+    }
+
+    [Fact]
+    public async Task ListenerConnect_SuccessStillCompletes()
+    {
+        await ConnectForListenerTestAsync(() => Task.CompletedTask, expectAbort: true);
+    }
+
+    private static Task ConnectForListenerTestAsync(TcpClient client, IPEndPoint endpoint,
+        CancellationToken ct, bool expectAbort) =>
+        ConnectForListenerTestAsync(() => client.ConnectAsync(endpoint, ct).AsTask(), expectAbort);
+
+    private static async Task ConnectForListenerTestAsync(Func<Task> connect, bool expectAbort)
     {
         try
         {
-            await client.ConnectAsync(endpoint, ct);
+            await connect();
         }
-        catch(SocketException ex) when(expectAbort && ex.SocketErrorCode == SocketError.ConnectionReset)
+        catch(SocketException ex) when(expectAbort &&
+            ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted)
         {
             // An intentional server-side abort can win the race with connect's
-            // completion on Linux. Only that result is allowed, and the caller
-            // must still observe the expected server diagnostic and cleanup.
+            // completion. Platforms may report reset or aborted; only these two
+            // results are allowed for expected rejection, and the caller must
+            // still observe the expected server diagnostic and cleanup.
         }
     }
 
