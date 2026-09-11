@@ -21,7 +21,6 @@ using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
-using Miningcore.Tests.Util;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
