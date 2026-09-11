@@ -70,6 +70,7 @@ cp -a "$repository_root/docs" "$package_root/docs"
 cp "$repository_root"/src/Miningcore/Persistence/Postgres/Scripts/*.sql \
     "$package_root/migrations/"
 cp "$repository_root/packaging/systemd/miningcore.service" \
+    "$repository_root/packaging/systemd/configure-postgresql-ordering.sh" \
     "$package_root/systemd/"
 
 cat > "$package_root/BUILD-INFO" <<EOF
@@ -83,7 +84,8 @@ EOF
 
 find "$package_root" -type d -exec chmod 0755 {} +
 find "$package_root" -type f -exec chmod 0644 {} +
-chmod 0755 "$package_root/Miningcore"
+chmod 0755 "$package_root/Miningcore" \
+    "$package_root/systemd/configure-postgresql-ordering.sh"
 find "$package_root" -maxdepth 1 -type f -name '*.so' -exec chmod 0755 {} +
 
 archive_path="$output_dir/$archive_name"
