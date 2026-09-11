@@ -71,6 +71,7 @@ cp "$repository_root"/src/Miningcore/Persistence/Postgres/Scripts/*.sql \
     "$package_root/migrations/"
 cp "$repository_root/packaging/systemd/miningcore.service" \
     "$repository_root/packaging/systemd/configure-postgresql-ordering.sh" \
+    "$repository_root/packaging/systemd/postgresql-ordering.conf.example" \
     "$package_root/systemd/"
 
 cat > "$package_root/BUILD-INFO" <<EOF
