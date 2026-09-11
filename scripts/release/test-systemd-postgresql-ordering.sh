@@ -20,6 +20,10 @@ case "${1:-}" in
         printf '%s loaded active running PostgreSQL Cluster\n' 'postgresql@16-old.service'
         printf '%s loaded active running PostgreSQL Cluster\n' 'postgresql@17-main.service'
         ;;
+      fail)
+        echo 'Failed to connect to bus: mock failure' >&2
+        exit 1
+        ;;
       *) exit 2 ;;
     esac
     ;;
@@ -38,7 +42,7 @@ EOF
 chmod +x "$fixture_dir/bin/systemctl"
 
 run_helper() {
-  PATH="$fixture_dir/bin:$PATH" "$helper" --dry-run "$@"
+  PATH="$fixture_dir/bin:$PATH" bash "$helper" --dry-run "$@"
 }
 
 output=$(FAKE_PG_UNITS=one run_helper)
@@ -49,6 +53,13 @@ grep -Fq 'After=postgresql@17-main.service' <<<"$output"
 output=$(FAKE_PG_UNITS=none run_helper)
 grep -Fq 'No running local postgresql@*.service cluster was detected.' <<<"$output"
 grep -Fq 'Skipping Miningcore/PostgreSQL ordering' <<<"$output"
+
+set +e
+output=$(FAKE_PG_UNITS=fail run_helper 2>&1)
+status=$?
+set -e
+[[ $status -eq 69 ]]
+grep -Fq 'Unable to query systemd for local PostgreSQL clusters; ordering was not changed.' <<<"$output"
 
 set +e
 output=$(FAKE_PG_UNITS=many run_helper 2>&1)
