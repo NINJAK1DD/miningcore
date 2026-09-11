@@ -15,6 +15,7 @@ using Miningcore.Mining;
 using Miningcore.Notifications;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Tests.Util;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http.Features;
@@ -28,6 +29,7 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
+[Collection(IntegrationDeadlineCollection.Name)]
 public class ProgramPoolTemplateTests
 {
     [Fact]

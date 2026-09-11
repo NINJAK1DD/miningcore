@@ -21,6 +21,7 @@ using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Stratum;
+using Miningcore.Tests.Util;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -30,6 +31,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
+[Collection(IntegrationDeadlineCollection.Name)]
 public class MergedMiningManagerReorgTests
 {
     public static IEnumerable<object[]> SupportedPayoutPairs()
