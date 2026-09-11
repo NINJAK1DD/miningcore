@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: configure-postgresql-ordering.sh [--unit UNIT]
+Usage: configure-postgresql-ordering.sh [--unit UNIT] [--dry-run]
 
 Configure a Miningcore systemd drop-in so a local PostgreSQL cluster starts
 before Miningcore and stops after Miningcore.
@@ -13,16 +13,23 @@ Without --unit, the helper auto-detects running postgresql@*.service units:
   - exactly one: configure it automatically
   - none: skip safely (remote/non-standard PostgreSQL may be intentional)
   - more than one: refuse to guess and require --unit
+
+--dry-run performs discovery and prints the drop-in without writing files or
+reloading systemd. It is also used by the release regression tests.
 EOF
 }
 
 explicit_unit=
+dry_run=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --unit)
             shift
             [[ $# -gt 0 ]] || { echo "Missing value for --unit" >&2; exit 64; }
             explicit_unit="$1"
+            ;;
+        --dry-run)
+            dry_run=1
             ;;
         -h|--help)
             usage
@@ -37,7 +44,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+if [[ $dry_run -eq 0 && ${EUID:-$(id -u)} -ne 0 ]]; then
     echo "Run this helper as root (for example with sudo)." >&2
     exit 77
 fi
@@ -96,6 +103,20 @@ else
     esac
 fi
 
+render_dropin() {
+    cat <<EOF
+[Unit]
+Wants=$pg_unit
+After=$pg_unit
+EOF
+}
+
+if [[ $dry_run -eq 1 ]]; then
+    echo "Detected local PostgreSQL cluster: $pg_unit"
+    render_dropin
+    exit 0
+fi
+
 dropin_dir=/etc/systemd/system/miningcore.service.d
 dropin="$dropin_dir/postgresql-ordering.conf"
 
@@ -103,11 +124,7 @@ install -d -m 0755 "$dropin_dir"
 
 tmp=$(mktemp "${dropin}.tmp.XXXXXX")
 trap 'rm -f -- "$tmp"' EXIT
-cat > "$tmp" <<EOF
-[Unit]
-Wants=$pg_unit
-After=$pg_unit
-EOF
+render_dropin > "$tmp"
 install -m 0644 "$tmp" "$dropin"
 rm -f -- "$tmp"
 trap - EXIT
