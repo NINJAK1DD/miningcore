@@ -34,6 +34,7 @@ using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Rest;
 using Miningcore.Time;
+using Miningcore.Tests.Util;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -56,14 +57,7 @@ public class RpcConsumerDiagnosticTests
         foreach(var type in new[] { typeof(RpcConsumerDiagnosticTests),
             typeof(Miningcore.Tests.Payments.PayoutManagerLoggingTests),
             typeof(IPAccessWhitelistLoggingTests), typeof(Miningcore.Tests.Mining.ShareRecorderTests) })
-        {
-            var collection = Assert.Single(type.CustomAttributes.Where(x => x.AttributeType == typeof(CollectionAttribute)));
-            var name = collection.ConstructorArguments[0].Value;
-            var definition = Assert.Single(type.Assembly.GetTypes().SelectMany(x => x.CustomAttributes)
-                .Where(x => x.AttributeType == typeof(CollectionDefinitionAttribute) && Equals(x.ConstructorArguments[0].Value, name)));
-            Assert.Contains(definition.NamedArguments,
-                x => x.MemberName == "DisableParallelization" && Equals(x.TypedValue.Value, true));
-        }
+            CollectionAssertions.NonParallelDefinition(type);
     }
 
     [Theory]
