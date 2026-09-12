@@ -338,6 +338,7 @@ set -euo pipefail
 created_units=()
 if [[ ${CLEANUP_CREATED:-0} == 1 ]]; then created_units=(miningcore.service postgresql-fixture.service); fi
 pg_unit=postgresql-fixture.service
+test_target=miningcore-ordering-test.target
 fixture_dir=${MININGCORE_SYSTEMD_ROOT:?}
 dropin_dir=$fixture_dir
 systemctl() { printf '%s\n' "$*" >> "${CLEANUP_TRACE:?}"; return 5; }

@@ -248,8 +248,10 @@ The `.NET` CI workflow runs the mocked lifecycle suite with root privileges; loc
 The fixture prefix and mocked manager keep its mutations inside a private temporary directory.
 The CI runner also runs `test-systemd-postgresql-ordering-integration.sh --disposable-host` against
 its real systemd manager. That test creates inert PostgreSQL/Miningcore service fixtures, checks
-startup and reverse shutdown order in a shared transaction, captures journal events, and verifies
-surviving-dependency, explicit-acknowledgement and masked-unit handling. It also checks real
+startup and reverse shutdown order and captures journal events. A disposable target and fixture-only
+`PartOf=` relationships place both stops in one transaction, avoiding reliance on multi-unit
+`systemctl stop` batching across systemd versions. The test also checks surviving-dependency,
+explicit-acknowledgement and masked-unit handling, plus real
 auto-discovery in dry-run mode for the runner's current zero/one/multiple active-cluster state;
 the inert ordering fixtures use explicit selection so existing runner databases are never changed.
 Cleanup preserves the original test failure status while reporting cleanup errors separately.

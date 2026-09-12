@@ -17,8 +17,9 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 helper="$repository_root/packaging/systemd/configure-postgresql-ordering.sh"
 # Avoid an instance name: hosts may already have a postgresql@.service template.
 pg_unit=postgresql-miningcore-ordering-test.service
+test_target=miningcore-ordering-test.target
 dropin_dir=/etc/systemd/system/miningcore.service.d
-for unit in miningcore.service "$pg_unit"; do
+for unit in miningcore.service "$pg_unit" "$test_target"; do
     if [[ $(systemctl show "$unit" -p LoadState --value --no-pager) != not-found ]]; then
         echo "Refusing to replace existing unit: $unit" >&2
         exit 78
@@ -42,7 +43,8 @@ cleanup() {
         systemctl stop "${created_units[@]}" || cleanup_status=1
     fi
     rm -f -- "$dropin_dir/postgresql-ordering.conf" "$dropin_dir/operator.conf" \
-        /run/systemd/system/miningcore.service "/run/systemd/system/$pg_unit" || cleanup_status=1
+        /run/systemd/system/miningcore.service "/run/systemd/system/$pg_unit" \
+        "/run/systemd/system/$test_target" || cleanup_status=1
     if [[ -d "$dropin_dir" ]]; then rmdir -- "$dropin_dir" || cleanup_status=1; fi
     systemctl daemon-reload || cleanup_status=1
     rm -rf -- "$fixture_dir" || cleanup_status=1
@@ -69,6 +71,7 @@ for role in postgres miningcore; do
     cat > "/run/systemd/system/$unit" <<EOF
 [Unit]
 Description=Disposable Miningcore ordering test ($role)
+PartOf=$test_target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
@@ -78,6 +81,13 @@ TimeoutStartSec=15
 TimeoutStopSec=15
 EOF
 done
+created_units+=("$test_target")
+cat > "/run/systemd/system/$test_target" <<EOF
+[Unit]
+Description=Disposable transaction for Miningcore ordering test
+Wants=miningcore.service
+After=miningcore.service
+EOF
 systemctl daemon-reload
 
 # Exercise the real discovery query without altering any runner database. The
@@ -97,13 +107,18 @@ printf 'Real systemd discovery checked with %s active cluster(s).\n' "${#discove
 bash "$helper" --unit "$pg_unit"
 
 # Wants pulls PostgreSQL into this transaction; After determines execution order.
-systemctl start miningcore.service
+systemctl start "$test_target"
 systemctl is-active --quiet miningcore.service
 systemctl is-active --quiet "$pg_unit"
-# Both stops must participate in the same transaction for reverse ordering.
-systemctl stop "$pg_unit" miningcore.service
+# Older systemctl versions submit a multi-unit stop as separate D-Bus requests.
+# A single target stop propagates through PartOf to create one shared transaction.
+systemctl stop "$test_target"
 printf '%s\n' postgres-start miningcore-start miningcore-stop postgres-stop > "$fixture_dir/expected"
-cmp "$fixture_dir/expected" "$fixture_dir/events"
+if ! cmp "$fixture_dir/expected" "$fixture_dir/events"; then
+    echo 'Unexpected lifecycle events:' >&2
+    cat "$fixture_dir/events" >&2
+    exit 1
+fi
 journalctl --sync
 journalctl -b -u miningcore.service -u "$pg_unit" --no-pager -o cat > "$fixture_dir/journal"
 for event in postgres-start miningcore-start miningcore-stop postgres-stop; do
