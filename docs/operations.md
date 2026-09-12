@@ -15,6 +15,9 @@ authoritative procedures instead of duplicating recovery SQL or release commands
   `shareRecoveryStateDirectory` across service or container replacement.
 - Use a service manager whose forced-stop timeout exceeds Miningcore's 45-second accounting budget.
   The supplied systemd unit uses 90 seconds.
+- For a local systemd PostgreSQL database, configure and verify
+  [persistent service ordering](systemd-postgresql-ordering.md) before enabling Miningcore.
+  The v0.3.0 archives predate the helper; use the guide's manual setup for that release.
 - Verify a PostgreSQL backup and retain the previous immutable application directory or container
   before every upgrade.
 - Before enabling PPS, prove the candidate, payout-ownership and share-accounting migrations; fund
@@ -314,6 +317,13 @@ pgrep -af 'Miningcore|Miningcore.dll' || true
 ```
 
 Start PostgreSQL and the required daemons first, wait for them to become ready, then start Miningcore.
+For normal host shutdowns, install the persistent
+[PostgreSQL ordering](systemd-postgresql-ordering.md) once and verify it. Rerun the helper whenever
+the PostgreSQL major version or cluster unit name changes, selecting the replacement with `--unit`
+before starting Miningcore; on v0.3.0 update the manual drop-in and reload systemd. For a confirmed
+local-to-remote migration or uninstall, follow the guide's explicit `--remove` procedure. This
+ordering applies to shared systemd transactions; keep the manual sequence for independently
+stopping services during maintenance.
 Read the complete startup log before returning traffic. Do not force-kill the process merely because
 shutdown takes several seconds; candidate delivery and share recovery intentionally outlive ordinary
 request cancellation within the bounded shutdown window.

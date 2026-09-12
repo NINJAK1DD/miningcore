@@ -399,6 +399,27 @@ unset token
 sudo cp /opt/miningcore/systemd/miningcore.service \
   /etc/systemd/system/miningcore.service
 sudo systemctl daemon-reload
+```
+
+Before enabling Miningcore with a local PostgreSQL database, configure persistent
+[PostgreSQL startup/shutdown ordering](docs/systemd-postgresql-ordering.md). The v0.3.0 archives
+predate the helper: for this pinned quick start, follow the guide's
+[manual setup](docs/systemd-postgresql-ordering.md#manual-setup-including-v030).
+Archives from the release containing this change onward include the helper; for those releases,
+run the following after installing the unit and before enabling it:
+
+```console
+sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh
+```
+
+Resolve any error or ambiguous cluster selection before continuing. Confirm the selected cluster
+serves Miningcore's database. Remote-database deployments should follow the guide's remote setup
+and removal guidance instead. Rerun the helper whenever the PostgreSQL major version or cluster unit
+name changes. For v0.3.0, update the manual drop-in and reload systemd after such changes.
+
+After the applicable ordering setup and verification succeed, enable Miningcore:
+
+```console
 sudo systemctl enable --now miningcore
 sudo systemctl status miningcore --no-pager -l
 ```

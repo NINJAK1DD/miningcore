@@ -928,6 +928,26 @@ printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
 sudo systemctl daemon-reload
+```
+
+Before enabling Miningcore with a local database, configure
+[PostgreSQL startup/shutdown ordering](systemd-postgresql-ordering.md). The v0.3.0 archives predate
+the helper; use the [manual setup](systemd-postgresql-ordering.md#manual-setup-including-v030) for
+that release. Archives from the release containing this change onward include the helper, which
+must run after installing/reloading the unit and before enabling Miningcore:
+
+```console
+sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh
+```
+
+Resolve any error or multiple-cluster ambiguity and verify the selected unit serves Miningcore's
+database before continuing. For remote databases, follow the guide's remote setup and explicit
+removal guidance instead. Rerun the helper whenever the PostgreSQL major version or cluster unit
+name changes; on v0.3.0, update the manual drop-in and reload systemd.
+
+After the applicable ordering setup and verification succeed:
+
+```console
 sudo systemctl enable --now miningcore
 sudo systemctl status miningcore
 sudo journalctl -u miningcore -f
@@ -941,6 +961,12 @@ can release its durable owner cleanly. If ownership remains after a database-ses
 loss, use the guarded [payout-manager recovery runbook](database.md#recover-payout-manager-ownership-safely).
 
 ## Upgrade or roll back
+
+If this maintenance changes the PostgreSQL major version or cluster unit name, follow the
+[ordering upgrade procedure](systemd-postgresql-ordering.md#postgresql-upgrades-and-removal) before
+starting Miningcore. Start/select the replacement database service and rerun the helper with its
+explicit `--unit` (or update the manual v0.3.0 drop-in), then verify both dependencies. For a
+confirmed local-to-remote migration, use `--remove` and verify the remaining drop-ins.
 
 For a major-runtime upgrade from .NET 6, use the more detailed
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). The sequence below is the shorter

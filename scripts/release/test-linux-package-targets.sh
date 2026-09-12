@@ -197,6 +197,18 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
     -maxdepth 1 -type f -name '*.sql' -print | sort)
 
   cp "$output_dir/$archive" "$complete_dir/"
+
+  extracted="$work_dir/extracted-$ubuntu_version"
+  mkdir -p "$extracted"
+  tar -xzf "$output_dir/$archive" -C "$extracted"
+  for asset in miningcore.service configure-postgresql-ordering.sh postgresql-ordering.conf.example; do
+    cmp "$repository_root/packaging/systemd/$asset" "$extracted/$package_root/systemd/$asset"
+  done
+  test -x "$extracted/$package_root/systemd/configure-postgresql-ordering.sh"
+  test "$(stat -c %a "$extracted/$package_root/systemd/configure-postgresql-ordering.sh")" = 755
+  test "$(stat -c %a "$extracted/$package_root/Miningcore")" = 755
+  cmp "$repository_root/docs/systemd-postgresql-ordering.md" \
+    "$extracted/$package_root/docs/systemd-postgresql-ordering.md"
 done
 
 bash "$collector" "$complete_dir" "$version" "$SOURCE_COMMIT"

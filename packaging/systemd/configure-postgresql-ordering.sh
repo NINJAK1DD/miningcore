@@ -4,109 +4,134 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: configure-postgresql-ordering.sh [--unit UNIT] [--dry-run]
+Usage: configure-postgresql-ordering.sh [--unit UNIT | --remove] [--dry-run]
 
-Configure a Miningcore systemd drop-in so a local PostgreSQL cluster starts
-before Miningcore and stops after Miningcore.
+Order a local PostgreSQL service before Miningcore at startup and after it at
+shutdown. Run only when Miningcore uses the selected local database.
 
-Without --unit, the helper auto-detects running postgresql@*.service units:
-  - exactly one: configure it automatically
-  - none: skip safely (remote/non-standard PostgreSQL may be intentional)
-  - more than one: refuse to guess and require --unit
+Without --unit, discover active Debian/Ubuntu postgresql@*.service clusters:
+  - one: configure it; multiple: refuse to guess and require --unit
+  - none: skip only if no existing managed drop-in remains
+Other local layouts require --unit (for example postgresql-16.service).
+--remove explicitly removes only postgresql-ordering.conf, then reloads systemd.
+--dry-run validates and previews changes without writing or reloading systemd.
+Rerun after changing the PostgreSQL major version or cluster unit name.
 
---dry-run performs discovery and prints the drop-in without writing files or
-reloading systemd. It is also used by the release regression tests.
+MININGCORE_SYSTEMD_ROOT is a filesystem prefix for isolated regression tests.
+It does not bypass root authorization or redirect systemctl; tests must mock it.
 EOF
 }
 
 explicit_unit=
 dry_run=0
+remove=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --unit)
             shift
-            [[ $# -gt 0 ]] || { echo "Missing value for --unit" >&2; exit 64; }
-            explicit_unit="$1"
+            [[ $# -gt 0 && -n "$1" && "$1" != --* ]] || {
+                echo 'Missing or empty value for --unit' >&2; exit 64;
+            }
+            [[ -z "$explicit_unit" ]] || { echo 'Duplicate --unit' >&2; exit 64; }
+            explicit_unit=$1
             ;;
-        --dry-run)
-            dry_run=1
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        *)
-            echo "Unknown argument: $1" >&2
-            usage >&2
-            exit 64
-            ;;
+        --remove) remove=1 ;;
+        --dry-run) dry_run=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; usage >&2; exit 64 ;;
     esac
     shift
 done
+if [[ $remove -eq 1 && -n "$explicit_unit" ]]; then
+    echo '--remove and --unit are mutually exclusive' >&2
+    exit 64
+fi
 
-if [[ $dry_run -eq 0 && ${EUID:-$(id -u)} -ne 0 ]]; then
-    echo "Run this helper as root (for example with sudo)." >&2
+root=${MININGCORE_SYSTEMD_ROOT:-}
+if [[ -n "$root" && ( "$root" != /* || ! -d "$root" ) ]]; then
+    echo 'MININGCORE_SYSTEMD_ROOT must be an existing absolute directory' >&2
+    exit 64
+fi
+dropin_dir="${root%/}/etc/systemd/system/miningcore.service.d"
+dropin="$dropin_dir/postgresql-ordering.conf"
+
+if [[ $dry_run -eq 0 && $EUID -ne 0 ]]; then
+    echo 'Run this helper as root (for example with sudo).' >&2
     exit 77
 fi
-
 if ! command -v systemctl >/dev/null 2>&1; then
-    echo "systemctl is unavailable; cannot configure local systemd ordering." >&2
+    echo 'systemctl is unavailable; cannot configure local systemd ordering.' >&2
     exit 69
 fi
+if [[ -L "$dropin_dir" || -L "$dropin" || ( -e "$dropin" && ! -f "$dropin" ) ]]; then
+    echo "Refusing unsafe managed drop-in path: $dropin" >&2
+    exit 78
+fi
 
-validate_unit() {
-    local unit=$1
-
-    if [[ ! "$unit" =~ ^postgresql@[A-Za-z0-9_.:-]+\.service$ ]]; then
-        echo "Refusing invalid PostgreSQL cluster unit: $unit" >&2
-        exit 64
-    fi
-
-    if ! systemctl cat "$unit" >/dev/null 2>&1; then
-        echo "PostgreSQL cluster unit does not exist: $unit" >&2
+reload_systemd() {
+    if ! systemctl daemon-reload; then
+        echo "Unable to reload systemd; inspect $dropin and retry before starting Miningcore." >&2
         exit 69
     fi
 }
 
-pg_unit=
-if [[ -n "$explicit_unit" ]]; then
-    validate_unit "$explicit_unit"
-    pg_unit="$explicit_unit"
-else
-    discovery_output=
-    if ! discovery_output=$(systemctl list-units \
-        --type=service \
-        --state=running \
-        --no-legend \
-        --plain \
-        'postgresql@*.service'); then
-        echo "Unable to query systemd for local PostgreSQL clusters; ordering was not changed." >&2
+if [[ $remove -eq 1 ]]; then
+    if [[ $dry_run -eq 1 ]]; then
+        echo "Would remove managed drop-in (if present) and reload systemd: $dropin"
+        exit 0
+    fi
+    # Also reload when absent, so retrying after a failed reload is effective.
+    rm -f -- "$dropin" || { echo "Unable to remove $dropin" >&2; exit 74; }
+    reload_systemd
+    echo "Removed managed PostgreSQL ordering: $dropin"
+    echo 'Other drop-ins and their dependencies are unchanged.'
+    exit 0
+fi
+
+validate_unit() {
+    local unit=$1
+    if [[ ! "$unit" =~ ^postgresql([@-][A-Za-z0-9_.:-]+)?\.service$ ]]; then
+        echo "Refusing invalid PostgreSQL unit: $unit" >&2
+        exit 64
+    fi
+    if ! systemctl cat "$unit" --no-pager >/dev/null 2>&1; then
+        echo "PostgreSQL unit does not exist or cannot be read: $unit" >&2
         exit 69
     fi
+}
 
-    mapfile -t pg_units < <(
-        printf '%s\n' "$discovery_output" |
-        awk 'NF { print $1 }' |
-        sort -u
-    )
-
+pg_unit=$explicit_unit
+if [[ -z "$pg_unit" ]]; then
+    if ! discovery_output=$(systemctl list-units --type=service --state=active \
+        --no-legend --plain --no-pager 'postgresql@*.service'); then
+        echo 'Unable to query systemd for local PostgreSQL clusters; ordering was not changed.' >&2
+        exit 69
+    fi
+    mapfile -t pg_units < <(printf '%s\n' "$discovery_output" | awk 'NF { print $1 }' | sort -u)
     case "${#pg_units[@]}" in
         0)
-            echo "No running local postgresql@*.service cluster was detected."
-            echo "Skipping Miningcore/PostgreSQL ordering; this is expected for remote or non-standard PostgreSQL deployments."
+            if [[ -e "$dropin" ]]; then
+                echo "No active Debian/Ubuntu cluster found, but an existing drop-in remains: $dropin" >&2
+                echo 'Start/select the replacement cluster and rerun with --unit; use --remove for a confirmed migration to remote PostgreSQL.' >&2
+                exit 78
+            fi
+            echo 'No active Debian/Ubuntu postgresql@*.service cluster was detected.'
+            echo 'Skipping Miningcore/PostgreSQL ordering. Other local layouts need --unit or a reviewed manual drop-in; remote databases need no local dependency.'
             exit 0
             ;;
-        1)
-            pg_unit="${pg_units[0]}"
-            validate_unit "$pg_unit"
-            ;;
+        1) pg_unit=${pg_units[0]} ;;
         *)
-            echo "Multiple running local PostgreSQL clusters were detected; refusing to guess:" >&2
+            echo 'Multiple active local PostgreSQL clusters were detected; refusing to guess:' >&2
             printf '  %s\n' "${pg_units[@]}" >&2
-            echo "Re-run with --unit <postgresql@...service> for the cluster used by Miningcore." >&2
+            echo 'Rerun with --unit for the cluster used by Miningcore. Existing ordering was not changed.' >&2
             exit 78
             ;;
     esac
+fi
+validate_unit "$pg_unit"
+if ! systemctl cat miningcore.service --no-pager >/dev/null 2>&1; then
+    echo 'Install miningcore.service and run systemctl daemon-reload before configuring ordering.' >&2
+    exit 69
 fi
 
 render_dropin() {
@@ -116,27 +141,42 @@ Wants=$pg_unit
 After=$pg_unit
 EOF
 }
-
 if [[ $dry_run -eq 1 ]]; then
-    echo "Detected local PostgreSQL cluster: $pg_unit"
+    echo "Selected local PostgreSQL unit: $pg_unit"
     render_dropin
     exit 0
 fi
 
-dropin_dir=/etc/systemd/system/miningcore.service.d
-dropin="$dropin_dir/postgresql-ordering.conf"
-
-install -d -m 0755 "$dropin_dir"
-
-tmp=$(mktemp "${dropin}.tmp.XXXXXX")
+install -d -m 0755 "$dropin_dir" || exit 74
+tmp=$(mktemp "${dropin}.tmp.XXXXXX") || exit 74
 trap 'rm -f -- "$tmp"' EXIT
-render_dropin > "$tmp"
-install -m 0644 "$tmp" "$dropin"
-rm -f -- "$tmp"
-trap - EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if ! render_dropin > "$tmp" || ! chmod 0644 "$tmp" || ! mv -fT -- "$tmp" "$dropin"; then
+    echo "Unable to install $dropin" >&2
+    exit 74
+fi
 
-systemctl daemon-reload
-
-echo "Configured Miningcore ordering with local PostgreSQL cluster: $pg_unit"
+reload_systemd
+if ! properties=$(systemctl show miningcore.service -p Wants -p After --no-pager); then
+    echo "Unable to verify Miningcore dependencies; inspect $dropin before starting Miningcore." >&2
+    exit 69
+fi
+for property in Wants After; do
+    found=0
+    while IFS= read -r line; do
+        if [[ "$line" == "$property="* ]]; then
+            read -r -a dependencies <<< "${line#*=}"
+            for dependency in "${dependencies[@]}"; do
+                [[ "$dependency" != "$pg_unit" ]] || found=1
+            done
+        fi
+    done <<< "$properties"
+    if [[ $found -ne 1 ]]; then
+        echo "Verification failed: $pg_unit is absent from $property. Inspect $dropin and other drop-ins before starting Miningcore." >&2
+        exit 78
+    fi
+done
+echo "Configured Miningcore ordering with local PostgreSQL unit: $pg_unit"
 echo "Drop-in: $dropin"
-systemctl show miningcore -p Wants -p After --no-pager
+printf '%s\n' "$properties"
