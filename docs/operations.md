@@ -322,6 +322,10 @@ For normal host shutdowns, install the persistent
 the PostgreSQL major version or cluster unit name changes, selecting the replacement with `--unit`
 before starting Miningcore; on v0.3.0 update the manual drop-in and reload systemd. For a confirmed
 local-to-remote migration or uninstall, follow the guide's explicit `--remove` procedure. This
+command returns exit `78` if PostgreSQL dependencies survive in other unit configuration; inspect
+`systemctl cat miningcore.service`, correct those entries explicitly, and rerun it. A helper
+verification failure leaves the host modified: the managed file has already been written or
+removed and systemd reloaded. Inspect that state before starting Miningcore. The
 ordering applies to shared systemd transactions; keep the manual sequence for independently
 stopping services during maintenance.
 Read the complete startup log before returning traffic. Do not force-kill the process merely because

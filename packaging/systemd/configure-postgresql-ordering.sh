@@ -14,11 +14,14 @@ Without --unit, discover active Debian/Ubuntu postgresql@*.service clusters:
   - none: skip only if no existing managed drop-in remains
 Other local layouts require --unit (for example postgresql-16.service).
 --remove explicitly removes only postgresql-ordering.conf, then reloads systemd.
+It exits 78 if PostgreSQL dependencies remain in other unit configuration.
 --dry-run validates and previews changes without writing or reloading systemd.
 Rerun after changing the PostgreSQL major version or cluster unit name.
 
 MININGCORE_SYSTEMD_ROOT is a filesystem prefix for isolated regression tests.
-It does not bypass root authorization or redirect systemctl; tests must mock it.
+It requires MININGCORE_SYSTEMD_TEST_MODE=1 and a mocked systemctl.
+Neither variable bypasses root authorization or redirects the systemd manager.
+Requires Bash, systemd and GNU coreutils on the local host.
 EOF
 }
 
@@ -48,6 +51,10 @@ if [[ $remove -eq 1 && -n "$explicit_unit" ]]; then
 fi
 
 root=${MININGCORE_SYSTEMD_ROOT:-}
+if [[ -n "$root" && ${MININGCORE_SYSTEMD_TEST_MODE:-} != 1 ]]; then
+    echo 'MININGCORE_SYSTEMD_ROOT requires MININGCORE_SYSTEMD_TEST_MODE=1 and a mocked systemctl; unset the prefix for normal operation.' >&2
+    exit 64
+fi
 if [[ -n "$root" && ( "$root" != /* || ! -d "$root" ) ]]; then
     echo 'MININGCORE_SYSTEMD_ROOT must be an existing absolute directory' >&2
     exit 64
@@ -75,6 +82,53 @@ reload_systemd() {
     fi
 }
 
+verify_dependencies() {
+    local operation=$1 properties property line dependency seen found remaining=0
+    local -a dependencies
+    if ! properties=$(systemctl show miningcore.service -p Wants -p After --no-pager); then
+        echo 'Unable to verify Miningcore dependencies. The managed file has changed and systemd was reloaded; inspect the effective configuration before starting Miningcore.' >&2
+        exit 69
+    fi
+    for property in Wants After; do
+        seen=0
+        found=0
+        while IFS= read -r line; do
+            if [[ "$line" == "$property="* ]]; then
+                seen=$((seen + 1))
+                read -r -a dependencies <<< "${line#*=}"
+                for dependency in "${dependencies[@]}"; do
+                    if [[ "$operation" == remove ]]; then
+                        if [[ "$dependency" == postgresql* ]]; then
+                            echo "Remaining PostgreSQL dependency: $property=$dependency" >&2
+                            remaining=1
+                        fi
+                    elif [[ "$dependency" == "$pg_unit" ]]; then
+                        found=1
+                    fi
+                done
+            fi
+        done <<< "$properties"
+        if [[ $seen -ne 1 || ( "$operation" == configure && $found -ne 1 ) ]]; then
+            echo "Verification failed for $property. The managed file has changed and systemd was reloaded; inspect $dropin and other drop-ins before starting Miningcore." >&2
+            exit 78
+        fi
+    done
+    if [[ $remaining -ne 0 ]]; then
+        echo 'The managed file was removed and systemd was reloaded, but PostgreSQL ordering remains. Inspect systemctl cat miningcore.service and explicitly update the remaining unit configuration.' >&2
+        exit 78
+    fi
+    printf '%s\n' "$properties"
+}
+
+require_loaded_unit() {
+    local unit=$1 load_state
+    if ! load_state=$(systemctl show "$unit" -p LoadState --value --no-pager) ||
+        [[ "$load_state" != loaded ]]; then
+        echo "Unit must exist and be loaded (not masked): $unit. Install/unmask it and run systemctl daemon-reload before configuring ordering." >&2
+        exit 69
+    fi
+}
+
 if [[ $remove -eq 1 ]]; then
     if [[ $dry_run -eq 1 ]]; then
         echo "Would remove managed drop-in (if present) and reload systemd: $dropin"
@@ -83,8 +137,9 @@ if [[ $remove -eq 1 ]]; then
     # Also reload when absent, so retrying after a failed reload is effective.
     rm -f -- "$dropin" || { echo "Unable to remove $dropin" >&2; exit 74; }
     reload_systemd
+    verify_dependencies remove
     echo "Removed managed PostgreSQL ordering: $dropin"
-    echo 'Other drop-ins and their dependencies are unchanged.'
+    echo 'No PostgreSQL dependencies remain in Wants or After. Other drop-ins are unchanged.'
     exit 0
 fi
 
@@ -94,10 +149,7 @@ validate_unit() {
         echo "Refusing invalid PostgreSQL unit: $unit" >&2
         exit 64
     fi
-    if ! systemctl cat "$unit" --no-pager >/dev/null 2>&1; then
-        echo "PostgreSQL unit does not exist or cannot be read: $unit" >&2
-        exit 69
-    fi
+    require_loaded_unit "$unit"
 }
 
 pg_unit=$explicit_unit
@@ -129,10 +181,7 @@ if [[ -z "$pg_unit" ]]; then
     esac
 fi
 validate_unit "$pg_unit"
-if ! systemctl cat miningcore.service --no-pager >/dev/null 2>&1; then
-    echo 'Install miningcore.service and run systemctl daemon-reload before configuring ordering.' >&2
-    exit 69
-fi
+require_loaded_unit miningcore.service
 
 render_dropin() {
     cat <<EOF
@@ -147,7 +196,9 @@ if [[ $dry_run -eq 1 ]]; then
     exit 0
 fi
 
-install -d -m 0755 "$dropin_dir" || exit 74
+if [[ ! -d "$dropin_dir" ]]; then
+    install -d -m 0755 "$dropin_dir" || exit 74
+fi
 tmp=$(mktemp "${dropin}.tmp.XXXXXX") || exit 74
 trap 'rm -f -- "$tmp"' EXIT
 trap 'exit 130' INT
@@ -158,25 +209,6 @@ if ! render_dropin > "$tmp" || ! chmod 0644 "$tmp" || ! mv -fT -- "$tmp" "$dropi
 fi
 
 reload_systemd
-if ! properties=$(systemctl show miningcore.service -p Wants -p After --no-pager); then
-    echo "Unable to verify Miningcore dependencies; inspect $dropin before starting Miningcore." >&2
-    exit 69
-fi
-for property in Wants After; do
-    found=0
-    while IFS= read -r line; do
-        if [[ "$line" == "$property="* ]]; then
-            read -r -a dependencies <<< "${line#*=}"
-            for dependency in "${dependencies[@]}"; do
-                [[ "$dependency" != "$pg_unit" ]] || found=1
-            done
-        fi
-    done <<< "$properties"
-    if [[ $found -ne 1 ]]; then
-        echo "Verification failed: $pg_unit is absent from $property. Inspect $dropin and other drop-ins before starting Miningcore." >&2
-        exit 78
-    fi
-done
+verify_dependencies configure
 echo "Configured Miningcore ordering with local PostgreSQL unit: $pg_unit"
 echo "Drop-in: $dropin"
-printf '%s\n' "$properties"

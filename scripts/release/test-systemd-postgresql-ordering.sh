@@ -14,6 +14,7 @@ fixture_dir=$(mktemp -d)
 trap 'rm -rf -- "$fixture_dir"' EXIT
 mkdir -p "$fixture_dir/bin" "$fixture_dir/root" "$fixture_dir/empty-bin"
 export MININGCORE_SYSTEMD_ROOT="$fixture_dir/root"
+export MININGCORE_SYSTEMD_TEST_MODE=1
 export TEST_TRACE="$fixture_dir/trace"
 export TEST_STATE="$fixture_dir/state"
 dropin_dir="$MININGCORE_SYSTEMD_ROOT/etc/systemd/system/miningcore.service.d"
@@ -40,10 +41,17 @@ case "$*" in
             *) exit 2 ;;
         esac
         ;;
-    'cat miningcore.service --no-pager') exit "${FAKE_MININGCORE_STATUS:-0}" ;;
-    'cat postgresql@17-main.service --no-pager'|'cat postgresql@18-main.service --no-pager'|\
-    'cat postgresql.service --no-pager'|'cat postgresql-16.service --no-pager') exit 0 ;;
-    'cat postgresql@99-missing.service --no-pager') exit 1 ;;
+    'show miningcore.service -p LoadState --value --no-pager')
+        [[ ${FAKE_MININGCORE_STATUS:-0} == 0 ]] || exit 1
+        echo "${FAKE_MININGCORE_LOAD_STATE:-loaded}"
+        ;;
+    'show postgresql@17-main.service -p LoadState --value --no-pager'|\
+    'show postgresql@18-main.service -p LoadState --value --no-pager'|\
+    'show postgresql.service -p LoadState --value --no-pager'|\
+    'show postgresql-16.service -p LoadState --value --no-pager')
+        echo "${FAKE_PG_LOAD_STATE:-loaded}"
+        ;;
+    'show postgresql@99-missing.service -p LoadState --value --no-pager') echo not-found ;;
     daemon-reload)
         [[ ${FAKE_RELOAD_FAIL:-0} == 0 ]] || exit 1
         # Model the manager loading the on-disk graph only after daemon-reload.
@@ -52,15 +60,29 @@ case "$*" in
         else
             : > "$TEST_STATE"
         fi
+        if [[ -f "${TEST_DROPIN%/*}/operator.conf" ]]; then
+            cat "${TEST_DROPIN%/*}/operator.conf" >> "$TEST_STATE"
+        fi
         ;;
     'show miningcore.service -p Wants -p After --no-pager')
         [[ ${FAKE_SHOW_FAIL:-0} == 0 ]] || exit 1
         case "${FAKE_PROPERTIES:-valid}" in
-            valid) cat "$TEST_STATE" ;;
+            valid|first|last)
+                wants=$(awk -F= '/^Wants=/ { printf "%s ", $2 }' "$TEST_STATE")
+                after=$(awk -F= '/^After=/ { printf "%s ", $2 }' "$TEST_STATE")
+                case "${FAKE_PROPERTIES:-valid}" in
+                    first) printf 'Wants=%snetwork-online.target\nAfter=%sbasic.target sysinit.target\n' "$wants" "$after" ;;
+                    last) printf 'Wants=network-online.target %s\nAfter=basic.target sysinit.target %s\n' "$wants" "$after" ;;
+                    valid) printf 'Wants=network-online.target %ssockets.target\nAfter=basic.target %ssysinit.target system.slice\n' "$wants" "$after" ;;
+                esac
+                ;;
             missing-wants) echo 'Wants=network.target'; echo 'After=postgresql@17-main.service' ;;
             missing-after) echo 'Wants=postgresql@17-main.service'; echo 'After=network.target' ;;
             substring) echo 'Wants=postgresql@17-main.service.extra'; echo 'After=postgresql@17-main.service' ;;
             empty) printf 'Wants=\nAfter=\n' ;;
+            missing-property) echo 'Wants=network-online.target' ;;
+            duplicate-property) printf 'Wants=\nWants=\nAfter=\n' ;;
+            wrong-service) printf 'Wants=postgresql@17-main.service\nAfter=postgresql@17-main.service\n' ;;
             *) exit 2 ;;
         esac
         ;;
@@ -79,8 +101,8 @@ expect() {
         printf 'Expected exit %s containing %s; got %s:\n%s\n' "$expected" "$message" "$status" "$output" >&2
         exit 1
     fi
-    if [[ $expected -ne 0 ]] && grep -Fq 'Configured Miningcore ordering' <<< "$output"; then
-        echo 'Failure incorrectly claimed successful configuration' >&2
+    if [[ $expected -ne 0 ]] && grep -Eq 'Configured Miningcore ordering|Removed managed PostgreSQL ordering:' <<< "$output"; then
+        echo 'Failure incorrectly claimed successful configuration/removal' >&2
         exit 1
     fi
 }
@@ -93,7 +115,7 @@ expect 78 'refusing to guess' env FAKE_PG_UNITS=many bash "$helper" --dry-run
 expect 64 'Refusing invalid PostgreSQL unit' env FAKE_PG_UNITS=invalid bash "$helper" --dry-run
 expect 64 'Refusing invalid PostgreSQL unit' bash "$helper" --dry-run --unit ssh.service
 expect 64 'Refusing invalid PostgreSQL unit' bash "$helper" --dry-run --unit $'postgresql@17-main.service\nRequires=ssh.service'
-expect 69 'does not exist' bash "$helper" --dry-run --unit postgresql@99-missing.service
+expect 69 'must exist and be loaded' bash "$helper" --dry-run --unit postgresql@99-missing.service
 expect 64 'Missing or empty' bash "$helper" --dry-run --unit ''
 expect 64 'Missing or empty' bash "$helper" --dry-run --unit
 expect 64 'Missing or empty' bash "$helper" --unit --dry-run
@@ -106,10 +128,21 @@ expect 0 'Usage:' bash "$helper" --help
 for unit in postgresql.service postgresql-16.service postgresql@18-main.service; do
     expect 0 "Wants=$unit" env FAKE_PG_UNITS=many bash "$helper" --dry-run --unit "$unit"
 done
-expect 69 'Install miningcore.service' env FAKE_MININGCORE_STATUS=1 bash "$helper" --dry-run
-expect 69 'Install miningcore.service' env FAKE_MININGCORE_STATUS=1 bash "$helper"
+expect 69 'must exist and be loaded' env FAKE_MININGCORE_STATUS=1 bash "$helper" --dry-run
+expect 69 'must exist and be loaded' env FAKE_MININGCORE_STATUS=1 bash "$helper"
+for state in masked not-found error; do
+    expect 69 'not masked' env FAKE_MININGCORE_LOAD_STATE="$state" bash "$helper"
+    expect 69 'not masked' env FAKE_PG_LOAD_STATE="$state" bash "$helper"
+done
 [[ ! -e "$dropin_dir" ]]
-if grep -Eq 'daemon-reload|^show ' "$TEST_TRACE"; then exit 1; fi
+if grep -Eq 'daemon-reload|^show .* -p Wants' "$TEST_TRACE"; then exit 1; fi
+
+# Accidental prefixes must fail before either discovery or mutation, even if the
+# real manager would already have matching dependencies from an old configuration.
+: > "$TEST_TRACE"
+expect 64 'requires MININGCORE_SYSTEMD_TEST_MODE=1' env -u MININGCORE_SYSTEMD_TEST_MODE bash "$helper"
+expect 64 'requires MININGCORE_SYSTEMD_TEST_MODE=1' env MININGCORE_SYSTEMD_TEST_MODE=0 bash "$helper" --remove
+[[ ! -s "$TEST_TRACE" && ! -e "$dropin_dir" ]]
 
 # Real non-root execution, including prefix: no environment EUID spoofing.
 cp "$helper" "$fixture_dir/unprivileged-helper.sh"
@@ -129,6 +162,11 @@ cmp "$fixture_dir/expected" "$dropin"
 [[ $(stat -c %a "$dropin") == 644 && $(stat -c %a "$dropin_dir") == 755 ]]
 expect 0 'Configured Miningcore ordering' bash "$helper"
 cmp "$fixture_dir/expected" "$dropin"
+chmod 0700 "$dropin_dir"
+for properties in valid first last; do
+    expect 0 'Configured Miningcore ordering' env FAKE_PROPERTIES="$properties" bash "$helper"
+    [[ $(stat -c %a "$dropin_dir") == 700 ]]
+done
 printf '[Service]\nRestart=no\n' > "$dropin_dir/operator.conf"
 cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
 : > "$TEST_TRACE"
@@ -137,7 +175,7 @@ expect 78 'existing drop-in remains' env FAKE_PG_UNITS=none bash "$helper" --dry
 expect 78 'refusing to guess' env FAKE_PG_UNITS=many bash "$helper"
 expect 69 'Unable to query systemd' env FAKE_PG_UNITS=fail bash "$helper"
 cmp "$fixture_dir/expected" "$dropin"
-if grep -Eq 'daemon-reload|^show ' "$TEST_TRACE"; then exit 1; fi
+if grep -Eq 'daemon-reload|^show .* -p Wants' "$TEST_TRACE"; then exit 1; fi
 expect 0 'Would remove' bash "$helper" --remove --dry-run
 cmp "$fixture_dir/expected" "$dropin"
 expect 0 'Configured Miningcore ordering' env FAKE_PG_UNITS=new bash "$helper"
@@ -148,9 +186,12 @@ cmp "$fixture_dir/expected" "$dropin"
 
 expect 69 'Unable to reload systemd' env FAKE_RELOAD_FAIL=1 bash "$helper"
 expect 69 'Unable to verify' env FAKE_SHOW_FAIL=1 bash "$helper"
-for properties in missing-wants missing-after substring empty; do
+for properties in missing-wants missing-after substring empty missing-property duplicate-property; do
     expect 78 'Verification failed' env FAKE_PROPERTIES="$properties" bash "$helper"
+    grep -Fq 'managed file has changed and systemd was reloaded' <<< "$output"
 done
+expect 78 'Verification failed' env FAKE_PROPERTIES=wrong-service bash "$helper" --unit postgresql.service
+expect 0 'Configured Miningcore ordering' bash "$helper"
 
 # Failed atomic replacement must retain the old complete file and clean its temp.
 cat > "$fixture_dir/bin/mv" <<'EOF'
@@ -168,10 +209,30 @@ rm "$fixture_dir/bin/mv"
 expect 69 'Unable to reload systemd' env FAKE_RELOAD_FAIL=1 bash "$helper" --remove
 [[ ! -e "$dropin" ]]
 expect 0 'Removed managed PostgreSQL ordering' env FAKE_MININGCORE_STATUS=1 bash "$helper" --remove
-[[ ! -s "$TEST_STATE" ]]
+if grep -Fq 'postgresql' "$TEST_STATE"; then exit 1; fi
 cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
 expect 0 'Removed managed PostgreSQL ordering' bash "$helper" --remove
 expect 0 'Skipping Miningcore/PostgreSQL ordering' env FAKE_PG_UNITS=none bash "$helper"
+
+# Removal must inspect all effective dependency tokens, preserve other files,
+# report which properties remain, and succeed on retry only after correction.
+for property in Wants After; do
+    for unit in postgresql@17-main.service postgresql.service postgresql-16.service postgresql-custom.target; do
+        printf '[Unit]\n%s=network-online.target %s basic.target\n' "$property" "$unit" > "$dropin_dir/operator.conf"
+        cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
+        expect 0 'Configured Miningcore ordering' bash "$helper"
+        expect 78 "Remaining PostgreSQL dependency: $property=$unit" bash "$helper" --remove
+        [[ ! -e "$dropin" ]]
+        cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
+        expect 78 'PostgreSQL ordering remains' bash "$helper" --remove
+        printf '[Service]\nRestart=no\n' > "$dropin_dir/operator.conf"
+        expect 0 'No PostgreSQL dependencies remain' bash "$helper" --remove
+    done
+done
+expect 69 'Unable to verify' env FAKE_SHOW_FAIL=1 bash "$helper" --remove
+expect 78 'Verification failed' env FAKE_PROPERTIES=missing-property bash "$helper" --remove
+expect 78 'Verification failed' env FAKE_PROPERTIES=duplicate-property bash "$helper" --remove
+expect 0 'Removed managed PostgreSQL ordering' env FAKE_PROPERTIES=empty bash "$helper" --remove
 
 ln -s "$fixture_dir/expected" "$dropin"
 expect 78 'unsafe managed drop-in path' bash "$helper"

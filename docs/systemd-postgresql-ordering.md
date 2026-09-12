@@ -56,13 +56,21 @@ For standard Fedora/RHEL layouts, select the actual installed unit explicitly, f
 Use `--dry-run` to preview any configuration or removal without writing files or reloading systemd.
 An empty `--unit` is an error, so an unset shell variable cannot silently enable auto-discovery.
 
-The helper validates both service units, atomically replaces the drop-in with mode `0644`, reloads
+The helper requires both service units to have `LoadState=loaded` (masked, missing or unloadable
+units are rejected), atomically replaces the drop-in with mode `0644`, reloads
 systemd, and checks that the selected unit appears in both dependency properties before reporting
 success. A reload or verification failure returns nonzero; inspect the written file and other
 drop-ins, correct the problem, and rerun before enabling Miningcore. It does not roll back a file
-after a failed reload. Root is required for changes. The `MININGCORE_SYSTEMD_ROOT` environment
-variable is for isolated tests with a mocked `systemctl`; it does not redirect the systemd manager
-or bypass the root check and must not be used as an offline installation mode.
+after a failed reload. A verification failure occurs after the file has changed and systemd has
+been reloaded, so the host remains in that modified state; it does not mean the operation was a
+no-op. Existing drop-in directory permissions are preserved; a newly created directory uses `0755`.
+Root is required for changes. The helper assumes Bash, systemd and GNU coreutils (including `mv -T`).
+
+The `MININGCORE_SYSTEMD_ROOT` environment variable is for isolated tests with a mocked `systemctl`
+and is rejected unless `MININGCORE_SYSTEMD_TEST_MODE=1` is also set. These variables do not redirect
+the systemd manager or bypass the root check and must not be used as an offline installation mode.
+Unset the prefix for normal operation; the second variable is an accidental-use guard, not a
+security boundary or a substitute for the mock.
 
 ## Manual setup (including v0.3.0)
 
@@ -73,7 +81,7 @@ replace it with the unit that serves Miningcore. Run after installing and reload
 
 ```console
 systemctl cat miningcore.service postgresql@17-main.service --no-pager
-sudo install -d -m 0755 /etc/systemd/system/miningcore.service.d
+sudo mkdir -p -m 0755 /etc/systemd/system/miningcore.service.d
 sudo tee /etc/systemd/system/miningcore.service.d/postgresql-ordering.conf >/dev/null <<'EOF'
 [Unit]
 Wants=postgresql@17-main.service
@@ -96,7 +104,8 @@ before the database upgrade, start and verify the replacement cluster, then reru
 If multiple clusters are active the helper refuses to guess, preserving the existing file. A
 concrete old unit name does not update itself when PostgreSQL is upgraded.
 
-For a confirmed local-to-remote migration or uninstall, remove the managed relationship explicitly:
+For a confirmed local-to-remote migration or uninstall, stop Miningcore before changing database
+topology and remove the managed relationship explicitly:
 
 ```console
 sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh --remove
@@ -104,8 +113,16 @@ systemctl show miningcore.service -p Wants -p After --no-pager
 ```
 
 Removal touches only `/etc/systemd/system/miningcore.service.d/postgresql-ordering.conf`; other
-drop-ins are preserved and may still add dependencies. It works after either service is uninstalled
-and is safe to rerun, including after a failed reload. On v0.3.0, manually update the concrete unit
+drop-ins are preserved. After reloading, the helper checks the effective `Wants=` and `After=`:
+any remaining token beginning with `postgresql` is reported and causes exit `78`. Inspect
+`systemctl cat miningcore.service`, explicitly correct the remaining base-unit or drop-in
+configuration, then rerun `--remove`. The managed file is already removed and systemd reloaded at
+that point; a failed verification does not restore it. An inability to read the effective graph
+also returns nonzero, rather than claiming removal succeeded. Custom database unit names outside
+the `postgresql` prefix still require operator review.
+
+Removal works after either service is uninstalled and is safe to rerun, including after a failed
+reload. On v0.3.0, manually update the concrete unit
 in that file after an upgrade, or remove that file for a confirmed remote migration, then run
 `sudo systemctl daemon-reload` and verify the remaining dependencies. Do not delete the entire
 drop-in directory.
@@ -167,3 +184,14 @@ and verify the dependency graph explicitly.
 ## Recovery remains fail-closed
 
 If Miningcore reports that a durable payout-manager ownership marker remains without its advisory lock, do not delete or clear it merely to make startup succeed. Confirm the recorded process/backend is dead, reconcile any wallet submission with an uncertain outcome, and then follow the guarded payout-manager ownership recovery procedure in [Database and recovery](database.md#recover-payout-manager-ownership-safely).
+
+## Regression validation
+
+The `.NET` CI workflow runs the mocked lifecycle suite with root privileges; locally it requires
+`sudo bash scripts/release/test-systemd-postgresql-ordering.sh` and `setpriv` from util-linux.
+The fixture prefix and mocked manager keep its mutations inside a private temporary directory.
+The CI runner also runs `test-systemd-postgresql-ordering-integration.sh --disposable-host` against
+its real systemd manager. That test creates inert PostgreSQL/Miningcore service fixtures, checks
+startup and reverse shutdown order in a shared transaction, captures journal events, and verifies
+surviving-dependency and masked-unit handling. It refuses pre-existing Miningcore service
+configuration and cleans up its own files. Run it only as root on a disposable systemd host.
