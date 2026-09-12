@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+trap 'echo "Systemd integration test failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # This uses the real system manager on a disposable GitHub-hosted VM, with inert
 # service fixtures. It must never replace an operator's installed Miningcore.
@@ -153,18 +154,32 @@ bash "$helper" --remove
 # against the live graph. An After-only exporter need not be started or exist.
 printf '[Unit]\nAfter=postgresql-exporter.service\n' > "$dropin_dir/operator.conf"
 systemctl daemon-reload
-graph_before=$(systemctl show miningcore.service -p Wants -p After --no-pager)
+# Property token order is not part of systemd's dependency contract.
+dependency_snapshot() {
+    local property
+    for property in Wants After; do
+        printf '%s\n' "$property="
+        systemctl show miningcore.service -p "$property" --value --no-pager | tr ' ' '\n' | LC_ALL=C sort
+    done
+}
+graph_before=$(dependency_snapshot)
 cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
 for operation in configure remove; do
     args=(--dry-run)
     if [[ "$operation" == remove ]]; then args+=(--remove); else args+=(--unit "$pg_unit"); fi
     output=$(bash "$helper" "${args[@]}" 2>&1)
+    printf '%s\n' "$output"
     grep -Fq 'Current PostgreSQL dependency to review: After=postgresql-exporter.service' <<< "$output"
     output=$(bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service 2>&1)
+    printf '%s\n' "$output"
     grep -Fq 'Acknowledged remaining PostgreSQL dependency: After=postgresql-exporter.service' <<< "$output"
     [[ ! -e "$dropin_dir/postgresql-ordering.conf" ]]
     cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
-    [[ $(systemctl show miningcore.service -p Wants -p After --no-pager) == "$graph_before" ]]
+    graph_after=$(dependency_snapshot)
+    if [[ "$graph_after" != "$graph_before" ]]; then
+        printf 'Preview changed dependency membership:\nBefore:\n%s\nAfter:\n%s\n' "$graph_before" "$graph_after" >&2
+        exit 1
+    fi
 done
 status=0
 output=$(bash "$helper" --unit "$pg_unit" 2>&1) || status=$?
