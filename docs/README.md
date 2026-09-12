@@ -13,6 +13,7 @@ wallet balances or recovery files.
 | Task | Guide |
 | --- | --- |
 | Install, upgrade or roll back a release | [Release installation](releases.md) |
+| Order a local PostgreSQL service safely with Miningcore under systemd | [systemd PostgreSQL ordering](systemd-postgresql-ordering.md) |
 | Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
 | Configure pools, logging and recovery storage | [Configuration](configuration.md) |
 | Operate and monitor a production service | [Operator handbook](operations.md) |

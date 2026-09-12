@@ -47,6 +47,14 @@ jobs:
       shell: bash
       run: bash scripts/release/test-release-install-docs.sh
 
+    - name: Test PostgreSQL systemd ordering helper
+      shell: bash
+      run: sudo bash scripts/release/test-systemd-postgresql-ordering.sh
+
+    - name: Test real systemd PostgreSQL ordering on disposable runner
+      shell: bash
+      run: sudo bash scripts/release/test-systemd-postgresql-ordering-integration.sh --disposable-host
+
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py
@@ -74,6 +82,10 @@ jobs:
         scripts/release/assert-warning-free-build.sh
         scripts/release/audit-source-build-warnings.sh
         scripts/release/linux-release-targets.sh
+        scripts/release/package-linux-x64.sh
+        packaging/systemd/configure-postgresql-ordering.sh
+        scripts/release/test-systemd-postgresql-ordering.sh
+        scripts/release/test-systemd-postgresql-ordering-integration.sh
         scripts/release/run-warning-audited-dotnet.sh
         scripts/release/test-cryptonote-abi-safety.sh
         scripts/release/test-linux-native-inventory.sh

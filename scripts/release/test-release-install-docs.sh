@@ -236,6 +236,36 @@ assert_file_contains 'the quick-start systemd unit path' \
   '/etc/systemd/system/miningcore.service' "$readme"
 assert_file_contains 'the quick-start service enablement' \
   'sudo systemctl enable --now miningcore' "$readme"
+
+# Protect the release boundary and the order of the actual installation sections.
+# v0.3.0 must retain a usable manual route; the helper belongs before enablement
+# only for archives that contain it.
+python3 - "$readme" "$document" "$repository_root/docs/operations.md" <<'PY'
+import pathlib
+import sys
+
+for filename, heading in zip(sys.argv[1:3], (
+    '### 8. Install and start the systemd service', '## Install the systemd service'
+)):
+    text = pathlib.Path(filename).read_text()
+    section = text.split(heading + '\n', 1)[1].split('\n##', 1)[0]
+    normalized = ' '.join(section.split())
+    for required in (
+        'v0.3.0 archives predate', 'manual-setup-including-v030',
+        'Archives from the release containing this change onward',
+        'PostgreSQL major version or cluster unit name changes',
+        '--dry-run', '--allow-remaining UNIT',
+    ):
+        assert required in normalized, f'{filename}: missing {required}'
+    reload = section.index('sudo systemctl daemon-reload')
+    helper = section.index('sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh')
+    enable = section.index('sudo systemctl enable --now miningcore')
+    assert reload < helper < enable, f'{filename}: ordering must precede enablement'
+
+operations = pathlib.Path(sys.argv[3]).read_text()
+for required in ('systemd-postgresql-ordering.md', 'v0.3.0 archives predate', '--remove', '--unit'):
+    assert required in operations, f'Operator handbook missing {required}'
+PY
 assert_file_contains 'the quick-start AutoMapper licensing guidance' \
   'Review AutoMapper licensing and configure an applicable Lucky Penny key' "$readme"
 assert_file_contains 'the quick-start Lucky Penny guide link' \

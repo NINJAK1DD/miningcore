@@ -671,6 +671,15 @@ jobs:
           archive="miningcore-${{ needs.resolve-release.outputs.version }}"
           archive+="-linux-x64-ubuntu-${{ matrix.ubuntu }}.tar.gz"
           tar -tzf "dist/$archive"
+          extracted=$(mktemp -d)
+          trap 'rm -rf -- "$extracted"' EXIT
+          tar -xzf "dist/$archive" -C "$extracted"
+          package_root="$extracted/${archive%.tar.gz}"
+          test -f "$package_root/systemd/configure-postgresql-ordering.sh"
+          test -x "$package_root/systemd/configure-postgresql-ordering.sh"
+          test "$(stat -c %a "$package_root/systemd/configure-postgresql-ordering.sh")" = 755
+          test -f "$package_root/systemd/postgresql-ordering.conf.example"
+          test -f "$package_root/docs/systemd-postgresql-ordering.md"
 
       - name: Upload tested release archive
         uses: actions/upload-artifact@v7
