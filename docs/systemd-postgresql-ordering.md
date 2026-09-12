@@ -229,8 +229,7 @@ systemctl show postgresql@17-main.service -p ActiveState -p SubState --no-pager
 ```
 
 `active` is the high-level `ActiveState`; `running` and `exited` are finer-grained `SubState`
-values, so `active` and `exited` are not alternatives for the same property. See the
-[systemd state-property documentation](https://wiki.freedesktop.org/www/Software/systemd/dbus/).
+values, so `active` and `exited` are not alternatives for the same property.
 Discovery accepts active units in either sub-state. If the selected unit reports `active (exited)`,
 inspect its unit configuration and logs and verify that Miningcore's database endpoint is serving
 connections before proceeding; the active state alone does not establish database readiness.
