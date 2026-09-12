@@ -54,6 +54,24 @@ Do not copy that example unit name blindly. PostgreSQL major versions and cluste
 For standard Fedora/RHEL layouts, select the actual installed unit explicitly, for example
 `--unit postgresql.service` or `--unit postgresql-16.service`. Those layouts are not auto-discovered.
 Use `--dry-run` to preview any configuration or removal without writing files or reloading systemd.
+It reads the current effective `Wants=`/`After=`, reports PostgreSQL dependencies needing review,
+and identifies exact matches to any `--allow-remaining` options you supply. It works without root.
+For example, before configuring a replacement cluster:
+
+```console
+/opt/miningcore/systemd/configure-postgresql-ordering.sh --dry-run \
+  --unit postgresql@18-main.service --allow-remaining postgresql-exporter.service
+```
+
+This is a current-state report, not a simulation of systemd after a reload. Entries supplied by
+the managed drop-in may disappear when it is replaced or removed; entries from other configuration
+may survive. Review them with `systemctl cat miningcore.service` before deciding which intentional
+extras to acknowledge. A valid preview returns `0` even when it lists dependencies for review;
+it does not require the proposed selected unit to be in the current graph yet. Query failures
+return `69`, malformed dependency properties return `78`, and neither path changes files or reloads
+systemd. The actual operation still performs strict post-change verification and returns `78` for
+unacknowledged extras. `--remove --dry-run` provides the same read-only report for removal.
+
 An empty `--unit` is an error, so an unset shell variable cannot silently enable auto-discovery.
 
 The helper requires both service units to have `LoadState=loaded` (masked, missing or unloadable
@@ -141,6 +159,20 @@ bypass query/parse failures. Remove obsolete cluster references rather than ackn
 Successful removal reports that no **unacknowledged** PostgreSQL dependencies remain; it does not
 claim that intentional dependencies disappeared. Successful configuration prints its result before
 the effective properties; removal omits the raw property dump.
+
+Record each reviewed intentional dependency and its reason in comments in your own drop-in, so
+the next operator can reconstruct the command during a PostgreSQL upgrade. For example, above the
+existing exporter directives in `/etc/systemd/system/miningcore.service.d/monitoring.conf`:
+
+```ini
+# Reviewed dependency: postgresql-exporter.service provides local monitoring.
+# Keep its existing directives; after reviewing this requirement on each upgrade,
+# pass --allow-remaining postgresql-exporter.service to the ordering helper.
+```
+
+These comments are operator notes, not saved acknowledgements: the helper never reads them as
+authorization. Keep them in the operator-owned drop-in, not `postgresql-ordering.conf`, which the
+helper replaces. Recheck the purpose of each dependency before supplying the option again.
 
 Removal works after either service is uninstalled and is safe to rerun, including after a failed
 reload. On v0.3.0, manually update the concrete unit

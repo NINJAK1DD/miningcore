@@ -124,6 +124,20 @@ bash "$helper" --remove
 # Unexpected configuration dependencies and exact acknowledgements also work
 # against the live graph. An After-only exporter need not be started or exist.
 printf '[Unit]\nAfter=postgresql-exporter.service\n' > "$dropin_dir/operator.conf"
+systemctl daemon-reload
+graph_before=$(systemctl show miningcore.service -p Wants -p After --no-pager)
+cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
+for operation in configure remove; do
+    args=(--dry-run)
+    if [[ "$operation" == remove ]]; then args+=(--remove); else args+=(--unit "$pg_unit"); fi
+    output=$(bash "$helper" "${args[@]}" 2>&1)
+    grep -Fq 'Current PostgreSQL dependency to review: After=postgresql-exporter.service' <<< "$output"
+    output=$(bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service 2>&1)
+    grep -Fq 'Acknowledged remaining PostgreSQL dependency: After=postgresql-exporter.service' <<< "$output"
+    [[ ! -e "$dropin_dir/postgresql-ordering.conf" ]]
+    cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
+    [[ $(systemctl show miningcore.service -p Wants -p After --no-pager) == "$graph_before" ]]
+done
 status=0
 output=$(bash "$helper" --unit "$pg_unit" 2>&1) || status=$?
 [[ $status -eq 78 ]]

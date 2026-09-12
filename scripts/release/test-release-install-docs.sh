@@ -254,6 +254,7 @@ for filename, heading in zip(sys.argv[1:3], (
         'v0.3.0 archives predate', 'manual-setup-including-v030',
         'Archives from the release containing this change onward',
         'PostgreSQL major version or cluster unit name changes',
+        '--dry-run', '--allow-remaining UNIT',
     ):
         assert required in normalized, f'{filename}: missing {required}'
     reload = section.index('sudo systemctl daemon-reload')

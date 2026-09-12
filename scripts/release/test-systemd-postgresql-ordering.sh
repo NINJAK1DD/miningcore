@@ -17,6 +17,7 @@ export MININGCORE_SYSTEMD_ROOT="$fixture_dir/root"
 export MININGCORE_SYSTEMD_TEST_MODE=1
 export TEST_TRACE="$fixture_dir/trace"
 export TEST_STATE="$fixture_dir/state"
+: > "$TEST_STATE"
 dropin_dir="$MININGCORE_SYSTEMD_ROOT/etc/systemd/system/miningcore.service.d"
 dropin="$dropin_dir/postgresql-ordering.conf"
 export TEST_DROPIN="$dropin"
@@ -141,7 +142,7 @@ for state in masked not-found error; do
     expect 69 'not masked' env FAKE_PG_LOAD_STATE="$state" bash "$helper"
 done
 [[ ! -e "$dropin_dir" ]]
-if grep -Eq 'daemon-reload|^show .* -p Wants' "$TEST_TRACE"; then exit 1; fi
+if grep -Fq 'daemon-reload' "$TEST_TRACE"; then exit 1; fi
 
 # Accidental prefixes must fail before either discovery or mutation, even if the
 # real manager would already have matching dependencies from an old configuration.
@@ -159,6 +160,46 @@ expect 77 'Run this helper as root' setpriv --reuid=65534 --regid=65534 --clear-
 expect 77 'Run this helper as root' setpriv --reuid=65534 --regid=65534 --clear-groups \
     bash "$fixture_dir/unprivileged-helper.sh" --remove
 expect 69 'systemctl is unavailable' env PATH="$fixture_dir/empty-bin" /bin/bash "$helper" --dry-run
+
+# Preview reads the existing graph without demanding that a new selected unit
+# already be present. Acknowledgements produce feedback but cannot hide bad data.
+printf '[Unit]\nWants=postgresql-exporter.service\nAfter=postgresql-exporter.service postgresql@16-old.service\n' > "$TEST_STATE"
+cp "$TEST_STATE" "$fixture_dir/preview.expected"
+: > "$TEST_TRACE"
+for operation in configure remove; do
+    args=(--dry-run)
+    if [[ "$operation" == remove ]]; then args+=(--remove); else args+=(--unit postgresql@18-main.service); fi
+    expect 0 'Current PostgreSQL dependency to review: Wants=postgresql-exporter.service' bash "$helper" "${args[@]}"
+    grep -Fq 'Current effective dependencies (before the proposed change):' <<< "$output"
+    grep -Fq 'Exit 0 here does not guarantee post-change verification' <<< "$output"
+    expect 0 'Acknowledged remaining PostgreSQL dependency: Wants=postgresql-exporter.service' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service
+    grep -Fq 'Current PostgreSQL dependency to review: After=postgresql@16-old.service' <<< "$output"
+    expect 0 'Current PostgreSQL dependency to review: Wants=postgresql-exporter.service' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service.extra
+    expect 69 'Dry run made no changes' env FAKE_SHOW_FAIL=1 bash "$helper" "${args[@]}"
+    for properties in missing-property duplicate-property; do
+        expect 78 'Dry run made no changes' env FAKE_PROPERTIES="$properties" bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service
+    done
+    expect 0 'Dry run made no changes' env FAKE_PROPERTIES=empty bash "$helper" "${args[@]}"
+    cmp "$fixture_dir/preview.expected" "$TEST_STATE"
+    [[ ! -e "$dropin_dir" ]]
+done
+if grep -Fq 'daemon-reload' "$TEST_TRACE"; then exit 1; fi
+
+# The read-only path also succeeds under a genuinely unprivileged UID. Only the
+# mock's separate trace is writable; all graph data and the helper stay read-only.
+: > "$fixture_dir/unprivileged-trace"
+chmod 0666 "$fixture_dir/unprivileged-trace"
+for operation in configure remove; do
+    args=(--dry-run)
+    if [[ "$operation" == remove ]]; then args+=(--remove); else args+=(--unit postgresql@18-main.service); fi
+    expect 0 'Acknowledged remaining PostgreSQL dependency' env TEST_TRACE="$fixture_dir/unprivileged-trace" \
+        setpriv --reuid=65534 --regid=65534 --clear-groups \
+        bash "$fixture_dir/unprivileged-helper.sh" "${args[@]}" --allow-remaining postgresql-exporter.service
+done
+cmp "$fixture_dir/preview.expected" "$TEST_STATE"
+[[ ! -e "$dropin_dir" ]]
+if grep -Fq 'daemon-reload' "$fixture_dir/unprivileged-trace"; then exit 1; fi
+: > "$TEST_STATE"
 
 # Persistent-state transitions exercise the real write, chmod, rename and reload.
 umask 0077
