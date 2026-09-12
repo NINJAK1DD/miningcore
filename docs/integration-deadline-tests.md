@@ -47,7 +47,51 @@ that a previously intermittent failure cannot happen.
 The collection contracts share `CollectionAssertions` with the existing RPC
 global-logging isolation check. They resolve each fixture to its actual collection
 definition, require a unique non-parallel definition, and pin the reviewed member
-set; they do not use timing-sensitive competing-test probes.
+set, including inherited collection membership and nearest-derived overrides.
+The resolver conservatively includes attributed types even if they currently
+declare no test methods. Synthetic resolver tests use runtime-only assemblies so
+they cannot add collections to xUnit's discovery. Logging collections have the
+same exact-member guards. Duplicate definitions and unsupported constructor
+metadata fail assertions rather than silently weakening the contract. These
+guards do not use timing-sensitive competing-test probes.
 
-References: [xUnit scheduling documentation](https://xunit.net/docs/running-tests-in-parallel)
-and the [pinned 2.4.2 assembly runner](https://github.com/xunit/xunit/blob/v2-2.4.2/src/xunit.execution/Sdk/Frameworks/Runners/XunitTestAssemblyRunner.cs).
+## Measured whole-assembly comparison
+
+On 2026-09-11, three alternating baseline/patched pairs ran on Ubuntu 22.04 WSL
+with process-local `DOTNET_PROCESSOR_COUNT=2`, identical native libraries, and
+`MININGCORE_TEST_POSTGRES` unset. Baseline was `dev` at `f17ba085`; patched was
+`a979340e`. Every run had 28 skipped cases (counted from TRX test outcomes, not
+the runner's misleading zero `notExecuted` summary counter). This is a constrained
+local comparison, not a replacement for database-backed CI.
+
+| Run order | Revision | Passed | Failed | Skipped | Elapsed seconds |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | Baseline | 2553 | 6 | 28 | 165.40 |
+| 2 | Patched | 2558 | 3 | 28 | 174.00 |
+| 3 | Baseline | 2554 | 5 | 28 | 165.12 |
+| 4 | Patched | 2560 | 1 | 28 | 180.41 |
+| 5 | Baseline | 2554 | 5 | 28 | 165.55 |
+| 6 | Patched | 2557 | 4 | 28 | 174.31 |
+
+Median elapsed time was 165.40 seconds baseline versus 174.31 seconds patched
+(+8.91 seconds, approximately 5.4%). Failures and the small sample limit causal
+performance claims. Retain whole-class isolation for this narrow change: the
+observed cost does not justify extracting established fixtures here. Reassess if
+representative CI measurements show a material regression.
+
+Both targeted classes passed in all three patched runs. Baseline timed out in
+`MergedMiningManagerReorgTests.AuxiliaryRefreshTimeout_RetainsCacheAndPublishesDegradedState`
+twice and `ProgramPoolTemplateTests.CandidatePersistenceFailure_StopsRealHostAndDrainsSiblingPool`
+once. This supports the scoped scheduling change but does not prove flake elimination.
+
+Failures remained outside those classes in `PayoutManagerTests`,
+`HostedServiceStartupTests`, `BtStreamReceiverTests`, `PoolBaseTests` and
+`StratumServerTests`; every affected class also failed in the baseline. Those
+failures require separate diagnosis, not automatic collection expansion or raised
+timeouts. None of the six complete-assembly runs is claimed as green. Raw TRX
+files are retained locally in `build/deadline-comparison/`.
+
+References: [xUnit scheduling documentation](https://xunit.net/docs/running-tests-in-parallel),
+the [pinned 2.4.2 assembly runner](https://github.com/xunit/xunit/blob/v2-2.4.2/src/xunit.execution/Sdk/Frameworks/Runners/XunitTestAssemblyRunner.cs),
+the [inheritable collection attribute](https://github.com/xunit/xunit/blob/v2-2.4.2/src/xunit.core/CollectionAttribute.cs)
+and [attribute inheritance resolution](https://github.com/xunit/xunit/blob/v2-2.4.2/src/xunit.execution/Sdk/Reflection/ReflectionAttributeInfo.cs).
