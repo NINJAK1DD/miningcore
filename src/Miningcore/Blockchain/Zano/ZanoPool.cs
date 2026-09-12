@@ -184,17 +184,14 @@ public class ZanoPool : PoolBase
             await connection.NotifyAsync(ZanoStratumMethods.MiningNotify, job);
 
             // log association
-            if(!string.IsNullOrEmpty(context.Worker))
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {context.Worker}@{context.Miner}");
-            else
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized miner {context.Miner}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
         }
 
         else
         {
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {context.Miner} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -396,10 +393,7 @@ public class ZanoPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            if(!string.IsNullOrEmpty(context.Worker))
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {context.Worker}@{context.Miner}");
-            else
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized miner {context.Miner}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
         }
 
         else
@@ -408,7 +402,7 @@ public class ZanoPool : PoolBase
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {context.Miner} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -512,10 +506,7 @@ public class ZanoPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            if(!string.IsNullOrEmpty(context.Worker))
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {context.Worker}@{context.Miner}");
-            else
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized miner {context.Miner}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
         }
 
         else
@@ -524,7 +515,7 @@ public class ZanoPool : PoolBase
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {context.Miner} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 

@@ -1047,7 +1047,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         {
             share.BlockType = "merged-parent";
             share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
-            logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {share.Miner}");
+            logger.Info(() => $"Parent daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
         }
         else if(acceptResponse.Ambiguous)
         {

@@ -163,14 +163,14 @@ public class EthereumPool : PoolBase
             await connection.NotifyAsync(EthereumStratumMethods.SetDifficulty, new object[] { context.Difficulty });
             await connection.NotifyAsync(EthereumStratumMethods.MiningNotify, ethereumJob.GetJobParamsForStratum());
 
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
         }
 
         else
         {
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -372,7 +372,7 @@ public class EthereumPool : PoolBase
                 logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
             }
 
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // setup worker context
             context.IsSubscribed = true;
@@ -384,7 +384,7 @@ public class EthereumPool : PoolBase
             {
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 Disconnect(connection);
             }
@@ -583,7 +583,7 @@ public class EthereumPool : PoolBase
                     {
                         EnsureProtocolVersion(context, 1);
                         
-                        logger.Warn(() => $"Use of Ethash Stratum V1 method: {request.Method}");
+                        logger.Warn(() => $"Use of Ethash Stratum V1 method: {StratumDiagnostics.Method(request.Method)}");
                         await OnGetWorkAsync(connection, tsRequest);
                     }
                     break;
@@ -599,7 +599,7 @@ public class EthereumPool : PoolBase
                     {
                         EnsureProtocolVersion(context, 1);
                         
-                        logger.Warn(() => $"Use of Ethash Stratum V1 method: {request.Method}");
+                        logger.Warn(() => $"Use of Ethash Stratum V1 method: {StratumDiagnostics.Method(request.Method)}");
                         await OnSubmitAsync(connection, tsRequest, ct, true);
                     }
                     break;

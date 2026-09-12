@@ -51,6 +51,10 @@ jobs:
       shell: bash
       run: python3 scripts/release/test-doc-links.py
 
+    - name: Guard Stratum direct logging boundaries
+      shell: bash
+      run: python3 scripts/release/test-stratum-diagnostic-sources.py
+
     - name: Test Bash and PowerShell configuration diagnostic snapshot helpers
       shell: bash
       run: python3 scripts/release/test-config-diagnostics-snapshot.py
@@ -488,6 +492,14 @@ jobs:
         --configuration Release
         --framework net10.0
         --filter "FullyQualifiedName~Miningcore.Tests.ProgramLoggingTests"
+
+    - name: Test Windows Stratum diagnostic boundary
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumDiagnosticTests"
 
     - name: Test Windows Stratum listener lifecycle
       run: >-
