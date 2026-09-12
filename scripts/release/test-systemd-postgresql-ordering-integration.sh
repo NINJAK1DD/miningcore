@@ -113,6 +113,19 @@ systemctl is-active --quiet "$pg_unit"
 # Older systemctl versions submit a multi-unit stop as separate D-Bus requests.
 # A single target stop propagates through PartOf to create one shared transaction.
 systemctl stop "$test_target"
+# systemctl waits for the requested target job, which can finish before its
+# propagated stop jobs. Observe both services without submitting new stop jobs
+# that might accidentally impose the order this test is meant to verify.
+stop_deadline=$((SECONDS + 35))
+while [[ $(systemctl show miningcore.service -p ActiveState --value) != inactive ||
+         $(systemctl show "$pg_unit" -p ActiveState --value) != inactive ]]; do
+    if [[ $SECONDS -ge $stop_deadline ]]; then
+        echo 'Timed out waiting for the propagated fixture stop jobs.' >&2
+        systemctl status miningcore.service "$pg_unit" --no-pager >&2 || true
+        exit 1
+    fi
+    sleep 0.1
+done
 printf '%s\n' postgres-start miningcore-start miningcore-stop postgres-stop > "$fixture_dir/expected"
 if ! cmp "$fixture_dir/expected" "$fixture_dir/events"; then
     echo 'Unexpected lifecycle events:' >&2
