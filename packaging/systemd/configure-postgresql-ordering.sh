@@ -21,6 +21,8 @@ name, for this invocation only. Repeat for multiple units; wildcards are refused
 --dry-run validates and previews changes without writing or reloading systemd.
 It reports current dependencies and acknowledgements, not a predicted final graph.
 Valid previews exit 0 even when listing current dependencies for review.
+Discovery skips or refusals exit without a graph preview; select --unit or use
+--remove --dry-run to inspect current dependencies explicitly.
 Rerun after changing the PostgreSQL major version or cluster unit name.
 
 MININGCORE_SYSTEMD_ROOT is a filesystem prefix for isolated regression tests.
@@ -125,6 +127,8 @@ verify_dependencies() {
                 seen=$((seen + 1))
                 read -r -a dependencies <<< "${line#*=}"
                 for dependency in "${dependencies[@]}"; do
+                    # Both configure modes exempt the selected unit from extras;
+                    # only real configure requires it to be present below.
                     if [[ "$operation" == *configure && "$dependency" == "$selected_unit" ]]; then
                         found=1
                     elif [[ "$dependency" == postgresql* ]]; then
@@ -133,14 +137,18 @@ verify_dependencies() {
                             [[ "$dependency" != "$allowed" ]] || acknowledged=1
                         done
                         if [[ $acknowledged -eq 1 ]]; then
-                            echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency" >&2
+                            if [[ "$operation" == preview-* ]]; then
+                                echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency"
+                            else
+                                echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency" >&2
+                            fi
                         else
                             if [[ "$operation" == preview-* ]]; then
-                                echo "Current PostgreSQL dependency to review: $property=$dependency" >&2
+                                echo "Current PostgreSQL dependency to review: $property=$dependency"
                             else
                                 echo "Remaining PostgreSQL dependency: $property=$dependency" >&2
+                                remaining=1
                             fi
-                            remaining=1
                         fi
                     fi
                 done
@@ -155,7 +163,7 @@ verify_dependencies() {
             exit 78
         fi
     done
-    if [[ $remaining -ne 0 && "$operation" != preview-* ]]; then
+    if [[ $remaining -ne 0 ]]; then
         echo 'The managed-file operation completed and systemd was reloaded, but unexpected PostgreSQL ordering remains. Inspect systemctl cat miningcore.service; remove obsolete entries or acknowledge intentional units with --allow-remaining UNIT.' >&2
         exit 78
     fi
@@ -225,7 +233,10 @@ if [[ -z "$pg_unit" ]]; then
             fi
             echo 'No active Debian/Ubuntu postgresql@*.service cluster was detected.'
             echo 'Skipping Miningcore/PostgreSQL ordering. Other local layouts need --unit or a reviewed manual drop-in; remote databases need no local dependency.'
-            if [[ $dry_run -eq 1 ]]; then preview_dependencies remove ''; fi
+            if [[ $dry_run -eq 1 ]]; then
+                echo 'Dry run made no changes. No operation is proposed, so dependency preview was skipped.'
+                echo 'To inspect current dependencies explicitly, use --unit UNIT --dry-run or --remove --dry-run.'
+            fi
             exit 0
             ;;
         1) pg_unit=${pg_units[0]} ;;

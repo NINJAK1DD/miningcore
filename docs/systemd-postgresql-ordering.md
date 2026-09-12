@@ -53,9 +53,11 @@ Do not copy that example unit name blindly. PostgreSQL major versions and cluste
 
 For standard Fedora/RHEL layouts, select the actual installed unit explicitly, for example
 `--unit postgresql.service` or `--unit postgresql-16.service`. Those layouts are not auto-discovered.
-Use `--dry-run` to preview any configuration or removal without writing files or reloading systemd.
-It reads the current effective `Wants=`/`After=`, reports PostgreSQL dependencies needing review,
-and identifies exact matches to any `--allow-remaining` options you supply. It works without root.
+Use `--dry-run` to preview a selected configuration or removal without writing files or reloading systemd.
+Once a unit is selected (automatically or with `--unit`), or `--remove` is requested, it reads the
+current effective `Wants=`/`After=`, reports PostgreSQL dependencies needing review, and identifies
+exact matches to any `--allow-remaining` options you supply. The complete informational report is
+on stdout, so `> review.txt` captures it; errors remain on stderr. It works without root.
 For example, before configuring a replacement cluster:
 
 ```console
@@ -71,6 +73,12 @@ it does not require the proposed selected unit to be in the current graph yet. Q
 return `69`, malformed dependency properties return `78`, and neither path changes files or reloads
 systemd. The actual operation still performs strict post-change verification and returns `78` for
 unacknowledged extras. `--remove --dry-run` provides the same read-only report for removal.
+
+Discovery exits before dependency preview when no operation can be selected. With zero clusters
+and no managed drop-in, `--dry-run` returns `0` without querying Miningcore, even if that unit is
+absent. With a stale managed drop-in or multiple clusters, it returns `78` without a graph report.
+To inspect dependencies in those cases, use `--unit UNIT --dry-run` after identifying the database
+unit, or `--remove --dry-run` to inspect a possible removal without removing anything.
 
 An empty `--unit` is an error, so an unset shell variable cannot silently enable auto-discovery.
 

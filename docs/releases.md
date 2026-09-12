@@ -941,7 +941,7 @@ sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh
 ```
 
 Resolve any error or multiple-cluster ambiguity and verify the selected unit serves Miningcore's
-database before continuing. Use `--dry-run` to inspect current dependencies before changing them;
+database before continuing. Once a unit is selected, use `--dry-run` to inspect current dependencies;
 for reviewed intentional extras such as an exporter, see the ordering guide's exact-name
 `--allow-remaining UNIT` option. Remove obsolete cluster references instead of acknowledging them.
 For remote databases, follow the guide's remote setup and explicit

@@ -108,6 +108,16 @@ expect() {
     fi
 }
 
+# A fresh zero-cluster host is a successful no-op even when Miningcore is absent
+# or its graph cannot be read. It must not query that unit or imply removal.
+: > "$TEST_TRACE"
+expect 0 'Skipping Miningcore/PostgreSQL ordering' env FAKE_PG_UNITS=none \
+    FAKE_MININGCORE_STATUS=1 FAKE_SHOW_FAIL=1 bash "$helper" --dry-run
+grep -Fq 'No operation is proposed, so dependency preview was skipped.' <<< "$output"
+if grep -Eq 'Would remove|replaced or removed|Current effective dependencies' <<< "$output" ||
+    grep -Eq '^show |daemon-reload' "$TEST_TRACE"; then exit 1; fi
+[[ ! -e "$dropin_dir" && ! -s "$TEST_STATE" ]]
+
 expect 0 'Wants=postgresql@17-main.service' bash "$helper" --dry-run
 expect 0 'After=postgresql@17-main.service' env FAKE_PG_UNITS=exited bash "$helper" --dry-run
 expect 0 'Skipping Miningcore/PostgreSQL ordering' env FAKE_PG_UNITS=none bash "$helper" --dry-run
@@ -174,6 +184,19 @@ for operation in configure remove; do
     grep -Fq 'Exit 0 here does not guarantee post-change verification' <<< "$output"
     expect 0 'Acknowledged remaining PostgreSQL dependency: Wants=postgresql-exporter.service' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service
     grep -Fq 'Current PostgreSQL dependency to review: After=postgresql@16-old.service' <<< "$output"
+    # Redirecting stdout must retain the entire informational report, including
+    # both reviewed extras and acknowledgements; successful previews need no stderr.
+    bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service \
+        > "$fixture_dir/preview.stdout" 2> "$fixture_dir/preview.stderr"
+    for message in 'Current effective dependencies (before the proposed change):' \
+        'Acknowledgement supplied for this invocation: postgresql-exporter.service' \
+        'Acknowledged remaining PostgreSQL dependency: Wants=postgresql-exporter.service' \
+        'Acknowledged remaining PostgreSQL dependency: After=postgresql-exporter.service' \
+        'Current PostgreSQL dependency to review: After=postgresql@16-old.service' \
+        'Review extras:'; do
+        grep -Fq "$message" "$fixture_dir/preview.stdout"
+    done
+    [[ ! -s "$fixture_dir/preview.stderr" ]]
     expect 0 'Current PostgreSQL dependency to review: Wants=postgresql-exporter.service' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service.extra
     expect 69 'Dry run made no changes' env FAKE_SHOW_FAIL=1 bash "$helper" "${args[@]}"
     for properties in missing-property duplicate-property; do
