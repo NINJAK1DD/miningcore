@@ -335,6 +335,27 @@ for operation in configure remove; do
     expect 78 'Remaining PostgreSQL dependency: After=postgresql-metrics.target' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service
     expect 0 'Acknowledged remaining PostgreSQL dependency' bash "$helper" "${args[@]}" \
         --allow-remaining postgresql-exporter.service --allow-remaining postgresql-metrics.target
+    # A saved stdout report records the waived dependencies on real changes too.
+    bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service \
+        --allow-remaining postgresql-metrics.target \
+        > "$fixture_dir/change.stdout" 2> "$fixture_dir/change.stderr"
+    for dependency in Wants=postgresql-exporter.service After=postgresql-exporter.service \
+        After=postgresql-metrics.target; do
+        grep -Fq "Acknowledged remaining PostgreSQL dependency: $dependency" "$fixture_dir/change.stdout"
+    done
+    [[ ! -s "$fixture_dir/change.stderr" ]]
+    grep -Eq 'Configured Miningcore ordering|Removed managed PostgreSQL ordering:' "$fixture_dir/change.stdout"
+
+    # An acknowledgement is informational even if another dependency fails
+    # verification. The error stays on stderr and no success result is printed.
+    status=0
+    bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service \
+        > "$fixture_dir/change.stdout" 2> "$fixture_dir/change.stderr" || status=$?
+    [[ $status -eq 78 ]]
+    grep -Fq 'Acknowledged remaining PostgreSQL dependency: Wants=postgresql-exporter.service' "$fixture_dir/change.stdout"
+    grep -Fq 'Remaining PostgreSQL dependency: After=postgresql-metrics.target' "$fixture_dir/change.stderr"
+    if grep -Eq 'Acknowledged remaining|Configured Miningcore ordering|Removed managed PostgreSQL ordering:' "$fixture_dir/change.stderr" ||
+        grep -Eq 'Remaining PostgreSQL dependency:|Configured Miningcore ordering|Removed managed PostgreSQL ordering:' "$fixture_dir/change.stdout"; then exit 1; fi
     cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
     expect 78 'Remaining PostgreSQL dependency' bash "$helper" "${args[@]}"
 done

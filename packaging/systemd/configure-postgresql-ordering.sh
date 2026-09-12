@@ -137,11 +137,7 @@ verify_dependencies() {
                             [[ "$dependency" != "$allowed" ]] || acknowledged=1
                         done
                         if [[ $acknowledged -eq 1 ]]; then
-                            if [[ "$operation" == preview-* ]]; then
-                                echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency"
-                            else
-                                echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency" >&2
-                            fi
+                            echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency"
                         else
                             if [[ "$operation" == preview-* ]]; then
                                 echo "Current PostgreSQL dependency to review: $property=$dependency"

@@ -164,6 +164,9 @@ each intentional extra unit. Names are matched exactly; wildcards are rejected, 
 are not saved, and every acknowledged dependency is still reported. This option does not change
 other files, suppress unexpected units, waive the selected unit's presence in both properties, or
 bypass query/parse failures. Remove obsolete cluster references rather than acknowledging them.
+Acknowledgements go to stdout in every mode, so redirecting it captures the units waived during
+configuration or removal as well as previews. Errors go to stderr. An acknowledgement line alone
+does not mean verification succeeded; check the exit status and final result before continuing.
 Successful removal reports that no **unacknowledged** PostgreSQL dependencies remain; it does not
 claim that intentional dependencies disappeared. Successful configuration prints its result before
 the effective properties; removal omits the raw property dump.
