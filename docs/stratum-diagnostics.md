@@ -139,6 +139,13 @@ worker names or assume that identifiers are private everywhere. The real protoco
 still transports credentials and may echo request IDs: use appropriately secured
 transport. No payout-accounting or daemon TLS policy is changed.
 
+The identity source guard deliberately covers `Blockchain/` and `Mining/`, not
+`Payments/`. For example, `SOLOPaymentScheme` logs the block miner when discarding
+shares, and `PPLNSBFPaymentScheme` logs the block-finder reward and payout address.
+These accounting diagnostics remain outside the Stratum boundary. A requirement
+to withhold payout addresses from all logs needs a separate payment-log audit and
+an explicit replacement for the accounting correlation those records provide.
+
 Earlier Debug logs could contain complete Stratum requests and responses; parser
 errors could expose request fragments at error level, and identity logs existed at
 Info. Restrict access to retained logs and exported support bundles, investigate the
@@ -179,6 +186,16 @@ helper or an expanded argument still fails. Inline
 The scan does not derive its scope from `identity withheld` markers that a regression
 could remove. It is not a full C# parser or taint analyzer: aliases, indirect consumers
 and new language constructs still require review and captured-output tests.
+Qualified spellings such as `global::StratumDiagnostics.Method(request.Method)`
+also fail closed; changing the accepted projection syntax requires guard review.
+
+`StratumDiagnosticTests` remains parallel. Its real loopback sockets and ten-second
+watchdogs alone do not justify admission to the
+[integration deadline collection](integration-deadline-tests.md). If full-suite
+failures recur, distinguish TCP abort races and product defects from delayed
+continuations, retain failure evidence, and measure full-suite runtime before
+changing the collection's reviewed membership. Do not wrap tests in `Task.Run`
+or relax deadlines to bypass the runner's scheduling limits.
 
 Run the focused tests plus existing lifecycle and share-rejection regressions:
 
