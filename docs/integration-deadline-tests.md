@@ -50,10 +50,26 @@ definition, require a unique non-parallel definition, and pin the reviewed membe
 set, including inherited collection membership and nearest-derived overrides.
 The resolver conservatively includes attributed types even if they currently
 declare no test methods. Synthetic resolver tests use runtime-only assemblies so
-they cannot add collections to xUnit's discovery. Logging collections have the
-same exact-member guards. Duplicate definitions and unsupported constructor
+they cannot add collections to xUnit's discovery. `NonParallelCollectionTests`
+guards the five logging collections, the administrative API environment collection
+and the Bitcoin Core payout integration collection. Together with the dedicated
+deadline contract, all eight current non-parallel collections have exact-member
+guards. These metadata checks run even when optional integration tests are skipped;
+they neither start daemons nor change collection scheduling. The parallel
+`PayoutManagerLeaseIntegrationCollection` is intentionally excluded.
+Duplicate definitions and unsupported constructor
 metadata fail assertions rather than silently weakening the contract. These
 guards do not use timing-sensitive competing-test probes.
+
+The synthetic tests require a dynamic-code-capable runtime and preserved reflection
+metadata. They assert the dynamic-code requirement before using `Reflection.Emit`.
+A future Native AOT or trimmed test lane needs an explicit fixture/metadata design
+review, not silently skipped guards. The small shared emitted-type builder is
+retained because malformed and duplicate collection definitions must be tested
+without contaminating the actual discovery assembly; no general-purpose test
+framework or new package is needed. There are 14 contract cases across the three
+contract test classes: two deadline facts, seven non-parallel membership cases and
+five resolver regression facts.
 
 ## Measured whole-assembly comparison
 
@@ -89,7 +105,9 @@ Failures remained outside those classes in `PayoutManagerTests`,
 `StratumServerTests`; every affected class also failed in the baseline. Those
 failures require separate diagnosis, not automatic collection expansion or raised
 timeouts. None of the six complete-assembly runs is claimed as green. Raw TRX
-files are retained locally in `build/deadline-comparison/`.
+files are retained locally in `build/deadline-comparison/`. That directory is
+gitignored: the raw local evidence is not included in this repository or PR, so
+the table alone is not an independently auditable artifact bundle.
 
 References: [xUnit scheduling documentation](https://xunit.net/docs/running-tests-in-parallel),
 the [pinned 2.4.2 assembly runner](https://github.com/xunit/xunit/blob/v2-2.4.2/src/xunit.execution/Sdk/Frameworks/Runners/XunitTestAssemblyRunner.cs),

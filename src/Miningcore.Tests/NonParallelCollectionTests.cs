@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Miningcore.Tests.Blockchain.Bitcoin;
+using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Miningcore.Tests.Mining;
 using Miningcore.Tests.Payments;
 using Miningcore.Tests.Rpc;
@@ -9,10 +11,16 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
-public class LoggingCollectionTests
+public class NonParallelCollectionTests
 {
     public static IEnumerable<object[]> ReviewedCollections()
     {
+        // The deadline collection has its own exact-membership contract.
+        yield return new object[] { typeof(AdminApiEnvironmentCollection), new[] { typeof(AdminApiSecurityTests) } };
+        yield return new object[] { typeof(BitcoinCorePayoutIntegrationCollection),
+            new[] { typeof(BitcoinDirectSoloRegtestTests), typeof(BitcoinPayoutHandlerRegtestTests),
+                typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
+                typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),
             new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests) } };
         yield return new object[] { typeof(PayoutManagerLoggingCollection), new[] { typeof(PayoutManagerLoggingTests) } };
@@ -24,7 +32,7 @@ public class LoggingCollectionTests
 
     [Theory]
     [MemberData(nameof(ReviewedCollections))]
-    public void LoggingCollection_HasExactlyTheReviewedMembers(Type definition, Type[] expected)
+    public void NonParallelCollection_HasExactlyTheReviewedMembers(Type definition, Type[] expected)
     {
         foreach(var fixture in expected)
             Assert.Same(definition, CollectionAssertions.NonParallelDefinition(fixture));

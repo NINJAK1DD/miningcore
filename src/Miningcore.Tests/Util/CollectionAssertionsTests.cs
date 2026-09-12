@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using Xunit;
 using Xunit.Sdk;
 
@@ -78,9 +79,14 @@ public class CollectionAssertionsTests
     }
 
     // Runtime-only assemblies keep synthetic collections out of xUnit discovery.
-    private static ModuleBuilder NewModule() => AssemblyBuilder.DefineDynamicAssembly(
-        new AssemblyName("CollectionAssertions-" + Guid.NewGuid().ToString("N")),
-        AssemblyBuilderAccess.RunAndCollect).DefineDynamicModule("Fixtures");
+    private static ModuleBuilder NewModule()
+    {
+        Assert.True(RuntimeFeature.IsDynamicCodeSupported,
+            "Collection resolver regressions require dynamic code; redesign the synthetic fixtures before adding a Native AOT test lane.");
+        return AssemblyBuilder.DefineDynamicAssembly(
+            new AssemblyName("CollectionAssertions-" + Guid.NewGuid().ToString("N")),
+            AssemblyBuilderAccess.RunAndCollect).DefineDynamicModule("Fixtures");
+    }
 
     private static Type Define(ModuleBuilder module, string name, Type attributeType = null,
         string collection = null, Type parent = null, bool disableParallelization = true)
