@@ -119,6 +119,12 @@ expect 69 'must exist and be loaded' bash "$helper" --dry-run --unit postgresql@
 expect 64 'Missing or empty' bash "$helper" --dry-run --unit ''
 expect 64 'Missing or empty' bash "$helper" --dry-run --unit
 expect 64 'Missing or empty' bash "$helper" --unit --dry-run
+expect 64 'Missing or empty' bash "$helper" --allow-remaining
+expect 64 'Missing or empty' bash "$helper" --allow-remaining ''
+expect 64 'Missing or empty' bash "$helper" --allow-remaining --remove
+for invalid in 'postgresql*' ssh.service $'postgresql-exporter.service\nAfter=ssh.service'; do
+    expect 64 'Invalid --allow-remaining' bash "$helper" --remove --allow-remaining "$invalid"
+done
 expect 64 'Duplicate --unit' bash "$helper" --unit postgresql.service --unit postgresql.service
 expect 64 'Unknown argument' bash "$helper" --unexpected
 expect 64 'mutually exclusive' bash "$helper" --remove --unit postgresql.service
@@ -157,6 +163,9 @@ expect 69 'systemctl is unavailable' env PATH="$fixture_dir/empty-bin" /bin/bash
 # Persistent-state transitions exercise the real write, chmod, rename and reload.
 umask 0077
 expect 0 'Configured Miningcore ordering' bash "$helper"
+[[ "$output" == 'Configured Miningcore ordering'* ]]
+grep -q '^Wants=' <<< "$output"
+grep -q '^After=' <<< "$output"
 printf '[Unit]\nWants=postgresql@17-main.service\nAfter=postgresql@17-main.service\n' > "$fixture_dir/expected"
 cmp "$fixture_dir/expected" "$dropin"
 [[ $(stat -c %a "$dropin") == 644 && $(stat -c %a "$dropin_dir") == 755 ]]
@@ -212,6 +221,8 @@ expect 0 'Removed managed PostgreSQL ordering' env FAKE_MININGCORE_STATUS=1 bash
 if grep -Fq 'postgresql' "$TEST_STATE"; then exit 1; fi
 cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
 expect 0 'Removed managed PostgreSQL ordering' bash "$helper" --remove
+[[ "$output" == 'Removed managed PostgreSQL ordering'* ]]
+if grep -Eq '^(Wants|After)=' <<< "$output"; then exit 1; fi
 expect 0 'Skipping Miningcore/PostgreSQL ordering' env FAKE_PG_UNITS=none bash "$helper"
 
 # Removal must inspect all effective dependency tokens, preserve other files,
@@ -220,13 +231,19 @@ for property in Wants After; do
     for unit in postgresql@17-main.service postgresql.service postgresql-16.service postgresql-custom.target; do
         printf '[Unit]\n%s=network-online.target %s basic.target\n' "$property" "$unit" > "$dropin_dir/operator.conf"
         cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
-        expect 0 'Configured Miningcore ordering' bash "$helper"
+        # Configure now rejects other PostgreSQL dependencies as well. Explicit
+        # acknowledgements may preserve them but cannot waive the selected unit.
+        if [[ "$unit" != postgresql@17-main.service ]]; then
+            expect 78 "Remaining PostgreSQL dependency: $property=$unit" bash "$helper"
+            cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
+        fi
+        expect 0 'Configured Miningcore ordering' bash "$helper" --allow-remaining "$unit"
         expect 78 "Remaining PostgreSQL dependency: $property=$unit" bash "$helper" --remove
         [[ ! -e "$dropin" ]]
         cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
         expect 78 'PostgreSQL ordering remains' bash "$helper" --remove
         printf '[Service]\nRestart=no\n' > "$dropin_dir/operator.conf"
-        expect 0 'No PostgreSQL dependencies remain' bash "$helper" --remove
+        expect 0 'No unacknowledged PostgreSQL dependencies remain' bash "$helper" --remove
     done
 done
 expect 69 'Unable to verify' env FAKE_SHOW_FAIL=1 bash "$helper" --remove
@@ -234,9 +251,65 @@ expect 78 'Verification failed' env FAKE_PROPERTIES=missing-property bash "$help
 expect 78 'Verification failed' env FAKE_PROPERTIES=duplicate-property bash "$helper" --remove
 expect 0 'Removed managed PostgreSQL ordering' env FAKE_PROPERTIES=empty bash "$helper" --remove
 
+# Upgrade with an operator-owned 17-main relationship must not silently succeed.
+printf '[Unit]\nWants=postgresql@17-main.service\nAfter=postgresql@17-main.service\n' > "$dropin_dir/operator.conf"
+cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
+expect 78 'Remaining PostgreSQL dependency: Wants=postgresql@17-main.service' bash "$helper" --unit postgresql@18-main.service
+grep -Fq 'Remaining PostgreSQL dependency: After=postgresql@17-main.service' <<< "$output"
+grep -Fxq 'Wants=postgresql@18-main.service' "$dropin"
+cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
+
+# Exact, per-invocation acknowledgements permit intentional exporter dependencies
+# in both properties without swallowing a second unexpected service or a prefix.
+printf '[Unit]\nWants=postgresql-exporter.service\nAfter=postgresql-exporter.service postgresql-metrics.target\n' > "$dropin_dir/operator.conf"
+cp "$dropin_dir/operator.conf" "$fixture_dir/operator.expected"
+for operation in configure remove; do
+    args=()
+    [[ "$operation" != remove ]] || args+=(--remove)
+    expect 78 'Remaining PostgreSQL dependency' bash "$helper" "${args[@]}"
+    expect 78 'Remaining PostgreSQL dependency: Wants=postgresql-exporter.service' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service.extra
+    expect 78 'Remaining PostgreSQL dependency: After=postgresql-metrics.target' bash "$helper" "${args[@]}" --allow-remaining postgresql-exporter.service
+    expect 0 'Acknowledged remaining PostgreSQL dependency' bash "$helper" "${args[@]}" \
+        --allow-remaining postgresql-exporter.service --allow-remaining postgresql-metrics.target
+    cmp "$fixture_dir/operator.expected" "$dropin_dir/operator.conf"
+    expect 78 'Remaining PostgreSQL dependency' bash "$helper" "${args[@]}"
+done
+expect 78 'Verification failed' env FAKE_PROPERTIES=missing-wants bash "$helper" --allow-remaining postgresql@17-main.service
+expect 78 'Verification failed' env FAKE_PROPERTIES=duplicate-property bash "$helper" --remove --allow-remaining postgresql-exporter.service
+expect 69 'Unable to verify' env FAKE_SHOW_FAIL=1 bash "$helper" --remove --allow-remaining postgresql-exporter.service
+printf '[Service]\nRestart=no\n' > "$dropin_dir/operator.conf"
+expect 0 'Removed managed PostgreSQL ordering' bash "$helper" --remove
+
 ln -s "$fixture_dir/expected" "$dropin"
 expect 78 'unsafe managed drop-in path' bash "$helper"
 expect 78 'unsafe managed drop-in path' bash "$helper" --remove
 cmp "$fixture_dir/expected" "$dropin"
+
+# Exercise the integration test's actual cleanup function with failed external
+# commands, without touching the live system manager or service files.
+awk '
+    /^cleanup\(\) \{$/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+' "$repository_root/scripts/release/test-systemd-postgresql-ordering-integration.sh" > "$fixture_dir/cleanup-test.sh"
+cat >> "$fixture_dir/cleanup-test.sh" <<'EOF'
+set -euo pipefail
+created_units=()
+if [[ ${CLEANUP_CREATED:-0} == 1 ]]; then created_units=(miningcore.service postgresql-fixture.service); fi
+pg_unit=postgresql-fixture.service
+fixture_dir=${MININGCORE_SYSTEMD_ROOT:?}
+dropin_dir=$fixture_dir
+systemctl() { printf '%s\n' "$*" >> "${CLEANUP_TRACE:?}"; return 5; }
+rm() { return 1; }
+rmdir() { return 1; }
+trap cleanup EXIT
+exit "${CLEANUP_INITIAL_STATUS:?}"
+EOF
+export CLEANUP_TRACE="$fixture_dir/cleanup-trace"
+expect 74 'original test exit status: 74' env CLEANUP_INITIAL_STATUS=74 bash "$fixture_dir/cleanup-test.sh"
+if grep -q '^stop ' "$CLEANUP_TRACE"; then exit 1; fi
+expect 69 'original test exit status: 69' env CLEANUP_INITIAL_STATUS=69 CLEANUP_CREATED=1 bash "$fixture_dir/cleanup-test.sh"
+grep -Fq 'stop miningcore.service postgresql-fixture.service' "$CLEANUP_TRACE"
+expect 1 'original test exit status: 0' env CLEANUP_INITIAL_STATUS=0 CLEANUP_CREATED=1 bash "$fixture_dir/cleanup-test.sh"
 
 echo 'systemd PostgreSQL ordering helper tests passed'

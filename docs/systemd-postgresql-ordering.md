@@ -59,7 +59,10 @@ An empty `--unit` is an error, so an unset shell variable cannot silently enable
 The helper requires both service units to have `LoadState=loaded` (masked, missing or unloadable
 units are rejected), atomically replaces the drop-in with mode `0644`, reloads
 systemd, and checks that the selected unit appears in both dependency properties before reporting
-success. A reload or verification failure returns nonzero; inspect the written file and other
+success. Configuration also rejects any additional `postgresql*` dependency from other unit
+configuration unless it was explicitly acknowledged as described below. This prevents an obsolete
+cluster from silently remaining alongside its replacement after an upgrade.
+A reload or verification failure returns nonzero; inspect the written file and other
 drop-ins, correct the problem, and rerun before enabling Miningcore. It does not roll back a file
 after a failed reload. A verification failure occurs after the file has changed and systemd has
 been reloaded, so the host remains in that modified state; it does not mean the operation was a
@@ -114,12 +117,30 @@ systemctl show miningcore.service -p Wants -p After --no-pager
 
 Removal touches only `/etc/systemd/system/miningcore.service.d/postgresql-ordering.conf`; other
 drop-ins are preserved. After reloading, the helper checks the effective `Wants=` and `After=`:
-any remaining token beginning with `postgresql` is reported and causes exit `78`. Inspect
+any unacknowledged remaining token beginning with `postgresql` is reported and causes exit `78`. Inspect
 `systemctl cat miningcore.service`, explicitly correct the remaining base-unit or drop-in
 configuration, then rerun `--remove`. The managed file is already removed and systemd reloaded at
 that point; a failed verification does not restore it. An inability to read the effective graph
 also returns nonzero, rather than claiming removal succeeded. Custom database unit names outside
 the `postgresql` prefix still require operator review.
+
+An intentional dependency such as `postgresql-exporter.service` can be retained without making
+every subsequent command fail. Review its purpose, then acknowledge that exact unit for this
+invocation:
+
+```console
+sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh --remove \
+  --allow-remaining postgresql-exporter.service
+```
+
+The same option is available when configuring with `--unit`. Repeat `--allow-remaining UNIT` for
+each intentional extra unit. Names are matched exactly; wildcards are rejected, acknowledgements
+are not saved, and every acknowledged dependency is still reported. This option does not change
+other files, suppress unexpected units, waive the selected unit's presence in both properties, or
+bypass query/parse failures. Remove obsolete cluster references rather than acknowledging them.
+Successful removal reports that no **unacknowledged** PostgreSQL dependencies remain; it does not
+claim that intentional dependencies disappeared. Successful configuration prints its result before
+the effective properties; removal omits the raw property dump.
 
 Removal works after either service is uninstalled and is safe to rerun, including after a failed
 reload. On v0.3.0, manually update the concrete unit
@@ -170,8 +191,11 @@ A `daemon-reload` is performed by the helper. If Miningcore is already running, 
 At the next planned reboot, confirm the previous-boot journal shows Miningcore completing its shutdown before PostgreSQL stops:
 
 ```console
-sudo journalctl -b -1 -u miningcore -u 'postgresql@*.service' --no-pager
+sudo journalctl -b -1 -u miningcore -u 'postgresql*.service' --no-pager
 ```
+
+The glob includes Debian/Ubuntu instances and the explicit `postgresql.service` /
+`postgresql-16.service` layouts. Use the exact selected unit instead when isolating a single database.
 
 ## Remote and non-systemd PostgreSQL
 
@@ -193,5 +217,9 @@ The fixture prefix and mocked manager keep its mutations inside a private tempor
 The CI runner also runs `test-systemd-postgresql-ordering-integration.sh --disposable-host` against
 its real systemd manager. That test creates inert PostgreSQL/Miningcore service fixtures, checks
 startup and reverse shutdown order in a shared transaction, captures journal events, and verifies
-surviving-dependency and masked-unit handling. It refuses pre-existing Miningcore service
+surviving-dependency, explicit-acknowledgement and masked-unit handling. It also checks real
+auto-discovery in dry-run mode for the runner's current zero/one/multiple active-cluster state;
+the inert ordering fixtures use explicit selection so existing runner databases are never changed.
+Cleanup preserves the original test failure status while reporting cleanup errors separately.
+It refuses pre-existing Miningcore service
 configuration and cleans up its own files. Run it only as root on a disposable systemd host.

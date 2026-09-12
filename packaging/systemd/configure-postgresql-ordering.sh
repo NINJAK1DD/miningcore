@@ -5,6 +5,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage: configure-postgresql-ordering.sh [--unit UNIT | --remove] [--dry-run]
+                                      [--allow-remaining UNIT]...
 
 Order a local PostgreSQL service before Miningcore at startup and after it at
 shutdown. Run only when Miningcore uses the selected local database.
@@ -14,7 +15,9 @@ Without --unit, discover active Debian/Ubuntu postgresql@*.service clusters:
   - none: skip only if no existing managed drop-in remains
 Other local layouts require --unit (for example postgresql-16.service).
 --remove explicitly removes only postgresql-ordering.conf, then reloads systemd.
-It exits 78 if PostgreSQL dependencies remain in other unit configuration.
+Both operations exit 78 for unexpected PostgreSQL dependencies in other configuration.
+--allow-remaining UNIT acknowledges one intentional remaining dependency by exact
+name, for this invocation only. Repeat for multiple units; wildcards are refused.
 --dry-run validates and previews changes without writing or reloading systemd.
 Rerun after changing the PostgreSQL major version or cluster unit name.
 
@@ -28,6 +31,7 @@ EOF
 explicit_unit=
 dry_run=0
 remove=0
+allowed_remaining=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --unit)
@@ -37,6 +41,17 @@ while [[ $# -gt 0 ]]; do
             }
             [[ -z "$explicit_unit" ]] || { echo 'Duplicate --unit' >&2; exit 64; }
             explicit_unit=$1
+            ;;
+        --allow-remaining)
+            shift
+            [[ $# -gt 0 && -n "$1" && "$1" != --* ]] || {
+                echo 'Missing or empty value for --allow-remaining' >&2; exit 64;
+            }
+            if [[ ! "$1" =~ ^postgresql[A-Za-z0-9_.:@-]*\.[a-z]+$ ]]; then
+                echo "Invalid --allow-remaining unit (use an exact PostgreSQL-prefixed name): $1" >&2
+                exit 64
+            fi
+            allowed_remaining+=("$1")
             ;;
         --remove) remove=1 ;;
         --dry-run) dry_run=1 ;;
@@ -82,13 +97,20 @@ reload_systemd() {
     fi
 }
 
-verify_dependencies() {
-    local operation=$1 properties property line dependency seen found remaining=0
-    local -a dependencies
+read_dependencies() {
+    local properties
     if ! properties=$(systemctl show miningcore.service -p Wants -p After --no-pager); then
         echo 'Unable to verify Miningcore dependencies. The managed file has changed and systemd was reloaded; inspect the effective configuration before starting Miningcore.' >&2
         exit 69
     fi
+    printf '%s\n' "$properties"
+}
+
+verify_dependencies() {
+    local operation=$1 selected_unit=$2 properties=$3
+    shift 3
+    local property line dependency seen found acknowledged allowed remaining=0
+    local -a dependencies allowed_units=("$@")
     for property in Wants After; do
         seen=0
         found=0
@@ -97,13 +119,19 @@ verify_dependencies() {
                 seen=$((seen + 1))
                 read -r -a dependencies <<< "${line#*=}"
                 for dependency in "${dependencies[@]}"; do
-                    if [[ "$operation" == remove ]]; then
-                        if [[ "$dependency" == postgresql* ]]; then
+                    if [[ "$operation" == configure && "$dependency" == "$selected_unit" ]]; then
+                        found=1
+                    elif [[ "$dependency" == postgresql* ]]; then
+                        acknowledged=0
+                        for allowed in "${allowed_units[@]}"; do
+                            [[ "$dependency" != "$allowed" ]] || acknowledged=1
+                        done
+                        if [[ $acknowledged -eq 1 ]]; then
+                            echo "Acknowledged remaining PostgreSQL dependency: $property=$dependency" >&2
+                        else
                             echo "Remaining PostgreSQL dependency: $property=$dependency" >&2
                             remaining=1
                         fi
-                    elif [[ "$dependency" == "$pg_unit" ]]; then
-                        found=1
                     fi
                 done
             fi
@@ -114,10 +142,9 @@ verify_dependencies() {
         fi
     done
     if [[ $remaining -ne 0 ]]; then
-        echo 'The managed file was removed and systemd was reloaded, but PostgreSQL ordering remains. Inspect systemctl cat miningcore.service and explicitly update the remaining unit configuration.' >&2
+        echo 'The managed-file operation completed and systemd was reloaded, but unexpected PostgreSQL ordering remains. Inspect systemctl cat miningcore.service; remove obsolete entries or acknowledge intentional units with --allow-remaining UNIT.' >&2
         exit 78
     fi
-    printf '%s\n' "$properties"
 }
 
 require_loaded_unit() {
@@ -137,9 +164,10 @@ if [[ $remove -eq 1 ]]; then
     # Also reload when absent, so retrying after a failed reload is effective.
     rm -f -- "$dropin" || { echo "Unable to remove $dropin" >&2; exit 74; }
     reload_systemd
-    verify_dependencies remove
+    properties=$(read_dependencies)
+    verify_dependencies remove '' "$properties" "${allowed_remaining[@]}"
     echo "Removed managed PostgreSQL ordering: $dropin"
-    echo 'No PostgreSQL dependencies remain in Wants or After. Other drop-ins are unchanged.'
+    echo 'No unacknowledged PostgreSQL dependencies remain in Wants or After. Other drop-ins are unchanged.'
     exit 0
 fi
 
@@ -209,6 +237,8 @@ if ! render_dropin > "$tmp" || ! chmod 0644 "$tmp" || ! mv -fT -- "$tmp" "$dropi
 fi
 
 reload_systemd
-verify_dependencies configure
+properties=$(read_dependencies)
+verify_dependencies configure "$pg_unit" "$properties" "${allowed_remaining[@]}"
 echo "Configured Miningcore ordering with local PostgreSQL unit: $pg_unit"
 echo "Drop-in: $dropin"
+printf '%s\n' "$properties"

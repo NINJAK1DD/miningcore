@@ -34,15 +34,22 @@ for unit in miningcore.service "$pg_unit"; do
 done
 
 fixture_dir=$(mktemp -d /run/miningcore-ordering-test.XXXXXX)
+created_units=()
 cleanup() {
-    local status=$?
+    local status=$? cleanup_status=0
     trap - EXIT
-    systemctl stop miningcore.service "$pg_unit" || status=1
+    if [[ ${#created_units[@]} -gt 0 ]]; then
+        systemctl stop "${created_units[@]}" || cleanup_status=1
+    fi
     rm -f -- "$dropin_dir/postgresql-ordering.conf" "$dropin_dir/operator.conf" \
-        /run/systemd/system/miningcore.service "/run/systemd/system/$pg_unit"
-    if [[ -d "$dropin_dir" ]]; then rmdir -- "$dropin_dir" || status=1; fi
-    systemctl daemon-reload || status=1
-    rm -rf -- "$fixture_dir"
+        /run/systemd/system/miningcore.service "/run/systemd/system/$pg_unit" || cleanup_status=1
+    if [[ -d "$dropin_dir" ]]; then rmdir -- "$dropin_dir" || cleanup_status=1; fi
+    systemctl daemon-reload || cleanup_status=1
+    rm -rf -- "$fixture_dir" || cleanup_status=1
+    if [[ $cleanup_status -ne 0 ]]; then
+        echo "Fixture cleanup failed (original test exit status: $status)." >&2
+        [[ $status -ne 0 ]] || status=$cleanup_status
+    fi
     exit "$status"
 }
 trap cleanup EXIT
@@ -58,6 +65,7 @@ EOF
 for role in postgres miningcore; do
     unit=$pg_unit
     [[ "$role" != miningcore ]] || unit=miningcore.service
+    created_units+=("$unit")
     cat > "/run/systemd/system/$unit" <<EOF
 [Unit]
 Description=Disposable Miningcore ordering test ($role)
@@ -71,6 +79,21 @@ TimeoutStopSec=15
 EOF
 done
 systemctl daemon-reload
+
+# Exercise the real discovery query without altering any runner database. The
+# runner may have zero, one or several active Debian/Ubuntu clusters; all three
+# results have defined dry-run behavior. Named fixtures below remain explicit.
+discovery=$(systemctl list-units --type=service --state=active --no-legend --plain --no-pager 'postgresql@*.service')
+mapfile -t discovered_units < <(printf '%s\n' "$discovery" | awk 'NF {print $1}' | sort -u)
+status=0
+output=$(bash "$helper" --dry-run 2>&1) || status=$?
+case ${#discovered_units[@]} in
+    0) [[ $status -eq 0 ]]; grep -Fq 'Skipping Miningcore/PostgreSQL ordering' <<< "$output" ;;
+    1) [[ $status -eq 0 ]]; grep -Fxq "Selected local PostgreSQL unit: ${discovered_units[0]}" <<< "$output" ;;
+    *) [[ $status -eq 78 ]]; grep -Fq 'refusing to guess' <<< "$output" ;;
+esac
+[[ ! -e "$dropin_dir" ]]
+printf 'Real systemd discovery checked with %s active cluster(s).\n' "${#discovered_units[@]}"
 bash "$helper" --unit "$pg_unit"
 
 # Wants pulls PostgreSQL into this transaction; After determines execution order.
@@ -95,6 +118,19 @@ output=$(bash "$helper" --remove 2>&1) || status=$?
 [[ $status -eq 78 ]]
 grep -Fq "Remaining PostgreSQL dependency: After=$pg_unit" <<< "$output"
 [[ ! -e "$dropin_dir/postgresql-ordering.conf" && -f "$dropin_dir/operator.conf" ]]
+rm -- "$dropin_dir/operator.conf"
+bash "$helper" --remove
+
+# Unexpected configuration dependencies and exact acknowledgements also work
+# against the live graph. An After-only exporter need not be started or exist.
+printf '[Unit]\nAfter=postgresql-exporter.service\n' > "$dropin_dir/operator.conf"
+status=0
+output=$(bash "$helper" --unit "$pg_unit" 2>&1) || status=$?
+[[ $status -eq 78 ]]
+grep -Fq 'Remaining PostgreSQL dependency: After=postgresql-exporter.service' <<< "$output"
+bash "$helper" --unit "$pg_unit" --allow-remaining postgresql-exporter.service
+bash "$helper" --remove --allow-remaining postgresql-exporter.service
+[[ -f "$dropin_dir/operator.conf" ]]
 rm -- "$dropin_dir/operator.conf"
 bash "$helper" --remove
 
