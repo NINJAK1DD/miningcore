@@ -309,7 +309,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 OnBlockFound();
 

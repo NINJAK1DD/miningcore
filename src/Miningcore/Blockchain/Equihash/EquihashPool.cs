@@ -188,7 +188,7 @@ public class EquihashPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -236,7 +236,7 @@ public class EquihashPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 

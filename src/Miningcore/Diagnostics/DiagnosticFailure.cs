@@ -1,5 +1,7 @@
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
 using Newtonsoft.Json;
 using ZeroMQ;
 
@@ -15,6 +17,8 @@ internal static class DiagnosticFailure
         TimeoutException => "timeout",
         OperationCanceledException { InnerException: TimeoutException } => "timeout",
         OperationCanceledException => "cancelled",
+        AuthenticationException => "tls-handshake",
+        CryptographicException => "cryptographic",
         JsonException => "json",
         FormatException => "format",
         HttpRequestException => "http",

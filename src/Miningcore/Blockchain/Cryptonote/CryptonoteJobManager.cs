@@ -452,7 +452,7 @@ public class CryptonoteJobManager : JobManagerBase<CryptonoteJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash[..6]}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash[..6]}] (miner identity withheld)");
 
                 OnBlockFound();
 

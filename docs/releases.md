@@ -49,6 +49,36 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: credential-safe Stratum diagnostics
+
+[#157](https://github.com/NINJAK1DD/miningcore/issues/157) closes the unbounded
+Stratum request-method telemetry-label path: distinct miner-supplied method names
+could create continually growing Prometheus series, consuming memory and inflating
+metrics scrapes. A fixed method vocabulary now bounds that cardinality, with unknown
+methods grouped as `other`. This does not replace request-rate or resource limits.
+
+The same change removes raw miner JSON,
+response payloads, request IDs, PROXY headers and exception text from the audited
+Stratum transport/error logs. Diagnostics retain fixed event/rejection categories,
+numeric error codes, byte counts and server-assigned connection correlation.
+Listener/certificate failures also identify the configured port, and certificate
+errors distinguish missing/inaccessible files from invalid certificates or passwords
+without exposing filesystem paths or exception text. TLS/cryptographic categories
+are shared with RPC consumers. Banned-client messages honor the existing IP-censor flag.
+Stratum JSON omits unavailable optional fields instead of emitting null padding;
+consumers must accept absent properties. RPC/payment alert filters that previously
+matched `failure=other` must account for the shared `tls-handshake` and `cryptographic`
+categories; their record shape and payment behavior are unchanged.
+Authorization, stale-job and block-acceptance diagnostics no longer echo miner
+identity/user-agent text. Unknown request-method telemetry labels become `other`;
+known protocol methods retain their labels.
+
+Wire replies, authorization/share decisions, counters, bans and connection lifecycle
+are unchanged. Update monitoring that relied on raw messages, and review retained
+Debug logs or error fragments for historical credential exposure. This is not global
+redaction of databases, statistics, APIs, notifications or third-party logs. See the
+[complete inventory, retained metadata and verification contract](stratum-diagnostics.md).
+
 ## Unreleased: credential-safe configuration dumps
 
 [PR #159](https://github.com/NINJAK1DD/miningcore/pull/159) restores useful `-dc`/`--dumpconfig`

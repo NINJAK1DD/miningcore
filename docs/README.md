@@ -29,6 +29,7 @@ wallet balances or recovery files.
 | Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
 | Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
 | Interpret safe daemon error logs and payout alerts | [RPC consumer diagnostics](rpc-consumer-diagnostics.md) |
+| Interpret safe miner transport and rejection logs | [Stratum diagnostics](stratum-diagnostics.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Pay canonical Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-coinbase SOLO](bitcoin-direct-solo.md) |
 | Configure and operate Bitcoin-family PPS | [PPS](pps.md) |
@@ -53,6 +54,7 @@ wallet balances or recovery files.
 | Review dependency and licence decisions | [Dependency security](dependency-security.md) |
 | Review reproducible daemon-backed evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence | [Mainnet validation record](mainnet-validation.md) |
+| Maintain deadline-sensitive test isolation | [Integration deadline scheduling](integration-deadline-tests.md) |
 
 The machine-readable configuration reference is
 [`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained

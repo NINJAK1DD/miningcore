@@ -28,6 +28,7 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
+[Collection(IntegrationDeadlineCollection.Name)]
 public class ProgramPoolTemplateTests
 {
     [Fact]
