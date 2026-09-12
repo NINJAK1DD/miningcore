@@ -30,6 +30,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
+[Collection(IntegrationDeadlineCollection.Name)]
 public class MergedMiningManagerReorgTests
 {
     public static IEnumerable<object[]> SupportedPayoutPairs()
