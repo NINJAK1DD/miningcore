@@ -220,6 +220,21 @@ Shutdown:  Miningcore -> PostgreSQL
 
 ## Verification
 
+Before applying the helper on the pool host, run `--dry-run` and confirm the selected unit
+serves Miningcore's configured database. Inspect both state properties for that exact unit
+(replace this example with the selected name):
+
+```console
+systemctl show postgresql@17-main.service -p ActiveState -p SubState --no-pager
+```
+
+`active` is the high-level `ActiveState`; `running` and `exited` are finer-grained `SubState`
+values, so `active` and `exited` are not alternatives for the same property. See the
+[systemd state-property documentation](https://wiki.freedesktop.org/www/Software/systemd/dbus/).
+Discovery accepts active units in either sub-state. If the selected unit reports `active (exited)`,
+inspect its unit configuration and logs and verify that Miningcore's database endpoint is serving
+connections before proceeding; the active state alone does not establish database readiness.
+
 After configuration, verify the dependency graph:
 
 ```console
