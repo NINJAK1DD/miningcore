@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Miningcore.Tests.Mining;
@@ -13,6 +14,18 @@ namespace Miningcore.Tests;
 
 public class NonParallelCollectionTests
 {
+    [Fact]
+    public void NonParallelDefinitions_HaveExactlyTheReviewedInventory()
+    {
+        var expected = ReviewedCollections().Select(row => (Type) row[0])
+            .Append(typeof(IntegrationDeadlineCollection));
+        var actual = typeof(NonParallelCollectionTests).Assembly.GetTypes().Where(type =>
+            type.GetCustomAttribute<CollectionDefinitionAttribute>(inherit: false)?.DisableParallelization == true);
+
+        Assert.Equal(expected.Select(x => x.FullName).OrderBy(x => x),
+            actual.Select(x => x.FullName).OrderBy(x => x));
+    }
+
     public static IEnumerable<object[]> ReviewedCollections()
     {
         // The deadline collection has its own exact-membership contract.

@@ -54,7 +54,9 @@ they cannot add collections to xUnit's discovery. `NonParallelCollectionTests`
 guards the five logging collections, the administrative API environment collection
 and the Bitcoin Core payout integration collection. Together with the dedicated
 deadline contract, all eight current non-parallel collections have exact-member
-guards. These metadata checks run even when optional integration tests are skipped;
+guards. An assembly-wide definition inventory also requires any new non-parallel
+collection to be added explicitly to the reviewed set. These metadata checks run
+even when optional integration tests are skipped;
 they neither start daemons nor change collection scheduling. The parallel
 `PayoutManagerLeaseIntegrationCollection` is intentionally excluded.
 Duplicate definitions and unsupported constructor
@@ -63,13 +65,15 @@ guards do not use timing-sensitive competing-test probes.
 
 The synthetic tests require a dynamic-code-capable runtime and preserved reflection
 metadata. They assert the dynamic-code requirement before using `Reflection.Emit`.
+That assertion does not detect trimming or prove reflection metadata preservation;
+trimmed test assemblies are not currently supported or verified by these guards.
 A future Native AOT or trimmed test lane needs an explicit fixture/metadata design
 review, not silently skipped guards. The small shared emitted-type builder is
 retained because malformed and duplicate collection definitions must be tested
 without contaminating the actual discovery assembly; no general-purpose test
-framework or new package is needed. There are 14 contract cases across the three
-contract test classes: two deadline facts, seven non-parallel membership cases and
-five resolver regression facts.
+framework or new package is needed. There are 15 contract cases across the three
+contract test classes: two deadline facts, seven non-parallel membership cases,
+one definition-inventory fact and five resolver regression facts.
 
 ## Measured whole-assembly comparison
 
