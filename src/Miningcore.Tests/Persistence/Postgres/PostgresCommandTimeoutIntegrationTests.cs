@@ -22,6 +22,7 @@ using Npgsql;
 using NSubstitute;
 using Xunit;
 using Xunit.Abstractions;
+using XunitException = Xunit.Sdk.XunitException;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
@@ -50,6 +51,10 @@ public sealed class PostgresTimeoutFactAttribute : FactAttribute
 public class PostgresCommandTimeoutIntegrationTests(
     IsolatedPostgresServer server, ITestOutputHelper output)
 {
+    // Unlike COPY's uncancellable delay, this sleep must survive until cancellation
+    // arrives and arms the advisory gate, including scheduling jitter on busy CI hosts.
+    private const int CommitGateCancellationWindowSeconds = 15;
+
     [PostgresTimeoutTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -356,13 +361,13 @@ public class PostgresCommandTimeoutIntegrationTests(
         // This test-only trigger absorbs the first cancellation, making COMMIT outlive
         // the broken client connection. An observer-owned advisory lock holds it until
         // a production retry is visibly blocked on the original payment-batch key.
-        await db.Observer.ExecuteAsync("""
+        await db.Observer.ExecuteAsync($"""
             CREATE SEQUENCE commit_fault;
             CREATE FUNCTION gate_commit() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
                 IF nextval('commit_fault') = 1 THEN
                     BEGIN
-                        PERFORM pg_sleep(5);
+                        PERFORM pg_sleep({CommitGateCancellationWindowSeconds});
                     EXCEPTION WHEN query_canceled THEN
                         PERFORM pg_advisory_xact_lock(TG_ARGV[0]::bigint);
                     END;
@@ -385,8 +390,10 @@ public class PostgresCommandTimeoutIntegrationTests(
             submissions++;
             return Task.FromResult("tx-1");
         }, perRecipient);
+        // The subject is awaited in the final cleanup action: even a failed overlap
+        // assertion must release the gate first, then observe the payout's outcome.
         await PostgresTestCleanup.RunAsync(
-            () => db.WaitForRetryBlockedByCommitAsync(),
+            () => db.WaitForRetryBlockedByCommitAsync(payout),
             async () => { await db.Observer.ExecuteAsync("SELECT pg_advisory_unlock(@gate)", new { gate }); },
             () => payout.WaitAsync(TimeSpan.FromSeconds(40)));
         await db.WaitForTransactionEndAsync();
@@ -534,18 +541,36 @@ public class PostgresCommandTimeoutIntegrationTests(
                 await Task.Delay(25, deadline.Token).ConfigureAwait(false);
         }
 
-        public async Task WaitForRetryBlockedByCommitAsync()
+        public async Task WaitForRetryBlockedByCommitAsync(Task payout)
         {
+            // Covers the current production 1s command timeout, 2s cancellation
+            // budget, Polly's 2s first retry delay, reconnect and lock observation.
+            // Revisit this budget if the production retry policy changes.
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            while(!await Observer.ExecuteScalarAsync<bool>(new CommandDefinition("""
-                SELECT EXISTS(
-                    SELECT 1 FROM pg_stat_activity original
-                    JOIN pg_stat_activity retry ON original.pid=ANY(pg_blocking_pids(retry.pid))
-                    WHERE original.application_name=@schema AND retry.application_name=@schema
-                      AND original.query ILIKE 'COMMIT%' AND original.wait_event='advisory'
-                      AND retry.wait_event_type='Lock')
-                """, new { schema }, cancellationToken: deadline.Token)))
-                await Task.Delay(25, deadline.Token);
+            try
+            {
+                // Only this test's COMMIT trigger waits on an advisory lock under
+                // this generated application identity; no driver SQL spelling needed.
+                while(!await Observer.ExecuteScalarAsync<bool>(new CommandDefinition("""
+                    SELECT EXISTS(
+                        SELECT 1 FROM pg_stat_activity original
+                        JOIN pg_stat_activity retry ON original.pid=ANY(pg_blocking_pids(retry.pid))
+                        WHERE original.application_name=@schema AND retry.application_name=@schema
+                          AND original.wait_event='advisory' AND retry.wait_event_type='Lock')
+                    """, new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false))
+                {
+                    Assert.False(payout.IsCompleted,
+                        "Payout completed before a retry was observed blocked by the COMMIT gate. " +
+                        "Check whether query_canceled arrived before the gate sleep ended or the original backend terminated.");
+                    await Task.Delay(25, deadline.Token).ConfigureAwait(false);
+                }
+            }
+            catch(OperationCanceledException error) when(deadline.IsCancellationRequested)
+            {
+                throw new XunitException(
+                    "No retry was observed blocked by the COMMIT advisory gate within 20 seconds. " +
+                    "Check cancellation delivery, original backend termination, and the production first-retry delay/reconnect budget.", error);
+            }
         }
 
         public async ValueTask DisposeAsync()

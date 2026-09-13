@@ -186,16 +186,36 @@ absorbs the first cancellation and waits on an observer-owned advisory lock. The
 observer releases that gate only after PostgreSQL shows a retry blocked by the
 unfinished COMMIT. Both overloads converge on one payment without another wallet
 submission. A fixture regression checks restoration from SCRAM authentication and
-disabled TLS. Ordinary injected sleeps are five seconds, exceeding the one-second
-command limit plus the driver's two-second cancellation budget; the race gate is
-released by observed state rather than a guessed delay. See PostgreSQL's
+disabled TLS. Ordinary write/commit delays remain five seconds; reducing the
+uncancellable COPY delay avoids waiting out a longer server sleep. The race
+trigger instead uses a named **15-second cancellation window**: its sleep must
+still be running when `query_canceled` arrives to arm the advisory gate, so it
+needs margin for scheduling and cancellation-delivery jitter. Normally cancellation
+interrupts that sleep after roughly one second. The armed gate is released by
+observed blocking state rather than a guessed delay or the driver's SQL text.
+The observer's 20-second budget includes the current one-second command timeout,
+two-second cancellation budget, two-second first retry backoff, reconnect and
+lock detection; a changed retry policy requires revisiting that budget. If the
+payout finishes without observed overlap or the budget expires, the test reports
+the missing gate/retry condition and cancellation/backend timing checks. Gate
+release and awaiting the payout run even when the overlap assertion fails.
+See PostgreSQL's
 [advisory lock semantics](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS).
 Financial assertions, trigger removal and pool-reuse checks wait for server
 transaction completion. Assertions inspect database state before cleanup;
 per-test teardown terminates only its generated backend identity, drops its schema
 and clears its pool. Collection teardown stops/removes the temporary server.
 
-### Verification record: 2026-09-13
+### Gate-hardening verification: 2026-09-14
+
+The Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed **26 targeted tests**,
+including all **thirteen live database cases**, cleanup and collection-isolation
+checks. Both production retry races observed blocking with the 15-second gate
+window; cancellation still interrupted the sleep rather than waiting it out.
+The managed build had zero warnings/errors; documentation links and diff-whitespace
+checks passed. Results: `src/Miningcore.Tests/TestResults/issue147-gate-hardening.trx`.
+
+### Broader verification record: 2026-09-13
 
 The Windows lab ran PostgreSQL **17.10**, Npgsql **9.0.3**, and .NET SDK **10.0.303**.
 The managed build completed with zero warnings/errors. The configuration, TLS,
