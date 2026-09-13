@@ -15,7 +15,7 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
 {
     private readonly string bin = Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN");
-    private readonly string directory = Path.Combine(Path.GetTempPath(), "miningcore-pg-tls-" + Guid.NewGuid().ToString("N"));
+    private readonly string directory = Path.Combine(Path.GetTempPath(), "miningcore-pg-policy-" + Guid.NewGuid().ToString("N"));
     private string Data => Path.Combine(directory, "data");
     private string Log => Path.Combine(directory, "postgres.log");
     public string Root => Path.Combine(directory, "root;quoted=ca.crt");
@@ -24,7 +24,10 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
     public int Port { get; private set; }
     private bool started;
     private string activeCertificate;
+    private bool? passwordAuthentication;
 
+    // Opted-in filtered unit runs also construct this collection fixture. Keep
+    // the environment guard so ordinary unit runs never start PostgreSQL.
     public Task InitializeAsync() => string.IsNullOrEmpty(bin) ? Task.CompletedTask : Initialize();
     Task IAsyncLifetime.DisposeAsync() => DisposeAsync().AsTask();
 
@@ -42,6 +45,7 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
         CreateServerCertificate(ca, "valid", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
         CreateServerCertificate(ca, "expired", DateTimeOffset.UtcNow.AddDays(-3), DateTimeOffset.UtcNow.AddDays(-2));
         await Start("valid", firstPort);
+        passwordAuthentication = false; // initdb used --auth=trust.
     }
 
     private static X509Certificate2 CreateCa(RSA key, string name)
@@ -109,23 +113,29 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
     }
 
     public Task UseCertificate(string certificate) =>
-        activeCertificate == certificate ? Task.CompletedTask : Restart(certificate);
+        started && activeCertificate == certificate ? Task.CompletedTask : Restart(certificate);
 
     public async Task PasswordAuthentication(bool required)
     {
+        if(started && passwordAuthentication == required)
+            return;
+        // A failed write/restart leaves unknown state: the next caller must retry.
+        passwordAuthentication = null;
         await File.WriteAllTextAsync(Path.Combine(Data, "pg_hba.conf"),
             "host all all 127.0.0.1/32 " + (required ? "scram-sha-256" : "trust") + "\n");
         await Restart("valid");
+        passwordAuthentication = required;
     }
 
     public async Task Restart(string certificate)
     {
-        await Run("pg_ctl", "-D", Data, "-m", "fast", "-w", "stop");
+        if(started)
+            await Run("pg_ctl", "-D", Data, "-m", "fast", "-w", "stop");
         started = false;
         await Start(certificate, Port);
     }
 
-    public async Task<string> Run(string executable, params string[] arguments)
+    internal async Task<string> Run(string executable, params string[] arguments)
     {
         // A Windows postgres child can retain pg_ctl's redirected pipe handles after
         // pg_ctl exits. Do not await EOF on those pipes while the server is running.

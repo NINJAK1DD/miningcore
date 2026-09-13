@@ -61,17 +61,23 @@ silently replaced. Negative, oversized and malformed values also fail normal and
 Before upgrading, replace zero with a reviewed finite duration or omit the field
 to use 300 seconds. Positive settings through 86,400 are unchanged; larger values
 must be reduced. The main and TLS examples retain their explicit **60-second**
-limit. Validate your configuration with the **new release's binary** before
+limit. Check your configuration with the **new release's binary** before
 replacing the running service:
 
 ```sh
 dotnet Miningcore.dll -c /etc/miningcore/config.json --dumpconfig
 ```
 
-A nonzero exit status means validation failed. This command starts no mining,
-database or wallet services and does not verify live database connectivity. Its
-safe diagnostic output is not a reusable configuration export. Correct legacy
-zero values before an incident, because they also block emergency `-rs` startup.
+A nonzero exit status means the check failed. This command parses, schema-validates
+and binds configuration, including the raw timeout policy. Normal startup performs
+additional deployment, FluentValidation and cross-field checks and may still fail.
+The command starts no mining, database or wallet services and does not verify live
+connectivity. Its safe diagnostic output is not a reusable configuration export.
+Correct legacy zero values before an incident, because they also block emergency
+`-rs` startup.
+Read-stage PostgreSQL syntax failures, including invalid TLS combinations as well
+as timeout values, now report `invalid-configuration` instead of `internal` in
+`--dumpconfig`; the fixed diagnostic continues to omit supplied values and paths.
 Connection and cancellation timeouts retain their driver defaults. Review
 [the policy, maintenance guidance and live financial rollback/recovery checks](postgres-command-timeout.md)
 before changing a timeout. It is not a deadline for an entire transaction, and a

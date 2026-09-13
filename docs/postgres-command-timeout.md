@@ -104,11 +104,14 @@ your existing configuration, substituting its actual path:
 dotnet Miningcore.dll -c /etc/miningcore/config.json --dumpconfig
 ```
 
-Check the process exit status: a nonzero result means validation failed. This
-command reads and validates configuration without starting mining, database or
-wallet services or importing recovery shares. Its output is a credential-safe,
-lossy diagnostic, not a configuration export; do not save it over the input.
-Success confirms configuration validation, not live database connectivity.
+Check the process exit status: a nonzero result means the pre-upgrade check failed.
+This command parses, schema-validates and binds configuration, including the raw
+PostgreSQL command-timeout policy, without starting mining, database or wallet
+services or importing recovery shares. Its output is a credential-safe, lossy
+diagnostic, not a configuration export; do not save it over the input.
+Success confirms these read-stage checks only. Normal startup additionally runs
+FluentValidation, deployment and cross-field checks and may still reject the
+configuration. This command is not a full startup dry run or a connectivity test.
 Perform this check before an incident: a legacy `commandTimeout: 0` also blocks
 the new binary's emergency `-rs` recovery path until corrected.
 
@@ -150,7 +153,8 @@ The [documented Windows/WSL lab](merged-mining-regtest-validation.md) has Postgr
 and timeout tests share one `IsolatedPostgresServer` collection fixture: a
 temporary cluster, generated certificates, random loopback port and synthetic
 financial data. Tests restore mutable authentication settings, and timeout tests
-select the valid certificate before using their own schema and pool. Existing
+select both the valid certificate and trust authentication before using their own
+schema and pool. Re-selecting an already active state avoids a server restart. Existing
 lab databases, services and wallets are not used.
 
 ```powershell
@@ -165,17 +169,29 @@ the directory containing `initdb`, `pg_ctl` and `postgres`. The primary CI job
 already installs and opts into this fixture; without that variable these live
 tests are explicitly skipped. The Windows managed-only build above is sufficient
 for these database tests and is not a production publish.
+With the environment variable set, filtering to a unit test in the same policy
+collection also initializes the shared server. Unset it for unit-only runs that
+should avoid PostgreSQL setup.
 
-The ten database cases exercise real command timeout/caller cancellation,
+The thirteen database cases exercise real command timeout/caller cancellation,
 transaction rollback, the one-slot connection pool after failure, PPS replay and
 rounding, the payout handler's database retry, COPY recovery, and interruption
 between recovery commit and archival. A deferred-trigger COMMIT timeout also
 verifies uncertain-outcome classification and database reconciliation before
 idempotent persistence retry. Two cases exercise the actual payout handler's
 default COMMIT error path, one for each persistence overload, and assert a single
-wallet submission, payment batch, payment and debit after retry. Every interruption
-waits for the server transaction to end before inspecting balances, removing
-triggers or checking pool reuse. Assertions inspect database state before cleanup;
+wallet submission, payment batch, payment and debit after retry. Two additional
+cases keep the production retry hook and backoff unchanged: a test-only trigger
+absorbs the first cancellation and waits on an observer-owned advisory lock. The
+observer releases that gate only after PostgreSQL shows a retry blocked by the
+unfinished COMMIT. Both overloads converge on one payment without another wallet
+submission. A fixture regression checks restoration from SCRAM authentication and
+disabled TLS. Ordinary injected sleeps are five seconds, exceeding the one-second
+command limit plus the driver's two-second cancellation budget; the race gate is
+released by observed state rather than a guessed delay. See PostgreSQL's
+[advisory lock semantics](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS).
+Financial assertions, trigger removal and pool-reuse checks wait for server
+transaction completion. Assertions inspect database state before cleanup;
 per-test teardown terminates only its generated backend identity, drops its schema
 and clears its pool. Collection teardown stops/removes the temporary server.
 
@@ -183,16 +199,17 @@ and clears its pool. Collection teardown stops/removes the temporary server.
 
 The Windows lab ran PostgreSQL **17.10**, Npgsql **9.0.3**, and .NET SDK **10.0.303**.
 The managed build completed with zero warnings/errors. The configuration, TLS,
-transaction, payout and share-recovery regression selection passed **762 tests**,
-including all **ten live timeout cases**. One existing Unix permissions test was
+transaction, payout and share-recovery regression selection passed **769 tests**,
+including all **thirteen live database cases**. One existing Unix permissions test was
 skipped on Windows. Schema parity, diagnostic snapshot, documentation links and
 diff-whitespace checks passed. Local test results are recorded in
-`src/Miningcore.Tests/TestResults/issue147-review.trx`.
+`src/Miningcore.Tests/TestResults/issue147-rereview.trx`; the diagnostic theory's
+final isolated recheck is in `issue147-rereview-diagnostics.trx` in the same directory.
 
-At revision `eb98d05`, the [primary Linux CI run](https://github.com/NINJAK1DD/miningcore/actions/runs/34780588021)
-used PostgreSQL **18.6** and Npgsql **9.0.3**: **2,828 tests passed**, with one skip,
-including all eight live timeout cases present at that revision. Its Ubuntu and
-Windows matrix also passed. The [release checks](https://github.com/NINJAK1DD/miningcore/actions/runs/34780587997)
-and [macOS/Alpine portability checks](https://github.com/NINJAK1DD/miningcore/actions/runs/34780587982)
-passed. These results establish PostgreSQL 18 coverage for the original policy;
+At revision `d6dbc523`, the [primary Linux CI run](https://github.com/NINJAK1DD/miningcore/actions/runs/34783987303)
+used PostgreSQL **18.6** and Npgsql **9.0.3**: **2,840 tests passed**, with one skip,
+including all ten live timeout cases present at that revision. Its Ubuntu and
+Windows matrix also passed. The [release checks](https://github.com/NINJAK1DD/miningcore/actions/runs/34783987257)
+and [macOS/Alpine portability checks](https://github.com/NINJAK1DD/miningcore/actions/runs/34783987345)
+passed. These results establish PostgreSQL 18 coverage for that revision;
 the PR checks separately report CI results for subsequent review changes.
