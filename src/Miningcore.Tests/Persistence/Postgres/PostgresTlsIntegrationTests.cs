@@ -150,6 +150,7 @@ public class PostgresTlsIntegrationTests
         private readonly string bin = Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN");
         private readonly string directory = Path.Combine(Path.GetTempPath(), "miningcore-pg-tls-" + Guid.NewGuid().ToString("N"));
         private string Data => Path.Combine(directory, "data");
+        private string Log => Path.Combine(directory, "postgres.log");
         public string Root => Path.Combine(directory, "root;quoted=ca.crt");
         public string OtherRoot => Path.Combine(directory, "other.crt");
         public int Port { get; private set; }
@@ -203,11 +204,13 @@ public class PostgresTlsIntegrationTests
 
         private async Task Start(string certificate)
         {
+            // This fixture connects over loopback TCP only. Debian/Ubuntu default Unix
+            // sockets to /var/run/postgresql, which an unprivileged test user cannot write.
             await File.WriteAllTextAsync(Path.Combine(Data, "postgresql.conf"),
-                $"listen_addresses='127.0.0.1'\nport={Port}\n" +
+                $"listen_addresses='127.0.0.1'\nport={Port}\nunix_socket_directories=''\n" +
                 (certificate == "off" ? "ssl=off\n" :
                     $"ssl=on\nssl_cert_file='{certificate}.crt'\nssl_key_file='{certificate}.key'\n"));
-            await Run("pg_ctl", "-D", Data, "-l", Path.Combine(directory, "postgres.log"), "-w", "start");
+            await Run("pg_ctl", "-D", Data, "-l", Log, "-w", "start");
             started = true;
         }
 
@@ -234,6 +237,8 @@ public class PostgresTlsIntegrationTests
             try { await process.WaitForExitAsync(timeout.Token); }
             catch { process.Kill(true); throw; }
             var result = await stdout + await stderr;
+            if(process.ExitCode != 0 && executable == "pg_ctl" && File.Exists(Log))
+                result += await File.ReadAllTextAsync(Log);
             Assert.True(process.ExitCode == 0, executable + " failed: " + result);
             return result;
         }

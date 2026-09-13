@@ -6,6 +6,7 @@ using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Miningcore.Tests.Mining;
 using Miningcore.Tests.Payments;
+using Miningcore.Tests.Persistence.Postgres;
 using Miningcore.Tests.Rpc;
 using Miningcore.Tests.Util;
 using Xunit;
@@ -41,6 +42,9 @@ public class NonParallelCollectionTests
         yield return new object[] { typeof(ShareRecoveryLoggingCollection),
             new[] { typeof(ShareRecorderTests), typeof(ShareRecoveryPathOwnershipTests) } };
         yield return new object[] { typeof(PostgresConfigurationLoggingCollection), new[] { typeof(PostgresConfigurationLoggingTests) } };
+        // These fixtures change process-wide logging, JSON settings, or PGSSLROOTCERT.
+        yield return new object[] { typeof(PostgresPolicyCollection),
+            new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresTlsIntegrationTests) } };
     }
 
     [Theory]
