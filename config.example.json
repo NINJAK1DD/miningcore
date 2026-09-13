@@ -110,9 +110,13 @@
       "database": "miningcore",
       // Maximum duration in seconds for database commands.
       "commandTimeout": 60,
-      // Enable PostgreSQL transport encryption.
+      // Legacy false uses opportunistic Prefer: TLS may be used, without server authentication.
       "tls": false,
-      // Never enable in production unless certificate validation is handled elsewhere.
+      // false does NOT validate server identity in Npgsql 9, even with tls=true.
+      // For remote authenticated TLS, REMOVE both legacy flags and use:
+      // "sslMode": "VerifyFull",
+      // "tlsRootCert": "/etc/miningcore/postgres-root-ca.crt"
+      // See docs/postgres-tls.md for trust sources and migration.
       "tlsNoValidate": false
     }
   },

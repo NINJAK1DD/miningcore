@@ -631,8 +631,26 @@
         "port": {
           "type": "integer"
         },
+        "sslMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "Disable",
+            "Allow",
+            "Prefer",
+            "Require",
+            "VerifyCA",
+            "VerifyFull"
+          ]
+        },
         "tls": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "tlsCert": {
           "type": [
@@ -647,9 +665,18 @@
           ]
         },
         "tlsNoValidate": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "tlsPassword": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tlsRootCert": {
           "type": [
             "string",
             "null"

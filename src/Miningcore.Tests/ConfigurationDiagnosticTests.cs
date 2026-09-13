@@ -127,7 +127,7 @@ public class ConfigurationDiagnosticTests
         var supported = new HashSet<Type>(objects)
         {
             typeof(bool), typeof(byte), typeof(int), typeof(double), typeof(decimal),
-            typeof(PayoutScheme), typeof(BanManagerKind), typeof(PoolConfig[]),
+            typeof(PayoutScheme), typeof(BanManagerKind), typeof(PostgresSslMode), typeof(PoolConfig[]),
             typeof(DaemonEndpointConfig[]), typeof(RewardRecipient[]),
             typeof(ShareRelayEndpointConfig[]), typeof(Dictionary<int, PoolEndpoint>),
         };
@@ -289,9 +289,9 @@ public class ConfigurationDiagnosticTests
     public void Projection_PresenceNeverEmitsValuesOrClaimsUsability(string value, string expected)
     {
         var config = new ClusterConfig { Persistence = new PersistenceConfig { Postgres = new PostgresConfig
-            { TlsCert = value, TlsKey = value, TlsPassword = value, Password = value } } };
+            { TlsCert = value, TlsKey = value, TlsPassword = value, Password = value, TlsRootCert = value } } };
         var output = JObject.Parse(Program.SerializeConfigDiagnostics(config))["configuration"]["persistence"]["postgres"];
-        foreach(var name in new[] { "tlsCert", "tlsKey", "tlsPassword", "password" })
+        foreach(var name in new[] { "tlsCert", "tlsKey", "tlsPassword", "password", "tlsRootCert" })
             Assert.Equal(expected, output[name].Value<string>());
     }
 

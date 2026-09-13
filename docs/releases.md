@@ -294,7 +294,25 @@ undeliverable critical alerts. No coin-family, accounting or schema change is ma
 The existing top-level/admin/channel switch semantics are unchanged. Their validation and
 documentation mismatch is tracked separately in [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148).
 
+## Unreleased: PostgreSQL certificate validation (issue #146)
+
+PostgreSQL configuration now supports explicit `sslMode` values, including
+`VerifyCA` and recommended `VerifyFull`, and `tlsRootCert` for a trusted CA file.
+Legacy `tls: true` retains encryption-only `Require`; false/omitted retains
+opportunistic `Prefer`. `tlsNoValidate: false` does not authenticate the server.
+Remove both legacy flags before setting an explicit mode. Conflicting settings
+and previously ignored nonempty client TLS settings now fail startup validation.
+Connection values are passed through `NpgsqlConnectionStringBuilder`, preserving
+literal credentials instead of interpreting them as options. Startup diagnostics
+use a fixed allowlist without credentials or certificate paths. Review the
+[migration and trust-source rules](postgres-tls.md) before upgrading.
+
 ## Unreleased: PostgreSQL credential-safe diagnostics
+
+The next two paragraphs describe the original PR #142 logging-only change. Its mode and
+field contracts are superseded by the [certificate-validation update](#unreleased-postgresql-certificate-validation-issue-146):
+the current diagnostic reports the effective mode, omits host/database/user strings and adds
+root-certificate presence. Connection-open exception details are now omitted as well.
 
 PostgreSQL startup debug logging no longer prints the connection string, which could expose
 database and client-certificate passwords. The explicit allowlist contains host, port, database,
