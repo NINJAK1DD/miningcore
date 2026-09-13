@@ -43,8 +43,11 @@ public class NonParallelCollectionTests
             new[] { typeof(ShareRecorderTests), typeof(ShareRecoveryPathOwnershipTests) } };
         yield return new object[] { typeof(PostgresConfigurationLoggingCollection), new[] { typeof(PostgresConfigurationLoggingTests) } };
         // These fixtures change process-wide logging, JSON settings, or PGSSLROOTCERT.
+        // Timeout tests share this isolation so configuration reads and physical opens
+        // cannot observe the TLS fixtures' temporary process-wide settings.
         yield return new object[] { typeof(PostgresPolicyCollection),
-            new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresTlsIntegrationTests) } };
+            new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresTlsIntegrationTests),
+                typeof(PostgresCommandTimeoutTests), typeof(PostgresCommandTimeoutIntegrationTests) } };
     }
 
     [Theory]
