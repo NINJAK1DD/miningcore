@@ -48,7 +48,7 @@ internal static class PostgresConnectionPolicy
     {
         // Structural exclusions also help editor/offline validation. Runtime validation
         // remains authoritative for case-insensitive binding and environment sources.
-        document["definitions"]["PostgresConfig"]["allOf"] = JArray.Parse($$"""
+        var rules = JArray.Parse("""
             [
               { "not": {
                   "type": "object",
@@ -59,18 +59,29 @@ internal static class PostgresConnectionPolicy
                   "type": "object",
                   "required": ["sslMode", "tlsNoValidate"],
                   "properties": { "sslMode": { "type": "string" }, "tlsNoValidate": { "type": "boolean" } }
-              } },
+              } }
+            ]
+            """);
+        var rootCertificateRule = JObject.Parse("""
               { "not": {
                   "type": "object",
                   "required": ["tlsRootCert"],
                   "properties": { "tlsRootCert": { "type": "string" } },
                   "not": {
                     "required": ["sslMode"],
-                    "properties": { "sslMode": { "enum": {{new JArray(VerifyingModes.Select(mode => mode.ToString())).ToString(Formatting.None)}} } }
+                    "properties": { "sslMode": { "enum": [] } }
                   }
               } }
-            ]
             """);
+        rootCertificateRule["not"]["not"]["properties"]["sslMode"]["enum"] =
+            new JArray(VerifyingModes.Select(mode => mode.ToString()));
+        rules.Add(rootCertificateRule);
+
+        // Preserve constraints emitted by the generator; TLS rules must only narrow them.
+        var postgres = document["definitions"]["PostgresConfig"];
+        var allOf = (JArray) (postgres["allOf"] ??= new JArray());
+        foreach(var rule in rules)
+            allOf.Add(rule);
     }
 
     internal static void ValidateSyntax(JObject document)

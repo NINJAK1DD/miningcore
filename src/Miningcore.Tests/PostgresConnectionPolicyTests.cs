@@ -241,6 +241,46 @@ public class PostgresConnectionPolicyTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SchemaPreservesExistingConstraintsWhenAddingTlsRules(bool populated)
+    {
+        var document = Program.GenerateJsonConfigSchemaDocument();
+        var postgres = document["definitions"]["PostgresConfig"];
+        var existing = new JArray();
+        if(populated)
+            existing.Add(JObject.Parse("""{"properties":{"port":{"maximum":1024}}}"""));
+        var original = existing.DeepClone();
+        postgres["allOf"] = existing;
+
+        PostgresConnectionPolicy.AddSchemaRules(document);
+
+        Assert.Same(existing, postgres["allOf"]);
+        Assert.Equal(original.Count() + 3, existing.Count);
+        for(var i = 0; i < original.Count(); i++)
+            Assert.True(JToken.DeepEquals(original[i], existing[i]));
+
+        var schema = JSchema.Parse(postgres.ToString());
+        Assert.True(JValue.CreateNull().IsValid(schema));
+        var config = new JObject { ["port"] = 1024, ["sslMode"] = "VerifyFull", ["tlsRootCert"] = "root.pem" };
+        Assert.True(config.IsValid(schema));
+        config["port"] = 1025;
+        Assert.Equal(!populated, config.IsValid(schema));
+        config["port"] = 1024;
+        config["sslMode"] = "Require";
+        Assert.False(config.IsValid(schema));
+        config["sslMode"] = "VerifyFull";
+        foreach(var field in new[] { "tls", "tlsNoValidate" })
+        {
+            config[field] = false;
+            Assert.False(config.IsValid(schema));
+            config[field] = null;
+            Assert.True(config.IsValid(schema));
+            config.Remove(field);
+        }
+    }
+
+    [Theory]
     [InlineData(" semi;SSL Mode=Disable;Timeout=1; ")]
     [InlineData(" equals=value ")]
     [InlineData(" quotes\"and'quotes ")]
