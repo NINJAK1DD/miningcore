@@ -311,7 +311,11 @@ literal credentials instead of interpreting them as options. Startup diagnostics
 use a fixed allowlist without credentials or certificate paths. The root presence
 field is `RootCertificatePathConfigured`: it describes a path encoded in the
 connection string, not all driver fallback sources. Connection errors include
-safe failure categories; failed cleanup cannot leak provider errors or replace
+safe failure categories that distinguish local file access (including PostgreSQL
+passfiles), cryptographic material, missing databases, connection limits and server
+availability. Generic I/O failures do not imply network or TLS faults. Verifying
+modes without an encoded CA path emit a fixed ambient-trust warning. Failed cleanup
+cannot leak provider errors or replace
 cancellation. Omitted/empty passwords retain environment/passfile fallback.
 CA paths do not freeze file contents, and an unset root permits Npgsql to consult
 environment/default trust sources at later physical opens. Review the

@@ -38,11 +38,17 @@ public sealed class PostgresSslModeConverter : JsonConverter
 
 internal static class PostgresConnectionPolicy
 {
+    private static readonly PostgresSslMode[] VerifyingModes =
+        [PostgresSslMode.VerifyCA, PostgresSslMode.VerifyFull];
+
+    internal static bool UsesAmbientTrust(PostgresConnectionDiagnostic diagnostic) =>
+        !diagnostic.RootCertificatePathConfigured && VerifyingModes.Any(mode => ToDriverMode(mode) == diagnostic.SslMode);
+
     internal static void AddSchemaRules(JObject document)
     {
         // Structural exclusions also help editor/offline validation. Runtime validation
         // remains authoritative for case-insensitive binding and environment sources.
-        document["definitions"]["PostgresConfig"]["allOf"] = JArray.Parse("""
+        document["definitions"]["PostgresConfig"]["allOf"] = JArray.Parse($$"""
             [
               { "not": {
                   "type": "object",
@@ -60,7 +66,7 @@ internal static class PostgresConnectionPolicy
                   "properties": { "tlsRootCert": { "type": "string" } },
                   "not": {
                     "required": ["sslMode"],
-                    "properties": { "sslMode": { "enum": ["VerifyCA", "VerifyFull"] } }
+                    "properties": { "sslMode": { "enum": {{new JArray(VerifyingModes.Select(mode => mode.ToString())).ToString(Formatting.None)}} } }
                   }
               } }
             ]
@@ -100,7 +106,7 @@ internal static class PostgresConnectionPolicy
         if(mode != null && (tls?.Type == JTokenType.Boolean || noValidate?.Type == JTokenType.Boolean))
             throw Invalid("sslMode cannot be combined with tls or tlsNoValidate; omit legacy flags");
         if(postgres.GetValue("tlsRootCert", StringComparison.OrdinalIgnoreCase)?.Type == JTokenType.String &&
-           mode is not ("VerifyCA" or "VerifyFull"))
+           !VerifyingModes.Any(candidate => candidate.ToString() == mode))
             throw Invalid("tlsRootCert requires VerifyCA or VerifyFull");
     }
 
@@ -139,7 +145,7 @@ internal static class PostgresConnectionPolicy
             throw Invalid("tlsNoValidate requires legacy tls=true");
 
         var mode = config.SslMode ?? (config.Tls == true ? PostgresSslMode.Require : PostgresSslMode.Prefer);
-        var verifying = mode is PostgresSslMode.VerifyCA or PostgresSslMode.VerifyFull;
+        var verifying = VerifyingModes.Contains(mode);
         if(config.TlsRootCert != null && !verifying)
             throw Invalid("tlsRootCert requires VerifyCA or VerifyFull");
         var root = verifying ? config.TlsRootCert ?? environmentRoot : null;
@@ -155,17 +161,19 @@ internal static class PostgresConnectionPolicy
            mode is PostgresSslMode.Disable or PostgresSslMode.Allow or PostgresSslMode.Prefer)
             throw Invalid("client TLS settings require Require, VerifyCA or VerifyFull");
 
-        return (mode switch
-        {
-            PostgresSslMode.Disable => SslMode.Disable,
-            PostgresSslMode.Allow => SslMode.Allow,
-            PostgresSslMode.Prefer => SslMode.Prefer,
-            PostgresSslMode.Require => SslMode.Require,
-            PostgresSslMode.VerifyCA => SslMode.VerifyCA,
-            PostgresSslMode.VerifyFull => SslMode.VerifyFull,
-            _ => throw Invalid("sslMode is unknown"),
-        }, root, cert, key, password);
+        return (ToDriverMode(mode), root, cert, key, password);
     }
+
+    private static SslMode ToDriverMode(PostgresSslMode mode) => mode switch
+    {
+        PostgresSslMode.Disable => SslMode.Disable,
+        PostgresSslMode.Allow => SslMode.Allow,
+        PostgresSslMode.Prefer => SslMode.Prefer,
+        PostgresSslMode.Require => SslMode.Require,
+        PostgresSslMode.VerifyCA => SslMode.VerifyCA,
+        PostgresSslMode.VerifyFull => SslMode.VerifyFull,
+        _ => throw Invalid("sslMode is unknown"),
+    };
 
     private static string ClientPath(string path, string field)
     {

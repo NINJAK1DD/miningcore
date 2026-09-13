@@ -22,16 +22,24 @@ public class PostgresConnectionFailureTests
     {
         yield return new object[] { new ArgumentException(Secret), PostgresConnectFailure.Configuration };
         yield return new object[] { new SocketException((int) SocketError.ConnectionRefused), PostgresConnectFailure.Network };
-        yield return new object[] { new IOException(Secret), PostgresConnectFailure.Network };
+        yield return new object[] { new IOException(Secret), PostgresConnectFailure.Other };
+        yield return new object[] { new IOException(Secret, new SocketException((int) SocketError.ConnectionRefused)), PostgresConnectFailure.Network };
         yield return new object[] { new TimeoutException(Secret), PostgresConnectFailure.Timeout };
         yield return new object[] { new SocketException((int) SocketError.TimedOut), PostgresConnectFailure.Timeout };
-        yield return new object[] { new FileNotFoundException(Secret, Secret), PostgresConnectFailure.TlsFileAccess };
-        yield return new object[] { new DirectoryNotFoundException(Secret), PostgresConnectFailure.TlsFileAccess };
-        yield return new object[] { new UnauthorizedAccessException(Secret), PostgresConnectFailure.TlsFileAccess };
-        yield return new object[] { new CryptographicException(Secret), PostgresConnectFailure.TlsFileAccess };
+        yield return new object[] { new FileNotFoundException(Secret, Secret), PostgresConnectFailure.LocalFileAccess };
+        yield return new object[] { new DirectoryNotFoundException(Secret), PostgresConnectFailure.LocalFileAccess };
+        yield return new object[] { new UnauthorizedAccessException(Secret), PostgresConnectFailure.LocalFileAccess };
+        yield return new object[] { new CryptographicException(Secret), PostgresConnectFailure.SecurityMaterial };
         yield return new object[] { new AuthenticationException(Secret, new CryptographicException(Secret)), PostgresConnectFailure.TlsHandshake };
+        yield return new object[] { new AuthenticationException(Secret, new FileNotFoundException(Secret, Secret)), PostgresConnectFailure.LocalFileAccess };
+        yield return new object[] { new AuthenticationException(Secret, new UnauthorizedAccessException(Secret)), PostgresConnectFailure.LocalFileAccess };
+        yield return new object[] { new AuthenticationException(Secret, new CryptographicException(Secret,
+            new DirectoryNotFoundException(Secret))), PostgresConnectFailure.LocalFileAccess };
         yield return new object[] { new PostgresException(Secret, "FATAL", "FATAL", "28P01"), PostgresConnectFailure.Authentication };
         yield return new object[] { new PostgresException(Secret, "FATAL", "FATAL", "28000"), PostgresConnectFailure.Authentication };
+        yield return new object[] { new PostgresException(Secret, "FATAL", "FATAL", "3D000"), PostgresConnectFailure.DatabaseNotFound };
+        yield return new object[] { new PostgresException(Secret, "FATAL", "FATAL", "53300"), PostgresConnectFailure.ConnectionLimit };
+        yield return new object[] { new PostgresException(Secret, "FATAL", "FATAL", "57P03"), PostgresConnectFailure.ServerUnavailable };
         yield return new object[] { new PostgresException(Secret, "FATAL", "FATAL", Secret), PostgresConnectFailure.Other };
         yield return new object[] { new Exception("hostname mismatch expired certificate " + Secret), PostgresConnectFailure.Other };
         yield return new object[] { new AggregateException(new IOException(Secret), new TimeoutException(Secret)), PostgresConnectFailure.Timeout };
@@ -52,6 +60,8 @@ public class PostgresConnectionFailureTests
         Assert.DoesNotContain("SECRET", error.ToString());
         Assert.DoesNotContain("forged", error.ToString());
         Assert.Contains($"({expected})", error.Message);
+        Assert.Equal((PostgresConnectFailure) expected == PostgresConnectFailure.Other,
+            error.Message.Contains("If the SSL mode requires TLS, check that the server supports TLS"));
         Assert.Equal(1, connection.DisposeCalls);
     }
 

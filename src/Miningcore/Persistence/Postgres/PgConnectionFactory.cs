@@ -54,8 +54,11 @@ public class PgConnectionFactory : IConnectionFactory, ICancellableConnectionFac
         if(connection == null)
             return;
         try { await connection.DisposeAsync(); }
-        // Cleanup must never replace cancellation or leak a second provider exception.
-        catch(Exception) { }
+        catch(Exception)
+        {
+            // Intentionally ignored: cleanup must never replace cancellation or leak
+            // a second provider exception. The original open outcome remains authoritative.
+        }
     }
 }
 
@@ -67,11 +70,19 @@ internal enum PostgresConnectFailure
     Timeout,
     Authentication,
     TlsHandshake,
-    TlsFileAccess,
+    LocalFileAccess,
+    SecurityMaterial,
+    DatabaseNotFound,
+    ConnectionLimit,
+    ServerUnavailable,
 }
 
 internal sealed class PostgresConnectionException(PostgresConnectFailure category, bool isTransient) : NpgsqlException(
-    $"PostgreSQL connection failed ({category}). Check the PostgreSQL connection troubleshooting guide; connection details omitted.")
+    $"PostgreSQL connection failed ({category}). " +
+    (category == PostgresConnectFailure.Other
+        ? "If the SSL mode requires TLS, check that the server supports TLS; other connection or authentication failures can also cause this result. "
+        : string.Empty) +
+    "Check the PostgreSQL connection troubleshooting guide; connection details omitted.")
 {
     public PostgresConnectFailure Category { get; } = category;
     public override bool IsTransient => isTransient;
@@ -90,16 +101,22 @@ internal sealed class PostgresConnectionException(PostgresConnectFailure categor
             {
                 PostgresException { SqlState: PostgresErrorCodes.InvalidPassword or
                     PostgresErrorCodes.InvalidAuthorizationSpecification } => PostgresConnectFailure.Authentication,
+                PostgresException { SqlState: PostgresErrorCodes.InvalidCatalogName } => PostgresConnectFailure.DatabaseNotFound,
+                PostgresException { SqlState: PostgresErrorCodes.TooManyConnections } => PostgresConnectFailure.ConnectionLimit,
+                PostgresException { SqlState: PostgresErrorCodes.CannotConnectNow } => PostgresConnectFailure.ServerUnavailable,
                 AuthenticationException => PostgresConnectFailure.TlsHandshake,
-                FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or
-                    CryptographicException => PostgresConnectFailure.TlsFileAccess,
+                FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException => PostgresConnectFailure.LocalFileAccess,
+                CryptographicException => PostgresConnectFailure.SecurityMaterial,
                 TimeoutException or SocketException { SocketErrorCode: SocketError.TimedOut } => PostgresConnectFailure.Timeout,
-                SocketException or IOException => PostgresConnectFailure.Network,
+                SocketException => PostgresConnectFailure.Network,
+                // An IOException alone can originate from a passfile, TLS material or a
+                // transport stream. Only a structured inner cause establishes provenance.
                 ArgumentException => PostgresConnectFailure.Configuration,
                 _ => PostgresConnectFailure.Other,
             };
-            // Prefer specific causes over their generic transport wrappers. A handshake
-            // failure takes precedence over platform-specific cryptographic inner errors.
+            // Prefer definite file-access failures even inside handshake wrappers. Generic
+            // cryptographic causes remain below TLS handshake errors because they also
+            // occur during certificate verification, not just material loading.
             if(Priority(category) > Priority(result))
                 result = category;
             if(current is AggregateException aggregate)
@@ -115,9 +132,11 @@ internal sealed class PostgresConnectionException(PostgresConnectFailure categor
 
     private static int Priority(PostgresConnectFailure category) => category switch
     {
+        PostgresConnectFailure.LocalFileAccess => 7,
         PostgresConnectFailure.TlsHandshake => 6,
-        PostgresConnectFailure.Authentication => 5,
-        PostgresConnectFailure.TlsFileAccess => 4,
+        PostgresConnectFailure.Authentication or PostgresConnectFailure.DatabaseNotFound or
+            PostgresConnectFailure.ConnectionLimit or PostgresConnectFailure.ServerUnavailable => 5,
+        PostgresConnectFailure.SecurityMaterial => 4,
         PostgresConnectFailure.Timeout => 3,
         PostgresConnectFailure.Network => 2,
         PostgresConnectFailure.Configuration => 1,

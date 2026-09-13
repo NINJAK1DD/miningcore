@@ -135,6 +135,11 @@ connection string. False does **not** mean that Npgsql uses no CA file: environm
 and default-file fallback may still apply at physical connection time.
 `PasswordConfigured` likewise describes a nonempty configuration value, not the
 presence of a password obtained from an environment variable or passfile.
+When a verifying mode has no encoded root path, startup also emits a fixed warning
+that trust depends on the service account's ambient sources. This can be intentional
+when using system trust; check the actual service environment, rather than assuming
+that a CA variable set in an interactive shell reaches the daemon. The warning
+contains no endpoint, credential or certificate-path values.
 Host/database/user strings, password values and certificate/key paths are omitted.
 Compared with PR #142, raw connection-string equality is deliberately replaced by
 parsed field assertions: Npgsql canonicalizes keyword spelling, order and quoting.
@@ -147,19 +152,34 @@ or its `ConnectionString`.
 Connection-open failures include a fixed category in the message and `Category`
 property. They omit the driver's text, type name and exception graph, which can
 contain certificate paths or server-supplied identity strings. Categories come
-from structured exception types and reviewed authentication SQLSTATEs, never
+from structured exception types and a fixed set of SQLSTATEs, never
 from parsing error messages. Inspect the service's `persistence.postgres`
 configuration privately to identify its endpoint and credentials.
 
 | Category | Checks under the deployed service account |
 | --- | --- |
-| `Network` | Resolve the configured host; check the configured port, listener, routing and firewall. |
+| `Network` | A socket error establishes network provenance. Resolve the configured host; check the configured port, listener, routing and firewall. |
 | `Timeout` | Check reachability, server load, connection limits and timeouts. |
 | `Authentication` | Verify the role, password source and `pg_hba.conf`; restricted server logs can help with database authentication rejection. |
-| `TlsFileAccess` | Verify CA/client-certificate/key file existence, permissions, encoding and key password; correct configuration instead of waiting for retries. This also covers cryptographic material-loading errors. |
+| `LocalFileAccess` | Verify existence and access permissions for CA/client-certificate/key files **and PostgreSQL passfiles**, including `PGPASSFILE` and the default passfile. This category does not identify which file failed or imply a TLS problem. |
+| `SecurityMaterial` | Check certificate/key encoding, key passwords and other cryptographic material. A cryptographic failure alone does not identify a particular file or prove a filesystem problem. |
 | `TlsHandshake` | Check the trust chain, certificate validity dates, system clock and hostname/SAN match on the client. The provider does not expose reliable typed distinctions among those causes. |
+| `DatabaseNotFound` | The server returned `3D000`: check the configured database name and provisioning. |
+| `ConnectionLimit` | The server returned `53300`: check connection usage, pool sizes and server limits. |
+| `ServerUnavailable` | The server returned `57P03`: check startup/recovery state and server availability. |
 | `Configuration` | Check supported connection options and their types/ranges. |
 | `Other` | Check SSL mode and whether the server supports TLS, credential availability, and server health; the provider supplied no safely classifiable cause. |
+
+An `IOException` without a more specific structured cause remains `Other`: both
+local files and transport streams can produce it. Definite file-access errors
+retain `LocalFileAccess` even inside handshake wrappers. A generic cryptographic
+error inside an authentication exception remains `TlsHandshake` because it may
+come from certificate verification.
+
+The `Other` message includes a conditional reminder to check server TLS support.
+Selecting `Require`/`VerifyCA`/`VerifyFull` does not establish that an unknown error
+means TLS is unavailable; the classifier never makes that inference or parses
+provider messages to invent a more specific diagnosis.
 
 Client-side certificate rejection may appear only as a reset in PostgreSQL logs;
 those logs cannot explain all trust or hostname failures. Verify the deployed CA
@@ -198,7 +218,11 @@ mismatch, `VerifyCA` versus `VerifyFull`, missing/invalid CA files, environment 
 precedence, changes after factory construction, file-content replacement and
 unavailable TLS. Separately reported theory cases share an isolated class fixture;
 each case explicitly selects its certificate mode. Other tests cover SCRAM
-password sources, safe error categories, cancellation and an occupied-port retry.
+password sources, missing/unreadable passfiles, database-selection errors, safe
+error categories, cancellation and an occupied-port retry. The unreadable-passfile
+case uses Unix permissions and is explicitly skipped on Windows. SCRAM test
+cleanup attempts every restoration and preserves the original failure alongside
+any teardown failures.
 Port selection occurs immediately before startup and retries at most three times
 only when the port is occupied and the temporary server has exited.
 The test stops and removes its own temporary cluster.

@@ -384,6 +384,62 @@ public class PostgresConnectionPolicyTests
         Assert.DoesNotContain("SECRET", diagnostic);
     }
 
+    [Theory]
+    [InlineData(PostgresSslMode.Disable, "absent", false)]
+    [InlineData(PostgresSslMode.Allow, "absent", false)]
+    [InlineData(PostgresSslMode.Prefer, "absent", false)]
+    [InlineData(PostgresSslMode.Require, "absent", false)]
+    [InlineData(PostgresSslMode.VerifyCA, "absent", true)]
+    [InlineData(PostgresSslMode.VerifyFull, "absent", true)]
+    [InlineData(PostgresSslMode.VerifyCA, "explicit", false)]
+    [InlineData(PostgresSslMode.VerifyFull, "explicit", false)]
+    [InlineData(PostgresSslMode.VerifyCA, "environment", false)]
+    [InlineData(PostgresSslMode.VerifyFull, "environment", false)]
+    public void StartupWarnsOnlyForVerifyingModesWithAmbientTrust(PostgresSslMode mode, string source, bool warns)
+    {
+        const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+        var field = typeof(Program).GetField("logger", flags);
+        var previous = field.GetValue(null);
+        var previousRoot = Environment.GetEnvironmentVariable("PGSSLROOTCERT");
+        using var factory = new LogFactory();
+        var target = new MemoryTarget { Layout = "${level}|${message}|${exception:format=ToString}" };
+        var logging = new LoggingConfiguration(factory);
+        logging.AddRuleForAllLevels(target);
+        factory.Configuration = logging;
+        try
+        {
+            field.SetValue(null, factory.GetLogger("Core"));
+            Environment.SetEnvironmentVariable("PGSSLROOTCERT", source == "environment" ? "SECRET-environment-root" : null);
+            var config = Config();
+            config.SslMode = mode;
+            config.Host = config.User = config.Database = config.Password = "SECRET;\r\nforged";
+            config.TlsRootCert = source == "explicit" ? "SECRET-configured-root" : null;
+            var builder = new ContainerBuilder();
+            typeof(Program).GetMethod("ConfigurePostgres", flags).Invoke(null, new object[] { config, builder });
+            using var container = builder.Build();
+            Assert.IsType<PgConnectionFactory>(container.Resolve<IConnectionFactory>());
+            factory.Flush();
+            var warnings = target.Logs.Where(line => line.StartsWith("Warn|")).ToArray();
+            if(warns)
+                Assert.Equal("Warn|PostgreSQL certificate verification has no root path in the connection string; " +
+                    "Npgsql may use environment, default certificate files or system trust. " +
+                    "Check the service account's trust configuration.|", Assert.Single(warnings));
+            else
+                Assert.Empty(warnings);
+            Assert.Equal(warns ? 2 : 1, target.Logs.Count);
+            Assert.All(target.Logs, line =>
+            {
+                Assert.DoesNotContain("SECRET", line);
+                Assert.DoesNotContain("\n", line);
+            });
+        }
+        finally
+        {
+            field.SetValue(null, previous);
+            Environment.SetEnvironmentVariable("PGSSLROOTCERT", previousRoot);
+        }
+    }
+
     [Fact]
     public void RegisteredFactoryAndLoggingUseReviewedPolicy()
     {

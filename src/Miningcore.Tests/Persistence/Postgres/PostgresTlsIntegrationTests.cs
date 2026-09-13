@@ -32,6 +32,17 @@ public sealed class PostgresTlsTheoryAttribute : TheoryAttribute
     }
 }
 
+public sealed class PostgresTlsUnixFactAttribute : FactAttribute
+{
+    public PostgresTlsUnixFactAttribute()
+    {
+        if(OperatingSystem.IsWindows())
+            Skip = "Requires Unix file permissions and an unprivileged PostgreSQL test account";
+        else if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
+            Skip = "Set MININGCORE_TEST_POSTGRES_BIN to run isolated real TLS tests";
+    }
+}
+
 [Collection(PostgresPolicyCollection.Name)]
 public class PostgresTlsIntegrationTests : IClassFixture<PostgresTlsIntegrationTests.TlsServer>
 {
@@ -78,9 +89,12 @@ public class PostgresTlsIntegrationTests : IClassFixture<PostgresTlsIntegrationT
         {
             var error = await Assert.ThrowsAsync<PostgresConnectionException>(() => factory.OpenConnectionAsync());
             var expected = certificate == "off" ? PostgresConnectFailure.Other :
-                root is "missing" or "invalid" ? PostgresConnectFailure.TlsFileAccess :
+                root == "missing" ? PostgresConnectFailure.LocalFileAccess :
+                root == "invalid" ? PostgresConnectFailure.SecurityMaterial :
                 PostgresConnectFailure.TlsHandshake;
             Assert.Equal(expected, error.Category);
+            if(certificate == "off")
+                Assert.Contains("If the SSL mode requires TLS, check that the server supports TLS", error.Message);
             AssertSafe(error);
         }
     }
@@ -140,7 +154,7 @@ public class PostgresTlsIntegrationTests : IClassFixture<PostgresTlsIntegrationT
         await server.UseCertificate("valid");
         var factory = new PgConnectionFactory(Connection(PostgresSslMode.VerifyFull, "localhost", server.Root + ".missing").ConnectionString);
         var error = await Assert.ThrowsAsync<PostgresConnectionException>(() => factory.OpenConnectionAsync());
-        Assert.Equal(PostgresConnectFailure.TlsFileAccess, error.Category);
+        Assert.Equal(PostgresConnectFailure.LocalFileAccess, error.Category);
         // Keep Npgsql's retry contract; the safe category identifies the configuration error.
         Assert.True(error.IsTransient);
         AssertSafe(error);
@@ -153,20 +167,9 @@ public class PostgresTlsIntegrationTests : IClassFixture<PostgresTlsIntegrationT
     public async Task PasswordSourcesAuthenticateUsingScramAndExplicitValuesTakePrecedence()
     {
         const string password = "ephemeral-password";
-        await server.UseCertificate("valid");
-        var priorPassword = Environment.GetEnvironmentVariable("PGPASSWORD");
-        var priorPassfile = Environment.GetEnvironmentVariable("PGPASSFILE");
         var passfile = server.Root + ".pgpass";
-        try
+        await WithScramAuthentication(async () =>
         {
-            // The role and password belong only to this temporary cluster.
-            using(var connection = await new PgConnectionFactory(Connection(PostgresSslMode.VerifyFull, "localhost", server.Root).ConnectionString).OpenConnectionAsync())
-            {
-                using var command = connection.CreateCommand();
-                command.CommandText = "SET password_encryption = 'scram-sha-256'; ALTER ROLE miningcore PASSWORD 'ephemeral-password'";
-                command.ExecuteNonQuery();
-            }
-            await server.PasswordAuthentication(true);
             await File.WriteAllTextAsync(passfile, $"localhost:{server.Port}:postgres:miningcore:{password}\n");
             if(!OperatingSystem.IsWindows())
                 File.SetUnixFileMode(passfile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -202,14 +205,106 @@ public class PostgresTlsIntegrationTests : IClassFixture<PostgresTlsIntegrationT
             // the legacy builder did. Verify the actual factory boundary, not just a getter.
             explicitPassword.Password = "";
             await AssertOpened(new PgConnectionFactory(explicitPassword.ConnectionString));
-        }
-        finally
+        }, () => { File.Delete(passfile); return Task.CompletedTask; });
+    }
+
+    [PostgresTlsTheory]
+    [InlineData("missing")]
+    [InlineData("directory")]
+    public async Task PassfileAccessFailuresAreSourceNeutralAndDoNotExposePaths(string failure)
+    {
+        var passfile = server.Root + ".SECRET-passfile";
+        if(failure == "directory")
+            Directory.CreateDirectory(passfile);
+        await WithScramAuthentication(async () =>
         {
-            Environment.SetEnvironmentVariable("PGPASSWORD", priorPassword);
-            Environment.SetEnvironmentVariable("PGPASSFILE", priorPassfile);
-            File.Delete(passfile);
-            await server.PasswordAuthentication(false);
-        }
+            // First prove that TLS and database authentication are healthy.
+            var builder = Connection(PostgresSslMode.VerifyFull, "localhost", server.Root);
+            builder.Password = "ephemeral-password";
+            await AssertOpened(new PgConnectionFactory(builder.ConnectionString));
+            builder.Password = null;
+            Environment.SetEnvironmentVariable("PGPASSFILE", passfile);
+            var error = await Assert.ThrowsAsync<PostgresConnectionException>(() =>
+                new PgConnectionFactory(builder.ConnectionString).OpenConnectionAsync());
+            Assert.Equal(PostgresConnectFailure.LocalFileAccess, error.Category);
+            AssertSafe(error);
+            Assert.DoesNotContain(passfile, error.ToString());
+        }, () =>
+        {
+            if(Directory.Exists(passfile))
+                Directory.Delete(passfile); // Only this fixture-created, empty directory.
+            return Task.CompletedTask;
+        });
+    }
+
+    [PostgresTlsUnixFact]
+    public async Task UnreadablePassfileReportsLocalAccessWithoutExposingItsPath()
+    {
+        var passfile = server.Root + ".SECRET-unreadable-passfile";
+        await WithScramAuthentication(async () =>
+        {
+            if(OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException("This test requires Unix file permissions");
+            var builder = Connection(PostgresSslMode.VerifyFull, "localhost", server.Root);
+            builder.Password = "ephemeral-password";
+            await AssertOpened(new PgConnectionFactory(builder.ConnectionString));
+            builder.Password = null;
+            await File.WriteAllTextAsync(passfile, "localhost:*:postgres:miningcore:ephemeral-password\n");
+            File.SetUnixFileMode(passfile, UnixFileMode.None);
+            Environment.SetEnvironmentVariable("PGPASSFILE", passfile);
+            var error = await Assert.ThrowsAsync<PostgresConnectionException>(() =>
+                new PgConnectionFactory(builder.ConnectionString).OpenConnectionAsync());
+            Assert.Equal(PostgresConnectFailure.LocalFileAccess, error.Category);
+            AssertSafe(error);
+            Assert.DoesNotContain(passfile, error.ToString());
+        }, () =>
+        {
+            if(File.Exists(passfile))
+            {
+                if(!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(passfile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.Delete(passfile);
+            }
+            return Task.CompletedTask;
+        });
+    }
+
+    [PostgresTlsFact]
+    public async Task MissingDatabaseReportsItsCategoryWithoutExposingItsName()
+    {
+        await server.UseCertificate("valid");
+        var builder = Connection(PostgresSslMode.VerifyFull, "localhost", server.Root);
+        builder.Database = "SECRET-missing-database";
+        var error = await Assert.ThrowsAsync<PostgresConnectionException>(() =>
+            new PgConnectionFactory(builder.ConnectionString).OpenConnectionAsync());
+        Assert.Equal(PostgresConnectFailure.DatabaseNotFound, error.Category);
+        AssertSafe(error);
+    }
+
+    private async Task WithScramAuthentication(Func<Task> body, params Func<Task>[] cleanup)
+    {
+        await server.UseCertificate("valid");
+        var priorPassword = Environment.GetEnvironmentVariable("PGPASSWORD");
+        var priorPassfile = Environment.GetEnvironmentVariable("PGPASSFILE");
+        await PostgresTestCleanup.RunAsync(async () =>
+        {
+            // The role and password belong only to this temporary cluster.
+            using(var connection = await new PgConnectionFactory(Connection(PostgresSslMode.VerifyFull, "localhost", server.Root).ConnectionString).OpenConnectionAsync())
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "SET password_encryption = 'scram-sha-256'; ALTER ROLE miningcore PASSWORD 'ephemeral-password'";
+                command.ExecuteNonQuery();
+            }
+            await server.PasswordAuthentication(true);
+            Environment.SetEnvironmentVariable("PGPASSWORD", null);
+            Environment.SetEnvironmentVariable("PGPASSFILE", null);
+            await body();
+        }, [
+            () => { Environment.SetEnvironmentVariable("PGPASSWORD", priorPassword); return Task.CompletedTask; },
+            () => { Environment.SetEnvironmentVariable("PGPASSFILE", priorPassfile); return Task.CompletedTask; },
+            .. cleanup,
+            () => server.PasswordAuthentication(false),
+        ]);
     }
 
     [PostgresTlsFact]

@@ -2693,6 +2693,10 @@ public class Program : ProcessStatusBackgroundService
         var connectionString = PostgresConnectionPolicy.Build(pgConfig, out var diagnostic);
         logger.Debug(() => "Using PostgreSQL persistence " +
             PostgresConnectionPolicy.Diagnostic(diagnostic));
+        if(PostgresConnectionPolicy.UsesAmbientTrust(diagnostic))
+            logger.Warn("PostgreSQL certificate verification has no root path in the connection string; " +
+                "Npgsql may use environment, default certificate files or system trust. " +
+                "Check the service account's trust configuration.");
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))
