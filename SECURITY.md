@@ -39,6 +39,27 @@ Include, where possible:
 Never include wallet private keys, seed phrases, passwords, API tokens,
 or other credentials.
 
+## Encryption
+
+GitHub's private vulnerability reporting feature is the primary reporting
+channel. If you want to encrypt sensitive report details before submitting
+them, use the maintainer's [public OpenPGP key](https://github.com/NINJAK1DD.gpg).
+
+Verify the key's full primary fingerprint before encrypting:
+
+```text
+1CF5 C5D0 A8A1 E027 EEF4  30A6 D67E 44D9 32A2 727D
+```
+
+This key includes an encryption subkey. The primary key and encryption
+subkey currently expire on 26 August 2029. Check that your OpenPGP software
+considers the key valid before using it.
+
+Submit the encrypted content through a private vulnerability report,
+with a brief, non-sensitive summary so the report can be triaged.
+Encryption is optional; you can also submit report details directly
+through GitHub's private reporting form.
+
 ## Safe Testing
 
 Use regtest, local deployments, or isolated environments you control.
