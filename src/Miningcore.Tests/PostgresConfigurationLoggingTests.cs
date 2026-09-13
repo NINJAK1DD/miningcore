@@ -102,7 +102,9 @@ public class PostgresConfigurationLoggingTests
             });
             // Issue #146 deliberately rejects options which the former raw-string
             // contract silently ignored. Rejected settings must not reach logging or DI.
-            if(!tls && (noValidate || tlsPasswordConfigured || tlsCertConfigured || tlsKeyConfigured))
+            if((tlsCert?.Length > 0 && string.IsNullOrWhiteSpace(tlsCert)) ||
+               (tlsKey?.Length > 0 && string.IsNullOrWhiteSpace(tlsKey)) ||
+               (!tls && (noValidate || tlsPasswordConfigured || tlsCertConfigured || tlsKeyConfigured)))
             {
                 var error = Assert.Throws<TargetInvocationException>(configureAction);
                 Assert.IsType<PoolStartupException>(error.InnerException);
@@ -127,7 +129,8 @@ public class PostgresConfigurationLoggingTests
             Assert.Equal(5433, connection.Port);
             Assert.Equal("test\r\n\u0085\u2028\u2029forged-line", connection.Database);
             Assert.Equal("test-user", connection.Username);
-            Assert.Equal(password ?? string.Empty, connection.Password ?? string.Empty);
+            Assert.Equal(string.IsNullOrEmpty(password) ? null : password, connection.Password);
+            Assert.Equal(!string.IsNullOrEmpty(password), connection.ShouldSerialize("Password"));
             Assert.Equal(tls ? SslMode.Require : SslMode.Prefer, connection.SslMode);
             Assert.DoesNotContain("Trust Server Certificate", actualConnection);
             Assert.Equal(tls && tlsCertConfigured ? tlsCert.Trim() : null, connection.SslCertificate);
@@ -149,7 +152,7 @@ public class PostgresConfigurationLoggingTests
             Assert.Equal(tlsPasswordConfigured, metadata["TlsPasswordConfigured"]?.Value<bool>());
             Assert.Equal(tlsCertConfigured, metadata["TlsCertConfigured"]?.Value<bool>());
             Assert.Equal(tlsKeyConfigured, metadata["TlsKeyConfigured"]?.Value<bool>());
-            Assert.False(metadata["RootCertificateConfigured"]?.Value<bool>());
+            Assert.False(metadata["RootCertificatePathConfigured"]?.Value<bool>());
             Assert.Equal(timeout ?? 300, metadata["CommandTimeout"]?.Value<int>());
             foreach(var separator in new[] { "\n", "\r", "\u0085", "\u2028", "\u2029" })
                 Assert.DoesNotContain(separator, entry);
@@ -180,7 +183,7 @@ public class PostgresConfigurationLoggingTests
             "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;";
         const string goldenDiagnostic = "Using PostgreSQL persistence {\"Port\":5433,\"SslMode\":\"Require\"," +
             "\"TlsNoValidate\":true,\"PasswordConfigured\":true,\"TlsCertConfigured\":true,\"TlsKeyConfigured\":true," +
-            "\"TlsPasswordConfigured\":true,\"RootCertificateConfigured\":false,\"CommandTimeout\":600}";
+            "\"TlsPasswordConfigured\":true,\"RootCertificatePathConfigured\":false,\"CommandTimeout\":600}";
         Assert.True(new NpgsqlConnectionStringBuilder(goldenConnection).EquivalentTo(
             new NpgsqlConnectionStringBuilder(actual.ConnectionString)));
         Assert.Equal(goldenDiagnostic, actual.Diagnostic);

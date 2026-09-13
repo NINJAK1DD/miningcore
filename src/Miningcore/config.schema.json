@@ -688,7 +688,69 @@
             "null"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "not": {
+            "type": "object",
+            "required": [
+              "sslMode",
+              "tls"
+            ],
+            "properties": {
+              "sslMode": {
+                "type": "string"
+              },
+              "tls": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "required": [
+              "sslMode",
+              "tlsNoValidate"
+            ],
+            "properties": {
+              "sslMode": {
+                "type": "string"
+              },
+              "tlsNoValidate": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "required": [
+              "tlsRootCert"
+            ],
+            "properties": {
+              "tlsRootCert": {
+                "type": "string"
+              }
+            },
+            "not": {
+              "required": [
+                "sslMode"
+              ],
+              "properties": {
+                "sslMode": {
+                  "enum": [
+                    "VerifyCA",
+                    "VerifyFull"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "PushoverConfig": {
       "type": [

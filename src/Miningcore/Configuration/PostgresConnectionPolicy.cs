@@ -38,6 +38,35 @@ public sealed class PostgresSslModeConverter : JsonConverter
 
 internal static class PostgresConnectionPolicy
 {
+    internal static void AddSchemaRules(JObject document)
+    {
+        // Structural exclusions also help editor/offline validation. Runtime validation
+        // remains authoritative for case-insensitive binding and environment sources.
+        document["definitions"]["PostgresConfig"]["allOf"] = JArray.Parse("""
+            [
+              { "not": {
+                  "type": "object",
+                  "required": ["sslMode", "tls"],
+                  "properties": { "sslMode": { "type": "string" }, "tls": { "type": "boolean" } }
+              } },
+              { "not": {
+                  "type": "object",
+                  "required": ["sslMode", "tlsNoValidate"],
+                  "properties": { "sslMode": { "type": "string" }, "tlsNoValidate": { "type": "boolean" } }
+              } },
+              { "not": {
+                  "type": "object",
+                  "required": ["tlsRootCert"],
+                  "properties": { "tlsRootCert": { "type": "string" } },
+                  "not": {
+                    "required": ["sslMode"],
+                    "properties": { "sslMode": { "enum": ["VerifyCA", "VerifyFull"] } }
+                  }
+              } }
+            ]
+            """);
+    }
+
     internal static void ValidateSyntax(JObject document)
     {
         if(document.GetValue("persistence", StringComparison.OrdinalIgnoreCase) is not JObject persistence ||
@@ -59,15 +88,36 @@ internal static class PostgresConnectionPolicy
                 _ => true,
             };
             if(!valid)
-                throw Invalid("invalid TLS setting type or sslMode name");
+                // name is one of the fixed switch labels above, never an arbitrary key/value.
+                throw Invalid($"invalid TLS setting '{name}': check its type or sslMode name");
         }
+
+        // Give the same actionable, value-free policy error before schema exclusions fire.
+        // All tokens used here have passed the fixed security-field type checks above.
+        var mode = postgres.GetValue("sslMode", StringComparison.OrdinalIgnoreCase)?.Value<string>();
+        var tls = postgres.GetValue("tls", StringComparison.OrdinalIgnoreCase);
+        var noValidate = postgres.GetValue("tlsNoValidate", StringComparison.OrdinalIgnoreCase);
+        if(mode != null && (tls?.Type == JTokenType.Boolean || noValidate?.Type == JTokenType.Boolean))
+            throw Invalid("sslMode cannot be combined with tls or tlsNoValidate; omit legacy flags");
+        if(postgres.GetValue("tlsRootCert", StringComparison.OrdinalIgnoreCase)?.Type == JTokenType.String &&
+           mode is not ("VerifyCA" or "VerifyFull"))
+            throw Invalid("tlsRootCert requires VerifyCA or VerifyFull");
     }
 
     internal static NpgsqlConnectionStringBuilder Build(PostgresConfig config) =>
         Build(config, Environment.GetEnvironmentVariable("PGSSLROOTCERT"));
 
-    // Resolve the environment once, then pin the effective CA in the connection string.
-    internal static NpgsqlConnectionStringBuilder Build(PostgresConfig config, string environmentRoot)
+    internal static NpgsqlConnectionStringBuilder Build(PostgresConfig config, out PostgresConnectionDiagnostic diagnostic) =>
+        Build(config, Environment.GetEnvironmentVariable("PGSSLROOTCERT"), out diagnostic);
+
+    internal static NpgsqlConnectionStringBuilder Build(PostgresConfig config, string environmentRoot) =>
+        Build(config, environmentRoot, out _);
+
+    internal static void Validate(PostgresConfig config) =>
+        Resolve(config, Environment.GetEnvironmentVariable("PGSSLROOTCERT"));
+
+    private static (SslMode Mode, string Root, string Cert, string Key, string Password) Resolve(
+        PostgresConfig config, string environmentRoot)
     {
         if(config == null)
             throw Invalid("configuration is missing");
@@ -96,14 +146,47 @@ internal static class PostgresConnectionPolicy
         if(root != null && string.IsNullOrWhiteSpace(root))
             throw Invalid("root CA setting must be omitted or a nonempty file path");
 
-        // Preserve legacy trimming of client paths, but never trim passwords or the new CA path.
-        var cert = string.IsNullOrWhiteSpace(config.TlsCert) ? null : config.TlsCert.Trim();
-        var key = string.IsNullOrWhiteSpace(config.TlsKey) ? null : config.TlsKey.Trim();
+        // Empty client paths remain omitted for existing example configurations. Whitespace
+        // alone is a likely mistake and must not silently disable client authentication.
+        var cert = ClientPath(config.TlsCert, "tlsCert");
+        var key = ClientPath(config.TlsKey, "tlsKey");
         var password = string.IsNullOrEmpty(config.TlsPassword) ? null : config.TlsPassword;
         if((cert != null || key != null || password != null) &&
            mode is PostgresSslMode.Disable or PostgresSslMode.Allow or PostgresSslMode.Prefer)
             throw Invalid("client TLS settings require Require, VerifyCA or VerifyFull");
 
+        return (mode switch
+        {
+            PostgresSslMode.Disable => SslMode.Disable,
+            PostgresSslMode.Allow => SslMode.Allow,
+            PostgresSslMode.Prefer => SslMode.Prefer,
+            PostgresSslMode.Require => SslMode.Require,
+            PostgresSslMode.VerifyCA => SslMode.VerifyCA,
+            PostgresSslMode.VerifyFull => SslMode.VerifyFull,
+            _ => throw Invalid("sslMode is unknown"),
+        }, root, cert, key, password);
+    }
+
+    private static string ClientPath(string path, string field)
+    {
+        if(string.IsNullOrEmpty(path))
+            return null;
+        if(string.IsNullOrWhiteSpace(path))
+            throw Invalid(field + " must be omitted, empty or a nonempty file path");
+        return path.Trim();
+    }
+
+    internal static NpgsqlConnectionStringBuilder Build(PostgresConfig config, string environmentRoot,
+        out PostgresConnectionDiagnostic diagnostic)
+    {
+        var settings = Resolve(config, environmentRoot);
+        diagnostic = new(config.Port, settings.Mode, config.TlsNoValidate == true,
+            !string.IsNullOrEmpty(config.Password), settings.Cert != null, settings.Key != null,
+            settings.Password != null, settings.Root != null, config.CommandTimeout ?? 300);
+
+        // Explicit and present environment CA paths are copied as data. If neither exists,
+        // Npgsql resolves environment/default trust sources at each physical open. Paths
+        // do not freeze file contents. See docs/postgres-tls.md for this lifetime contract.
         // Values are data, never connection-string fragments. Do not add validation bypasses.
         return new NpgsqlConnectionStringBuilder
         {
@@ -111,31 +194,38 @@ internal static class PostgresConnectionPolicy
             Port = config.Port,
             Database = config.Database,
             Username = config.User,
-            Password = config.Password ?? string.Empty,
-            SslMode = Enum.Parse<SslMode>(mode.ToString()),
-            RootCertificate = root,
-            SslCertificate = cert,
-            SslKey = key,
-            SslPassword = password,
+            // Npgsql parses the legacy "Password=;" as omitted as well. Preserve its
+            // environment/passfile fallback explicitly instead of emitting an empty key.
+            Password = string.IsNullOrEmpty(config.Password) ? null : config.Password,
+            SslMode = settings.Mode,
+            RootCertificate = settings.Root,
+            SslCertificate = settings.Cert,
+            SslKey = settings.Key,
+            SslPassword = settings.Password,
             CommandTimeout = config.CommandTimeout ?? 300,
         };
     }
 
-    internal static string Diagnostic(PostgresConfig config, NpgsqlConnectionStringBuilder connection) =>
+    internal static string Diagnostic(PostgresConnectionDiagnostic diagnostic) =>
         // Only reviewed numeric, enum and presence fields; no operator-controlled strings.
         JObject.FromObject(new
         {
-            connection.Port,
-            SslMode = connection.SslMode.ToString(),
-            TlsNoValidate = config.TlsNoValidate == true,
-            PasswordConfigured = !string.IsNullOrEmpty(config.Password),
-            TlsCertConfigured = !string.IsNullOrWhiteSpace(config.TlsCert),
-            TlsKeyConfigured = !string.IsNullOrWhiteSpace(config.TlsKey),
-            TlsPasswordConfigured = !string.IsNullOrEmpty(config.TlsPassword),
-            RootCertificateConfigured = !string.IsNullOrEmpty(connection.RootCertificate),
-            connection.CommandTimeout,
+            diagnostic.Port,
+            SslMode = diagnostic.SslMode.ToString(),
+            diagnostic.TlsNoValidate,
+            diagnostic.PasswordConfigured,
+            diagnostic.TlsCertConfigured,
+            diagnostic.TlsKeyConfigured,
+            diagnostic.TlsPasswordConfigured,
+            diagnostic.RootCertificatePathConfigured,
+            diagnostic.CommandTimeout,
         }, JsonSerializer.Create(new JsonSerializerSettings())).ToString(Formatting.None);
 
     private static PoolStartupException Invalid(string reason) =>
         new("PostgreSQL configuration: " + reason);
 }
+
+// The logging boundary accepts no credentials, paths, endpoints or connection builder.
+internal readonly record struct PostgresConnectionDiagnostic(int Port, SslMode SslMode,
+    bool TlsNoValidate, bool PasswordConfigured, bool TlsCertConfigured, bool TlsKeyConfigured,
+    bool TlsPasswordConfigured, bool RootCertificatePathConfigured, int CommandTimeout);

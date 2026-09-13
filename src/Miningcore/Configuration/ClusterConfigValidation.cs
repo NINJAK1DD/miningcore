@@ -374,7 +374,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             {
                 try
                 {
-                    PostgresConnectionPolicy.Build(postgres);
+                    PostgresConnectionPolicy.Validate(postgres);
                 }
                 catch(Miningcore.Mining.PoolStartupException error)
                 {

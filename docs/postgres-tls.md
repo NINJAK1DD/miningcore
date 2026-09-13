@@ -60,17 +60,28 @@ when a physical connection is opened; they also fail closed.
 ## CA and client certificate sources
 
 For `VerifyCA` and `VerifyFull`, a non-null `tlsRootCert` takes precedence over
-`PGSSLROOTCERT`. The effective environment path is resolved when the connection
-factory is constructed and included as data in the connection string. With
-neither configured, Npgsql uses its default PostgreSQL `root.crt` location when
-present (`~/.postgresql/root.crt` on Unix or
-`%APPDATA%/postgresql/root.crt` on Windows), otherwise the operating system trust
-store. Audit the service account's environment and default certificate directory;
-an interactive shell may have different trust sources.
+`PGSSLROOTCERT`. An explicit path, or a non-null environment path present when the
+factory is constructed, is copied into the connection string. Later environment
+changes do not replace a path already copied there.
+
+If neither path exists at construction, the connection string leaves the root
+unset. **At each subsequent physical TLS connection**, Npgsql may read
+`PGSSLROOTCERT` again, then check its default PostgreSQL `root.crt` location
+(`~/.postgresql/root.crt` on Unix or `%APPDATA%/postgresql/root.crt` on Windows),
+then use the operating system trust store. An environment variable set later or
+a default file created later can therefore change the trust source. This is
+intentional driver fallback behavior; the selected verifying mode never weakens.
+
+Copying a path does not freeze its file contents either. Replacing a CA file at
+that path can change which certificates subsequent physical connections accept.
+Protect the service environment, default PostgreSQL trust directory, configured
+CA files and system trust store for the entire process lifetime. An interactive
+shell may have different trust sources. Startup validation checks configuration;
+it does not snapshot trust-store state or reserve a CA file for future opens.
 
 Use a PEM CA certificate file supported by Npgsql 9. An explicit missing,
 unreadable or invalid file does not fall back to the environment or system store.
-An empty/whitespace-only explicit or effective environment CA path is rejected.
+An empty/whitespace-only explicit or construction-time environment CA path is rejected.
 The new `tlsRootCert` path is preserved exactly, including meaningful spaces.
 In non-verifying modes `PGSSLROOTCERT` does not upgrade security; its value is
 ignored, preserving legacy behavior. `PGSSLMODE` does not override the explicit
@@ -80,9 +91,19 @@ effective mode built by Miningcore.
 independent of server authentication. If omitted, Npgsql's existing `PGSSLCERT`,
 `PGSSLKEY` and default client certificate locations still apply. PEM and PFX
 support follows the bundled driver. Legacy client certificate/key paths retain
-their previous surrounding-whitespace trimming; passwords are never trimmed.
+their previous surrounding-whitespace trimming; a nonempty whitespace-only path
+now fails validation. Omitted, null and empty client paths retain driver fallback.
+Passwords are never trimmed.
 Npgsql's default certificate revocation checks remain disabled. This change does
 not add CRL/OCSP controls or promise revocation enforcement.
+
+For database password authentication, a nonempty `password` is literal and takes
+precedence over driver credential sources. Omitted, null or empty passwords use
+Npgsql's `PGPASSWORD`, then `PGPASSFILE` or the default PostgreSQL passfile. This
+preserves the old connection-string parser's handling of `Password=;`; empty
+does not disable fallback. Protect these sources under the service account and
+test them with the server's required authentication method. TLS verification is
+independent of password authentication.
 
 ## Upgrade checklist
 
@@ -93,7 +114,8 @@ not add CRL/OCSP controls or promise revocation enforcement.
 3. Remove `tls` and `tlsNoValidate`; add `sslMode: "VerifyFull"` and, for a private
    CA, `tlsRootCert`. Existing valid legacy configurations retain their mode.
 4. Remove stale client TLS settings previously ignored with `tls: false`. They
-   now fail validation. Do not add connection-string quoting inside JSON values:
+   now fail validation. Correct whitespace-only `tlsCert`/`tlsKey` paths or remove
+   those fields. Do not add connection-string quoting inside JSON values:
    database, user, password and host are passed as literal data. Semicolons,
    equals signs, quotes, and surrounding whitespace cannot inject options.
    Database/user/password/host whitespace is preserved, rather than being
@@ -108,6 +130,11 @@ not add CRL/OCSP controls or promise revocation enforcement.
 
 Startup connection diagnostics contain only port, effective SSL mode, timeout,
 the legacy bypass flag and booleans indicating configured credentials/paths.
+`RootCertificatePathConfigured` means a root path was encoded in Miningcore's
+connection string. False does **not** mean that Npgsql uses no CA file: environment
+and default-file fallback may still apply at physical connection time.
+`PasswordConfigured` likewise describes a nonempty configuration value, not the
+presence of a password obtained from an environment variable or passfile.
 Host/database/user strings, password values and certificate/key paths are omitted.
 Compared with PR #142, raw connection-string equality is deliberately replaced by
 parsed field assertions: Npgsql canonicalizes keyword spelling, order and quoting.
@@ -115,20 +142,45 @@ The logging contract remains an explicit allowlist, now also excluding endpoint
 and user strings and adding only root-certificate presence. Never log the builder
 or its `ConnectionString`.
 
-Connection-open failures also omit the driver's exception graph, which can
-contain certificate paths or server-supplied identity strings. The replacement
-remains an `NpgsqlException` and preserves `IsTransient` for retry decisions;
-cancellation remains cancellation. Use restricted PostgreSQL server logs to
-diagnose authentication failures. SQL execution errors after opening are outside
-this connection-diagnostic boundary.
+## Connection troubleshooting
+
+Connection-open failures include a fixed category in the message and `Category`
+property. They omit the driver's text, type name and exception graph, which can
+contain certificate paths or server-supplied identity strings. Categories come
+from structured exception types and reviewed authentication SQLSTATEs, never
+from parsing error messages. Inspect the service's `persistence.postgres`
+configuration privately to identify its endpoint and credentials.
+
+| Category | Checks under the deployed service account |
+| --- | --- |
+| `Network` | Resolve the configured host; check the configured port, listener, routing and firewall. |
+| `Timeout` | Check reachability, server load, connection limits and timeouts. |
+| `Authentication` | Verify the role, password source and `pg_hba.conf`; restricted server logs can help with database authentication rejection. |
+| `TlsFileAccess` | Verify CA/client-certificate/key file existence, permissions, encoding and key password; correct configuration instead of waiting for retries. This also covers cryptographic material-loading errors. |
+| `TlsHandshake` | Check the trust chain, certificate validity dates, system clock and hostname/SAN match on the client. The provider does not expose reliable typed distinctions among those causes. |
+| `Configuration` | Check supported connection options and their types/ranges. |
+| `Other` | Check SSL mode and whether the server supports TLS, credential availability, and server health; the provider supplied no safely classifiable cause. |
+
+Client-side certificate rejection may appear only as a reset in PostgreSQL logs;
+those logs cannot explain all trust or hostname failures. Verify the deployed CA
+and server certificate privately and retain `VerifyFull` while correcting them.
+No sensitive trace-logging escape hatch is enabled.
+
+The replacement remains an `NpgsqlException` and preserves the original driver's
+`IsTransient` for existing retry policies. That flag is not proof that waiting
+will fix the cause: Npgsql classifies a missing CA file's nested I/O error as
+transient. Cancellation remains cancellation even if failed-open disposal also
+fails. Cleanup errors cannot escape this diagnostic boundary. SQL execution
+errors after opening remain outside this connection-diagnostic boundary.
 
 ## Reproducible real TLS tests
 
 The documented Windows/Ubuntu WSL test lab has PostgreSQL 17 on Windows. These
 tests use its binaries to create a separate ephemeral cluster, synthetic CAs and
 server certificates, a random loopback port, and no mining/payout data. Existing
-lab databases and services are not modified. The test cluster uses local trust
-authentication solely to isolate TLS behavior; run it on a trusted test machine.
+lab databases and services are not modified. The test cluster normally uses local
+trust authentication to isolate TLS behavior; dedicated password tests switch only
+that cluster to SCRAM-SHA-256. Run it on a trusted test machine.
 
 ```powershell
 dotnet build src/Miningcore.Tests/Miningcore.Tests.csproj --no-restore -p:BuildOdoCryptWindows=false
@@ -143,29 +195,21 @@ opt-in the live test is marked skipped. Every matrix entry opens a fresh physica
 connection with pooling disabled and verifies either `pg_stat_ssl` or the expected
 TLS failure category. Cases cover trusted/untrusted CA, expiration, hostname
 mismatch, `VerifyCA` versus `VerifyFull`, missing/invalid CA files, environment CA
-precedence and unavailable TLS. The test stops and removes its own temporary cluster.
+precedence, changes after factory construction, file-content replacement and
+unavailable TLS. Separately reported theory cases share an isolated class fixture;
+each case explicitly selects its certificate mode. Other tests cover SCRAM
+password sources, safe error categories, cancellation and an occupied-port retry.
+Port selection occurs immediately before startup and retries at most three times
+only when the port is occupied and the temporary server has exited.
+The test stops and removes its own temporary cluster.
+
+CI pins the TLS server major to PostgreSQL 18 on Ubuntu 26.04 and selects its
+binary directory explicitly; distribution security patch updates remain enabled.
+Set `MININGCORE_TEST_POSTGRES_BIN` to another installed major for compatibility
+testing. Process-global environment changes run in an xUnit collection with
+`DisableParallelization = true`; the pinned xUnit 2.4.2 runner executes those
+collections one at a time after all parallel-capable collections finish.
 
 References: [Npgsql TLS documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls),
 [Npgsql 9.0.3 TLS implementation](https://github.com/npgsql/npgsql/blob/v9.0.3/src/Npgsql/Internal/NpgsqlConnector.cs),
 and [Npgsql connection parameters](https://www.npgsql.org/doc/connection-string-parameters.html).
-
-### Verification record: 2026-09-13
-
-The documented Windows lab's PostgreSQL 17.10 binaries and bundled Npgsql 9.0.3
-passed the 20-case physical-connection matrix, plus factory opening, safe error
-and cancellation checks. The selected configuration, recovery, pool-template,
-diagnostic and TLS suite passed 551 tests; one Linux-only socket-binding test was
-skipped on Windows. The managed build completed with zero warnings/errors.
-Results were saved to `src/Miningcore.Tests/TestResults/issue146-final.trx`.
-The primary CI job now installs PostgreSQL binaries and opts into the isolated
-TLS fixture; that Linux CI run is not represented as executed by this local record.
-
-PR preparation replayed the change on `dev` at `81603aa`, including the merged
-PR #142 logging contracts and current diagnostic projection. The updated
-configuration suite passed 781 tests with one Linux-only socket-binding test
-skipped; the real PostgreSQL TLS matrix passed in that checkout as well.
-The reviewed diagnostic fixture adds only `sslMode` and CA-path presence.
-The clean managed test build used `BuildOdoCryptWindows=false` and
-`DisableGitVersionTask=true` because the PR checkout was shallow; neither is a
-production publishing setting. Results are in `issue146-pr-configuration.trx`
-and `issue146-pr.trx` under the test project's `TestResults` directory.

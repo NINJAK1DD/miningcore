@@ -10,6 +10,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Postgres;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Schema;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
@@ -18,6 +19,9 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
+// xUnit 2.4.2 awaits every parallel collection, then runs disabled collections one
+// at a time (XunitTestAssemblyRunner.RunTestCollectionsAsync). This isolates all
+// process-wide state here from the logging collections as well as ordinary tests.
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class PostgresPolicyCollection
 {
@@ -136,6 +140,104 @@ public class PostgresConnectionPolicyTests
         config.TlsRootCert = null;
         Assert.Null(PostgresConnectionPolicy.Build(config, null).RootCertificate);
         Assert.Throws<PoolStartupException>(() => PostgresConnectionPolicy.Build(config, " "));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("secret;literal password")]
+    public void PasswordSourcesPreserveAbsentEmptyAndExplicitValues(string password)
+    {
+        var config = Config();
+        config.Password = password;
+        var builder = new NpgsqlConnectionStringBuilder(PostgresConnectionPolicy.Build(config, null).ConnectionString);
+        if(string.IsNullOrEmpty(password))
+        {
+            Assert.Null(builder.Password);
+            Assert.False(builder.ShouldSerialize("Password"));
+            Assert.Null(new NpgsqlConnectionStringBuilder("Host=localhost;Password=;").Password);
+        }
+        else
+        {
+            Assert.Equal(password, builder.Password);
+            Assert.True(builder.ShouldSerialize("Password"));
+        }
+    }
+
+    [Theory]
+    [InlineData("tlsCert")]
+    [InlineData("tlsKey")]
+    public void WhitespaceClientPathsFailBeforeNormalAndRecoveryStartup(string field)
+    {
+        foreach(var mode in Enum.GetValues<PostgresSslMode>())
+        foreach(var recovery in new[] { false, true })
+        {
+            var postgres = Config();
+            postgres.SslMode = mode;
+            if(field == "tlsCert") postgres.TlsCert = " \t\r\n";
+            else postgres.TlsKey = " \t\r\n";
+            var cluster = new ClusterConfig { Persistence = new() { Postgres = postgres }, Pools = Array.Empty<PoolConfig>() };
+            var result = new ClusterConfigValidator(recovery).Validate(cluster);
+            Assert.Contains(result.Errors, x => x.PropertyName == "Persistence.Postgres" && x.ErrorMessage.Contains(field));
+        }
+    }
+
+    [Theory]
+    [InlineData("sslMode")]
+    [InlineData("tls")]
+    [InlineData("tlsNoValidate")]
+    [InlineData("tlsCert")]
+    [InlineData("tlsKey")]
+    [InlineData("tlsPassword")]
+    [InlineData("tlsRootCert")]
+    public void InvalidSecurityFieldsNameOnlyTheReviewedKey(string field)
+    {
+        var document = new JObject { ["persistence"] = new JObject { ["postgres"] =
+            new JObject { [field.ToUpperInvariant()] = new JObject { ["SECRET"] = "SECRET" } } } };
+        var error = Assert.Throws<PoolStartupException>(() => PostgresConnectionPolicy.ValidateSyntax(document));
+        Assert.Contains("'" + field.ToLowerInvariant() + "'", error.Message);
+        Assert.DoesNotContain("SECRET", error.ToString());
+    }
+
+    [Fact]
+    public void DiagnosticBoundaryContainsOnlyReviewedValueTypes()
+    {
+        Assert.All(typeof(PostgresConnectionDiagnostic).GetProperties(), property =>
+            Assert.Contains(property.PropertyType, new[] { typeof(bool), typeof(int), typeof(SslMode) }));
+        var config = Config();
+        config.SslMode = PostgresSslMode.VerifyFull;
+        PostgresConnectionPolicy.Build(config, null, out var fallback);
+        Assert.False(fallback.RootCertificatePathConfigured);
+        PostgresConnectionPolicy.Build(config, "SECRET_ROOT", out var copied);
+        Assert.True(copied.RootCertificatePathConfigured);
+        Assert.DoesNotContain("SECRET", PostgresConnectionPolicy.Diagnostic(copied));
+    }
+
+    [Fact]
+    public void SchemaRejectsExplicitLegacyMixesAndNonVerifyingRoots()
+    {
+        var schema = JSchema.Parse(Program.GenerateJsonConfigSchemaDocument()["definitions"]["PostgresConfig"].ToString());
+        Assert.True(JValue.CreateNull().IsValid(schema));
+        Assert.True(new JObject().IsValid(schema));
+        foreach(var mode in Enum.GetNames<PostgresSslMode>())
+        {
+            var document = new JObject { ["sslMode"] = mode };
+            Assert.True(document.IsValid(schema));
+            foreach(var field in new[] { "tls", "tlsNoValidate" })
+            {
+                document[field] = false;
+                Assert.False(document.IsValid(schema));
+                document[field] = true;
+                Assert.False(document.IsValid(schema));
+                document[field] = null;
+                Assert.True(document.IsValid(schema));
+                document.Remove(field);
+            }
+            document["tlsRootCert"] = "SECRET";
+            Assert.Equal(mode is "VerifyCA" or "VerifyFull", document.IsValid(schema));
+        }
+        Assert.True(new JObject { ["tls"] = true, ["tlsRootCert"] = null }.IsValid(schema));
+        Assert.False(new JObject { ["tlsRootCert"] = "SECRET" }.IsValid(schema));
     }
 
     [Theory]
@@ -261,7 +363,7 @@ public class PostgresConnectionPolicyTests
     [InlineData("cert", "TlsCertConfigured")]
     [InlineData("key", "TlsKeyConfigured")]
     [InlineData("tlsPassword", "TlsPasswordConfigured")]
-    [InlineData("root", "RootCertificateConfigured")]
+    [InlineData("root", "RootCertificatePathConfigured")]
     public void DiagnosticPresenceFlagsAreIndependent(string setting, string expected)
     {
         var config = Config();
@@ -274,7 +376,8 @@ public class PostgresConnectionPolicyTests
             case "tlsPassword": config.TlsPassword = "SECRET"; break;
             case "root": config.TlsRootCert = "SECRET"; break;
         }
-        var diagnostic = PostgresConnectionPolicy.Diagnostic(config, PostgresConnectionPolicy.Build(config, null));
+        PostgresConnectionPolicy.Build(config, null, out var snapshot);
+        var diagnostic = PostgresConnectionPolicy.Diagnostic(snapshot);
         var metadata = JObject.Parse(diagnostic);
         Assert.Equal(new[] { expected }, metadata.Properties()
             .Where(p => p.Name.EndsWith("Configured") && p.Value.Value<bool>()).Select(p => p.Name));
@@ -316,7 +419,7 @@ public class PostgresConnectionPolicyTests
             Assert.Equal("Using PostgreSQL persistence {\"Port\":5432,\"SslMode\":\"VerifyFull\"," +
                 "\"TlsNoValidate\":false,\"PasswordConfigured\":true,\"TlsCertConfigured\":true," +
                 "\"TlsKeyConfigured\":true,\"TlsPasswordConfigured\":true," +
-                "\"RootCertificateConfigured\":true,\"CommandTimeout\":300}|", output);
+                "\"RootCertificatePathConfigured\":true,\"CommandTimeout\":300}|", output);
             Assert.DoesNotContain("SECRET", output);
             Assert.DoesNotContain("\n", output);
         }

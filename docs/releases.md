@@ -93,7 +93,8 @@ strings become null/`[blank]`/`[set]`, logging level uses a closed vocabulary, A
 categories, and reviewed string arrays become counts. Actual credentials, paths, addresses,
 extension names/payloads and arbitrary strings never appear. `[blank]` distinguishes empty or
 whitespace-only input from nonblank `[set]`; markers do not assert runtime effectiveness. For
-example, PostgreSQL ignores blank certificate paths but can consume whitespace passwords. They
+example, PostgreSQL ignores empty client certificate paths, rejects whitespace-only paths,
+and can consume whitespace passwords. They
 do not prove a value is usable, a file exists, or credentials work. Listener categories likewise
 distinguish absent/blank input without claiming what startup will bind. Closed-output failures
 report `output-unavailable`, not an unreadable configuration file.
@@ -302,9 +303,18 @@ Legacy `tls: true` retains encryption-only `Require`; false/omitted retains
 opportunistic `Prefer`. `tlsNoValidate: false` does not authenticate the server.
 Remove both legacy flags before setting an explicit mode. Conflicting settings
 and previously ignored nonempty client TLS settings now fail startup validation.
+**Remove stale client TLS settings when TLS is disabled, and remove
+`tlsNoValidate: true` unless legacy `tls: true` is also set.** Whitespace-only
+`tlsCert`/`tlsKey` paths now fail validation instead of being silently ignored.
 Connection values are passed through `NpgsqlConnectionStringBuilder`, preserving
 literal credentials instead of interpreting them as options. Startup diagnostics
-use a fixed allowlist without credentials or certificate paths. Review the
+use a fixed allowlist without credentials or certificate paths. The root presence
+field is `RootCertificatePathConfigured`: it describes a path encoded in the
+connection string, not all driver fallback sources. Connection errors include
+safe failure categories; failed cleanup cannot leak provider errors or replace
+cancellation. Omitted/empty passwords retain environment/passfile fallback.
+CA paths do not freeze file contents, and an unset root permits Npgsql to consult
+environment/default trust sources at later physical opens. Review the
 [migration and trust-source rules](postgres-tls.md) before upgrading.
 
 ## Unreleased: PostgreSQL credential-safe diagnostics

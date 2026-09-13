@@ -1411,8 +1411,9 @@ public class Program : ProcessStatusBackgroundService
             }
         };
 
-        return JObject.Parse(generator.Generate(typeof(ClusterConfig))
-            .ToString());
+        var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
+        PostgresConnectionPolicy.AddSchemaRules(document);
+        return document;
     }
 
     private static CommandLineApplication ParseCommandLine(string[] args,
@@ -2689,9 +2690,9 @@ public class Program : ProcessStatusBackgroundService
 
     private static void ConfigurePostgres(PostgresConfig pgConfig, ContainerBuilder builder)
     {
-        var connectionString = PostgresConnectionPolicy.Build(pgConfig);
+        var connectionString = PostgresConnectionPolicy.Build(pgConfig, out var diagnostic);
         logger.Debug(() => "Using PostgreSQL persistence " +
-            PostgresConnectionPolicy.Diagnostic(pgConfig, connectionString));
+            PostgresConnectionPolicy.Diagnostic(diagnostic));
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))
