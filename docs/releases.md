@@ -49,6 +49,23 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: bounded PostgreSQL command timeout
+
+[#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines
+`persistence.postgres.commandTimeout` as an integer from **1 to 86,400 seconds**.
+Omitted/null retains the **300-second** default. Explicit **zero**, formerly
+unlimited in Npgsql, now fails startup with a named diagnostic; it is never
+silently replaced. Negative, oversized and malformed values also fail normal and
+`-rs` recovery startup, with matching schema bounds.
+
+Before upgrading, replace zero with a reviewed finite duration or omit the field
+to use 300 seconds. Positive settings through 86,400 are unchanged; larger values
+must be reduced. The main and TLS examples now show the default explicitly.
+Connection and cancellation timeouts retain their driver defaults. Review
+[the policy, maintenance guidance and live financial rollback/recovery checks](postgres-command-timeout.md)
+before changing a timeout. It is not a deadline for an entire transaction, and a
+timeout does not establish the outcome of an in-flight COMMIT or wallet payment.
+
 ## Unreleased: credential-safe Stratum diagnostics
 
 [#157](https://github.com/NINJAK1DD/miningcore/issues/157) closes the unbounded

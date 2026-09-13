@@ -41,7 +41,7 @@ public class PostgresConfigurationLoggingTests
         {
             yield return new object[] { tls, noValidate, null, null, null, null,
                 null, false, false, false, false };
-            // Zero preserves the existing unlimited-timeout setting; this test does not endorse it.
+            // Issue #147 rejects zero before logging or registering a connection factory.
             yield return new object[] { tls, noValidate, "", "", "", "",
                 0, false, false, false, false };
             yield return new object[] { tls, noValidate, " \t ", " \t ", " \t ", " \t ",
@@ -102,7 +102,7 @@ public class PostgresConfigurationLoggingTests
             });
             // Issue #146 deliberately rejects options which the former raw-string
             // contract silently ignored. Rejected settings must not reach logging or DI.
-            if((tlsCert?.Length > 0 && string.IsNullOrWhiteSpace(tlsCert)) ||
+            if(timeout == 0 || (tlsCert?.Length > 0 && string.IsNullOrWhiteSpace(tlsCert)) ||
                (tlsKey?.Length > 0 && string.IsNullOrWhiteSpace(tlsKey)) ||
                (!tls && (noValidate || tlsPasswordConfigured || tlsCertConfigured || tlsKeyConfigured)))
             {

@@ -38,6 +38,18 @@ public sealed class PostgresSslModeConverter : JsonConverter
 
 internal static class PostgresConnectionPolicy
 {
+    internal const int DefaultCommandTimeoutSeconds = 300;
+    internal const int MaximumCommandTimeoutSeconds = 86400;
+    private const string CommandTimeoutError =
+        "persistence.postgres.commandTimeout must be an integer from 1 to 86400 seconds, or omitted/null for 300 seconds; zero (unlimited) is not supported";
+
+    internal static int ResolveCommandTimeout(int? value)
+    {
+        if(value is < 1 or > MaximumCommandTimeoutSeconds)
+            throw Invalid(CommandTimeoutError);
+        return value ?? DefaultCommandTimeoutSeconds;
+    }
+
     private static readonly PostgresSslMode[] VerifyingModes =
         [PostgresSslMode.VerifyCA, PostgresSslMode.VerifyFull];
 
@@ -96,6 +108,16 @@ internal static class PostgresConnectionPolicy
             var token = property.Value;
             if(token.Type == JTokenType.Null)
                 continue;
+            // Check before binding/schema diagnostics: reject coercion, overflow and
+            // malformed values without echoing configuration data in startup errors.
+            if(name == "commandtimeout")
+            {
+                if(token.Type != JTokenType.Integer ||
+                   !System.Numerics.BigInteger.TryParse(token.ToString(Formatting.None), out var seconds) ||
+                   seconds < 1 || seconds > MaximumCommandTimeoutSeconds)
+                    throw Invalid(CommandTimeoutError);
+                continue;
+            }
             var valid = name switch
             {
                 "sslmode" => token.Type == JTokenType.String &&
@@ -146,8 +168,7 @@ internal static class PostgresConnectionPolicy
             throw Invalid("database is missing");
         if(string.IsNullOrWhiteSpace(config.User))
             throw Invalid("user is missing");
-        if(config.CommandTimeout < 0)
-            throw Invalid("commandTimeout must be nonnegative");
+        ResolveCommandTimeout(config.CommandTimeout);
         if(config.SslMode.HasValue && !Enum.IsDefined(config.SslMode.Value))
             throw Invalid("sslMode is unknown");
         if(config.SslMode.HasValue && (config.Tls.HasValue || config.TlsNoValidate.HasValue))
@@ -199,9 +220,10 @@ internal static class PostgresConnectionPolicy
         out PostgresConnectionDiagnostic diagnostic)
     {
         var settings = Resolve(config, environmentRoot);
+        var commandTimeout = ResolveCommandTimeout(config.CommandTimeout);
         diagnostic = new(config.Port, settings.Mode, config.TlsNoValidate == true,
             !string.IsNullOrEmpty(config.Password), settings.Cert != null, settings.Key != null,
-            settings.Password != null, settings.Root != null, config.CommandTimeout ?? 300);
+            settings.Password != null, settings.Root != null, commandTimeout);
 
         // Explicit and present environment CA paths are copied as data. If neither exists,
         // Npgsql resolves environment/default trust sources at each physical open. Paths
@@ -221,7 +243,7 @@ internal static class PostgresConnectionPolicy
             SslCertificate = settings.Cert,
             SslKey = settings.Key,
             SslPassword = settings.Password,
-            CommandTimeout = config.CommandTimeout ?? 300,
+            CommandTimeout = commandTimeout,
         };
     }
 

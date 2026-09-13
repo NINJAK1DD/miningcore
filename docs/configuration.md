@@ -26,6 +26,7 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
 | Authenticate a remote PostgreSQL server | [PostgreSQL TLS and migration](postgres-tls.md) |
+| Configure database command limits or migrate an unlimited timeout | [PostgreSQL command timeout](postgres-command-timeout.md) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
 | Configure default non-custodial Bitcoin SOLO | [Bitcoin direct-coinbase SOLO](#bitcoin-direct-coinbase-solo) |
 | Enable direct Bitcoin-family PPS | [Bitcoin-family PPS](#bitcoin-family-pps) |
@@ -197,6 +198,13 @@ and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help
 
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
 secrets. Restrict the file to the service account.
+
+`persistence.postgres.commandTimeout` accepts whole seconds from **1 to 86,400**;
+omitted/null uses **300 seconds**. Explicit **zero (unlimited) is rejected**, as are
+negative and oversized values, in normal and `-rs` recovery startup. This is a
+command timeout, not a connection/cancellation timeout or an entire-transaction
+deadline. Review [the timeout policy and migration guidance](postgres-command-timeout.md)
+before changing it for maintenance, payouts or recovery.
 
 Distributed sender/receiver roles have additional durability, security and database requirements.
 Start with the maintained [relay example pair](../examples/README.md#distributed-recorder-layout),

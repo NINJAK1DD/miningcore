@@ -13,7 +13,7 @@ does not prove that the peer is your database server. These settings apply to
   "password": "CHANGE_ME_POSTGRES_PASSWORD",
   "sslMode": "VerifyFull",
   "tlsRootCert": "/etc/miningcore/postgres-root-ca.crt",
-  "commandTimeout": 60
+  "commandTimeout": 300
 }
 ```
 
