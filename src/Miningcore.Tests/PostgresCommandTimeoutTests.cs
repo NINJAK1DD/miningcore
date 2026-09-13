@@ -100,6 +100,17 @@ public class PostgresCommandTimeoutTests
         Assert.DoesNotContain("forged", error.ToString());
     }
 
+    [Theory]
+    [InlineData("1e2")]
+    [InlineData("300.0")]
+    public void IntegralFloatSpellingsAreIntentionallyRejectedBeforeBinding(string json)
+    {
+        var postgres = PostgresDocument(json);
+        Assert.Equal(JTokenType.Float, postgres["commandTimeout"].Type);
+        foreach(var recovery in new[] { false, true })
+            AssertNamedError(Assert.Throws<PoolStartupException>(() => Read(postgres, recovery)));
+    }
+
     private static JSchema Schema() => PostgresSchema.Value;
 
     private static JObject PostgresDocument(string json)

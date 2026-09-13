@@ -1101,6 +1101,8 @@ public class PostgresConfig : DatabaseConfig
     /// Command execution timeout in seconds. Omitted/null uses 300; zero is rejected.
     /// This is not a connection timeout or a deadline for an entire transaction.
     /// </summary>
+    // Schema-generation metadata only; runtime validation uses PostgresConnectionPolicy
+    // through FluentValidation and the raw-JSON startup boundary.
     [Range(1, PostgresConnectionPolicy.MaximumCommandTimeoutSeconds)]
     [Description("Command timeout in seconds: 1-86400; omitted/null uses 300. Zero (unlimited) is rejected.")]
     public int? CommandTimeout { get; set; }

@@ -418,6 +418,28 @@ public class ConfigurationDiagnosticTests
         Assert.DoesNotContain("Exception", result.Error);
     }
 
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("86401")]
+    [InlineData("2147483648")]
+    [InlineData("300.0")]
+    [InlineData("1e2")]
+    [InlineData("\"SECRET\\r\\nforged\"")]
+    public async Task PublicDump_RejectsInvalidCommandTimeoutBeforeStartingServices(string timeout)
+    {
+        var document = Fixture();
+        document["persistence"]["postgres"]["commandTimeout"] = JToken.Parse(timeout);
+        var result = await RunDump(document.ToString(), "--dumpconfig");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.Output);
+        Assert.Empty(result.Logs);
+        Assert.Equal(FailureMessage("invalid-configuration"), result.Error);
+        Assert.DoesNotContain(Secret, result.Error);
+        Assert.DoesNotContain("SECRET", result.Error);
+        Assert.DoesNotContain("forged", result.Error);
+    }
+
     [Fact]
     public void Projection_DoesNotMutateRuntimeConfigurationOrSerialization()
     {

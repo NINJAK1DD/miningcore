@@ -112,9 +112,11 @@ internal static class PostgresConnectionPolicy
             // malformed values without echoing configuration data in startup errors.
             if(name == "commandtimeout")
             {
+                // Compare the already-parsed integer, including overflow-sized BigInteger
+                // values, without reparsing text or consulting serializer converters.
                 if(token.Type != JTokenType.Integer ||
-                   !System.Numerics.BigInteger.TryParse(token.ToString(Formatting.None), out var seconds) ||
-                   seconds < 1 || seconds > MaximumCommandTimeoutSeconds)
+                   ((JValue) token).CompareTo(new JValue(1)) < 0 ||
+                   ((JValue) token).CompareTo(new JValue(MaximumCommandTimeoutSeconds)) > 0)
                     throw Invalid(CommandTimeoutError);
                 continue;
             }
@@ -155,7 +157,7 @@ internal static class PostgresConnectionPolicy
     internal static void Validate(PostgresConfig config) =>
         Resolve(config, Environment.GetEnvironmentVariable("PGSSLROOTCERT"));
 
-    private static (SslMode Mode, string Root, string Cert, string Key, string Password) Resolve(
+    private static (SslMode Mode, string Root, string Cert, string Key, string Password, int CommandTimeout) Resolve(
         PostgresConfig config, string environmentRoot)
     {
         if(config == null)
@@ -168,7 +170,7 @@ internal static class PostgresConnectionPolicy
             throw Invalid("database is missing");
         if(string.IsNullOrWhiteSpace(config.User))
             throw Invalid("user is missing");
-        ResolveCommandTimeout(config.CommandTimeout);
+        var commandTimeout = ResolveCommandTimeout(config.CommandTimeout);
         if(config.SslMode.HasValue && !Enum.IsDefined(config.SslMode.Value))
             throw Invalid("sslMode is unknown");
         if(config.SslMode.HasValue && (config.Tls.HasValue || config.TlsNoValidate.HasValue))
@@ -193,7 +195,7 @@ internal static class PostgresConnectionPolicy
            mode is PostgresSslMode.Disable or PostgresSslMode.Allow or PostgresSslMode.Prefer)
             throw Invalid("client TLS settings require Require, VerifyCA or VerifyFull");
 
-        return (ToDriverMode(mode), root, cert, key, password);
+        return (ToDriverMode(mode), root, cert, key, password, commandTimeout);
     }
 
     private static SslMode ToDriverMode(PostgresSslMode mode) => mode switch
@@ -220,10 +222,9 @@ internal static class PostgresConnectionPolicy
         out PostgresConnectionDiagnostic diagnostic)
     {
         var settings = Resolve(config, environmentRoot);
-        var commandTimeout = ResolveCommandTimeout(config.CommandTimeout);
         diagnostic = new(config.Port, settings.Mode, config.TlsNoValidate == true,
             !string.IsNullOrEmpty(config.Password), settings.Cert != null, settings.Key != null,
-            settings.Password != null, settings.Root != null, commandTimeout);
+            settings.Password != null, settings.Root != null, settings.CommandTimeout);
 
         // Explicit and present environment CA paths are copied as data. If neither exists,
         // Npgsql resolves environment/default trust sources at each physical open. Paths
@@ -243,7 +244,7 @@ internal static class PostgresConnectionPolicy
             SslCertificate = settings.Cert,
             SslKey = settings.Key,
             SslPassword = settings.Password,
-            CommandTimeout = commandTimeout,
+            CommandTimeout = settings.CommandTimeout,
         };
     }
 

@@ -16,6 +16,18 @@ namespace Miningcore.Tests;
 public class NonParallelCollectionTests
 {
     [Fact]
+    public void PostgresPolicy_UsesOneCollectionServerForBothLiveTestClasses()
+    {
+        Assert.Contains(typeof(ICollectionFixture<IsolatedPostgresServer>),
+            typeof(PostgresPolicyCollection).GetInterfaces());
+        foreach(var testClass in new[] { typeof(PostgresTlsIntegrationTests), typeof(PostgresCommandTimeoutIntegrationTests) })
+        {
+            Assert.DoesNotContain(typeof(IClassFixture<IsolatedPostgresServer>), testClass.GetInterfaces());
+            Assert.Same(typeof(PostgresPolicyCollection), CollectionAssertions.NonParallelDefinition(testClass));
+        }
+    }
+
+    [Fact]
     public void NonParallelDefinitions_HaveExactlyTheReviewedInventory()
     {
         var expected = ReviewedCollections().Select(row => (Type) row[0])

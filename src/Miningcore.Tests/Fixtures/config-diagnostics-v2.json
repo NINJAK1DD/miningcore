@@ -73,7 +73,7 @@
     },
     "persistence": {
       "postgres": {
-        "commandTimeout": 300,
+        "commandTimeout": 60,
         "database": "[set]",
         "enableLegacyTimestamps": null,
         "host": "[set]",

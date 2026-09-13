@@ -200,7 +200,8 @@ Do not store a production configuration in Git. It contains database, daemon, ma
 secrets. Restrict the file to the service account.
 
 `persistence.postgres.commandTimeout` accepts whole seconds from **1 to 86,400**;
-omitted/null uses **300 seconds**. Explicit **zero (unlimited) is rejected**, as are
+omitted/null uses **300 seconds**, while the shipped example explicitly uses
+**60 seconds**. Explicit **zero (unlimited) is rejected**, as are
 negative and oversized values, in normal and `-rs` recovery startup. This is a
 command timeout, not a connection/cancellation timeout or an entire-transaction
 deadline. Review [the timeout policy and migration guidance](postgres-command-timeout.md)

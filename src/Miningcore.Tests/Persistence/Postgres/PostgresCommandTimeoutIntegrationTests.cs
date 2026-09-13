@@ -1,6 +1,7 @@
 using System;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
@@ -33,12 +34,20 @@ public sealed class PostgresTimeoutTheoryAttribute : TheoryAttribute
     }
 }
 
+public sealed class PostgresTimeoutFactAttribute : FactAttribute
+{
+    public PostgresTimeoutFactAttribute()
+    {
+        if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
+            Skip = "Set MININGCORE_TEST_POSTGRES_BIN to run isolated PostgreSQL timeout/rollback tests";
+    }
+}
+
 // Reuse the isolated, loopback-only server lifecycle (also installed by CI).
-// Each class fixture owns its server; each test owns its schema and connection pool.
+// The collection owns one server; each test owns its schema and connection pool.
 [Collection(PostgresPolicyCollection.Name)]
 public class PostgresCommandTimeoutIntegrationTests(
-    PostgresTlsIntegrationTests.TlsServer server, ITestOutputHelper output)
-    : IClassFixture<PostgresTlsIntegrationTests.TlsServer>
+    IsolatedPostgresServer server, ITestOutputHelper output)
 {
     [PostgresTimeoutTheory]
     [InlineData(false)]
@@ -153,11 +162,11 @@ public class PostgresCommandTimeoutIntegrationTests(
             } });
             var original = await File.ReadAllBytesAsync(filename);
             await db.DelayWrites("shares", "INSERT");
-            await Interrupt(db, false, _ => recorder.RecoverSharesAsync(filename));
             // Npgsql 9 COPY completion disables the separate PostgreSQL cancellation
             // request and breaks the connection on timeout. PostgreSQL can finish the
-            // current work before observing that disconnect. No COMMIT was sent.
-            await db.WaitForRollback();
+            // current work before observing that disconnect. Interrupt waits for the
+            // server transaction to end before inspecting rollback. No COMMIT was sent.
+            await Interrupt(db, false, _ => recorder.RecoverSharesAsync(filename));
             Assert.Equal(original, await File.ReadAllBytesAsync(filename));
             Assert.True(File.Exists(recorder.RecoveryImportStateFilename));
             Assert.True(File.Exists(recorder.RecoveryTerminalStateFilename));
@@ -190,20 +199,21 @@ public class PostgresCommandTimeoutIntegrationTests(
         }
     }
 
-    [PostgresTimeoutTheory]
-    [InlineData(1)]
-    public async Task PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit(int timeout)
+    [PostgresTimeoutFact]
+    public async Task PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit()
     {
-        await using var db = await Database.Create(server, timeout);
+        await using var db = await Database.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var balances = new BalanceRepository(mapper);
         await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, "ltc", "miner", 12.5m, "seed"));
         await db.DelayWrites("balances", "UPDATE");
         var retries = 0;
-        var handler = new PersistenceHandler(db.Factory, mapper, () =>
+        var handler = new PersistenceHandler(db.Factory, mapper, error =>
         {
             retries++;
-            // The actual handler's retry hook runs only after RunTx has released its transaction.
+            Assert.IsType<NpgsqlException>(error);
+            // A broken client connection need not mean the server has released locks yet.
+            db.WaitForTransactionEndAsync().GetAwaiter().GetResult();
             Assert.Equal(12.5m, db.Observer.ExecuteScalar<decimal>("SELECT amount FROM balances"));
             Assert.Equal(0, db.Observer.ExecuteScalar<int>("SELECT count(*) FROM payments"));
             Assert.Equal(0, db.Observer.ExecuteScalar<int>("SELECT count(*) FROM payment_batches"));
@@ -211,7 +221,7 @@ public class PostgresCommandTimeoutIntegrationTests(
             db.Observer.Execute("DROP TRIGGER delay_write ON balances");
         });
         var payment = new[] { new Balance { PoolId = "ltc", Address = "miner", Amount = 12.5m } };
-        await handler.Persist(payment).WaitAsync(TimeSpan.FromSeconds(20));
+        await handler.Persist(payment).WaitAsync(TimeSpan.FromSeconds(40));
         await handler.Persist(payment);
         Assert.Equal(1, retries);
         Assert.Equal(0m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
@@ -234,16 +244,17 @@ public class PostgresCommandTimeoutIntegrationTests(
             var driverError = Assert.IsType<NpgsqlException>(error);
             Assert.IsType<TimeoutException>(driverError.InnerException);
         }
+        // Observe server completion before callers inspect durable state or issue DDL.
+        await db.WaitForTransactionEndAsync();
         output.WriteLine($"PostgreSQL {await db.Observer.ExecuteScalarAsync<string>("SHOW server_version")}; " +
             $"Npgsql {typeof(NpgsqlConnection).Assembly.GetName().Version}; " +
             $"{(cancel ? "caller cancellation" : "command timeout")}: {error.GetType().Name}");
     }
 
-    [PostgresTimeoutTheory]
-    [InlineData(1)]
-    public async Task CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation(int timeout)
+    [PostgresTimeoutFact]
+    public async Task CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation()
     {
-        await using var db = await Database.Create(server, timeout);
+        await using var db = await Database.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var payments = new PaymentRepository(mapper);
         var balances = new BalanceRepository(mapper);
@@ -264,7 +275,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         var error = await Assert.ThrowsAsync<TransactionCommitOutcomeUncertainException>(
             () => Persist().WaitAsync(TimeSpan.FromSeconds(20)));
         Assert.IsType<TimeoutException>(Assert.IsType<NpgsqlException>(error.InnerException).InnerException);
-        await db.WaitForRollback();
+        await db.WaitForTransactionEndAsync();
         // Reconcile durable evidence; the client exception alone cannot select the outcome.
         var committed = await db.Count("payment_batches");
         Assert.InRange(committed, 0, 1);
@@ -281,18 +292,78 @@ public class PostgresCommandTimeoutIntegrationTests(
         output.WriteLine($"COMMIT timeout remained uncertain; database reconciliation found {committed} committed batch(es).");
     }
 
-    private sealed class PersistenceHandler(IConnectionFactory factory, IMapper mapper, Action retry)
+    [PostgresTimeoutTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PayoutHandlerCommitTimeoutReconcilesWithoutAnotherWalletSubmission(bool perRecipient)
+    {
+        await using var db = await Database.Create(server, 1);
+        var mapper = AutoMapperFactory.CreateMapper();
+        var balances = new BalanceRepository(mapper);
+        await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, "ltc", "miner", 12.5m, "seed"));
+        await db.Observer.ExecuteAsync("""
+            CREATE FUNCTION delay_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN PERFORM pg_sleep(15); RETURN NEW; END $$;
+            CREATE CONSTRAINT TRIGGER delay_commit AFTER INSERT ON payment_batches
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION delay_commit();
+            """);
+        var retries = 0;
+        var submissions = 0;
+        var handler = new PersistenceHandler(db.Factory, mapper, error =>
+        {
+            Assert.Equal(1, ++retries);
+            Assert.IsType<TimeoutException>(Assert.IsType<NpgsqlException>(error).InnerException);
+            db.WaitForTransactionEndAsync().GetAwaiter().GetResult();
+            var committed = db.Observer.ExecuteScalar<int>("SELECT count(*) FROM payment_batches");
+            Assert.InRange(committed, 0, 1);
+            Assert.Equal(committed, db.Observer.ExecuteScalar<int>("SELECT count(*) FROM payments"));
+            Assert.Equal(committed + 1, db.Observer.ExecuteScalar<int>("SELECT count(*) FROM balance_changes"));
+            Assert.Equal(committed == 1 ? 0m : 12.5m,
+                db.Observer.ExecuteScalar<decimal>("SELECT amount FROM balances"));
+            // Remove the fault only after reconciliation; the production retry policy
+            // and default RunTx commit handling remain unchanged in both overloads.
+            db.Observer.Execute("DROP TRIGGER delay_commit ON payment_batches");
+        });
+        var payment = new[] { new Balance { PoolId = "ltc", Address = "miner", Amount = 12.5m } };
+        await handler.Pay(payment, () =>
+        {
+            Assert.Equal(1, ++submissions);
+            return Task.FromResult("tx-1");
+        }, perRecipient).WaitAsync(TimeSpan.FromSeconds(40));
+        await handler.Persist(payment, perRecipient);
+
+        Assert.Equal(1, submissions);
+        Assert.Equal(1, retries);
+        Assert.Equal(1, await db.Count("payment_batches"));
+        Assert.Equal(1, await db.Count("payments"));
+        Assert.Equal(2, await db.Count("balance_changes"));
+        Assert.Equal(0m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        Assert.Equal(12.5m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM payments"));
+        await db.AssertUsable();
+    }
+
+    private sealed class PersistenceHandler(IConnectionFactory factory, IMapper mapper, Action<Exception> retry)
         : PayoutHandlerBase(factory, mapper, new ShareRepository(mapper), new BlockRepository(mapper),
             new BalanceRepository(mapper), new PaymentRepository(mapper), new StandardClock(), Substitute.For<IMessageBus>())
     {
         protected override string LogCategory => "timeout-test";
-        protected override void OnRetry(Exception ex, TimeSpan timeSpan, int attempt, object context) => retry();
-        public Task Persist(Balance[] balances)
+        protected override void OnRetry(Exception ex, TimeSpan timeSpan, int attempt, object context) => retry(ex);
+        public Task Persist(Balance[] balances, bool perRecipient = false)
         {
             logger = LogManager.GetCurrentClassLogger();
             poolConfig = new PoolConfig { Id = "ltc", Template = new BitcoinTemplate { Symbol = "LTC" }, RewardRecipients = Array.Empty<RewardRecipient>() };
-            return PersistPaymentsAsync(balances, "tx-1");
+            return perRecipient
+                ? PersistPaymentsAsync(balances.ToDictionary(balance => balance, _ => "tx-1"))
+                : PersistPaymentsAsync(balances, "tx-1");
         }
+
+        public Task Pay(Balance[] balances, Func<Task<string>> submitWallet, bool perRecipient) =>
+            TrackPayoutAsync(balances, async () =>
+            {
+                TrackPayoutSubmission(CancellationToken.None, balances);
+                Assert.Equal("tx-1", await submitWallet());
+                await Persist(balances, perRecipient);
+            });
     }
 
     private sealed class Database : IAsyncDisposable
@@ -302,11 +373,14 @@ public class PostgresCommandTimeoutIntegrationTests(
         public NpgsqlConnection Observer { get; private set; }
         public PgConnectionFactory Factory { get; private set; }
 
-        public static async Task<Database> Create(PostgresTlsIntegrationTests.TlsServer server, int timeout)
+        public static async Task<Database> Create(IsolatedPostgresServer server, int timeout)
         {
             var db = new Database();
             try
             {
+                // TLS tests in the same collection may leave the shared server in an
+                // intentional non-verifying mode. Select the required state explicitly.
+                await server.UseCertificate("valid");
                 var config = PostgresConnectionPolicyTests.Config();
                 config.Host = "127.0.0.1";
                 config.Port = server.Port;
@@ -354,19 +428,20 @@ public class PostgresCommandTimeoutIntegrationTests(
 
         public async Task AssertUsable()
         {
+            await WaitForTransactionEndAsync();
             // A one-slot pool must be usable after failure, without leaked transactions/locks.
             Assert.Equal(1, await Factory.Run(con => con.ExecuteScalarAsync<int>("SELECT 1")));
             Assert.Equal(0, await Observer.ExecuteScalarAsync<int>(
                 "SELECT count(*) FROM pg_stat_activity WHERE application_name=@schema AND xact_start IS NOT NULL", new { schema }));
         }
 
-        public async Task WaitForRollback()
+        public async Task WaitForTransactionEndAsync()
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             while(await Observer.ExecuteScalarAsync<bool>(new CommandDefinition(
                 "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=@schema AND xact_start IS NOT NULL)",
-                new { schema }, cancellationToken: deadline.Token)))
-                await Task.Delay(25, deadline.Token);
+                new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false))
+                await Task.Delay(25, deadline.Token).ConfigureAwait(false);
         }
 
         public async ValueTask DisposeAsync()
