@@ -1411,8 +1411,9 @@ public class Program : ProcessStatusBackgroundService
             }
         };
 
-        return JObject.Parse(generator.Generate(typeof(ClusterConfig))
-            .ToString());
+        var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
+        PostgresConnectionPolicy.AddSchemaRules(document);
+        return document;
     }
 
     private static CommandLineApplication ParseCommandLine(string[] args,
@@ -1498,6 +1499,7 @@ public class Program : ProcessStatusBackgroundService
                         skipApiListenerSettings);
 
                     RejectCaseInsensitivePropertyDuplicates(document);
+                    PostgresConnectionPolicy.ValidateSyntax(document);
                     // Recovery mode discards live pool settings, but the same
                     // source document must never make malformed or ambiguous
                     // security-sensitive switches appear acceptable in one
@@ -2688,62 +2690,13 @@ public class Program : ProcessStatusBackgroundService
 
     private static void ConfigurePostgres(PostgresConfig pgConfig, ContainerBuilder builder)
     {
-        // validate config
-        if(string.IsNullOrEmpty(pgConfig.Host))
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'host'");
-
-        if(pgConfig.Port == 0)
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'port'");
-
-        if(string.IsNullOrEmpty(pgConfig.Database))
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'database'");
-
-        if(string.IsNullOrEmpty(pgConfig.User))
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'user'");
-
-        // build connection string
-        var connectionString = new StringBuilder($"Server={pgConfig.Host};Port={pgConfig.Port};Database={pgConfig.Database};User Id={pgConfig.User};Password={pgConfig.Password};");
-
-        var sslMode = pgConfig.Tls ? "Require" : null;
-        if(pgConfig.Tls)
-        {
-            connectionString.Append($"SSL Mode={sslMode};");
-
-            if(pgConfig.TlsNoValidate)
-                connectionString.Append("Trust Server Certificate=true;");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()))
-                connectionString.Append($"SSL Certificate={pgConfig.TlsCert.Trim()};");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()))
-                connectionString.Append($"SSL Key={pgConfig.TlsKey.Trim()};");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsPassword))
-                connectionString.Append($"SSL Password={pgConfig.TlsPassword};");
-        }
-
-        var commandTimeout = pgConfig.CommandTimeout ?? 300;
-        connectionString.Append($"CommandTimeout={commandTimeout};");
-
-        // Allowlist diagnostics instead of redacting a connection string: new secret options
-        // must never become log fields. JSON escaping also keeps configured values on one line.
-        // Use an isolated serializer: process-wide JsonConvert defaults must not change this contract.
-        logger.Debug(() => "Using PostgreSQL persistence " + JObject.FromObject(new
-        {
-            pgConfig.Host,
-            pgConfig.Port,
-            pgConfig.Database,
-            pgConfig.User,
-            SslMode = sslMode ?? "<unset>",
-            pgConfig.TlsNoValidate,
-            // Match connection-string presence rules: passwords are not trimmed, paths are.
-            // TLS presence is configured presence, even when TLS options are not applied.
-            PasswordConfigured = !string.IsNullOrEmpty(pgConfig.Password),
-            TlsCertConfigured = !string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()),
-            TlsKeyConfigured = !string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()),
-            TlsPasswordConfigured = !string.IsNullOrEmpty(pgConfig.TlsPassword),
-            CommandTimeout = commandTimeout,
-        }, JsonSerializer.Create(new JsonSerializerSettings())).ToString(Formatting.None));
+        var connectionString = PostgresConnectionPolicy.Build(pgConfig, out var diagnostic);
+        logger.Debug(() => "Using PostgreSQL persistence " +
+            PostgresConnectionPolicy.Diagnostic(diagnostic));
+        if(PostgresConnectionPolicy.UsesAmbientTrust(diagnostic))
+            logger.Warn("PostgreSQL certificate verification has no root path in the connection string; " +
+                "Npgsql may use environment, default certificate files or system trust. " +
+                "Check the service account's trust configuration.");
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))

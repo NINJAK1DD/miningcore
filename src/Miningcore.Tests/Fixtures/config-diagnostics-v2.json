@@ -79,11 +79,13 @@
         "host": "[set]",
         "password": "[set]",
         "port": 5432,
+        "sslMode": null,
         "tls": false,
         "tlsCert": null,
         "tlsKey": null,
         "tlsNoValidate": false,
         "tlsPassword": null,
+        "tlsRootCert": null,
         "user": "[set]"
       }
     },

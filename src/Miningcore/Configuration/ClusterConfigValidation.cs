@@ -369,6 +369,20 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .SetValidator(new RecoveryPostgresConfigValidator())
             .When(x => recoveryMode && x.Persistence?.Postgres != null);
 
+        RuleFor(j => j.Persistence.Postgres)
+            .Custom((postgres, context) =>
+            {
+                try
+                {
+                    PostgresConnectionPolicy.Validate(postgres);
+                }
+                catch(Miningcore.Mining.PoolStartupException error)
+                {
+                    context.AddFailure(error.Message);
+                }
+            })
+            .When(x => x.Persistence?.Postgres != null);
+
         RuleFor(j => j.Pools)
             .NotNull()
             .NotEmpty();

@@ -1,5 +1,9 @@
 # Database setup and upgrades
 
+For authenticated remote connections, configure `sslMode: "VerifyFull"` using the
+[PostgreSQL TLS policy and migration guide](postgres-tls.md). Legacy `tls: true`
+encrypts traffic but does not authenticate the server certificate with Npgsql 9.
+
 Miningcore's database contains financial accounting state. Use the procedure matching the task;
 do not improvise SQL from another section during an incident.
 
