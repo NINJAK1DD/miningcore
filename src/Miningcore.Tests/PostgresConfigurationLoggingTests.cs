@@ -1,13 +1,15 @@
+using System;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Text;
 using Autofac;
 using Miningcore.Configuration;
+using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Postgres;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
+using Npgsql;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
@@ -60,7 +62,7 @@ public class PostgresConfigurationLoggingTests
 
     [Theory]
     [MemberData(nameof(DiagnosticCases))]
-    public void ConfigurePostgres_PreservesConnectionAndSafeDiagnosticContracts(bool tls, bool noValidate,
+    public void ConfigurePostgres_ValidatesLegacyPolicyAndSafeDiagnosticContracts(bool tls, bool noValidate,
         string password, string tlsPassword, string tlsCert, string tlsKey, int? timeout,
         bool passwordConfigured, bool tlsPasswordConfigured, bool tlsCertConfigured, bool tlsKeyConfigured) =>
         ConfigureAndVerify(tls, noValidate, password, tlsPassword, tlsCert, tlsKey, timeout,
@@ -86,7 +88,7 @@ public class PostgresConfigurationLoggingTests
         {
             loggerField.SetValue(null, factory.GetLogger("Core"));
             var builder = new ContainerBuilder();
-            configure.Invoke(null, new object[]
+            Action configureAction = () => configure.Invoke(null, new object[]
             {
                 new PostgresConfig
                 {
@@ -98,6 +100,18 @@ public class PostgresConfigurationLoggingTests
                 },
                 builder,
             });
+            // Issue #146 deliberately rejects options which the former raw-string
+            // contract silently ignored. Rejected settings must not reach logging or DI.
+            if((tlsCert?.Length > 0 && string.IsNullOrWhiteSpace(tlsCert)) ||
+               (tlsKey?.Length > 0 && string.IsNullOrWhiteSpace(tlsKey)) ||
+               (!tls && (noValidate || tlsPasswordConfigured || tlsCertConfigured || tlsKeyConfigured)))
+            {
+                var error = Assert.Throws<TargetInvocationException>(configureAction);
+                Assert.IsType<PoolStartupException>(error.InnerException);
+                Assert.Empty(target.Logs);
+                return (null, null);
+            }
+            configureAction();
             factory.Flush();
 
             // Inspect the actual registered factory without opening a database connection.
@@ -108,22 +122,21 @@ public class PostgresConfigurationLoggingTests
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(connectionField);
             var actualConnection = Assert.IsType<string>(connectionField.GetValue(connectionFactory));
-            var expectedConnection = new StringBuilder(
-                $"Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;User Id=test-user;Password={password};");
-            if(tls)
-            {
-                expectedConnection.Append("SSL Mode=Require;");
-                if(noValidate)
-                    expectedConnection.Append("Trust Server Certificate=true;");
-                if(tlsCertConfigured)
-                    expectedConnection.Append($"SSL Certificate={tlsCert.Trim()};");
-                if(tlsKeyConfigured)
-                    expectedConnection.Append($"SSL Key={tlsKey.Trim()};");
-                if(tlsPasswordConfigured)
-                    expectedConnection.Append($"SSL Password={tlsPassword};");
-            }
-            expectedConnection.Append($"CommandTimeout={timeout ?? 300};");
-            Assert.Equal(expectedConnection.ToString(), actualConnection);
+            // Compare literal parsed values, not legacy keyword spelling/order or
+            // unescaped fragments. Typed construction intentionally changes normalization.
+            var connection = new NpgsqlConnectionStringBuilder(actualConnection);
+            Assert.Equal("db.example.invalid", connection.Host);
+            Assert.Equal(5433, connection.Port);
+            Assert.Equal("test\r\n\u0085\u2028\u2029forged-line", connection.Database);
+            Assert.Equal("test-user", connection.Username);
+            Assert.Equal(string.IsNullOrEmpty(password) ? null : password, connection.Password);
+            Assert.Equal(!string.IsNullOrEmpty(password), connection.ShouldSerialize("Password"));
+            Assert.Equal(tls ? SslMode.Require : SslMode.Prefer, connection.SslMode);
+            Assert.DoesNotContain("Trust Server Certificate", actualConnection);
+            Assert.Equal(tls && tlsCertConfigured ? tlsCert.Trim() : null, connection.SslCertificate);
+            Assert.Equal(tls && tlsKeyConfigured ? tlsKey.Trim() : null, connection.SslKey);
+            Assert.Equal(tls && tlsPasswordConfigured ? tlsPassword : null, connection.SslPassword);
+            Assert.Equal(timeout ?? 300, connection.CommandTimeout);
 
             const string prefix = "Using PostgreSQL persistence ";
             // Any additional diagnostic requires explicit review, even if it misses our sentinels.
@@ -131,17 +144,15 @@ public class PostgresConfigurationLoggingTests
             Assert.StartsWith(prefix, entry);
             var metadata = JObject.Parse(entry[prefix.Length..]);
             Assert.Equal(prefix + metadata.ToString(Formatting.None), entry);
-            Assert.Equal(11, metadata.Count);
-            Assert.Equal("db.example.invalid", metadata["Host"]?.Value<string>());
+            Assert.Equal(9, metadata.Count);
             Assert.Equal(5433, metadata["Port"]?.Value<int>());
-            Assert.Equal("test\r\n\u0085\u2028\u2029forged-line", metadata["Database"]?.Value<string>());
-            Assert.Equal("test-user", metadata["User"]?.Value<string>());
-            Assert.Equal(tls ? "Require" : "<unset>", metadata["SslMode"]?.Value<string>());
+            Assert.Equal(tls ? "Require" : "Prefer", metadata["SslMode"]?.Value<string>());
             Assert.Equal(noValidate, metadata["TlsNoValidate"]?.Value<bool>());
             Assert.Equal(passwordConfigured, metadata["PasswordConfigured"]?.Value<bool>());
             Assert.Equal(tlsPasswordConfigured, metadata["TlsPasswordConfigured"]?.Value<bool>());
             Assert.Equal(tlsCertConfigured, metadata["TlsCertConfigured"]?.Value<bool>());
             Assert.Equal(tlsKeyConfigured, metadata["TlsKeyConfigured"]?.Value<bool>());
+            Assert.False(metadata["RootCertificatePathConfigured"]?.Value<bool>());
             Assert.Equal(timeout ?? 300, metadata["CommandTimeout"]?.Value<int>());
             foreach(var separator in new[] { "\n", "\r", "\u0085", "\u2028", "\u2029" })
                 Assert.DoesNotContain(separator, entry);
@@ -168,13 +179,13 @@ public class PostgresConfigurationLoggingTests
             CertificatePath, KeyPath, 600, true, true, true, true);
         const string goldenConnection = "Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;" +
             "User Id=test-user;Password=database-secret-must-not-be-logged;SSL Mode=Require;" +
-            "Trust Server Certificate=true;SSL Certificate=private-certificate-path;SSL Key=private-key-path;" +
+            "SSL Certificate=private-certificate-path;SSL Key=private-key-path;" +
             "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;";
-        const string goldenDiagnostic = "Using PostgreSQL persistence {\"Host\":\"db.example.invalid\",\"Port\":5433," +
-            "\"Database\":\"test\\r\\n\\u0085\\u2028\\u2029forged-line\",\"User\":\"test-user\",\"SslMode\":\"Require\"," +
+        const string goldenDiagnostic = "Using PostgreSQL persistence {\"Port\":5433,\"SslMode\":\"Require\"," +
             "\"TlsNoValidate\":true,\"PasswordConfigured\":true,\"TlsCertConfigured\":true,\"TlsKeyConfigured\":true," +
-            "\"TlsPasswordConfigured\":true,\"CommandTimeout\":600}";
-        Assert.Equal(goldenConnection, actual.ConnectionString);
+            "\"TlsPasswordConfigured\":true,\"RootCertificatePathConfigured\":false,\"CommandTimeout\":600}";
+        Assert.True(new NpgsqlConnectionStringBuilder(goldenConnection).EquivalentTo(
+            new NpgsqlConnectionStringBuilder(actual.ConnectionString)));
         Assert.Equal(goldenDiagnostic, actual.Diagnostic);
     }
 

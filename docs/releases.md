@@ -93,7 +93,8 @@ strings become null/`[blank]`/`[set]`, logging level uses a closed vocabulary, A
 categories, and reviewed string arrays become counts. Actual credentials, paths, addresses,
 extension names/payloads and arbitrary strings never appear. `[blank]` distinguishes empty or
 whitespace-only input from nonblank `[set]`; markers do not assert runtime effectiveness. For
-example, PostgreSQL ignores blank certificate paths but can consume whitespace passwords. They
+example, PostgreSQL ignores empty client certificate paths, rejects whitespace-only paths,
+and can consume whitespace passwords. They
 do not prove a value is usable, a file exists, or credentials work. Listener categories likewise
 distinguish absent/blank input without claiming what startup will bind. Closed-output failures
 report `output-unavailable`, not an unreadable configuration file.
@@ -294,7 +295,38 @@ undeliverable critical alerts. No coin-family, accounting or schema change is ma
 The existing top-level/admin/channel switch semantics are unchanged. Their validation and
 documentation mismatch is tracked separately in [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148).
 
+## Unreleased: PostgreSQL certificate validation (issue #146)
+
+PostgreSQL configuration now supports explicit `sslMode` values, including
+`VerifyCA` and recommended `VerifyFull`, and `tlsRootCert` for a trusted CA file.
+Legacy `tls: true` retains encryption-only `Require`; false/omitted retains
+opportunistic `Prefer`. `tlsNoValidate: false` does not authenticate the server.
+Remove both legacy flags before setting an explicit mode. Conflicting settings
+and previously ignored nonempty client TLS settings now fail startup validation.
+**Remove stale client TLS settings when TLS is disabled, and remove
+`tlsNoValidate: true` unless legacy `tls: true` is also set.** Whitespace-only
+`tlsCert`/`tlsKey` paths now fail validation instead of being silently ignored.
+Connection values are passed through `NpgsqlConnectionStringBuilder`, preserving
+literal credentials instead of interpreting them as options. Startup diagnostics
+use a fixed allowlist without credentials or certificate paths. The root presence
+field is `RootCertificatePathConfigured`: it describes a path encoded in the
+connection string, not all driver fallback sources. Connection errors include
+safe failure categories that distinguish local file access (including PostgreSQL
+passfiles), cryptographic material, missing databases, connection limits and server
+availability. Generic I/O failures do not imply network or TLS faults. Verifying
+modes without an encoded CA path emit a fixed ambient-trust warning. Failed cleanup
+cannot leak provider errors or replace
+cancellation. Omitted/empty passwords retain environment/passfile fallback.
+CA paths do not freeze file contents, and an unset root permits Npgsql to consult
+environment/default trust sources at later physical opens. Review the
+[migration and trust-source rules](postgres-tls.md) before upgrading.
+
 ## Unreleased: PostgreSQL credential-safe diagnostics
+
+The next two paragraphs describe the original PR #142 logging-only change. Its mode and
+field contracts are superseded by the [certificate-validation update](#unreleased-postgresql-certificate-validation-issue-146):
+the current diagnostic reports the effective mode, omits host/database/user strings and adds
+root-certificate presence. Connection-open exception details are now omitted as well.
 
 PostgreSQL startup debug logging no longer prints the connection string, which could expose
 database and client-certificate passwords. The explicit allowlist contains host, port, database,

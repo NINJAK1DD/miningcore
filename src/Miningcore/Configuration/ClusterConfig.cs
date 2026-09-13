@@ -1060,9 +1060,21 @@ public class DatabaseConfig : AuthenticatedNetworkEndpointConfig
 public class PostgresConfig : DatabaseConfig
 {
     /// <summary>
-    /// Enable Transport layer security (TLS)
+    /// Explicit connection security policy. Omit legacy TLS flags when specifying this.
     /// </summary>
-    public bool Tls { get; set; }
+    [JsonConverter(typeof(PostgresSslModeConverter))]
+    public PostgresSslMode? SslMode { get; set; }
+
+    /// <summary>
+    /// PEM root CA file for VerifyCA/VerifyFull. Overrides PGSSLROOTCERT.
+    /// </summary>
+    public string TlsRootCert { get; set; }
+
+    /// <summary>
+    /// Legacy policy: true requires encryption without server authentication;
+    /// false/omitted uses opportunistic TLS. Omit when SslMode is configured.
+    /// </summary>
+    public bool? Tls { get; set; }
 
     /// <summary>
     /// Location of a client certificate to be sent to the server (.PFX or .PEM)
@@ -1080,9 +1092,10 @@ public class PostgresConfig : DatabaseConfig
     public string TlsPassword { get; set; }
 
     /// <summary>
-    /// Trust (self-signed) server certificate
+    /// Legacy compatibility flag; false does not authenticate the server.
+    /// Omit when SslMode is configured.
     /// </summary>
-    public bool TlsNoValidate { get; set; }
+    public bool? TlsNoValidate { get; set; }
 
     public int? CommandTimeout { get; set; }
 

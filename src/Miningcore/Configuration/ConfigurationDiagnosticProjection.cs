@@ -43,6 +43,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(ClusterBanningConfig.BanOnInvalidShares), nameof(ClusterBanningConfig.BanOnLoginFailure)),
             [typeof(PersistenceConfig)] = Fields<PersistenceConfig>(nameof(PersistenceConfig.Postgres)),
             [typeof(PostgresConfig)] = Fields<PostgresConfig>(
+                nameof(PostgresConfig.SslMode),
                 nameof(PostgresConfig.Port), nameof(PostgresConfig.Tls), nameof(PostgresConfig.TlsNoValidate),
                 nameof(PostgresConfig.CommandTimeout), nameof(PostgresConfig.EnableLegacyTimestamps)),
             [typeof(ClusterPaymentProcessingConfig)] = Fields<ClusterPaymentProcessingConfig>(
@@ -107,7 +108,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(ClusterLoggingConfig.ApiLogFile), nameof(ClusterLoggingConfig.LogBaseDirectory)),
             [typeof(PostgresConfig)] = Fields<PostgresConfig>(nameof(PostgresConfig.Host), nameof(PostgresConfig.User),
                 nameof(PostgresConfig.Password), nameof(PostgresConfig.Database), nameof(PostgresConfig.TlsCert),
-                nameof(PostgresConfig.TlsKey), nameof(PostgresConfig.TlsPassword)),
+                nameof(PostgresConfig.TlsKey), nameof(PostgresConfig.TlsPassword), nameof(PostgresConfig.TlsRootCert)),
             [typeof(PoolConfig)] = Fields<PoolConfig>(nameof(PoolConfig.Id), nameof(PoolConfig.Coin),
                 nameof(PoolConfig.Address), nameof(PoolConfig.PubKey)),
             [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(nameof(PoolEndpoint.Name),

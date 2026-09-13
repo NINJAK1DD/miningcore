@@ -141,6 +141,29 @@ jobs:
           cmake ninja-build build-essential libssl-dev pkg-config \
           libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
 
+    - name: Install isolated PostgreSQL TLS test dependency
+      shell: bash
+      env:
+        POSTGRES_TLS_MAJOR: '18'
+      run: |
+        set -euo pipefail
+        # The accounting service already owns 5432. Only install server binaries;
+        # the TLS fixture creates and removes its own cluster on a random port.
+        sudo mkdir -p /etc/postgresql-common
+        # Append the override so packaged settings remain intact. PostgreSQL 18 is the
+        # reviewed Ubuntu 26.04 major; continue receiving distro security patch updates.
+        printf '\ncreate_main_cluster = false\n' | sudo tee -a /etc/postgresql-common/createcluster.conf
+        sudo apt-get -o Acquire::Retries=3 install -y "postgresql-${POSTGRES_TLS_MAJOR}"
+        pg_bin="/usr/lib/postgresql/${POSTGRES_TLS_MAJOR}/bin"
+        for executable in initdb pg_ctl postgres; do
+          if [[ ! -x "${pg_bin}/${executable}" ]]; then
+            echo "::error::Missing PostgreSQL ${POSTGRES_TLS_MAJOR} test binary: ${executable}"
+            exit 1
+          fi
+        done
+        "${pg_bin}/postgres" --version
+        echo "MININGCORE_TEST_POSTGRES_BIN=${pg_bin}" >> "$GITHUB_ENV"
+
     - name: Install pinned Bitcoin Core regtest dependency
       shell: bash
       env:

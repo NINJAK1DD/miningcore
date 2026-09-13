@@ -25,6 +25,7 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Configure a coin-family-only field | [Coin-specific extension fields](#coin-specific-extension-fields) |
 | Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
+| Authenticate a remote PostgreSQL server | [PostgreSQL TLS and migration](postgres-tls.md) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
 | Configure default non-custodial Bitcoin SOLO | [Bitcoin direct-coinbase SOLO](#bitcoin-direct-coinbase-solo) |
 | Enable direct Bitcoin-family PPS | [Bitcoin-family PPS](#bitcoin-family-pps) |
