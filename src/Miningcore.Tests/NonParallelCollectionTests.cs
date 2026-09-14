@@ -16,11 +16,12 @@ namespace Miningcore.Tests;
 public class NonParallelCollectionTests
 {
     [Fact]
-    public void PostgresPolicy_UsesOneCollectionServerForBothLiveTestClasses()
+    public void PostgresPolicy_UsesOneCollectionServerForAllLiveTestClasses()
     {
         Assert.Contains(typeof(ICollectionFixture<IsolatedPostgresServer>),
             typeof(PostgresPolicyCollection).GetInterfaces());
-        foreach(var testClass in new[] { typeof(PostgresTlsIntegrationTests), typeof(PostgresCommandTimeoutIntegrationTests) })
+        foreach(var testClass in new[] { typeof(PostgresTlsIntegrationTests), typeof(PostgresCommandTimeoutIntegrationTests),
+                    typeof(PayoutHandlerPersistenceIntegrationTests) })
         {
             Assert.DoesNotContain(typeof(IClassFixture<IsolatedPostgresServer>), testClass.GetInterfaces());
             Assert.Same(typeof(PostgresPolicyCollection), CollectionAssertions.NonParallelDefinition(testClass));
@@ -55,11 +56,12 @@ public class NonParallelCollectionTests
             new[] { typeof(ShareRecorderTests), typeof(ShareRecoveryPathOwnershipTests) } };
         yield return new object[] { typeof(PostgresConfigurationLoggingCollection), new[] { typeof(PostgresConfigurationLoggingTests) } };
         // These fixtures change process-wide logging, JSON settings, or PGSSLROOTCERT.
-        // Timeout tests share this isolation so configuration reads and physical opens
+        // Timeout and payout tests share this isolation so configuration reads and physical opens
         // cannot observe the TLS fixtures' temporary process-wide settings.
         yield return new object[] { typeof(PostgresPolicyCollection),
             new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresTlsIntegrationTests),
-                typeof(PostgresCommandTimeoutTests), typeof(PostgresCommandTimeoutIntegrationTests) } };
+                typeof(PostgresCommandTimeoutTests), typeof(PostgresCommandTimeoutIntegrationTests),
+                typeof(PayoutHandlerPersistenceIntegrationTests) } };
     }
 
     [Theory]

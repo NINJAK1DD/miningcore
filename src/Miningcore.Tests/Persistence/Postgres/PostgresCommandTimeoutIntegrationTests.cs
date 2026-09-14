@@ -1,8 +1,5 @@
 using System;
-using System.Collections.Generic;
-using System.Data;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoMapper;
@@ -11,20 +8,15 @@ using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
-using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
-using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
-using Miningcore.Time;
+using Miningcore.Tests.Payments;
 using Newtonsoft.Json;
-using NLog;
 using Npgsql;
 using NSubstitute;
 using Xunit;
 using Xunit.Abstractions;
-// Import only the exception: Xunit.Sdk also defines IMessageBus.
-using XunitException = Xunit.Sdk.XunitException;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
@@ -53,22 +45,12 @@ public sealed class PostgresTimeoutFactAttribute : FactAttribute
 public class PostgresCommandTimeoutIntegrationTests(
     IsolatedPostgresServer server, ITestOutputHelper output)
 {
-    // Unlike COPY's uncancellable delay, this sleep must survive until cancellation
-    // arrives and arms the advisory gate, including scheduling jitter on busy CI hosts.
-    private const int CommitGateCancellationWindowSeconds = 15;
-    // Let an unarmed gate finish its sleep and expose the payout's outcome before
-    // the observer deadline wins. Keep this relationship when tuning the window.
-    private const int CommitOverlapObservationTimeoutSeconds = CommitGateCancellationWindowSeconds + 8;
-    // The second retry adds a failed 1s command, up to 2s cancellation, the real
-    // 4s second backoff, and reconnect/observation slack. Revisit with policy changes.
-    private const int SecondRetryObservationBudgetSeconds = 8;
-
     [PostgresTimeoutTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PaymentTransactionRollsBackAndReplaysExactlyOnce(bool cancel)
     {
-        await using var db = await Database.Create(server, cancel ? 300 : 1);
+        await using var db = await PostgresPersistenceTestDatabase.Create(server, cancel ? 300 : 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var payments = new PaymentRepository(mapper);
         var balances = new BalanceRepository(mapper);
@@ -108,7 +90,7 @@ public class PostgresCommandTimeoutIntegrationTests(
     [InlineData(true)]
     public async Task PpsTimeoutOrCancellationRollsBackReceiptCreditAndRemainder(bool cancel)
     {
-        await using var db = await Database.Create(server, cancel ? 300 : 1);
+        await using var db = await PostgresPersistenceTestDatabase.Create(server, cancel ? 300 : 1);
         var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
         var id = Guid.NewGuid();
         var created = DateTime.UtcNow;
@@ -155,7 +137,7 @@ public class PostgresCommandTimeoutIntegrationTests(
     [InlineData(true)]
     public async Task RecoveryJournalSurvivesCopyTimeoutAndCommitArchiveInterruption(bool interruptArchive)
     {
-        await using var db = await Database.Create(server, 1);
+        await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
         var directory = Path.Combine(Path.GetTempPath(), "miningcore-timeout-recovery-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var filename = Path.Combine(directory, "shares.txt");
@@ -216,7 +198,7 @@ public class PostgresCommandTimeoutIntegrationTests(
     [PostgresTimeoutFact]
     public async Task PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit()
     {
-        await using var db = await Database.Create(server, 1);
+        await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var balances = new BalanceRepository(mapper);
         await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, "ltc", "miner", 12.5m, "seed"));
@@ -245,7 +227,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         await db.AssertUsable();
     }
 
-    private async Task Interrupt(Database db, bool cancel, Func<CancellationToken, Task> action)
+    private async Task Interrupt(PostgresPersistenceTestDatabase db, bool cancel, Func<CancellationToken, Task> action)
     {
         using var cancellation = new CancellationTokenSource();
         var observed = cancel ? db.CancelWhenSleeping(cancellation) : Task.CompletedTask;
@@ -268,7 +250,7 @@ public class PostgresCommandTimeoutIntegrationTests(
     [PostgresTimeoutFact]
     public async Task CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation()
     {
-        await using var db = await Database.Create(server, 1);
+        await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var payments = new PaymentRepository(mapper);
         var balances = new BalanceRepository(mapper);
@@ -311,7 +293,7 @@ public class PostgresCommandTimeoutIntegrationTests(
     [InlineData(true)]
     public async Task PayoutHandlerCommitTimeoutReconcilesWithoutAnotherWalletSubmission(bool perRecipient)
     {
-        await using var db = await Database.Create(server, 1);
+        await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var balances = new BalanceRepository(mapper);
         await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, "ltc", "miner", 12.5m, "seed"));
@@ -356,69 +338,6 @@ public class PostgresCommandTimeoutIntegrationTests(
         await db.AssertUsable();
     }
 
-    [PostgresTimeoutTheory]
-    [InlineData(false, 1)]
-    [InlineData(true, 1)]
-    [InlineData(false, 2)]
-    [InlineData(true, 2)]
-    public async Task ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission(bool perRecipient, int requiredRetryCount)
-    {
-        await using var db = await Database.Create(server, 1);
-        var mapper = AutoMapperFactory.CreateMapper();
-        var balances = new BalanceRepository(mapper);
-        await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, "ltc", "miner", 12.5m, "seed"));
-        // Keep the real driver's cancellation budget and the real Polly hook/backoff.
-        // This test-only trigger absorbs the first cancellation, making COMMIT outlive
-        // the broken client connection. An observer-owned advisory lock holds it until
-        // the requested number of distinct production retries have visibly blocked
-        // on the original payment-batch key. Earlier retries must time out naturally.
-        await db.Observer.ExecuteAsync($"""
-            CREATE SEQUENCE commit_fault;
-            CREATE FUNCTION gate_commit() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN
-                IF nextval('commit_fault') = 1 THEN
-                    BEGIN
-                        PERFORM pg_sleep({CommitGateCancellationWindowSeconds});
-                    EXCEPTION WHEN query_canceled THEN
-                        PERFORM pg_advisory_xact_lock(TG_ARGV[0]::bigint);
-                    END;
-                END IF;
-                RETURN NEW;
-            END $$;
-            """);
-        var gate = Random.Shared.NextInt64(1, long.MaxValue);
-        // gate is generated numeric test data, never an operator-supplied SQL fragment.
-        await db.Observer.ExecuteAsync($"""
-            CREATE CONSTRAINT TRIGGER gate_commit AFTER INSERT ON payment_batches
-                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION gate_commit('{gate}');
-            """);
-        await db.Observer.ExecuteAsync("SELECT pg_advisory_lock(@gate)", new { gate });
-        var handler = new PersistenceHandler(db.Factory, mapper); // Inherits normal OnRetry unchanged.
-        var submissions = 0;
-        var payment = new[] { new Balance { PoolId = "ltc", Address = "miner", Amount = 12.5m } };
-        var payout = handler.Pay(payment, () =>
-        {
-            submissions++;
-            return Task.FromResult("tx-1");
-        }, perRecipient);
-        // The subject is awaited in the final cleanup action: even a failed overlap
-        // assertion must release the gate first, then observe the payout's outcome.
-        await PostgresTestCleanup.RunAsync(
-            () => db.WaitForRetriesBlockedByCommitAsync(payout, requiredRetryCount),
-            async () => { await db.Observer.ExecuteAsync("SELECT pg_advisory_unlock(@gate)", new { gate }); },
-            () => payout.WaitAsync(TimeSpan.FromSeconds(40)));
-        await db.WaitForTransactionEndAsync();
-        await handler.Persist(payment, perRecipient);
-        Assert.Equal(1, submissions);
-        Assert.Equal(1, await db.Count("payment_batches"));
-        Assert.Equal(1, await db.Count("payments"));
-        Assert.Equal(2, await db.Count("balance_changes"));
-        Assert.Equal(0m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
-        Assert.Equal(12.5m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM payments"));
-        await db.AssertUsable();
-        output.WriteLine($"Observed {requiredRetryCount} distinct production retry transaction(s) blocked by the unfinished COMMIT; one wallet submission and one durable payment.");
-    }
-
     [PostgresTimeoutFact]
     public async Task DatabaseSetupRestoresAuthenticationAndTlsWithoutRedundantRestarts()
     {
@@ -426,7 +345,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         {
             await server.PasswordAuthentication(true);
             await server.UseCertificate("off");
-            await using var db = await Database.Create(server, 1);
+            await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
             await db.AssertUsable();
             Assert.True(await db.Observer.ExecuteScalarAsync<bool>(
                 "SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()"));
@@ -440,192 +359,8 @@ public class PostgresCommandTimeoutIntegrationTests(
     }
 
     private sealed class ObservedRetryHandler(IConnectionFactory factory, IMapper mapper, Action<Exception> retry)
-        : PersistenceHandler(factory, mapper)
+        : PayoutPersistenceTestHandler(factory, mapper)
     {
         protected override void OnRetry(Exception ex, TimeSpan timeSpan, int attempt, object context) => retry(ex);
-    }
-
-    private class PersistenceHandler(IConnectionFactory factory, IMapper mapper)
-        : PayoutHandlerBase(factory, mapper, new ShareRepository(mapper), new BlockRepository(mapper),
-            new BalanceRepository(mapper), new PaymentRepository(mapper), new StandardClock(), Substitute.For<IMessageBus>())
-    {
-        protected override string LogCategory => "timeout-test";
-        public Task Persist(Balance[] balances, bool perRecipient = false)
-        {
-            logger = LogManager.GetCurrentClassLogger();
-            poolConfig = new PoolConfig { Id = "ltc", Template = new BitcoinTemplate { Symbol = "LTC" }, RewardRecipients = Array.Empty<RewardRecipient>() };
-            return perRecipient
-                // Reconstruct the POCOs so reconciliation cannot rely on reference identity.
-                ? PersistPaymentsAsync(balances.ToDictionary(balance => new Balance
-                    { PoolId = balance.PoolId, Address = balance.Address, Amount = balance.Amount }, _ => "tx-1"))
-                : PersistPaymentsAsync(balances, "tx-1");
-        }
-
-        public Task Pay(Balance[] balances, Func<Task<string>> submitWallet, bool perRecipient) =>
-            TrackPayoutAsync(balances, async () =>
-            {
-                TrackPayoutSubmission(CancellationToken.None, balances);
-                Assert.Equal("tx-1", await submitWallet());
-                await Persist(balances, perRecipient);
-            });
-    }
-
-    private sealed class Database : IAsyncDisposable
-    {
-        private readonly string schema = "timeout_" + Guid.NewGuid().ToString("N");
-        private NpgsqlConnectionStringBuilder settings;
-        public NpgsqlConnection Observer { get; private set; }
-        public PgConnectionFactory Factory { get; private set; }
-
-        public static async Task<Database> Create(IsolatedPostgresServer server, int timeout)
-        {
-            var db = new Database();
-            try
-            {
-                // TLS tests in the same collection may leave the shared server in an
-                // intentional non-verifying mode. Select the required state explicitly.
-                await server.UseCertificate("valid");
-                await server.PasswordAuthentication(false);
-                var config = PostgresConnectionPolicyTests.Config();
-                config.Host = "127.0.0.1";
-                config.Port = server.Port;
-                config.Database = "postgres";
-                config.SslMode = PostgresSslMode.VerifyCA;
-                config.TlsRootCert = server.Root;
-                config.CommandTimeout = timeout;
-                db.settings = PostgresConnectionPolicy.Build(config, null, out var diagnostic);
-                Assert.Equal(timeout, diagnostic.CommandTimeout);
-                db.settings.SearchPath = db.schema;
-                db.settings.ApplicationName = db.schema;
-                db.settings.MaxPoolSize = 1;
-                db.Factory = new PgConnectionFactory(db.settings.ConnectionString);
-                var control = new NpgsqlConnectionStringBuilder(db.settings.ConnectionString)
-                { Pooling = false, CommandTimeout = 10, ApplicationName = db.schema + "_observer" };
-                db.Observer = new NpgsqlConnection(control.ConnectionString);
-                await db.Observer.OpenAsync();
-                await db.Observer.ExecuteAsync($"CREATE SCHEMA {db.schema}");
-                var script = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql"));
-                await db.Observer.ExecuteAsync(await File.ReadAllTextAsync(script));
-                return db;
-            }
-            catch { await db.DisposeAsync(); throw; }
-        }
-
-        public Task<int> Count(string table) => Observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {table}");
-
-        public Task DelayWrites(string table, string operation) => Observer.ExecuteAsync($"""
-            CREATE OR REPLACE FUNCTION delay_write() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN PERFORM pg_sleep(5); RETURN NEW; END $$;
-            CREATE TRIGGER delay_write AFTER {operation} ON {table} FOR EACH ROW EXECUTE FUNCTION delay_write();
-            """);
-
-        public Task RemoveDelay(string table) => Observer.ExecuteAsync($"DROP TRIGGER delay_write ON {table}");
-
-        public async Task CancelWhenSleeping(CancellationTokenSource cancellation)
-        {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            while(!await Observer.ExecuteScalarAsync<bool>(new CommandDefinition(
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=@schema AND wait_event='PgSleep')",
-                new { schema }, cancellationToken: deadline.Token)))
-                await Task.Delay(25, deadline.Token);
-            cancellation.Cancel();
-        }
-
-        public async Task AssertUsable()
-        {
-            await WaitForTransactionEndAsync();
-            // A one-slot pool must be usable after failure, without leaked transactions/locks.
-            Assert.Equal(1, await Factory.Run(con => con.ExecuteScalarAsync<int>("SELECT 1")));
-            Assert.Equal(0, await Observer.ExecuteScalarAsync<int>(
-                "SELECT count(*) FROM pg_stat_activity WHERE application_name=@schema AND xact_start IS NOT NULL", new { schema }));
-        }
-
-        public async Task WaitForTransactionEndAsync()
-        {
-            // OnRetry is synchronous. ConfigureAwait(false) on every await here is
-            // required to avoid deadlocking its caller under xUnit's sync context.
-            // Move those callers to await if the production hook becomes asynchronous.
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            while(await Observer.ExecuteScalarAsync<bool>(new CommandDefinition(
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=@schema AND xact_start IS NOT NULL)",
-                new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false))
-                await Task.Delay(25, deadline.Token).ConfigureAwait(false);
-        }
-
-        private sealed class BlockedRetry
-        {
-            public int Pid { get; set; }
-            public DateTime TransactionStarted { get; set; }
-        }
-
-        public async Task WaitForRetriesBlockedByCommitAsync(Task payout, int requiredRetryCount)
-        {
-            Assert.InRange(requiredRetryCount, 1, 2);
-            // Covers the current production 1s command timeout, 2s cancellation
-            // budget, Polly's 2s first retry delay, reconnect and lock observation.
-            // Also leaves eight seconds after the gate window for late-cancel
-            // completion diagnostics. Revisit the slack if the retry policy changes.
-            var observationTimeoutSeconds = CommitOverlapObservationTimeoutSeconds +
-                (requiredRetryCount - 1) * SecondRetryObservationBudgetSeconds;
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(observationTimeoutSeconds));
-            // A retry may reuse the same pooled backend. Transaction start time
-            // distinguishes attempts; polling the same blocked attempt never counts twice.
-            var observedRetries = new HashSet<(int Pid, DateTime TransactionStarted)>();
-            try
-            {
-                // Only this test's COMMIT trigger waits on an advisory lock under
-                // this generated application identity; no driver SQL spelling needed.
-                while(true)
-                {
-                    var blocked = await Observer.QueryAsync<BlockedRetry>(new CommandDefinition("""
-                        SELECT retry.pid AS Pid, retry.xact_start AS TransactionStarted
-                        FROM pg_stat_activity original
-                        JOIN pg_stat_activity retry ON original.pid=ANY(pg_blocking_pids(retry.pid))
-                        WHERE original.application_name=@schema AND retry.application_name=@schema
-                          AND original.wait_event='advisory' AND retry.wait_event_type='Lock'
-                          AND retry.xact_start IS NOT NULL
-                        """, new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false);
-                    foreach(var retry in blocked)
-                        observedRetries.Add((retry.Pid, retry.TransactionStarted));
-                    if(observedRetries.Count >= requiredRetryCount)
-                        return;
-                    Assert.False(payout.IsCompleted,
-                        $"Payout completed with status {payout.Status} after observing {observedRetries.Count} of {requiredRetryCount} required retry transactions blocked by the COMMIT gate. " +
-                        "The payout outcome is awaited after gate release. For successful completion, check whether " +
-                        "query_canceled arrived before the gate sleep ended or the original backend terminated.");
-                    await Task.Delay(25, deadline.Token).ConfigureAwait(false);
-                }
-            }
-            catch(OperationCanceledException error) when(deadline.IsCancellationRequested)
-            {
-                throw new XunitException(
-                    $"Observed {observedRetries.Count} of {requiredRetryCount} required retry transactions blocked by the COMMIT advisory gate within {observationTimeoutSeconds} seconds. " +
-                    "Check cancellation delivery, original backend termination, and the production retry delay/reconnect budget.", error);
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if(Observer != null)
-            {
-                try
-                {
-                    if(Observer.State == ConnectionState.Open)
-                    {
-                        // Cleanup cannot mask a failed assertion with a DROP blocked by
-                        // the deliberately sleeping test backend. Only this generated
-                        // test identity on this private server can be terminated here.
-                        await Observer.ExecuteAsync("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name=@schema", new { schema });
-                        await Observer.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
-                    }
-                }
-                finally { await Observer.DisposeAsync(); }
-            }
-            if(settings != null)
-            {
-                using var pool = new NpgsqlConnection(settings.ConnectionString);
-                NpgsqlConnection.ClearPool(pool);
-            }
-        }
     }
 }

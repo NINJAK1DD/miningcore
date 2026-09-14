@@ -149,8 +149,9 @@ transaction deadline.
 ## Reproduce the live checks
 
 The [documented Windows/WSL lab](merged-mining-regtest-validation.md) has PostgreSQL
-17 binaries on Windows; the primary Linux CI job installs PostgreSQL 18. The TLS
-and timeout tests share one `IsolatedPostgresServer` collection fixture: a
+17 binaries on Windows; the primary Linux CI job installs PostgreSQL 18. The TLS,
+timeout and payout persistence tests share one `IsolatedPostgresServer` collection
+fixture: a
 temporary cluster, generated certificates, random loopback port and synthetic
 financial data. Tests restore mutable authentication settings, and timeout tests
 select both the valid certificate and trust authentication before using their own
@@ -173,48 +174,25 @@ With the environment variable set, filtering to a unit test in the same policy
 collection also initializes the shared server. Unset it for unit-only runs that
 should avoid PostgreSQL setup.
 
-The fifteen database cases exercise real command timeout/caller cancellation,
+The eleven database cases in `PostgresCommandTimeoutIntegrationTests` exercise
+real command timeout/caller cancellation,
 transaction rollback, the one-slot connection pool after failure, PPS replay and
 rounding, the payout handler's database retry, COPY recovery, and interruption
 between recovery commit and archival. A deferred-trigger COMMIT timeout also
 verifies uncertain-outcome classification and database reconciliation before
 idempotent persistence retry. Two cases exercise the actual payout handler's
 default COMMIT error path, one for each persistence overload, and assert a single
-wallet submission, payment batch, payment and debit after retry. Four additional
-cases keep the production retry hook and backoff unchanged: a test-only trigger
-absorbs the first cancellation and waits on an observer-owned advisory lock. The
-observer releases that gate only after PostgreSQL shows the required number of
-distinct retry transactions blocked by the unfinished COMMIT: one or two for each
-persistence overload. In the two-retry cases, the first retry must time out and
-the second must reach the same blocked payment-batch identity while the original
-COMMIT remains unresolved. Attempts are distinguished by backend PID and transaction
-start time, so repeated observations or a reused pooled connection cannot count
-as an extra retry. Both overloads converge on one payment without another wallet
-submission. A fixture regression checks restoration from SCRAM authentication and
-disabled TLS. Ordinary write/commit delays remain five seconds; reducing the
-uncancellable COPY delay avoids waiting out a longer server sleep. The race
-trigger instead uses a named **15-second cancellation window**: its sleep must
-still be running when `query_canceled` arrives to arm the advisory gate, so it
-needs margin for scheduling and cancellation-delivery jitter. Normally cancellation
-interrupts that sleep after roughly one second. The armed gate is released by
-observed blocking state rather than a guessed delay or the driver's SQL text.
-The one-retry observer budget is derived from the gate window plus eight seconds
-(currently **23 seconds**), so an unarmed gate can finish its sleep and expose the
-payout outcome before the observer deadline expires. It also covers the current
-one-second command timeout, two-second cancellation budget, two-second first retry
-backoff, reconnect and lock detection. Observing a second retry adds eight seconds
-(**31 seconds** total), covering another one-second command timeout, up to two
-seconds of cancellation, the production four-second second backoff and reconnect
-slack. Changes to the retry policy or Npgsql cancellation semantics require
-revisiting these test assumptions. If the
-payout finishes without observed overlap or the budget expires, the test reports
-observed versus required attempt counts and cancellation/backend timing checks. Early
-completion reports the payout task's status so faults/cancellation are distinguished
-from successful completion without overlap; the actual payout exception is still
-observed after releasing the gate. Gate
-release and awaiting the payout run even when the overlap assertion fails.
-See PostgreSQL's
-[advisory lock semantics](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS).
+wallet submission, payment batch, payment and debit after retry. A fixture
+regression checks restoration from SCRAM authentication and disabled TLS.
+Ordinary write/commit delays remain five seconds; reducing the uncancellable
+COPY delay avoids waiting out a longer server sleep.
+
+Four additional [payout retry-contention cases](payout-persistence-tests.md) live
+in `Payments/PayoutHandlerPersistenceIntegrationTests.cs`, alongside the payout
+handler unit tests. They exercise the existing production retry policy across
+one or two retries behind an unresolved COMMIT. The timeout-only filter above
+does not select them; the payout guide gives both focused and combined commands.
+
 Financial assertions, trigger removal and pool-reuse checks wait for server
 transaction completion. Assertions inspect database state before cleanup;
 per-test teardown terminates only its generated backend identity, drops its schema
@@ -222,7 +200,8 @@ and clears its pool. Collection teardown stops/removes the temporary server.
 
 ### Multiple-retry verification: 2026-09-14
 
-The Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed **28 targeted tests**,
+At `6534c09a`, before the payout-test relocation, the Windows lab (PostgreSQL
+**17.10**, Npgsql **9.0.3**) passed **28 targeted tests**,
 including all **fifteen live database cases**, cleanup and collection-isolation
 checks. Both payout persistence overloads observed one and two distinct retry
 transactions blocked by the original COMMIT, with one wallet submission and one
