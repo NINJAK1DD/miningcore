@@ -57,6 +57,7 @@ wallet balances or recovery files.
 | Review reproducible daemon-backed evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence | [Mainnet validation record](mainnet-validation.md) |
 | Maintain deadline-sensitive test isolation | [Integration deadline scheduling](integration-deadline-tests.md) |
+| Maintain payout retry-contention coverage | [Payout persistence tests](payout-persistence-tests.md) |
 
 The machine-readable configuration reference is
 [`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained

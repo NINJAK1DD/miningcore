@@ -5,40 +5,12 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using Miningcore.Configuration;
 using Miningcore.Persistence.Postgres;
+using Miningcore.Tests.Util.Postgres;
 using Npgsql;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Persistence.Postgres;
-
-public sealed class PostgresTlsFactAttribute : FactAttribute
-{
-    public PostgresTlsFactAttribute()
-    {
-        if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = "Set MININGCORE_TEST_POSTGRES_BIN to the PostgreSQL bin directory to run isolated real TLS tests";
-    }
-}
-
-public sealed class PostgresTlsTheoryAttribute : TheoryAttribute
-{
-    public PostgresTlsTheoryAttribute()
-    {
-        if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = "Set MININGCORE_TEST_POSTGRES_BIN to run isolated real TLS tests";
-    }
-}
-
-public sealed class PostgresTlsUnixFactAttribute : FactAttribute
-{
-    public PostgresTlsUnixFactAttribute()
-    {
-        if(OperatingSystem.IsWindows())
-            Skip = "Requires Unix file permissions and an unprivileged PostgreSQL test account";
-        else if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = "Set MININGCORE_TEST_POSTGRES_BIN to run isolated real TLS tests";
-    }
-}
 
 [Collection(PostgresPolicyCollection.Name)]
 public class PostgresTlsIntegrationTests
@@ -51,7 +23,7 @@ public class PostgresTlsIntegrationTests
         this.output = output;
     }
 
-    [PostgresTlsTheory]
+    [IsolatedPostgresTheory]
     [InlineData("valid", PostgresSslMode.VerifyCA, "localhost", "trusted", true)]
     [InlineData("valid", PostgresSslMode.VerifyFull, "localhost", "trusted", true)]
     [InlineData("valid", PostgresSslMode.VerifyCA, "localhost", "untrusted", false)]
@@ -96,7 +68,7 @@ public class PostgresTlsIntegrationTests
         }
     }
 
-    [PostgresTlsTheory]
+    [IsolatedPostgresTheory]
     [InlineData("absent")]
     [InlineData("environment")]
     [InlineData("explicit")]
@@ -127,7 +99,7 @@ public class PostgresTlsIntegrationTests
         finally { Environment.SetEnvironmentVariable("PGSSLROOTCERT", priorRoot); }
     }
 
-    [PostgresTlsFact]
+    [IsolatedPostgresFact]
     public async Task ConfiguredPathDoesNotFreezeCertificateFileContents()
     {
         await server.UseCertificate("valid");
@@ -145,7 +117,7 @@ public class PostgresTlsIntegrationTests
         finally { File.Delete(rotatingRoot); }
     }
 
-    [PostgresTlsFact]
+    [IsolatedPostgresFact]
     public async Task MissingCaPreservesRetryClassificationAndCancellation()
     {
         await server.UseCertificate("valid");
@@ -160,7 +132,7 @@ public class PostgresTlsIntegrationTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => factory.OpenConnectionAsync(cancelled.Token));
     }
 
-    [PostgresTlsFact]
+    [IsolatedPostgresFact]
     public async Task PasswordSourcesAuthenticateUsingScramAndExplicitValuesTakePrecedence()
     {
         const string password = "ephemeral-password";
@@ -205,7 +177,7 @@ public class PostgresTlsIntegrationTests
         }, () => { File.Delete(passfile); return Task.CompletedTask; });
     }
 
-    [PostgresTlsTheory]
+    [IsolatedPostgresTheory]
     [InlineData("missing")]
     [InlineData("directory")]
     public async Task PassfileAccessFailuresAreSourceNeutralAndDoNotExposePaths(string failure)
@@ -266,7 +238,7 @@ public class PostgresTlsIntegrationTests
         });
     }
 
-    [PostgresTlsFact]
+    [IsolatedPostgresFact]
     public async Task MissingDatabaseReportsItsCategoryWithoutExposingItsName()
     {
         await server.UseCertificate("valid");
@@ -304,7 +276,7 @@ public class PostgresTlsIntegrationTests
         ]);
     }
 
-    [PostgresTlsFact]
+    [IsolatedPostgresFact]
     public async Task OccupiedPortRetriesWithoutTouchingTheOtherListener()
     {
         using var occupied = new TcpListener(IPAddress.Loopback, 0);
