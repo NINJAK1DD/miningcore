@@ -86,21 +86,25 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
     }
 
-    private bool ShouldPublishJobUpdate((bool IsNew, bool Force) update,
+    private void ReportMissingVerifiedJob((bool IsNew, bool Force) update,
         CancellationToken ct)
     {
         if(ct.IsCancellationRequested || (!update.IsNew && !update.Force))
-            return false;
+            return;
 
-        if(currentJob is not null)
-            return true;
-
-        // This is a final family-wide boundary for specialized managers. Keep
-        // the wait visible without repeating the same warning on every timer.
-        WarnMissingVerifiedJobOnce();
-
-        return false;
+        if(currentJob is null)
+        {
+            // This is a final family-wide boundary for specialized managers.
+            // Keep the wait visible without repeating it on every timer.
+            WarnMissingVerifiedJobOnce();
+        }
     }
+
+    private bool IsPublishableJobUpdate((bool IsNew, bool Force) update,
+        CancellationToken ct) =>
+        !ct.IsCancellationRequested &&
+        (update.IsNew || update.Force) &&
+        currentJob is not null;
 
     protected virtual object[] GetBlockTemplateParams()
     {
@@ -260,7 +264,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
-            .Where(x => ShouldPublishJobUpdate(x, ct))
+            .Do(x => ReportMissingVerifiedJob(x, ct))
+            .Where(x => IsPublishableJobUpdate(x, ct))
             .Do(x =>
             {
                 if(x.IsNew)

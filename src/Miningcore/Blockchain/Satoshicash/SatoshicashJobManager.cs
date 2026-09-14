@@ -105,7 +105,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "SatoshicashJobManager.UpdateJob", code: response.Error?.Code);
                 return (false, PreserveForceForVerifiedJob(forceUpdate, ct));

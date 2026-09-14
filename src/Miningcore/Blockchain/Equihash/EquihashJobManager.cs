@@ -112,7 +112,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashJobManager.UpdateJob", code: response.Error?.Code);
                 return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
