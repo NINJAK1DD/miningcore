@@ -193,11 +193,17 @@ still be running when `query_canceled` arrives to arm the advisory gate, so it
 needs margin for scheduling and cancellation-delivery jitter. Normally cancellation
 interrupts that sleep after roughly one second. The armed gate is released by
 observed blocking state rather than a guessed delay or the driver's SQL text.
-The observer's 20-second budget includes the current one-second command timeout,
-two-second cancellation budget, two-second first retry backoff, reconnect and
-lock detection; a changed retry policy requires revisiting that budget. If the
+The observer's budget is derived from the gate window plus eight seconds
+(currently **23 seconds**), so an unarmed gate can finish its sleep and expose the
+payout outcome before the observer deadline expires. It also covers the current
+one-second command timeout, two-second cancellation budget, two-second first retry
+backoff, reconnect and lock detection; a changed retry policy requires revisiting
+the slack. If the
 payout finishes without observed overlap or the budget expires, the test reports
-the missing gate/retry condition and cancellation/backend timing checks. Gate
+the missing gate/retry condition and cancellation/backend timing checks. Early
+completion reports the payout task's status so faults/cancellation are distinguished
+from successful completion without overlap; the actual payout exception is still
+observed after releasing the gate. Gate
 release and awaiting the payout run even when the overlap assertion fails.
 See PostgreSQL's
 [advisory lock semantics](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS).
@@ -212,10 +218,14 @@ The Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed **26 targeted te
 including all **thirteen live database cases**, cleanup and collection-isolation
 checks. Both production retry races observed blocking with the 15-second gate
 window; cancellation still interrupted the sleep rather than waiting it out.
-The managed build had zero warnings/errors; documentation links and diff-whitespace
-checks passed. Results: `src/Miningcore.Tests/TestResults/issue147-gate-hardening.trx`.
+The observer deadline is derived from that window plus eight seconds. The managed
+build had zero warnings/errors; documentation links and diff-whitespace checks
+passed. Results: `src/Miningcore.Tests/TestResults/issue147-gate-budget.trx`.
 
 ### Broader verification record: 2026-09-13
+
+Production code is unchanged since `d6dbc523`; subsequent commits change only
+tests and documentation, so the earlier production-policy evidence still applies.
 
 The Windows lab ran PostgreSQL **17.10**, Npgsql **9.0.3**, and .NET SDK **10.0.303**.
 The managed build completed with zero warnings/errors. The configuration, TLS,

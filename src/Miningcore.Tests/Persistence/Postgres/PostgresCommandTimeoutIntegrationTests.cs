@@ -22,6 +22,7 @@ using Npgsql;
 using NSubstitute;
 using Xunit;
 using Xunit.Abstractions;
+// Import only the exception: Xunit.Sdk also defines IMessageBus.
 using XunitException = Xunit.Sdk.XunitException;
 
 namespace Miningcore.Tests.Persistence.Postgres;
@@ -54,6 +55,9 @@ public class PostgresCommandTimeoutIntegrationTests(
     // Unlike COPY's uncancellable delay, this sleep must survive until cancellation
     // arrives and arms the advisory gate, including scheduling jitter on busy CI hosts.
     private const int CommitGateCancellationWindowSeconds = 15;
+    // Let an unarmed gate finish its sleep and expose the payout's outcome before
+    // the observer deadline wins. Keep this relationship when tuning the window.
+    private const int CommitOverlapObservationTimeoutSeconds = CommitGateCancellationWindowSeconds + 8;
 
     [PostgresTimeoutTheory]
     [InlineData(false)]
@@ -545,8 +549,9 @@ public class PostgresCommandTimeoutIntegrationTests(
         {
             // Covers the current production 1s command timeout, 2s cancellation
             // budget, Polly's 2s first retry delay, reconnect and lock observation.
-            // Revisit this budget if the production retry policy changes.
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            // Also leaves eight seconds after the gate window for late-cancel
+            // completion diagnostics. Revisit the slack if the retry policy changes.
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(CommitOverlapObservationTimeoutSeconds));
             try
             {
                 // Only this test's COMMIT trigger waits on an advisory lock under
@@ -560,15 +565,16 @@ public class PostgresCommandTimeoutIntegrationTests(
                     """, new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false))
                 {
                     Assert.False(payout.IsCompleted,
-                        "Payout completed before a retry was observed blocked by the COMMIT gate. " +
-                        "Check whether query_canceled arrived before the gate sleep ended or the original backend terminated.");
+                        $"Payout completed with status {payout.Status} before a retry was observed blocked by the COMMIT gate. " +
+                        "The payout outcome is awaited after gate release. For successful completion, check whether " +
+                        "query_canceled arrived before the gate sleep ended or the original backend terminated.");
                     await Task.Delay(25, deadline.Token).ConfigureAwait(false);
                 }
             }
             catch(OperationCanceledException error) when(deadline.IsCancellationRequested)
             {
                 throw new XunitException(
-                    "No retry was observed blocked by the COMMIT advisory gate within 20 seconds. " +
+                    $"No retry was observed blocked by the COMMIT advisory gate within {CommitOverlapObservationTimeoutSeconds} seconds. " +
                     "Check cancellation delivery, original backend termination, and the production first-retry delay/reconnect budget.", error);
             }
         }
