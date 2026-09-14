@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.IO;
 using System.Linq;
@@ -58,6 +59,9 @@ public class PostgresCommandTimeoutIntegrationTests(
     // Let an unarmed gate finish its sleep and expose the payout's outcome before
     // the observer deadline wins. Keep this relationship when tuning the window.
     private const int CommitOverlapObservationTimeoutSeconds = CommitGateCancellationWindowSeconds + 8;
+    // The second retry adds a failed 1s command, up to 2s cancellation, the real
+    // 4s second backoff, and reconnect/observation slack. Revisit with policy changes.
+    private const int SecondRetryObservationBudgetSeconds = 8;
 
     [PostgresTimeoutTheory]
     [InlineData(false)]
@@ -353,9 +357,11 @@ public class PostgresCommandTimeoutIntegrationTests(
     }
 
     [PostgresTimeoutTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission(bool perRecipient)
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    public async Task ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission(bool perRecipient, int requiredRetryCount)
     {
         await using var db = await Database.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
@@ -364,7 +370,8 @@ public class PostgresCommandTimeoutIntegrationTests(
         // Keep the real driver's cancellation budget and the real Polly hook/backoff.
         // This test-only trigger absorbs the first cancellation, making COMMIT outlive
         // the broken client connection. An observer-owned advisory lock holds it until
-        // a production retry is visibly blocked on the original payment-batch key.
+        // the requested number of distinct production retries have visibly blocked
+        // on the original payment-batch key. Earlier retries must time out naturally.
         await db.Observer.ExecuteAsync($"""
             CREATE SEQUENCE commit_fault;
             CREATE FUNCTION gate_commit() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -397,7 +404,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         // The subject is awaited in the final cleanup action: even a failed overlap
         // assertion must release the gate first, then observe the payout's outcome.
         await PostgresTestCleanup.RunAsync(
-            () => db.WaitForRetryBlockedByCommitAsync(payout),
+            () => db.WaitForRetriesBlockedByCommitAsync(payout, requiredRetryCount),
             async () => { await db.Observer.ExecuteAsync("SELECT pg_advisory_unlock(@gate)", new { gate }); },
             () => payout.WaitAsync(TimeSpan.FromSeconds(40)));
         await db.WaitForTransactionEndAsync();
@@ -409,7 +416,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         Assert.Equal(0m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
         Assert.Equal(12.5m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM payments"));
         await db.AssertUsable();
-        output.WriteLine("Observed a production retry blocked by the unfinished COMMIT; one wallet submission and one durable payment.");
+        output.WriteLine($"Observed {requiredRetryCount} distinct production retry transaction(s) blocked by the unfinished COMMIT; one wallet submission and one durable payment.");
     }
 
     [PostgresTimeoutFact]
@@ -545,27 +552,45 @@ public class PostgresCommandTimeoutIntegrationTests(
                 await Task.Delay(25, deadline.Token).ConfigureAwait(false);
         }
 
-        public async Task WaitForRetryBlockedByCommitAsync(Task payout)
+        private sealed class BlockedRetry
         {
+            public int Pid { get; set; }
+            public DateTime TransactionStarted { get; set; }
+        }
+
+        public async Task WaitForRetriesBlockedByCommitAsync(Task payout, int requiredRetryCount)
+        {
+            Assert.InRange(requiredRetryCount, 1, 2);
             // Covers the current production 1s command timeout, 2s cancellation
             // budget, Polly's 2s first retry delay, reconnect and lock observation.
             // Also leaves eight seconds after the gate window for late-cancel
             // completion diagnostics. Revisit the slack if the retry policy changes.
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(CommitOverlapObservationTimeoutSeconds));
+            var observationTimeoutSeconds = CommitOverlapObservationTimeoutSeconds +
+                (requiredRetryCount - 1) * SecondRetryObservationBudgetSeconds;
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(observationTimeoutSeconds));
+            // A retry may reuse the same pooled backend. Transaction start time
+            // distinguishes attempts; polling the same blocked attempt never counts twice.
+            var observedRetries = new HashSet<(int Pid, DateTime TransactionStarted)>();
             try
             {
                 // Only this test's COMMIT trigger waits on an advisory lock under
                 // this generated application identity; no driver SQL spelling needed.
-                while(!await Observer.ExecuteScalarAsync<bool>(new CommandDefinition("""
-                    SELECT EXISTS(
-                        SELECT 1 FROM pg_stat_activity original
+                while(true)
+                {
+                    var blocked = await Observer.QueryAsync<BlockedRetry>(new CommandDefinition("""
+                        SELECT retry.pid AS Pid, retry.xact_start AS TransactionStarted
+                        FROM pg_stat_activity original
                         JOIN pg_stat_activity retry ON original.pid=ANY(pg_blocking_pids(retry.pid))
                         WHERE original.application_name=@schema AND retry.application_name=@schema
-                          AND original.wait_event='advisory' AND retry.wait_event_type='Lock')
-                    """, new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false))
-                {
+                          AND original.wait_event='advisory' AND retry.wait_event_type='Lock'
+                          AND retry.xact_start IS NOT NULL
+                        """, new { schema }, cancellationToken: deadline.Token)).ConfigureAwait(false);
+                    foreach(var retry in blocked)
+                        observedRetries.Add((retry.Pid, retry.TransactionStarted));
+                    if(observedRetries.Count >= requiredRetryCount)
+                        return;
                     Assert.False(payout.IsCompleted,
-                        $"Payout completed with status {payout.Status} before a retry was observed blocked by the COMMIT gate. " +
+                        $"Payout completed with status {payout.Status} after observing {observedRetries.Count} of {requiredRetryCount} required retry transactions blocked by the COMMIT gate. " +
                         "The payout outcome is awaited after gate release. For successful completion, check whether " +
                         "query_canceled arrived before the gate sleep ended or the original backend terminated.");
                     await Task.Delay(25, deadline.Token).ConfigureAwait(false);
@@ -574,8 +599,8 @@ public class PostgresCommandTimeoutIntegrationTests(
             catch(OperationCanceledException error) when(deadline.IsCancellationRequested)
             {
                 throw new XunitException(
-                    $"No retry was observed blocked by the COMMIT advisory gate within {CommitOverlapObservationTimeoutSeconds} seconds. " +
-                    "Check cancellation delivery, original backend termination, and the production first-retry delay/reconnect budget.", error);
+                    $"Observed {observedRetries.Count} of {requiredRetryCount} required retry transactions blocked by the COMMIT advisory gate within {observationTimeoutSeconds} seconds. " +
+                    "Check cancellation delivery, original backend termination, and the production retry delay/reconnect budget.", error);
             }
         }
 

@@ -173,18 +173,23 @@ With the environment variable set, filtering to a unit test in the same policy
 collection also initializes the shared server. Unset it for unit-only runs that
 should avoid PostgreSQL setup.
 
-The thirteen database cases exercise real command timeout/caller cancellation,
+The fifteen database cases exercise real command timeout/caller cancellation,
 transaction rollback, the one-slot connection pool after failure, PPS replay and
 rounding, the payout handler's database retry, COPY recovery, and interruption
 between recovery commit and archival. A deferred-trigger COMMIT timeout also
 verifies uncertain-outcome classification and database reconciliation before
 idempotent persistence retry. Two cases exercise the actual payout handler's
 default COMMIT error path, one for each persistence overload, and assert a single
-wallet submission, payment batch, payment and debit after retry. Two additional
+wallet submission, payment batch, payment and debit after retry. Four additional
 cases keep the production retry hook and backoff unchanged: a test-only trigger
 absorbs the first cancellation and waits on an observer-owned advisory lock. The
-observer releases that gate only after PostgreSQL shows a retry blocked by the
-unfinished COMMIT. Both overloads converge on one payment without another wallet
+observer releases that gate only after PostgreSQL shows the required number of
+distinct retry transactions blocked by the unfinished COMMIT: one or two for each
+persistence overload. In the two-retry cases, the first retry must time out and
+the second must reach the same blocked payment-batch identity while the original
+COMMIT remains unresolved. Attempts are distinguished by backend PID and transaction
+start time, so repeated observations or a reused pooled connection cannot count
+as an extra retry. Both overloads converge on one payment without another wallet
 submission. A fixture regression checks restoration from SCRAM authentication and
 disabled TLS. Ordinary write/commit delays remain five seconds; reducing the
 uncancellable COPY delay avoids waiting out a longer server sleep. The race
@@ -193,14 +198,17 @@ still be running when `query_canceled` arrives to arm the advisory gate, so it
 needs margin for scheduling and cancellation-delivery jitter. Normally cancellation
 interrupts that sleep after roughly one second. The armed gate is released by
 observed blocking state rather than a guessed delay or the driver's SQL text.
-The observer's budget is derived from the gate window plus eight seconds
+The one-retry observer budget is derived from the gate window plus eight seconds
 (currently **23 seconds**), so an unarmed gate can finish its sleep and expose the
 payout outcome before the observer deadline expires. It also covers the current
 one-second command timeout, two-second cancellation budget, two-second first retry
-backoff, reconnect and lock detection; a changed retry policy requires revisiting
-the slack. If the
+backoff, reconnect and lock detection. Observing a second retry adds eight seconds
+(**31 seconds** total), covering another one-second command timeout, up to two
+seconds of cancellation, the production four-second second backoff and reconnect
+slack. Changes to the retry policy or Npgsql cancellation semantics require
+revisiting these test assumptions. If the
 payout finishes without observed overlap or the budget expires, the test reports
-the missing gate/retry condition and cancellation/backend timing checks. Early
+observed versus required attempt counts and cancellation/backend timing checks. Early
 completion reports the payout task's status so faults/cancellation are distinguished
 from successful completion without overlap; the actual payout exception is still
 observed after releasing the gate. Gate
@@ -212,15 +220,17 @@ transaction completion. Assertions inspect database state before cleanup;
 per-test teardown terminates only its generated backend identity, drops its schema
 and clears its pool. Collection teardown stops/removes the temporary server.
 
-### Gate-hardening verification: 2026-09-14
+### Multiple-retry verification: 2026-09-14
 
-The Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed **26 targeted tests**,
-including all **thirteen live database cases**, cleanup and collection-isolation
-checks. Both production retry races observed blocking with the 15-second gate
-window; cancellation still interrupted the sleep rather than waiting it out.
-The observer deadline is derived from that window plus eight seconds. The managed
+The Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed **28 targeted tests**,
+including all **fifteen live database cases**, cleanup and collection-isolation
+checks. Both payout persistence overloads observed one and two distinct retry
+transactions blocked by the original COMMIT, with one wallet submission and one
+durable payment after release. Cancellation still interrupted the 15-second gate
+sleep rather than waiting it out. The observer deadline is derived from that window
+plus eight seconds, with another eight seconds for the second retry. The managed
 build had zero warnings/errors; documentation links and diff-whitespace checks
-passed. Results: `src/Miningcore.Tests/TestResults/issue147-gate-budget.trx`.
+passed. Results: `src/Miningcore.Tests/TestResults/issue147-multiple-retries.trx`.
 
 ### Broader verification record: 2026-09-13
 
