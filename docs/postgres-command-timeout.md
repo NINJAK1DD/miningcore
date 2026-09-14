@@ -151,12 +151,11 @@ transaction deadline.
 The [documented Windows/WSL lab](merged-mining-regtest-validation.md) has PostgreSQL
 17 binaries on Windows; the primary Linux CI job installs PostgreSQL 18. The TLS,
 timeout and payout persistence tests share one `IsolatedPostgresServer` collection
-fixture: a
-temporary cluster, generated certificates, random loopback port and synthetic
-financial data. Tests restore mutable authentication settings, and timeout tests
-select both the valid certificate and trust authentication before using their own
-schema and pool. Re-selecting an already active state avoids a server restart. Existing
-lab databases, services and wallets are not used.
+fixture: a temporary cluster, generated certificates, random loopback port and
+synthetic financial data. Tests restore mutable authentication settings; timeout
+and payout tests select both the valid certificate and trust authentication before
+using their own schema and pool. Re-selecting an already active state avoids a
+server restart. Existing lab databases, services and wallets are not used.
 
 ```powershell
 dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
@@ -175,8 +174,8 @@ collection also initializes the shared server. Unset it for unit-only runs that
 should avoid PostgreSQL setup.
 
 The eleven database cases in `PostgresCommandTimeoutIntegrationTests` exercise
-real command timeout/caller cancellation,
-transaction rollback, the one-slot connection pool after failure, PPS replay and
+real command timeout/caller cancellation, transaction rollback, the one-slot
+connection pool after failure, PPS replay and
 rounding, the payout handler's database retry, COPY recovery, and interruption
 between recovery commit and archival. A deferred-trigger COMMIT timeout also
 verifies uncertain-outcome classification and database reconciliation before
@@ -209,7 +208,8 @@ durable payment after release. Cancellation still interrupted the 15-second gate
 sleep rather than waiting it out. The observer deadline is derived from that window
 plus eight seconds, with another eight seconds for the second retry. The managed
 build had zero warnings/errors; documentation links and diff-whitespace checks
-passed. Results: `src/Miningcore.Tests/TestResults/issue147-multiple-retries.trx`.
+passed. Local validation artifact (not committed):
+`src/Miningcore.Tests/TestResults/issue147-multiple-retries.trx`.
 
 ### Broader verification record: 2026-09-13
 
@@ -221,7 +221,7 @@ The managed build completed with zero warnings/errors. The configuration, TLS,
 transaction, payout and share-recovery regression selection passed **769 tests**,
 including all **thirteen live database cases**. One existing Unix permissions test was
 skipped on Windows. Schema parity, diagnostic snapshot, documentation links and
-diff-whitespace checks passed. Local test results are recorded in
+diff-whitespace checks passed. Local test results (not committed) are recorded in
 `src/Miningcore.Tests/TestResults/issue147-rereview.trx`; the diagnostic theory's
 final isolated recheck is in `issue147-rereview-diagnostics.trx` in the same directory.
 

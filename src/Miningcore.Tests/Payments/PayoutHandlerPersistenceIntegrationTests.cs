@@ -7,9 +7,11 @@ using Miningcore.Extensions;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Tests.Persistence.Postgres;
+using Miningcore.Tests.Util;
 using Xunit;
 using Xunit.Abstractions;
-using Xunit.Sdk;
+// Import only the exception: Xunit.Sdk also defines IMessageBus.
+using XunitException = Xunit.Sdk.XunitException;
 
 namespace Miningcore.Tests.Payments;
 
@@ -30,7 +32,7 @@ public class PayoutHandlerPersistenceIntegrationTests(
     // Revisit both the cap and budget when changing the production retry policy.
     private const int SecondRetryObservationBudgetSeconds = 8;
 
-    [PostgresTimeoutTheory]
+    [PostgresLiveTheory]
     [InlineData(false, 1)]
     [InlineData(true, 1)]
     [InlineData(false, 2)]
@@ -127,7 +129,7 @@ public class PayoutHandlerPersistenceIntegrationTests(
                     WHERE original.application_name=@schema AND retry.application_name=@schema
                       AND original.wait_event='advisory' AND retry.wait_event_type='Lock'
                       AND retry.xact_start IS NOT NULL
-                    """, new { schema = db.ApplicationName }, cancellationToken: deadline.Token)).ConfigureAwait(false);
+                    """, new { schema = db.SchemaAndApplicationName }, cancellationToken: deadline.Token)).ConfigureAwait(false);
                 foreach(var retry in blocked)
                     observedRetries.Add((retry.Pid, retry.TransactionStarted));
                 if(observedRetries.Count >= requiredRetryCount)

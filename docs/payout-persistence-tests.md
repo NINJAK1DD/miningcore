@@ -49,9 +49,13 @@ invariant without exercising all eight production retries.
 
 Use the [documented isolated Windows/WSL lab](merged-mining-regtest-validation.md)
 and [managed build instructions](postgres-command-timeout.md#reproduce-the-live-checks).
-The payout and timeout suites share `PostgresPersistenceTestDatabase` and
-`PayoutPersistenceTestHandler`. They use the same collection-owned
-`IsolatedPostgresServer` as TLS tests, retaining process-state isolation and one
+The payout and timeout suites share `PostgresPersistenceTestDatabase`,
+`PayoutPersistenceTestHandler` and the `PostgresLiveFact`/`PostgresLiveTheory`
+opt-in attributes under `src/Miningcore.Tests/Util`. Neither suite owns the
+other's shared helpers. Timeout-only fault injection stays in the timeout suite.
+`SchemaAndApplicationName` explicitly identifies the generated schema, search path
+and application name shared by each case's connections. The suites use the same
+collection-owned `IsolatedPostgresServer` as TLS tests, retaining process-state isolation and one
 temporary server. Each case owns its schema, application identity and one-slot
 pool. Existing lab databases and wallets are not used.
 
@@ -77,5 +81,17 @@ The documented Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed all
 **28 combined checks**, including **15 live database cases**, with zero failures
 or skips after relocating the four contention cases. The managed build completed
 with zero warnings/errors; documentation links and diff-whitespace checks passed.
-Results: `src/Miningcore.Tests/TestResults/payout-persistence-relocation.trx`.
+Local validation artifact (not committed):
+`src/Miningcore.Tests/TestResults/payout-persistence-relocation.trx`.
+The `TestResults` directory is gitignored; these paths identify local evidence,
+not files available in a repository checkout or uploaded CI artifacts.
 Earlier policy evidence remains in the [timeout verification record](postgres-command-timeout.md#broader-verification-record-2026-09-13).
+
+The review follow-up passed the same **28 checks**, including all **15 live cases**,
+after moving the shared helpers to `Util` and extracting the generic opt-in
+attributes. Without the opt-in variable, **13 checks passed** and **eight test
+methods skipped**; xUnit reports skipped theories once without expanding their
+rows. Both runs had zero failures, and the managed build had zero warnings/errors.
+Local validation artifacts (not committed):
+`src/Miningcore.Tests/TestResults/payout-review-live.trx` and
+`src/Miningcore.Tests/TestResults/payout-review-opt-out.trx`.

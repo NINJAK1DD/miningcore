@@ -11,7 +11,7 @@ using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
-using Miningcore.Tests.Payments;
+using Miningcore.Tests.Util;
 using Newtonsoft.Json;
 using Npgsql;
 using NSubstitute;
@@ -20,32 +20,13 @@ using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Persistence.Postgres;
 
-public sealed class PostgresTimeoutTheoryAttribute : TheoryAttribute
-{
-    internal const string SkipReason = "Set MININGCORE_TEST_POSTGRES_BIN to run isolated PostgreSQL timeout/rollback tests";
-    public PostgresTimeoutTheoryAttribute()
-    {
-        if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = SkipReason;
-    }
-}
-
-public sealed class PostgresTimeoutFactAttribute : FactAttribute
-{
-    public PostgresTimeoutFactAttribute()
-    {
-        if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = PostgresTimeoutTheoryAttribute.SkipReason;
-    }
-}
-
 // Reuse the isolated, loopback-only server lifecycle (also installed by CI).
 // The collection owns one server; each test owns its schema and connection pool.
 [Collection(PostgresPolicyCollection.Name)]
 public class PostgresCommandTimeoutIntegrationTests(
     IsolatedPostgresServer server, ITestOutputHelper output)
 {
-    [PostgresTimeoutTheory]
+    [PostgresLiveTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PaymentTransactionRollsBackAndReplaysExactlyOnce(bool cancel)
@@ -85,7 +66,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         Assert.Equal(1, await db.Count("payment_batches"));
     }
 
-    [PostgresTimeoutTheory]
+    [PostgresLiveTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PpsTimeoutOrCancellationRollsBackReceiptCreditAndRemainder(bool cancel)
@@ -112,7 +93,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         };
         // This blocks inside the real financial SQL after the receipt/share insertion
         // and remainder seed, rather than substituting a repository exception.
-        await db.DelayWrites("balances", "INSERT");
+        await DelayWrites(db, "balances", "INSERT");
         Task<ShareAccountingInsertResult> Persist(CancellationToken ct) => db.Factory.RunTx(
             (con, tx) => repository.InsertAccountingBatchAsync(con, tx, batch, ct),
             ct: ct, classifyCommitOutcome: true);
@@ -123,7 +104,7 @@ public class PostgresCommandTimeoutIntegrationTests(
             Assert.Equal(0, await db.Count(table));
         await db.AssertUsable();
 
-        await db.RemoveDelay("balances");
+        await RemoveDelay(db, "balances");
         Assert.Equal(ShareAccountingInsertResult.Inserted, await Persist(CancellationToken.None));
         Assert.Equal(ShareAccountingInsertResult.AlreadyCommitted, await Persist(CancellationToken.None));
         foreach(var table in new[] { "shares", "share_accounting_groups", "pps_share_credits", "balance_changes" })
@@ -132,7 +113,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         Assert.Equal(0.0000000000005m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM pps_credit_remainders"));
     }
 
-    [PostgresTimeoutTheory]
+    [PostgresLiveTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task RecoveryJournalSurvivesCopyTimeoutAndCommitArchiveInterruption(bool interruptArchive)
@@ -157,7 +138,7 @@ public class PostgresCommandTimeoutIntegrationTests(
                 NetworkDifficulty = 100, BlockHeight = 100, Created = DateTime.UtcNow,
             } });
             var original = await File.ReadAllBytesAsync(filename);
-            await db.DelayWrites("shares", "INSERT");
+            await DelayWrites(db, "shares", "INSERT");
             // Npgsql 9 COPY completion disables the separate PostgreSQL cancellation
             // request and breaks the connection on timeout. PostgreSQL can finish the
             // current work before observing that disconnect. Interrupt waits for the
@@ -169,7 +150,7 @@ public class PostgresCommandTimeoutIntegrationTests(
             Assert.Equal(0, await db.Count("shares"));
             Assert.Equal(0, await db.Count("share_recovery_imports"));
             await db.AssertUsable();
-            await db.RemoveDelay("shares");
+            await RemoveDelay(db, "shares");
 
             if(interruptArchive)
             {
@@ -195,14 +176,14 @@ public class PostgresCommandTimeoutIntegrationTests(
         }
     }
 
-    [PostgresTimeoutFact]
+    [PostgresLiveFact]
     public async Task PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit()
     {
         await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
         var mapper = AutoMapperFactory.CreateMapper();
         var balances = new BalanceRepository(mapper);
         await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, "ltc", "miner", 12.5m, "seed"));
-        await db.DelayWrites("balances", "UPDATE");
+        await DelayWrites(db, "balances", "UPDATE");
         var retries = 0;
         var handler = new ObservedRetryHandler(db.Factory, mapper, error =>
         {
@@ -230,7 +211,7 @@ public class PostgresCommandTimeoutIntegrationTests(
     private async Task Interrupt(PostgresPersistenceTestDatabase db, bool cancel, Func<CancellationToken, Task> action)
     {
         using var cancellation = new CancellationTokenSource();
-        var observed = cancel ? db.CancelWhenSleeping(cancellation) : Task.CompletedTask;
+        var observed = cancel ? CancelWhenSleeping(db, cancellation) : Task.CompletedTask;
         var error = await Record.ExceptionAsync(() => action(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(20)));
         await observed;
         if(cancel)
@@ -247,7 +228,7 @@ public class PostgresCommandTimeoutIntegrationTests(
             $"{(cancel ? "caller cancellation" : "command timeout")}: {error.GetType().Name}");
     }
 
-    [PostgresTimeoutFact]
+    [PostgresLiveFact]
     public async Task CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation()
     {
         await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
@@ -288,7 +269,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         output.WriteLine($"COMMIT timeout remained uncertain; database reconciliation found {committed} committed batch(es).");
     }
 
-    [PostgresTimeoutTheory]
+    [PostgresLiveTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PayoutHandlerCommitTimeoutReconcilesWithoutAnotherWalletSubmission(bool perRecipient)
@@ -338,7 +319,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         await db.AssertUsable();
     }
 
-    [PostgresTimeoutFact]
+    [PostgresLiveFact]
     public async Task DatabaseSetupRestoresAuthenticationAndTlsWithoutRedundantRestarts()
     {
         await PostgresTestCleanup.RunAsync(async () =>
@@ -356,6 +337,27 @@ public class PostgresCommandTimeoutIntegrationTests(
             await server.UseCertificate("valid");
             Assert.Equal(1, await db.Observer.ExecuteScalarAsync<int>("SELECT 1"));
         }, () => server.PasswordAuthentication(false));
+    }
+
+    // Fault injection belongs to the timeout suite; the shared database fixture
+    // owns only setup, observation, pool checks and cleanup.
+    private static Task DelayWrites(PostgresPersistenceTestDatabase db, string table, string operation) => db.Observer.ExecuteAsync($"""
+        CREATE OR REPLACE FUNCTION delay_write() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_sleep(5); RETURN NEW; END $$;
+        CREATE TRIGGER delay_write AFTER {operation} ON {table} FOR EACH ROW EXECUTE FUNCTION delay_write();
+        """);
+
+    private static Task RemoveDelay(PostgresPersistenceTestDatabase db, string table) =>
+        db.Observer.ExecuteAsync($"DROP TRIGGER delay_write ON {table}");
+
+    private static async Task CancelWhenSleeping(PostgresPersistenceTestDatabase db, CancellationTokenSource cancellation)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while(!await db.Observer.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=@schema AND wait_event='PgSleep')",
+            new { schema = db.SchemaAndApplicationName }, cancellationToken: deadline.Token)))
+            await Task.Delay(25, deadline.Token);
+        cancellation.Cancel();
     }
 
     private sealed class ObservedRetryHandler(IConnectionFactory factory, IMapper mapper, Action<Exception> retry)

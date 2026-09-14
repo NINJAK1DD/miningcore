@@ -14,14 +14,14 @@ using NLog;
 using NSubstitute;
 using Xunit;
 
-namespace Miningcore.Tests.Payments;
+namespace Miningcore.Tests.Util;
 
 // Exercises both production persistence overloads without replacing OnRetry or backoff.
 internal class PayoutPersistenceTestHandler(IConnectionFactory factory, IMapper mapper)
     : PayoutHandlerBase(factory, mapper, new ShareRepository(mapper), new BlockRepository(mapper),
         new BalanceRepository(mapper), new PaymentRepository(mapper), new StandardClock(), Substitute.For<IMessageBus>())
 {
-    protected override string LogCategory => "timeout-test";
+    protected override string LogCategory => "payout-persistence-test";
     public Task Persist(Balance[] balances, bool perRecipient = false)
     {
         logger = LogManager.GetCurrentClassLogger();

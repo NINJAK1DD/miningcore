@@ -7,16 +7,18 @@ using Dapper;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Persistence.Postgres;
+using Miningcore.Tests.Persistence.Postgres;
 using Npgsql;
 using Xunit;
 
-namespace Miningcore.Tests.Persistence.Postgres;
+namespace Miningcore.Tests.Util;
 
 // Shared isolated schema and one-slot pool for timeout and payout persistence tests.
 internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
 {
-    private readonly string schema = "timeout_" + Guid.NewGuid().ToString("N");
-    public string ApplicationName => schema;
+    private readonly string schema = "persistence_" + Guid.NewGuid().ToString("N");
+    // One generated identity deliberately serves as schema, search_path and application_name.
+    public string SchemaAndApplicationName => schema;
     private NpgsqlConnectionStringBuilder settings;
     public NpgsqlConnection Observer { get; private set; }
     public PgConnectionFactory Factory { get; private set; }
@@ -56,24 +58,6 @@ internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
     }
 
     public Task<int> Count(string table) => Observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {table}");
-
-    public Task DelayWrites(string table, string operation) => Observer.ExecuteAsync($"""
-        CREATE OR REPLACE FUNCTION delay_write() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN PERFORM pg_sleep(5); RETURN NEW; END $$;
-        CREATE TRIGGER delay_write AFTER {operation} ON {table} FOR EACH ROW EXECUTE FUNCTION delay_write();
-        """);
-
-    public Task RemoveDelay(string table) => Observer.ExecuteAsync($"DROP TRIGGER delay_write ON {table}");
-
-    public async Task CancelWhenSleeping(CancellationTokenSource cancellation)
-    {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        while(!await Observer.ExecuteScalarAsync<bool>(new CommandDefinition(
-            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=@schema AND wait_event='PgSleep')",
-            new { schema }, cancellationToken: deadline.Token)))
-            await Task.Delay(25, deadline.Token);
-        cancellation.Cancel();
-    }
 
     public async Task AssertUsable()
     {
