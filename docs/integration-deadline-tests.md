@@ -34,6 +34,35 @@ If a timeout recurs, inspect host/IO progress and intra-test continuation schedu
 before considering a test watchdog change. Do not automatically relax deadlines.
 Revisit this isolation when upgrading xUnit to its conservative scheduler.
 
+## Background-service startup context
+
+The [post-merge dev run at `ac903306`](https://github.com/NINJAK1DD/miningcore/actions/runs/34797126540)
+failed only `BtStreamReceiverTests.StartAsync_CompletesImmediatelyWithoutEndpoints`
+at its ten-second watchdog (2,848 passed, one failed, one skipped). All live
+PostgreSQL timeout/payout cases passed. The empty-endpoint path signals readiness
+and returns without network I/O, but `StartupGatedBackgroundService.StartAsync`
+captured its caller's synchronization context while awaiting that result. An
+occupied context can delay reporting readiness even after background work finishes.
+The CI trace is consistent with this scheduling dependency; it does not contain
+a scheduler trace proving which continuation was delayed.
+
+The gate's internal awaits now use `ConfigureAwait(false)`: readiness, failure
+and cancellation have no caller-context affinity. This leaves test collection
+membership, watchdogs and the readiness contract unchanged. The deterministic
+`StartupGatedBackgroundServiceTests` holds execution behind a controlled gate,
+records posts to the caller context, and covers readiness, early execution failure,
+return without readiness, explicitly signaled failure and cancellation. All five
+cases failed the context-post assertion before the fix; no timing race was needed.
+The recording context forwards callbacks so a failing assertion does not leave
+startup suspended. Local baseline results are in
+`src/Miningcore.Tests/TestResults/startup-context-before.trx`.
+After the fix, **85 targeted tests passed**, with no failures or skips, on the
+Windows lab: the five context cases plus `BtStreamReceiverTests`,
+`HostedServiceStartupTests`, `ShareReceiverTests` and `ProgramPoolTemplateTests`.
+The managed build had zero warnings/errors. Results are in
+`src/Miningcore.Tests/TestResults/startup-context-after.trx`; full-suite CI remains
+the separate check for behavior under assembly-wide contention.
+
 ## Verification expectations
 
 Filtered repetitions check fixture stability but cannot reproduce competition from
