@@ -65,16 +65,22 @@ Use the [documented isolated Windows/WSL lab](merged-mining-regtest-validation.m
 and [managed build instructions](postgres-command-timeout.md#reproduce-the-live-checks).
 The payout and timeout suites share `PostgresPersistenceTestDatabase`,
 `PayoutPersistenceTestHandler` and the `IsolatedPostgresFact`/`IsolatedPostgresTheory`
-opt-in attributes under `src/Miningcore.Tests/Util`. The shared server, collection
-definition and cleanup helper also live there, and the database helper builds its
-own connection configuration without depending on a test class. Neither suite
-owns the other's shared helpers. Timeout-only fault injection stays in the timeout
-suite.
+opt-in attributes under `src/Miningcore.Tests/Util/Postgres`. The shared server,
+collection definition, cleanup helper and its tests also live there. The database
+helper builds its own connection configuration without depending on a test class
+and asserts the resulting timeout, `VerifyCA` mode and root certificate. Neither
+suite owns the other's shared helpers. Timeout-only fault injection stays in the
+timeout suite.
 The TLS suite also uses these internal attributes; its Unix-permission case keeps
-the additional platform restriction in `PostgresTlsUnixFact`.
-An inventory test requires every test method in all three suites to use the
-isolated opt-in attributes (or the TLS Unix specialization). These attributes
-require `MININGCORE_TEST_POSTGRES_BIN` to name the PostgreSQL **bin directory**;
+the additional platform restriction in `PostgresTlsUnixFact`, beside the other
+attributes in `Util/Postgres/IsolatedPostgresAttributes.cs`.
+The collection is named `Isolated PostgreSQL policy`. An inventory test discovers
+its live suites by their `IsolatedPostgresServer` constructor parameter, so new
+members automatically receive the opt-in check without another hand-maintained
+list. Every test method must use exactly one isolated opt-in attribute (or the
+TLS Unix specialization in the TLS suite); duplicate-attribute failures name the
+method and offending attributes. These attributes require
+`MININGCORE_TEST_POSTGRES_BIN` to name the PostgreSQL **bin directory**;
 the separate `PostgresIntegrationFact` instead uses the `MININGCORE_TEST_POSTGRES`
 connection string for an existing service database.
 `SchemaAndApplicationName` explicitly identifies the generated schema, search path
@@ -143,16 +149,18 @@ The build had zero warnings/errors. Local artifacts (not committed):
 `src/Miningcore.Tests/TestResults/postgres-shared-attributes-live.trx` and
 `src/Miningcore.Tests/TestResults/postgres-shared-attributes-opt-out.trx`.
 
-The fixture-ownership and discovery-guard follow-up passed **56 checks** with
+The shared PostgreSQL infrastructure follow-up passed **56 checks** with
 zero failures and the expected Unix-permission skip on Windows. This includes
-all **15 timeout/payout live cases** and the new opt-in inventory check. Without
+all **15 timeout/payout live cases** and the derived opt-in inventory check. Without
 the opt-in variable, **14 checks passed** and **17 methods skipped**. The managed
-build had zero warnings/errors. A temporary mutation replacing an isolated fact
-with plain `[Fact]` made the inventory check fail with the offending method's
-name; the annotation was restored before the final build and both passing runs.
-Local artifacts (not committed):
-`src/Miningcore.Tests/TestResults/isolated-postgres-review-live.trx`,
-`src/Miningcore.Tests/TestResults/isolated-postgres-review-opt-out.trx` and
-`src/Miningcore.Tests/TestResults/isolated-postgres-guard-mutation.trx` (the expected
-failure proving the guard). Current-head Linux evidence, including the Unix-only
-TLS case, is recorded in the PR checks and description.
+build had zero warnings/errors. A temporary fourth suite with a plain `[Fact]`
+failed the guard without updating either inventory. Stacked fact attributes
+failed with the method name and both attribute types. The latter check temporarily
+suppressed xUnit1002, which already rejects duplicates at build time. All mutations
+and the suppression were removed before the final build and passing runs.
+Local artifacts (not committed), under `src/Miningcore.Tests/TestResults/`:
+`postgres-derived-guard-live.trx`, `postgres-derived-guard-opt-out.trx`,
+`postgres-guard-new-suite-mutation.trx` and `postgres-guard-duplicate-mutation.trx`.
+The two mutation artifacts are expected failures proving the guard. Current-head
+Linux evidence, including the Unix-only TLS case, is recorded in the PR checks
+and description.

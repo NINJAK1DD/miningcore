@@ -1,7 +1,22 @@
 using System;
 using Xunit;
 
-namespace Miningcore.Tests.Util;
+namespace Miningcore.Tests.Util.Postgres;
+
+/// <summary>
+/// Requires isolated PostgreSQL binaries and Unix permissions for TLS access tests.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+internal sealed class PostgresTlsUnixFactAttribute : FactAttribute
+{
+    public PostgresTlsUnixFactAttribute()
+    {
+        if(OperatingSystem.IsWindows())
+            Skip = "Requires Unix file permissions and an unprivileged PostgreSQL test account";
+        else if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
+            Skip = IsolatedPostgresTheoryAttribute.SkipReason;
+    }
+}
 
 /// <summary>
 /// Opts into theory cases that create an isolated server from PostgreSQL binaries,

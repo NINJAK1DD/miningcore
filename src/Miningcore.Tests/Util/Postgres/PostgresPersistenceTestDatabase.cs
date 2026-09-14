@@ -10,7 +10,7 @@ using Miningcore.Persistence.Postgres;
 using Npgsql;
 using Xunit;
 
-namespace Miningcore.Tests.Util;
+namespace Miningcore.Tests.Util.Postgres;
 
 // Shared isolated schema and one-slot pool for timeout and payout persistence tests.
 internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
@@ -39,6 +39,8 @@ internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
             };
             db.settings = PostgresConnectionPolicy.Build(config, null, out var diagnostic);
             Assert.Equal(timeout, diagnostic.CommandTimeout);
+            Assert.Equal(SslMode.VerifyCA, db.settings.SslMode);
+            Assert.Equal(server.Root, db.settings.RootCertificate);
             db.settings.SearchPath = db.schema;
             db.settings.ApplicationName = db.schema;
             db.settings.MaxPoolSize = 1;

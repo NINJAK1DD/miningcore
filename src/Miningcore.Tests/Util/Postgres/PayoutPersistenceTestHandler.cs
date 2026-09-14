@@ -14,7 +14,7 @@ using NLog;
 using NSubstitute;
 using Xunit;
 
-namespace Miningcore.Tests.Util;
+namespace Miningcore.Tests.Util.Postgres;
 
 // Exercises both production persistence overloads without replacing OnRetry or backoff.
 internal class PayoutPersistenceTestHandler(IConnectionFactory factory, IMapper mapper)

@@ -7,6 +7,7 @@ using Miningcore.Extensions;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Tests.Util;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 using Xunit.Abstractions;
 // Import only the exception: Xunit.Sdk also defines IMessageBus.

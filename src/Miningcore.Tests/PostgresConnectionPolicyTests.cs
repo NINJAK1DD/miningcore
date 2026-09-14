@@ -8,7 +8,7 @@ using Miningcore.Configuration;
 using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Postgres;
-using Miningcore.Tests.Util;
+using Miningcore.Tests.Util.Postgres;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Schema;

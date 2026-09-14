@@ -9,24 +9,29 @@ using Miningcore.Tests.Payments;
 using Miningcore.Tests.Persistence.Postgres;
 using Miningcore.Tests.Rpc;
 using Miningcore.Tests.Util;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests;
 
 public class NonParallelCollectionTests
 {
-    private static readonly Type[] IsolatedPostgresSuites =
-    {
-        typeof(PostgresTlsIntegrationTests), typeof(PostgresCommandTimeoutIntegrationTests),
-        typeof(PayoutHandlerPersistenceIntegrationTests),
-    };
+    // Derive live suites from fixture injection so new collection members are
+    // guarded automatically, without maintaining another list beside ReviewedCollections.
+    private static Type[] IsolatedPostgresSuites() =>
+        CollectionAssertions.Members(typeof(PostgresPolicyCollection))
+            .Where(type => type.GetConstructors().Any(constructor => constructor.GetParameters()
+                .Any(parameter => parameter.ParameterType == typeof(IsolatedPostgresServer))))
+            .ToArray();
 
     [Fact]
     public void PostgresPolicy_UsesOneCollectionServerForAllLiveTestClasses()
     {
         Assert.Contains(typeof(ICollectionFixture<IsolatedPostgresServer>),
             typeof(PostgresPolicyCollection).GetInterfaces());
-        foreach(var testClass in IsolatedPostgresSuites)
+        var suites = IsolatedPostgresSuites();
+        Assert.NotEmpty(suites);
+        foreach(var testClass in suites)
         {
             Assert.DoesNotContain(typeof(IClassFixture<IsolatedPostgresServer>), testClass.GetInterfaces());
             Assert.Same(typeof(PostgresPolicyCollection), CollectionAssertions.NonParallelDefinition(testClass));
@@ -36,7 +41,9 @@ public class NonParallelCollectionTests
     [Fact]
     public void IsolatedPostgresSuites_RequireOptInOnEveryTestMethod()
     {
-        foreach(var testClass in IsolatedPostgresSuites)
+        var suites = IsolatedPostgresSuites();
+        Assert.NotEmpty(suites);
+        foreach(var testClass in suites)
         {
             var methods = testClass.GetMethods(BindingFlags.Instance | BindingFlags.Static |
                     BindingFlags.Public | BindingFlags.NonPublic)
@@ -44,7 +51,11 @@ public class NonParallelCollectionTests
             Assert.NotEmpty(methods);
             foreach(var method in methods)
             {
-                var attribute = Assert.Single(method.GetCustomAttributes<FactAttribute>(inherit: true));
+                var attributes = method.GetCustomAttributes<FactAttribute>(inherit: true).ToArray();
+                Assert.True(attributes.Length == 1,
+                    $"{testClass.Name}.{method.Name} must declare exactly one isolated PostgreSQL opt-in attribute; " +
+                    $"found {attributes.Length}: {string.Join(", ", attributes.Select(attribute => attribute.GetType().Name))}.");
+                var attribute = attributes[0];
                 Assert.True(attribute is IsolatedPostgresFactAttribute or IsolatedPostgresTheoryAttribute ||
                     (testClass == typeof(PostgresTlsIntegrationTests) && attribute is PostgresTlsUnixFactAttribute),
                     $"{testClass.Name}.{method.Name} must use an isolated PostgreSQL opt-in attribute, not {attribute.GetType().Name}.");

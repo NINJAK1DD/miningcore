@@ -4,7 +4,7 @@ using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 using Xunit;
 
-namespace Miningcore.Tests.Util;
+namespace Miningcore.Tests.Util.Postgres;
 
 // Test-only cleanup: attempt every restoration, and report cleanup failures alongside
 // the original test failure rather than replacing it or silently passing a damaged fixture.

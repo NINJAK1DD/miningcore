@@ -1,6 +1,6 @@
 using Xunit;
 
-namespace Miningcore.Tests.Util;
+namespace Miningcore.Tests.Util.Postgres;
 
 // xUnit 2.4.2 awaits every parallel collection, then runs disabled collections one
 // at a time (XunitTestAssemblyRunner.RunTestCollectionsAsync). This isolates all
@@ -8,5 +8,5 @@ namespace Miningcore.Tests.Util;
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class PostgresPolicyCollection : ICollectionFixture<IsolatedPostgresServer>
 {
-    public const string Name = "PostgreSQL TLS policy";
+    public const string Name = "Isolated PostgreSQL policy";
 }

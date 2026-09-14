@@ -12,6 +12,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Tests.Util;
+using Miningcore.Tests.Util.Postgres;
 using Newtonsoft.Json;
 using Npgsql;
 using NSubstitute;

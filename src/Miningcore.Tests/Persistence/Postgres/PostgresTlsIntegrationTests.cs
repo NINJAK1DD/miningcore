@@ -5,23 +5,12 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using Miningcore.Configuration;
 using Miningcore.Persistence.Postgres;
-using Miningcore.Tests.Util;
+using Miningcore.Tests.Util.Postgres;
 using Npgsql;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Persistence.Postgres;
-
-internal sealed class PostgresTlsUnixFactAttribute : FactAttribute
-{
-    public PostgresTlsUnixFactAttribute()
-    {
-        if(OperatingSystem.IsWindows())
-            Skip = "Requires Unix file permissions and an unprivileged PostgreSQL test account";
-        else if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = IsolatedPostgresTheoryAttribute.SkipReason;
-    }
-}
 
 [Collection(PostgresPolicyCollection.Name)]
 public class PostgresTlsIntegrationTests

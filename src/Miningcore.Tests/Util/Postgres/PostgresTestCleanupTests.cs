@@ -1,9 +1,8 @@
 using System;
 using System.Threading.Tasks;
-using Miningcore.Tests.Util;
 using Xunit;
 
-namespace Miningcore.Tests.Persistence.Postgres;
+namespace Miningcore.Tests.Util.Postgres;
 
 public class PostgresTestCleanupTests
 {
