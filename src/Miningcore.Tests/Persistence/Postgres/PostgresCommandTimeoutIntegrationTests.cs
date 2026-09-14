@@ -26,7 +26,7 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class PostgresCommandTimeoutIntegrationTests(
     IsolatedPostgresServer server, ITestOutputHelper output)
 {
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PaymentTransactionRollsBackAndReplaysExactlyOnce(bool cancel)
@@ -66,7 +66,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         Assert.Equal(1, await db.Count("payment_batches"));
     }
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PpsTimeoutOrCancellationRollsBackReceiptCreditAndRemainder(bool cancel)
@@ -113,7 +113,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         Assert.Equal(0.0000000000005m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM pps_credit_remainders"));
     }
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task RecoveryJournalSurvivesCopyTimeoutAndCommitArchiveInterruption(bool interruptArchive)
@@ -176,7 +176,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         }
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit()
     {
         await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
@@ -228,7 +228,7 @@ public class PostgresCommandTimeoutIntegrationTests(
             $"{(cancel ? "caller cancellation" : "command timeout")}: {error.GetType().Name}");
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation()
     {
         await using var db = await PostgresPersistenceTestDatabase.Create(server, 1);
@@ -269,7 +269,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         output.WriteLine($"COMMIT timeout remained uncertain; database reconciliation found {committed} committed batch(es).");
     }
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PayoutHandlerCommitTimeoutReconcilesWithoutAnotherWalletSubmission(bool perRecipient)
@@ -319,7 +319,7 @@ public class PostgresCommandTimeoutIntegrationTests(
         await db.AssertUsable();
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task DatabaseSetupRestoresAuthenticationAndTlsWithoutRedundantRestarts()
     {
         await PostgresTestCleanup.RunAsync(async () =>
@@ -363,6 +363,8 @@ public class PostgresCommandTimeoutIntegrationTests(
     private sealed class ObservedRetryHandler(IConnectionFactory factory, IMapper mapper, Action<Exception> retry)
         : PayoutPersistenceTestHandler(factory, mapper)
     {
+        protected override string LogCategory => "timeout-test";
+
         protected override void OnRetry(Exception ex, TimeSpan timeSpan, int attempt, object context) => retry(ex);
     }
 }

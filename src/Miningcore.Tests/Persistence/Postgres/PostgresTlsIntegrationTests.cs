@@ -19,7 +19,7 @@ internal sealed class PostgresTlsUnixFactAttribute : FactAttribute
         if(OperatingSystem.IsWindows())
             Skip = "Requires Unix file permissions and an unprivileged PostgreSQL test account";
         else if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN")))
-            Skip = PostgresLiveTheoryAttribute.SkipReason;
+            Skip = IsolatedPostgresTheoryAttribute.SkipReason;
     }
 }
 
@@ -34,7 +34,7 @@ public class PostgresTlsIntegrationTests
         this.output = output;
     }
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData("valid", PostgresSslMode.VerifyCA, "localhost", "trusted", true)]
     [InlineData("valid", PostgresSslMode.VerifyFull, "localhost", "trusted", true)]
     [InlineData("valid", PostgresSslMode.VerifyCA, "localhost", "untrusted", false)]
@@ -79,7 +79,7 @@ public class PostgresTlsIntegrationTests
         }
     }
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData("absent")]
     [InlineData("environment")]
     [InlineData("explicit")]
@@ -110,7 +110,7 @@ public class PostgresTlsIntegrationTests
         finally { Environment.SetEnvironmentVariable("PGSSLROOTCERT", priorRoot); }
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task ConfiguredPathDoesNotFreezeCertificateFileContents()
     {
         await server.UseCertificate("valid");
@@ -128,7 +128,7 @@ public class PostgresTlsIntegrationTests
         finally { File.Delete(rotatingRoot); }
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task MissingCaPreservesRetryClassificationAndCancellation()
     {
         await server.UseCertificate("valid");
@@ -143,7 +143,7 @@ public class PostgresTlsIntegrationTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => factory.OpenConnectionAsync(cancelled.Token));
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task PasswordSourcesAuthenticateUsingScramAndExplicitValuesTakePrecedence()
     {
         const string password = "ephemeral-password";
@@ -188,7 +188,7 @@ public class PostgresTlsIntegrationTests
         }, () => { File.Delete(passfile); return Task.CompletedTask; });
     }
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData("missing")]
     [InlineData("directory")]
     public async Task PassfileAccessFailuresAreSourceNeutralAndDoNotExposePaths(string failure)
@@ -249,7 +249,7 @@ public class PostgresTlsIntegrationTests
         });
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task MissingDatabaseReportsItsCategoryWithoutExposingItsName()
     {
         await server.UseCertificate("valid");
@@ -287,7 +287,7 @@ public class PostgresTlsIntegrationTests
         ]);
     }
 
-    [PostgresLiveFact]
+    [IsolatedPostgresFact]
     public async Task OccupiedPortRetriesWithoutTouchingTheOtherListener()
     {
         using var occupied = new TcpListener(IPAddress.Loopback, 0);

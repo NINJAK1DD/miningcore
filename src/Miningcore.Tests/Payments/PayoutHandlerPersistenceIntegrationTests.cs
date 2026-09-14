@@ -6,7 +6,6 @@ using Dapper;
 using Miningcore.Extensions;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
-using Miningcore.Tests.Persistence.Postgres;
 using Miningcore.Tests.Util;
 using Xunit;
 using Xunit.Abstractions;
@@ -32,7 +31,7 @@ public class PayoutHandlerPersistenceIntegrationTests(
     // Revisit both the cap and budget when changing the production retry policy.
     private const int SecondRetryObservationBudgetSeconds = 8;
 
-    [PostgresLiveTheory]
+    [IsolatedPostgresTheory]
     [InlineData(false, 1)]
     [InlineData(true, 1)]
     [InlineData(false, 2)]
@@ -70,13 +69,14 @@ public class PayoutHandlerPersistenceIntegrationTests(
             """);
         await db.Observer.ExecuteAsync("SELECT pg_advisory_lock(@gate)", new { gate });
         var handler = new PayoutPersistenceTestHandler(db.Factory, mapper); // Inherits normal OnRetry unchanged.
+        var transactionId = perRecipient ? "recipient-tx" : "batch-tx";
         var submissions = 0;
         var payment = new[] { new Balance { PoolId = "ltc", Address = "miner", Amount = 12.5m } };
         var payout = handler.Pay(payment, () =>
         {
             submissions++;
-            return Task.FromResult("tx-1");
-        }, perRecipient);
+            return Task.FromResult(transactionId);
+        }, perRecipient, transactionId);
         // The subject is awaited in the final cleanup action: even a failed overlap
         // assertion must release the gate first, then observe the payout's outcome.
         await PostgresTestCleanup.RunAsync(
@@ -84,13 +84,14 @@ public class PayoutHandlerPersistenceIntegrationTests(
             async () => { await db.Observer.ExecuteAsync("SELECT pg_advisory_unlock(@gate)", new { gate }); },
             () => payout.WaitAsync(TimeSpan.FromSeconds(40)));
         await db.WaitForTransactionEndAsync();
-        await handler.Persist(payment, perRecipient);
+        await handler.Persist(payment, perRecipient, transactionId);
         Assert.Equal(1, submissions);
         Assert.Equal(1, await db.Count("payment_batches"));
         Assert.Equal(1, await db.Count("payments"));
         Assert.Equal(2, await db.Count("balance_changes"));
         Assert.Equal(0m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
         Assert.Equal(12.5m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT amount FROM payments"));
+        Assert.Equal(transactionId, await db.Observer.ExecuteScalarAsync<string>("SELECT transactionconfirmationdata FROM payments"));
         await db.AssertUsable();
         output.WriteLine($"Observed {requiredRetryCount} distinct production retry transaction(s) blocked by the unfinished COMMIT; one wallet submission and one durable payment.");
     }
@@ -116,6 +117,10 @@ public class PayoutHandlerPersistenceIntegrationTests(
         // A retry may reuse the same pooled backend. Transaction start time
         // distinguishes attempts; polling the same blocked attempt never counts twice.
         var observedRetries = new HashSet<(int Pid, DateTime TransactionStarted)>();
+        // Each failed retry is visible only during its roughly 1s command timeout.
+        // A 25ms delay is not a sampling guarantee: slow queries or scheduling can
+        // miss that window. Keep observer continuations independent of the test's
+        // synchronization context to avoid adding caller-context delays to polling.
         try
         {
             // Only this test's COMMIT trigger waits on an advisory lock under
@@ -137,7 +142,8 @@ public class PayoutHandlerPersistenceIntegrationTests(
                 Assert.False(payout.IsCompleted,
                     $"Payout completed with status {payout.Status} after observing {observedRetries.Count} of {requiredRetryCount} required retry transactions blocked by the COMMIT gate. " +
                     "The payout outcome is awaited after gate release. For successful completion, check whether " +
-                    "query_canceled arrived before the gate sleep ended or the original backend terminated.");
+                    "query_canceled arrived before the gate sleep ended, the original backend terminated, " +
+                    "or observer polling missed a retry's short lock-wait window.");
                 await Task.Delay(25, deadline.Token).ConfigureAwait(false);
             }
         }
@@ -145,7 +151,8 @@ public class PayoutHandlerPersistenceIntegrationTests(
         {
             throw new XunitException(
                 $"Observed {observedRetries.Count} of {requiredRetryCount} required retry transactions blocked by the COMMIT advisory gate within {observationTimeoutSeconds} seconds. " +
-                "Check cancellation delivery, original backend termination, and the production retry delay/reconnect budget.", error);
+                "Check observer-poll starvation (a retry is visible for roughly one second), cancellation delivery, " +
+                "original backend termination, and the production retry delay/reconnect budget.", error);
         }
     }
 }

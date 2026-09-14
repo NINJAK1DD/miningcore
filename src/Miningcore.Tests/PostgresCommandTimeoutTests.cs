@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Miningcore.Configuration;
 using Miningcore.Mining;
+using Miningcore.Tests.Util;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Schema;
 using Npgsql;

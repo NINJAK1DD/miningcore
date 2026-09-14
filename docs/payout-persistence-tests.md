@@ -5,6 +5,11 @@ the four live PostgreSQL retry-contention cases for `PayoutHandlerBase`, alongsi
 its unit tests. These cases exercise existing payout idempotency under lock
 contention; they do not change the [command-timeout policy](postgres-command-timeout.md).
 
+For new coverage, live PostgreSQL tests whose subject is payout behavior belong
+under `Payments/`; tests whose subject is the persistence layer belong under
+`Persistence/Postgres/`. Existing suites outside this placement rule are not
+relocated by this change.
+
 For each persistence overload, the test observes one or two distinct retry
 transactions blocked by an unfinished COMMIT. The production retry hook,
 exponential backoff and Npgsql cancellation budget remain unchanged. A test-only
@@ -19,8 +24,8 @@ After release and idempotent replay, each case asserts one wallet submission,
 one payment batch, one payment and one debit. The advisory gate is released and
 the payout awaited even when overlap observation fails. Early completion reports
 task status; deadline failures report observed versus required attempts and the
-cancellation/backend/retry-budget assumptions to check. Financial assertions
-and pool-reuse checks wait for server transaction completion.
+observer-poll/cancellation/backend/retry-budget assumptions to check. Financial
+assertions and pool-reuse checks wait for server transaction completion.
 
 ## Timing assumptions
 
@@ -45,21 +50,43 @@ the retry policy, Npgsql cancellation semantics or PostgreSQL wait-event names
 require checking these assumptions. The existing four cases establish the
 invariant without exercising all eight production retries.
 
+Each failed retry is visible to the observer only during its roughly one-second
+command-timeout window. The 25 ms polling delay is added to a database round trip;
+it does not guarantee a sample within that window. A slow query or scheduling
+stall can miss an entire retry, especially on a loaded runner. A longer deadline
+cannot recover a missed observation, although a later retry may still be observed.
+Failures therefore name observer-poll starvation alongside the other timing
+assumptions. Observer continuations avoid the caller's synchronization context
+to avoid introducing additional scheduling delays.
+
 ## Run the live tests
 
 Use the [documented isolated Windows/WSL lab](merged-mining-regtest-validation.md)
 and [managed build instructions](postgres-command-timeout.md#reproduce-the-live-checks).
 The payout and timeout suites share `PostgresPersistenceTestDatabase`,
-`PayoutPersistenceTestHandler` and the `PostgresLiveFact`/`PostgresLiveTheory`
-opt-in attributes under `src/Miningcore.Tests/Util`. Neither suite owns the
-other's shared helpers. Timeout-only fault injection stays in the timeout suite.
+`PayoutPersistenceTestHandler` and the `IsolatedPostgresFact`/`IsolatedPostgresTheory`
+opt-in attributes under `src/Miningcore.Tests/Util`. The shared server, collection
+definition and cleanup helper also live there, and the database helper builds its
+own connection configuration without depending on a test class. Neither suite
+owns the other's shared helpers. Timeout-only fault injection stays in the timeout
+suite.
 The TLS suite also uses these internal attributes; its Unix-permission case keeps
 the additional platform restriction in `PostgresTlsUnixFact`.
+An inventory test requires every test method in all three suites to use the
+isolated opt-in attributes (or the TLS Unix specialization). These attributes
+require `MININGCORE_TEST_POSTGRES_BIN` to name the PostgreSQL **bin directory**;
+the separate `PostgresIntegrationFact` instead uses the `MININGCORE_TEST_POSTGRES`
+connection string for an existing service database.
 `SchemaAndApplicationName` explicitly identifies the generated schema, search path
-and application name shared by each case's connections. The suites use the same
-collection-owned `IsolatedPostgresServer` as TLS tests, retaining process-state
-isolation and one temporary server. Each case owns its schema, application
-identity and one-slot pool. Existing lab databases and wallets are not used.
+and application name shared by each case's connections. Its
+`miningcore_persist_{guid}` prefix identifies test-owned schemas; even the
+longest identity, with the observer suffix, fits PostgreSQL's 63-byte limit.
+The shared payout adapter accepts a transaction ID, defaulting to `tx-1`; the
+contention cases exercise distinct batch and recipient IDs through replay.
+The suites use the same collection-owned `IsolatedPostgresServer` as TLS tests,
+retaining process-state isolation and one temporary server. Each case owns its
+schema, application identity and one-slot pool. Existing lab databases and wallets
+are not used.
 
 ```powershell
 $env:MININGCORE_TEST_POSTGRES_BIN = 'C:/Program Files/PostgreSQL/17/bin'
@@ -115,3 +142,17 @@ Without the opt-in variable, **13 checks passed** and **17 methods skipped**.
 The build had zero warnings/errors. Local artifacts (not committed):
 `src/Miningcore.Tests/TestResults/postgres-shared-attributes-live.trx` and
 `src/Miningcore.Tests/TestResults/postgres-shared-attributes-opt-out.trx`.
+
+The fixture-ownership and discovery-guard follow-up passed **56 checks** with
+zero failures and the expected Unix-permission skip on Windows. This includes
+all **15 timeout/payout live cases** and the new opt-in inventory check. Without
+the opt-in variable, **14 checks passed** and **17 methods skipped**. The managed
+build had zero warnings/errors. A temporary mutation replacing an isolated fact
+with plain `[Fact]` made the inventory check fail with the offending method's
+name; the annotation was restored before the final build and both passing runs.
+Local artifacts (not committed):
+`src/Miningcore.Tests/TestResults/isolated-postgres-review-live.trx`,
+`src/Miningcore.Tests/TestResults/isolated-postgres-review-opt-out.trx` and
+`src/Miningcore.Tests/TestResults/isolated-postgres-guard-mutation.trx` (the expected
+failure proving the guard). Current-head Linux evidence, including the Unix-only
+TLS case, is recorded in the PR checks and description.

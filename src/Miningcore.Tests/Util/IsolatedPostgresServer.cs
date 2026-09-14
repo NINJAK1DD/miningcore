@@ -8,7 +8,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 using Xunit;
 
-namespace Miningcore.Tests.Persistence.Postgres;
+namespace Miningcore.Tests.Util;
 
 // One loopback-only cluster per PostgreSQL policy collection. Tests restore their
 // mutable server state and dispose their own connections before another test runs.

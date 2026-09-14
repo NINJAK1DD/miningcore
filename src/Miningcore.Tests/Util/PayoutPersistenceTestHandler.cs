@@ -22,22 +22,22 @@ internal class PayoutPersistenceTestHandler(IConnectionFactory factory, IMapper 
         new BalanceRepository(mapper), new PaymentRepository(mapper), new StandardClock(), Substitute.For<IMessageBus>())
 {
     protected override string LogCategory => "payout-persistence-test";
-    public Task Persist(Balance[] balances, bool perRecipient = false)
+    public Task Persist(Balance[] balances, bool perRecipient = false, string transactionId = "tx-1")
     {
         logger = LogManager.GetCurrentClassLogger();
         poolConfig = new PoolConfig { Id = "ltc", Template = new BitcoinTemplate { Symbol = "LTC" }, RewardRecipients = Array.Empty<RewardRecipient>() };
         return perRecipient
             // Reconstruct the POCOs so reconciliation cannot rely on reference identity.
             ? PersistPaymentsAsync(balances.ToDictionary(balance => new Balance
-                { PoolId = balance.PoolId, Address = balance.Address, Amount = balance.Amount }, _ => "tx-1"))
-            : PersistPaymentsAsync(balances, "tx-1");
+                { PoolId = balance.PoolId, Address = balance.Address, Amount = balance.Amount }, _ => transactionId))
+            : PersistPaymentsAsync(balances, transactionId);
     }
 
-    public Task Pay(Balance[] balances, Func<Task<string>> submitWallet, bool perRecipient) =>
+    public Task Pay(Balance[] balances, Func<Task<string>> submitWallet, bool perRecipient, string transactionId = "tx-1") =>
         TrackPayoutAsync(balances, async () =>
         {
             TrackPayoutSubmission(CancellationToken.None, balances);
-            Assert.Equal("tx-1", await submitWallet());
-            await Persist(balances, perRecipient);
+            Assert.Equal(transactionId, await submitWallet());
+            await Persist(balances, perRecipient, transactionId);
         });
 }

@@ -7,7 +7,6 @@ using Dapper;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Persistence.Postgres;
-using Miningcore.Tests.Persistence.Postgres;
 using Npgsql;
 using Xunit;
 
@@ -16,7 +15,8 @@ namespace Miningcore.Tests.Util;
 // Shared isolated schema and one-slot pool for timeout and payout persistence tests.
 internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
 {
-    private readonly string schema = "persistence_" + Guid.NewGuid().ToString("N");
+    // Including the observer suffix, the ASCII identity stays within PostgreSQL's 63-byte limit.
+    private readonly string schema = "miningcore_persist_" + Guid.NewGuid().ToString("N");
     // One generated identity deliberately serves as schema, search_path and application_name.
     public string SchemaAndApplicationName => schema;
     private NpgsqlConnectionStringBuilder settings;
@@ -32,13 +32,11 @@ internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
             // intentional non-verifying mode. Select the required state explicitly.
             await server.UseCertificate("valid");
             await server.PasswordAuthentication(false);
-            var config = PostgresConnectionPolicyTests.Config();
-            config.Host = "127.0.0.1";
-            config.Port = server.Port;
-            config.Database = "postgres";
-            config.SslMode = PostgresSslMode.VerifyCA;
-            config.TlsRootCert = server.Root;
-            config.CommandTimeout = timeout;
+            var config = new PostgresConfig
+            {
+                Host = "127.0.0.1", Port = server.Port, Database = "postgres", User = "miningcore",
+                SslMode = PostgresSslMode.VerifyCA, TlsRootCert = server.Root, CommandTimeout = timeout,
+            };
             db.settings = PostgresConnectionPolicy.Build(config, null, out var diagnostic);
             Assert.Equal(timeout, diagnostic.CommandTimeout);
             db.settings.SearchPath = db.schema;

@@ -175,8 +175,8 @@ should avoid PostgreSQL setup.
 
 The eleven database cases in `PostgresCommandTimeoutIntegrationTests` exercise
 real command timeout/caller cancellation, transaction rollback, the one-slot
-connection pool after failure, PPS replay and
-rounding, the payout handler's database retry, COPY recovery, and interruption
+connection pool after failure, PPS replay and rounding, the payout handler's
+database retry, COPY recovery, and interruption
 between recovery commit and archival. A deferred-trigger COMMIT timeout also
 verifies uncertain-outcome classification and database reconciliation before
 idempotent persistence retry. Two cases exercise the actual payout handler's
@@ -186,16 +186,16 @@ regression checks restoration from SCRAM authentication and disabled TLS.
 Ordinary write/commit delays remain five seconds; reducing the uncancellable
 COPY delay avoids waiting out a longer server sleep.
 
+Financial assertions, trigger removal and pool-reuse checks wait for server
+transaction completion. Assertions inspect database state before cleanup;
+per-test teardown terminates only its generated backend identity, drops its schema
+and clears its pool. Collection teardown stops/removes the temporary server.
+
 Four additional [payout retry-contention cases](payout-persistence-tests.md) live
 in `Payments/PayoutHandlerPersistenceIntegrationTests.cs`, alongside the payout
 handler unit tests. They exercise the existing production retry policy across
 one or two retries behind an unresolved COMMIT. The timeout-only filter above
 does not select them; the payout guide gives both focused and combined commands.
-
-Financial assertions, trigger removal and pool-reuse checks wait for server
-transaction completion. Assertions inspect database state before cleanup;
-per-test teardown terminates only its generated backend identity, drops its schema
-and clears its pool. Collection teardown stops/removes the temporary server.
 
 ### Multiple-retry verification: 2026-09-14
 

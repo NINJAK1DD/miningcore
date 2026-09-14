@@ -15,16 +15,40 @@ namespace Miningcore.Tests;
 
 public class NonParallelCollectionTests
 {
+    private static readonly Type[] IsolatedPostgresSuites =
+    {
+        typeof(PostgresTlsIntegrationTests), typeof(PostgresCommandTimeoutIntegrationTests),
+        typeof(PayoutHandlerPersistenceIntegrationTests),
+    };
+
     [Fact]
     public void PostgresPolicy_UsesOneCollectionServerForAllLiveTestClasses()
     {
         Assert.Contains(typeof(ICollectionFixture<IsolatedPostgresServer>),
             typeof(PostgresPolicyCollection).GetInterfaces());
-        foreach(var testClass in new[] { typeof(PostgresTlsIntegrationTests), typeof(PostgresCommandTimeoutIntegrationTests),
-                    typeof(PayoutHandlerPersistenceIntegrationTests) })
+        foreach(var testClass in IsolatedPostgresSuites)
         {
             Assert.DoesNotContain(typeof(IClassFixture<IsolatedPostgresServer>), testClass.GetInterfaces());
             Assert.Same(typeof(PostgresPolicyCollection), CollectionAssertions.NonParallelDefinition(testClass));
+        }
+    }
+
+    [Fact]
+    public void IsolatedPostgresSuites_RequireOptInOnEveryTestMethod()
+    {
+        foreach(var testClass in IsolatedPostgresSuites)
+        {
+            var methods = testClass.GetMethods(BindingFlags.Instance | BindingFlags.Static |
+                    BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(method => method.GetCustomAttributes<FactAttribute>(inherit: true).Any()).ToArray();
+            Assert.NotEmpty(methods);
+            foreach(var method in methods)
+            {
+                var attribute = Assert.Single(method.GetCustomAttributes<FactAttribute>(inherit: true));
+                Assert.True(attribute is IsolatedPostgresFactAttribute or IsolatedPostgresTheoryAttribute ||
+                    (testClass == typeof(PostgresTlsIntegrationTests) && attribute is PostgresTlsUnixFactAttribute),
+                    $"{testClass.Name}.{method.Name} must use an isolated PostgreSQL opt-in attribute, not {attribute.GetType().Name}.");
+            }
         }
     }
 
