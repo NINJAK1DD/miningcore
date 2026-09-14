@@ -59,6 +59,11 @@ Failures therefore name observer-poll starvation alongside the other timing
 assumptions. Observer continuations avoid the caller's synchronization context
 to avoid introducing additional scheduling delays.
 
+If observed CI failures confirm polling starvation, widen the retry's visible
+window by increasing the command timeout for these four contention cases and
+re-evaluate their timing budgets. Increasing only the observation deadline cannot
+recover a missed sample; the current timing remains unchanged.
+
 ## Run the live tests
 
 Use the [documented isolated Windows/WSL lab](merged-mining-regtest-validation.md)
@@ -77,7 +82,13 @@ attributes in `Util/Postgres/IsolatedPostgresAttributes.cs`.
 The collection is named `Isolated PostgreSQL policy`. An inventory test discovers
 its live suites by their `IsolatedPostgresServer` constructor parameter, so new
 members automatically receive the opt-in check without another hand-maintained
-list. Every test method must use exactly one isolated opt-in attribute (or the
+live-suite list. Every collection member must belong to exactly one category:
+a discovered live suite, or the explicit unit-only exceptions
+`PostgresConnectionPolicyTests` and `PostgresCommandTimeoutTests`. A constructor
+refactor that hides server injection therefore fails the guard. Live database
+tests belong in the server-injected suites; this structural check cannot detect
+raw database access added inside a unit-only method.
+Every live test method must use exactly one isolated opt-in attribute (or the
 TLS Unix specialization in the TLS suite); duplicate-attribute failures name the
 method and offending attributes. These attributes require
 `MININGCORE_TEST_POSTGRES_BIN` to name the PostgreSQL **bin directory**;
@@ -149,7 +160,7 @@ The build had zero warnings/errors. Local artifacts (not committed):
 `src/Miningcore.Tests/TestResults/postgres-shared-attributes-live.trx` and
 `src/Miningcore.Tests/TestResults/postgres-shared-attributes-opt-out.trx`.
 
-The shared PostgreSQL infrastructure follow-up passed **56 checks** with
+At `b3e519aa`, the shared PostgreSQL infrastructure follow-up passed **56 checks** with
 zero failures and the expected Unix-permission skip on Windows. This includes
 all **15 timeout/payout live cases** and the derived opt-in inventory check. Without
 the opt-in variable, **14 checks passed** and **17 methods skipped**. The managed
@@ -164,3 +175,12 @@ Local artifacts (not committed), under `src/Miningcore.Tests/TestResults/`:
 The two mutation artifacts are expected failures proving the guard. Current-head
 Linux evidence, including the Unix-only TLS case, is recorded in the PR checks
 and description.
+
+The subsequent collection-accounting follow-up changes inventory assertions and
+guidance only. Its managed build had zero warnings/errors; without PostgreSQL
+opt-in, **14 checks passed** and **17 methods skipped**. Temporarily removing the
+payout suite's server constructor parameter failed the guard with that suite's
+name, while other live suites remained discoverable. The mutation was restored
+before the final build and passing run. Local artifacts (not committed), under
+`src/Miningcore.Tests/TestResults/`: `postgres-hidden-injection-mutation.trx`
+(expected failure) and `postgres-classification-opt-out.trx`.

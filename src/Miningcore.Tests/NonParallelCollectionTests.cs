@@ -16,13 +16,30 @@ namespace Miningcore.Tests;
 
 public class NonParallelCollectionTests
 {
-    // Derive live suites from fixture injection so new collection members are
-    // guarded automatically, without maintaining another list beside ReviewedCollections.
-    private static Type[] IsolatedPostgresSuites() =>
-        CollectionAssertions.Members(typeof(PostgresPolicyCollection))
+    // Discover live suites from fixture injection, then account for every member
+    // so a constructor refactor cannot silently remove a suite from the guard.
+    private static Type[] IsolatedPostgresSuites()
+    {
+        var members = CollectionAssertions.Members(typeof(PostgresPolicyCollection)).ToArray();
+        var liveSuites = members
             .Where(type => type.GetConstructors().Any(constructor => constructor.GetParameters()
                 .Any(parameter => parameter.ParameterType == typeof(IsolatedPostgresServer))))
             .ToArray();
+        // These exceptions are unit-only. Keep live database cases in server-injected
+        // suites: the structural guard cannot detect database access inside a method.
+        var unitSuites = new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresCommandTimeoutTests) };
+        foreach(var unitSuite in unitSuites)
+            Assert.Contains(unitSuite, members);
+        foreach(var member in members)
+        {
+            var isLive = liveSuites.Contains(member);
+            var isUnit = unitSuites.Contains(member);
+            Assert.True(isLive != isUnit,
+                $"{member.FullName} must be exactly one of a server-injected live suite or an explicit unit-only suite " +
+                $"(server injection: {isLive}, unit exception: {isUnit}). Review fixture injection and collection classification.");
+        }
+        return liveSuites;
+    }
 
     [Fact]
     public void PostgresPolicy_UsesOneCollectionServerForAllLiveTestClasses()
