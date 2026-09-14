@@ -49,6 +49,17 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: merged-mining startup job gate
+
+[#141](https://github.com/NINJAK1DD/miningcore/issues/141) prevents a forced
+rebroadcast from publishing a null job while the first Litecoin–Dogecoin merged
+template is still unavailable. Parent RPC failures, missing initial auxiliary
+templates and caught refresh exceptions now preserve the force signal only after
+a verified job exists. Stratum listeners remain inactive through initial failure
+and start after recovery publishes the first usable combined job. Existing jobs
+still rebroadcast during transient parent failures, and cached Dogecoin fallback
+retains its existing degraded-state reporting.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines

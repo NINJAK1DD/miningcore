@@ -383,7 +383,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             if(parentResponse.Error != null || parentResponse.Response == null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob", code: parentResponse.Error?.Code, stage: RpcConsumerDiagnostics.Stage.Unavailable);
-                return (false, forceUpdate);
+                return (false, forceUpdate && currentJob != null);
             }
 
             var previousJob = currentJob as MergedMiningBitcoinJob;
@@ -422,7 +422,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     PublishAuxiliaryTemplateState(
                         auxiliaryTemplateState.ReportUnavailable());
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob");
-                    return (false, forceUpdate);
+                    return (false, forceUpdate && currentJob != null);
                 }
 
                 if(usedCachedAuxiliaryTemplate)
@@ -531,7 +531,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             auxiliaryTemplateState.AbandonPendingObservation();
         }
 
-        return (false, forceUpdate);
+        return (false, forceUpdate && currentJob != null);
     }
 
     internal void CacheStartupAuxiliaryTemplate(AuxBlockTemplate auxiliaryTemplate)
