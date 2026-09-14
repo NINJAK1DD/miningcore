@@ -599,10 +599,13 @@
       ],
       "properties": {
         "commandTimeout": {
+          "description": "Command timeout in seconds: 1-86400; omitted/null uses 300. Zero (unlimited) is rejected.",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "minimum": 1.0,
+          "maximum": 86400.0
         },
         "database": {
           "type": [

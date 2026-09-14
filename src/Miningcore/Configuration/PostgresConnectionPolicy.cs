@@ -38,6 +38,18 @@ public sealed class PostgresSslModeConverter : JsonConverter
 
 internal static class PostgresConnectionPolicy
 {
+    internal const int DefaultCommandTimeoutSeconds = 300;
+    internal const int MaximumCommandTimeoutSeconds = 86400;
+    private const string CommandTimeoutError =
+        "persistence.postgres.commandTimeout must be an integer from 1 to 86400 seconds, or omitted/null for 300 seconds; zero (unlimited) is not supported";
+
+    internal static int ResolveCommandTimeout(int? value)
+    {
+        if(value is < 1 or > MaximumCommandTimeoutSeconds)
+            throw Invalid(CommandTimeoutError);
+        return value ?? DefaultCommandTimeoutSeconds;
+    }
+
     private static readonly PostgresSslMode[] VerifyingModes =
         [PostgresSslMode.VerifyCA, PostgresSslMode.VerifyFull];
 
@@ -96,6 +108,18 @@ internal static class PostgresConnectionPolicy
             var token = property.Value;
             if(token.Type == JTokenType.Null)
                 continue;
+            // Check before binding/schema diagnostics: reject coercion, overflow and
+            // malformed values without echoing configuration data in startup errors.
+            if(name == "commandtimeout")
+            {
+                // Compare the already-parsed integer, including overflow-sized BigInteger
+                // values, without reparsing text or consulting serializer converters.
+                if(token.Type != JTokenType.Integer ||
+                   ((JValue) token).CompareTo(new JValue(1)) < 0 ||
+                   ((JValue) token).CompareTo(new JValue(MaximumCommandTimeoutSeconds)) > 0)
+                    throw Invalid(CommandTimeoutError);
+                continue;
+            }
             var valid = name switch
             {
                 "sslmode" => token.Type == JTokenType.String &&
@@ -133,7 +157,7 @@ internal static class PostgresConnectionPolicy
     internal static void Validate(PostgresConfig config) =>
         Resolve(config, Environment.GetEnvironmentVariable("PGSSLROOTCERT"));
 
-    private static (SslMode Mode, string Root, string Cert, string Key, string Password) Resolve(
+    private static (SslMode Mode, string Root, string Cert, string Key, string Password, int CommandTimeout) Resolve(
         PostgresConfig config, string environmentRoot)
     {
         if(config == null)
@@ -146,8 +170,7 @@ internal static class PostgresConnectionPolicy
             throw Invalid("database is missing");
         if(string.IsNullOrWhiteSpace(config.User))
             throw Invalid("user is missing");
-        if(config.CommandTimeout < 0)
-            throw Invalid("commandTimeout must be nonnegative");
+        var commandTimeout = ResolveCommandTimeout(config.CommandTimeout);
         if(config.SslMode.HasValue && !Enum.IsDefined(config.SslMode.Value))
             throw Invalid("sslMode is unknown");
         if(config.SslMode.HasValue && (config.Tls.HasValue || config.TlsNoValidate.HasValue))
@@ -172,7 +195,7 @@ internal static class PostgresConnectionPolicy
            mode is PostgresSslMode.Disable or PostgresSslMode.Allow or PostgresSslMode.Prefer)
             throw Invalid("client TLS settings require Require, VerifyCA or VerifyFull");
 
-        return (ToDriverMode(mode), root, cert, key, password);
+        return (ToDriverMode(mode), root, cert, key, password, commandTimeout);
     }
 
     private static SslMode ToDriverMode(PostgresSslMode mode) => mode switch
@@ -201,7 +224,7 @@ internal static class PostgresConnectionPolicy
         var settings = Resolve(config, environmentRoot);
         diagnostic = new(config.Port, settings.Mode, config.TlsNoValidate == true,
             !string.IsNullOrEmpty(config.Password), settings.Cert != null, settings.Key != null,
-            settings.Password != null, settings.Root != null, config.CommandTimeout ?? 300);
+            settings.Password != null, settings.Root != null, settings.CommandTimeout);
 
         // Explicit and present environment CA paths are copied as data. If neither exists,
         // Npgsql resolves environment/default trust sources at each physical open. Paths
@@ -221,7 +244,7 @@ internal static class PostgresConnectionPolicy
             SslCertificate = settings.Cert,
             SslKey = settings.Key,
             SslPassword = settings.Password,
-            CommandTimeout = config.CommandTimeout ?? 300,
+            CommandTimeout = settings.CommandTimeout,
         };
     }
 

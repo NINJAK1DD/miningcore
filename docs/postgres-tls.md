@@ -24,6 +24,9 @@ address needs a matching IP SAN. Protect configuration and client private keys
 with service-account-only permissions. Protect CA files from unauthorized edits
 and make them readable by the Miningcore account.
 
+The example retains its explicit 60-second command timeout. Omitted/null uses
+300 seconds; see [the timeout policy and upgrade check](postgres-command-timeout.md).
+
 ## Modes and compatibility
 
 | `sslMode` | Behavior |

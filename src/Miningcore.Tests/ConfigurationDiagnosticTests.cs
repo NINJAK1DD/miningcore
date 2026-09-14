@@ -386,6 +386,10 @@ public class ConfigurationDiagnosticTests
     [InlineData("syntax")]
     [InlineData("schema")]
     [InlineData("duplicate")]
+    [InlineData("tls")]
+    [InlineData("tls-root")]
+    [InlineData("direct-solo")]
+    [InlineData("bip54")]
     [InlineData("missing-file")]
     [InlineData("missing-option")]
     [InlineData("unknown-option")]
@@ -399,6 +403,20 @@ public class ConfigurationDiagnosticTests
             case "syntax": content = "{\"" + Secret + "\": \"unterminated"; break;
             case "schema": document["api"]["port"] = Secret; content = document.ToString(); break;
             case "duplicate": document["pools"][0]["ID"] = Secret; content = document.ToString(); break;
+            case "tls":
+                document["persistence"]["postgres"]["sslMode"] = "VerifyFull";
+                document["persistence"]["postgres"]["tls"] = true;
+                content = document.ToString();
+                break;
+            case "tls-root":
+                ((JObject) document["persistence"]["postgres"]).Remove("tls");
+                ((JObject) document["persistence"]["postgres"]).Remove("tlsNoValidate");
+                document["persistence"]["postgres"]["sslMode"] = "Require";
+                document["persistence"]["postgres"]["tlsRootCert"] = Secret;
+                content = document.ToString();
+                break;
+            case "direct-solo": document["pools"][0]["soloCoinbasePayout"] = Secret; content = document.ToString(); break;
+            case "bip54": document["pools"][0]["bip54Coinbase"] = Secret; content = document.ToString(); break;
         }
         var result = await RunDump(content,
             failure == "invalid-flag-value" ? "--dumpconfig=" + Secret : "--dumpconfig", failure);
@@ -409,13 +427,35 @@ public class ConfigurationDiagnosticTests
         {
             "syntax" => "invalid-json",
             "schema" => "schema-invalid",
-            "duplicate" => "invalid-configuration",
+            "duplicate" or "tls" or "tls-root" or "direct-solo" or "bip54" => "invalid-configuration",
             "missing-file" => "unreadable",
             _ => "usage",
         };
         Assert.Equal(FailureMessage(category), result.Error);
         Assert.DoesNotContain(Secret, result.Error);
         Assert.DoesNotContain("Exception", result.Error);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("86401")]
+    [InlineData("2147483648")]
+    [InlineData("300.0")]
+    [InlineData("1e2")]
+    [InlineData("\"SECRET\\r\\nforged\"")]
+    public async Task PublicDump_RejectsInvalidCommandTimeoutBeforeStartingServices(string timeout)
+    {
+        var document = Fixture();
+        document["persistence"]["postgres"]["commandTimeout"] = JToken.Parse(timeout);
+        var result = await RunDump(document.ToString(), "--dumpconfig");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.Output);
+        Assert.Empty(result.Logs);
+        Assert.Equal(FailureMessage("invalid-configuration"), result.Error);
+        Assert.DoesNotContain(Secret, result.Error);
+        Assert.DoesNotContain("SECRET", result.Error);
+        Assert.DoesNotContain("forged", result.Error);
     }
 
     [Fact]

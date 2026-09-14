@@ -1297,7 +1297,7 @@ public class Program : ProcessStatusBackgroundService
             {
                 JSchemaValidationException => "schema-invalid",
                 JsonReaderException => "invalid-json",
-                JsonException => "invalid-configuration",
+                JsonException or PoolStartupException => "invalid-configuration",
                 IOException or UnauthorizedAccessException => "unreadable",
                 _ => "internal",
             },

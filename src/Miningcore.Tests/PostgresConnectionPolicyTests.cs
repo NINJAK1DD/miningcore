@@ -23,7 +23,7 @@ namespace Miningcore.Tests;
 // at a time (XunitTestAssemblyRunner.RunTestCollectionsAsync). This isolates all
 // process-wide state here from the logging collections as well as ordinary tests.
 [CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class PostgresPolicyCollection
+public sealed class PostgresPolicyCollection : ICollectionFixture<Miningcore.Tests.Persistence.Postgres.IsolatedPostgresServer>
 {
     public const string Name = "PostgreSQL TLS policy";
 }
