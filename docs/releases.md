@@ -60,6 +60,11 @@ and start after recovery publishes the first usable combined job. Existing jobs
 still rebroadcast during transient parent failures, and cached Dogecoin fallback
 retains its existing degraded-state reporting.
 
+The shared Bitcoin-family job pipeline now enforces the same verified-job gate as
+defence in depth for Bitcoin, Equihash, Handshake, Nexa, ProgPoW and Satoshicash
+pools. A fixed warning reports the waiting state once per pool start, and shutdown
+cancellation cannot race a final forced publication.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines

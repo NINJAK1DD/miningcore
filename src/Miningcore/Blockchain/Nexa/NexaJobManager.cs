@@ -96,7 +96,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
             if(response.Error != null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.UpdateJob", code: response.Error?.Code);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var miningCandidate = response.Response;
@@ -113,7 +113,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
                 if(gbtResponse.Error != null)
                 {
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.UpdateJob", code: gbtResponse.Error?.Code);
-                    return (false, forceUpdate);
+                    return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
                 }
                 blockTemplate = gbtResponse.Response;
                 messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
@@ -165,7 +165,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NexaJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)

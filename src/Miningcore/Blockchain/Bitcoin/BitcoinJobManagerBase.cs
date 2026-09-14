@@ -57,6 +57,50 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected TimeSpan jobRebroadcastTimeout;
     protected Network network;
     protected IDestination poolAddressDestination;
+    private int missingVerifiedJobWarningEmitted;
+
+    /// <summary>
+    /// A failed forced refresh may rebroadcast previously verified work, but it
+    /// must never manufacture a publishable update before the first job exists.
+    /// </summary>
+    protected bool PreserveForceForVerifiedJob(bool forceUpdate,
+        CancellationToken ct)
+    {
+        if(!forceUpdate || ct.IsCancellationRequested)
+            return false;
+
+        if(currentJob is not null)
+            return true;
+
+        WarnMissingVerifiedJobOnce();
+        return false;
+    }
+
+    private void WarnMissingVerifiedJobOnce()
+    {
+        if(Interlocked.CompareExchange(ref missingVerifiedJobWarningEmitted,
+               1, 0) == 0)
+        {
+            logger.Warn(() =>
+                "Job publication suppressed because no verified job is available yet");
+        }
+    }
+
+    private bool ShouldPublishJobUpdate((bool IsNew, bool Force) update,
+        CancellationToken ct)
+    {
+        if(ct.IsCancellationRequested || (!update.IsNew && !update.Force))
+            return false;
+
+        if(currentJob is not null)
+            return true;
+
+        // This is a final family-wide boundary for specialized managers. Keep
+        // the wait visible without repeating the same warning on every timer.
+        WarnMissingVerifiedJobOnce();
+
+        return false;
+    }
 
     protected virtual object[] GetBlockTemplateParams()
     {
@@ -216,7 +260,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
-            .Where(x => x.IsNew || x.Force)
+            .Where(x => ShouldPublishJobUpdate(x, ct))
             .Do(x =>
             {
                 if(x.IsNew)

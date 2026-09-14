@@ -188,9 +188,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             if(response.Error != null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManager.UpdateJob", code: response.Error?.Code);
-                // A forced refresh can rebroadcast verified old work, but
-                // must never publish null before the first job exists.
-                return (false, forceUpdate && currentJob != null);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -276,7 +274,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate && currentJob != null);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)

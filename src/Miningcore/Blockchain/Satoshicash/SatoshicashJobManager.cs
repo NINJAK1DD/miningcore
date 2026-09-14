@@ -108,7 +108,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
             if(response.Error != null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "SatoshicashJobManager.UpdateJob", code: response.Error?.Code);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -173,7 +173,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "SatoshicashJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     private void UpdateHashParams(BlockTemplate blockTemplate)

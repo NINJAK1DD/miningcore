@@ -120,7 +120,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
             if(response.Error != null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ProgpowJobManager.UpdateJob", code: response.Error?.Code);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -185,7 +185,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ProgpowJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)

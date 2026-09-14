@@ -1801,7 +1801,10 @@ public partial class MergedMiningManagerReorgTests
         public Func<MergedMiningShareResult> ProcessMergedShareHandler { get; set; }
         public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
         public Exception ParentSubmissionException { get; set; }
+        // The lifecycle fixture toggles this from the test thread while the Rx
+        // scheduler reads it; a field is required because properties cannot be volatile.
         public volatile bool ParentUnavailable;
+        public bool ParentEmptyResponse { get; set; }
         public Exception ParentRefreshException { get; set; }
         public Exception JobCreationException { get; set; }
         public Func<AuxBlockTemplate, Exception> JobCreationExceptionFactory { get; set; }
@@ -1834,6 +1837,12 @@ public partial class MergedMiningManagerReorgTests
             if(ParentRefreshException != null)
                 return Task.FromException<RpcResponse<BlockTemplate>>(
                     ParentRefreshException);
+
+            if(ParentEmptyResponse)
+            {
+                return Task.FromResult(
+                    new RpcResponse<BlockTemplate>(null));
+            }
 
             if(ParentUnavailable)
             {

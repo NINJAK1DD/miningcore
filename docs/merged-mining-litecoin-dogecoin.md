@@ -179,6 +179,11 @@ usable merged job is published. Once verified work exists, a transient parent fa
 rebroadcast that job, and an auxiliary failure may build fresh parent work from the last valid DOGE
 template under the degraded-state policy below.
 
+The shared Bitcoin-family publication boundary also rejects any specialized-manager update that
+would otherwise publish without a verified current job. Miningcore logs this waiting state once per
+pool start rather than repeating it on every refresh. Shutdown cancellation cannot release a final
+rebroadcast through this boundary.
+
 Startup, recurring polling, address validation, submission and ambiguity lookup have separate
 timeouts. `auxiliaryTemplatePollTimeoutMs` controls recurring Dogecoin `createauxblock` calls and
 defaults to 500 ms; startup synchronization retains its separate ten-second deadline.

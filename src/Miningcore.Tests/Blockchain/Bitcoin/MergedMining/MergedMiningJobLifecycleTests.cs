@@ -25,6 +25,9 @@ using Miningcore.Persistence.Repositories;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
 using NSubstitute;
 using Xunit;
 
@@ -40,6 +43,22 @@ public partial class MergedMiningManagerReorgTests
         var (parent, _, cluster) = CreateConfig();
         manager.Configure(parent, cluster);
         manager.ParentUnavailable = true;
+
+        var result = await manager.ForceUpdate(CancellationToken.None);
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.Null(manager.Current);
+    }
+
+    [Fact]
+    public async Task ForcedEmptyParentResponseBeforeFirstJob_SuppressesPublication()
+    {
+        using var dependencies = BuildLifecycleDependencies();
+        var manager = CreateLifecycleManager(dependencies, out _);
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        manager.ParentEmptyResponse = true;
 
         var result = await manager.ForceUpdate(CancellationToken.None);
 
@@ -117,6 +136,92 @@ public partial class MergedMiningManagerReorgTests
         Assert.False(result.IsNew);
         Assert.True(result.Force);
         Assert.Same(verified, manager.Current);
+    }
+
+    [Fact]
+    public async Task ExistingVerifiedJob_RebroadcastsAcrossEmptyParentResponse()
+    {
+        using var dependencies = BuildLifecycleDependencies();
+        var manager = CreateLifecycleManager(dependencies, out _);
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), CreateAuxiliaryTemplate());
+        var verified = manager.Current;
+        manager.ParentEmptyResponse = true;
+
+        var result = await manager.ForceUpdate(CancellationToken.None);
+
+        Assert.False(result.IsNew);
+        Assert.True(result.Force);
+        Assert.Same(verified, manager.Current);
+    }
+
+    [Fact]
+    public async Task ShutdownCancellation_DoesNotRequestARebroadcast()
+    {
+        using var dependencies = BuildLifecycleDependencies();
+        var manager = CreateLifecycleManager(dependencies, out _);
+        var (parent, _, cluster) = CreateConfig();
+        manager.Configure(parent, cluster);
+        manager.Seed(CreateParentTemplate(), CreateAuxiliaryTemplate());
+        var verified = manager.Current;
+        using var stop = new CancellationTokenSource();
+        await stop.CancelAsync();
+        manager.ParentRefreshException = new OperationCanceledException(
+            stop.Token);
+
+        var result = await manager.ForceUpdate(stop.Token);
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.Same(verified, manager.Current);
+    }
+
+    [Fact]
+    public async Task SharedPipeline_DropsUnsafeNullUpdatesAndLogsWaitOnce()
+    {
+        var previousLogging = LogManager.Configuration;
+        using var target = new MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new LoggingConfiguration();
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, target);
+        LogManager.Configuration = logging;
+
+        try
+        {
+            using var dependencies = BuildLifecycleDependencies();
+            var manager = CreateLifecycleManager(dependencies, out var messageBus);
+            var (parent, _, cluster) = CreateConfig();
+            manager.ReturnUnsafeForcedResult = true;
+            manager.Configure(parent, cluster);
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            manager.InitializeJobUpdates(stop.Token);
+            var publications = 0;
+            using var subscription = manager.Jobs.Subscribe(_ =>
+                Interlocked.Increment(ref publications));
+
+            var now = DateTime.UtcNow;
+            messageBus.SendMessage(new BtStreamMessage("ltc-templates",
+                "first", now, now));
+            await manager.ForcedRefresh.Task.WaitAsync(stop.Token);
+            messageBus.SendMessage(new BtStreamMessage("ltc-templates",
+                "second", now, now));
+            await manager.SecondForcedRefresh.Task.WaitAsync(stop.Token);
+
+            // The completion sources run inside UpdateJob. Give the synchronous
+            // Rx continuation time to apply the publication boundary.
+            await Task.Delay(50, stop.Token);
+            LogManager.Flush();
+
+            Assert.Equal(0, publications);
+            Assert.Null(manager.Current);
+            Assert.Single(target.Logs.Where(x => x.Contains(
+                "Job publication suppressed because no verified job is available yet",
+                StringComparison.Ordinal)));
+        }
+        finally
+        {
+            LogManager.Configuration = previousLogging;
+        }
     }
 
     [Fact]
@@ -247,6 +352,9 @@ public partial class MergedMiningManagerReorgTests
         try
         {
             await manager.ForcedRefresh.Task.WaitAsync(stop.Token);
+            // ForcedRefresh completes inside UpdateJob, before the Rx pipeline
+            // consumes its tuple. The parent remains unavailable throughout this
+            // short drain, so no legitimate publication can race the assertions.
             await Task.Delay(100, stop.Token);
 
             Assert.Equal(0, manager.Publications);
@@ -305,10 +413,14 @@ public partial class MergedMiningManagerReorgTests
     {
         internal readonly TaskCompletionSource ForcedRefresh = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource SecondForcedRefresh = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TaskCompletionSource FirstPublication = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         internal AuxBlockTemplate LifecycleStartupAuxiliary { get; set; }
+        internal bool ReturnUnsafeForcedResult { get; set; }
         internal int Publications;
+        private int forcedRefreshCount;
 
         protected override Task<bool> AreDaemonsHealthyAsync(
             CancellationToken ct) => Task.FromResult(true);
@@ -334,9 +446,15 @@ public partial class MergedMiningManagerReorgTests
             CancellationToken ct, bool forceUpdate, string via = null,
             string json = null)
         {
-            var result = await base.UpdateJob(ct, forceUpdate, via, json);
+            var result = forceUpdate && ReturnUnsafeForcedResult
+                ? (IsNew: false, Force: true)
+                : await base.UpdateJob(ct, forceUpdate, via, json);
             if(forceUpdate)
+            {
                 ForcedRefresh.TrySetResult();
+                if(Interlocked.Increment(ref forcedRefreshCount) == 2)
+                    SecondForcedRefresh.TrySetResult();
+            }
             return result;
         }
 

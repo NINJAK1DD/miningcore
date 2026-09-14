@@ -115,7 +115,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
             if(response.Error != null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashJobManager.UpdateJob", code: response.Error?.Code);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -175,7 +175,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)
