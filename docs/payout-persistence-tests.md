@@ -53,11 +53,13 @@ The payout and timeout suites share `PostgresPersistenceTestDatabase`,
 `PayoutPersistenceTestHandler` and the `PostgresLiveFact`/`PostgresLiveTheory`
 opt-in attributes under `src/Miningcore.Tests/Util`. Neither suite owns the
 other's shared helpers. Timeout-only fault injection stays in the timeout suite.
+The TLS suite also uses these internal attributes; its Unix-permission case keeps
+the additional platform restriction in `PostgresTlsUnixFact`.
 `SchemaAndApplicationName` explicitly identifies the generated schema, search path
 and application name shared by each case's connections. The suites use the same
-collection-owned `IsolatedPostgresServer` as TLS tests, retaining process-state isolation and one
-temporary server. Each case owns its schema, application identity and one-slot
-pool. Existing lab databases and wallets are not used.
+collection-owned `IsolatedPostgresServer` as TLS tests, retaining process-state
+isolation and one temporary server. Each case owns its schema, application
+identity and one-slot pool. Existing lab databases and wallets are not used.
 
 ```powershell
 $env:MININGCORE_TEST_POSTGRES_BIN = 'C:/Program Files/PostgreSQL/17/bin'
@@ -71,9 +73,20 @@ isolation checks, use this combined filter:
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore --filter 'FullyQualifiedName~PostgresCommandTimeoutIntegrationTests|FullyQualifiedName~PayoutHandlerPersistenceIntegrationTests|FullyQualifiedName~PostgresTestCleanupTests|FullyQualifiedName~NonParallelCollectionTests' --logger 'trx;LogFileName=payout-persistence-relocation.trx'
 ```
 
+To check the shared attributes' TLS consumers too, append
+`|FullyQualifiedName~PostgresTlsIntegrationTests` to that filter. The Unix-permission
+case intentionally skips on Windows.
+
 On Linux, point `MININGCORE_TEST_POSTGRES_BIN` at the PostgreSQL binary directory
 and run as an unprivileged user. Primary Linux CI already installs PostgreSQL 18
 and enables these cases. Without the environment variable the live tests skip.
+
+The primary Linux workflow already runs the complete timeout and payout suite:
+it exports `MININGCORE_TEST_POSTGRES_BIN=/usr/lib/postgresql/18/bin` before the
+unfiltered `dotnet test` step. The [Linux run at `f2afb229`](https://github.com/NINJAK1DD/miningcore/actions/runs/34815000311)
+records all **15 cases passing** with PostgreSQL **18.6** and Npgsql **9.0.3**,
+including each of the four payout overlap cases. This is CI execution evidence,
+separate from the local Windows artifacts below.
 
 ## Relocation verification: 2026-09-14
 
@@ -95,3 +108,10 @@ rows. Both runs had zero failures, and the managed build had zero warnings/error
 Local validation artifacts (not committed):
 `src/Miningcore.Tests/TestResults/payout-review-live.trx` and
 `src/Miningcore.Tests/TestResults/payout-review-opt-out.trx`.
+
+The TLS attribute follow-up passed **55 checks** with zero failures and the one
+expected Unix-permission skip on Windows, including all 15 timeout/payout cases.
+Without the opt-in variable, **13 checks passed** and **17 methods skipped**.
+The build had zero warnings/errors. Local artifacts (not committed):
+`src/Miningcore.Tests/TestResults/postgres-shared-attributes-live.trx` and
+`src/Miningcore.Tests/TestResults/postgres-shared-attributes-opt-out.trx`.

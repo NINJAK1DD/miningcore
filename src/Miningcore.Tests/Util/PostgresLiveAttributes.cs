@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Util;
 
-public sealed class PostgresLiveTheoryAttribute : TheoryAttribute
+internal sealed class PostgresLiveTheoryAttribute : TheoryAttribute
 {
     internal const string SkipReason = "Set MININGCORE_TEST_POSTGRES_BIN to run isolated live PostgreSQL tests";
 
@@ -14,7 +14,7 @@ public sealed class PostgresLiveTheoryAttribute : TheoryAttribute
     }
 }
 
-public sealed class PostgresLiveFactAttribute : FactAttribute
+internal sealed class PostgresLiveFactAttribute : FactAttribute
 {
     public PostgresLiveFactAttribute()
     {
