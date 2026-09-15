@@ -201,6 +201,87 @@ as executable references:
 First validate against the pinned isolated regtest node. These references do not certify
 third-party miner firmware or provide a production-ready adapter.
 
+## Miner-requested difficulty budget
+
+Each BLAKE2b TCP connection shares one budget between `mining.suggest_difficulty`
+and `mining.configure` requests whose extension list includes `minimum-difficulty`.
+It starts with **four requests**, replenishes **one request per ten elapsed seconds**,
+and stores at most four requests. Fractional refill time is retained. The allowance
+accommodates initial negotiation and a small retry burst; sustained miner-driven
+retargeting is deliberately limited to six requests per minute after that burst.
+There is no configuration switch to disable this admission boundary.
+
+The budget is charged before the inherited handlers acknowledge, parse the requested
+difficulty, change VarDiff/difficulty state, or issue work. Duplicate, below-base and
+malformed suggestions still consume admission. A configure message consumes one
+request even when it repeats the minimum-difficulty extension name. Calls made before
+subscription consume the same connection budget; subscribing does not reset it.
+
+When exhausted:
+
+- `mining.suggest_difficulty` returns a JSON-RPC error with Stratum code `20`,
+  `result: false`, and the original request ID.
+- `mining.configure` returns an error string under `result.minimum-difficulty`:
+  `Difficulty request rate limit exceeded; retry after 10 seconds`. Other requested
+  extensions are explicitly unsupported (`false`) for this BLAKE2b protocol.
+- Refused requests leave the assignment, pending VarDiff update and active jobs intact.
+  They send no difficulty or job notification. A successful change still sends
+  `mining.set_difficulty` before the matching immutable `mining.notify` job.
+- The eighth consecutive over-budget request closes that connection without queuing
+  another response. A newly admitted difficulty request resets this refusal count;
+  unrelated messages do not. Closing is abortive, so buffered replies are not guaranteed
+  to reach a miner that continues flooding. A miner should wait at least ten seconds
+  after a refusal before retrying.
+
+Subscribe, authorize, share submission, configure without minimum-difficulty, pool
+job broadcasts and server-driven VarDiff do not consume this budget. Connections have
+independent allowances, including connections behind one proxy/IP. State is tied to
+the connection with weak keys and has no per-IP history, timer or deferred work queue.
+Elapsed time uses `TimeProvider.System.GetTimestamp`, independent of wall-clock/NTP
+adjustments and miner timestamps. This bounds these two renegotiation paths per
+connection; it is not a global connection or general Stratum denial-of-service limit.
+
+### Research and wire validation for issue #152
+
+The refusal format follows [BIP310's extension result specification](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki),
+which permits an error string and repeated minimum-difficulty negotiation. The timer
+uses [.NET's high-frequency timestamp API](https://learn.microsoft.com/en-us/dotnet/api/system.timeprovider.gettimestamp?view=net-10.0).
+This policy does not alter header serialization, target conversion or credited-share
+difficulty from the consensus implementation.
+
+Baseline measured on `d5864b38a2084e7909ffcadd55d097a4810d5b2f`, using newline-delimited
+loopback TCP through `StratumConnection`, `StratumServer` and the real BLAKE2b pool:
+
+| Path | Alternating requests | Fresh worker jobs | Responses / set-difficulty / notify | Elapsed |
+| --- | ---: | ---: | --- | ---: |
+| `suggest_difficulty` | 20 | 20 | 20 / 20 / 20 | 10.79 ms |
+| configure minimum-difficulty | 20 | 20 | 20 / 20 / 20 | 20.43 ms |
+
+These are functional loopback measurements, not a production throughput benchmark.
+The dispatcher awaits each request serially, limits buffered inbound data to 32 KiB,
+bounds the send queue at 16 items, and applies a five-second send timeout. Those bounds
+do not limit request frequency when a miner promptly reads replies. The baseline
+above crossed no existing dispatcher limit despite issuing twenty immutable snapshots.
+
+The [TCP regression suite](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bDifficultyBudgetTests.cs)
+now admits four requests, refuses seven and disconnects on the next over-budget request
+with a frozen monotonic clock. It covers each method, mixed methods, duplicate values
+and extension names, pipelined bursts, pre-subscription exhaustion, two connections on
+one pool, backward/forward wall-clock changes, exact refill boundaries, capacity after
+long idle, pending VarDiff preservation, server-driven updates and original proof credit.
+The fixture drives the production server dispatch wrapper, not a direct handler call.
+The [live Knots suite](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRegtestTests.cs)
+also exhausts the shared budget before VarDiff and real accepted header-v2 submissions
+for SOLO, PPS, PROP and PPLNS. Run the focused suite with:
+
+```sh
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -c Release --filter FullyQualifiedName~BitcoinBlake2bDifficultyBudgetTests
+```
+
+Set `MININGCORE_TEST_BLAKE2B_BITCOIND` to the verified, pinned Knots executable to run
+the daemon cases with `--filter FullyQualifiedName~BitcoinBlake2b`. The separate
+PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
+
 ## Troubleshooting and validation limits
 
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,

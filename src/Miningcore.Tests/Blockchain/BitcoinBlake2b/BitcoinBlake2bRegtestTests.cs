@@ -100,6 +100,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Contains("!blake2b", template.Rules);
             var job = await manager.FetchJobAsync(managerStop.Token);
             await using var wire = new BitcoinBlake2bWireSession(container, clock, pool, manager, bus);
+            wire.BudgetTimeProvider = new ManualTimeProvider();
             var subscribe = await wire.RequestAsync("mining.subscribe", "Miningcore-header-v2-test");
             Assert.Equal(8, subscribe["result"][2].Value<int>());
             Assert.Equal(8, subscribe["result"][1].Value<string>().Length);
@@ -140,6 +141,21 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(BitcoinBlake2bHeader.TargetForDifficulty(3e-9))
                 .ToString("x8"), configuredJob["params"][6].Value<string>());
             Assert.NotEqual(notify[0], configuredJob["params"][0].Value<string>());
+            // Exhaust the shared request budget against live daemon-issued work.
+            // The first token was used by minimum-difficulty above.
+            foreach(var requested in new[] { 4e-9, 5e-9, 3e-9 })
+            {
+                Assert.True((await wire.RequestAsync("mining.suggest_difficulty", requested))["result"].Value<bool>());
+                Assert.Equal(requested, (await wire.ReadAsync())["params"][0].Value<double>());
+                Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(BitcoinBlake2bHeader.TargetForDifficulty(requested))
+                    .ToString("x8"), (await wire.ReadAsync())["params"][6].Value<string>());
+            }
+            await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
+                new Dictionary<string, object> { ["minimum-difficulty.value"] = 6e-9 });
+            Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
+            Assert.Equal(3e-9, worker.Context.Difficulty);
+            await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" }, new Dictionary<string, object>());
+            Assert.Null((await wire.ReadAsync())["method"]); // refusal issued no hidden work
             var rejected = await wire.RequestAsync("mining.submit", destination + ".test",
                 notify[0], "0000000000000000", notify[7], 1000000000000000L);
             Assert.NotNull(rejected["error"]);

@@ -2,6 +2,7 @@ using Miningcore.Rpc;
 using Autofac;
 using AutoMapper;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Microsoft.IO;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -38,6 +39,10 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     }
 
     private readonly PoolOperationGate operations = new();
+    // Weak connection keys retain no disconnected-miner/IP history. Both
+    // negotiation methods share one bucket, including pre-subscription calls.
+    private readonly ConditionalWeakTable<StratumConnection, DifficultyRequestBudget> difficultyBudgets = new();
+    internal TimeProvider DifficultyBudgetTimeProvider { get; set; } = TimeProvider.System;
     private readonly object statusSync = new();
     private CancellationToken hostShutdown;
     private int lifetimeStarted;
@@ -268,6 +273,21 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             Disconnect(connection);
             return;
         }
+
+        if(IsDifficultyRequest(request.Value))
+        {
+            var admission = difficultyBudgets.GetValue(connection,
+                _ => new DifficultyRequestBudget(DifficultyBudgetTimeProvider)).TryAcquire();
+            if(admission != DifficultyRequestBudget.Admission.Allowed)
+            {
+                if(admission == DifficultyRequestBudget.Admission.Disconnect)
+                    Disconnect(connection);
+                else
+                    await RefuseDifficultyRequestAsync(connection, request.Value);
+                return;
+            }
+        }
+
         var context = connection.ContextAs<BitcoinWorkerContext>();
         var previousDifficulty = context.Difficulty;
         await base.OnRequestAsync(connection, request, ct);
@@ -303,6 +323,34 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
                 CreateWorkerJob(connection, false));
         }
+    }
+
+    private static bool IsDifficultyRequest(JsonRpcRequest request) =>
+        request.Method == BitcoinStratumMethods.SuggestDifficulty ||
+        request.Method == BitcoinStratumMethods.MiningConfigure &&
+        request.Params is JArray { Count: > 0 } parameters && parameters[0] is JArray extensions &&
+        extensions.Any(x => x.Type == JTokenType.String &&
+            x.Value<string>() == BitcoinStratumExtensions.MinimumDiff);
+
+    private static Task RefuseDifficultyRequestAsync(StratumConnection connection, JsonRpcRequest request)
+    {
+        const string reason = "Difficulty request rate limit exceeded; retry after 10 seconds";
+        if(request.Method == BitcoinStratumMethods.SuggestDifficulty)
+            return connection.RespondErrorAsync(StratumError.Other, reason, request.Id, false);
+
+        // BIP310 permits an extension error string. BLAKE2b supports only
+        // minimum-difficulty; other extensions remain explicitly unsupported.
+        var result = new Dictionary<string, object>();
+        foreach(var extension in (JArray) ((JArray) request.Params)[0])
+        {
+            if(extension.Type == JTokenType.String)
+                result[extension.Value<string>()] = extension.Value<string>() == BitcoinStratumExtensions.MinimumDiff
+                    ? reason : false;
+        }
+        return connection.RespondAsync(new JsonRpcResponse<object>(result, request.Id)
+        {
+            Extra = new Dictionary<string, object> { ["error"] = null },
+        });
     }
 
     protected override object CreateWorkerJob(StratumConnection connection,

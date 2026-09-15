@@ -49,6 +49,17 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: BLAKE2b difficulty request budget
+
+[#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b
+difficulty negotiation to a four-request burst and one replenished request per ten
+seconds per connection. Suggest-difficulty and configure minimum-difficulty share the
+budget, including duplicate requests. Excess requests receive a protocol refusal;
+eight consecutive refusals close the connection. Normal subscribe/authorize, shares
+and server-driven VarDiff remain available while the budget recovers. Successful
+changes retain difficulty-before-notify ordering and immutable target/credit binding.
+See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
+
 ## Unreleased: Bitcoin-family verified job gate
 
 [#141](https://github.com/NINJAK1DD/miningcore/issues/141) prevents a forced

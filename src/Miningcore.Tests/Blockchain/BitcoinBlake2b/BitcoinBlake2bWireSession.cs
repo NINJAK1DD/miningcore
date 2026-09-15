@@ -44,9 +44,12 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     private Exception dispatchError;
 
     internal StratumConnection Connection { get; }
+    internal int JobsCreated => pool.JobsCreated;
+    internal TimeProvider BudgetTimeProvider { set => pool.DifficultyBudgetTimeProvider = value; }
 
     internal BitcoinBlake2bWireSession(IComponentContext container, IMasterClock clock,
-        PoolConfig config, BitcoinJobManager manager, IMessageBus bus)
+        PoolConfig config, BitcoinJobManager manager, IMessageBus bus,
+        BitcoinBlake2bWireSession sharedPool = null)
     {
         var streams = container.Resolve<RecyclableMemoryStreamManager>();
         scope = ((ILifetimeScope) container).BeginLifetimeScope(builder =>
@@ -54,9 +57,12 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             builder.RegisterInstance(Substitute.For<IBlockRepository>());
             builder.RegisterInstance(Substitute.For<IShareRepository>());
         });
-        pool = new TestPool(scope, clock, bus, streams);
-        pool.Configure(config, new ClusterConfig());
-        pool.SetManager(manager);
+        pool = sharedPool?.pool ?? new TestPool(scope, clock, bus, streams);
+        if(sharedPool == null)
+        {
+            pool.Configure(config, new ClusterConfig());
+            pool.SetManager(manager);
+        }
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var endpoint = new StratumEndpoint((IPEndPoint) listener.LocalEndpoint,
@@ -74,8 +80,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         pool.AddConnection(Connection);
         dispatch = Connection.DispatchAsync(socket, stop.Token, endpoint,
             (IPEndPoint) socket.RemoteEndPoint, null,
-            (connection, request, ct) => pool.Dispatch(connection,
-                new Timestamped<JsonRpcRequest>(request, new DateTimeOffset(clock.Now)), ct),
+            pool.Dispatch,
             _ => { }, (_, error) => dispatchError = error);
         reader = new StreamReader(client.GetStream(), Encoding.UTF8, false, 1024, true);
         writer = new StreamWriter(client.GetStream(), new UTF8Encoding(false), 1024, true)
@@ -106,6 +111,13 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     internal Task AnnounceJobAsync(object jobParams) => pool.Announce(jobParams);
     internal object CreateJob() => pool.CreateJob(Connection);
+    internal Task UpdateVarDiffAsync(double difficulty) => pool.UpdateVarDiff(Connection, difficulty);
+
+    internal async Task AssertDisconnectedAsync()
+    {
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(Connection.IsAlive);
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -121,6 +133,13 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     private sealed class TestPool : BitcoinBlake2bPool
     {
+        internal int JobsCreated { get; private set; }
+        protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+        {
+            var result = base.CreateWorkerJob(connection, cleanJob);
+            JobsCreated++;
+            return result;
+        }
         internal TestPool(IComponentContext ctx, IMasterClock clock,
             IMessageBus bus, RecyclableMemoryStreamManager streams) :
             base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),
@@ -131,8 +150,10 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
         internal void SetManager(BitcoinJobManager value) => manager = value;
         internal void AddConnection(StratumConnection value) => RegisterConnection(value);
-        internal Task Dispatch(StratumConnection connection, Timestamped<JsonRpcRequest> request,
+        internal Task Dispatch(StratumConnection connection, JsonRpcRequest request,
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
+        internal Task UpdateVarDiff(StratumConnection connection, double difficulty) =>
+            OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
         internal Task Announce(object jobParams) => OnNewJobAsync(jobParams);
         internal object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }
