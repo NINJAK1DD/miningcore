@@ -100,7 +100,9 @@ their simplification preserves the previous wire behavior.
 **Custom-subclass source compatibility:** the protected `currentJobParams` fields
 in BitcoinPool, EquihashPool, ErgoPool, KaspaPool and SatoshicashPool were removed.
 Custom subclasses that accessed those fields must use the `OnNewJobAsync` argument
-for the relevant broadcast. Existing in-tree subclasses are updated and tested.
+for the relevant broadcast. BitcoinBlake2bPool's obsolete assignment was removed;
+MergedMiningBitcoinPool did not use the field. Both compile in CI, but neither has
+a dedicated regression test for this field removal.
 
 ## Unreleased: bounded PostgreSQL command timeout
 
