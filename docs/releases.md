@@ -2126,22 +2126,22 @@ Docker Hub response bytes were SHA-256 verified at all three levels (index, mani
 
 | Ubuntu 26.04 reference | SHA-256 digest |
 | --- | --- |
-| `ubuntu:26.04` index (pinned) | `513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d` |
-| `ubuntu:resolute-20260901` index | `5212ec9732bb047ef5aed8f477787a11b079527f9f4045e7dd509c282af74b84` |
-| Shared Linux amd64 manifest | `e5a4d6262ab5dbc25a85e60550dd7c87fd41a74fe43881534ed8288b2a7a3f8d` |
-| Shared Linux amd64 configuration | `e2e49769ecc7948a72b28e9748f2dc881a13f5cea02fc0faa99a7a5607e457f6` |
+| `ubuntu:26.04` index (pinned) | SHA-256 `513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d` |
+| `ubuntu:resolute-20260901` index | SHA-256 `5212ec9732bb047ef5aed8f477787a11b079527f9f4045e7dd509c282af74b84` |
+| Shared Linux amd64 manifest | SHA-256 `e5a4d6262ab5dbc25a85e60550dd7c87fd41a74fe43881534ed8288b2a7a3f8d` |
+| Shared Linux amd64 configuration | SHA-256 `e2e49769ecc7948a72b28e9748f2dc881a13f5cea02fc0faa99a7a5607e457f6` |
 
 | Ubuntu 22.04 reference | SHA-256 digest |
 | --- | --- |
-| `ubuntu:22.04` index (pinned) | `829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7` |
-| `ubuntu:jammy-20260901.2` index | `ee61c25c29326511cc86dbf6479935edfd62533a14604d1befc69169a5f96255` |
-| Shared Linux amd64 manifest | `281c5745f657873d78e5531fc5ba8575f46ab7769b94550ac99543f122679986` |
-| Shared Linux amd64 configuration | `bf7f4568d95723d2148bb19c688526d1404ef3302ef024bc1513ad8f533d46c8` |
+| `ubuntu:22.04` index (pinned) | SHA-256 `829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7` |
+| `ubuntu:jammy-20260901.2` index | SHA-256 `ee61c25c29326511cc86dbf6479935edfd62533a14604d1befc69169a5f96255` |
+| Shared Linux amd64 manifest | SHA-256 `281c5745f657873d78e5531fc5ba8575f46ab7769b94550ac99543f122679986` |
+| Shared Linux amd64 configuration | SHA-256 `bf7f4568d95723d2148bb19c688526d1404ef3302ef024bc1513ad8f533d46c8` |
 
 Ubuntu version labels and runtime configuration remain unchanged apart from creation labels and
 legacy build-parent metadata. This comparison does not claim identical root filesystems or packages.
-The prior index pins were `2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b` (26.04)
-and `2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc` (22.04); their source record
+The prior SHA-256 index pins were `2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b` (26.04)
+and SHA-256 `2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc` (22.04); their source record
 remains in the [pre-update contract](https://github.com/NINJAK1DD/miningcore/blob/7c3ecff475a4b3a66300e1884cdaa921184cdbac/scripts/release/linux-release-targets.sh).
 Keep dated review records when advancing the pins. Every advance requires the complete release matrix.
 
