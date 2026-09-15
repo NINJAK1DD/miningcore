@@ -63,6 +63,8 @@ a pool broadcast that may not yet exist when the manager already has a job.
 
 ProgPoW subscription always issues `clean_jobs=true` for the miner's initial work,
 independently of whether a manager broadcast has occurred or which flag it carried.
+This intentionally changes the previous wire behavior after a non-clean broadcast:
+the initial notification now carries `true` instead of inheriting `false`.
 The manager must already have valid work; this is not an initial-template readiness
 change. Subsequent difficulty-only updates continue to use `false`.
 

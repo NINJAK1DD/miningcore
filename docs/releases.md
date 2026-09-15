@@ -91,9 +91,16 @@ Difficulty-only updates in all affected pools explicitly preserve existing work
 without reading a previous broadcast. Ergo fills each worker's target directly
 in its owned snapshot, eliminating the redundant array copy before queueing.
 
-ProgPoW subscriptions now issue clean initial work without depending on a previous
-broadcast. Unused pool broadcast caches were removed; custom subclasses using the
-former protected `currentJobParams` field should use the broadcast handler argument.
+**ProgPoW subscription behavior changes:** initial `mining.notify` now always sends
+`clean_jobs=true`. Previously it reused the last broadcast's flag, including
+`false`, and could throw before the first broadcast. The seven-field layout is
+unchanged. Subsequent difficulty-only updates still send `clean_jobs=false`;
+their simplification preserves the previous wire behavior.
+
+**Custom-subclass source compatibility:** the protected `currentJobParams` fields
+in BitcoinPool, EquihashPool, ErgoPool, KaspaPool and SatoshicashPool were removed.
+Custom subclasses that accessed those fields must use the `OnNewJobAsync` argument
+for the relevant broadcast. Existing in-tree subclasses are updated and tested.
 
 ## Unreleased: bounded PostgreSQL command timeout
 
