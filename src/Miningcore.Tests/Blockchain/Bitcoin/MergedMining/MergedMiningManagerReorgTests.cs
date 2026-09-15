@@ -31,7 +31,7 @@ using Xunit;
 namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
 [Collection(IntegrationDeadlineCollection.Name)]
-public class MergedMiningManagerReorgTests
+public partial class MergedMiningManagerReorgTests
 {
     public static IEnumerable<object[]> SupportedPayoutPairs()
     {
@@ -1787,7 +1787,7 @@ public class MergedMiningManagerReorgTests
         return (parent, auxiliary, cluster);
     }
 
-    private sealed class TestManager : MergedMiningBitcoinJobManager
+    private sealed partial class TestManager : MergedMiningBitcoinJobManager
     {
         public TestManager(IComponentContext ctx, IMasterClock clock, IMessageBus messageBus,
             IExtraNonceProvider extraNonceProvider, IBlockCandidateRecorder recorder) :
@@ -1801,6 +1801,11 @@ public class MergedMiningManagerReorgTests
         public Func<MergedMiningShareResult> ProcessMergedShareHandler { get; set; }
         public Func<CancellationToken, Task<bool[]>> SubmitCandidatePathsHandler { get; set; }
         public Exception ParentSubmissionException { get; set; }
+        // The lifecycle fixture toggles this from the test thread while the Rx
+        // scheduler reads it; a field is required because properties cannot be volatile.
+        public volatile bool ParentUnavailable;
+        public bool ParentEmptyResponse { get; set; }
+        public Exception ParentRefreshException { get; set; }
         public Exception JobCreationException { get; set; }
         public Func<AuxBlockTemplate, Exception> JobCreationExceptionFactory { get; set; }
 
@@ -1823,8 +1828,30 @@ public class MergedMiningManagerReorgTests
         public Task<(bool IsNew, bool Force)> Update(CancellationToken ct,
             string via = null) => UpdateJob(ct, false, via);
 
+        public Task<(bool IsNew, bool Force)> ForceUpdate(CancellationToken ct) =>
+            UpdateJob(ct, true);
+
         protected override Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(
-            CancellationToken ct) => Task.FromResult(responses.Dequeue());
+            CancellationToken ct)
+        {
+            if(ParentRefreshException != null)
+                return Task.FromException<RpcResponse<BlockTemplate>>(
+                    ParentRefreshException);
+
+            if(ParentEmptyResponse)
+            {
+                return Task.FromResult(
+                    new RpcResponse<BlockTemplate>(null));
+            }
+
+            if(ParentUnavailable)
+            {
+                return Task.FromResult(new RpcResponse<BlockTemplate>(null,
+                    new JsonRpcError(-500, "parent RPC unavailable", null)));
+            }
+
+            return Task.FromResult(responses.Dequeue());
+        }
 
         protected override MergedMiningShareResult ProcessMergedShare(
             MergedMiningBitcoinJob job, StratumConnection worker, string extraNonce2,

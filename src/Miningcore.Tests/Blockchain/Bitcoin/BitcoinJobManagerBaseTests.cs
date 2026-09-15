@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -19,6 +20,9 @@ using Miningcore.Tests.Util;
 using Miningcore.Time;
 using NBitcoin;
 using Newtonsoft.Json;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
 using NSubstitute;
 using Xunit;
 
@@ -366,6 +370,60 @@ public class BitcoinJobManagerBaseTests
 
         Assert.True(connected);
         Assert.Equal("v1.2.3", version);
+    }
+
+    [Fact]
+    public async Task ForcedRefreshPolicy_RequiresLiveTokenAndVerifiedJob()
+    {
+        using var container = BuildContainer();
+        using var logFactory = new LogFactory();
+        using var target = new MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new LoggingConfiguration(logFactory);
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, target);
+        logFactory.Configuration = logging;
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        manager.Configure(CreateDirectPool(), new ClusterConfig());
+        manager.UseLogger(logFactory.GetLogger(nameof(
+            ForcedRefreshPolicy_RequiresLiveTokenAndVerifiedJob)));
+
+        Assert.False(manager.PreserveForce(false, CancellationToken.None));
+        using var stop = new CancellationTokenSource();
+        await stop.CancelAsync();
+        Assert.False(manager.PreserveForce(true, stop.Token));
+        Assert.False(manager.PreserveForce(true, CancellationToken.None));
+        Assert.False(manager.PreserveForce(true, CancellationToken.None));
+        logFactory.Flush();
+        var logsBeforeJob = target.Logs.ToArray();
+        Assert.Single(logsBeforeJob.Where(x => x.Contains(
+            BitcoinJobManagerBase<BitcoinJob>.MissingVerifiedJobWarning,
+            StringComparison.Ordinal)));
+
+        manager.SetVerifiedJob(new BitcoinJob());
+
+        Assert.True(manager.PreserveForce(true, CancellationToken.None));
+        Assert.False(manager.PreserveForce(false, CancellationToken.None));
+        Assert.False(manager.PreserveForce(true, stop.Token));
+        logFactory.Flush();
+        Assert.Equal(logsBeforeJob, target.Logs.ToArray());
+    }
+
+    [Fact]
+    public async Task EmptyBlockTemplateResponse_UsesGuardedFailurePath()
+    {
+        using var container = BuildContainer();
+        var manager = new TestBitcoinJobManager(container,
+            MockMasterClock.FromTicks(638010200200475015),
+            new MessageBus(), Substitute.For<IExtraNonceProvider>());
+        manager.Configure(CreateDirectPool(), new ClusterConfig());
+        manager.EnqueueResponse(new RpcResponse<BlockTemplate>(null));
+
+        var result = await manager.ForceUpdate(CancellationToken.None);
+
+        Assert.False(result.IsNew);
+        Assert.False(result.Force);
+        Assert.Null(manager.Current);
     }
 
     [Fact]
@@ -945,6 +1003,13 @@ public class BitcoinJobManagerBaseTests
         public BitcoinJob Current => currentJob;
         public bool LegacyDaemonEnabled => hasLegacyDaemon;
 
+        public bool PreserveForce(bool forceUpdate, CancellationToken ct) =>
+            PreserveForceForVerifiedJob(forceUpdate, ct);
+
+        public void SetVerifiedJob(BitcoinJob job) => currentJob = job;
+
+        public void UseLogger(ILogger value) => logger = value;
+
         public void PrepareJobConstruction(Network jobNetwork,
             IDestination destination)
         {
@@ -963,8 +1028,14 @@ public class BitcoinJobManagerBaseTests
         public void Enqueue(BlockTemplate template) => responses.Enqueue(
             new RpcResponse<BlockTemplate>(template));
 
+        public void EnqueueResponse(RpcResponse<BlockTemplate> response) =>
+            responses.Enqueue(response);
+
         public Task<(bool IsNew, bool Force)> Update(CancellationToken ct) =>
             UpdateJob(ct, false);
+
+        public Task<(bool IsNew, bool Force)> ForceUpdate(
+            CancellationToken ct) => UpdateJob(ct, true);
 
         public async Task<(bool Accepted, bool Ambiguous)>
             PersistAndSubmitDirect(Share share, string blockHex,

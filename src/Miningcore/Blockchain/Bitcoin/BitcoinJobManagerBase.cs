@@ -57,6 +57,57 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected TimeSpan jobRebroadcastTimeout;
     protected Network network;
     protected IDestination poolAddressDestination;
+    private int missingVerifiedJobWarningEmitted;
+    internal const string MissingVerifiedJobWarning =
+        "Job publication suppressed because no verified job is available yet";
+
+    /// <summary>
+    /// A failed forced refresh may rebroadcast previously verified work, but it
+    /// must never manufacture a publishable update before the first job exists.
+    /// </summary>
+    protected bool PreserveForceForVerifiedJob(bool forceUpdate,
+        CancellationToken ct)
+    {
+        if(!forceUpdate || ct.IsCancellationRequested)
+            return false;
+
+        if(currentJob is not null)
+            return true;
+
+        WarnMissingVerifiedJobOnce();
+        return false;
+    }
+
+    private void WarnMissingVerifiedJobOnce()
+    {
+        // Consume the attempt before logging: a broken target must not be
+        // retried on every refresh. Protect both manager and pipeline callers.
+        if(Interlocked.CompareExchange(ref missingVerifiedJobWarningEmitted,
+               1, 0) == 0)
+        {
+            Guard(() => logger.Warn(() => MissingVerifiedJobWarning));
+        }
+    }
+
+    private void ReportMissingVerifiedJob((bool IsNew, bool Force) update,
+        CancellationToken ct)
+    {
+        if(ct.IsCancellationRequested || (!update.IsNew && !update.Force))
+            return;
+
+        if(currentJob is null)
+        {
+            // This is a final family-wide boundary for specialized managers.
+            // Keep the wait visible without repeating it on every timer.
+            WarnMissingVerifiedJobOnce();
+        }
+    }
+
+    private bool IsPublishableJobUpdate((bool IsNew, bool Force) update,
+        CancellationToken ct) =>
+        !ct.IsCancellationRequested &&
+        (update.IsNew || update.Force) &&
+        currentJob is not null;
 
     protected virtual object[] GetBlockTemplateParams()
     {
@@ -216,7 +267,10 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
-            .Where(x => x.IsNew || x.Force)
+            // Diagnostics must never turn a safely suppressed update into a
+            // job-pipeline failure or pool fail-stop.
+            .Do(x => Guard(() => ReportMissingVerifiedJob(x, ct)))
+            .Where(x => IsPublishableJobUpdate(x, ct))
             .Do(x =>
             {
                 if(x.IsNew)

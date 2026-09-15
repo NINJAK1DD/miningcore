@@ -68,10 +68,10 @@ public class HandshakeJobManager : BitcoinJobManagerBase<HandshakeJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "HandshakeJobManager.UpdateJob", code: response.Error?.Code);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -133,7 +133,7 @@ public class HandshakeJobManager : BitcoinJobManagerBase<HandshakeJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "HandshakeJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
     
     protected override object GetJobParamsForStratum(bool isNew)

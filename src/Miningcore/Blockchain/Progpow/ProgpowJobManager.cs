@@ -117,10 +117,10 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ProgpowJobManager.UpdateJob", code: response.Error?.Code);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -185,7 +185,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ProgpowJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)

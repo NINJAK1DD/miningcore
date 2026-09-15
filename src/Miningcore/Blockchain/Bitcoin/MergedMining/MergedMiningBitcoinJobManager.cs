@@ -383,7 +383,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             if(parentResponse.Error != null || parentResponse.Response == null)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob", code: parentResponse.Error?.Code, stage: RpcConsumerDiagnostics.Stage.Unavailable);
-                return (false, forceUpdate);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var previousJob = currentJob as MergedMiningBitcoinJob;
@@ -422,7 +422,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                     PublishAuxiliaryTemplateState(
                         auxiliaryTemplateState.ReportUnavailable());
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "MergedMiningBitcoinJobManager.UpdateJob");
-                    return (false, forceUpdate);
+                    return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
                 }
 
                 if(usedCachedAuxiliaryTemplate)
@@ -515,7 +515,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 PublishAuxiliaryTemplateState(
                     auxiliaryTemplateState.NoJobRequired(auxiliaryTemplate));
 
+            // Every successful forced path installed a verified job above, so
+            // retaining Force here is the intentional existing-work rebroadcast.
             return (parentIsNew || auxiliaryIsNew, forceUpdate);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            return (false, false);
         }
         catch(OperationCanceledException)
         {
@@ -531,7 +537,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             auxiliaryTemplateState.AbandonPendingObservation();
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     internal void CacheStartupAuxiliaryTemplate(AuxBlockTemplate auxiliaryTemplate)
