@@ -264,7 +264,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
-            .Do(x => ReportMissingVerifiedJob(x, ct))
+            // Diagnostics must never turn a safely suppressed update into a
+            // job-pipeline failure or pool fail-stop.
+            .Do(x => Guard(() => ReportMissingVerifiedJob(x, ct)))
             .Where(x => IsPublishableJobUpdate(x, ct))
             .Do(x =>
             {

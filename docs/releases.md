@@ -49,7 +49,7 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Unreleased: merged-mining startup job gate
+## Unreleased: Bitcoin-family verified job gate
 
 [#141](https://github.com/NINJAK1DD/miningcore/issues/141) prevents a forced
 rebroadcast from publishing a null job while the first Litecoin–Dogecoin merged
@@ -64,6 +64,10 @@ The shared Bitcoin-family job pipeline now enforces the same verified-job gate a
 defence in depth for Bitcoin, Equihash, Handshake, Nexa, ProgPoW and Satoshicash
 pools. A fixed warning reports the waiting state once per pool start, and shutdown
 cancellation cannot race a final forced publication.
+
+Error-free RPC envelopes with no template payload are now handled as unavailable
+at warning level across these managers instead of reaching job construction and
+producing an error-level exception.
 
 ## Unreleased: bounded PostgreSQL command timeout
 

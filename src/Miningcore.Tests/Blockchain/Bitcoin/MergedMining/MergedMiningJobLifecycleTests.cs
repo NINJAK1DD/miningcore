@@ -245,6 +245,42 @@ public partial class MergedMiningManagerReorgTests
     }
 
     [Fact]
+    public async Task SharedPipeline_SurvivesSuppressionDiagnosticFailure()
+    {
+        using var target = new ThrowingTarget();
+        using var logFactory = new LogFactory { ThrowExceptions = true };
+        var logging = new LoggingConfiguration(logFactory);
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, target);
+        logFactory.Configuration = logging;
+        using var dependencies = BuildLifecycleDependencies();
+        var manager = CreateLifecycleManager(dependencies, out var messageBus);
+        var (parent, _, cluster) = CreateConfig();
+        manager.ReturnUnsafeForcedResult = true;
+        manager.RecoverOnThirdUnsafeForcedResult = true;
+        manager.Configure(parent, cluster);
+        manager.UseLogger(logFactory.GetLogger(nameof(
+            SharedPipeline_SurvivesSuppressionDiagnosticFailure)));
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        manager.InitializeJobUpdates(stop.Token);
+        var published = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = manager.Jobs.Subscribe(_ =>
+            published.TrySetResult(), ex => published.TrySetException(ex));
+
+        var now = DateTime.UtcNow;
+        messageBus.SendMessage(new BtStreamMessage("ltc-templates",
+            "unsafe", now, now));
+        messageBus.SendMessage(new BtStreamMessage("ltc-templates",
+            "still-unsafe", now, now));
+        messageBus.SendMessage(new BtStreamMessage("ltc-templates",
+            "recovery", now, now));
+
+        await published.Task.WaitAsync(stop.Token);
+
+        Assert.NotNull(manager.Current);
+    }
+
+    [Fact]
     public async Task ExistingVerifiedJob_RebroadcastsWithCachedAuxiliaryFallback()
     {
         await using var server = new SequenceJsonRpcServer(
@@ -430,6 +466,12 @@ public partial class MergedMiningManagerReorgTests
             .Resolve<IEnumerable<Meta<Lazy<IMiningPool, CoinFamilyAttribute>>>>()
             .Where(x => x.Value.Metadata.SupportedFamilies
                 .Contains(CoinFamily.Bitcoin))).Value.Value);
+
+    private sealed class ThrowingTarget : TargetWithLayout
+    {
+        protected override void Write(LogEventInfo logEvent) =>
+            throw new InvalidOperationException("synthetic logging failure");
+    }
 
     private sealed partial class TestManager
     {
