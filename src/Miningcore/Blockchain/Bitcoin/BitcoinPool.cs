@@ -40,7 +40,6 @@ public class BitcoinPool : PoolBase
     {
     }
 
-    protected object currentJobParams;
     protected BitcoinJobManager manager;
     private BitcoinTemplate coin;
     private int directJobPipelineFailed;
@@ -640,8 +639,6 @@ public class BitcoinPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>

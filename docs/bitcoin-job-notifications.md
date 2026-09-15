@@ -18,7 +18,7 @@ an already queued notification.
 | BLAKE2b | `BitcoinBlake2bJob` overrides `GetJobParams` and already copies its different payload. It does not call this base implementation. |
 | ProgPoW and its derived jobs | `ProgpowJob` overrides the base method and returns a new `ProgpowJobParams` object for each call, including calls through a `BitcoinJob` reference. Its pool projects a separate seven-field wire array. See the sibling audit below. |
 
-The Bitcoin and Satoshicash pools retain the manager notification, read job ID
+The Bitcoin and Satoshicash pools consume the manager notification, read job ID
 at index 0 and `clean_jobs` at index 8, and issue worker notifications during
 broadcast, subscription and difficulty changes. Direct SOLO also issues work
 after authorization. No audited caller requires reference identity of the
@@ -54,12 +54,22 @@ They are fixed explicitly in this update:
 | Veruscoin | Copy the outer array before setting the penultimate flag; preserve the trailing solution string. |
 | Xelis and Warthog | Copy the outer array before setting the last flag; reuse immutable strings. |
 | Ergo | Copy at job issuance, then fill the per-worker target in that connection's owned snapshot before queueing. No second pool-level copy is needed. Copying only at target projection would leave the earlier interval unprotected. |
-| ProgPoW, Firo, Kiiro, Realichain and Telestai | Return a new two-field parameter object through virtual dispatch. Capture each broadcast's flag from its own notification before invoking miner callbacks, so a newer `currentJobParams` cannot change an in-progress fan-out. |
+| ProgPoW, Firo, Kiiro, Realichain and Telestai | Return a new two-field parameter object through virtual dispatch. Capture each broadcast's flag from its own notification before invoking miner callbacks, so later broadcasts cannot change an in-progress fan-out. |
 
 Bitcoin, ProgPoW, Satoshicash, Equihash/Veruscoin, Xelis, Warthog and Ergo
 difficulty-only updates explicitly request `clean_jobs=false`. This simplifies
 their existing always-false logic, preserves in-flight work and avoids reading
 a pool broadcast that may not yet exist when the manager already has a job.
+
+ProgPoW subscription always issues `clean_jobs=true` for the miner's initial work,
+independently of whether a manager broadcast has occurred or which flag it carried.
+The manager must already have valid work; this is not an initial-template readiness
+change. Subsequent difficulty-only updates continue to use `false`.
+
+Pools no longer retain unused broadcast parameter fields. Broadcast handlers use
+their own arguments and worker notifications use manager-issued snapshots.
+Custom pool subclasses that accessed the removed protected `currentJobParams`
+field should use the `OnNewJobAsync` argument for that broadcast instead.
 
 Other inspected paths are **not covered by a blanket caller-ownership guarantee**:
 BLAKE2b already clones its outer array and has an empty Merkle array; Kaspa
@@ -111,12 +121,20 @@ difficulty updates with an absent, true or false previous broadcast. They inspec
 the queued difficulty/target and job messages for two workers, verify independent
 non-clean notifications and unchanged caches, and check Ergo's distinct worker
 targets. Protected notification caches use test subclasses; private pool/manager
-state uses checked reflection without changing the production visibility.
+state uses checked reflection without changing the production visibility. Prior
+broadcasts go through the real pool handler, rather than being seeded into fields.
+Pool constructors are called explicitly; reflected methods and properties report
+named fixture errors if their expected contracts change.
+
+ProgPoW subscription regressions cover no prior broadcast and both prior flags,
+assert a clean seven-field initial notification with actual header/coinbase
+preparation, and then verify a non-clean difficulty update. They use a fixed seed
+from a test hasher and do not claim ProgPoW proof computation.
 
 Run the deterministic matrix without a daemon:
 
 ```powershell
-dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -p:BuildOdoCryptWindows=false --filter FullyQualifiedName~BitcoinJobNotificationTests
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -p:BuildOdoCryptWindows=false --filter "FullyQualifiedName~BitcoinJobNotificationTests|FullyQualifiedName~JobNotificationSnapshotTests"
 ```
 
 The Windows managed-only build option is sufficient for these notification tests.

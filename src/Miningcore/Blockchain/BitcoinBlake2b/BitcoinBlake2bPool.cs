@@ -243,7 +243,6 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     {
         if(operations.IsClosed)
             return;
-        currentJobParams = jobParams;
         logger.Info(() => $"Broadcasting base job {((object[]) jobParams)[0]} (worker IDs include a difficulty suffix)");
         async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {

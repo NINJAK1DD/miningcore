@@ -38,7 +38,6 @@ public class ProgpowPool : PoolBase
     {
     }
 
-    private ProgpowJobParams currentJobParams;
     private long currentJobId;
     private ProgpowJobManager manager;
     private ProgpowCoinTemplate coin;
@@ -104,8 +103,9 @@ public class ProgpowPool : PoolBase
             context.SetDifficulty(nicehashDiff.Value);
         }
 
-        var minerJobParams = CreateWorkerJob(connection, currentJobParams.CleanJobs);
-        // send intial update
+        // Initial work starts a clean job set independently of prior broadcasts.
+        var minerJobParams = CreateWorkerJob(connection, true);
+        // send initial update
         await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
         await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
     }
@@ -300,9 +300,7 @@ public class ProgpowPool : PoolBase
         logger.Info(() => $"Broadcasting jobs");
 
         var notification = (ProgpowJobParams) job;
-        currentJobParams = notification;
-        // Bind this broadcast to its own flag, even if a later broadcast replaces
-        // currentJobParams while the miner callbacks are still running.
+        // Bind this broadcast to its own flag while miner callbacks are running.
         var cleanJobs = notification.CleanJobs;
 
         await Guard(() => ForEachMinerAsync(async (connection, _) =>

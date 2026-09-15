@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Reactive;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -35,6 +36,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
+using Miningcore.Time;
 using NBitcoin;
 using Newtonsoft.Json;
 using NSubstitute;
@@ -104,6 +106,30 @@ public class JobNotificationSnapshotTests : TestBase
     [InlineData("telestai", false)]
     public void ProgpowNotification_BaseAndDerivedCallsUseIndependentTypedSnapshots(string family, bool clean)
     {
+        var job = CreateProgpowJob(family);
+        BitcoinJob baseReference = job;
+        var first = Assert.IsType<ProgpowJobParams>(baseReference.GetJobParams(clean));
+        var second = Assert.IsType<ProgpowJobParams>(job.GetJobParams(!clean));
+        Assert.NotSame(first, second);
+        Assert.Equal(clean, first.CleanJobs);
+        Assert.Equal(!clean, second.CleanJobs);
+        Assert.Equal(101ul, first.Height);
+        second.CleanJobs = clean;
+        Assert.Equal(!clean, Assert.IsType<ProgpowJobParams>(baseReference.GetJobParams(!clean)).CleanJobs);
+
+        var results = new ProgpowJobParams[128];
+        Parallel.For(0, results.Length, i => results[i] = Assert.IsType<ProgpowJobParams>(
+            baseReference.GetJobParams(i % 2 == 0)));
+        Assert.Equal(results.Length, results.Distinct(ReferenceEqualityComparer.Instance).Count());
+        for(var i = 0; i < results.Length; i++)
+        {
+            Assert.Equal(i % 2 == 0, results[i].CleanJobs);
+            Assert.Equal(101ul, results[i].Height);
+        }
+    }
+
+    private static ProgpowJob CreateProgpowJob(string family)
+    {
         ProgpowJob job = family switch
         {
             "firo" => new FiroJob(),
@@ -124,35 +150,19 @@ public class JobNotificationSnapshotTests : TestBase
             Height = 101,
             Transactions = Array.Empty<BitcoinBlockTransaction>(),
         };
+        var hasher = Substitute.For<IProgpowCache>();
+        hasher.SeedHash.Returns(new byte[32]);
         job.Init(block, "progpow-snapshot", new PoolConfig
         {
             Coin = "snapshot",
-            Template = new ProgpowCoinTemplate { Symbol = "TEST", CoinbaseTxVersion = 1 },
+            Template = ModuleInitializer.CoinTemplates["ravencoin"],
         }, null, new ClusterConfig(), MockMasterClock.FromTicks(
             DateTimeOffset.FromUnixTimeSeconds(block.CurTime).UtcTicks),
             new KeyId(new byte[20]), Network.RegTest, false, bitcoin.ShareMultiplier,
             bitcoin.CoinbaseHasherValue, bitcoin.HeaderHasherValue, bitcoin.BlockHasherValue,
-            Substitute.For<IProgpowCache>());
+            hasher);
 
-        BitcoinJob baseReference = job;
-        var first = Assert.IsType<ProgpowJobParams>(baseReference.GetJobParams(clean));
-        var second = Assert.IsType<ProgpowJobParams>(job.GetJobParams(!clean));
-        Assert.NotSame(first, second);
-        Assert.Equal(clean, first.CleanJobs);
-        Assert.Equal(!clean, second.CleanJobs);
-        Assert.Equal(101ul, first.Height);
-        second.CleanJobs = clean;
-        Assert.Equal(!clean, Assert.IsType<ProgpowJobParams>(baseReference.GetJobParams(!clean)).CleanJobs);
-
-        var results = new ProgpowJobParams[128];
-        Parallel.For(0, results.Length, i => results[i] = Assert.IsType<ProgpowJobParams>(
-            baseReference.GetJobParams(i % 2 == 0)));
-        Assert.Equal(results.Length, results.Distinct(ReferenceEqualityComparer.Instance).Count());
-        for(var i = 0; i < results.Length; i++)
-        {
-            Assert.Equal(i % 2 == 0, results[i].CleanJobs);
-            Assert.Equal(101ul, results[i].Height);
-        }
+        return job;
     }
 
     public static IEnumerable<object[]> DifficultyCases()
@@ -192,31 +202,28 @@ public class JobNotificationSnapshotTests : TestBase
         if(manager is EquihashJobManager)
         {
             var zcash = Assert.IsType<EquihashCoinTemplate>(ModuleInitializer.CoinTemplates["zcash"]);
-            typeof(EquihashJobManager).GetProperty(nameof(EquihashJobManager.ChainConfig))!
+            FindProperty(typeof(EquihashJobManager), nameof(EquihashJobManager.ChainConfig))
                 .SetValue(manager, zcash.GetNetwork(ChainName.Mainnet));
         }
 
         using var memoryCache = new MemoryCache(new MemoryCacheOptions());
         var nicehash = new NicehashService(Substitute.For<IHttpClientFactory>(), memoryCache);
-        var pool = Activator.CreateInstance(poolType, scope, jsonSerializerSettings,
-            Substitute.For<IConnectionFactory>(), Substitute.For<IStatsRepository>(),
-            container.Resolve<IMapper>(), clock, Substitute.For<IMessageBus>(), streams,
-            nicehash);
+        var pool = CreatePool(family, scope, clock, streams, nicehash);
         FindField(poolType, "manager").SetValue(pool, manager);
         if(manager is EquihashJobManager)
             FindField(poolType, "coin").SetValue(pool,
                 new EquihashCoinTemplate { Symbol = family == "verus" ? "VRSC" : "ZEC" });
-        var broadcastField = FindField(poolType, "currentJobParams");
-        Assert.Null(broadcastField.GetValue(pool));
+        object[] broadcastParams = null;
         if(broadcast.HasValue)
         {
-            var broadcastParams = (object[]) template.Clone();
+            broadcastParams = (object[]) template.Clone();
             broadcastParams[flagIndex] = broadcast.Value;
-            broadcastField.SetValue(pool, broadcastParams);
+            await (Task) FindMethod(poolType, "OnNewJobAsync",
+                family == "ergo" ? typeof(object[]) : typeof(object)).Invoke(pool, new object[] { broadcastParams });
         }
         var originalCache = JsonConvert.SerializeObject(template);
-        var originalBroadcast = JsonConvert.SerializeObject(broadcastField.GetValue(pool));
-        var update = poolType.GetMethod("OnVarDiffUpdateAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var originalBroadcast = JsonConvert.SerializeObject(broadcastParams);
+        var update = FindMethod(poolType, "OnVarDiffUpdateAsync", typeof(StratumConnection), typeof(double), typeof(CancellationToken));
         var snapshots = new List<object[]>();
 
         foreach(var difficulty in new[] { 2d, 4d })
@@ -263,8 +270,108 @@ public class JobNotificationSnapshotTests : TestBase
         Array.Fill(snapshots[1], "other-worker-mutation");
         Assert.Equal(firstJson, JsonConvert.SerializeObject(snapshots[0]));
         Assert.Equal(originalCache, JsonConvert.SerializeObject(template));
-        Assert.Equal(originalBroadcast, JsonConvert.SerializeObject(broadcastField.GetValue(pool)));
+        Assert.Equal(originalBroadcast, JsonConvert.SerializeObject(broadcastParams));
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProgpowSubscribe_InitialWorkIsCleanRegardlessOfPriorBroadcast(bool? broadcast)
+    {
+        var job = CreateProgpowJob("progpow");
+        var clock = MockMasterClock.FromTicks(DateTime.UtcNow.Ticks);
+        var streams = container.Resolve<RecyclableMemoryStreamManager>();
+        using var scope = container.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(Substitute.For<Miningcore.Persistence.Repositories.IBlockRepository>());
+            builder.RegisterInstance(Substitute.For<IShareRepository>());
+        });
+        var extraNonce = Substitute.For<IExtraNonceProvider>();
+        extraNonce.Next().Returns("00000001");
+        var manager = new ProgpowJobManager(scope, clock, Substitute.For<IMessageBus>(), extraNonce);
+        FindField(typeof(ProgpowJobManager), "currentJob").SetValue(manager, job);
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var pool = CreatePool("progpow", scope, clock, streams,
+            new NicehashService(Substitute.For<IHttpClientFactory>(), memoryCache));
+        FindField(typeof(ProgpowPool), "manager").SetValue(pool, manager);
+        FindField(typeof(ProgpowPool), "coin").SetValue(pool, ModuleInitializer.CoinTemplates["ravencoin"]);
+        FindField(typeof(PoolBase), "poolConfig").SetValue(pool, new PoolConfig());
+        if(broadcast.HasValue)
+            await (Task) FindMethod(typeof(ProgpowPool), "OnNewJobAsync", typeof(object))
+                .Invoke(pool, new[] { job.GetJobParams(broadcast.Value) });
+
+        var context = new ProgpowWorkerContext();
+        context.Init(1, null, clock);
+        var connection = new StratumConnection(NLog.LogManager.GetCurrentClassLogger(),
+            streams, clock, "progpow-subscribe", false);
+        connection.SetContext(context);
+        var request = new Timestamped<JsonRpcRequest>(
+            new JsonRpcRequest(BitcoinStratumMethods.Subscribe, new[] { "test-miner" }, 1), DateTimeOffset.UtcNow);
+        await (Task) FindMethod(typeof(ProgpowPool), "OnSubscribeAsync",
+            typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>)).Invoke(pool, new object[] { connection, request });
+
+        Assert.True(context.IsSubscribed);
+        var queue = Assert.IsType<BufferBlock<object>>(FindField(typeof(StratumConnection), "sendQueue").GetValue(connection));
+        Assert.True(queue.TryReceive(out var response));
+        Assert.Equal(1, Assert.IsType<JsonRpcResponse<object[]>>(response).Id);
+        Assert.True(queue.TryReceive(out var difficulty));
+        Assert.Equal(ProgpowStratumMethods.SetDifficulty, Assert.IsType<JsonRpcRequest<object[]>>(difficulty).Method);
+        Assert.True(queue.TryReceive(out var message));
+        var notification = Assert.IsType<JsonRpcRequest<object>>(message);
+        Assert.Equal(ProgpowStratumMethods.MiningNotify, notification.Method);
+        var snapshot = Assert.IsType<object[]>(notification.Params);
+        Assert.Equal(7, snapshot.Length);
+        Assert.True(Assert.IsType<bool>(snapshot[4]));
+        Assert.Equal(64, Assert.IsType<string>(snapshot[1]).Length);
+        Assert.Equal(new string('0', 64), snapshot[2]);
+        Assert.Equal(101u, snapshot[5]);
+        Assert.Equal("207fffff", snapshot[6]);
+        Assert.False(queue.TryReceive(out _));
+
+        // A subsequent difficulty update still preserves the subscribed work.
+        var initialJson = JsonConvert.SerializeObject(snapshot);
+        await (Task) FindMethod(typeof(ProgpowPool), "OnVarDiffUpdateAsync",
+            typeof(StratumConnection), typeof(double), typeof(CancellationToken))
+            .Invoke(pool, new object[] { connection, 2d, CancellationToken.None });
+        Assert.True(queue.TryReceive(out _));
+        Assert.True(queue.TryReceive(out var update));
+        var updated = Assert.IsType<object[]>(Assert.IsType<JsonRpcRequest<object>>(update).Params);
+        Assert.False(Assert.IsType<bool>(updated[4]));
+        Assert.NotSame(snapshot, updated);
+        Assert.Equal(initialJson, JsonConvert.SerializeObject(snapshot));
+        Assert.False(queue.TryReceive(out _));
+    }
+
+    private PoolBase CreatePool(string family, IComponentContext scope, IMasterClock clock,
+        RecyclableMemoryStreamManager streams, NicehashService nicehash)
+    {
+        var cf = Substitute.For<IConnectionFactory>();
+        var stats = Substitute.For<IStatsRepository>();
+        var mapper = container.Resolve<IMapper>();
+        var bus = Substitute.For<IMessageBus>();
+        // Explicit construction makes constructor changes compile-time failures.
+        PoolBase pool = family switch
+        {
+            "equihash" or "verus" => new EquihashPool(scope, jsonSerializerSettings, cf, stats, mapper, clock, bus, streams, nicehash),
+            "xelis" => new XelisPool(scope, jsonSerializerSettings, cf, stats, mapper, clock, bus, streams, nicehash),
+            "warthog" => new WarthogPool(scope, jsonSerializerSettings, cf, stats, mapper, clock, bus, streams, nicehash),
+            "ergo" => new ErgoPool(scope, jsonSerializerSettings, cf, stats, mapper, clock, bus, streams, nicehash),
+            "satoshicash" => new SatoshicashPool(scope, jsonSerializerSettings, cf, stats, mapper, clock, bus, streams, nicehash),
+            "progpow" => new ProgpowPool(scope, jsonSerializerSettings, cf, stats, mapper, clock, bus, streams, nicehash),
+            _ => throw new ArgumentException($"Unknown pool fixture {family}", nameof(family)),
+        };
+        FindField(typeof(StratumServer), "logger").SetValue(pool, NLog.LogManager.GetCurrentClassLogger());
+        return pool;
+    }
+
+    private static MethodInfo FindMethod(Type type, string name, params Type[] parameters) =>
+        type.GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic, null, parameters, null) ??
+        throw new InvalidOperationException($"Test fixture method {type.Name}.{name} with the expected signature no longer exists");
+
+    private static PropertyInfo FindProperty(Type type, string name) =>
+        type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) ??
+        throw new InvalidOperationException($"Test fixture property {type.Name}.{name} no longer exists");
 
     private static FieldInfo FindField(Type type, string name)
     {

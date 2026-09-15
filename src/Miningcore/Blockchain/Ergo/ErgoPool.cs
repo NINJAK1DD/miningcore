@@ -41,7 +41,6 @@ public class ErgoPool : PoolBase
     {
     }
 
-    protected object[] currentJobParams;
     protected ErgoJobManager manager;
     private ErgoPoolConfigExtra extraPoolConfig;
     private ErgoCoinTemplate coin;
@@ -274,8 +273,6 @@ public class ErgoPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object[] jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {jobParams[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>

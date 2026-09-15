@@ -91,6 +91,10 @@ Difficulty-only updates in all affected pools explicitly preserve existing work
 without reading a previous broadcast. Ergo fills each worker's target directly
 in its owned snapshot, eliminating the redundant array copy before queueing.
 
+ProgPoW subscriptions now issue clean initial work without depending on a previous
+broadcast. Unused pool broadcast caches were removed; custom subclasses using the
+former protected `currentJobParams` field should use the broadcast handler argument.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines

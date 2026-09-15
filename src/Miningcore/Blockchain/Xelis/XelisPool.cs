@@ -40,7 +40,6 @@ public class XelisPool : PoolBase
     {
     }
 
-    private object currentJobParams;
     private XelisJobManager manager;
     private XelisPoolConfigExtra extraPoolConfig;
     private XelisCoinTemplate coin;
@@ -285,8 +284,6 @@ public class XelisPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>

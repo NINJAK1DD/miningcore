@@ -38,7 +38,6 @@ public class NexaPool : PoolBase
     {
     }
 
-    private object currentJobParams;
     private NexaJobManager manager;
     private BitcoinTemplate coin;
 
@@ -308,8 +307,6 @@ public class NexaPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>

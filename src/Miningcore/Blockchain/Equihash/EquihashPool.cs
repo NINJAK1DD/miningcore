@@ -43,7 +43,6 @@ public class EquihashPool : PoolBase
     }
 
     protected EquihashJobManager manager;
-    protected object currentJobParams;
     private double hashrateDivisor;
     private EquihashPoolConfigExtra extraConfig;
     private EquihashCoinTemplate coin;
@@ -420,8 +419,6 @@ public class EquihashPool : PoolBase
 
     protected async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         bool cleanJob;

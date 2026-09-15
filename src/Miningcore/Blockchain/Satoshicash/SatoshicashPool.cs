@@ -39,7 +39,6 @@ public class SatoshicashPool : PoolBase
     {
     }
 
-    protected object currentJobParams;
     protected SatoshicashJobManager manager;
     private BitcoinTemplate coin;
 
@@ -310,8 +309,6 @@ public class SatoshicashPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
