@@ -2038,6 +2038,68 @@ pin needs review; updating a pin still requires the complete release validation.
 monitor runs independently of lint tooling, while the always-running .NET pull-request workflow
 enforces ShellCheck for the release scripts.
 
+### Workflow dependency contract
+
+External GitHub Actions and reusable workflows must use a full upstream commit SHA with a bare
+same-line `# vX.Y.Z` release comment. Resolve the release with `git ls-remote --tags`, dereference
+annotated tags to commits when necessary, and inspect the pinned `action.yml` runtime and inputs.
+The version comment identifies the release; it does not replace verification of the SHA. Put
+runtime or migration notes on separate lines so Dependabot can update the version comment.
+If upstream publishes only major tags, do not invent a three-part release comment: first review
+an explicit exception and extend the guard's contract/tests to represent that upstream accurately.
+Local `./` actions are source-controlled; `docker://` actions must use a SHA-256 image digest.
+`scripts/release/test-workflow-action-pins.py` checks workflow YAML and tracked composite-action
+definitions in the .NET job, including reusable workflows and quoted references. It rejects
+floating/short pins, missing version comments, duplicate keys and YAML aliases. It checks syntax,
+not upstream provenance; release-to-SHA verification remains part of dependency review.
+The checker requires a Git checkout with Git installed so tracked composite actions cannot be
+silently omitted; extracted release trees receive a named error. Use spaces in YAML pin annotations.
+`--self-test` uses synthetic fixtures only. The normal check separately validates the live Docker
+publisher, reporting policy failures as `Invalid workflow contract` even when action pins are
+invalid; malformed YAML, duplicate keys and aliases still block publisher inspection. The gate accepts
+the simple event-name equality with optional expression delimiters, parentheses and whitespace;
+action `push` inputs require expression delimiters. More complex gates require a contract review.
+Secret detection covers both dot and bracket access, including workflow/job environment values.
+
+All checkout steps disable persistent Git credentials. Public repository fetches remain anonymous;
+release publication uses its existing explicitly supplied API tokens rather than checkout state.
+Specifically, `Validate release tag` in `.github/workflows/release.yml` runs
+`git fetch --no-tags origin dev` anonymously on tag builds. Before making this repository private,
+provide narrowly scoped, ephemeral authentication for that fetch and validate a tag build; otherwise
+it will fail authentication because checkout no longer retains Git credentials. Do not restore
+persistent credentials to PR checkouts to accommodate a private release fetch.
+
+GitHub Actions version updates run weekly as one Dependabot group, with `ci(actions):` titles.
+Both Actions and NuGet omit `target-branch` and follow the default branch (currently `dev`), allowing
+their configuration to apply to security updates too. NuGet keeps individual monthly version updates
+with `chore(deps):` titles so application-dependency changes can be reviewed separately.
+Security updates are advisory-driven and also require the repository security-update
+setting. Removing a branch override does not enable that setting. SHA-based Actions do not receive
+the same Dependabot alert coverage as semantic-version references, so maintainers must also track
+upstream advisories and review urgent fixes without waiting for the weekly run. See GitHub's
+[Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
+and [alert limitations](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-alerts#limitations).
+
+This update deliberately retains Checkout v6.1.0 and setup-dotnet v5.4.0, the existing major lines
+used by the tested workflows, while migrating retired Docker and MSBuild runtimes. Checkout v7
+and setup-dotnet v6 introduce separate ESM/dependency migrations; Dependabot may propose those
+major upgrades for independent review. There is no major-version ignore rule.
+
+The legacy Docker Hub publisher retains its manual destination and credentials. Pull requests
+changing that workflow build with the same metadata/Buildx actions but cannot log in or push;
+only `workflow_dispatch` enables those steps. Published images include BuildKit provenance and
+an SBOM, and the run summary records the immutable image digest. This does not attest that Docker
+Hub credentials or registry publication work during a PR build; those require an authorized
+manual publication. GHCR release publication remains the canonical release path.
+The Docker PR check is path-filtered and must not be required by branch protection. Its Buildx
+docker-container driver supports the attestation inputs; PR builds exercise those inputs even
+though their cache-only output does not export the image or attestations.
+
+The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
+integration-test databases. They are outside the archive-build pin/monitor contract; test jobs
+therefore exercise current PostgreSQL 17 maintenance releases rather than a reproducible database
+image. The serviced .NET runtime tags likewise retain their documented policy.
+
 ### Image-pin monitor contract
 
 Pin drift exits with status 1. A registry failure uses advisory status 69 only when its diagnostic
@@ -2110,6 +2172,37 @@ git push origin "$NEXT_VERSION"
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight
 tag. After the first GHCR publication, confirm the package is public and inherits access from this
 repository. Do not move or reuse a published version tag; publish a new version instead.
+
+#### Reviewed pins: 2026-09-15
+
+The shared release-target contract pins the **rolling tags** `ubuntu:26.04` and `ubuntu:22.04`.
+The corresponding dated tags identify the builds published by the
+[official Ubuntu update](https://github.com/docker-library/official-images/commit/811a6c4a94bb0dbb18adbfb290520b6c780eb3b0),
+but have different index digests. Each rolling/dated pair resolves to the same Linux amd64 manifest
+and configuration. Do not compare a dated tag's index with the rolling-tag pin.
+
+Docker Hub response bytes were SHA-256 verified at all three levels (index, manifest, configuration):
+
+| Ubuntu 26.04 reference | SHA-256 digest |
+| --- | --- |
+| `ubuntu:26.04` index (pinned) | SHA-256 `513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d` |
+| `ubuntu:resolute-20260901` index | SHA-256 `5212ec9732bb047ef5aed8f477787a11b079527f9f4045e7dd509c282af74b84` |
+| Shared Linux amd64 manifest | SHA-256 `e5a4d6262ab5dbc25a85e60550dd7c87fd41a74fe43881534ed8288b2a7a3f8d` |
+| Shared Linux amd64 configuration | SHA-256 `e2e49769ecc7948a72b28e9748f2dc881a13f5cea02fc0faa99a7a5607e457f6` |
+
+| Ubuntu 22.04 reference | SHA-256 digest |
+| --- | --- |
+| `ubuntu:22.04` index (pinned) | SHA-256 `829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7` |
+| `ubuntu:jammy-20260901.2` index | SHA-256 `ee61c25c29326511cc86dbf6479935edfd62533a14604d1befc69169a5f96255` |
+| Shared Linux amd64 manifest | SHA-256 `281c5745f657873d78e5531fc5ba8575f46ab7769b94550ac99543f122679986` |
+| Shared Linux amd64 configuration | SHA-256 `bf7f4568d95723d2148bb19c688526d1404ef3302ef024bc1513ad8f533d46c8` |
+
+Ubuntu version labels and runtime configuration remain unchanged apart from creation labels and
+legacy build-parent metadata. This comparison does not claim identical root filesystems or packages.
+The prior SHA-256 index pins were `2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b` (26.04)
+and SHA-256 `2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc` (22.04); their source record
+remains in the [pre-update contract](https://github.com/NINJAK1DD/miningcore/blob/7c3ecff475a4b3a66300e1884cdaa921184cdbac/scripts/release/linux-release-targets.sh).
+Keep dated review records when advancing the pins. Every advance requires the complete release matrix.
 
 ### Recover an interrupted publication
 

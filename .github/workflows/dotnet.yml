@@ -1,5 +1,8 @@
 name: .NET
 
+# Pin external actions to full upstream commits; keep version comments for review.
+# Dependabot proposes updates for the github-actions ecosystem.
+
 on:
   push:
     branches: [ master, dev, ravencoin-rollback ]
@@ -31,8 +34,9 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
+        persist-credentials: false
         fetch-depth: 0
 
     - name: Validate administrative API documentation
@@ -58,6 +62,16 @@ jobs:
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py
+
+    - name: Enforce workflow action pins
+      shell: bash
+      run: |
+        python3 -c 'import yaml' 2>/dev/null || {
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y python3-yaml
+        }
+        python3 scripts/release/test-workflow-action-pins.py --self-test
+        python3 scripts/release/test-workflow-action-pins.py
 
     - name: Guard Stratum direct logging boundaries
       shell: bash
@@ -235,7 +249,7 @@ jobs:
         echo "MININGCORE_TEST_DOGECOIND=$dogecoind" >> "$GITHUB_ENV"
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v5
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
       with:
         dotnet-version: 10.0.x
 
@@ -345,8 +359,9 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
+        persist-credentials: false
         fetch-depth: 0
 
     - name: Verify source-build runner identity
@@ -383,12 +398,13 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
+        persist-credentials: false
         fetch-depth: 0
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v5
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
       with:
         dotnet-version: 10.0.x
 
@@ -396,8 +412,9 @@ jobs:
       shell: pwsh
       run: python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests -v
 
+    # v3 upgrades the action runtime from Node.js 20 to Node.js 24.
     - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v2
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
       with:
         msbuild-architecture: x64
 
