@@ -19,37 +19,40 @@ IMAGE = re.compile(r"docker://[^\s@]+@sha256:[0-9a-f]{64}")
 VERSION = re.compile(r" +# +v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? *")
 
 
-def check_document(source):
+def inspect_document(source, publisher=False):
     """Parse YAML so quoting, reuse and run-script text cannot bypass the guard."""
     errors = []
     count = 0
+    structure_valid = True
     try:
         # Anchors/aliases and merge keys obscure each call site's version comment.
         # Fail closed rather than letting YAML expand them before validation.
         if any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
                for token in yaml.scan(source)):
-            return ["YAML anchors and aliases are unsupported by the action-pin contract"], 0
+            return ["YAML anchors and aliases are unsupported by the action-pin contract"], 0, []
         root = yaml.compose(source, Loader=yaml.SafeLoader)
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         lines = source.splitlines()
         if mark is not None and mark.line < len(lines) and "\t" in lines[mark.line]:
-            return [f"line {mark.line + 1}: invalid YAML; use spaces instead of tabs"], 0
-        return ["invalid YAML"], 0
+            return [f"line {mark.line + 1}: invalid YAML; use spaces instead of tabs"], 0, []
+        return ["invalid YAML"], 0, []
     if not isinstance(root, MappingNode):
-        return ["workflow/action must be a YAML mapping"], 0
+        return ["workflow/action must be a YAML mapping"], 0, []
 
     lines = source.splitlines()
 
     def walk(node):
-        nonlocal count
+        nonlocal count, structure_valid
         if isinstance(node, MappingNode):
             keys = set()
             for key, value in node.value:
                 if not isinstance(key, ScalarNode) or key.value in keys or key.value == "<<":
                     errors.append(f"line {key.start_mark.line + 1}: duplicate or unsupported mapping key")
+                    structure_valid = False
                     continue
                 keys.add(key.value)
+                walk(value)
                 if key.value == "uses":
                     count += 1
                     line = key.start_mark.line + 1
@@ -68,12 +71,22 @@ def check_document(source):
                     if (value.start_mark.line != value.end_mark.line or
                             not VERSION.fullmatch(lines[value.end_mark.line][value.end_mark.column:])):
                         errors.append(f"line {line}: external action requires a bare trailing # vX.Y.Z comment")
-                walk(value)
         elif isinstance(node, SequenceNode):
             for child in node.value:
                 walk(child)
 
     walk(root)
+    contract_errors = []
+    if publisher and structure_valid:
+        # Pin-format errors do not mask independent policy errors. Structural
+        # errors still block loading: alias sharing would undermine secret isolation.
+        # BaseLoader preserves GitHub's 'on' key and literal input strings.
+        contract_errors = check_publisher(yaml.load(source, Loader=yaml.BaseLoader))
+    return errors, count, contract_errors
+
+
+def check_document(source):
+    errors, count, _ = inspect_document(source)
     return errors, count
 
 
@@ -132,6 +145,8 @@ def check_publisher(workflow):
         if value is login.get("with"):
             return False
         if isinstance(value, str):
+            # Deliberately conservative: even a step name or script comment using
+            # the bare word "secrets" requires rewording or a contract review.
             return re.search(r"\bsecrets\b", value, re.IGNORECASE) is not None
         if isinstance(value, dict):
             return any(has_secrets(key) or has_secrets(child) for key, child in value.items())
@@ -258,6 +273,26 @@ class ContractTests(unittest.TestCase):
         workflow["jobs"]["build"]["permissions"] = {"contents": "write"}
         self.assertTrue(check_publisher(workflow))
 
+    def test_pin_and_publisher_errors_are_reported_together(self):
+        workflow = self.publisher()
+        steps = workflow["jobs"]["build"]["steps"]
+        steps[0]["uses"] = "docker/login-action@v4"
+        steps[0]["if"] = "true"
+        errors, count, policy = inspect_document(yaml.safe_dump(workflow), publisher=True)
+        self.assertTrue(any("full commit SHA" in error for error in errors))
+        self.assertEqual(count, 2)
+        self.assertIn("Docker login must be gated by the manual-dispatch equality", policy)
+
+    def test_structural_errors_block_publisher_loading(self):
+        for source in ("jobs: [\n", "jobs: &jobs {}\ncopy: *jobs\n",
+                       "jobs: {}\njobs: {}\n", "jobs:\n  <<: {}\n",
+                       "uses: {duplicate: one, duplicate: two}\n"):
+            with patch(__name__ + ".check_publisher") as check:
+                errors, _, policy = inspect_document(source, publisher=True)
+                self.assertTrue(errors)
+                self.assertEqual(policy, [])
+                check.assert_not_called()
+
     def test_discovery_failure_is_actionable(self):
         with tempfile.TemporaryDirectory() as directory:
             for failure in (FileNotFoundError(), subprocess.CalledProcessError(128, "git")):
@@ -290,18 +325,16 @@ def main():
             print(f"Cannot read workflow/action file {ascii(str(path.relative_to(ROOT)))}")
             failed = True
             continue
-        errors, found = check_document(source)
+        errors, found, contract_errors = inspect_document(
+            source, publisher=path == ROOT / ".github/workflows/docker-image.yml")
         count += found
         for error in errors:
             # ascii escapes prevent workflow-command injection through filenames.
             print(f"Invalid action pin in {ascii(str(path.relative_to(ROOT)))}: {error}")
         failed |= bool(errors)
-        if not errors and path == ROOT / ".github/workflows/docker-image.yml":
-            # BaseLoader preserves GitHub's 'on' key and literal input strings.
-            contract_errors = check_publisher(yaml.load(source, Loader=yaml.BaseLoader))
-            for error in contract_errors:
-                print(f"Invalid workflow contract in '.github/workflows/docker-image.yml': {error}")
-            failed |= bool(contract_errors)
+        for error in contract_errors:
+            print(f"Invalid workflow contract in '.github/workflows/docker-image.yml': {error}")
+        failed |= bool(contract_errors)
     if failed:
         raise SystemExit(1)
     print(f"Validated {count} uses references in {len(paths)} workflow/action files")

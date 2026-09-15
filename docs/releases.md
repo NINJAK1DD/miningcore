@@ -2020,22 +2020,28 @@ not upstream provenance; release-to-SHA verification remains part of dependency 
 The checker requires a Git checkout with Git installed so tracked composite actions cannot be
 silently omitted; extracted release trees receive a named error. Use spaces in YAML pin annotations.
 `--self-test` uses synthetic fixtures only. The normal check separately validates the live Docker
-publisher, reporting policy failures as `Invalid workflow contract`. Its manual-dispatch gate accepts
+publisher, reporting policy failures as `Invalid workflow contract` even when action pins are
+invalid; malformed YAML, duplicate keys and aliases still block publisher inspection. The gate accepts
 the simple event-name equality with optional expression delimiters, parentheses and whitespace;
 action `push` inputs require expression delimiters. More complex gates require a contract review.
 Secret detection covers both dot and bracket access, including workflow/job environment values.
 
 All checkout steps disable persistent Git credentials. Public repository fetches remain anonymous;
 release publication uses its existing explicitly supplied API tokens rather than checkout state.
+Specifically, `Validate release tag` in `.github/workflows/release.yml` runs
+`git fetch --no-tags origin dev` anonymously on tag builds. Before making this repository private,
+provide narrowly scoped, ephemeral authentication for that fetch and validate a tag build; otherwise
+it will fail authentication because checkout no longer retains Git credentials. Do not restore
+persistent credentials to PR checkouts to accommodate a private release fetch.
 
 GitHub Actions version updates run weekly as one Dependabot group, with `ci(actions):` titles.
 Both Actions and NuGet omit `target-branch` and follow the default branch (currently `dev`), allowing
-their configuration to apply to security updates too. NuGet keeps its monthly version-update
-schedule; security updates are advisory-driven and also require the repository security-update
+their configuration to apply to security updates too. NuGet keeps individual monthly version updates
+with `chore(deps):` titles so application-dependency changes can be reviewed separately.
+Security updates are advisory-driven and also require the repository security-update
 setting. Removing a branch override does not enable that setting. SHA-based Actions do not receive
-the same Dependabot alert
-coverage as semantic-version references, so maintainers must also track upstream advisories and
-review urgent fixes without waiting for the weekly run. See GitHub's
+the same Dependabot alert coverage as semantic-version references, so maintainers must also track
+upstream advisories and review urgent fixes without waiting for the weekly run. See GitHub's
 [Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
 and [alert limitations](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-alerts#limitations).
 
