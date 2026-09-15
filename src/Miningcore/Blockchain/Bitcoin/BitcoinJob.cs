@@ -1211,8 +1211,13 @@ public class BitcoinJob
 
     public virtual object GetJobParams(bool isNew)
     {
-        jobParams[^1] = isNew;
-        return jobParams;
+        // Stratum queues payloads before serializing them. Never mutate the cached
+        // template or expose its mutable arrays to a notification's caller.
+        var result = (object[]) jobParams.Clone();
+        result[4] = ((string[]) result[4]).Clone();
+        result[^1] = isNew;
+        // All remaining fields and the branch strings are immutable cached values.
+        return result;
     }
 
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,

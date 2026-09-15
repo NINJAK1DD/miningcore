@@ -69,6 +69,17 @@ Error-free RPC envelopes with no template payload are now handled as unavailable
 at warning level across these managers instead of reaching job construction and
 producing an error-level exception.
 
+## Unreleased: independent Bitcoin-family job notifications
+
+Bitcoin-family `mining.notify` messages now retain the `clean_jobs` flag supplied
+for each notification, even when another call occurs before queued work is
+serialized. Returned outer and Merkle-branch arrays are independent, so caller
+mutation cannot corrupt another notification or the cached job. Field order,
+wire values, coinbase construction and cached immutable strings are preserved.
+This covers custodial Bitcoin-family, direct Bitcoin SOLO, merged-mining and
+Satoshicash jobs that use `BitcoinJob.GetJobParams`. See the
+[caller audit and regression contract](bitcoin-job-notifications.md) for issue #153.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines
