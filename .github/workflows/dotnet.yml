@@ -62,6 +62,14 @@ jobs:
       shell: bash
       run: python3 scripts/release/test-doc-links.py
 
+    - name: Enforce workflow action pins
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-yaml
+        python3 scripts/release/test-workflow-action-pins.py --self-test
+        python3 scripts/release/test-workflow-action-pins.py
+
     - name: Guard Stratum direct logging boundaries
       shell: bash
       run: python3 scripts/release/test-stratum-diagnostic-sources.py
@@ -399,8 +407,9 @@ jobs:
       shell: pwsh
       run: python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests -v
 
+    # v3 upgrades the action runtime from Node.js 20 to Node.js 24.
     - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0; Node.js 24
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
       with:
         msbuild-architecture: x64
 
