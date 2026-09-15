@@ -80,6 +80,13 @@ This covers custodial Bitcoin-family, direct Bitcoin SOLO, merged-mining and
 Satoshicash jobs that use `BitcoinJob.GetJobParams`. See the
 [caller audit and regression contract](bitcoin-job-notifications.md) for issue #153.
 
+The review follow-up extends snapshot ownership to Equihash/Veruscoin, Xelis,
+Warthog, Ergo and ProgPoW. ProgPoW now uses virtual dispatch for its typed
+notification and captures each broadcast's flag before miner fan-out. Existing
+wire layouts, including Veruscoin's trailing solution, are preserved. The generic
+Bitcoin copier handles string arrays by type, and deterministic parallel and real
+send-queue regressions cover the ownership boundary.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines

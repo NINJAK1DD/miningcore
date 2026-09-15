@@ -299,13 +299,17 @@ public class ProgpowPool : PoolBase
     {
         logger.Info(() => $"Broadcasting jobs");
 
-        currentJobParams = job as ProgpowJobParams;
+        var notification = (ProgpowJobParams) job;
+        currentJobParams = notification;
+        // Bind this broadcast to its own flag, even if a later broadcast replaces
+        // currentJobParams while the miner callbacks are still running.
+        var cleanJobs = notification.CleanJobs;
 
         await Guard(() => ForEachMinerAsync(async (connection, _) =>
         {
             var context = connection.ContextAs<ProgpowWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection, currentJobParams.CleanJobs);
+            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
 
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
@@ -445,9 +449,8 @@ public class ProgpowPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            bool cleanJob = (currentJobParams.CleanJobs) ? !currentJobParams.CleanJobs : currentJobParams.CleanJobs;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
             await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(connection.Context.Difficulty) });
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
         }

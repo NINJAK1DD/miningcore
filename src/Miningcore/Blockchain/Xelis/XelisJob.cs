@@ -227,8 +227,9 @@ public class XelisJob
 
     public virtual object GetJobParams(bool isNew)
     {
-        jobParams[^1] = isNew;
-        return jobParams;
+        var result = (object[]) jobParams.Clone();
+        result[^1] = isNew;
+        return result;
     }
 
     protected virtual bool RegisterSubmit(string extraNonce1, string nonce)

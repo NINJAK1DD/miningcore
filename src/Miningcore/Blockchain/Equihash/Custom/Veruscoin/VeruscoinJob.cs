@@ -523,8 +523,10 @@ public class VeruscoinJob : EquihashJob
     
     public override object GetJobParams(bool isNew)
     {
-        jobParams[^2] = isNew;
-        return jobParams;
+        // Verus appends the immutable solution string after clean_jobs.
+        var result = (object[]) jobParams.Clone();
+        result[^2] = isNew;
+        return result;
     }
     
     #endregion // API-Surface

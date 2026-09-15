@@ -1,7 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
 using Autofac;
+using Microsoft.IO;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
@@ -12,6 +18,7 @@ using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using Miningcore.Time;
 using NBitcoin;
@@ -58,8 +65,10 @@ public class BitcoinJobNotificationTests : TestBase
             ? manager.GetDirectJobForStratum(miner.GetAddress(Network.RegTest).ToString(), miner, 7)
             : manager.GetJobForStratum();
         var workerNotification = Assert.IsType<object[]>(workerJob.GetJobParams(!firstClean));
-        manager.Notification(!firstClean);
-        workerJob.GetJobParams(firstClean);
+        // Deliberately issue and discard later notifications: these calls must not
+        // retroactively change either outstanding manager/worker notification.
+        _ = manager.Notification(!firstClean);
+        _ = workerJob.GetJobParams(firstClean);
 
         Assert.Equal(firstClean, broadcast[8]);
         Assert.Equal(!firstClean, workerNotification[8]);
@@ -83,6 +92,95 @@ public class BitcoinJobNotificationTests : TestBase
         foreach(var transactionCount in new[] { 0, 3 })
         foreach(var firstClean in new[] { true, false })
             yield return new object[] { path, transactionCount, firstClean };
+    }
+
+    [Theory]
+    [MemberData(nameof(NotificationCases))]
+    public void GetJobParams_ParallelIssuanceOwnsEveryMutableContainer(
+        string path, int transactionCount, bool firstClean)
+    {
+        var job = CreateJob(path, transactionCount);
+        var notifications = new object[128][];
+        Parallel.For(0, notifications.Length, i =>
+            notifications[i] = Assert.IsType<object[]>(job.GetJobParams(
+                i % 2 == 0 ? firstClean : !firstClean)));
+
+        Assert.Equal(notifications.Length, notifications.Distinct(ReferenceEqualityComparer.Instance).Count());
+        Assert.Equal(notifications.Length, notifications.Select(x => x[4])
+            .Distinct(ReferenceEqualityComparer.Instance).Count());
+        for(var i = 0; i < notifications.Length; i++)
+            Assert.Equal(i % 2 == 0 ? firstClean : !firstClean, notifications[i][8]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NotifyAsync_QueuedSnapshotsRetainFlagsAndBranchesOnTheWire(bool firstClean)
+    {
+        var job = CreateJob("bitcoin", 3);
+        var clock = MockMasterClock.FromTicks(DateTimeOffset.FromUnixTimeSeconds(
+            job.BlockTemplate.CurTime).UtcTicks);
+        var connection = new StratumConnection(NLog.LogManager.GetCurrentClassLogger(),
+            container.Resolve<RecyclableMemoryStreamManager>(), clock, "notification-queue", false);
+        var first = Assert.IsType<object[]>(job.GetJobParams(firstClean));
+        var expectedFirst = JArray.FromObject(first);
+        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, first);
+        var second = Assert.IsType<object[]>(job.GetJobParams(!firstClean));
+        var expectedSecond = JArray.FromObject(second);
+        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, second);
+
+        // The real send queue already owns both notifications, but its consumer
+        // starts only below. Interference therefore precedes serialization exactly.
+        var later = Assert.IsType<object[]>(job.GetJobParams(firstClean));
+        Array.Fill((string[]) later[4], "changed-branch");
+        Array.Fill(later, "changed-field");
+
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var endpoint = (IPEndPoint) listener.LocalEndpoint;
+        var accept = listener.AcceptSocketAsync(stop.Token);
+        await client.ConnectAsync(endpoint.Address, endpoint.Port, stop.Token);
+        using var accepted = await accept;
+        var errors = new List<Exception>();
+        var dispatch = connection.DispatchAsync(accepted, stop.Token,
+            new StratumEndpoint(endpoint, new PoolEndpoint()),
+            (IPEndPoint) accepted.RemoteEndPoint, null,
+            (_, _, _) => Task.CompletedTask, _ => { }, (_, error) => errors.Add(error));
+        try
+        {
+            using var reader = new StreamReader(client.GetStream());
+            foreach(var expected in new[] { expectedFirst, expectedSecond })
+            {
+                var line = await reader.ReadLineAsync(stop.Token);
+                var wire = JObject.Parse(Assert.IsType<string>(line));
+                Assert.Equal(BitcoinStratumMethods.MiningNotify, wire.Value<string>("method"));
+                Assert.True(JToken.DeepEquals(expected, wire["params"]));
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            client.Dispose();
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void GetJobParams_ClonesStringArraysIndependentOfTheirSlot()
+    {
+        var template = new object[] { "id", new[] { "first" }, null, new[] { "second" }, false };
+        var job = new LayoutJob(template);
+        var first = Assert.IsType<object[]>(job.GetJobParams(true));
+        Assert.Null(first[2]);
+        ((string[]) first[1])[0] = "changed";
+        ((string[]) first[3])[0] = "changed";
+        var second = Assert.IsType<object[]>(job.GetJobParams(false));
+        Assert.Equal("first", ((string[]) second[1])[0]);
+        Assert.Equal("second", ((string[]) second[3])[0]);
+        Assert.False((bool) template[^1]);
     }
 
     [Theory]
@@ -271,5 +369,10 @@ public class BitcoinJobNotificationTests : TestBase
         }
 
         public object[] Notification(bool clean) => (object[]) GetJobParamsForStratum(clean);
+    }
+
+    private sealed class LayoutJob : BitcoinJob
+    {
+        public LayoutJob(object[] template) => jobParams = template;
     }
 }

@@ -1214,7 +1214,13 @@ public class BitcoinJob
         // Stratum queues payloads before serializing them. Never mutate the cached
         // template or expose its mutable arrays to a notification's caller.
         var result = (object[]) jobParams.Clone();
-        result[4] = ((string[]) result[4]).Clone();
+        // Copy branch containers by type rather than coupling this method to a
+        // particular slot in a subclass's notification layout.
+        for(var i = 0; i < result.Length; i++)
+        {
+            if(result[i] is string[] values)
+                result[i] = values.Clone();
+        }
         result[^1] = isNew;
         // All remaining fields and the branch strings are immutable cached values.
         return result;
