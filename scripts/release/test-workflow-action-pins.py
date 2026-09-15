@@ -2,9 +2,12 @@
 """Enforce docs/releases.md's action-pin contract. Requires python3-yaml."""
 
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
@@ -13,7 +16,7 @@ from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 ROOT = Path(__file__).resolve().parents[2]
 ACTION = re.compile(r"[\w.-]+/[\w.-]+(?:/[\w./-]+)?@[0-9a-f]{40}")
 IMAGE = re.compile(r"docker://[^\s@]+@sha256:[0-9a-f]{64}")
-VERSION = re.compile(r"[ \t]+#[ \t]+v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?[ \t]*")
+VERSION = re.compile(r" +# +v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? *")
 
 
 def check_document(source):
@@ -27,7 +30,11 @@ def check_document(source):
                for token in yaml.scan(source)):
             return ["YAML anchors and aliases are unsupported by the action-pin contract"], 0
         root = yaml.compose(source, Loader=yaml.SafeLoader)
-    except yaml.YAMLError:
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        lines = source.splitlines()
+        if mark is not None and mark.line < len(lines) and "\t" in lines[mark.line]:
+            return [f"line {mark.line + 1}: invalid YAML; use spaces instead of tabs"], 0
         return ["invalid YAML"], 0
     if not isinstance(root, MappingNode):
         return ["workflow/action must be a YAML mapping"], 0
@@ -68,6 +75,88 @@ def check_document(source):
 
     walk(root)
     return errors, count
+
+
+def manual_dispatch_only(value, require_expression=False):
+    """Recognize the documented simple equality, not arbitrary Actions expressions."""
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if value.startswith("${{") and value.endswith("}}"):
+        value = value[3:-2].strip()
+    elif require_expression:
+        return False
+    while value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip()
+    return re.fullmatch(r"github\s*(?:\.\s*event_name|\[\s*'event_name'\s*\])\s*==\s*'workflow_dispatch'", value) is not None
+
+
+def check_publisher(workflow):
+    """Check live publication policy separately from the hermetic checker tests."""
+    errors = []
+    if not isinstance(workflow, dict):
+        return ["publisher must be a mapping"]
+    triggers = workflow.get("on")
+    if not isinstance(triggers, dict) or set(triggers) != {"pull_request", "workflow_dispatch"}:
+        errors.append("publisher permits only pull_request and workflow_dispatch triggers")
+    if workflow.get("permissions") != {"contents": "read"}:
+        errors.append("publisher must have read-only contents permission")
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {"build"} or not isinstance(jobs["build"], dict):
+        return errors + ["publisher must contain one build job"]
+    job = jobs["build"]
+    if "permissions" in job and job["permissions"] != {"contents": "read"}:
+        errors.append("build job must not override read-only contents permission")
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        return errors + ["publisher steps must be a sequence of mappings"]
+    login = [step for step in steps if str(step.get("uses", "")).startswith("docker/login-action@")]
+    build = [step for step in steps if str(step.get("uses", "")).startswith("docker/build-push-action@")]
+    if len(login) != 1 or len(build) != 1:
+        return errors + ["publisher requires exactly one Docker login and build step"]
+    login, build = login[0], build[0]
+    if not manual_dispatch_only(login.get("if")):
+        errors.append("Docker login must be gated by the manual-dispatch equality")
+    inputs = build.get("with")
+    if not isinstance(inputs, dict):
+        errors.append("Docker build inputs must be a mapping")
+    else:
+        if not manual_dispatch_only(inputs.get("push"), require_expression=True):
+            errors.append("Docker push must evaluate the manual-dispatch equality")
+        if inputs.get("provenance") != "mode=max" or inputs.get("sbom") != "true":
+            errors.append("Docker build must retain provenance and SBOM validation")
+
+    def has_secrets(value):
+        # Only login inputs may reference secrets. Include top-level/job env and
+        # both dot/bracket notation, without relying on Python's dictionary repr.
+        if value is login.get("with"):
+            return False
+        if isinstance(value, str):
+            return re.search(r"\bsecrets\b", value, re.IGNORECASE) is not None
+        if isinstance(value, dict):
+            return any(has_secrets(key) or has_secrets(child) for key, child in value.items())
+        if isinstance(value, list):
+            return any(has_secrets(child) for child in value)
+        return False
+
+    if has_secrets(workflow):
+        errors.append("secret references are allowed only in the gated Docker login inputs")
+    return errors
+
+
+def discover_paths(root):
+    paths = set((root / ".github/workflows").glob("*.yml"))
+    paths.update((root / ".github/workflows").glob("*.yaml"))
+    try:
+        result = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        # An incomplete scan must not silently pass an extracted release tree.
+        raise ValueError("cannot list tracked actions; run this check in a Git checkout with Git installed") from error
+    tracked = result.stdout.decode("utf-8").split("\0")
+    paths.update(root / name for name in tracked if Path(name).name in ("action.yml", "action.yaml"))
+    if not paths:
+        raise ValueError("no workflow files found")
+    return paths
 
 
 class ContractTests(unittest.TestCase):
@@ -112,42 +201,107 @@ class ContractTests(unittest.TestCase):
     def test_flow_mapping_without_usable_comment(self):
         self.assertTrue(check_document(f"steps: [{{uses: owner/action@{self.sha}}}] # v1.2.3\n")[0])
 
-    def test_manual_publisher_keeps_pr_builds_unprivileged(self):
-        path = ROOT / ".github/workflows/docker-image.yml"
-        # BaseLoader preserves GitHub's 'on' key rather than YAML 1.1's Boolean coercion.
-        workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(set(workflow["on"]), {"pull_request", "workflow_dispatch"})
-        self.assertEqual(workflow["permissions"], {"contents": "read"})
-        steps = workflow["jobs"]["build"]["steps"]
-        login = next(step for step in steps if step.get("uses", "").startswith("docker/login-action@"))
-        self.assertEqual(login["if"], "github.event_name == 'workflow_dispatch'")
-        build = next(step for step in steps if step.get("uses", "").startswith("docker/build-push-action@"))
-        self.assertEqual(build["with"]["push"], "${{ github.event_name == 'workflow_dispatch' }}")
-        self.assertEqual(build["with"]["provenance"], "mode=max")
-        self.assertEqual(build["with"]["sbom"], "true")
-        for step in steps:
-            if step is not login:
-                self.assertNotIn("secrets.", str(step))
+    def test_tab_diagnostic(self):
+        errors, _ = check_document(f"uses: owner/action@{self.sha}\t# v1.2.3\n")
+        self.assertIn("use spaces instead of tabs", errors[0])
+
+    @staticmethod
+    def publisher():
+        return {"on": {"pull_request": {}, "workflow_dispatch": {}},
+                "permissions": {"contents": "read"}, "jobs": {"build": {"steps": [
+                    {"uses": "docker/login-action@" + "a" * 40,
+                     "if": "github.event_name == 'workflow_dispatch'",
+                     "with": {"password": "${{ secrets['DOCKER_PASSWORD'] }}"}},
+                    {"uses": "docker/build-push-action@" + "b" * 40,
+                     "with": {"push": "${{ github.event_name == 'workflow_dispatch' }}",
+                              "provenance": "mode=max", "sbom": "true"}}]}}}
+
+    def test_publisher_accepts_equivalent_conditions(self):
+        for condition in ("github.event_name=='workflow_dispatch'",
+                          "${{ ( github.event_name  ==  'workflow_dispatch' ) }}",
+                          "github['event_name'] == 'workflow_dispatch'"):
+            workflow = self.publisher()
+            workflow["jobs"]["build"]["steps"][0]["if"] = condition
+            self.assertEqual(check_publisher(workflow), [])
+
+    def test_publisher_yaml_quote_styles(self):
+        for condition in ('"github.event_name == \'workflow_dispatch\'"',
+                          "'github.event_name == ''workflow_dispatch'''", "github.event_name == 'workflow_dispatch'"):
+            workflow = self.publisher()
+            workflow["jobs"]["build"]["steps"][0]["if"] = yaml.load("if: " + condition, Loader=yaml.BaseLoader)["if"]
+            self.assertEqual(check_publisher(workflow), [])
+
+    def test_publisher_rejects_unsafe_gates(self):
+        for condition in (None, "true", "github.event_name == 'pull_request'",
+                          "github.event_name == 'workflow_dispatch' || true"):
+            workflow = self.publisher()
+            workflow["jobs"]["build"]["steps"][0]["if"] = condition
+            self.assertTrue(check_publisher(workflow))
+        workflow = self.publisher()
+        workflow["jobs"]["build"]["steps"][1]["with"]["push"] = "github.event_name == 'workflow_dispatch'"
+        self.assertTrue(check_publisher(workflow))  # A bare action input is a truthy string.
+
+    def test_publisher_rejects_secret_dot_and_bracket_access(self):
+        for expression in ("${{ secrets.DOCKER_USER }}", "${{ secrets['DOCKER_USER'] }}",
+                           "${{ SECRETS['DOCKER_USER'] }}"):
+            for location in ("workflow", "job", "step"):
+                workflow = self.publisher()
+                target = {"workflow": workflow, "job": workflow["jobs"]["build"],
+                          "step": workflow["jobs"]["build"]["steps"][1]}[location]
+                target["env"] = {"TOKEN": expression}
+                self.assertTrue(check_publisher(workflow))
+
+    def test_publisher_rejects_malformed_and_privileged_jobs(self):
+        for workflow in (None, {}, {"jobs": []}, {"jobs": {"build": {"steps": [None]}}}):
+            self.assertTrue(check_publisher(workflow))
+        workflow = self.publisher()
+        workflow["jobs"]["build"]["permissions"] = {"contents": "write"}
+        self.assertTrue(check_publisher(workflow))
+
+    def test_discovery_failure_is_actionable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for failure in (FileNotFoundError(), subprocess.CalledProcessError(128, "git")):
+                with patch.object(subprocess, "run", side_effect=failure):
+                    with self.assertRaisesRegex(ValueError, "Git checkout"):
+                        discover_paths(Path(directory))
+
+    def test_discovery_includes_composites_and_yaml_workflows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/test.yaml").touch()
+            result = subprocess.CompletedProcess([], 0, b"local/action.yml\0local/action.yaml\0src/a.cs\0")
+            with patch.object(subprocess, "run", return_value=result):
+                self.assertEqual(discover_paths(root), {
+                    root / ".github/workflows/test.yaml", root / "local/action.yml", root / "local/action.yaml"})
 
 
 def main():
-    paths = set((ROOT / ".github/workflows").glob("*.yml"))
-    paths.update((ROOT / ".github/workflows").glob("*.yaml"))
-    # Include repository-owned composite actions, excluding generated/ignored files.
-    import subprocess
-    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
-    paths.update(ROOT / name for name in tracked if Path(name).name in ("action.yml", "action.yaml"))
-    if not paths:
-        raise SystemExit("No workflows found")
+    try:
+        paths = discover_paths(ROOT)
+    except ValueError as error:
+        raise SystemExit(f"Cannot validate workflow pins: {error}") from None
     failed = False
     count = 0
     for path in sorted(paths):
-        errors, found = check_document(path.read_text(encoding="utf-8"))
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            print(f"Cannot read workflow/action file {ascii(str(path.relative_to(ROOT)))}")
+            failed = True
+            continue
+        errors, found = check_document(source)
         count += found
         for error in errors:
             # ascii escapes prevent workflow-command injection through filenames.
             print(f"Invalid action pin in {ascii(str(path.relative_to(ROOT)))}: {error}")
         failed |= bool(errors)
+        if not errors and path == ROOT / ".github/workflows/docker-image.yml":
+            # BaseLoader preserves GitHub's 'on' key and literal input strings.
+            contract_errors = check_publisher(yaml.load(source, Loader=yaml.BaseLoader))
+            for error in contract_errors:
+                print(f"Invalid workflow contract in '.github/workflows/docker-image.yml': {error}")
+            failed |= bool(contract_errors)
     if failed:
         raise SystemExit(1)
     print(f"Validated {count} uses references in {len(paths)} workflow/action files")

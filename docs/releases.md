@@ -2010,15 +2010,30 @@ same-line `# vX.Y.Z` release comment. Resolve the release with `git ls-remote --
 annotated tags to commits when necessary, and inspect the pinned `action.yml` runtime and inputs.
 The version comment identifies the release; it does not replace verification of the SHA. Put
 runtime or migration notes on separate lines so Dependabot can update the version comment.
+If upstream publishes only major tags, do not invent a three-part release comment: first review
+an explicit exception and extend the guard's contract/tests to represent that upstream accurately.
 Local `./` actions are source-controlled; `docker://` actions must use a SHA-256 image digest.
 `scripts/release/test-workflow-action-pins.py` checks workflow YAML and tracked composite-action
 definitions in the .NET job, including reusable workflows and quoted references. It rejects
 floating/short pins, missing version comments, duplicate keys and YAML aliases. It checks syntax,
 not upstream provenance; release-to-SHA verification remains part of dependency review.
+The checker requires a Git checkout with Git installed so tracked composite actions cannot be
+silently omitted; extracted release trees receive a named error. Use spaces in YAML pin annotations.
+`--self-test` uses synthetic fixtures only. The normal check separately validates the live Docker
+publisher, reporting policy failures as `Invalid workflow contract`. Its manual-dispatch gate accepts
+the simple event-name equality with optional expression delimiters, parentheses and whitespace;
+action `push` inputs require expression delimiters. More complex gates require a contract review.
+Secret detection covers both dot and bracket access, including workflow/job environment values.
+
+All checkout steps disable persistent Git credentials. Public repository fetches remain anonymous;
+release publication uses its existing explicitly supplied API tokens rather than checkout state.
 
 GitHub Actions version updates run weekly as one Dependabot group, with `ci(actions):` titles.
-The Actions entry omits `target-branch` and follows the repository default branch (currently `dev`).
-NuGet's existing policy is unchanged. SHA-based Actions do not receive the same Dependabot alert
+Both Actions and NuGet omit `target-branch` and follow the default branch (currently `dev`), allowing
+their configuration to apply to security updates too. NuGet keeps its monthly version-update
+schedule; security updates are advisory-driven and also require the repository security-update
+setting. Removing a branch override does not enable that setting. SHA-based Actions do not receive
+the same Dependabot alert
 coverage as semantic-version references, so maintainers must also track upstream advisories and
 review urgent fixes without waiting for the weekly run. See GitHub's
 [Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
@@ -2035,6 +2050,9 @@ only `workflow_dispatch` enables those steps. Published images include BuildKit 
 an SBOM, and the run summary records the immutable image digest. This does not attest that Docker
 Hub credentials or registry publication work during a PR build; those require an authorized
 manual publication. GHCR release publication remains the canonical release path.
+The Docker PR check is path-filtered and must not be required by branch protection. Its Buildx
+docker-container driver supports the attestation inputs; PR builds exercise those inputs even
+though their cache-only output does not export the image or attestations.
 
 The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
 integration-test databases. They are outside the archive-build pin/monitor contract; test jobs
