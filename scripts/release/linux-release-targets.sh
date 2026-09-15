@@ -28,14 +28,14 @@ miningcore_linux_release_target_runner() {
 miningcore_linux_release_target_image_digest() {
   case "$1" in
     # Docker Official Image manifest-list digests resolved from Docker Hub on
-    # 2026-08-22. Updating either image is a reviewed source change.
+    # 2026-09-15. Updating either image is a reviewed source change.
     26.04)
       printf '%s\n' \
-        'sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b'
+        'sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d'
       ;;
     22.04)
       printf '%s\n' \
-        'sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc'
+        'sha256:829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7'
       ;;
     *) return 1 ;;
   esac

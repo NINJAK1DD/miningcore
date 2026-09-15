@@ -12,8 +12,8 @@ complete_dir="$work_dir/complete"
 version=v1.2.3-rc.4
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
-resolute_digest=sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
-jammy_digest=sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
+resolute_digest=sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d
+jammy_digest=sha256:829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7
 resolute_image="ubuntu:26.04@$resolute_digest"
 jammy_image="ubuntu:22.04@$jammy_digest"
 expected_matrix='{"include":['

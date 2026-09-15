@@ -2005,6 +2005,14 @@ enforces ShellCheck for the release scripts.
 
 ### Image-pin monitor contract
 
+The archive-build pins were reviewed on 2026-09-15 against the
+[official Ubuntu publication update](https://github.com/docker-library/official-images/commit/811a6c4a94bb0dbb18adbfb290520b6c780eb3b0):
+`resolute-20260901` and `jammy-20260901.2`. The Docker Hub index, Linux amd64
+manifest and configuration digests were verified. Ubuntu version labels and
+runtime settings remain unchanged; the creation label and legacy build-parent
+metadata reflect the new builds. The exact index pins live in
+`scripts/release/linux-release-targets.sh` and require the full release matrix.
+
 Pin drift exits with status 1. A registry failure uses advisory status 69 only when its diagnostic
 matches a known transient network, service or rate-limit condition. Missing tags and every
 unclassified inspection failure use status 70 and fail closed. The checker inspects every target
