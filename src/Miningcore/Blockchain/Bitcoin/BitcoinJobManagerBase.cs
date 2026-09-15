@@ -58,6 +58,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected Network network;
     protected IDestination poolAddressDestination;
     private int missingVerifiedJobWarningEmitted;
+    internal const string MissingVerifiedJobWarning =
+        "Job publication suppressed because no verified job is available yet";
 
     /// <summary>
     /// A failed forced refresh may rebroadcast previously verified work, but it
@@ -83,8 +85,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(Interlocked.CompareExchange(ref missingVerifiedJobWarningEmitted,
                1, 0) == 0)
         {
-            Guard(() => logger.Warn(() =>
-                "Job publication suppressed because no verified job is available yet"));
+            Guard(() => logger.Warn(() => MissingVerifiedJobWarning));
         }
     }
 

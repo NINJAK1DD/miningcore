@@ -397,7 +397,7 @@ public class BitcoinJobManagerBaseTests
         logFactory.Flush();
         var logsBeforeJob = target.Logs.ToArray();
         Assert.Single(logsBeforeJob.Where(x => x.Contains(
-            "Job publication suppressed because no verified job is available yet",
+            BitcoinJobManagerBase<BitcoinJob>.MissingVerifiedJobWarning,
             StringComparison.Ordinal)));
 
         manager.SetVerifiedJob(new BitcoinJob());

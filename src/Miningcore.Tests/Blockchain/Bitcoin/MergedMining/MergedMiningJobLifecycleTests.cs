@@ -240,7 +240,7 @@ public partial class MergedMiningManagerReorgTests
         Assert.Equal(1, publications);
         Assert.NotNull(manager.Current);
         Assert.Single(logs.Where(x => x.Contains(
-            "Job publication suppressed because no verified job is available yet",
+            BitcoinJobManagerBase<BitcoinJob>.MissingVerifiedJobWarning,
             StringComparison.Ordinal)));
     }
 
@@ -501,7 +501,7 @@ public partial class MergedMiningManagerReorgTests
             // Ordinary RPC diagnostics and background polling are not the
             // behavior under test, even when the runner pauses for a timer tick.
             if(logEvent.FormattedMessage ==
-               "Job publication suppressed because no verified job is available yet")
+               BitcoinJobManagerBase<BitcoinJob>.MissingVerifiedJobWarning)
             {
                 Interlocked.Increment(ref Attempts);
                 throw new InvalidOperationException("synthetic logging failure");
