@@ -468,22 +468,8 @@ public class EquihashPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            bool cleanJob;
-            switch(coin.Symbol)
-            {
-                case "VRSC":
-
-                    cleanJob = (bool) ((object[]) currentJobParams)[^2];
-                    break;
-                default:
-
-                    cleanJob = (bool) ((object[]) currentJobParams)[^1];
-                    break;
-            }
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(connection.Context.Difficulty) });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

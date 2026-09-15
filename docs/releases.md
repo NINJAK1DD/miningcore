@@ -87,6 +87,10 @@ wire layouts, including Veruscoin's trailing solution, are preserved. The generi
 Bitcoin copier handles string arrays by type, and deterministic parallel and real
 send-queue regressions cover the ownership boundary.
 
+Difficulty-only updates in all affected pools explicitly preserve existing work
+without reading a previous broadcast. Ergo fills each worker's target directly
+in its owned snapshot, eliminating the redundant array copy before queueing.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines

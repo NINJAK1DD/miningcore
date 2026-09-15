@@ -53,11 +53,13 @@ They are fixed explicitly in this update:
 | Equihash and inherited layouts, including Bitcoin Gold | Copy the outer array before setting the last flag. Other fields are immutable strings. |
 | Veruscoin | Copy the outer array before setting the penultimate flag; preserve the trailing solution string. |
 | Xelis and Warthog | Copy the outer array before setting the last flag; reuse immutable strings. |
-| Ergo | Copy at job issuance before its pool later copies and fills in the per-worker target. The later copy alone cannot protect a flag changed between issuance and projection. |
+| Ergo | Copy at job issuance, then fill the per-worker target in that connection's owned snapshot before queueing. No second pool-level copy is needed. Copying only at target projection would leave the earlier interval unprotected. |
 | ProgPoW, Firo, Kiiro, Realichain and Telestai | Return a new two-field parameter object through virtual dispatch. Capture each broadcast's flag from its own notification before invoking miner callbacks, so a newer `currentJobParams` cannot change an in-progress fan-out. |
 
-Bitcoin and ProgPoW difficulty-only updates explicitly request `clean_jobs=false`;
-this simplifies their existing always-false logic and preserves in-flight work.
+Bitcoin, ProgPoW, Satoshicash, Equihash/Veruscoin, Xelis, Warthog and Ergo
+difficulty-only updates explicitly request `clean_jobs=false`. This simplifies
+their existing always-false logic, preserves in-flight work and avoids reading
+a pool broadcast that may not yet exist when the manager already has a job.
 
 Other inspected paths are **not covered by a blanket caller-ownership guarantee**:
 BLAKE2b already clones its outer array and has an empty Merkle array; Kaspa
@@ -93,6 +95,8 @@ merged-mining and Satoshicash jobs, each with zero or three transactions. It che
 - Two actual notifications enqueued before starting `StratumConnection`'s send
   pump, followed by interfering calls/mutations, then validation of the emitted
   JSON lines over loopback TCP. Queueing before consumer startup fixes the ordering.
+  Teardown cancels and drains dispatch before closing the client stream; any wire
+  assertion failure takes precedence over a simultaneous teardown failure.
 - String-array copying in alternate slots and preservation of null fields.
 
 `JobNotificationSnapshotTests` exercises the sibling implementations with
@@ -101,6 +105,13 @@ their real initializers; Equihash/Veruscoin, Xelis and Warthog use representativ
 notification caches to isolate the ownership boundary without claiming native
 proof or live-daemon validation. ProgPoW tests also cover all four derived job
 classes and calls through a `BitcoinJob` reference.
+
+Pool regressions exercise Satoshicash, Equihash/Veruscoin, Xelis, Warthog and Ergo
+difficulty updates with an absent, true or false previous broadcast. They inspect
+the queued difficulty/target and job messages for two workers, verify independent
+non-clean notifications and unchanged caches, and check Ergo's distinct worker
+targets. Protected notification caches use test subclasses; private pool/manager
+state uses checked reflection without changing the production visibility.
 
 Run the deterministic matrix without a daemon:
 

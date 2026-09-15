@@ -289,14 +289,10 @@ public class ErgoPool : PoolBase
 
     private async Task SendJob(StratumConnection connection, ErgoWorkerContext context, object[] jobParams)
     {
-        // clone job params
-        var jobParamsActual = new object[jobParams.Length];
-
-        for(var i = 0; i < jobParamsActual.Length; i++)
-            jobParamsActual[i] = jobParams[i];
-
+        // CreateWorkerJob gives this connection its own snapshot. Fill its target
+        // before queueing; neither another worker nor the job cache shares it.
         var target = new BigRational(BitcoinConstants.Diff1 * (BigInteger) (1 / context.Difficulty * 0x10000), 0x10000).GetWholePart();
-        jobParamsActual[6] = target.ToString();
+        jobParams[6] = target.ToString();
 
         var notifyArgs = !context.IsNicehash ?
             new object[] { 1 } :  // send static diff of 1 since actual diff gets pre-multiplied to target
@@ -305,7 +301,7 @@ public class ErgoPool : PoolBase
         await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, notifyArgs);
 
         // send target
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, jobParamsActual);
+        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, jobParams);
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -431,11 +427,8 @@ public class ErgoPool : PoolBase
 
         if(context.ApplyPendingDifficulty())
         {
-            var cleanJob = (bool) currentJobParams[^1];
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             await SendJob(connection, context, minerJobParams);
         }

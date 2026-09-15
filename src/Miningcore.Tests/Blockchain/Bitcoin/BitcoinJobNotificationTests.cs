@@ -148,9 +148,10 @@ public class BitcoinJobNotificationTests : TestBase
             new StratumEndpoint(endpoint, new PoolEndpoint()),
             (IPEndPoint) accepted.RemoteEndPoint, null,
             (_, _, _) => Task.CompletedTask, _ => { }, (_, error) => errors.Add(error));
-        try
+        var wireError = await Record.ExceptionAsync(async () =>
         {
-            using var reader = new StreamReader(client.GetStream());
+            // Disposing the reader must not close the peer before dispatch drains.
+            using var reader = new StreamReader(client.GetStream(), leaveOpen: true);
             foreach(var expected in new[] { expectedFirst, expectedSecond })
             {
                 var line = await reader.ReadLineAsync(stop.Token);
@@ -158,13 +159,17 @@ public class BitcoinJobNotificationTests : TestBase
                 Assert.Equal(BitcoinStratumMethods.MiningNotify, wire.Value<string>("method"));
                 Assert.True(JToken.DeepEquals(expected, wire["params"]));
             }
-        }
-        finally
+        });
+        var dispatchError = await Record.ExceptionAsync(async () =>
         {
             stop.Cancel();
-            client.Dispose();
             await dispatch.WaitAsync(TimeSpan.FromSeconds(10));
-        }
+        });
+        // Report the wire failure first if teardown also failed. The peer remains
+        // open until dispatch has observed cancellation and completed its I/O.
+        if(wireError != null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(wireError).Throw();
+        Assert.Null(dispatchError);
         Assert.Empty(errors);
     }
 
