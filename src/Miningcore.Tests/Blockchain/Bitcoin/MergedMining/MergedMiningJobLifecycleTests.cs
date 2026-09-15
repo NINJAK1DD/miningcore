@@ -244,8 +244,11 @@ public partial class MergedMiningManagerReorgTests
             StringComparison.Ordinal)));
     }
 
-    [Fact]
-    public async Task SharedPipeline_SurvivesSuppressionDiagnosticFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedPipeline_SurvivesSuppressionDiagnosticFailure(
+        bool useRealManager)
     {
         using var target = new ThrowingTarget();
         using var logFactory = new LogFactory { ThrowExceptions = true };
@@ -255,9 +258,18 @@ public partial class MergedMiningManagerReorgTests
         using var dependencies = BuildLifecycleDependencies();
         var manager = CreateLifecycleManager(dependencies, out var messageBus);
         var (parent, _, cluster) = CreateConfig();
-        manager.ReturnUnsafeForcedResult = true;
-        manager.RecoverOnThirdUnsafeForcedResult = true;
+        manager.ReturnUnsafeForcedResult = !useRealManager;
+        manager.RecoverOnThirdUnsafeForcedResult = !useRealManager;
         manager.Configure(parent, cluster);
+        if(useRealManager)
+        {
+            // Exercise the real failure fallthrough, where PreserveForce is
+            // called outside UpdateJob's catch blocks and before the Rx guard.
+            manager.ParentRefreshException = new OperationCanceledException(
+                "synthetic refresh timeout with a live host token");
+            manager.SeedStartup(CreateAuxiliaryTemplate());
+            manager.Enqueue(CreateParentTemplate());
+        }
         manager.UseLogger(logFactory.GetLogger(nameof(
             SharedPipeline_SurvivesSuppressionDiagnosticFailure)));
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -270,14 +282,27 @@ public partial class MergedMiningManagerReorgTests
         var now = DateTime.UtcNow;
         messageBus.SendMessage(new BtStreamMessage("ltc-templates",
             "unsafe", now, now));
-        messageBus.SendMessage(new BtStreamMessage("ltc-templates",
-            "still-unsafe", now, now));
+        if(useRealManager)
+        {
+            var first = await Task.WhenAny(manager.ForcedRefresh.Task,
+                published.Task).WaitAsync(stop.Token);
+            await first;
+            Assert.False(published.Task.IsCompleted);
+            Assert.Null(manager.Current);
+            manager.ParentRefreshException = null;
+        }
+        else
+        {
+            messageBus.SendMessage(new BtStreamMessage("ltc-templates",
+                "still-unsafe", now, now));
+        }
         messageBus.SendMessage(new BtStreamMessage("ltc-templates",
             "recovery", now, now));
 
         await published.Task.WaitAsync(stop.Token);
 
         Assert.NotNull(manager.Current);
+        Assert.Equal(1, target.Attempts);
     }
 
     [Fact]
@@ -469,8 +494,19 @@ public partial class MergedMiningManagerReorgTests
 
     private sealed class ThrowingTarget : TargetWithLayout
     {
-        protected override void Write(LogEventInfo logEvent) =>
-            throw new InvalidOperationException("synthetic logging failure");
+        internal int Attempts;
+
+        protected override void Write(LogEventInfo logEvent)
+        {
+            // Ordinary RPC diagnostics and background polling are not the
+            // behavior under test, even when the runner pauses for a timer tick.
+            if(logEvent.FormattedMessage ==
+               "Job publication suppressed because no verified job is available yet")
+            {
+                Interlocked.Increment(ref Attempts);
+                throw new InvalidOperationException("synthetic logging failure");
+            }
+        }
     }
 
     private sealed partial class TestManager

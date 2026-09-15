@@ -78,11 +78,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     private void WarnMissingVerifiedJobOnce()
     {
+        // Consume the attempt before logging: a broken target must not be
+        // retried on every refresh. Protect both manager and pipeline callers.
         if(Interlocked.CompareExchange(ref missingVerifiedJobWarningEmitted,
                1, 0) == 0)
         {
-            logger.Warn(() =>
-                "Job publication suppressed because no verified job is available yet");
+            Guard(() => logger.Warn(() =>
+                "Job publication suppressed because no verified job is available yet"));
         }
     }
 
