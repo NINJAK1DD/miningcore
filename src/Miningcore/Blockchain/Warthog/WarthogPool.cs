@@ -41,7 +41,6 @@ public class WarthogPool : PoolBase
     {
     }
 
-    private object currentJobParams;
     private WarthogJobManager manager;
     private WarthogPoolConfigExtra extraPoolConfig;
     private WarthogCoinTemplate coin;
@@ -294,8 +293,6 @@ public class WarthogPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
@@ -418,11 +415,8 @@ public class WarthogPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            var cleanJob = (bool) ((object[]) currentJobParams)[^1];
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

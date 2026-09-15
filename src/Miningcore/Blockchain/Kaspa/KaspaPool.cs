@@ -41,7 +41,6 @@ public class KaspaPool : PoolBase
     {
     }
 
-    protected object[] currentJobParams;
     protected KaspaJobManager manager;
     private KaspaPoolConfigExtra extraPoolConfig;
     private KaspaCoinTemplate coin;
@@ -321,8 +320,6 @@ public class KaspaPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object[] jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {jobParams[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>

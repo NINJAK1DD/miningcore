@@ -596,8 +596,10 @@ public class EquihashJob
 
     public virtual object GetJobParams(bool isNew)
     {
-        jobParams[^1] = isNew;
-        return jobParams;
+        // Queue consumers must not observe a later notification's clean_jobs flag.
+        var result = (object[]) jobParams.Clone();
+        result[^1] = isNew;
+        return result;
     }
 
     public string GetFoundersRewardAddress()

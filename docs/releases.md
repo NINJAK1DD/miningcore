@@ -69,6 +69,41 @@ Error-free RPC envelopes with no template payload are now handled as unavailable
 at warning level across these managers instead of reaching job construction and
 producing an error-level exception.
 
+## Unreleased: independent Bitcoin-family job notifications
+
+Bitcoin-family `mining.notify` messages now retain the `clean_jobs` flag supplied
+for each notification, even when another call occurs before queued work is
+serialized. Returned outer and Merkle-branch arrays are independent, so caller
+mutation cannot corrupt another notification or the cached job. Field order,
+wire values, coinbase construction and cached immutable strings are preserved.
+This covers custodial Bitcoin-family, direct Bitcoin SOLO, merged-mining and
+Satoshicash jobs that use `BitcoinJob.GetJobParams`. See the
+[caller audit and regression contract](bitcoin-job-notifications.md) for issue #153.
+
+The review follow-up extends snapshot ownership to Equihash/Veruscoin, Xelis,
+Warthog, Ergo and ProgPoW. ProgPoW now uses virtual dispatch for its typed
+notification and captures each broadcast's flag before miner fan-out. Existing
+wire layouts, including Veruscoin's trailing solution, are preserved. The generic
+Bitcoin copier handles string arrays by type, and deterministic parallel and real
+send-queue regressions cover the ownership boundary.
+
+Difficulty-only updates in all affected pools explicitly preserve existing work
+without reading a previous broadcast. Ergo fills each worker's target directly
+in its owned snapshot, eliminating the redundant array copy before queueing.
+
+**ProgPoW subscription behavior changes:** initial `mining.notify` now always sends
+`clean_jobs=true`. Previously it reused the last broadcast's flag, including
+`false`, and could throw before the first broadcast. The seven-field layout is
+unchanged. Subsequent difficulty-only updates still send `clean_jobs=false`;
+their simplification preserves the previous wire behavior.
+
+**Custom-subclass source compatibility:** the protected `currentJobParams` fields
+in BitcoinPool, EquihashPool, ErgoPool, KaspaPool and SatoshicashPool were removed.
+Custom subclasses that accessed those fields must use the `OnNewJobAsync` argument
+for the relevant broadcast. BitcoinBlake2bPool's obsolete assignment was removed;
+MergedMiningBitcoinPool did not use the field. Both compile in CI, but neither has
+a dedicated regression test for this field removal.
+
 ## Unreleased: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines
