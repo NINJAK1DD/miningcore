@@ -1593,11 +1593,25 @@ public class ShareRecorderTests
             config.ShareRecoveryStateDirectory);
         var completedIncidentPublished = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFinalLatch = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         fatalState.CompletedIncidentPublishedCheckpoint = () =>
+        {
             completedIncidentPublished.TrySetResult();
+            releaseFinalLatch.Task.GetAwaiter().GetResult();
+        };
+        var fatalStateRecorded = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        notificationSender.SendCriticalAdminNotificationAsync(
+                Arg.Any<AdminNotification>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                fatalStateRecorded.TrySetResult();
+                return Task.CompletedTask;
+            });
         var handler = new ShareRecoveryFailureHandler(coordinator,
-            new Lazy<ICriticalNotificationSender>(() =>
-                Substitute.For<ICriticalNotificationSender>()), fatalState);
+            new Lazy<ICriticalNotificationSender>(() => notificationSender), fatalState);
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
@@ -1666,14 +1680,19 @@ public class ShareRecorderTests
             Assert.Throws<OperationCanceledException>(() =>
                 acceptance.QueueResponse(() => { }));
 
-            // The exact-share sidecar uses durable writes and can take longer than
-            // a generic polling window on a loaded Windows runner. Wait for the
-            // production publication boundary, then poll only the final latch handoff.
+            // Incident publication precedes the final latch replacement. Hold that
+            // handoff to verify that our completion signal cannot fire prematurely.
             await completedIncidentPublished.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            await WaitUntilAsync(
-                () => FatalStateIsComplete(fatalState.FatalStateFilename),
-                TimeSpan.FromSeconds(5));
+            Assert.False(fatalStateRecorded.Task.IsCompleted);
+            releaseFinalLatch.TrySetResult();
+
+            // Notification follows MarkFatalShares. Reading only after that call
+            // returns avoids a Windows FileShare.Read handle blocking File.Move
+            // during replacement. Still assert completeness: the handler also
+            // notifies when fatal-state publication fails.
+            await fatalStateRecorded.Task.WaitAsync(TimeSpan.FromSeconds(30));
             var latch = File.ReadAllLines(fatalState.FatalStateFilename);
+            Assert.Contains("detailState=complete", latch);
             var sidecar = Assert.Single(latch.Where(line =>
                 line.StartsWith("detailFile=", StringComparison.Ordinal)))[
                 "detailFile=".Length..];
@@ -1705,6 +1724,7 @@ public class ShareRecorderTests
             // outer guard decides that deleting their retained recovery directory is unsafe.
             recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromSeconds(5);
             recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(5);
+            releaseFinalLatch.TrySetResult();
             releaseJournal.TrySetResult();
             releaseDatabase.TrySetResult();
             await StopRecorderBeforeFixtureCleanupAsync(recorder);
@@ -8621,22 +8641,6 @@ public class ShareRecorderTests
             // though the stop task itself is complete. The outer 30-second timeout has
             // the same unsafe-cleanup meaning, so either timeout must escape before a
             // caller can delete a directory beneath a live recovery owner or worker.
-        }
-    }
-
-    private static bool FatalStateIsComplete(string filename)
-    {
-        try
-        {
-            return File.ReadLines(filename).Any(line =>
-                string.Equals(line, "detailState=complete",
-                    StringComparison.Ordinal));
-        }
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
-        {
-            // The fail-closed latch is atomically advanced from hash-pending to complete.
-            // Retry while either publication is in flight.
-            return false;
         }
     }
 
