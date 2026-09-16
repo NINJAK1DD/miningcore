@@ -28,7 +28,7 @@ using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
-public class BitcoinBlake2bDifficultyBudgetTests : TestBase
+public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
 {
     private readonly ITestOutputHelper output;
     public BitcoinBlake2bDifficultyBudgetTests(ITestOutputHelper output) => this.output = output;
@@ -36,7 +36,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task DuplicateSubscribe_DisconnectsBeforeAnyWorkOrExtranonceMutation(bool exhausted)
+    public async Task DuplicateSubscribe_WarnsOnceThenDisconnectsWithoutWorkOrExtranonceMutation(bool exhausted)
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: new ManualTimeProvider());
@@ -60,6 +60,15 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var extraNonce = context.ExtraNonce1;
         var jobs = context.validJobs.ToArray();
         var difficulty = context.Difficulty;
+        await wire.SendRequestAsync("mining.subscribe", "stray-duplicate");
+        var warning = await wire.ReadAsync();
+        Assert.Equal((int) StratumError.Other, warning["error"]["code"].Value<int>());
+        Assert.False(warning["result"].Value<bool>());
+        await Fence(wire);
+        Assert.Equal(extraNonce, context.ExtraNonce1);
+        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Equal(1, wire.JobsCreated);
+        Assert.DoesNotContain(target.Logs, x => x.Contains("DuplicateSubscription"));
         await wire.SendDisconnectingBatchAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
             $"{{\"id\":{100 + i},\"method\":\"mining.subscribe\",\"params\":[\"repeat\"]}}")));
         await wire.AssertNoMoreMessagesAsync();
@@ -85,7 +94,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
     [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":null}]")]
     [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":-1}]")]
     [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":1e999}]")]
-    public async Task MalformedConfigure_ReturnsErrorWithoutMutationOrChargingBudget(string parameters)
+    public async Task MalformedConfigure_ReturnsErrorWithoutMutationAndConsumesAdmission(string parameters)
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: new ManualTimeProvider());
@@ -102,7 +111,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.True(context.HasPendingDifficulty);
         Assert.Equal(jobs, context.validJobs.ToArray());
         Assert.Equal(1, wire.JobsCreated);
-        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity - 1; i++)
             await Accepted(wire, true, (i + 2) / 1e9);
         await Refused(wire, true);
     }
@@ -208,6 +217,9 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         // Canonical Bitcoin still issues work only at subscribe here.
         Assert.Equal(1, wire.JobsCreated);
         Assert.Equal(7, manager.AddressValidations);
+        // Documents existing canonical behavior, not a safe resubscription contract:
+        // extranonce rotation can strand old jobs. Tracked in issue #181; keep this
+        // scope regression until the canonical Bitcoin-family policy is fixed.
         await Subscribe(wire);
         Assert.Equal(2, wire.JobsCreated);
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
@@ -544,16 +556,19 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
     private sealed class FixtureManager : BitcoinBlake2bJobManager
     {
         internal int AddressValidations { get; private set; }
+        internal Func<Task> BeforeValidation { get; set; }
         internal FixtureManager(IComponentContext ctx, IMasterClock clock, IMessageBus bus, BitcoinBlake2bJob job) :
             base(ctx, clock, bus, new BitcoinBlake2bExtraNonceProvider())
         {
             network = Network.RegTest;
             currentJob = job;
         }
-        public override Task<bool> ValidateAddressAsync(string address, CancellationToken ct)
+        public override async Task<bool> ValidateAddressAsync(string address, CancellationToken ct)
         {
             AddressValidations++;
-            return Task.FromResult(true);
+            if(BeforeValidation != null)
+                await BeforeValidation();
+            return true;
         }
     }
 }

@@ -206,16 +206,21 @@ third-party miner firmware or provide a production-ready adapter.
 Each BLAKE2b TCP connection shares one budget between `mining.suggest_difficulty`
 requests, `mining.configure` requests whose extension list includes `minimum-difficulty`,
 and `mining.authorize` requests with a parseable static-difficulty password control (`d=`).
+Malformed configure/authorize requests with an ID also consume this allowance.
 It starts with **eight requests**, replenishes **one request per ten elapsed seconds**,
 and stores at most eight requests. Fractional refill time is retained. The allowance
 accommodates configure, static authorization, suggest, renegotiation and startup retries;
 sustained miner-driven retargeting is limited to six requests per minute after that burst.
 There is no configuration switch to disable this admission boundary.
 
-Request IDs and configure shape/value are validated before charging. Configure requires
-a string extension array and parameter object; minimum-difficulty requires a finite,
-positive JSON number. Malformed configure requests receive Stratum error 20 without
-changing state or consuming allowance. Missing IDs receive error -1 without charging.
+Configure requires a string extension array and parameter object; minimum-difficulty
+accepts a finite, positive JSON number or numeric string for firmware compatibility.
+Numbers and strings are parsed once with invariant culture, and that exact value reaches
+the assignment handler. Authorization accepts a worker string and optional string/null
+password. Invalid configure/authorize requests consume a token and receive Stratum error
+20 without assignment or identity mutation or authorization RPC. Once exhausted, their
+responses follow the same bounded refusal/disconnect policy. Missing IDs receive error -1
+without charging.
 Admission precedes inherited acknowledgments, VarDiff/difficulty changes and work issuance.
 Static-difficulty authorization is parsed once with the inherited parser and passed to the
 authorization handler, including semicolon-separated and legacy embedded `d=` syntax,
@@ -250,13 +255,25 @@ When exhausted:
   to reach a miner that continues flooding. A miner should wait at least ten seconds
   after a refusal before retrying.
 
-The **first subscribe is free**, even after difficulty allowance is exhausted. A second
-`mining.subscribe` on the same connection closes it immediately, before subscriber data,
-extranonce rotation, job allocation or any response/notification. This protocol does not
-support in-session resubscription. Buffered requests cannot reopen a terminal connection.
+The **first subscribe is free**, even after difficulty allowance is exhausted. The first
+duplicate `mining.subscribe` receives Stratum error 20 with `result: false`, retaining the
+working connection. Another duplicate closes it without queuing another response. Neither
+duplicate rotates extranonce, changes work or emits difficulty/job notifications. The
+one-warning allowance is per connection and is not reset by other requests or refill.
+This protocol does not support in-session resubscription. Buffered requests cannot reopen
+a terminal connection. Canonical Bitcoin's existing resubscription behavior is separately
+tracked in [#181](https://github.com/NINJAK1DD/miningcore/issues/181).
 
-Ordinary authorize without a parseable static-difficulty request, share
-submission, configure without minimum-difficulty, pool
+A per-connection async gate covers assignment mutation, pending VarDiff application,
+`mining.set_difficulty` and the immutable job/target snapshot plus `mining.notify`.
+Miner changes, broadcasts and immediate VarDiff updates use the same gate, so one producer
+cannot snapshot a new target under another producer's previous difficulty announcement.
+Authorization address-validation RPC and share submission/accounting run outside the gate;
+only their assignment changes acquire it. Gates are independent between connections and
+released on exceptions/cancellation.
+
+Well-formed ordinary authorize without a parseable static-difficulty request, share
+submission, well-formed configure without minimum-difficulty, pool
 job broadcasts and server-driven VarDiff do not consume this budget. Connections have
 independent allowances, including connections behind one proxy/IP. State is tied to
 the connection with weak keys and has no per-IP history, timer or deferred work queue.
@@ -307,15 +324,21 @@ Additional cases cover increasing static-difficulty authorizations, their legacy
 syntax, refusals before initial authentication and reauthorization, ordinary authorization
 while exhausted, the ordinary/NiceHash/ASICBoost configure response matrix, and seven
 refusals followed by a refill/admission and another complete seven-refusal allowance.
-Further wire cases cover twenty queued duplicate subscribes with no extra job, notification
-or extranonce change, including first-subscribe success after exhaustion; malformed configure;
+Further wire cases cover a single duplicate-subscribe warning followed by twenty queued
+repeats with no extra job, notification or extranonce change, including first-subscribe
+success after exhaustion; bounded malformed configure/authorize traffic; numeric strings;
 missing request IDs; terminal log/metric cardinality; and unchanged canonical Bitcoin
 dispatch/authorization behavior. A custom template cannot enable version rolling.
+[Deterministic contention cases](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bAdmissionHardeningTests.cs)
+pause configure after mutation and broadcasts after a pending VarDiff announcement. They
+wait for a competing operation to reach the held gate before releasing the barrier, then
+check every wire target against the latest difficulty announcement. Additional coverage
+proves authorization RPC does not hold this gate.
 The fixture drives the production server dispatch wrapper, not a direct handler call.
 The [live Knots suite](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRegtestTests.cs)
 also exhausts the shared budget before VarDiff and real accepted header-v2 submissions
-for SOLO, PPS, PROP and PPLNS, then explicitly verifies the bucket is still exhausted
-after accepted wire submissions. Run the focused suite with:
+for SOLO, PPS, PROP and PPLNS, explicitly checking exhaustion immediately before the
+wire proof loop and after accepted submissions. Run the focused suite with:
 
 ```sh
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -c Release --filter FullyQualifiedName~BitcoinBlake2bDifficultyBudgetTests
@@ -342,9 +365,11 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   behavior on an isolated endpoint first. The limit is fixed and has no operator override.
   A fleet requiring faster sustained miner-selected changes needs a reviewed compatibility
   change; removing the guard during an incident restores the resource-exhaustion path.
-- **Connection closes on subscribe:** `DuplicateSubscription` means the client subscribed
-  twice on one connection. Configure/authorize renegotiation does not require another
-  subscribe. Fix the firmware/proxy sequence; the initial subscribe remains free.
+- **Already-subscribed error or connection closes on subscribe:** the first duplicate
+  receives an error and keeps the working connection. `DuplicateSubscription` means the
+  client repeated the duplicate after that warning. Configure/authorize renegotiation
+  does not require another subscribe. Fix the firmware/proxy sequence; initial subscribe
+  remains free and the error does not invalidate previously issued work.
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,
   deployment state, and `!blake2b`. Do not remove the gate or substitute the `bitcoin` template.
 - **Activation parent RPC is temporarily unavailable:** work verification retries with

@@ -24,9 +24,11 @@ internal sealed class DifficultyRequestBudget
     private double tokens = Capacity;
     private int refusals;
     private int closed;
+    private int duplicateSubscribeWarning;
 
     internal bool IsClosed => Volatile.Read(ref closed) != 0;
     internal bool TryClose() => Interlocked.Exchange(ref closed, 1) == 0;
+    internal bool TryWarnDuplicateSubscribe() => Interlocked.Exchange(ref duplicateSubscribeWarning, 1) == 0;
 
     internal Admission TryAcquire()
     {

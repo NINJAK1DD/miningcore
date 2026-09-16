@@ -196,6 +196,12 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Equal(notify[0], (await wire.ReadAsync())["params"][0].Value<string>());
             Assert.Equal(78, Assert.IsType<string>(notify[2]).Length);
             Assert.Empty(Assert.IsType<string[]>(notify[4]));
+            // Establish exhaustion immediately before the real wire proof loop,
+            // after all server-driven updates. The injected clock cannot refill.
+            await wire.SendRequestAsync("mining.suggest_difficulty", 100e-9);
+            var beforeProof = await wire.ReadAsync();
+            Assert.Equal((int) StratumError.Other, beforeProof["error"]["code"].Value<int>());
+            Assert.False(beforeProof["result"].Value<bool>());
             var time = Assert.IsType<string>(notify[7]);
             Share candidate = null;
             var nonceBytes = new byte[8];

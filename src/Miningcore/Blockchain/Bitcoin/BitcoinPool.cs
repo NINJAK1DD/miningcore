@@ -179,18 +179,7 @@ public class BitcoinPool : PoolBase
             var staticDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value :
                 GetStaticDiffFromPassparts(password?.Split(PasswordControlVarsSeparator));
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
-            {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
-
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
-
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-            }
+            await ApplyStaticDifficultyAsync(connection, staticDiff, ct);
 
             if(manager.DirectCoinbasePayoutEnabled && context.IsSubscribed)
             {
@@ -215,6 +204,25 @@ public class BitcoinPool : PoolBase
 
                 Disconnect(connection);
             }
+        }
+    }
+
+    // Address validation and identity updates finish before this assignment-only hook.
+    protected virtual async Task ApplyStaticDifficultyAsync(StratumConnection connection,
+        double? staticDiff, CancellationToken ct)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        // Static diff
+        if(staticDiff.HasValue &&
+           (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+               context.VarDiff == null && staticDiff.Value > context.Difficulty))
+        {
+            context.VarDiff = null; // disable vardiff
+            context.SetDifficulty(staticDiff.Value);
+
+            logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+
+            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
         }
     }
 
@@ -452,7 +460,8 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    private async Task OnConfigureMiningAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnConfigureMiningAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
+        double? validatedMinimumDifficulty = null)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -473,7 +482,7 @@ public class BitcoinPool : PoolBase
                         break;
 
                     case BitcoinStratumExtensions.MinimumDiff:
-                        ConfigureMinimumDiff(connection, context, extensionParams, result);
+                        ConfigureMinimumDiff(connection, context, extensionParams, result, validatedMinimumDifficulty);
                         break;
                 }
             }
@@ -625,9 +634,9 @@ public class BitcoinPool : PoolBase
     }
 
     private void ConfigureMinimumDiff(StratumConnection connection, BitcoinWorkerContext context,
-        IReadOnlyDictionary<string, JToken> extensionParams, Dictionary<string, object> result)
+        IReadOnlyDictionary<string, JToken> extensionParams, Dictionary<string, object> result, double? validatedMinimumDifficulty)
     {
-        var requestedDiff = extensionParams[BitcoinStratumExtensions.MinimumDiffValue].Value<double>();
+        var requestedDiff = validatedMinimumDifficulty ?? extensionParams[BitcoinStratumExtensions.MinimumDiffValue].Value<double>();
 
         // client may suggest higher-than-base difficulty, but not a lower one
         var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];

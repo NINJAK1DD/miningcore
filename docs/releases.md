@@ -60,8 +60,11 @@ eight consecutive refusals close the connection. First subscribe, ordinary autho
 without static difficulty, shares
 and server-driven VarDiff remain available while the budget recovers. Successful
 changes retain difficulty-before-notify ordering and immutable target/credit binding.
-Repeated subscribe now closes the connection before extranonce rotation or new work.
-Malformed configure and missing request IDs are rejected without spending allowance.
+The first duplicate subscribe receives an error while preserving work; another duplicate
+closes the connection. Malformed configure/authorize requests consume allowance without
+state mutation; missing IDs remain uncharged. Numeric-string minimum difficulty remains
+compatible and is parsed once. A per-connection async gate serializes difficulty mutation
+and work emission against broadcasts and VarDiff, keeping authorization RPC outside it.
 Terminal events have structured Info diagnostics and bounded admission counters; custom
 BLAKE2b templates must disable version rolling. Cross-connection churn defenses are
 tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
