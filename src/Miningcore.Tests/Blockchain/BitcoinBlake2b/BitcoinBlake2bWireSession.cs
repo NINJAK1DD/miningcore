@@ -4,7 +4,6 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
-using System.Reactive;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,11 +44,10 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     internal StratumConnection Connection { get; }
     internal int JobsCreated => pool.JobsCreated;
-    internal TimeProvider BudgetTimeProvider { set => pool.DifficultyBudgetTimeProvider = value; }
 
     internal BitcoinBlake2bWireSession(IComponentContext container, IMasterClock clock,
         PoolConfig config, BitcoinJobManager manager, IMessageBus bus,
-        BitcoinBlake2bWireSession sharedPool = null)
+        BitcoinBlake2bWireSession sharedPool = null, TimeProvider budgetTimeProvider = null)
     {
         var streams = container.Resolve<RecyclableMemoryStreamManager>();
         scope = ((ILifetimeScope) container).BeginLifetimeScope(builder =>
@@ -57,7 +55,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             builder.RegisterInstance(Substitute.For<IBlockRepository>());
             builder.RegisterInstance(Substitute.For<IShareRepository>());
         });
-        pool = sharedPool?.pool ?? new TestPool(scope, clock, bus, streams);
+        pool = sharedPool?.pool ?? new TestPool(scope, clock, bus, streams, budgetTimeProvider ?? TimeProvider.System);
         if(sharedPool == null)
         {
             pool.Configure(config, new ClusterConfig());
@@ -133,6 +131,14 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     private sealed class TestPool : BitcoinBlake2bPool
     {
+        internal TestPool(IComponentContext ctx, IMasterClock clock,
+            IMessageBus bus, RecyclableMemoryStreamManager streams, TimeProvider budgetTimeProvider) :
+            base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),
+                Substitute.For<IStatsRepository>(), AutoMapperFactory.CreateMapper(), clock,
+                bus, streams, new NicehashService(Substitute.For<IHttpClientFactory>(),
+                    new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                        new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())), budgetTimeProvider) { }
+
         internal int JobsCreated { get; private set; }
         protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
         {
@@ -140,13 +146,6 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             JobsCreated++;
             return result;
         }
-        internal TestPool(IComponentContext ctx, IMasterClock clock,
-            IMessageBus bus, RecyclableMemoryStreamManager streams) :
-            base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),
-                Substitute.For<IStatsRepository>(), AutoMapperFactory.CreateMapper(), clock,
-                bus, streams, new NicehashService(Substitute.For<IHttpClientFactory>(),
-                    new Microsoft.Extensions.Caching.Memory.MemoryCache(
-                        new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
 
         internal void SetManager(BitcoinJobManager value) => manager = value;
         internal void AddConnection(StratumConnection value) => RegisterConnection(value);

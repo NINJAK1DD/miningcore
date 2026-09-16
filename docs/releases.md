@@ -53,9 +53,11 @@ copying a recovery command from the maintainer section.
 
 [#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b
 difficulty negotiation to a four-request burst and one replenished request per ten
-seconds per connection. Suggest-difficulty and configure minimum-difficulty share the
-budget, including duplicate requests. Excess requests receive a protocol refusal;
-eight consecutive refusals close the connection. Normal subscribe/authorize, shares
+seconds per connection. Suggest-difficulty, configure minimum-difficulty and authorization
+with a parseable `d=` static-difficulty password control share the budget, including
+duplicate requests. Excess requests receive a protocol refusal;
+eight consecutive refusals close the connection. Subscribe, ordinary authorization
+without static difficulty, shares
 and server-driven VarDiff remain available while the budget recovers. Successful
 changes retain difficulty-before-notify ordering and immutable target/credit binding.
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).

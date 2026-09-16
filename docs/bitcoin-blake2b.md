@@ -204,7 +204,8 @@ third-party miner firmware or provide a production-ready adapter.
 ## Miner-requested difficulty budget
 
 Each BLAKE2b TCP connection shares one budget between `mining.suggest_difficulty`
-and `mining.configure` requests whose extension list includes `minimum-difficulty`.
+requests, `mining.configure` requests whose extension list includes `minimum-difficulty`,
+and `mining.authorize` requests with a parseable static-difficulty password control (`d=`).
 It starts with **four requests**, replenishes **one request per ten elapsed seconds**,
 and stores at most four requests. Fractional refill time is retained. The allowance
 accommodates initial negotiation and a small retry burst; sustained miner-driven
@@ -212,19 +213,28 @@ retargeting is deliberately limited to six requests per minute after that burst.
 There is no configuration switch to disable this admission boundary.
 
 The budget is charged before the inherited handlers acknowledge, parse the requested
-difficulty, change VarDiff/difficulty state, or issue work. Duplicate, below-base and
-malformed suggestions still consume admission. A configure message consumes one
+difficulty, change VarDiff/difficulty state, or issue work. Static-difficulty authorization
+is classified using the same parser as the inherited handler, including semicolon-separated
+and legacy embedded `d=` syntax, before any authorization RPC or identity change. Duplicate,
+below-base and malformed suggestions still consume admission. Parseable static-difficulty
+authorizations count even when the requested value would leave difficulty unchanged.
+A configure message consumes one
 request even when it repeats the minimum-difficulty extension name. Calls made before
 subscription consume the same connection budget; subscribing does not reset it.
 
 When exhausted:
 
-- `mining.suggest_difficulty` returns a JSON-RPC error with Stratum code `20`,
+- `mining.suggest_difficulty` and static-difficulty `mining.authorize` return an error with Stratum code `20`,
   `result: false`, and the original request ID.
 - `mining.configure` returns an error string under `result.minimum-difficulty`:
   `Difficulty request rate limit exceeded; retry after 10 seconds`. Other requested
   extensions are explicitly unsupported (`false`) for this BLAKE2b protocol.
+  The retry interval in the wire text is derived from the refill policy. As with
+  successful configure responses, the top-level `error` property is omitted for
+  ordinary clients; NiceHash/ASICBoost compatibility responses include `error: null`.
 - Refused requests leave the assignment, pending VarDiff update and active jobs intact.
+  A refused authorization also preserves existing authorization and miner identity;
+  an unauthenticated connection stays unauthenticated. The authorization RPC is not run.
   They send no difficulty or job notification. A successful change still sends
   `mining.set_difficulty` before the matching immutable `mining.notify` job.
 - The eighth consecutive over-budget request closes that connection without queuing
@@ -233,12 +243,13 @@ When exhausted:
   to reach a miner that continues flooding. A miner should wait at least ten seconds
   after a refusal before retrying.
 
-Subscribe, authorize, share submission, configure without minimum-difficulty, pool
+Subscribe, ordinary authorize without a parseable static-difficulty request, share
+submission, configure without minimum-difficulty, pool
 job broadcasts and server-driven VarDiff do not consume this budget. Connections have
 independent allowances, including connections behind one proxy/IP. State is tied to
 the connection with weak keys and has no per-IP history, timer or deferred work queue.
 Elapsed time uses `TimeProvider.System.GetTimestamp`, independent of wall-clock/NTP
-adjustments and miner timestamps. This bounds these two renegotiation paths per
+adjustments and miner timestamps. This bounds these three difficulty-request paths per
 connection; it is not a global connection or general Stratum denial-of-service limit.
 
 ### Research and wire validation for issue #152
@@ -269,6 +280,10 @@ with a frozen monotonic clock. It covers each method, mixed methods, duplicate v
 and extension names, pipelined bursts, pre-subscription exhaustion, two connections on
 one pool, backward/forward wall-clock changes, exact refill boundaries, capacity after
 long idle, pending VarDiff preservation, server-driven updates and original proof credit.
+Additional cases cover increasing static-difficulty authorizations, their legacy password
+syntax, refusals before initial authentication and reauthorization, ordinary authorization
+while exhausted, the ordinary/NiceHash/ASICBoost configure response matrix, and seven
+refusals followed by a refill/admission and another complete seven-refusal allowance.
 The fixture drives the production server dispatch wrapper, not a direct handler call.
 The [live Knots suite](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRegtestTests.cs)
 also exhausts the shared budget before VarDiff and real accepted header-v2 submissions
@@ -284,6 +299,19 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
 
 ## Troubleshooting and validation limits
 
+- **Miners report difficulty rate-limit errors or disconnect after repeated requests:**
+  inspect the miner/proxy's frequency of `suggest_difficulty`, configure minimum-difficulty
+  and authorization with `d=`. They share the four-request burst and ten-second refill.
+  Wait at least the retry interval before sending another difficulty request; continuing
+  to retry closes the connection on the eighth consecutive refusal. Initial static-difficulty
+  authorization can be refused if earlier negotiation already exhausted the allowance.
+  It must be retried after refill; do not assume the miner is authenticated from an earlier
+  subscribe response. Avoid periodic reauthorization with `d=` when the miner only needs
+  ordinary authentication, and let server VarDiff handle adaptive retargeting where supported.
+  Update or reconfigure firmware/proxies that continually renegotiate; commission their
+  behavior on an isolated endpoint first. The limit is fixed and has no operator override.
+  A fleet requiring faster sustained miner-selected changes needs a reviewed compatibility
+  change; removing the guard during an incident restores the resource-exhaustion path.
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,
   deployment state, and `!blake2b`. Do not remove the gate or substitute the `bitcoin` template.
 - **Activation parent RPC is temporarily unavailable:** work verification retries with

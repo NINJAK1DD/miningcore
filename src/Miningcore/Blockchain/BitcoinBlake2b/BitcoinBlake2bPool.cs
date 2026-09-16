@@ -33,16 +33,32 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         IConnectionFactory cf, IStatsRepository statsRepo, IMapper mapper,
         IMasterClock clock, IMessageBus messageBus,
         RecyclableMemoryStreamManager rmsm, NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus,
-            rmsm, nicehashService)
+        this(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus,
+            rmsm, nicehashService, TimeProvider.System)
     {
     }
 
+    // Inject once at construction: every connection uses the same immutable
+    // time source, including connections whose bucket is created later.
+    internal BitcoinBlake2bPool(IComponentContext ctx,
+        JsonSerializerSettings serializerSettings,
+        IConnectionFactory cf, IStatsRepository statsRepo, IMapper mapper,
+        IMasterClock clock, IMessageBus messageBus,
+        RecyclableMemoryStreamManager rmsm, NicehashService nicehashService,
+        TimeProvider difficultyBudgetTimeProvider) :
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus,
+            rmsm, nicehashService)
+    {
+        ArgumentNullException.ThrowIfNull(difficultyBudgetTimeProvider);
+        this.difficultyBudgetTimeProvider = difficultyBudgetTimeProvider;
+    }
+
     private readonly PoolOperationGate operations = new();
-    // Weak connection keys retain no disconnected-miner/IP history. Both
-    // negotiation methods share one bucket, including pre-subscription calls.
+    // Weak connection keys retain no disconnected-miner/IP history. Suggest,
+    // configure and static-difficulty authorization share one bucket, including
+    // pre-subscription calls.
     private readonly ConditionalWeakTable<StratumConnection, DifficultyRequestBudget> difficultyBudgets = new();
-    internal TimeProvider DifficultyBudgetTimeProvider { get; set; } = TimeProvider.System;
+    private readonly TimeProvider difficultyBudgetTimeProvider;
     private readonly object statusSync = new();
     private CancellationToken hostShutdown;
     private int lifetimeStarted;
@@ -274,16 +290,16 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             return;
         }
 
-        if(IsDifficultyRequest(request.Value))
+        if(TryClassifyDifficultyRequest(request.Value, out var extensions))
         {
             var admission = difficultyBudgets.GetValue(connection,
-                _ => new DifficultyRequestBudget(DifficultyBudgetTimeProvider)).TryAcquire();
+                _ => new DifficultyRequestBudget(difficultyBudgetTimeProvider)).TryAcquire();
             if(admission != DifficultyRequestBudget.Admission.Allowed)
             {
                 if(admission == DifficultyRequestBudget.Admission.Disconnect)
                     Disconnect(connection);
                 else
-                    await RefuseDifficultyRequestAsync(connection, request.Value);
+                    await RefuseDifficultyRequestAsync(connection, request.Value, extensions);
                 return;
             }
         }
@@ -325,32 +341,61 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
     }
 
-    private static bool IsDifficultyRequest(JsonRpcRequest request) =>
-        request.Method == BitcoinStratumMethods.SuggestDifficulty ||
-        request.Method == BitcoinStratumMethods.MiningConfigure &&
-        request.Params is JArray { Count: > 0 } parameters && parameters[0] is JArray extensions &&
-        extensions.Any(x => x.Type == JTokenType.String &&
-            x.Value<string>() == BitcoinStratumExtensions.MinimumDiff);
-
-    private static Task RefuseDifficultyRequestAsync(StratumConnection connection, JsonRpcRequest request)
+    private bool TryClassifyDifficultyRequest(JsonRpcRequest request, out JArray extensions)
     {
-        const string reason = "Difficulty request rate limit exceeded; retry after 10 seconds";
-        if(request.Method == BitcoinStratumMethods.SuggestDifficulty)
+        extensions = null;
+        switch(request.Method)
+        {
+            case BitcoinStratumMethods.SuggestDifficulty:
+                return true;
+
+            case BitcoinStratumMethods.MiningConfigure:
+                if(request.Params is JArray { Count: > 0 } parameters && parameters[0] is JArray requested &&
+                   requested.Any(x => x.Type == JTokenType.String && x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))
+                {
+                    extensions = requested;
+                    return true;
+                }
+                return false;
+
+            case BitcoinStratumMethods.Authorize:
+                // Match the inherited parser, including its legacy embedded d=
+                // syntax. A separate StartsWith check would leave a bypass.
+                // JSON strings are the only wire password tokens that can
+                // contain this control variable. Ordinary authorization is free.
+                return request.Params is JArray { Count: > 1 } authorization &&
+                    authorization[1].Type == JTokenType.String &&
+                    GetStaticDiffFromPassparts(authorization[1].Value<string>()
+                        .Split(PasswordControlVarsSeparator)).HasValue;
+
+            default:
+                return false;
+        }
+    }
+
+    private Task RefuseDifficultyRequestAsync(StratumConnection connection, JsonRpcRequest request, JArray extensions)
+    {
+        var reason = FormattableString.Invariant($"Difficulty request rate limit exceeded; retry after {DifficultyRequestBudget.RefillInterval.TotalSeconds} seconds");
+        if(extensions == null)
             return connection.RespondErrorAsync(StratumError.Other, reason, request.Id, false);
 
         // BIP310 permits an extension error string. BLAKE2b supports only
         // minimum-difficulty; other extensions remain explicitly unsupported.
         var result = new Dictionary<string, object>();
-        foreach(var extension in (JArray) ((JArray) request.Params)[0])
+        foreach(var extension in extensions)
         {
             if(extension.Type == JTokenType.String)
                 result[extension.Value<string>()] = extension.Value<string>() == BitcoinStratumExtensions.MinimumDiff
                     ? reason : false;
         }
-        return connection.RespondAsync(new JsonRpcResponse<object>(result, request.Id)
+        var response = new JsonRpcResponse<object>(result, request.Id);
+        // Preserve the inherited success response shape for ordinary clients,
+        // including its compatibility exception for NiceHash/ASICBoost clients.
+        if(connection.ContextAs<BitcoinWorkerContext>().IsNicehash || poolConfig.EnableAsicBoost == true)
         {
-            Extra = new Dictionary<string, object> { ["error"] = null },
-        });
+            response.Extra = new Dictionary<string, object> { ["error"] = null };
+        }
+        return connection.RespondAsync(response);
     }
 
     protected override object CreateWorkerJob(StratumConnection connection,

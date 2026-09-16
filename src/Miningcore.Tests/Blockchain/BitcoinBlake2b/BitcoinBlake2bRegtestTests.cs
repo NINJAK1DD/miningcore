@@ -99,8 +99,14 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Equal((uint) height, template.Height);
             Assert.Contains("!blake2b", template.Rules);
             var job = await manager.FetchJobAsync(managerStop.Token);
-            await using var wire = new BitcoinBlake2bWireSession(container, clock, pool, manager, bus);
-            wire.BudgetTimeProvider = new ManualTimeProvider();
+            await using var wire = new BitcoinBlake2bWireSession(container, clock, pool, manager, bus,
+                budgetTimeProvider: new ManualTimeProvider());
+            var difficultyRequests = 0;
+            async Task<JObject> RequestDifficultyAsync(string method, params object[] parameters)
+            {
+                difficultyRequests++;
+                return await wire.RequestAsync(method, parameters);
+            }
             var subscribe = await wire.RequestAsync("mining.subscribe", "Miningcore-header-v2-test");
             Assert.Equal(8, subscribe["result"][2].Value<int>());
             Assert.Equal(8, subscribe["result"][1].Value<string>().Length);
@@ -111,7 +117,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
             var notify = wireJob.ToObject<object[]>();
             notify[4] = wireJob[4].ToObject<string[]>();
             var worker = wire.Connection;
-            var authorize = await wire.RequestAsync("mining.authorize", destination + ".test", "d=0.000000002");
+            var authorize = await RequestDifficultyAsync("mining.authorize", destination + ".test", "d=0.000000002");
             Assert.True(authorize["result"].Value<bool>());
             Assert.Equal("mining.set_difficulty", (await wire.ReadAsync())["method"].Value<string>());
             var authorizedJob = await wire.ReadAsync();
@@ -130,7 +136,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });
             Assert.False(configure["result"]["version-rolling"].Value<bool>());
             Assert.Null(worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask);
-            var minimum = await wire.RequestAsync("mining.configure", new[] { "minimum-difficulty" },
+            var minimum = await RequestDifficultyAsync("mining.configure", new[] { "minimum-difficulty" },
                 new Dictionary<string, object> { ["minimum-difficulty.value"] = 3e-9 });
             Assert.True(minimum["result"]["minimum-difficulty"].Value<bool>());
             var difficultyMessage = await wire.ReadAsync();
@@ -142,18 +148,31 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 .ToString("x8"), configuredJob["params"][6].Value<string>());
             Assert.NotEqual(notify[0], configuredJob["params"][0].Value<string>());
             // Exhaust the shared request budget against live daemon-issued work.
-            // The first token was used by minimum-difficulty above.
-            foreach(var requested in new[] { 4e-9, 5e-9, 3e-9 })
+            // Account explicitly for setup's authorize/configure requests and
+            // derive the remaining allowance from the policy capacity.
+            Assert.InRange(difficultyRequests, 1, DifficultyRequestBudget.Capacity);
+            var lastRequestedDifficulty = worker.Context.Difficulty;
+            while(difficultyRequests < DifficultyRequestBudget.Capacity)
             {
-                Assert.True((await wire.RequestAsync("mining.suggest_difficulty", requested))["result"].Value<bool>());
+                var requested = (difficultyRequests + 2) / 1e9;
+                Assert.True((await RequestDifficultyAsync("mining.suggest_difficulty", requested))["result"].Value<bool>());
                 Assert.Equal(requested, (await wire.ReadAsync())["params"][0].Value<double>());
                 Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(BitcoinBlake2bHeader.TargetForDifficulty(requested))
                     .ToString("x8"), (await wire.ReadAsync())["params"][6].Value<string>());
+                lastRequestedDifficulty = requested;
             }
             await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
                 new Dictionary<string, object> { ["minimum-difficulty.value"] = 6e-9 });
             Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
-            Assert.Equal(3e-9, worker.Context.Difficulty);
+            Assert.Equal(lastRequestedDifficulty, worker.Context.Difficulty);
+            await wire.SendRequestAsync("mining.authorize", destination + ".test", "d=0.000000006");
+            var refusedAuthorization = await wire.ReadAsync();
+            Assert.Equal((int) StratumError.Other, refusedAuthorization["error"]["code"].Value<int>());
+            Assert.False(refusedAuthorization["result"].Value<bool>());
+            Assert.True(worker.Context.IsAuthorized);
+            Assert.Equal(lastRequestedDifficulty, worker.Context.Difficulty);
+            await wire.SendRequestAsync("mining.authorize", destination + ".test", "ordinary-password");
+            Assert.True((await wire.ReadAsync())["result"].Value<bool>());
             await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" }, new Dictionary<string, object>());
             Assert.Null((await wire.ReadAsync())["method"]); // refusal issued no hidden work
             var rejected = await wire.RequestAsync("mining.submit", destination + ".test",
