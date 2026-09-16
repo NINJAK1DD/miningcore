@@ -57,12 +57,17 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     private readonly ConditionalWeakTable<StratumConnection, SemaphoreSlim> assignmentGates = new();
 
     // Serialize mutations and their complete wire assignment, not individual sends.
-    // Internal virtual entry allows deterministic contention barriers in TCP tests.
-    internal virtual Task EnterAssignmentAsync(StratumConnection connection, CancellationToken ct) =>
-        assignmentGates.GetValue(connection, static _ => new SemaphoreSlim(1, 1)).WaitAsync(ct);
-
-    private void ExitAssignment(StratumConnection connection) => assignmentGates.GetValue(connection,
-        static _ => new SemaphoreSlim(1, 1)).Release();
+    // Never hold this gate across daemon RPC or external HTTP lookups.
+    // Callers release the returned instance only after successful acquisition.
+    // Internal virtual entry provides deterministic contention barriers in tests.
+    // Weak ownership allows reclamation with the connection;
+    // do not dispose while waiters exist. AvailableWaitHandle is never used.
+    internal virtual async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+    {
+        var gate = assignmentGates.GetValue(connection, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        return gate;
+    }
 
     private bool IsAdmissionClosed(StratumConnection connection) => operations.IsClosed ||
         difficultyBudgets.TryGetValue(connection, out var budget) && budget.IsClosed;
@@ -288,7 +293,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         logger.Info(() => $"Broadcasting base job {((object[]) jobParams)[0]} (worker IDs include a difficulty suffix)");
         async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {
-            await EnterAssignmentAsync(connection, ct);
+            var gate = await EnterAssignmentAsync(connection, ct);
             try
             {
                 var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -302,20 +307,20 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
                     CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]));
             }
-            finally { ExitAssignment(connection); }
+            finally { gate.Release(); }
         });
         await Guard(BroadcastAsync);
     }
 
     protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
     {
-        await EnterAssignmentAsync(connection, ct);
+        var gate = await EnterAssignmentAsync(connection, ct);
         try
         {
             if(!IsAdmissionClosed(connection))
                 await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
         }
-        finally { ExitAssignment(connection); }
+        finally { gate.Release(); }
     }
 
     protected override async Task OnRequestAsync(StratumConnection connection,
@@ -382,19 +387,45 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             return;
         }
 
-        await EnterAssignmentAsync(connection, ct);
         try
         {
-            if(IsAdmissionClosed(connection))
-                return;
-            var previousDifficulty = context.Difficulty;
-            if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
-                await OnConfigureMiningAsync(connection, request, minimumDifficulty);
-            else
-                await base.OnRequestAsync(connection, request, ct);
-            await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
+            ResolvedNicehashDifficulty? nicehashDifficulty = null;
+            if(request.Value.Method == BitcoinStratumMethods.Subscribe)
+            {
+                if(request.Value.Id == null)
+                    throw new StratumException(StratumError.MinusOne, "missing request id");
+                // Resolve external data before changing subscription/extranonce
+                // state. An already-authorized miner must not stall broadcasts
+                // behind a cold NiceHash HTTP lookup.
+                var userAgent = request.Value.ParamsAs<string[]>().FirstOrDefault()?.Trim();
+                var lookupContext = new BitcoinWorkerContext { UserAgent = userAgent };
+                var template = (BitcoinTemplate) poolConfig.Template;
+                nicehashDifficulty = new ResolvedNicehashDifficulty(
+                    await GetNicehashStaticMinDiff(lookupContext, template.Name, template.GetAlgorithmName()));
+            }
+
+            var gate = await EnterAssignmentAsync(connection, ct);
+            try
+            {
+                if(IsAdmissionClosed(connection))
+                    return;
+                var previousDifficulty = context.Difficulty;
+                if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
+                    await OnConfigureMiningAsync(connection, request, minimumDifficulty);
+                else if(request.Value.Method == BitcoinStratumMethods.Subscribe)
+                    await OnSubscribeCoreAsync(connection, request, nicehashDifficulty);
+                else
+                    await base.OnRequestAsync(connection, request, ct);
+                await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
+            }
+            finally { gate.Release(); }
         }
-        finally { ExitAssignment(connection); }
+        catch(StratumException ex)
+        {
+            // Configure and subscribe call core handlers directly; preserve the
+            // same protocol-error boundary as BitcoinPool.OnRequestAsync.
+            await connection.RespondErrorAsync(ex.Code, ex.Message, request.Value.Id, false);
+        }
     }
 
     private async Task CompleteAssignmentAsync(StratumConnection connection, double previousDifficulty, string method)
@@ -424,21 +455,23 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     protected override async Task OnAuthorizeAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
-        var parameters = request.Value.ParamsAs<string[]>();
+        // Only consumed fields are converted; ignored trailing fields may contain
+        // any JSON value, as with other extensible request arrays.
+        var parameters = ((JArray) request.Value.Params).Take(2).Select(x => x.Value<string>()).ToArray();
         var password = parameters?.Length > 1 ? parameters[1] : null;
         // Use exactly the inherited parser once, including legacy embedded d= syntax.
         var difficulty = GetStaticDiffFromPassparts(password?.Split(PasswordControlVarsSeparator));
         if(difficulty.HasValue && !await AdmitDifficultyRequestAsync(connection,
             difficultyBudgets.GetValue(connection, createDifficultyBudget), request.Value, null))
             return;
-        await OnAuthorizeCoreAsync(connection, request, ct, new ParsedStaticDifficulty(difficulty));
+        await OnAuthorizeCoreAsync(connection, request, ct, new ParsedStaticDifficulty(difficulty), parameters);
     }
 
     protected override async Task ApplyStaticDifficultyAsync(StratumConnection connection, double? difficulty, CancellationToken ct)
     {
         if(!difficulty.HasValue)
             return;
-        await EnterAssignmentAsync(connection, ct);
+        var gate = await EnterAssignmentAsync(connection, ct);
         try
         {
             if(IsAdmissionClosed(connection))
@@ -447,18 +480,21 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
             await CompleteAssignmentAsync(connection, previousDifficulty, BitcoinStratumMethods.Authorize);
         }
-        finally { ExitAssignment(connection); }
+        finally { gate.Release(); }
     }
 
     private static bool IsValidAuthorization(object parameters) =>
-        parameters is JArray { Count: 1 or 2 } values && values[0].Type == JTokenType.String &&
-        (values.Count == 1 || values[1].Type is JTokenType.String or JTokenType.Null);
+        parameters is JArray { Count: >= 1 } values && IsAuthorizationScalar(values[0]) &&
+        (values.Count == 1 || IsAuthorizationScalar(values[1]));
+
+    private static bool IsAuthorizationScalar(JToken value) =>
+        value.Type is JTokenType.String or JTokenType.Integer or JTokenType.Float or JTokenType.Boolean or JTokenType.Null;
 
     private static bool TryValidateConfigure(object parameters, out JArray extensions, out double? minimumDifficulty)
     {
         extensions = null;
         minimumDifficulty = null;
-        if(parameters is not JArray { Count: 2 } array || array[0] is not JArray requested ||
+        if(parameters is not JArray { Count: >= 2 } array || array[0] is not JArray requested ||
             requested.Any(x => x.Type != JTokenType.String) || array[1] is not JObject values)
             return false;
         if(requested.Any(x => x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))

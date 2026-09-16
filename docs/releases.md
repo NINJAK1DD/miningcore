@@ -63,12 +63,26 @@ changes retain difficulty-before-notify ordering and immutable target/credit bin
 The first duplicate subscribe receives an error while preserving work; another duplicate
 closes the connection. Malformed configure/authorize requests consume allowance without
 state mutation; missing IDs remain uncharged. Numeric-string minimum difficulty remains
-compatible and is parsed once. A per-connection async gate serializes difficulty mutation
-and work emission against broadcasts and VarDiff, keeping authorization RPC outside it.
+compatible and is parsed once. Authorization preserves scalar worker/password conversion,
+and authorize/configure tolerate ignored trailing fields. Canonical Bitcoin now declines
+minimum-difficulty negotiation with a missing value without dropping the connection.
 Terminal events have structured Info diagnostics and bounded admission counters; custom
 BLAKE2b templates must disable version rolling. Cross-connection churn defenses are
 tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
+
+## Unreleased: BLAKE2b assignment ordering
+
+[#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
+changes, server broadcasts and immediate VarDiff updates per connection. Difficulty
+mutation, `mining.set_difficulty`, immutable target/job creation and `mining.notify` now
+complete together, so a concurrent producer cannot snapshot a target that differs from
+the latest announced difficulty. Previously issued work retains its original target and
+credit basis. Address-validation RPC and share submission/accounting run outside the gate.
+Subscribe resolves NiceHash autodiff before acquiring the gate and committing subscription
+state; an authorize-before-subscribe client cannot hold up broadcasts during the API lookup.
+Each successful acquisition releases its exact semaphore, including protocol-error paths.
+BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 ## Unreleased: Bitcoin-family verified job gate
 

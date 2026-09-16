@@ -216,8 +216,11 @@ There is no configuration switch to disable this admission boundary.
 Configure requires a string extension array and parameter object; minimum-difficulty
 accepts a finite, positive JSON number or numeric string for firmware compatibility.
 Numbers and strings are parsed once with invariant culture, and that exact value reaches
-the assignment handler. Authorization accepts a worker string and optional string/null
-password. Invalid configure/authorize requests consume a token and receive Stratum error
+the assignment handler. Authorization preserves scalar-to-string conversion for worker
+names and optional passwords, including numeric worker names and null passwords; objects
+and arrays in those consumed positions are rejected. Configure and authorize ignore
+trailing fields after their consumed parameters. Invalid configure/authorize requests
+consume a token and receive Stratum error
 20 without assignment or identity mutation or authorization RPC. Once exhausted, their
 responses follow the same bounded refusal/disconnect policy. Missing IDs receive error -1
 without charging.
@@ -269,8 +272,16 @@ A per-connection async gate covers assignment mutation, pending VarDiff applicat
 Miner changes, broadcasts and immediate VarDiff updates use the same gate, so one producer
 cannot snapshot a new target under another producer's previous difficulty announcement.
 Authorization address-validation RPC and share submission/accounting run outside the gate;
-only their assignment changes acquire it. Gates are independent between connections and
-released on exceptions/cancellation.
+only their assignment changes acquire it. Subscribe resolves NiceHash autodiff outside the
+gate, then commits subscription/extranonce state and publishes the initial assignment while
+holding it. A cold HTTP lookup cannot delay the broadcast pipeline even when authorization
+precedes subscription. A completed lookup returning no difficulty is not repeated. Gates
+are independent between connections; each successful acquisition releases that exact
+semaphore in `finally`, and cancellation before acquisition does not release it.
+This assignment-ordering fix is tracked separately in
+[#182](https://github.com/NINJAK1DD/miningcore/issues/182).
+BLAKE2b supports custodial SOLO and rejects canonical `soloCoinbasePayout` options at
+startup, so Bitcoin's direct-coinbase SOLO authorization-notify path is unreachable here.
 
 Well-formed ordinary authorize without a parseable static-difficulty request, share
 submission, well-formed configure without minimum-difficulty, pool
@@ -333,7 +344,13 @@ dispatch/authorization behavior. A custom template cannot enable version rolling
 pause configure after mutation and broadcasts after a pending VarDiff announcement. They
 wait for a competing operation to reach the held gate before releasing the barrier, then
 check every wire target against the latest difficulty announcement. Additional coverage
-proves authorization RPC does not hold this gate.
+proves authorization RPC and delayed NiceHash autodiff do not hold this gate. It checks
+both present and absent autodiff results, no partial subscription/extranonce mutation,
+scalar worker/trailing-field compatibility with unchanged admission accounting,
+configure protocol-error recovery, and exact malformed-error versus rate-refusal messages.
+A canonical Bitcoin request missing `minimum-difficulty.value` now declines the extension
+without dropping the connection. Startup tests explicitly reject direct-coinbase SOLO
+options whether their `enabled` property is true or false.
 The fixture drives the production server dispatch wrapper, not a direct handler call.
 The [live Knots suite](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRegtestTests.cs)
 also exhausts the shared budget before VarDiff and real accepted header-v2 submissions

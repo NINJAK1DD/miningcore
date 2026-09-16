@@ -57,7 +57,14 @@ public class BitcoinPool : PoolBase
     internal readonly record struct VersionRollingNegotiation(
         VersionRollingNegotiationStatus Status, uint? Mask);
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest) =>
+        OnSubscribeCoreAsync(connection, tsRequest);
+
+    // A present wrapper includes a completed lookup that returned no difficulty.
+    protected readonly record struct ResolvedNicehashDifficulty(double? Value);
+
+    protected async Task OnSubscribeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
+        ResolvedNicehashDifficulty? resolvedNicehashDifficulty = null)
     {
         var request = tsRequest.Value;
 
@@ -96,7 +103,8 @@ public class BitcoinPool : PoolBase
         context.UserAgent = requestParams.FirstOrDefault()?.Trim();
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = resolvedNicehashDifficulty.HasValue ? resolvedNicehashDifficulty.Value.Value :
+            await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
 
         if(nicehashDiff.HasValue)
         {
@@ -125,7 +133,7 @@ public class BitcoinPool : PoolBase
     protected readonly record struct ParsedStaticDifficulty(double? Value);
 
     protected async Task OnAuthorizeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
-        CancellationToken ct, ParsedStaticDifficulty? parsedDifficulty = null)
+        CancellationToken ct, ParsedStaticDifficulty? parsedDifficulty = null, string[] parsedParameters = null)
     {
         var request = tsRequest.Value;
 
@@ -133,7 +141,7 @@ public class BitcoinPool : PoolBase
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        var requestParams = request.ParamsAs<string[]>();
+        var requestParams = parsedParameters ?? request.ParamsAs<string[]>();
         var workerValue = requestParams?.Length > 0 ? requestParams[0] : null;
         var password = requestParams?.Length > 1 ? requestParams[1] : null;
 
@@ -636,6 +644,12 @@ public class BitcoinPool : PoolBase
     private void ConfigureMinimumDiff(StratumConnection connection, BitcoinWorkerContext context,
         IReadOnlyDictionary<string, JToken> extensionParams, Dictionary<string, object> result, double? validatedMinimumDifficulty)
     {
+        if(!validatedMinimumDifficulty.HasValue &&
+            !extensionParams.ContainsKey(BitcoinStratumExtensions.MinimumDiffValue))
+        {
+            result[BitcoinStratumExtensions.MinimumDiff] = false;
+            return;
+        }
         var requestedDiff = validatedMinimumDifficulty ?? extensionParams[BitcoinStratumExtensions.MinimumDiffValue].Value<double>();
 
         // client may suggest higher-than-base difficulty, but not a lower one

@@ -46,6 +46,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal StratumConnection Connection { get; }
     internal int JobsCreated => pool.JobsCreated;
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
+    internal Func<Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
+    internal Action BeforeConfigure { set => ((TestPool) pool).BeforeConfigure = value; }
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }
     internal Action AssignmentWaiting { set => ((TestPool) pool).AssignmentWaiting = value; }
@@ -177,11 +179,16 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     private sealed class TestPool : BitcoinBlake2bPool, IWirePool
     {
+        internal Func<Task<double?>> NicehashLookup;
+        internal Action BeforeConfigure;
         internal Func<Task> AfterConfigure;
+
+        protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
+            string coinName, string algorithm) => NicehashLookup?.Invoke() ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
         internal Action BeforeCreateJob;
         internal Action AssignmentWaiting;
 
-        internal override Task EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+        internal override ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
         {
             var wait = base.EnterAssignmentAsync(connection, ct);
             if(!wait.IsCompleted)
@@ -192,6 +199,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         protected override async Task OnConfigureMiningAsync(StratumConnection connection,
             Timestamped<JsonRpcRequest> request, double? validatedMinimumDifficulty = null)
         {
+            BeforeConfigure?.Invoke();
             await base.OnConfigureMiningAsync(connection, request, validatedMinimumDifficulty);
             if(AfterConfigure != null)
                 await AfterConfigure();
