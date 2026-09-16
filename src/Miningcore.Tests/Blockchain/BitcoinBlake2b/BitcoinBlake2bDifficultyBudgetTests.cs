@@ -60,7 +60,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var extraNonce = context.ExtraNonce1;
         var jobs = context.validJobs.ToArray();
         var difficulty = context.Difficulty;
-        await wire.SendRawAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
+        await wire.SendDisconnectingBatchAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
             $"{{\"id\":{100 + i},\"method\":\"mining.subscribe\",\"params\":[\"repeat\"]}}")));
         await wire.AssertNoMoreMessagesAsync();
         Assert.Equal(1, wire.JobsCreated);
@@ -249,7 +249,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.Equal(DifficultyRequestBudget.Capacity, wire.JobsCreated - before);
         output.WriteLine("Mode {0}: {1} admitted requests and jobs, seven refusal replies in {2:F2} ms; next request disconnects",
             mode, DifficultyRequestBudget.Capacity, timer.Elapsed.TotalMilliseconds);
-        await wire.SendRawAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
+        await wire.SendDisconnectingBatchAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
             $"{{\"id\":{100 + i},\"method\":\"mining.suggest_difficulty\",\"params\":[0.000000002]}}")));
         await wire.AssertNoMoreMessagesAsync();
         Assert.Single(target.Logs.Where(x => x.Contains("DifficultyBudgetDisconnect")));

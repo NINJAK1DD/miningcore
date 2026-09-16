@@ -47,6 +47,22 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
     internal Task SendRawAsync(string lines) => writer.WriteLineAsync(lines);
 
+    internal async Task SendDisconnectingBatchAsync(string lines)
+    {
+        try
+        {
+            // Avoid StreamWriter's 1 KiB chunking: the server may abort after the
+            // first line while the writer still has another chunk to flush.
+            await client.GetStream().WriteAsync(Encoding.UTF8.GetBytes(lines + "\n"), stop.Token);
+        }
+        catch(IOException ex) when(ex.InnerException is SocketException)
+        {
+            // Early reset is valid only for these terminal batches. The caller
+            // must still prove the exact admission diagnostic and unchanged work.
+            await AssertDisconnectedAsync();
+        }
+    }
+
     internal async Task AssertNoMoreMessagesAsync()
     {
         await AssertDisconnectedAsync();
